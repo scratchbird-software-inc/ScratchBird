@@ -101,9 +101,13 @@
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include <chrono>
 #include <cctype>
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -260,6 +264,552 @@ api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
   return result;
 }
 
+bool ReadCanonicalRowSize(std::string_view encoded,
+                          std::size_t* offset,
+                          std::size_t* parsed_size) {
+  if (offset == nullptr || parsed_size == nullptr || *offset >= encoded.size()) {
+    return false;
+  }
+  std::size_t value = 0;
+  bool saw_digit = false;
+  while (*offset < encoded.size()) {
+    const char ch = encoded[*offset];
+    if (ch == ':') {
+      ++(*offset);
+      *parsed_size = value;
+      return saw_digit;
+    }
+    if (!std::isdigit(static_cast<unsigned char>(ch))) {
+      return false;
+    }
+    saw_digit = true;
+    value = value * 10u + static_cast<std::size_t>(ch - '0');
+    ++(*offset);
+  }
+  return false;
+}
+
+bool ReadCanonicalRowsetCount(std::string_view encoded,
+                              std::size_t* offset,
+                              std::size_t* parsed_count) {
+  if (offset == nullptr || parsed_count == nullptr || *offset >= encoded.size()) {
+    return false;
+  }
+  std::size_t value = 0;
+  bool saw_digit = false;
+  while (*offset < encoded.size()) {
+    const char ch = encoded[*offset];
+    if (ch == ';') {
+      ++(*offset);
+      *parsed_count = value;
+      return saw_digit;
+    }
+    if (!std::isdigit(static_cast<unsigned char>(ch))) {
+      return false;
+    }
+    saw_digit = true;
+    value = value * 10u + static_cast<std::size_t>(ch - '0');
+    ++(*offset);
+  }
+  return false;
+}
+
+bool DecodeCanonicalRowOperand(std::string_view encoded,
+                               std::string_view canonical_type_name,
+                               std::vector<std::pair<std::string, api::EngineTypedValue>>* fields) {
+  if (fields == nullptr) return false;
+  std::size_t offset = 0;
+  while (offset < encoded.size()) {
+    std::size_t name_size = 0;
+    if (!ReadCanonicalRowSize(encoded, &offset, &name_size) ||
+        offset + name_size > encoded.size()) {
+      return false;
+    }
+    std::string name(encoded.substr(offset, name_size));
+    offset += name_size;
+    if (offset >= encoded.size()) return false;
+    const char marker = encoded[offset++];
+
+    api::EngineTypedValue value;
+    value.descriptor.descriptor_kind = "scalar";
+    value.descriptor.canonical_type_name =
+        canonical_type_name.empty() ? "text" : std::string(canonical_type_name);
+    value.descriptor.encoded_descriptor =
+        "type=" + value.descriptor.canonical_type_name;
+    if (marker == '~') {
+      value.is_null = true;
+      value.setState(api::EngineValueState::sql_null);
+    } else if (marker == '=') {
+      std::size_t value_size = 0;
+      if (!ReadCanonicalRowSize(encoded, &offset, &value_size) ||
+          offset + value_size > encoded.size()) {
+        return false;
+      }
+      value.encoded_value = std::string(encoded.substr(offset, value_size));
+      offset += value_size;
+      value.is_null = false;
+    } else {
+      return false;
+    }
+    fields->push_back({std::move(name), std::move(value)});
+  }
+  return true;
+}
+
+bool DecodeCanonicalRowsetOperand(std::string_view encoded,
+                                  std::string_view canonical_type_name,
+                                  std::vector<api::EngineRowValue>* rows,
+                                  bool populate_descriptors = true) {
+  if (rows == nullptr) return false;
+  std::size_t offset = 0;
+  std::size_t column_count = 0;
+  if (!ReadCanonicalRowsetCount(encoded, &offset, &column_count) ||
+      column_count == 0) {
+    return false;
+  }
+  std::vector<std::string> columns;
+  columns.reserve(column_count);
+  for (std::size_t column = 0; column < column_count; ++column) {
+    std::size_t name_size = 0;
+    if (!ReadCanonicalRowSize(encoded, &offset, &name_size) ||
+        offset + name_size > encoded.size()) {
+      return false;
+    }
+    columns.emplace_back(encoded.substr(offset, name_size));
+    offset += name_size;
+  }
+  std::size_t row_count = 0;
+  if (!ReadCanonicalRowsetCount(encoded, &offset, &row_count)) {
+    return false;
+  }
+  rows->reserve(rows->size() + row_count);
+  for (std::size_t row_index = 0; row_index < row_count; ++row_index) {
+    std::size_t row_uuid_size = 0;
+    if (!ReadCanonicalRowSize(encoded, &offset, &row_uuid_size) ||
+        offset + row_uuid_size > encoded.size()) {
+      return false;
+    }
+    api::EngineRowValue row;
+    row.requested_row_uuid.canonical =
+        std::string(encoded.substr(offset, row_uuid_size));
+    offset += row_uuid_size;
+    row.fields.reserve(column_count);
+    for (const auto& column : columns) {
+      if (offset >= encoded.size()) return false;
+      const char marker = encoded[offset++];
+      api::EngineTypedValue value;
+      if (populate_descriptors) {
+        value.descriptor.descriptor_kind = "scalar";
+        value.descriptor.canonical_type_name =
+            canonical_type_name.empty() ? "text" : std::string(canonical_type_name);
+        value.descriptor.encoded_descriptor =
+            "type=" + value.descriptor.canonical_type_name;
+      }
+      if (marker == '~') {
+        value.is_null = true;
+        value.setState(api::EngineValueState::sql_null);
+      } else if (marker == '=') {
+        std::size_t value_size = 0;
+        if (!ReadCanonicalRowSize(encoded, &offset, &value_size) ||
+            offset + value_size > encoded.size()) {
+          return false;
+        }
+        value.encoded_value = std::string(encoded.substr(offset, value_size));
+        offset += value_size;
+        value.is_null = false;
+      } else {
+        return false;
+      }
+      row.fields.push_back({column, std::move(value)});
+    }
+    rows->push_back(std::move(row));
+  }
+  return offset == encoded.size();
+}
+
+std::string UnescapeDispatchOperandField(std::string_view value) {
+  if (value.find('\\') == std::string_view::npos) {
+    return std::string(value);
+  }
+  std::string out;
+  out.reserve(value.size());
+  bool escaped = false;
+  for (const char ch : value) {
+    if (!escaped) {
+      if (ch == '\\') {
+        escaped = true;
+      } else {
+        out.push_back(ch);
+      }
+      continue;
+    }
+    switch (ch) {
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      default:
+        out.push_back('\\');
+        out.push_back(ch);
+        break;
+    }
+    escaped = false;
+  }
+  if (escaped) {
+    out.push_back('\\');
+  }
+  return out;
+}
+
+std::string_view EnvelopeLineValue(std::string_view encoded,
+                                   std::string_view key) {
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    if (line.size() > key.size() && line.substr(0, key.size()) == key &&
+        line[key.size()] == '=') {
+      return line.substr(key.size() + 1);
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return {};
+}
+
+bool EnvelopeLineEquals(std::string_view encoded,
+                        std::string_view key,
+                        std::string_view expected) {
+  const std::string_view value = EnvelopeLineValue(encoded, key);
+  return value == expected;
+}
+
+std::uint64_t ParseUnsignedOption(std::string_view value) {
+  std::uint64_t parsed = 0;
+  bool saw_digit = false;
+  for (const char ch : value) {
+    if (!std::isdigit(static_cast<unsigned char>(ch))) {
+      return 0;
+    }
+    saw_digit = true;
+    parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
+  }
+  return saw_digit ? parsed : 0;
+}
+
+using SblrDispatchPhaseClock = std::chrono::steady_clock;
+
+struct SblrDispatchPhaseTiming {
+  std::string phase;
+  std::uint64_t elapsed_us = 0;
+};
+
+std::uint64_t SblrDispatchElapsedMicros(SblrDispatchPhaseClock::time_point start,
+                                        SblrDispatchPhaseClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count());
+}
+
+std::string SblrDispatchTraceJsonEscape(std::string_view value) {
+  std::ostringstream out;
+  for (const unsigned char ch : value) {
+    switch (ch) {
+      case '\\':
+        out << "\\\\";
+        break;
+      case '"':
+        out << "\\\"";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        if (ch < 0x20) {
+          constexpr char kHex[] = "0123456789abcdef";
+          out << "\\u00" << kHex[(ch >> 4u) & 0x0fu] << kHex[ch & 0x0fu];
+        } else {
+          out << static_cast<char>(ch);
+        }
+    }
+  }
+  return out.str();
+}
+
+void WriteSblrDispatchPhaseTraceIfRequested(
+    std::string_view operation_id,
+    std::uint64_t envelope_bytes,
+    std::uint64_t rows,
+    bool ok,
+    const std::vector<SblrDispatchPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"operation_id\":\"" << SblrDispatchTraceJsonEscape(operation_id)
+      << "\",\"envelope_bytes\":" << envelope_bytes
+      << ",\"rows\":" << rows
+      << ",\"ok\":" << (ok ? "true" : "false")
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << SblrDispatchTraceJsonEscape(phase.phase)
+        << "\":" << phase.elapsed_us;
+  }
+  out << "}}\n";
+}
+
+void ApplyAuthorizationTagToContext(std::string_view tag,
+                                    api::EngineRequestContext* context) {
+  if (context == nullptr || tag.empty()) {
+    return;
+  }
+  const std::string tag_text(tag);
+  if (std::find(context->trace_tags.begin(),
+                context->trace_tags.end(),
+                tag_text) == context->trace_tags.end()) {
+    context->trace_tags.push_back(tag_text);
+  }
+  if (tag.rfind("right:", 0) != 0 && tag.rfind("deny:", 0) != 0) {
+    return;
+  }
+  auto& authorization = context->authorization_context;
+  authorization.present = true;
+  if (authorization.principal_uuid.canonical.empty()) {
+    authorization.principal_uuid = context->principal_uuid;
+  }
+  if (authorization.authority_uuid.canonical.empty()) {
+    authorization.authority_uuid = context->database_uuid;
+  }
+  if (authorization.security_epoch == 0) {
+    authorization.security_epoch = context->security_epoch;
+  }
+  if (authorization.policy_epoch == 0) {
+    authorization.policy_epoch = 1;
+  }
+  if (authorization.catalog_generation_id == 0) {
+    authorization.catalog_generation_id =
+        context->catalog_generation_id == 0 ? 1 : context->catalog_generation_id;
+  }
+  if (authorization.effective_subjects.empty()) {
+    authorization.effective_subjects.push_back({context->principal_uuid, "principal"});
+  }
+
+  const bool deny = tag.rfind("deny:", 0) == 0;
+  const std::string right(tag.substr(deny ? 5 : 6));
+  const auto duplicate = std::find_if(
+      authorization.grants.begin(),
+      authorization.grants.end(),
+      [&](const auto& grant) {
+        return grant.right == right && grant.deny == deny &&
+               grant.target_uuid.canonical.empty();
+      });
+  if (!right.empty() && duplicate == authorization.grants.end()) {
+    api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical =
+        "public-abi-admitted-auth-tag:" + std::string(deny ? "deny:" : "right:") + right;
+    grant.subject_uuid = context->principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = right;
+    grant.deny = deny;
+    grant.security_epoch = authorization.security_epoch;
+    authorization.grants.push_back(std::move(grant));
+  }
+}
+
+bool TryDispatchNativeBulkRowsetFastPath(std::string_view encoded,
+                                         api::EngineRequestContext context,
+                                         SblrDispatchResult* result) {
+  if (result == nullptr ||
+      !EnvelopeLineEquals(encoded, "operation_id", "dml.execute_native_bulk_ingest") ||
+      encoded.find("operand=rowset_canonical:") == std::string_view::npos) {
+    return false;
+  }
+  std::vector<SblrDispatchPhaseTiming> phase_timings;
+  auto phase_start = SblrDispatchPhaseClock::now();
+  auto record_phase = [&](std::string phase,
+                          SblrDispatchPhaseClock::time_point start) {
+    if (std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE") == nullptr) {
+      return;
+    }
+    phase_timings.push_back(
+        {std::move(phase),
+         SblrDispatchElapsedMicros(start, SblrDispatchPhaseClock::now())});
+  };
+  result->api_result.operation_id = "dml.execute_native_bulk_ingest";
+  if (!EnvelopeLineEquals(encoded, "opcode", "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST") ||
+      !EnvelopeLineEquals(encoded, "contains_sql_text", "false") ||
+      !EnvelopeLineEquals(encoded, "parser_resolved_names_to_uuids", "true") ||
+      !EnvelopeLineEquals(encoded, "requires_security_context", "true") ||
+      !EnvelopeLineEquals(encoded, "requires_transaction_context", "true") ||
+      !EnvelopeLineEquals(encoded, "requires_cluster_authority", "false")) {
+    return false;
+  }
+  record_phase("header_validate", phase_start);
+
+  phase_start = SblrDispatchPhaseClock::now();
+  api::EngineExecuteNativeBulkIngestRequest request;
+  request.context = std::move(context);
+  request.operation_id = "dml.execute_native_bulk_ingest";
+  request.target_table.uuid.canonical =
+      std::string(EnvelopeLineValue(encoded, "target_object_uuid"));
+  request.target_table.object_kind =
+      std::string(EnvelopeLineValue(encoded, "target_object_kind"));
+  if (request.target_table.object_kind.empty()) {
+    request.target_table.object_kind = "table";
+  }
+  request.target_object = request.target_table;
+  request.estimated_row_count =
+      ParseUnsignedOption(EnvelopeLineValue(encoded, "estimated_row_count"));
+  request.duplicate_mode =
+      std::string(EnvelopeLineValue(encoded, "duplicate_mode"));
+  if (request.duplicate_mode.empty()) {
+    request.duplicate_mode = "error";
+  }
+  request.require_generated_row_uuid =
+      !EnvelopeLineEquals(encoded, "require_generated_row_uuid", "false");
+  request.native_bulk_ingest_enabled =
+      !EnvelopeLineEquals(encoded, "native_bulk_ingest_enabled", "false");
+  request.import_policy.reject_mode =
+      std::string(EnvelopeLineValue(encoded, "reject_mode"));
+  if (request.import_policy.reject_mode.empty()) {
+    request.import_policy.reject_mode = "fail_fast";
+  }
+  request.import_policy.reject_payload_policy =
+      std::string(EnvelopeLineValue(encoded, "reject_payload_policy"));
+  request.checkpoint_policy.resume_policy =
+      std::string(EnvelopeLineValue(encoded, "resume_policy"));
+  request.checkpoint_policy.checkpoint_mode =
+      std::string(EnvelopeLineValue(encoded, "checkpoint_mode"));
+  record_phase("request_header_build", phase_start);
+
+  phase_start = SblrDispatchPhaseClock::now();
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    if (line.starts_with("operand=")) {
+      const std::string_view value = line.substr(8);
+      const std::size_t first = value.find('\t');
+      const std::size_t second =
+          first == std::string_view::npos ? std::string_view::npos : value.find('\t', first + 1);
+      if (first != std::string_view::npos && second != std::string_view::npos) {
+        const std::string type = UnescapeDispatchOperandField(value.substr(0, first));
+        const std::string name =
+            UnescapeDispatchOperandField(value.substr(first + 1, second - first - 1));
+        const std::string operand_value =
+            UnescapeDispatchOperandField(value.substr(second + 1));
+        if (type == "text") {
+          request.option_envelopes.push_back(name + ":" + operand_value);
+          if (name == "authorization_tag") {
+            ApplyAuthorizationTagToContext(operand_value, &request.context);
+          }
+        } else if (type == "rowset_canonical" ||
+                   type.rfind("rowset_canonical:", 0) == 0) {
+          const std::size_t type_separator = type.find(':');
+          const std::string_view row_type =
+              type_separator == std::string::npos
+                  ? std::string_view("text")
+                  : std::string_view(type).substr(type_separator + 1);
+          if (!DecodeCanonicalRowsetOperand(operand_value,
+                                            row_type,
+                                            &request.canonical_rows,
+                                            false)) {
+            return false;
+          }
+        }
+      }
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  record_phase("operand_decode", phase_start);
+
+  phase_start = SblrDispatchPhaseClock::now();
+  if (!request.context.security_context_present) {
+    result->diagnostics.push_back(DispatchDiagnostic(
+        "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED",
+        "SBLR operation requires engine security context"));
+    result->api_result = FailureResult(request.context,
+                                       request.operation_id,
+                                       "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED",
+                                       "engine.sblr.dispatch.security_context_required",
+                                       "security_context_present=false");
+    return true;
+  }
+  if (request.context.local_transaction_id == 0 &&
+      request.context.transaction_uuid.canonical.empty()) {
+    result->diagnostics.push_back(DispatchDiagnostic(
+        "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
+        "SBLR operation requires engine transaction context"));
+    result->api_result = FailureResult(request.context,
+                                       request.operation_id,
+                                       "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
+                                       "engine.sblr.dispatch.transaction_context_required",
+                                       "transaction_uuid and local_transaction_id are both absent");
+    return true;
+  }
+  record_phase("context_validate", phase_start);
+
+  result->accepted = true;
+  result->envelope_validated = true;
+  result->dispatched_to_api = true;
+  phase_start = SblrDispatchPhaseClock::now();
+  result->api_result = api::EngineExecuteNativeBulkIngest(request);
+  record_phase("engine_api_native_bulk", phase_start);
+  WriteSblrDispatchPhaseTraceIfRequested("dml.execute_native_bulk_ingest",
+                                         encoded.size(),
+                                         request.canonical_rows.size(),
+                                         result->api_result.ok,
+                                         phase_timings);
+  return true;
+}
+
+bool IsRowCanonicalOperand(const SblrOperand& operand) {
+  return operand.type == "row_canonical" || operand.type.starts_with("row_canonical:");
+}
+
+bool IsRowsetCanonicalOperand(const SblrOperand& operand) {
+  return operand.type == "rowset_canonical" || operand.type.starts_with("rowset_canonical:");
+}
+
+bool IsCompactBulkFastPathOperand(const SblrOperand& operand) {
+  return IsRowCanonicalOperand(operand) ||
+         IsRowsetCanonicalOperand(operand) ||
+         (operand.type == "text" && !operand.name.empty() &&
+          operand.name != "authorization_tag");
+}
+
 api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
   api::EngineApiRequest api_request = request.api_request;
   api_request.context = request.context;
@@ -267,21 +817,65 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
   api_request.option_envelopes.reserve(api_request.option_envelopes.size() +
                                        request.envelope.operands.size());
 
-  std::unordered_map<std::string, std::size_t> row_index_by_uuid;
-  row_index_by_uuid.reserve(api_request.rows.size() +
-                            request.envelope.operands.size() / 4);
-  api_request.rows.reserve(api_request.rows.size() +
-                           request.envelope.operands.size() / 4);
-  for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
-    row_index_by_uuid.emplace(api_request.rows[index].requested_row_uuid.canonical,
-                              index);
-  }
+  const bool compact_row_operands_only =
+      api_request.rows.empty() &&
+      !request.envelope.operands.empty() &&
+      std::all_of(request.envelope.operands.begin(),
+                  request.envelope.operands.end(),
+                  IsCompactBulkFastPathOperand);
+  if (compact_row_operands_only) {
+    api_request.rows.reserve(request.envelope.operands.size());
+    for (const auto& operand : request.envelope.operands) {
+      if (!IsRowCanonicalOperand(operand) && !IsRowsetCanonicalOperand(operand)) {
+        api_request.option_envelopes.push_back(operand.name + ":" + operand.value);
+        continue;
+      }
+      if (IsRowsetCanonicalOperand(operand)) {
+        const auto type_separator = operand.type.find(':');
+        const std::string_view row_type =
+            type_separator == std::string::npos
+                ? std::string_view("text")
+                : std::string_view(operand.type).substr(type_separator + 1);
+        if (!DecodeCanonicalRowsetOperand(operand.value, row_type, &api_request.rows)) {
+          api_request.option_envelopes.push_back(
+              "sblr.compact_rowset_decode_refused:true");
+        }
+        continue;
+      }
+      if (operand.name.empty()) {
+        continue;
+      }
+      api::EngineRowValue row;
+      row.requested_row_uuid.canonical = operand.name;
+      const auto type_separator = operand.type.find(':');
+      const std::string_view row_type =
+          type_separator == std::string::npos
+              ? std::string_view("text")
+              : std::string_view(operand.type).substr(type_separator + 1);
+      if (!DecodeCanonicalRowOperand(operand.value, row_type, &row.fields)) {
+        api_request.option_envelopes.push_back(
+            "sblr.compact_row_decode_refused:true");
+      }
+      api_request.rows.push_back(std::move(row));
+    }
+  } else {
+    std::unordered_map<std::string, std::size_t> row_index_by_uuid;
+    row_index_by_uuid.reserve(api_request.rows.size() +
+                              request.envelope.operands.size() / 4);
+    api_request.rows.reserve(api_request.rows.size() +
+                             request.envelope.operands.size() / 4);
+    for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
+      row_index_by_uuid.emplace(api_request.rows[index].requested_row_uuid.canonical,
+                                index);
+    }
 
-  for (const auto& operand : request.envelope.operands) {
+    for (const auto& operand : request.envelope.operands) {
     const bool row_field = operand.type == "row_field" ||
                            operand.type.starts_with("row_field:");
     const bool row_null_field = operand.type == "row_null_field" ||
                                 operand.type.starts_with("row_null_field:");
+    const bool row_canonical = IsRowCanonicalOperand(operand);
+    const bool rowset_canonical = IsRowsetCanonicalOperand(operand);
     if (operand.type == "text" && operand.name == "authorization_tag" &&
         !operand.value.empty() &&
         std::find(api_request.context.trace_tags.begin(),
@@ -336,10 +930,44 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
         }
       }
     }
-    if (!operand.name.empty() && !row_field && !row_null_field) {
+    if (!operand.name.empty() && !row_field && !row_null_field &&
+        !row_canonical && !rowset_canonical) {
       api_request.option_envelopes.push_back(operand.name + ":" + operand.value);
     }
-    if (row_field || row_null_field) {
+    if (rowset_canonical) {
+      const auto type_separator = operand.type.find(':');
+      const std::string_view row_type =
+          type_separator == std::string::npos
+              ? std::string_view("text")
+              : std::string_view(operand.type).substr(type_separator + 1);
+      if (!DecodeCanonicalRowsetOperand(operand.value, row_type, &api_request.rows)) {
+        api_request.option_envelopes.push_back(
+            "sblr.compact_rowset_decode_refused:true");
+      }
+    } else if (row_canonical) {
+      if (operand.name.empty()) {
+        continue;
+      }
+      auto row_index = row_index_by_uuid.find(operand.name);
+      if (row_index == row_index_by_uuid.end()) {
+        const std::size_t appended_index = api_request.rows.size();
+        api::EngineRowValue appended;
+        appended.requested_row_uuid.canonical = operand.name;
+        api_request.rows.push_back(std::move(appended));
+        row_index =
+            row_index_by_uuid.emplace(operand.name, appended_index).first;
+      }
+      api::EngineRowValue& row = api_request.rows[row_index->second];
+      const auto type_separator = operand.type.find(':');
+      const std::string_view row_type =
+          type_separator == std::string::npos
+              ? std::string_view("text")
+              : std::string_view(operand.type).substr(type_separator + 1);
+      if (!DecodeCanonicalRowOperand(operand.value, row_type, &row.fields)) {
+        api_request.option_envelopes.push_back(
+            "sblr.compact_row_decode_refused:true");
+      }
+    } else if (row_field || row_null_field) {
       const auto separator = operand.name.find('|');
       if (separator == std::string::npos || separator + 1 >= operand.name.size()) {
         continue;
@@ -382,6 +1010,7 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
     } else if (operand.type == "predicate" && !operand.name.empty()) {
       api_request.predicate.predicate_kind = operand.name;
       api_request.predicate.canonical_predicate_envelope = operand.value;
+    }
     }
   }
   const std::string current_role_uuid =
@@ -4246,6 +4875,14 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
 SblrDispatchResult DecodeAndDispatchSblrOperation(std::string_view encoded_envelope,
                                                   api::EngineRequestContext context,
                                                   api::EngineApiRequest api_request) {
+  if (api_request.rows.empty()) {
+    SblrDispatchResult fast_path_result;
+    if (TryDispatchNativeBulkRowsetFastPath(encoded_envelope,
+                                            context,
+                                            &fast_path_result)) {
+      return fast_path_result;
+    }
+  }
   const auto decoded = DecodeSblrEnvelope(encoded_envelope);
   if (!decoded.ok) {
     SblrDispatchResult result;

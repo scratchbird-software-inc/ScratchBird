@@ -91,6 +91,84 @@ struct sb_engine_transaction_s {
 
 namespace {
 
+using PublicAbiPhaseClock = std::chrono::steady_clock;
+
+struct PublicAbiPhaseTiming {
+  std::string phase;
+  std::uint64_t elapsed_us = 0;
+};
+
+std::uint64_t public_abi_elapsed_us(PublicAbiPhaseClock::time_point start,
+                                    PublicAbiPhaseClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+std::string public_abi_json_escape(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(ch);
+        break;
+    }
+  }
+  return out;
+}
+
+void write_public_abi_phase_trace_if_requested(
+    std::string_view operation_id,
+    std::size_t envelope_bytes,
+    std::uint64_t rows,
+    const std::vector<PublicAbiPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"operation_id\":\"" << public_abi_json_escape(operation_id) << "\""
+      << ",\"envelope_bytes\":" << envelope_bytes
+      << ",\"rows\":" << rows
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << public_abi_json_escape(phase.phase) << "\":"
+        << phase.elapsed_us;
+  }
+  out << "}}\n";
+}
+
 bool valid_abi(std::uint32_t abi_version) {
   return abi_version == SB_ENGINE_ABI_VERSION_PACKED;
 }
@@ -518,8 +596,17 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                sb_engine_result_t* out_result) {
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view encoded(data, envelope.canonical_bytes.size());
+  std::vector<PublicAbiPhaseTiming> phase_timings;
+  auto phase_start = PublicAbiPhaseClock::now();
   const auto api_context = make_internal_context(session->engine, context);
+  phase_timings.push_back(
+      {"make_internal_context",
+       public_abi_elapsed_us(phase_start, PublicAbiPhaseClock::now())});
+  phase_start = PublicAbiPhaseClock::now();
   const auto dispatch_result = scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded, api_context);
+  phase_timings.push_back(
+      {"decode_and_dispatch",
+       public_abi_elapsed_us(phase_start, PublicAbiPhaseClock::now())});
   if (!dispatch_result.accepted || !dispatch_result.api_result.ok) {
     const sb_engine_status_t status = operation_envelope_failure_status(dispatch_result);
     return fail_result(status,
@@ -530,6 +617,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                        first_dispatch_diagnostic_detail(dispatch_result));
   }
 
+  phase_start = PublicAbiPhaseClock::now();
   auto* result = make_result(SB_ENGINE_RESULT_ROW_BATCH, dispatch_result.api_result.operation_id);
   const bool summary_only_requested =
       has_text_line_option(encoded, "result_payload_policy", "summary_only");
@@ -544,7 +632,17 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
       !summary_only_import &&
       !summary_only_native_bulk &&
       dispatch_result.api_result.operation_id.rfind("dml.", 0) == 0;
+  const bool dml_write_operation =
+      dispatch_result.api_result.operation_id == "dml.insert_rows" ||
+      dispatch_result.api_result.operation_id == "dml.update_rows" ||
+      dispatch_result.api_result.operation_id == "dml.delete_rows" ||
+      dispatch_result.api_result.operation_id == "dml.merge_rows" ||
+      dispatch_result.api_result.operation_id == "dml.execute_import_rows" ||
+      dispatch_result.api_result.operation_id == "dml.execute_native_bulk_ingest";
   result->result_kind = dispatch_result.api_result.result_shape.result_kind;
+  if (dml_write_operation) {
+    result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
+  }
   if (summary_only_import) {
     result->rows_produced = api_evidence_u64(
         dispatch_result.api_result,
@@ -577,8 +675,14 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     result->row_values = api_row_values(dispatch_result.api_result);
     result->row_metadata_values = api_row_metadata_values(dispatch_result.api_result);
   }
-  result->evidence_values = api_evidence_values(dispatch_result.api_result);
-  if (summary_only_import || summary_only_dml_write) {
+  if (summary_only_native_bulk) {
+    result->evidence_values = {
+        "direct_physical_bulk_row_count:" + std::to_string(result->rows_produced),
+        "result_payload_policy:summary_only"};
+  } else {
+    result->evidence_values = api_evidence_values(dispatch_result.api_result);
+  }
+  if (summary_only_import || summary_only_native_bulk || summary_only_dml_write) {
     result->payload = api_result_payload(dispatch_result.api_result.operation_id,
                                          result->result_kind,
                                          result->row_values,
@@ -591,6 +695,14 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     result->payload = api_result_payload(dispatch_result.api_result);
   }
   finalize_diagnostics(result);
+  phase_timings.push_back(
+      {"result_materialize",
+       public_abi_elapsed_us(phase_start, PublicAbiPhaseClock::now())});
+  write_public_abi_phase_trace_if_requested(
+      dispatch_result.api_result.operation_id,
+      encoded.size(),
+      result->rows_produced,
+      phase_timings);
   *out_result = result;
   return SB_ENGINE_STATUS_OK;
 }

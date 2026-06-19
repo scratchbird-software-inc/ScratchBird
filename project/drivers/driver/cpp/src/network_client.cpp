@@ -3371,6 +3371,7 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
 
     const size_t chunk_size = std::max<uint32_t>(1, config_.copy_chunk_bytes);
     std::vector<uint8_t> buffer(chunk_size);
+    std::string pending;
     auto send_payload = [&](const uint8_t* data, size_t size) -> core::Status {
         std::vector<uint8_t> chunk(data, data + size);
         const auto payload = protocol::buildCopyDataPayload(chunk);
@@ -3380,13 +3381,33 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
         }
         return core::Status::OK;
     };
+    auto flush_ready_rows = [&]() -> core::Status {
+        while (pending.size() >= chunk_size) {
+            size_t split = pending.rfind('\n', chunk_size);
+            if (split == std::string::npos) {
+                split = pending.find('\n', chunk_size);
+            }
+            if (split == std::string::npos) {
+                break;
+            }
+            ++split;
+            auto status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()), split);
+            if (status != core::Status::OK) {
+                return status;
+            }
+            pending.erase(0, split);
+        }
+        return core::Status::OK;
+    };
 
     while (*copy_input_stream_) {
         copy_input_stream_->read(reinterpret_cast<char*>(buffer.data()),
                                  static_cast<std::streamsize>(buffer.size()));
         const auto bytes_read = copy_input_stream_->gcount();
         if (bytes_read > 0) {
-            auto status = send_payload(buffer.data(), static_cast<size_t>(bytes_read));
+            pending.append(reinterpret_cast<const char*>(buffer.data()),
+                           static_cast<size_t>(bytes_read));
+            auto status = flush_ready_rows();
             if (status != core::Status::OK) {
                 return status;
             }
@@ -3403,6 +3424,13 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
             return fail_status;
         }
         return setError(ctx, core::Status::IO_ERROR, message);
+    }
+    if (!pending.empty()) {
+        auto status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()),
+                                   pending.size());
+        if (status != core::Status::OK) {
+            return status;
+        }
     }
     const auto done_payload = protocol::buildCopyDonePayload();
     return sendMessage(protocol::MessageType::CopyDone, done_payload, 0, false, nullptr, ctx);

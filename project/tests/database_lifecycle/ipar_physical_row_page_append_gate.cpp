@@ -337,14 +337,23 @@ void VerifyCommittedPhysicalRows() {
                       "direct_physical_bulk_row_page_writer",
                       "physical_mga_cow"),
           "IPAR-P3-01 physical row-page writer evidence missing");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.row_page_written=true") == 5,
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_evidence",
+                      "physical_mga_cow.row_page_written=true"),
+          "IPAR-P3-01 physical row-page write evidence missing");
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_verified_rows",
+                      "5"),
           "IPAR-P3-01 physical row-page write count mismatch");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.existing_active_transaction_verified=true") == 5,
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_evidence",
+                      "physical_mga_cow.existing_active_transaction_verified=true"),
           "IPAR-P3-01 existing transaction evidence missing");
+  Require(HasEvidence(
+              imported.evidence,
+              "direct_physical_bulk_row_page_existing_active_transaction_verified_rows",
+              "5"),
+          "IPAR-P3-01 existing transaction row evidence count mismatch");
   Commit(context);
 
   Require(SelectCount(fixture) == 5,
@@ -377,9 +386,13 @@ void VerifyRolledBackPhysicalRows() {
   RequireOk(imported, "IPAR-P3-01 rolled-back import failed");
   Require(imported.inserted_rows == 3 && imported.accepted_rows == 3,
           "IPAR-P3-01 rolled-back import row count mismatch");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.row_page_written=true") == 3,
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_evidence",
+                      "physical_mga_cow.row_page_written=true"),
+          "IPAR-P3-01 rolled-back physical write evidence missing");
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_verified_rows",
+                      "3"),
           "IPAR-P3-01 rolled-back physical write count mismatch");
   Rollback(context);
 

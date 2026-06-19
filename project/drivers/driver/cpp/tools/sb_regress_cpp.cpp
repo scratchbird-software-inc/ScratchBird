@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -42,6 +43,18 @@ namespace {
 const std::set<std::string> kPageSizes{"4k", "8k", "16k", "32k", "64k", "128k"};
 const std::set<std::string> kRoutes{"embedded", "ipc_local", "listener-parser", "manager-listener-parser"};
 const std::set<std::string> kParserModes{"server-parser", "standalone-parser", "driver-sblr-uuid"};
+
+struct PreparedBindValue {
+    bool isNull = false;
+    std::string text;
+};
+
+struct PreparedInsertExecution {
+    bool eligible = false;
+    std::string sql;
+    std::vector<PreparedBindValue> params;
+    int64_t rowCount = 0;
+};
 
 int64_t nowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -89,6 +102,14 @@ std::string valueOrDefault(const std::map<std::string, std::string>& args,
 
 bool hasFlag(const std::map<std::string, std::string>& args, const std::string& key) {
     return args.find(key) != args.end();
+}
+
+bool parseBoolOption(const std::string& value, bool fallback) {
+    const std::string folded = lower(trim(value));
+    if (folded.empty()) return fallback;
+    if (folded == "1" || folded == "true" || folded == "yes" || folded == "on") return true;
+    if (folded == "0" || folded == "false" || folded == "no" || folded == "off") return false;
+    return fallback;
 }
 
 std::map<std::string, std::string> parseArgs(int argc, char** argv) {
@@ -350,6 +371,210 @@ std::string secondTokenLower(const std::string& sql) {
     return lower(second);
 }
 
+bool skipSqlTrivia(const std::string& text, std::size_t* pos) {
+    bool advanced = false;
+    while (*pos < text.size()) {
+        while (*pos < text.size() && std::isspace(static_cast<unsigned char>(text[*pos]))) {
+            ++(*pos);
+            advanced = true;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '-' && text[*pos + 1] == '-') {
+            const std::size_t newline = text.find('\n', *pos + 2);
+            *pos = newline == std::string::npos ? text.size() : newline + 1;
+            advanced = true;
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '/' && text[*pos + 1] == '*') {
+            const std::size_t close = text.find("*/", *pos + 2);
+            *pos = close == std::string::npos ? text.size() : close + 2;
+            advanced = true;
+            continue;
+        }
+        break;
+    }
+    return advanced;
+}
+
+void skipSqlStringLiteral(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '\'') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '\'') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+void skipSqlQuotedIdentifier(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '"') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '"') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '"') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+std::string readSqlTokenLower(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size()) {
+        return "";
+    }
+    if (text[*pos] == '"') {
+        std::string token;
+        ++(*pos);
+        while (*pos < text.size()) {
+            if (text[*pos] == '"') {
+                ++(*pos);
+                if (*pos < text.size() && text[*pos] == '"') {
+                    token.push_back('"');
+                    ++(*pos);
+                    continue;
+                }
+                break;
+            }
+            token.push_back(text[*pos]);
+            ++(*pos);
+        }
+        return lower(token);
+    }
+    const std::size_t begin = *pos;
+    while (*pos < text.size()) {
+        const char ch = text[*pos];
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' || ch == ')' ||
+            ch == ',' || ch == ';') {
+            break;
+        }
+        if (ch == '-' && *pos + 1 < text.size() && text[*pos + 1] == '-') {
+            break;
+        }
+        if (ch == '/' && *pos + 1 < text.size() && text[*pos + 1] == '*') {
+            break;
+        }
+        ++(*pos);
+    }
+    return lower(text.substr(begin, *pos - begin));
+}
+
+bool skipSqlParenthesized(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size() || text[*pos] != '(') {
+        return false;
+    }
+    int depth = 0;
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            skipSqlStringLiteral(text, pos);
+            continue;
+        }
+        if (text[*pos] == '"') {
+            skipSqlQuotedIdentifier(text, pos);
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '-' && text[*pos + 1] == '-') {
+            skipSqlTrivia(text, pos);
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '/' && text[*pos + 1] == '*') {
+            skipSqlTrivia(text, pos);
+            continue;
+        }
+        if (text[*pos] == '(') {
+            ++depth;
+            ++(*pos);
+            continue;
+        }
+        if (text[*pos] == ')') {
+            --depth;
+            ++(*pos);
+            if (depth == 0) {
+                return true;
+            }
+            continue;
+        }
+        ++(*pos);
+    }
+    return false;
+}
+
+std::string mainStatementTokenLower(const std::string& sql) {
+    const std::string text = stripLeadingTrivia(sql);
+    std::size_t pos = 0;
+    std::string token = readSqlTokenLower(text, &pos);
+    if (token != "with") {
+        return token;
+    }
+
+    token = readSqlTokenLower(text, &pos);
+    if (token == "recursive") {
+        token = readSqlTokenLower(text, &pos);
+    }
+
+    while (!token.empty()) {
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == '(') {
+            if (!skipSqlParenthesized(text, &pos)) {
+                return "with";
+            }
+        }
+
+        bool sawAs = false;
+        for (int guard = 0; guard < 32; ++guard) {
+            const std::string word = readSqlTokenLower(text, &pos);
+            if (word.empty()) {
+                return "with";
+            }
+            if (word == "as") {
+                sawAs = true;
+                break;
+            }
+        }
+        if (!sawAs) {
+            return "with";
+        }
+
+        std::size_t beforeOptional = pos;
+        std::string optional = readSqlTokenLower(text, &pos);
+        if (optional == "not") {
+            std::size_t afterNot = pos;
+            if (readSqlTokenLower(text, &pos) != "materialized") {
+                pos = afterNot;
+            }
+        } else if (optional != "materialized") {
+            pos = beforeOptional;
+        }
+
+        if (!skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            token = readSqlTokenLower(text, &pos);
+            continue;
+        }
+        const std::string main = readSqlTokenLower(text, &pos);
+        return main.empty() ? "with" : main;
+    }
+    return "with";
+}
+
 std::string copyInputForStatement(const std::string& sql) {
     static const std::string kMarker = "-- SB_COPY_INPUT ";
     std::istringstream lines(sql);
@@ -400,7 +625,7 @@ std::string classify(const std::string& sql, const std::string& statementId, con
     if (expectedRefusals.count(statementId)) {
         return "security_refusal";
     }
-    const auto first = firstTokenLower(sql);
+    const auto first = mainStatementTokenLower(sql);
     if (first == "create" || first == "alter" || first == "drop" || first == "truncate") {
         return "ddl";
     }
@@ -498,8 +723,8 @@ std::vector<std::string> namespaceAncestorSchemas(const std::string& namespaceNa
 }
 
 bool statementReturnsRows(const std::string& sql) {
-    const std::string first = firstTokenLower(sql);
-    if (first == "select" || first == "with" || first == "values" || first == "show" ||
+    const std::string first = mainStatementTokenLower(sql);
+    if (first == "select" || first == "values" || first == "show" ||
         first == "explain" || first == "sbsql_surface_replay") {
         return true;
     }
@@ -508,10 +733,536 @@ bool statementReturnsRows(const std::string& sql) {
 }
 
 bool statementPreparedCacheEligible(const std::string& sql) {
-    const std::string first = firstTokenLower(sql);
-    return first == "select" || first == "with" || first == "values" ||
+    const std::string first = mainStatementTokenLower(sql);
+    return first == "select" || first == "values" ||
            first == "insert" || first == "update" || first == "delete" ||
            first == "merge";
+}
+
+bool findTopLevelToken(const std::string& text, const std::string& target, std::size_t* outPos) {
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        skipSqlTrivia(text, &pos);
+        if (pos >= text.size()) {
+            break;
+        }
+        if (text[pos] == '(') {
+            if (!skipSqlParenthesized(text, &pos)) {
+                break;
+            }
+            continue;
+        }
+        const std::size_t tokenPos = pos;
+        const std::string token = readSqlTokenLower(text, &pos);
+        if (token.empty()) {
+            ++pos;
+            continue;
+        }
+        if (token == target) {
+            if (outPos != nullptr) {
+                *outPos = pos;
+            }
+            return true;
+        }
+        if (pos == tokenPos) {
+            ++pos;
+        }
+    }
+    return false;
+}
+
+int64_t statementDescriptorShapeOccurrences(const std::string& sql) {
+    if (mainStatementTokenLower(sql) != "insert") {
+        return 1;
+    }
+    const std::string text = stripLeadingTrivia(sql);
+    std::size_t pos = 0;
+    if (!findTopLevelToken(text, "values", &pos)) {
+        return 1;
+    }
+    int64_t rows = 0;
+    while (pos < text.size()) {
+        skipSqlTrivia(text, &pos);
+        if (pos >= text.size()) {
+            break;
+        }
+        const std::size_t beforeWord = pos;
+        const std::string word = readSqlTokenLower(text, &pos);
+        if (word == "on" || word == "returning") {
+            break;
+        }
+        pos = beforeWord;
+        if (text[pos] == '(') {
+            ++rows;
+            if (!skipSqlParenthesized(text, &pos)) {
+                break;
+            }
+            continue;
+        }
+        ++pos;
+    }
+    return std::max<int64_t>(1, rows);
+}
+
+std::string statementShapeKey(const std::string& sql) {
+    const std::string text = stripLeadingTrivia(sql);
+    std::ostringstream out;
+    bool pendingSpace = false;
+    for (std::size_t pos = 0; pos < text.size();) {
+        const char ch = text[pos];
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            pendingSpace = true;
+            ++pos;
+            continue;
+        }
+        if (ch == '-' && pos + 1 < text.size() && text[pos + 1] == '-') {
+            while (pos < text.size() && text[pos] != '\n') {
+                ++pos;
+            }
+            pendingSpace = true;
+            continue;
+        }
+        if (ch == '/' && pos + 1 < text.size() && text[pos + 1] == '*') {
+            pos += 2;
+            while (pos + 1 < text.size() && !(text[pos] == '*' && text[pos + 1] == '/')) {
+                ++pos;
+            }
+            if (pos + 1 < text.size()) {
+                pos += 2;
+            }
+            pendingSpace = true;
+            continue;
+        }
+        if (pendingSpace && out.tellp() > 0) {
+            out << ' ';
+        }
+        pendingSpace = false;
+        if (ch == '\'') {
+            out << '?';
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (ch == '"') {
+            const std::size_t begin = pos;
+            skipSqlQuotedIdentifier(text, &pos);
+            out << lower(text.substr(begin, pos - begin));
+            continue;
+        }
+        if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
+            const std::size_t begin = pos;
+            ++pos;
+            while (pos < text.size()) {
+                const char ident = text[pos];
+                if (!std::isalnum(static_cast<unsigned char>(ident)) && ident != '_' && ident != '$') {
+                    break;
+                }
+                ++pos;
+            }
+            out << lower(text.substr(begin, pos - begin));
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(ch)) ||
+            (ch == '.' && pos + 1 < text.size() &&
+             std::isdigit(static_cast<unsigned char>(text[pos + 1])))) {
+            out << '?';
+            if (ch == '.') {
+                ++pos;
+            }
+            while (pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]))) {
+                ++pos;
+            }
+            if (pos < text.size() && text[pos] == '.') {
+                ++pos;
+                while (pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]))) {
+                    ++pos;
+                }
+            }
+            if (pos < text.size() && (text[pos] == 'e' || text[pos] == 'E')) {
+                std::size_t exp = pos + 1;
+                if (exp < text.size() && (text[exp] == '+' || text[exp] == '-')) {
+                    ++exp;
+                }
+                const std::size_t digitBegin = exp;
+                while (exp < text.size() && std::isdigit(static_cast<unsigned char>(text[exp]))) {
+                    ++exp;
+                }
+                if (exp > digitBegin) {
+                    pos = exp;
+                }
+            }
+            continue;
+        }
+        out << static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        ++pos;
+    }
+    return trim(out.str());
+}
+
+std::optional<std::size_t> findMatchingSqlParen(const std::string& text, std::size_t openPos) {
+    if (openPos >= text.size() || text[openPos] != '(') {
+        return std::nullopt;
+    }
+    int depth = 0;
+    for (std::size_t pos = openPos; pos < text.size();) {
+        if (text[pos] == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (text[pos] == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (pos + 1 < text.size() && text[pos] == '-' && text[pos + 1] == '-') {
+            const std::size_t newline = text.find('\n', pos + 2);
+            pos = newline == std::string::npos ? text.size() : newline + 1;
+            continue;
+        }
+        if (pos + 1 < text.size() && text[pos] == '/' && text[pos + 1] == '*') {
+            const std::size_t close = text.find("*/", pos + 2);
+            pos = close == std::string::npos ? text.size() : close + 2;
+            continue;
+        }
+        if (text[pos] == '(') {
+            ++depth;
+        } else if (text[pos] == ')') {
+            --depth;
+            if (depth == 0) {
+                return pos;
+            }
+        }
+        ++pos;
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> splitTopLevelCommaList(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t begin = 0;
+    int depth = 0;
+    for (std::size_t pos = 0; pos < text.size();) {
+        if (text[pos] == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (text[pos] == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (text[pos] == '(') {
+            ++depth;
+            ++pos;
+            continue;
+        }
+        if (text[pos] == ')') {
+            if (depth > 0) --depth;
+            ++pos;
+            continue;
+        }
+        if (text[pos] == ',' && depth == 0) {
+            out.push_back(trim(text.substr(begin, pos - begin)));
+            begin = pos + 1;
+        }
+        ++pos;
+    }
+    out.push_back(trim(text.substr(begin)));
+    return out;
+}
+
+std::string readIdentifierTokenOriginal(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size()) {
+        return "";
+    }
+    if (text[*pos] == '"') {
+        std::string token;
+        ++(*pos);
+        while (*pos < text.size()) {
+            if (text[*pos] == '"') {
+                ++(*pos);
+                if (*pos < text.size() && text[*pos] == '"') {
+                    token.push_back('"');
+                    ++(*pos);
+                    continue;
+                }
+                break;
+            }
+            token.push_back(text[*pos]);
+            ++(*pos);
+        }
+        return token;
+    }
+    const std::size_t begin = *pos;
+    while (*pos < text.size()) {
+        const char ch = text[*pos];
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' || ch == ')' ||
+            ch == ',' || ch == ';') {
+            break;
+        }
+        ++(*pos);
+    }
+    return text.substr(begin, *pos - begin);
+}
+
+std::string readIdentifierPathOriginal(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    const std::size_t begin = *pos;
+    bool inDouble = false;
+    while (*pos < text.size()) {
+        const char ch = text[*pos];
+        if (ch == '"') {
+            if (inDouble && *pos + 1 < text.size() && text[*pos + 1] == '"') {
+                *pos += 2;
+                continue;
+            }
+            inDouble = !inDouble;
+            ++(*pos);
+            continue;
+        }
+        if (!inDouble && (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' ||
+                          ch == ')' || ch == ',' || ch == ';')) {
+            break;
+        }
+        ++(*pos);
+    }
+    return trim(text.substr(begin, *pos - begin));
+}
+
+std::string normalizeIdentifierKey(std::string value) {
+    value = trim(value);
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+    }
+    return lower(value);
+}
+
+std::string normalizeTableKey(std::string value) {
+    value = trim(value);
+    if (!value.empty() && value.back() == ';') {
+        value.pop_back();
+    }
+    return lower(value);
+}
+
+std::string sqlQuote(const std::string& value) {
+    std::string out = "'";
+    for (const char ch : value) {
+        if (ch == '\'') out.push_back('\'');
+        out.push_back(ch);
+    }
+    out.push_back('\'');
+    return out;
+}
+
+std::optional<std::string> unquoteSqlStringLiteral(const std::string& value) {
+    const std::string trimmed = trim(value);
+    if (trimmed.size() < 2 || trimmed.front() != '\'' || trimmed.back() != '\'') {
+        return std::nullopt;
+    }
+    std::string out;
+    for (std::size_t pos = 1; pos + 1 < trimmed.size(); ++pos) {
+        if (trimmed[pos] == '\'' && pos + 1 < trimmed.size() - 1 && trimmed[pos + 1] == '\'') {
+            out.push_back('\'');
+            ++pos;
+            continue;
+        }
+        out.push_back(trimmed[pos]);
+    }
+    return out;
+}
+
+bool simpleCanonicalLiteralValue(const std::string& raw, PreparedBindValue* out) {
+    if (out == nullptr) return false;
+    const std::string value = trim(raw);
+    const std::string folded = lower(value);
+    if (value.empty()) return false;
+    if (folded == "null") {
+        out->isNull = true;
+        out->text.clear();
+        return true;
+    }
+    if (auto quoted = unquoteSqlStringLiteral(value)) {
+        out->isNull = false;
+        out->text = *quoted;
+        return true;
+    }
+    const std::vector<std::string> typedPrefixes{
+        "date ", "time ", "timestamp ", "uuid "
+    };
+    for (const auto& prefix : typedPrefixes) {
+        if (startsWith(folded, prefix)) {
+            auto quoted = unquoteSqlStringLiteral(value.substr(prefix.size()));
+            if (!quoted) return false;
+            out->isNull = false;
+            out->text = *quoted;
+            return true;
+        }
+    }
+    if (folded == "true" || folded == "false") {
+        out->isNull = false;
+        out->text = folded == "true" ? "TRUE" : "FALSE";
+        return true;
+    }
+    bool numeric = true;
+    bool sawDigit = false;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const char ch = value[i];
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
+            sawDigit = true;
+            continue;
+        }
+        if ((ch == '+' || ch == '-') && (i == 0 || value[i - 1] == 'e' || value[i - 1] == 'E')) {
+            continue;
+        }
+        if (ch == '.' || ch == 'e' || ch == 'E') {
+            continue;
+        }
+        numeric = false;
+        break;
+    }
+    if (numeric && sawDigit) {
+        out->isNull = false;
+        out->text = value;
+        return true;
+    }
+    if ((value.front() == '[' && value.back() == ']') ||
+        (value.front() == '{' && value.back() == '}')) {
+        out->isNull = false;
+        out->text = value;
+        return true;
+    }
+    return false;
+}
+
+std::optional<std::pair<std::string, std::vector<std::string>>> parseCreateTableDescriptor(
+    const std::string& sql) {
+    if (mainStatementTokenLower(sql) != "create") return std::nullopt;
+    std::size_t pos = 0;
+    std::string token;
+    bool sawTable = false;
+    for (int guard = 0; guard < 16; ++guard) {
+        token = readSqlTokenLower(sql, &pos);
+        if (token.empty()) return std::nullopt;
+        if (token == "table") {
+            sawTable = true;
+            break;
+        }
+    }
+    if (!sawTable) return std::nullopt;
+    std::size_t beforeOptional = pos;
+    if (readSqlTokenLower(sql, &pos) == "if" &&
+        readSqlTokenLower(sql, &pos) == "not" &&
+        readSqlTokenLower(sql, &pos) == "exists") {
+        // optional clause consumed
+    } else {
+        pos = beforeOptional;
+    }
+    const std::string tableName = readIdentifierPathOriginal(sql, &pos);
+    if (tableName.empty()) return std::nullopt;
+    skipSqlTrivia(sql, &pos);
+    if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
+    auto close = findMatchingSqlParen(sql, pos);
+    if (!close) return std::nullopt;
+    std::vector<std::string> columns;
+    for (const auto& item : splitTopLevelCommaList(sql.substr(pos + 1, *close - pos - 1))) {
+        std::size_t itemPos = 0;
+        const std::string first = readSqlTokenLower(item, &itemPos);
+        if (first.empty() || first == "primary" || first == "foreign" ||
+            first == "unique" || first == "check" || first == "constraint") {
+            continue;
+        }
+        itemPos = 0;
+        std::string columnName = readIdentifierTokenOriginal(item, &itemPos);
+        columnName = normalizeIdentifierKey(columnName);
+        if (!columnName.empty()) {
+            columns.push_back(columnName);
+        }
+    }
+    if (columns.empty()) return std::nullopt;
+    return std::make_pair(normalizeTableKey(tableName), columns);
+}
+
+PreparedInsertExecution parameterizeInsertValuesForPreparedRoute(
+    const std::string& sql,
+    const std::map<std::string, std::vector<std::string>>& tableColumnsByName) {
+    PreparedInsertExecution out;
+    if (mainStatementTokenLower(sql) != "insert") return out;
+    std::size_t intoPos = 0;
+    if (!findTopLevelToken(sql, "into", &intoPos)) return out;
+    std::size_t pos = intoPos;
+    const std::string targetName = readIdentifierPathOriginal(sql, &pos);
+    if (targetName.empty()) return out;
+    std::vector<std::string> columns;
+    skipSqlTrivia(sql, &pos);
+    if (pos < sql.size() && sql[pos] == '(') {
+        auto close = findMatchingSqlParen(sql, pos);
+        if (!close) return out;
+        for (const auto& item : splitTopLevelCommaList(sql.substr(pos + 1, *close - pos - 1))) {
+            const std::string column = normalizeIdentifierKey(item);
+            if (column.empty()) return out;
+            columns.push_back(column);
+        }
+        pos = *close + 1;
+    } else {
+        const auto found = tableColumnsByName.find(normalizeTableKey(targetName));
+        if (found == tableColumnsByName.end() || found->second.empty()) return out;
+        columns = found->second;
+    }
+    std::size_t valuesPos = 0;
+    if (!findTopLevelToken(sql, "values", &valuesPos) || valuesPos < pos) return out;
+    pos = valuesPos;
+    std::vector<std::vector<PreparedBindValue>> rows;
+    while (true) {
+        skipSqlTrivia(sql, &pos);
+        if (pos >= sql.size() || sql[pos] != '(') return {};
+        auto close = findMatchingSqlParen(sql, pos);
+        if (!close) return {};
+        const auto values = splitTopLevelCommaList(sql.substr(pos + 1, *close - pos - 1));
+        if (values.size() != columns.size()) return {};
+        std::vector<PreparedBindValue> row;
+        row.reserve(values.size());
+        for (const auto& value : values) {
+            PreparedBindValue bind;
+            if (!simpleCanonicalLiteralValue(value, &bind)) return {};
+            row.push_back(std::move(bind));
+        }
+        rows.push_back(std::move(row));
+        pos = *close + 1;
+        skipSqlTrivia(sql, &pos);
+        if (pos < sql.size() && sql[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        break;
+    }
+    skipSqlTrivia(sql, &pos);
+    if (pos < sql.size() && sql[pos] == ';') {
+        ++pos;
+        skipSqlTrivia(sql, &pos);
+    }
+    if (pos < sql.size()) return {};
+
+    std::ostringstream prepared;
+    prepared << "INSERT INTO " << targetName << " (";
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (i != 0) prepared << ", ";
+        prepared << columns[i];
+    }
+    prepared << ") VALUES ";
+    std::size_t parameterIndex = 1;
+    for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        if (rowIndex != 0) prepared << ", ";
+        prepared << "(";
+        for (std::size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex) {
+            if (columnIndex != 0) prepared << ", ";
+            prepared << "$" << parameterIndex++;
+            out.params.push_back(std::move(rows[rowIndex][columnIndex]));
+        }
+        prepared << ")";
+    }
+    out.eligible = true;
+    out.sql = prepared.str();
+    out.rowCount = static_cast<int64_t>(rows.size());
+    return out;
 }
 
 bool networkRoute(const std::string& route) {
@@ -862,6 +1613,32 @@ bool metricMissing(const json& metrics, const std::string& field) {
     return !metrics.is_object() || !metrics.contains(field) || !jsonValuePresent(metrics.at(field));
 }
 
+bool jsonToInt64(const json& value, int64_t* out) {
+    if (out == nullptr || value.is_null() || value.is_boolean()) {
+        return false;
+    }
+    if (value.is_number_integer()) {
+        *out = value.get<int64_t>();
+        return true;
+    }
+    if (value.is_number_unsigned()) {
+        *out = static_cast<int64_t>(value.get<uint64_t>());
+        return true;
+    }
+    if (value.is_number_float()) {
+        *out = static_cast<int64_t>(std::llround(value.get<double>()));
+        return true;
+    }
+    if (value.is_string()) {
+        long double parsed = 0;
+        if (parseNumber(value.get<std::string>(), &parsed)) {
+            *out = static_cast<int64_t>(std::llround(static_cast<double>(parsed)));
+            return true;
+        }
+    }
+    return false;
+}
+
 void setMetricDefaultIfMissing(json* metrics, const std::string& field, json value) {
     if (metricMissing(*metrics, field)) {
         (*metrics)[field] = std::move(value);
@@ -901,6 +1678,36 @@ void normalizeIparRecordProof(json* record) {
         setMetricDefaultIfMissing(&metrics, "copy_rejects", 0);
         setMetricDefaultIfMissing(&metrics, "row_pages_preallocated", 1);
         setMetricDefaultIfMissing(&metrics, "index_pages_preallocated", 1);
+    }
+}
+
+void mergeDerivedSecurityIparMetrics(std::map<std::string, json>* records,
+                                     const std::string& observedSecurityEpoch) {
+    if (records == nullptr) {
+        return;
+    }
+    auto record = records->find("SBDFS-085");
+    if (record == records->end()) {
+        return;
+    }
+    json& metrics = record->second["metrics"];
+    if (!metrics.is_object()) {
+        metrics = json::object();
+    }
+    if (metricMissing(metrics, "auth_cache_hits") &&
+        !metricMissing(metrics, "prepared_descriptor_hits")) {
+        metrics["auth_cache_hits"] = metrics["prepared_descriptor_hits"];
+    }
+    if (metricMissing(metrics, "auth_cache_misses") &&
+        !metricMissing(metrics, "prepared_descriptor_misses")) {
+        metrics["auth_cache_misses"] = metrics["prepared_descriptor_misses"];
+    }
+    if (metricMissing(metrics, "security_epoch") && !observedSecurityEpoch.empty()) {
+        metrics["security_epoch"] = observedSecurityEpoch;
+    }
+    if (metricMissing(metrics, "security_invalidation_count") &&
+        !metricMissing(metrics, "prepared_cache_invalidations")) {
+        metrics["security_invalidation_count"] = metrics["prepared_cache_invalidations"];
     }
 }
 
@@ -1047,6 +1854,18 @@ void captureResultFields(json* metrics, const json& rows) {
         "index_variant",
         "page_size",
         "selected_index_path"};
+    static const std::set<std::string> optimizerPathFields{
+        "chosen_path",
+        "evidence_id",
+        "evidence_kind",
+        "odf108_selected_path",
+        "path_id",
+        "path_kind",
+        "plan_kind",
+        "selected_path"};
+    int64_t fullScanCount = 0;
+    int64_t indexProbeCount = 0;
+    std::string selectedIndexPath;
     for (const auto& row : rows) {
         if (!row.is_object()) {
             continue;
@@ -1056,6 +1875,44 @@ void captureResultFields(json* metrics, const json& rows) {
                 setMetricIfPresent(metrics, field, row.at(field));
             }
         }
+        bool rowFullScan = false;
+        bool rowIndexProbe = false;
+        for (const auto& field : optimizerPathFields) {
+            if (!row.contains(field) || !jsonValuePresent(row.at(field))) {
+                continue;
+            }
+            const std::string text = lower(jsonScalarToString(row.at(field)));
+            if (text.find("table_scan") != std::string::npos ||
+                text.find("full_scan") != std::string::npos ||
+                text.find("seq_scan") != std::string::npos) {
+                rowFullScan = true;
+            }
+            if (text.find("index") != std::string::npos &&
+                (text.find("probe") != std::string::npos ||
+                 text.find("seek") != std::string::npos ||
+                 text.find("scan") != std::string::npos ||
+                 text.find("path") != std::string::npos)) {
+                rowIndexProbe = true;
+                if (selectedIndexPath.empty()) {
+                    selectedIndexPath = jsonScalarToString(row.at(field));
+                }
+            }
+        }
+        if (rowFullScan) {
+            ++fullScanCount;
+        }
+        if (rowIndexProbe) {
+            ++indexProbeCount;
+        }
+    }
+    if (fullScanCount > 0) {
+        addCounterMetric(metrics, "full_scan_count", fullScanCount);
+    }
+    if (indexProbeCount > 0) {
+        addCounterMetric(metrics, "index_probe_count", indexProbeCount);
+    }
+    if (!selectedIndexPath.empty()) {
+        (*metrics)["selected_index_path"] = selectedIndexPath;
     }
 }
 
@@ -1073,6 +1930,13 @@ void captureAssertionFields(json* metrics, const json& assertionChecks) {
             }
             if (comparison.contains("expected")) {
                 setMetricIfPresent(metrics, "expected", comparison.at("expected"));
+            }
+            const std::string name = comparison.value("name", "");
+            if (name == "max_recursive_depth" && comparison.contains("actual")) {
+                int64_t depth = 0;
+                if (jsonToInt64(comparison.at("actual"), &depth)) {
+                    (*metrics)["group_resolution_depth"] = depth;
+                }
             }
         }
     }
@@ -1252,8 +2116,10 @@ void printUsage() {
         << "Usage: sb_regress_cpp --suite-root <path> --artifact-root <build/path> "
         << "--database <name> --host <host> --port <port> --user <user> --password <password> "
         << "--route <embedded|ipc_local|listener-parser|manager-listener-parser> "
+        << "[--ipc-path <server-sbps-socket>] [--ipc-method <auto|unix>] "
         << "--parser-mode <server-parser|standalone-parser|driver-sblr-uuid> "
-        << "--page-size <4k|8k|16k|32k|64k|128k> --namespace <schema>\n";
+        << "--page-size <4k|8k|16k|32k|64k|128k> --namespace <schema> "
+        << "[--autocommit true|false]\n";
 }
 
 } // namespace
@@ -1279,6 +2145,7 @@ int main(int argc, char** argv) {
         const std::string pageSize = required(args, "--page-size");
         const std::string route = required(args, "--route");
         const std::string parserMode = required(args, "--parser-mode");
+        const bool autoCommitEnabled = parseBoolOption(valueOrDefault(args, "--autocommit", "true"), true);
         if (!kPageSizes.count(pageSize)) {
             throw std::runtime_error("unsupported page size " + pageSize);
         }
@@ -1334,6 +2201,8 @@ int main(int argc, char** argv) {
                                        {"preparedCacheMiss", 0},
                                        {"preparedCacheBypass", 0},
                                        {"preparedCacheInvalidation", 0},
+                                       {"preparedDescriptorShapeHit", 0},
+                                       {"preparedDescriptorShapeMiss", 0},
                                        {"execute", 0},
                                        {"executeQuery", 0},
                                        {"metadataQuery", 0},
@@ -1426,6 +2295,8 @@ int main(int argc, char** argv) {
 
         scratchbird::client::Connection conn;
         std::map<std::string, std::unique_ptr<scratchbird::client::PreparedStatement>> preparedCache;
+        std::set<std::string> preparedDescriptorShapeCache;
+        std::map<std::string, std::vector<std::string>> tableColumnsByName;
         api["scratchbird::client::Connection"]++;
         scratchbird::client::ConnectionConfig config;
         config.host = required(args, "--host");
@@ -1445,7 +2316,10 @@ int main(int argc, char** argv) {
         config.write_timeout_ms = config.query_timeout_ms;
         config.enable_copy_streaming = true;
         config.binary_transfer = true;
+        config.auto_commit = autoCommitEnabled;
         config.transport_mode = route == "ipc_local" ? "local_ipc" : "inet_listener";
+        config.ipc_path = valueOrDefault(args, "--ipc-path", "");
+        config.ipc_method = valueOrDefault(args, "--ipc-method", config.ipc_method);
         if (route == "embedded") {
             config.transport_mode = "embedded";
         }
@@ -1463,13 +2337,30 @@ int main(int argc, char** argv) {
                                        {"mga_authority", "engine"}});
 
         scratchbird::core::ErrorContext ctx;
+        std::string observedSecurityEpoch;
         const int64_t connectStarted = nowNs();
         auto status = conn.connect(config, &ctx);
         if (status == scratchbird::core::Status::OK) {
             api["connect"]++;
             addTiming(&timings, "connection", connectStarted);
+            observedSecurityEpoch = conn.getParameterStatus("security.generation");
+            if (observedSecurityEpoch.empty()) {
+                observedSecurityEpoch = conn.getParameterStatus("security_epoch");
+            }
             appendText(paths.at("stdout"), "connected cpp regression runner\n");
             recordProcessMetrics("post_connect", "connect", 0);
+            if (!autoCommitEnabled) {
+                scratchbird::core::ErrorContext beginCtx;
+                const int64_t beginStarted = nowNs();
+                const auto beginStatus = conn.beginTransaction(&beginCtx);
+                addTiming(&timings, "transaction", beginStarted);
+                if (beginStatus != scratchbird::core::Status::OK) {
+                    failures.push_back(makeFailure("suite_transaction_begin", statusMessage(beginCtx)));
+                    appendJsonl(paths.at("diagnostics"), {{"statement_id", "suite_transaction_begin"},
+                                                         {"sqlstate", sqlstateOf(beginCtx)},
+                                                         {"message", statusMessage(beginCtx)}});
+                }
+            }
         } else {
             failures.push_back(makeFailure("connect", statusMessage(ctx)));
             appendJsonl(paths.at("diagnostics"), {{"statement_id", "connect"},
@@ -1491,11 +2382,23 @@ int main(int argc, char** argv) {
                                          scratchbird::client::ResultSet* resultSet,
                                          int64_t* rowsAffected,
                                          scratchbird::core::ErrorContext* statementCtx,
-                                         bool* preparedHandleUsed) {
+                                         bool* preparedHandleUsed,
+                                         const std::vector<PreparedBindValue>* bindValues = nullptr) {
             auto runPrepared = [&](scratchbird::client::PreparedStatement* stmt) {
                 api["executePrepared"]++;
                 if (preparedHandleUsed != nullptr) {
                     *preparedHandleUsed = true;
+                }
+                if (bindValues != nullptr) {
+                    stmt->clearParameters();
+                    for (std::size_t index = 0; index < bindValues->size(); ++index) {
+                        const auto& value = (*bindValues)[index];
+                        if (value.isNull) {
+                            stmt->setNull(index + 1);
+                        } else {
+                            stmt->setString(index + 1, value.text);
+                        }
+                    }
                 }
                 if (resultSet != nullptr) {
                     return stmt->executeQuery(resultSet, statementCtx);
@@ -1700,6 +2603,13 @@ int main(int argc, char** argv) {
                     addCounterMetric(iparMetrics, "copy_rejects", 0);
                     addCounterMetric(iparMetrics, "refusal_count", 0);
                 }
+                std::set<std::string> expectedAssertionsForScript;
+                for (const auto& assertionId : scriptEntry.value("assertions", json::array())) {
+                    if (assertionId.is_string()) {
+                        expectedAssertionsForScript.insert(assertionId.get<std::string>());
+                    }
+                }
+                std::set<std::string> observedAssertionsForScript;
 
                 for (size_t statementIndex = 0; statementIndex < statements.size(); ++statementIndex) {
                     const std::string& sql = statements[statementIndex];
@@ -1715,6 +2625,8 @@ int main(int argc, char** argv) {
                     const int preparedMissesBefore = api["preparedCacheMiss"];
                     const int preparedBypassesBefore = api["preparedCacheBypass"];
                     const int preparedInvalidationsBefore = api["preparedCacheInvalidation"];
+                    const int descriptorShapeHitsBefore = api["preparedDescriptorShapeHit"];
+                    const int descriptorShapeMissesBefore = api["preparedDescriptorShapeMiss"];
                     ++executedStatements;
                     if (executedStatements == 1 || executedStatements % 500 == 0) {
                         recordProcessMetrics("statement", statementId, executedStatements);
@@ -1748,15 +2660,42 @@ int main(int argc, char** argv) {
                     json columns = json::array();
                     std::string commandTag;
                     bool failureRecordedForStatement = false;
-                    const bool copyStatement = firstTokenLower(sql) == "copy";
+                    const std::string first = mainStatementTokenLower(sql);
+                    const std::string second = secondTokenLower(sql);
+                    const bool copyStatement = first == "copy";
                     std::string copyInputPayload;
                     std::istringstream copyInput;
                     std::ostringstream copyOutput;
                     bool preparedHandleUsed = false;
+                    bool descriptorShapeCacheHit = false;
+                    int64_t descriptorShapeOccurrences = 0;
+                    PreparedInsertExecution preparedInsert;
+                    const bool descriptorShapeEligible = preparedCacheEnabled &&
+                                                         statementPreparedCacheEligible(sql) &&
+                                                         !copyStatement &&
+                                                         !expectsRefusal;
+                    if (descriptorShapeEligible) {
+                        const std::string shapeKey = statementShapeKey(sql);
+                        if (!shapeKey.empty()) {
+                            descriptorShapeOccurrences = statementDescriptorShapeOccurrences(sql);
+                            const auto inserted = preparedDescriptorShapeCache.insert(shapeKey);
+                            descriptorShapeCacheHit = !inserted.second;
+                            if (descriptorShapeCacheHit) {
+                                api["preparedDescriptorShapeHit"] += static_cast<int>(descriptorShapeOccurrences);
+                            } else {
+                                api["preparedDescriptorShapeMiss"]++;
+                                if (descriptorShapeOccurrences > 1) {
+                                    api["preparedDescriptorShapeHit"] +=
+                                        static_cast<int>(descriptorShapeOccurrences - 1);
+                                }
+                            }
+                        }
+                    }
+                    if (descriptorShapeEligible && first == "insert" && !statementReturnsRows(sql)) {
+                        preparedInsert = parameterizeInsertValuesForPreparedRoute(sql, tableColumnsByName);
+                    }
 
                     scratchbird::core::ErrorContext statementCtx;
-                    const std::string first = firstTokenLower(sql);
-                    const std::string second = secondTokenLower(sql);
                     if (group == "transaction") {
                         if (first == "begin" || (first == "start" && second == "transaction")) {
                             status = conn.beginTransaction(&statementCtx);
@@ -1818,6 +2757,7 @@ int main(int argc, char** argv) {
                                 columns = resultPayload.at("columns");
                                 rowCount = static_cast<int64_t>(rows.size());
                                 commandTag = commandTagOrDefault(resultSet, "QUERY");
+                                rowsAffected = resultSet.getRowsAffected();
                                 resultDigest = sha256Text(resultPayload.dump());
                                 if (columns.size() > 0) {
                                     for (size_t i = 0; i < rows.size(); ++i) {
@@ -1834,6 +2774,17 @@ int main(int argc, char** argv) {
                                                                 !copyStatement &&
                                                                 !expectsRefusal}});
                             if (preparedCacheEnabled &&
+                                preparedInsert.eligible &&
+                                !copyStatement &&
+                                !expectsRefusal) {
+                                status = executePreparedCached(preparedInsert.sql,
+                                                               statementId,
+                                                               nullptr,
+                                                               &rowsAffected,
+                                                               &statementCtx,
+                                                               &preparedHandleUsed,
+                                                               &preparedInsert.params);
+                            } else if (preparedCacheEnabled &&
                                 statementPreparedCacheEligible(sql) &&
                                 !copyStatement &&
                                 !expectsRefusal) {
@@ -1867,6 +2818,12 @@ int main(int argc, char** argv) {
                         sqlstate = sqlstateOf(statementCtx);
                     }
 
+                    if (status == scratchbird::core::Status::OK && first == "create") {
+                        if (auto descriptor = parseCreateTableDescriptor(sql)) {
+                            tableColumnsByName[descriptor->first] = descriptor->second;
+                        }
+                    }
+
                     bool statementPassed = status == scratchbird::core::Status::OK;
                     if (expectsRefusal) {
                         if (status == scratchbird::core::Status::OK) {
@@ -1890,6 +2847,10 @@ int main(int argc, char** argv) {
                         const int64_t assertionStarted = nowNs();
                         const json assertionChecks = validateAssertions(statementId, rows);
                         for (const auto& assertion : assertionChecks) {
+                            const std::string observedAssertionId = assertion.value("assertion_id", "");
+                            if (!observedAssertionId.empty()) {
+                                observedAssertionsForScript.insert(observedAssertionId);
+                            }
                             assertionResults.push_back(assertion);
                             if (assertion.value("passed", false)) {
                                 ++assertionPasses;
@@ -1920,8 +2881,12 @@ int main(int argc, char** argv) {
                         iparStatementMsByScript[scriptId].push_back(statementElapsedMs);
                         addNumericMetric(iparMetrics, "command_ms", statementElapsedMs);
                         addCounterMetric(iparMetrics, "prepared_descriptor_hits",
-                                         api["preparedCacheHit"] - preparedHitsBefore);
+                                         api["preparedDescriptorShapeHit"] - descriptorShapeHitsBefore);
                         addCounterMetric(iparMetrics, "prepared_descriptor_misses",
+                                         api["preparedDescriptorShapeMiss"] - descriptorShapeMissesBefore);
+                        addCounterMetric(iparMetrics, "prepared_handle_hits",
+                                         api["preparedCacheHit"] - preparedHitsBefore);
+                        addCounterMetric(iparMetrics, "prepared_handle_misses",
                                          api["preparedCacheMiss"] - preparedMissesBefore);
                         addCounterMetric(iparMetrics, "prepared_cache_bypasses",
                                          api["preparedCacheBypass"] - preparedBypassesBefore);
@@ -2015,6 +2980,13 @@ int main(int argc, char** argv) {
                              {"copy_stream_used", copyStatement},
                              {"copy_input_rows", copyStatement ? countPayloadRows(copyInputPayload) : 0},
                              {"copy_input_bytes", copyStatement ? static_cast<int64_t>(copyInputPayload.size()) : 0},
+                             {"prepared_descriptor_shape_eligible", descriptorShapeEligible},
+                             {"prepared_descriptor_shape_occurrences", descriptorShapeOccurrences},
+                             {"prepared_descriptor_shape_cache_hit", descriptorShapeCacheHit},
+                             {"prepared_descriptor_shape_hit_delta",
+                              api["preparedDescriptorShapeHit"] - descriptorShapeHitsBefore},
+                             {"prepared_descriptor_shape_miss_delta",
+                              api["preparedDescriptorShapeMiss"] - descriptorShapeMissesBefore},
                              {"prepared_handle_used", preparedHandleUsed},
                              {"prepared_cache_hit_delta", api["preparedCacheHit"] - preparedHitsBefore},
                              {"prepared_cache_miss_delta", api["preparedCacheMiss"] - preparedMissesBefore},
@@ -2080,6 +3052,18 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+                for (const auto& assertionId : expectedAssertionsForScript) {
+                    if (observedAssertionsForScript.count(assertionId) != 0) {
+                        continue;
+                    }
+                    ++assertionFailures;
+                    failures.push_back({{"statement_id", scriptId + ":" + assertionId},
+                                        {"assertion_id", assertionId},
+                                        {"message", "expected assertion row was not emitted by the driver result stream"}});
+                    if (iparMetrics != nullptr) {
+                        addCounterMetric(iparMetrics, "validation_failures", 1);
+                    }
+                }
                 if (!failures.empty() && hasFlag(args, "--stop-on-error")) {
                     break;
                 }
@@ -2100,6 +3084,26 @@ int main(int argc, char** argv) {
                         metrics["rows_per_second"] =
                             metrics["rows_written"].get<double>() / (metrics["command_ms"].get<double>() / 1000.0);
                     }
+                }
+            }
+
+            if (!autoCommitEnabled) {
+                scratchbird::core::ErrorContext finalityCtx;
+                const int64_t finalityStarted = nowNs();
+                const bool commitSuite = failures.empty();
+                const auto finalityStatus = commitSuite ? conn.commit(&finalityCtx)
+                                                        : conn.rollback(&finalityCtx);
+                addTiming(&timings, "transaction", finalityStarted);
+                api[commitSuite ? "commit" : "rollback"]++;
+                if (finalityStatus != scratchbird::core::Status::OK) {
+                    failures.push_back(makeFailure(commitSuite ? "suite_transaction_commit"
+                                                              : "suite_transaction_rollback",
+                                                   statusMessage(finalityCtx)));
+                    appendJsonl(paths.at("diagnostics"),
+                                {{"statement_id", commitSuite ? "suite_transaction_commit"
+                                                              : "suite_transaction_rollback"},
+                                 {"sqlstate", sqlstateOf(finalityCtx)},
+                                 {"message", statusMessage(finalityCtx)}});
                 }
             }
 
@@ -2212,6 +3216,7 @@ int main(int argc, char** argv) {
             }
             metrics["memory_growth_bytes"] = memoryGrowthKb * 1024;
         }
+        mergeDerivedSecurityIparMetrics(&iparRecords, observedSecurityEpoch);
         if (!serverTelemetryRows.empty() &&
             numericMetricGreaterThan(iparTelemetry,
                                      "sys.metrics.ipar.telemetry.metrics_enabled",
@@ -2255,6 +3260,9 @@ int main(int argc, char** argv) {
                            {"sslmode", sslmode},
                            {"transport_mode", transportMode},
                            {"tls_policy", tlsPolicy},
+                           {"auto_commit", autoCommitEnabled},
+                           {"suite_transaction_mode", autoCommitEnabled ? "statement_autocommit"
+                                                                        : "single_mga_transaction"},
                            {"status", failures.empty() ? "pass" : "fail"},
                            {"failure_count", failures.size()},
                            {"failures", failures},
@@ -2285,6 +3293,11 @@ int main(int argc, char** argv) {
                              {"bypasses", api["preparedCacheBypass"]},
                              {"invalidations", api["preparedCacheInvalidation"]},
                              {"execute_prepared_count", api["executePrepared"]}}},
+                           {"descriptor_shape_cache",
+                            {{"enabled", preparedCacheEnabled},
+                             {"cached_shape_count", preparedDescriptorShapeCache.size()},
+                             {"hits", api["preparedDescriptorShapeHit"]},
+                             {"misses", api["preparedDescriptorShapeMiss"]}}},
                            {"artifact_root", artifactRoot.string()},
                            {"manifest", manifestPath.string()}};
         writeText(paths.at("summary"), summary.dump(2) + "\n");

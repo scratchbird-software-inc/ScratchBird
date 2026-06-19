@@ -23,12 +23,15 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -202,7 +205,7 @@ constexpr std::uint64_t kFeatureReauth = FeatureBit(22);
 constexpr std::uint64_t kFeatureFailoverHints = FeatureBit(23);
 constexpr std::uint64_t kFeatureTraceContext = FeatureBit(24);
 constexpr std::uint8_t kCopyFormatCanonicalRowFieldsText = 0x00;
-constexpr std::uint32_t kCopyDefaultWindowBytes = 64u * 1024u;
+constexpr std::uint32_t kCopyDefaultWindowBytes = 1024u * 1024u;
 constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
 constexpr std::uint64_t kAutoCursorFetchRows = 1024;
 constexpr std::uint64_t kAutoCursorFetchBytes = 4u * 1024u * 1024u;
@@ -252,6 +255,7 @@ struct PreparedStatement {
     std::string server_operation_id;
     std::vector<std::string> column_names;
     std::vector<std::size_t> parameter_indexes;
+    std::vector<std::vector<std::size_t>> row_parameter_indexes;
   };
   std::optional<InsertRowsetPlan> insert_rowset_plan;
 };
@@ -495,6 +499,17 @@ std::string Trim(std::string value) {
   return value;
 }
 
+std::string_view TrimView(std::string_view value) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  while (!value.empty() && !not_space(static_cast<unsigned char>(value.front()))) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && !not_space(static_cast<unsigned char>(value.back()))) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
 bool StartsWithWord(std::string_view text, std::string_view word) {
   if (text.size() < word.size() || text.substr(0, word.size()) != word) return false;
   return text.size() == word.size() ||
@@ -730,36 +745,59 @@ std::optional<PreparedStatement::InsertRowsetPlan> AnalyzePreparedInsertRowset(s
   const std::string target_name = Trim(std::string(sql.substr(target_start, pos - target_start)));
   if (target_name.empty()) return std::nullopt;
   while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
-  if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
-  const std::size_t columns_end = FindMatchingSqlParen(sql, pos);
-  if (columns_end == std::string_view::npos) return std::nullopt;
-  auto columns = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, columns_end - pos - 1));
-  if (columns.empty()) return std::nullopt;
-  for (auto& column : columns) {
-    column = TrimIdentifierToken(std::move(column));
-    if (column.empty()) return std::nullopt;
+  std::vector<std::string> columns;
+  std::size_t search_from = pos;
+  if (pos < sql.size() && sql[pos] == '(') {
+    const std::size_t columns_end = FindMatchingSqlParen(sql, pos);
+    if (columns_end == std::string_view::npos) return std::nullopt;
+    columns = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, columns_end - pos - 1));
+    if (columns.empty()) return std::nullopt;
+    for (auto& column : columns) {
+      column = TrimIdentifierToken(std::move(column));
+      if (column.empty()) return std::nullopt;
+    }
+    search_from = columns_end + 1;
   }
-  const std::size_t values_pos = FindKeywordOutsideSql(sql, "VALUES", columns_end + 1);
+  const std::size_t values_pos = FindKeywordOutsideSql(sql, "VALUES", search_from);
   if (values_pos == std::string_view::npos) return std::nullopt;
   pos = values_pos + 6;
-  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
-  if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
-  const std::size_t values_end = FindMatchingSqlParen(sql, pos);
-  if (values_end == std::string_view::npos) return std::nullopt;
-  auto values = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, values_end - pos - 1));
-  if (values.size() != columns.size()) return std::nullopt;
-  std::vector<std::size_t> parameter_indexes;
-  parameter_indexes.reserve(values.size());
   std::size_t next_question_index = 0;
-  for (const auto& value : values) {
-    auto index = PlaceholderIndexForValue(value, &next_question_index);
-    if (!index.has_value()) return std::nullopt;
-    parameter_indexes.push_back(*index);
+  std::vector<std::vector<std::size_t>> row_parameter_indexes;
+  while (true) {
+    while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+    if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
+    const std::size_t values_end = FindMatchingSqlParen(sql, pos);
+    if (values_end == std::string_view::npos) return std::nullopt;
+    auto values = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, values_end - pos - 1));
+    if (values.empty()) return std::nullopt;
+    if (!columns.empty() && values.size() != columns.size()) return std::nullopt;
+    std::vector<std::size_t> parameter_indexes;
+    parameter_indexes.reserve(values.size());
+    for (const auto& value : values) {
+      auto index = PlaceholderIndexForValue(value, &next_question_index);
+      if (!index.has_value()) return std::nullopt;
+      parameter_indexes.push_back(*index);
+    }
+    row_parameter_indexes.push_back(std::move(parameter_indexes));
+    pos = values_end + 1;
+    while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+    if (pos < sql.size() && sql[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    break;
+  }
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos < sql.size()) {
+    const std::string trailing = Upper(Trim(std::string(sql.substr(pos))));
+    if (!trailing.empty() && trailing != ";") return std::nullopt;
   }
   PreparedStatement::InsertRowsetPlan plan;
   plan.target_name = target_name;
   plan.column_names = std::move(columns);
-  plan.parameter_indexes = std::move(parameter_indexes);
+  plan.parameter_indexes = row_parameter_indexes.empty() ? std::vector<std::size_t>{}
+                                                         : row_parameter_indexes.front();
+  plan.row_parameter_indexes = std::move(row_parameter_indexes);
   return plan;
 }
 
@@ -785,6 +823,9 @@ std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
     bytes += statement.insert_rowset_plan->server_operation_id.size();
     for (const auto& column : statement.insert_rowset_plan->column_names) bytes += column.size();
     bytes += statement.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
+    for (const auto& row : statement.insert_rowset_plan->row_parameter_indexes) {
+      bytes += row.size() * sizeof(std::size_t);
+    }
   }
   return bytes;
 }
@@ -801,6 +842,9 @@ std::size_t BoundPortalBytes(const BoundPortal& portal) {
     bytes += portal.insert_rowset_plan->server_operation_id.size();
     for (const auto& column : portal.insert_rowset_plan->column_names) bytes += column.size();
     bytes += portal.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
+    for (const auto& row : portal.insert_rowset_plan->row_parameter_indexes) {
+      bytes += row.size() * sizeof(std::size_t);
+    }
   }
   return bytes;
 }
@@ -1638,12 +1682,20 @@ std::vector<std::pair<std::string, std::string>> ParseFieldList(std::string_view
 std::optional<std::vector<CopyImportRow>> ParseTextCopyRows(
     const std::vector<std::uint8_t>& payload) {
   std::vector<CopyImportRow> rows;
-  std::istringstream in{
-      std::string(reinterpret_cast<const char*>(payload.data()), payload.size())};
-  std::string line;
-  while (std::getline(in, line)) {
-    line = Trim(std::move(line));
-    if (line.empty()) continue;
+  rows.reserve(std::count(payload.begin(), payload.end(), static_cast<std::uint8_t>('\n')) +
+               (payload.empty() ? 0 : 1));
+  const std::string_view body(reinterpret_cast<const char*>(payload.data()), payload.size());
+  std::size_t start = 0;
+  while (start <= body.size()) {
+    const std::size_t end = body.find('\n', start);
+    const std::string_view raw_line =
+        body.substr(start, end == std::string_view::npos ? body.size() - start : end - start);
+    const std::string_view line = TrimView(raw_line);
+    if (line.empty()) {
+      if (end == std::string_view::npos) break;
+      start = end + 1;
+      continue;
+    }
     const auto parsed = ParseFieldList(line);
     if (parsed.empty()) return std::nullopt;
     CopyImportRow row;
@@ -1657,6 +1709,8 @@ std::optional<std::vector<CopyImportRow>> ParseTextCopyRows(
       }
     }
     rows.push_back(std::move(row));
+    if (end == std::string_view::npos) break;
+    start = end + 1;
   }
   return rows;
 }
@@ -1673,6 +1727,86 @@ std::string GenerateCopyImportRowUuid() {
   return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
 }
 
+using CopyPhaseClock = std::chrono::steady_clock;
+
+std::uint64_t CopyPhaseElapsedMicros(CopyPhaseClock::time_point start,
+                                     CopyPhaseClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+struct CopyPhaseTiming {
+  std::string phase;
+  std::uint64_t elapsed_us = 0;
+};
+
+std::string CopyTraceJsonEscape(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(ch);
+        break;
+    }
+  }
+  return out;
+}
+
+void WriteCopyPhaseTraceIfRequested(
+    std::string_view event,
+    std::string_view operation_id,
+    std::size_t rows,
+    std::size_t bytes,
+    const std::vector<CopyPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_COPY_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"event\":\"" << CopyTraceJsonEscape(event) << "\""
+      << ",\"operation_id\":\"" << CopyTraceJsonEscape(operation_id) << "\""
+      << ",\"rows\":" << rows
+      << ",\"bytes\":" << bytes
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << CopyTraceJsonEscape(phase.phase) << "\":"
+        << phase.elapsed_us;
+  }
+  out << "}}\n";
+}
+
 std::string EscapeOperationOperandField(std::string_view value) {
   std::string out;
   out.reserve(value.size());
@@ -1686,6 +1820,128 @@ std::string EscapeOperationOperandField(std::string_view value) {
       out.push_back('t');
     } else {
       out.push_back(ch);
+    }
+  }
+  return out;
+}
+
+void AppendEscapedOperationOperandField(std::string* out, std::string_view value) {
+  if (out == nullptr) return;
+  for (char ch : value) {
+    if (ch == '\\' || ch == '\t' || ch == '\n' || ch == '\r') out->push_back('\\');
+    if (ch == '\n') {
+      out->push_back('n');
+    } else if (ch == '\r') {
+      out->push_back('r');
+    } else if (ch == '\t') {
+      out->push_back('t');
+    } else {
+      out->push_back(ch);
+    }
+  }
+}
+
+void AppendTextOperationOperand(std::string* out,
+                                std::string_view name,
+                                std::string_view value) {
+  if (out == nullptr) return;
+  out->append("operand=text\t");
+  AppendEscapedOperationOperandField(out, name);
+  out->push_back('\t');
+  AppendEscapedOperationOperandField(out, value);
+  out->push_back('\n');
+}
+
+std::string EncodeNativeBulkRowFields(const CopyImportRow& row) {
+  std::string out;
+  std::size_t estimate = 0;
+  for (const auto& [name, value] : row.fields) {
+    estimate += name.size() + (value.has_value() ? value->size() : 0) + 24;
+  }
+  out.reserve(estimate);
+  for (const auto& [name, value] : row.fields) {
+    out += std::to_string(name.size());
+    out += ":";
+    out += name;
+    if (!value.has_value()) {
+      out += "~";
+      continue;
+    }
+    out += "=";
+    out += std::to_string(value->size());
+    out += ":";
+    out += *value;
+  }
+  return out;
+}
+
+bool NativeBulkRowsShareShape(const CopyImportState& copy,
+                              std::size_t first_row,
+                              std::size_t end_row) {
+  if (first_row >= end_row || end_row > copy.rows.size()) {
+    return false;
+  }
+  const auto& first = copy.rows[first_row].fields;
+  if (first.empty()) {
+    return false;
+  }
+  for (std::size_t row_index = first_row + 1; row_index < end_row; ++row_index) {
+    const auto& fields = copy.rows[row_index].fields;
+    if (fields.size() != first.size()) {
+      return false;
+    }
+    for (std::size_t field_index = 0; field_index < first.size(); ++field_index) {
+      if (fields[field_index].first != first[field_index].first) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::string EncodeNativeBulkRowset(const CopyImportState& copy,
+                                   std::size_t first_row,
+                                   std::size_t end_row) {
+  std::string out;
+  const auto& columns = copy.rows[first_row].fields;
+  std::size_t estimate = 64;
+  for (const auto& [name, value] : columns) {
+    (void)value;
+    estimate += name.size() + 16;
+  }
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    estimate += 64;
+    for (const auto& [name, value] : copy.rows[row_index].fields) {
+      (void)name;
+      estimate += (value.has_value() ? value->size() : 0) + 16;
+    }
+  }
+  out.reserve(estimate);
+  out += std::to_string(columns.size());
+  out += ";";
+  for (const auto& [name, value] : columns) {
+    (void)value;
+    out += std::to_string(name.size());
+    out += ":";
+    out += name;
+  }
+  out += std::to_string(end_row - first_row);
+  out += ";";
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    // Rowsets use engine-side batched UUID generation. The parser remains
+    // responsible for SBLR/UUID lowering, but row identity authority stays in
+    // the engine direct-bulk path.
+    out += "0:";
+    for (const auto& [name, value] : copy.rows[row_index].fields) {
+      (void)name;
+      if (!value.has_value()) {
+        out += "~";
+        continue;
+      }
+      out += "=";
+      out += std::to_string(value->size());
+      out += ":";
+      out += *value;
     }
   }
   return out;
@@ -1760,6 +2016,14 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
                                                 std::size_t row_count) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
   std::string out;
+  std::size_t estimate = 1024;
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    estimate += 96;
+    for (const auto& [name, value] : copy.rows[row_index].fields) {
+      estimate += name.size() + (value.has_value() ? value->size() : 0) + 24;
+    }
+  }
+  out.reserve(estimate);
   out += "operation_id=dml.execute_native_bulk_ingest\n";
   out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
   out += "sblr_operation_family=sblr.dml.operation.v3\n";
@@ -1790,17 +2054,41 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
-    const auto& row = copy.rows[row_index];
-    const std::string row_uuid = GenerateCopyImportRowUuid();
-    for (const auto& [name, value] : row.fields) {
-      out += value.has_value() ? "operand=row_field:character\t"
-                               : "operand=row_null_field:character\t";
+  AppendTextOperationOperand(&out, "target_object_uuid", copy.target_object_uuid);
+  AppendTextOperationOperand(&out, "target_object_kind", "table");
+  AppendTextOperationOperand(&out, "dml_surface_variant", "sb_isql_native_bulk_ingest");
+  AppendTextOperationOperand(&out, "estimated_row_count", std::to_string(end_row - first_row));
+  AppendTextOperationOperand(&out, "native_bulk_ingest", "true");
+  AppendTextOperationOperand(&out,
+                             "native_bulk_ingest_enabled",
+                             copy.native_bulk_ingest_enabled ? "true" : "false");
+  AppendTextOperationOperand(&out, "reject_mode", "fail_fast");
+  AppendTextOperationOperand(&out, "reject_limit_rows", "0");
+  AppendTextOperationOperand(&out, "reject_payload_policy", "diagnostic_only");
+  AppendTextOperationOperand(&out, "result_payload_policy", "summary_only");
+  AppendTextOperationOperand(&out, "resume_policy", "fail_closed");
+  AppendTextOperationOperand(&out, "checkpoint_mode", "disabled");
+  AppendTextOperationOperand(&out, "duplicate_mode", "error");
+  AppendTextOperationOperand(&out, "require_generated_row_uuid", "true");
+  AppendTextOperationOperand(&out, "direct_bulk.precomputed_index_entries", "true");
+  const bool shared_rowset_shape = NativeBulkRowsShareShape(copy, first_row, end_row);
+  AppendTextOperationOperand(&out,
+                             "sblr.canonical_rowset_shared_shape",
+                             shared_rowset_shape ? "true" : "false");
+  if (shared_rowset_shape) {
+    out += "operand=rowset_canonical:character\tbatch\t";
+    const std::string encoded_rowset = EncodeNativeBulkRowset(copy, first_row, end_row);
+    AppendEscapedOperationOperandField(&out, encoded_rowset);
+    out += "\n";
+  } else {
+    for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+      const auto& row = copy.rows[row_index];
+      const std::string row_uuid = GenerateCopyImportRowUuid();
+      out += "operand=row_canonical:character\t";
       out += row_uuid;
-      out += "|";
-      out += EscapeOperationOperandField(name);
       out += "\t";
-      out += value.has_value() ? EscapeOperationOperandField(*value) : "";
+      const std::string encoded_row = EncodeNativeBulkRowFields(row);
+      AppendEscapedOperationOperandField(&out, encoded_row);
       out += "\n";
     }
   }
@@ -2733,6 +3021,21 @@ std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
     if (result.server_operation_id == "transaction.begin") return "BEGIN";
     if (result.server_operation_id == "transaction.commit") return "COMMIT";
     if (result.server_operation_id == "transaction.rollback") return "ROLLBACK";
+    if (result.server_operation_id == "dml.insert_rows") {
+      return "INSERT " + std::to_string(result.server_row_count);
+    }
+    if (result.server_operation_id == "dml.update_rows") {
+      return "UPDATE " + std::to_string(result.server_row_count);
+    }
+    if (result.server_operation_id == "dml.delete_rows") {
+      return "DELETE " + std::to_string(result.server_row_count);
+    }
+    if (result.server_operation_id == "dml.merge_rows") {
+      return "MERGE " + std::to_string(result.server_row_count);
+    }
+    if (result.server_operation_id == "dml.execute_import_rows") {
+      return "COPY " + std::to_string(result.server_row_count);
+    }
     if (result.server_operation_id == "dml.execute_native_bulk_ingest") {
       return "NATIVE_BULK_INGEST " + std::to_string(result.server_row_count);
     }
@@ -3204,24 +3507,52 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
   rowset.native_bulk_ingest_enabled = true;
   rowset.sql = portal.sql;
   rowset.target_object_uuid = plan.target_object_uuid;
-  CopyImportRow row;
-  row.fields.reserve(plan.column_names.size());
-  for (std::size_t i = 0; i < plan.column_names.size(); ++i) {
-    const std::size_t parameter_index =
-        i < plan.parameter_indexes.size() ? plan.parameter_indexes[i] : portal.param_values.size();
-    if (parameter_index >= portal.param_values.size()) {
+  if (plan.column_names.empty()) {
+    if (!SendError(io,
+                   state,
+                   "08P01",
+                   "SBWP.PREPARED_ROWSET.COLUMN_LIST_REQUIRED",
+                   "prepared rowset execution requires an explicit column list")) {
+      return false;
+    }
+    return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  std::vector<std::vector<std::size_t>> single_row_fallback;
+  const auto* row_groups = &plan.row_parameter_indexes;
+  if (row_groups->empty()) {
+    single_row_fallback.push_back(plan.parameter_indexes);
+    row_groups = &single_row_fallback;
+  }
+  rowset.rows.reserve(row_groups->size());
+  for (const auto& row_indexes : *row_groups) {
+    if (row_indexes.size() != plan.column_names.size()) {
       if (!SendError(io,
                      state,
                      "08P01",
-                     "SBWP.BIND.PARAMETER_MISSING",
-                     "prepared rowset bind did not supply every required parameter")) {
+                     "SBWP.PREPARED_ROWSET.SHAPE_MISMATCH",
+                     "prepared rowset bind shape does not match the target column list")) {
         return false;
       }
       return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
     }
-    row.fields.emplace_back(plan.column_names[i], portal.param_values[parameter_index]);
+    CopyImportRow row;
+    row.fields.reserve(plan.column_names.size());
+    for (std::size_t i = 0; i < plan.column_names.size(); ++i) {
+      const std::size_t parameter_index = row_indexes[i];
+      if (parameter_index >= portal.param_values.size()) {
+        if (!SendError(io,
+                       state,
+                       "08P01",
+                       "SBWP.BIND.PARAMETER_MISSING",
+                       "prepared rowset bind did not supply every required parameter")) {
+          return false;
+        }
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+      row.fields.emplace_back(plan.column_names[i], portal.param_values[parameter_index]);
+    }
+    rowset.rows.push_back(std::move(row));
   }
-  rowset.rows.push_back(std::move(row));
   const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size());
   auto result = plan.server_prepared_statement_uuid.empty()
                     ? session->RunSblrEnvelope(envelope, false)
@@ -3415,8 +3746,8 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     }
     state->copy_import = CopyImportState{};
     state->copy_import.active = true;
-    state->copy_import.native_bulk_ingest = NativeBulkIngestRequested(sql);
     state->copy_import.native_bulk_ingest_enabled = NativeBulkIngestEnabledRequested(sql);
+    state->copy_import.native_bulk_ingest = state->copy_import.native_bulk_ingest_enabled;
     state->copy_import.sql = sql;
     state->copy_import.target_object_uuid = *target_uuid;
     if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload())) return false;
@@ -3441,7 +3772,10 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      "COPY_DATA arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
+  const auto parse_start = CopyPhaseClock::now();
   const auto rows = ParseTextCopyRows(frame.payload);
+  const std::uint64_t parse_us =
+      CopyPhaseElapsedMicros(parse_start, CopyPhaseClock::now());
   if (!rows.has_value()) {
     state->copy_import = CopyImportState{};
     if (session != nullptr) {
@@ -3454,7 +3788,16 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      "CopyData payload must contain newline-delimited canonical field=value rows") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
+  const auto append_start = CopyPhaseClock::now();
   state->copy_import.rows.insert(state->copy_import.rows.end(), rows->begin(), rows->end());
+  const std::uint64_t append_us =
+      CopyPhaseElapsedMicros(append_start, CopyPhaseClock::now());
+  WriteCopyPhaseTraceIfRequested(
+      "copy_data",
+      "sbsql.copy_data",
+      rows->size(),
+      frame.payload.size(),
+      {{"parse_copy_rows", parse_us}, {"append_copy_rows", append_us}});
   return true;
 }
 
@@ -3485,15 +3828,25 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   result.operation_family = "sblr.dml.operation.v3";
   result.server_operation_id =
       copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
+  std::vector<CopyPhaseTiming> copy_done_phases;
+  const auto copy_done_total_start = CopyPhaseClock::now();
   for (std::size_t first_row = 0; first_row < copy.rows.size();
        first_row += kCopyExecuteRowsPerSblrEnvelope) {
     const std::size_t row_count =
         std::min(kCopyExecuteRowsPerSblrEnvelope, copy.rows.size() - first_row);
+    const auto build_start = CopyPhaseClock::now();
     const std::string envelope =
         copy.native_bulk_ingest
             ? BuildNativeBulkIngestExecuteEnvelope(copy, first_row, row_count)
             : BuildCopyExecuteEnvelope(copy, first_row, row_count);
+    copy_done_phases.push_back(
+        {"build_execute_envelope",
+         CopyPhaseElapsedMicros(build_start, CopyPhaseClock::now())});
+    const auto run_start = CopyPhaseClock::now();
     auto chunk_result = session->RunSblrEnvelope(envelope, false);
+    copy_done_phases.push_back(
+        {"run_sblr_envelope",
+         CopyPhaseElapsedMicros(run_start, CopyPhaseClock::now())});
     if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
       const std::string diagnostic_code = FirstDiagnosticCode(
           chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
@@ -3514,14 +3867,31 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
     result.server_operation_id = chunk_result.server_operation_id;
     result.server_row_count += chunk_result.server_row_count == 0 ? row_count
                                                                   : chunk_result.server_row_count;
+    const auto merge_start = CopyPhaseClock::now();
     if (!chunk_result.server_result_payload.empty()) {
       if (!result.server_result_payload.empty() && result.server_result_payload.back() != '\n') {
         result.server_result_payload.push_back('\n');
       }
       result.server_result_payload += chunk_result.server_result_payload;
     }
+    copy_done_phases.push_back(
+        {"merge_server_payload",
+         CopyPhaseElapsedMicros(merge_start, CopyPhaseClock::now())});
   }
+  const auto send_start = CopyPhaseClock::now();
   if (!SendPipelineResult(io, session, state, copy_sql, result)) return false;
+  copy_done_phases.push_back(
+      {"send_pipeline_result",
+       CopyPhaseElapsedMicros(send_start, CopyPhaseClock::now())});
+  copy_done_phases.push_back(
+      {"copy_done_total",
+       CopyPhaseElapsedMicros(copy_done_total_start, CopyPhaseClock::now())});
+  WriteCopyPhaseTraceIfRequested(
+      "copy_done",
+      result.server_operation_id,
+      copy.rows.size(),
+      result.server_result_payload.size(),
+      copy_done_phases);
   return SendReady(io, state, ReadyReason::kCommandComplete);
 }
 

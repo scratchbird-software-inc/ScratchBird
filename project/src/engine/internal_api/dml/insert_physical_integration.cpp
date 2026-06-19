@@ -32,9 +32,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -641,8 +644,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     const CrudState& state,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& visible_indexes,
-    const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
+    const std::vector<CrudRowVersionRecord>& staged_rows) {
   DirectBulkConstraintProofSelection selection;
   scratchbird::core::bulk_load::BulkConstraintProofRequest proof_request;
   proof_request.database_uuid =
@@ -700,11 +702,11 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
       unique.nulls_distinct =
           !primary_key &&
           (null_policy.empty() || null_policy == "nulls_distinct");
-      for (std::size_t row_index = 0; row_index < logical_value_batch.size();
+      for (std::size_t row_index = 0; row_index < staged_rows.size();
            ++row_index) {
         for (const auto& key :
              CrudIndexKeysForValues(*support_index,
-                                    logical_value_batch[row_index])) {
+                                    staged_rows[row_index].values)) {
           unique.incoming_keys.push_back(
               DirectProofKey(key,
                              staged_rows[row_index].row_uuid,
@@ -751,17 +753,17 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     foreign_key.parent_column_name = reference->parent_column;
     foreign_key.parent_index_uuid = parent_index->index_uuid;
     foreign_key.batch_local_parent_allowed = true;
-    for (std::size_t row_index = 0; row_index < logical_value_batch.size();
+    for (std::size_t row_index = 0; row_index < staged_rows.size();
          ++row_index) {
       foreign_key.child_keys.push_back(
-          DirectProofKey(CrudFieldValue(logical_value_batch[row_index],
+          DirectProofKey(CrudFieldValue(staged_rows[row_index].values,
                                         column_name),
                          staged_rows[row_index].row_uuid,
                          staged_rows[row_index].version_uuid,
                          row_index));
       if (parent->table_uuid == table.table_uuid) {
         foreign_key.batch_parent_keys.push_back(
-            DirectProofKey(CrudFieldValue(logical_value_batch[row_index],
+            DirectProofKey(CrudFieldValue(staged_rows[row_index].values,
                                           reference->parent_column),
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
@@ -789,10 +791,10 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     const auto columns = DirectIndexKeyColumns(index);
     unique.column_name = columns.empty() ? index.column_name : columns.front();
     unique.nulls_distinct = true;
-    for (std::size_t row_index = 0; row_index < logical_value_batch.size();
+    for (std::size_t row_index = 0; row_index < staged_rows.size();
          ++row_index) {
       for (const auto& key : CrudIndexKeysForValues(index,
-                                                    logical_value_batch[row_index])) {
+                                                    staged_rows[row_index].values)) {
         unique.incoming_keys.push_back(
             DirectProofKey(key,
                            staged_rows[row_index].row_uuid,
@@ -884,6 +886,45 @@ std::vector<MgaIndexEntryAppendBatch> DirectIndexAppendBatches(
     batches.push_back(std::move(batch));
   }
   return batches;
+}
+
+struct DirectPrecomputedIndexAppendSelection {
+  std::vector<MgaExactIndexEntryAppendBatch> exact_batches;
+  EngineApiU64 entry_count = 0;
+};
+
+bool DirectPrecomputedRetailIndexEntriesEnabled(
+    const DirectPhysicalBulkAppendRequest& request) {
+  const std::string value =
+      DirectOptionValue(request, "direct_bulk.precomputed_index_entries");
+  return !value.empty() && IsDirectTruthyValue(value);
+}
+
+DirectPrecomputedIndexAppendSelection DirectPrecomputedIndexAppendBatches(
+    const std::vector<CrudIndexRecord>& indexes,
+    const std::string& table_uuid,
+    const std::vector<MgaIndexEntryRowInput>& rows) {
+  DirectPrecomputedIndexAppendSelection selection;
+  selection.exact_batches.reserve(indexes.size());
+  for (const auto& index : indexes) {
+    MgaExactIndexEntryAppendBatch batch;
+    batch.index = index;
+    batch.table_uuid = table_uuid;
+    for (const auto& row : rows) {
+      for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
+        batch.entries.push_back({key,
+                                 CrudFieldValue(row.values, index.column_name),
+                                 row.row_uuid,
+                                 row.version_uuid});
+      }
+    }
+    selection.entry_count +=
+        static_cast<EngineApiU64>(batch.entries.size());
+    if (!batch.entries.empty()) {
+      selection.exact_batches.push_back(std::move(batch));
+    }
+  }
+  return selection;
 }
 
 scratchbird::core::index::IndexFamily DirectCoreIndexFamily(
@@ -1271,8 +1312,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     const DirectPhysicalBulkAppendRequest& request,
     const CrudState& state,
     const std::vector<CrudIndexRecord>& synchronous_indexes,
-    const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
+    const std::vector<CrudRowVersionRecord>& staged_rows) {
   DirectSortedBulkIndexBuildSelection selection;
   if (!DirectSortedBulkIndexBuildEnabled(request)) {
     if (DirectDeferredIndexBenchmarkCleanRequired(request)) {
@@ -1367,12 +1407,12 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     build.metadata.leaf_entry_capacity = 128;
     scratchbird::core::index::UniqueIndexReservationLedger unique_ledger;
     for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
-      for (const auto& key : CrudIndexKeysForValues(index, logical_value_batch[row_index])) {
+      for (const auto& key : CrudIndexKeysForValues(index, staged_rows[row_index].values)) {
         scratchbird::core::index::SortedBulkIndexRowInput input;
         input.encoded_key = key;
         input.row_uuid = staged_rows[row_index].row_uuid;
         input.version_uuid = staged_rows[row_index].version_uuid;
-        input.payload_value = CrudFieldValue(logical_value_batch[row_index], index.column_name);
+        input.payload_value = CrudFieldValue(staged_rows[row_index].values, index.column_name);
         input.source_ordinal = static_cast<std::uint64_t>(row_index);
         input.null_key = DirectNullValue(input.encoded_key) ||
                          input.encoded_key.find("<NULL>") != std::string::npos;
@@ -1509,6 +1549,121 @@ std::uint64_t DirectOptionU64(const DirectPhysicalBulkAppendRequest& request,
   return parsed == 0 ? fallback : parsed;
 }
 
+std::uint64_t EstimateDirectPhysicalRowBytes(
+    const CrudRowVersionRecord& row) {
+  std::uint64_t bytes = 112;  // row header plus slot directory entry.
+  for (const auto& field : row.values) {
+    bytes += 16;  // cell header.
+    bytes += static_cast<std::uint64_t>(field.second.size());
+  }
+  return std::max<std::uint64_t>(128, bytes);
+}
+
+std::uint64_t DefaultDirectPhysicalRowsPerPage(
+    const DirectPhysicalBulkAppendRequest& request,
+    const std::vector<CrudRowVersionRecord>& staged_rows) {
+  if (staged_rows.empty()) {
+    return 16;
+  }
+  const std::uint64_t page_size =
+      DirectOptionU64(request, "physical_mga_cow.page_size_bytes", 8192);
+  const std::uint64_t usable_bytes =
+      page_size > 512 ? page_size - 512 : std::max<std::uint64_t>(1, page_size / 2);
+  const std::size_t sample_count =
+      std::min<std::size_t>(staged_rows.size(), 64);
+  std::uint64_t sampled_bytes = 0;
+  for (std::size_t index = 0; index < sample_count; ++index) {
+    sampled_bytes += EstimateDirectPhysicalRowBytes(staged_rows[index]);
+  }
+  const std::uint64_t average_row_bytes =
+      std::max<std::uint64_t>(128, sampled_bytes / sample_count);
+  const std::uint64_t target_bytes = (usable_bytes * 80) / 100;
+  const std::uint64_t rows =
+      std::max<std::uint64_t>(1, target_bytes / average_row_bytes);
+  return std::clamp<std::uint64_t>(rows, 4, 256);
+}
+
+bool DirectBulkInputMatchesEncoderOrder(
+    const EngineRowValue& input_row,
+    const InsertRowEncoderPlan& row_encoder_plan) {
+  if (row_encoder_plan.columns.empty()) {
+    return true;
+  }
+  if (input_row.fields.size() != row_encoder_plan.columns.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < input_row.fields.size(); ++index) {
+    if (input_row.fields[index].first !=
+        row_encoder_plan.columns[index].column_name) {
+      return false;
+    }
+  }
+  return true;
+}
+
+PreparedInsertRow PrepareDirectBulkOrderedRowFast(
+    const EngineInsertRowsRequest& request,
+    const EngineRowValue& input_row,
+    const BoundInsertRowTemplate& row_template,
+    const std::string& row_uuid) {
+  PreparedInsertRow row;
+  row.row_uuid = row_uuid;
+  row.values.reserve(input_row.fields.size());
+  for (const auto& [field, typed] : input_row.fields) {
+    row.values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value});
+  }
+  row.encoded_bytes = static_cast<std::uint64_t>(EncodedValueBytes(row.values));
+  row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
+                       InsertBatchOptionEnabled(request,
+                                                "large_value.force_toast=true");
+  return row;
+}
+
+std::string DirectNotNullValidationFailure(
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const std::vector<std::pair<std::string, std::string>>& values) {
+  for (const auto& column : row_encoder_plan.columns) {
+    if (!column.not_null_bound) {
+      continue;
+    }
+    const auto found = std::find_if(values.begin(), values.end(), [&](const auto& value) {
+      return value.first == column.column_name;
+    });
+    if (found == values.end() || DirectNullValue(found->second)) {
+      return column.column_name;
+    }
+  }
+  return {};
+}
+
+std::vector<std::size_t> DirectNotNullValidationOrdinals(
+    const InsertRowEncoderPlan& row_encoder_plan) {
+  std::vector<std::size_t> ordinals;
+  ordinals.reserve(static_cast<std::size_t>(
+      row_encoder_plan.not_null_validator_count));
+  for (const auto& column : row_encoder_plan.columns) {
+    if (column.not_null_bound) {
+      ordinals.push_back(column.ordinal);
+    }
+  }
+  return ordinals;
+}
+
+std::string DirectNotNullValidationFailureOrdered(
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::vector<std::size_t>& ordinals) {
+  for (const std::size_t ordinal : ordinals) {
+    if (ordinal >= values.size() || DirectNullValue(values[ordinal].second)) {
+      if (ordinal < row_encoder_plan.columns.size()) {
+        return row_encoder_plan.columns[ordinal].column_name;
+      }
+      return "ordinal:" + std::to_string(ordinal);
+    }
+  }
+  return {};
+}
+
 bool DirectPhysicalMgaCowRequested(const DirectPhysicalBulkAppendRequest& request) {
   const std::string value = DirectOptionValue(request, "physical_mga_cow");
   if (value.empty()) {
@@ -1557,7 +1712,8 @@ struct DirectPhysicalMgaCowWriteResult {
 
 DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     const DirectPhysicalBulkAppendRequest& request,
-    const std::vector<CrudRowVersionRecord>& staged_rows) {
+    const std::vector<CrudRowVersionRecord>& staged_rows,
+    bool engine_generated_row_uuids) {
   DirectPhysicalMgaCowWriteResult result;
   if (!DirectPhysicalMgaCowRequested(request)) {
     result.evidence.push_back({"direct_physical_bulk_row_page_writer", "disabled"});
@@ -1580,10 +1736,18 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
 
   const std::uint64_t base_page =
       DirectOptionU64(request, "physical_mga_cow.page_number", 1024);
+  const std::uint64_t requested_rows_per_page =
+      DirectOptionU64(request, "physical_mga_cow.rows_per_page", 0);
   const std::uint64_t rows_per_page =
-      DirectOptionU64(request, "physical_mga_cow.rows_per_page", 16);
+      requested_rows_per_page == 0
+          ? DefaultDirectPhysicalRowsPerPage(request, staged_rows)
+          : requested_rows_per_page;
   const std::uint64_t row_offset =
       DirectOptionU64(request, "physical_mga_cow.row_offset", 0);
+  scratchbird::storage::database::PhysicalMgaCowMutationBatchRequest batch;
+  batch.sync_once_after_pages = true;
+  batch.append_only_unique_insert_rows = engine_generated_row_uuids;
+  batch.mutations.reserve(staged_rows.size());
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];
     const std::uint64_t absolute_index =
@@ -1603,30 +1767,49 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     cow.begin_unix_epoch_millis = 0;
     cow.stable_slot_id = static_cast<std::uint32_t>(absolute_index + 1);
     cow.cells = DirectPhysicalCells(row.values);
-    const auto written =
-        scratchbird::storage::database::WritePhysicalMgaCowUnpublishedMutation(cow);
-    if (!written.ok()) {
-      result.ok = false;
-      result.diagnostic = MakeEngineApiDiagnostic(
-          written.diagnostic.diagnostic_code.empty()
-              ? "SB-IPAR-PHYSICAL-MGA-COW-WRITE-FAILED"
-              : written.diagnostic.diagnostic_code,
-          written.diagnostic.message_key.empty()
-              ? "dml.direct_physical_bulk.physical_mga_cow_failed"
-              : written.diagnostic.message_key,
-          "row=" + row.row_uuid,
-          true);
-      return result;
-    }
-    ++result.written_rows;
-    for (const auto& item : written.evidence) {
-      result.evidence.push_back({"direct_physical_bulk_row_page_evidence", item});
-    }
+    batch.mutations.push_back(std::move(cow));
+  }
+  const auto written =
+      scratchbird::storage::database::WritePhysicalMgaCowUnpublishedMutationBatch(
+          batch);
+  if (!written.ok()) {
+    result.ok = false;
+    result.diagnostic = MakeEngineApiDiagnostic(
+        written.diagnostic.diagnostic_code.empty()
+            ? "SB-IPAR-PHYSICAL-MGA-COW-WRITE-FAILED"
+            : written.diagnostic.diagnostic_code,
+        written.diagnostic.message_key.empty()
+            ? "dml.direct_physical_bulk.physical_mga_cow_failed"
+            : written.diagnostic.message_key,
+        DiagnosticDetail(written.diagnostic).empty()
+            ? "physical_mga_cow_batch"
+            : DiagnosticDetail(written.diagnostic),
+        true);
+    return result;
+  }
+  result.written_rows = written.written_rows;
+  result.evidence.push_back({"direct_physical_bulk_row_page_evidence",
+                             "physical_mga_cow.row_page_written=true"});
+  result.evidence.push_back({"direct_physical_bulk_row_page_evidence",
+                             "physical_mga_cow.existing_active_transaction_verified=true"});
+  result.evidence.push_back({"direct_physical_bulk_row_page_verified_rows",
+                             std::to_string(written.written_rows)});
+  result.evidence.push_back(
+      {"direct_physical_bulk_row_page_existing_active_transaction_verified_rows",
+       std::to_string(written.written_rows)});
+  for (const auto& item : written.evidence) {
+    result.evidence.push_back({"direct_physical_bulk_row_page_evidence", item});
   }
   result.evidence.push_back({"direct_physical_bulk_row_page_writer",
                              "physical_mga_cow"});
   result.evidence.push_back({"direct_physical_bulk_row_page_written_rows",
                              std::to_string(result.written_rows)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_written_pages",
+                             std::to_string(written.written_pages)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_rows_per_page",
+                             std::to_string(rows_per_page)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_append_only_generated_rows",
+                             engine_generated_row_uuids ? "true" : "false"});
   result.evidence.push_back({"direct_physical_bulk_row_page_finality_authority",
                              "false"});
   result.evidence.push_back({"direct_physical_bulk_row_page_visibility_authority",
@@ -1713,6 +1896,16 @@ std::string DirectValueForColumn(
   return {};
 }
 
+std::vector<std::vector<std::pair<std::string, std::string>>> DirectValuesForRows(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  std::vector<std::vector<std::pair<std::string, std::string>>> values;
+  values.reserve(rows.size());
+  for (const auto& row : rows) {
+    values.push_back(row.values);
+  }
+  return values;
+}
+
 template <typename T>
 std::vector<T> ApplySourceOrdinalPermutation(
     const std::vector<T>& source,
@@ -1737,11 +1930,9 @@ struct DirectOrderedIngestSelection {
 
 DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     const DirectPhysicalBulkAppendRequest& request,
-    std::vector<CrudRowVersionRecord>* staged_rows,
-    std::vector<std::vector<std::pair<std::string, std::string>>>* logical_value_batch) {
+    std::vector<CrudRowVersionRecord>* staged_rows) {
   DirectOrderedIngestSelection selection;
-  if (staged_rows == nullptr || logical_value_batch == nullptr ||
-      staged_rows->size() != logical_value_batch->size()) {
+  if (staged_rows == nullptr) {
     selection.ok = false;
     selection.failure_reason = "ordered_ingest_batch_shape_invalid";
     selection.diagnostic = MakeInvalidRequestDiagnostic(
@@ -1765,7 +1956,7 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     row.source_ordinal = static_cast<std::uint64_t>(index);
     row.row_uuid = (*staged_rows)[index].row_uuid;
     row.placement_key =
-        DirectValueForColumn((*logical_value_batch)[index], placement_key_column);
+        DirectValueForColumn((*staged_rows)[index].values, placement_key_column);
     plan_request.rows.push_back(std::move(row));
   }
 
@@ -1835,9 +2026,6 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
       plan.source_ordinals_in_apply_order.size() == staged_rows->size()) {
     *staged_rows = ApplySourceOrdinalPermutation(
         *staged_rows,
-        plan.source_ordinals_in_apply_order);
-    *logical_value_batch = ApplySourceOrdinalPermutation(
-        *logical_value_batch,
         plan.source_ordinals_in_apply_order);
     selection.evidence.push_back({"ordered_ingest_apply_order",
                                   "placement_key"});
@@ -2000,6 +2188,90 @@ EngineApiU64 DirectElapsedMicros(DirectSteadyClock::time_point start,
   return static_cast<EngineApiU64>(
       std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
           .count());
+}
+
+struct DirectBulkPhaseTiming {
+  std::string phase;
+  EngineApiU64 elapsed_us = 0;
+};
+
+std::string DirectTraceJsonEscape(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(ch);
+        break;
+    }
+  }
+  return out;
+}
+
+void AddDirectBulkPhaseTimingEvidence(
+    const std::vector<DirectBulkPhaseTiming>& phases,
+    EngineApiU64 total_us,
+    DirectPhysicalBulkAppendResult* result) {
+  if (result == nullptr) {
+    return;
+  }
+  result->evidence.push_back({"direct_physical_bulk_phase_us_total",
+                              std::to_string(total_us)});
+  for (const auto& phase : phases) {
+    result->evidence.push_back({"direct_physical_bulk_phase_us_" + phase.phase,
+                                std::to_string(phase.elapsed_us)});
+  }
+}
+
+void WriteDirectBulkPhaseTraceIfRequested(
+    const DirectPhysicalBulkAppendRequest& request,
+    const DirectPhysicalBulkAppendResult& result,
+    const std::vector<DirectBulkPhaseTiming>& phases,
+    EngineApiU64 total_us) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_DIRECT_BULK_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  out << "{\"operation_id\":\"dml.direct_physical_bulk_append\""
+      << ",\"table_uuid\":\""
+      << DirectTraceJsonEscape(request.target_table.uuid.canonical) << "\""
+      << ",\"transaction_uuid\":\""
+      << DirectTraceJsonEscape(request.context.transaction_uuid.canonical) << "\""
+      << ",\"local_transaction_id\":" << request.context.local_transaction_id
+      << ",\"rows\":" << result.inserted_rows
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << DirectTraceJsonEscape(phase.phase) << "\":"
+        << phase.elapsed_us;
+  }
+  out << "}}\n";
 }
 
 std::string DirectPreallocationOutcome(
@@ -2332,8 +2604,7 @@ std::string EncodedStrictBulkRow(
 DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
     const DirectPhysicalBulkAppendRequest& request,
     const InsertBatchContext& batch_context,
-    const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
+    const std::vector<CrudRowVersionRecord>& staged_rows) {
   DirectStrictBulkLifecycleResult result;
   if (!batch_context.strict_bulk_load_selected) {
     return result;
@@ -2393,7 +2664,7 @@ DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     scratchbird::core::bulk_load::StrictBulkLoadRow row;
     row.row_uuid = ParseDirectTypedUuid(UuidKind::row, staged_rows[index].row_uuid);
-    row.encoded_row = EncodedStrictBulkRow(logical_value_batch[index]);
+    row.encoded_row = EncodedStrictBulkRow(staged_rows[index].values);
     row.constraints_valid = true;
     row.indexes_valid = true;
     row.domains_valid = true;
@@ -3025,9 +3296,20 @@ DiagnosticRecord MakeInsertPhysicalIntegrationDiagnostic(Status status,
 
 DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     const DirectPhysicalBulkAppendRequest& request) {
+  const auto direct_bulk_total_start = DirectSteadyClock::now();
+  std::vector<DirectBulkPhaseTiming> direct_bulk_phase_timings;
+  auto record_phase = [&](std::string phase,
+                          DirectSteadyClock::time_point start) {
+    direct_bulk_phase_timings.push_back(
+        {std::move(phase), DirectElapsedMicros(start, DirectSteadyClock::now())});
+  };
+
+  auto direct_bulk_phase_start = DirectSteadyClock::now();
   const auto write_result_policy = ResolveWriteResultPolicyOptions(
       request.option_envelopes,
       "dml.direct_physical_bulk_append");
+  record_phase("write_result_policy",
+               direct_bulk_phase_start);
   if (!write_result_policy.ok) {
     auto failure = DirectBulkFailure(
         request,
@@ -3072,9 +3354,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         "direct_physical_lane_duplicate_mode_unsupported");
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto loaded = LoadMgaRelationStoreStateForInsertTarget(
       request.context,
       request.target_table.uuid.canonical);
+  record_phase("relation_state_load",
+               direct_bulk_phase_start);
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
       request.target_table.uuid.canonical,
       "copy_import",
@@ -3086,7 +3371,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              loaded.diagnostic,
                              "mga_relation_store_load_failed");
   }
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  record_phase("crud_state_build",
+               direct_bulk_phase_start);
   const auto table = FindVisibleCrudTable(state,
                                           request.target_table.uuid.canonical,
                                           request.context.local_transaction_id);
@@ -3125,26 +3413,35 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         summary);
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto visible_indexes = VisibleCrudIndexesForTable(
       state,
       request.target_table.uuid.canonical,
       request.context.local_transaction_id);
+  record_phase("visible_index_lookup",
+               direct_bulk_phase_start);
   MgaRelationStorageDescriptor relation_descriptor;
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(
       request.context,
       *table,
       visible_indexes,
       &relation_descriptor);
+  record_phase("relation_descriptor_ready",
+               direct_bulk_phase_start);
   if (descriptor_ready.error) {
     return DirectBulkFailure(request,
                              descriptor_ready,
                              "relation_descriptor_refused");
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const EngineInsertRowsRequest synthetic_insert =
       SyntheticInsertRequestForDirectBulk(request);
   InsertBatchContext batch_context =
       BeginInsertBatchContext(synthetic_insert, state, *table, visible_indexes);
+  record_phase("batch_context_begin",
+               direct_bulk_phase_start);
   if (!batch_context.accepted) {
     const std::string reason = batch_context.fallback_reason.empty()
                                    ? "direct_physical_batch_refused"
@@ -3165,7 +3462,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     AddInsertBatchEvidenceToResult(batch_context, &failure);
     return failure;
   }
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto bulk_validation = ValidateStrictBulkLoadEligibility(batch_context, *table);
+  record_phase("strict_bulk_eligibility",
+               direct_bulk_phase_start);
   if (bulk_validation.error) {
     return DirectBulkFailureWithEvidence(request,
                                          bulk_validation,
@@ -3202,105 +3502,170 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   ConstraintDmlValidationCache constraint_cache;
   std::vector<CrudRowVersionRecord> staged_rows;
   std::vector<CrudRowVersionRecord> returning_rows;
-  std::vector<std::vector<std::pair<std::string, std::string>>> logical_value_batch;
   const bool suppress_payload_rows =
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
+  const bool has_default_validators =
+      batch_context.row_encoder_plan.default_validator_count != 0;
+  const bool has_domain_validators =
+      batch_context.row_encoder_plan.domain_validator_count != 0;
+  const bool has_not_null_validators =
+      batch_context.row_encoder_plan.not_null_validator_count != 0;
+  const bool has_check_validators =
+      batch_context.row_encoder_plan.check_validator_count != 0;
+  const bool has_immediate_row_validators =
+      has_not_null_validators || has_check_validators;
+  const bool can_use_direct_not_null_validation =
+      has_not_null_validators && !has_check_validators;
+  const bool can_use_ordered_row_fast_path =
+      !has_default_validators &&
+      !has_domain_validators &&
+      !has_check_validators;
+  const bool rowset_shared_shape =
+      DirectOptionTruthy(request, "sblr.canonical_rowset_shared_shape");
+  const bool can_use_shared_ordered_row_fast_path =
+      can_use_ordered_row_fast_path &&
+      rowset_shared_shape &&
+      !request.borrowed_input_rows.empty() &&
+      DirectBulkInputMatchesEncoderOrder(request.borrowed_input_rows.front(),
+                                         batch_context.row_encoder_plan);
+  const std::vector<std::size_t> not_null_ordinals =
+      can_use_direct_not_null_validation && can_use_shared_ordered_row_fast_path
+          ? DirectNotNullValidationOrdinals(batch_context.row_encoder_plan)
+          : std::vector<std::size_t>{};
   staged_rows.reserve(request.borrowed_input_rows.size());
   returning_rows.reserve(request.borrowed_input_rows.size());
-  logical_value_batch.reserve(request.borrowed_input_rows.size());
+  constexpr std::size_t kDirectBulkMaxStoredInsertTraceEvents = 128;
+  auto compact_direct_insert_trace = [&batch_context]() {
+    ++batch_context.trace_event_count;
+    ++batch_context.trace_event_compacted_count;
+  };
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   std::size_t row_ordinal = 0;
   for (const auto& input_row : request.borrowed_input_rows) {
-    AddInsertTrace(&batch_context,
-                   "direct_physical_bulk.row.convert",
-                   "row",
-                   std::to_string(batch_context.actual_row_count));
-	    PreparedInsertRow prepared =
-	        PrepareInsertRowForBatch(synthetic_insert,
-	                                 input_row,
-	                                 batch_context.row_template,
-	                                 batch_context.row_encoder_plan);
+    if (batch_context.trace_events.size() <
+        kDirectBulkMaxStoredInsertTraceEvents) {
+      AddInsertTrace(&batch_context,
+                     "direct_physical_bulk.row.convert",
+                     "row",
+                     std::to_string(batch_context.actual_row_count));
+    } else {
+      compact_direct_insert_trace();
+    }
+    PreparedInsertRow prepared =
+        can_use_shared_ordered_row_fast_path
+            ? PrepareDirectBulkOrderedRowFast(synthetic_insert,
+                                              input_row,
+                                              batch_context.row_template,
+                                              uuid_batch.row_uuids[row_ordinal])
+            : can_use_ordered_row_fast_path &&
+                DirectBulkInputMatchesEncoderOrder(input_row,
+                                                   batch_context.row_encoder_plan)
+                  ? PrepareDirectBulkOrderedRowFast(synthetic_insert,
+                                                    input_row,
+                                                    batch_context.row_template,
+                                                    uuid_batch.row_uuids[row_ordinal])
+                  : PrepareInsertRowForBatch(synthetic_insert,
+                                             input_row,
+                                             batch_context.row_template,
+                                             batch_context.row_encoder_plan);
     prepared.row_uuid = uuid_batch.row_uuids[row_ordinal];
-    auto values = prepared.values;
-    const auto default_validation =
-        ApplyConstraintDefaultsForInsert(request.context, *table, values);
-    if (!default_validation.ok) {
-      return DirectBulkFailure(request,
-                               default_validation.diagnostic,
-                               "constraint_default_refused");
-    }
-    values = default_validation.values;
-    result.evidence.insert(result.evidence.end(),
-                           default_validation.evidence.begin(),
-                           default_validation.evidence.end());
-
-    const auto domain_validation = ApplyDomainRulesToCrudValues(
-        request.context,
-        table->columns,
-        values,
-        request.context.local_transaction_id,
-        &constraint_cache);
-    if (!domain_validation.ok) {
-      return DirectBulkFailure(request,
-                               domain_validation.diagnostic,
-                               "domain_validation_refused");
-    }
-    values = domain_validation.values;
-    result.evidence.insert(result.evidence.end(),
-                           domain_validation.evidence.begin(),
-                           domain_validation.evidence.end());
-
+    auto values = std::move(prepared.values);
     ConstraintDmlValidationOptions direct_constraint_options;
     direct_constraint_options.validate_unique_constraints = false;
     direct_constraint_options.validate_foreign_key_constraints = false;
-    const auto constraint_validation = ValidateImmediateRowConstraintsWithOptions(
-        request.context,
-        state,
-        *table,
-        prepared.row_uuid,
-        values,
-        "insert",
-        direct_constraint_options,
-        &constraint_cache);
-    if (!constraint_validation.ok) {
-      return DirectBulkFailure(request,
-                               constraint_validation.diagnostic,
-                               "constraint_validation_refused");
-    }
-    values = constraint_validation.values;
-    result.evidence.insert(result.evidence.end(),
-                           constraint_validation.evidence.begin(),
-                           constraint_validation.evidence.end());
+    bool values_mutated_by_validation = false;
 
-    const auto descriptor_revalidation =
-        ValidateImmediateRowConstraintsWithOptions(request.context,
-                                                   state,
-                                                   *table,
-                                                   prepared.row_uuid,
-                                                   constraint_validation.values,
-                                                   "insert",
-                                                   direct_constraint_options,
-                                                   &constraint_cache);
-    if (!descriptor_revalidation.ok) {
-      return DirectBulkFailure(request,
-                               descriptor_revalidation.diagnostic,
-                               "constraint_descriptor_revalidation_refused");
+    const bool default_requested =
+        std::any_of(values.begin(), values.end(), [](const auto& field) {
+          return field.second == "<DEFAULT>";
+        });
+    if (has_default_validators || default_requested) {
+      const auto default_validation =
+          ApplyConstraintDefaultsForInsert(request.context, *table, values);
+      if (!default_validation.ok) {
+        return DirectBulkFailure(request,
+                                 default_validation.diagnostic,
+                                 "constraint_default_refused");
+      }
+      values = default_validation.values;
+      values_mutated_by_validation = true;
+      result.evidence.insert(result.evidence.end(),
+                             default_validation.evidence.begin(),
+                             default_validation.evidence.end());
     }
-    result.evidence.insert(result.evidence.end(),
-                           descriptor_revalidation.evidence.begin(),
-                           descriptor_revalidation.evidence.end());
 
-    prepared.values = descriptor_revalidation.values;
-    prepared.encoded_bytes =
-        static_cast<EngineApiU64>(EncodedValueBytes(prepared.values));
-    prepared.toast_required =
-        prepared.encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
-        InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
-    const auto memory_validation = ValidateInsertBatchMemoryBudget(
-        batch_context,
+    if (has_domain_validators) {
+      const auto domain_validation = ApplyDomainRulesToCrudValues(
+          request.context,
+          table->columns,
+          values,
+          request.context.local_transaction_id,
+          &constraint_cache);
+      if (!domain_validation.ok) {
+        return DirectBulkFailure(request,
+                                 domain_validation.diagnostic,
+                                 "domain_validation_refused");
+      }
+      values = domain_validation.values;
+      values_mutated_by_validation = true;
+      result.evidence.insert(result.evidence.end(),
+                             domain_validation.evidence.begin(),
+                             domain_validation.evidence.end());
+    }
+
+    if (can_use_direct_not_null_validation) {
+      const std::string not_null_failure =
+          can_use_shared_ordered_row_fast_path
+              ? DirectNotNullValidationFailureOrdered(
+                    batch_context.row_encoder_plan, values, not_null_ordinals)
+              : DirectNotNullValidationFailure(batch_context.row_encoder_plan,
+                                               values);
+      if (!not_null_failure.empty()) {
+        return DirectBulkFailure(
+            request,
+            MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                         "not_null_validation_refused"),
+            "not_null_validation_refused:" + not_null_failure);
+      }
+    } else if (has_immediate_row_validators) {
+      const auto constraint_validation = ValidateImmediateRowConstraintsWithOptions(
+          request.context,
+          state,
+          *table,
+          prepared.row_uuid,
+          values,
+          "insert",
+          direct_constraint_options,
+          &constraint_cache);
+      if (!constraint_validation.ok) {
+        return DirectBulkFailure(request,
+                                 constraint_validation.diagnostic,
+                                 "constraint_validation_refused");
+      }
+      values = constraint_validation.values;
+      values_mutated_by_validation = true;
+      result.evidence.insert(result.evidence.end(),
+                             constraint_validation.evidence.begin(),
+                             constraint_validation.evidence.end());
+    }
+
+    prepared.values = std::move(values);
+    if (values_mutated_by_validation) {
+      prepared.encoded_bytes =
+          static_cast<EngineApiU64>(EncodedValueBytes(prepared.values));
+      prepared.toast_required =
+          prepared.encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
+          InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
+    }
+    const std::uint64_t projected_memory_bytes =
         prepared.toast_required ? batch_context.row_template.max_inline_encoded_bytes
-                                : prepared.encoded_bytes);
-    if (memory_validation.error) {
+                                : prepared.encoded_bytes;
+    if (!batch_context.memory_policy.spill_allowed &&
+        projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
+      const auto memory_validation = ValidateInsertBatchMemoryBudget(
+          batch_context,
+          projected_memory_bytes);
       return DirectBulkFailure(request,
                                memory_validation,
                                "insert_batch_memory_budget_refused");
@@ -3321,23 +3686,31 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     row_record.temporary_session_uuid =
         table->temporary ? request.context.session_uuid.canonical : "";
     row_record.deleted = false;
-    row_record.values = prepared.values;
-    AddInsertTrace(&batch_context,
-                   "direct_physical_bulk.row.stage",
-                   "stage",
-                   prepared.row_uuid);
+    row_record.values = std::move(prepared.values);
+    if (batch_context.trace_events.size() <
+        kDirectBulkMaxStoredInsertTraceEvents) {
+      AddInsertTrace(&batch_context,
+                     "direct_physical_bulk.row.stage",
+                     "stage",
+                     prepared.row_uuid);
+    } else {
+      compact_direct_insert_trace();
+    }
     staged_rows.push_back(std::move(row_record));
-    logical_value_batch.push_back(std::move(prepared.values));
     ++row_ordinal;
   }
+  record_phase("row_stage_validate",
+               direct_bulk_phase_start);
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto constraint_proof = BuildDirectBulkConstraintProof(
       request,
       state,
       *table,
       visible_indexes,
-      staged_rows,
-      logical_value_batch);
+      staged_rows);
+  record_phase("constraint_proof",
+               direct_bulk_phase_start);
   if (!constraint_proof.ok) {
     return DirectBulkFailureWithEvidence(request,
                                          constraint_proof.diagnostic,
@@ -3352,12 +3725,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       DirectUniqueIndexProbeCount(visible_indexes, staged_rows.size());
 
   const auto synchronous_indexes = DirectSynchronousIndexes(batch_context);
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto sorted_index_build = BuildDirectSortedBulkIndexArtifacts(
       request,
       state,
       synchronous_indexes,
-      staged_rows,
-      logical_value_batch);
+      staged_rows);
+  record_phase("sorted_index_build",
+               direct_bulk_phase_start);
   if (!sorted_index_build.ok) {
     auto evidence = result.evidence;
     evidence.insert(evidence.end(),
@@ -3373,8 +3748,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          sorted_index_build.evidence.begin(),
                          sorted_index_build.evidence.end());
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   auto ordered_ingest =
-      ApplyDirectOrderedIngestPlan(request, &staged_rows, &logical_value_batch);
+      ApplyDirectOrderedIngestPlan(request, &staged_rows);
+  record_phase("ordered_ingest",
+               direct_bulk_phase_start);
   if (!ordered_ingest.ok) {
     return DirectBulkFailureWithEvidence(request,
                                          ordered_ingest.diagnostic,
@@ -3396,6 +3774,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       "direct_physical_bulk.row_data");
   const EngineApiU64 row_allocation_elapsed =
       DirectElapsedMicros(row_allocation_start, DirectSteadyClock::now());
+  direct_bulk_phase_timings.push_back({"row_page_allocation",
+                                       row_allocation_elapsed});
   if (!row_allocation.ok()) {
     AddDirectAllocationResourceSummary(
         row_allocation,
@@ -3463,10 +3843,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       request.option_envelopes,
       state,
       request.target_table.uuid.canonical,
-      logical_value_batch,
+      staged_rows,
       "direct_physical_bulk.index");
   const EngineApiU64 index_allocation_elapsed =
       DirectElapsedMicros(index_allocation_start, DirectSteadyClock::now());
+  direct_bulk_phase_timings.push_back({"index_page_allocation",
+                                       index_allocation_elapsed});
   if (!index_allocation.ok()) {
     AddDirectAllocationResourceSummary(index_allocation,
                                        "index",
@@ -3530,27 +3912,66 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                     &result);
   }
 
-  for (std::size_t index = 0; index < staged_rows.size(); ++index) {
-    auto storage_values = logical_value_batch[index];
-    const auto large_value_persisted = PersistMgaLargeValuesForRow(
+  direct_bulk_phase_start = DirectSteadyClock::now();
+  const bool force_large_values =
+      InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
+  bool large_value_persistence_required = false;
+  for (const auto& row : staged_rows) {
+    if (force_large_values ||
+        EncodedValueBytes(row.values) > kCrudVerticalSliceMaxEncodedValueBytes) {
+      large_value_persistence_required = true;
+      break;
+    }
+  }
+  if (large_value_persistence_required) {
+    std::vector<std::vector<std::pair<std::string, std::string>>> storage_value_batch =
+        DirectValuesForRows(staged_rows);
+    std::vector<MgaLargeValuePersistBatchRowInput> large_value_rows;
+    large_value_rows.reserve(staged_rows.size());
+    for (std::size_t index = 0; index < staged_rows.size(); ++index) {
+      large_value_rows.push_back(
+          {request.target_table.uuid.canonical,
+           staged_rows[index].row_uuid,
+           staged_rows[index].version_uuid,
+           force_large_values ||
+               EncodedValueBytes(storage_value_batch[index]) >
+                   kCrudVerticalSliceMaxEncodedValueBytes,
+           &storage_value_batch[index]});
+    }
+    MgaLargeValuePersistBatchCounters large_value_counters;
+    const auto large_value_persisted = PersistMgaLargeValuesForRows(
         request.context,
-        request.target_table.uuid.canonical,
-        staged_rows[index].row_uuid,
-        staged_rows[index].version_uuid,
-        EncodedValueBytes(storage_values) > kCrudVerticalSliceMaxEncodedValueBytes ||
-            InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true"),
-        &storage_values,
+        large_value_rows,
+        &large_value_counters,
         &result.evidence);
     if (large_value_persisted.error) {
       return DirectBulkFailure(request,
                                large_value_persisted,
                                "large_value_persistence_refused");
     }
-    staged_rows[index].values = std::move(storage_values);
+    for (std::size_t index = 0; index < staged_rows.size(); ++index) {
+      staged_rows[index].values = std::move(storage_value_batch[index]);
+    }
+    result.evidence.push_back({"mga_large_value_batch_rows_seen",
+                               std::to_string(large_value_counters.rows_seen)});
   }
+  record_phase("large_value_scan_persist",
+               direct_bulk_phase_start);
 
+  DirectPhysicalBulkAppendRequest physical_write_request = request;
+  if (relation_descriptor.page_size != 0 &&
+      DirectOptionValue(physical_write_request, "physical_mga_cow.page_size_bytes").empty()) {
+    physical_write_request.option_envelopes.push_back(
+        "physical_mga_cow.page_size_bytes:" +
+        std::to_string(relation_descriptor.page_size));
+  }
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto row_page_write =
-      WriteDirectPhysicalMgaCowRows(request, staged_rows);
+      WriteDirectPhysicalMgaCowRows(physical_write_request,
+                                    staged_rows,
+                                    uuid_batch.caller_row_uuids == 0);
+  record_phase("physical_cow_write",
+               direct_bulk_phase_start);
   result.evidence.insert(result.evidence.end(),
                          row_page_write.evidence.begin(),
                          row_page_write.evidence.end());
@@ -3569,11 +3990,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                row_page_write.diagnostic.detail});
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   auto strict_lifecycle = RunDirectStrictBulkLifecycle(
       request,
       batch_context,
-      staged_rows,
-      logical_value_batch);
+      staged_rows);
+  record_phase("strict_bulk_lifecycle",
+               direct_bulk_phase_start);
   if (!strict_lifecycle.ok) {
     return DirectBulkFailureWithEvidence(request,
                                          strict_lifecycle.diagnostic,
@@ -3604,6 +4027,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         "strict_bulk_load_physical_publication_failed",
         "row_append");
   }
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto rows_appended =
       IparFaultPointRequested(request.option_envelopes, "row_append")
           ? IparFaultDiagnostic("dml.direct_physical_bulk_append",
@@ -3636,6 +4060,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              "mga_row_append_refused");
   }
   const auto rows_flushed = hot_append.FlushRowVersions();
+  record_phase("mga_row_append_flush",
+               direct_bulk_phase_start);
   if (rows_flushed.error) {
     if (strict_lifecycle.active) {
       return DirectStrictPhysicalPublicationFailure(request,
@@ -3650,33 +4076,49 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              "mga_row_flush_refused");
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   std::vector<MgaIndexEntryRowInput> index_rows;
   index_rows.reserve(staged_rows.size());
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];
-    AddInsertTrace(&batch_context,
-                   "direct_physical_bulk.row.write",
-                   "write",
-                   row.row_uuid);
-    AddInsertTrace(&batch_context,
-                   "direct_physical_bulk.index.maintain",
-                   "index",
-                   row.row_uuid);
+    if (batch_context.trace_events.size() <
+        kDirectBulkMaxStoredInsertTraceEvents) {
+      AddInsertTrace(&batch_context,
+                     "direct_physical_bulk.row.write",
+                     "write",
+                     row.row_uuid);
+    } else {
+      compact_direct_insert_trace();
+    }
+    if (batch_context.trace_events.size() <
+        kDirectBulkMaxStoredInsertTraceEvents) {
+      AddInsertTrace(&batch_context,
+                     "direct_physical_bulk.index.maintain",
+                     "index",
+                     row.row_uuid);
+    } else {
+      compact_direct_insert_trace();
+    }
     index_rows.push_back({row.row_uuid,
                           row.version_uuid,
-                          logical_value_batch[index]});
+                          row.values});
     auto row_delta_entries =
-        DirectDeltaEntries(batch_context, row, logical_value_batch[index]);
+        DirectDeltaEntries(batch_context, row, row.values);
     delta_entries.insert(delta_entries.end(),
                          std::make_move_iterator(row_delta_entries.begin()),
                          std::make_move_iterator(row_delta_entries.end()));
   }
+  record_phase("index_row_delta_build",
+               direct_bulk_phase_start);
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
       request.context,
       delta_entries,
       &result.evidence);
+  record_phase("secondary_index_delta_append",
+               direct_bulk_phase_start);
   if (delta_appended.error) {
     if (strict_lifecycle.active) {
       return DirectStrictPhysicalPublicationFailure(
@@ -3693,8 +4135,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
 
   if (!sorted_index_build.exact_batches.empty()) {
+    direct_bulk_phase_start = DirectSteadyClock::now();
     const auto exact_appended = hot_append.AppendExactIndexEntryBatches(
         sorted_index_build.exact_batches);
+    record_phase("sorted_exact_index_append",
+                 direct_bulk_phase_start);
     if (exact_appended.error) {
       if (strict_lifecycle.active) {
         return DirectStrictPhysicalPublicationFailure(request,
@@ -3724,11 +4169,79 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
   }
 
-  const auto index_apply_plan = PlanLocalityAwareIndexApplyBatches(
-      DirectIndexAppendBatches(sorted_index_build.retail_indexes,
-                               request.target_table.uuid.canonical,
-                               index_rows));
-  if (!sorted_index_build.retail_indexes.empty()) {
+  if (!sorted_index_build.retail_indexes.empty() &&
+      DirectPrecomputedRetailIndexEntriesEnabled(request)) {
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    const auto precomputed_index_apply =
+        DirectPrecomputedIndexAppendBatches(sorted_index_build.retail_indexes,
+                                            request.target_table.uuid.canonical,
+                                            index_rows);
+    result.evidence.push_back({"index_apply_planner",
+                               "precomputed_exact_entries_v1"});
+    result.evidence.push_back({"index_apply_grouping_before_append",
+                               "true"});
+    result.evidence.push_back({"index_apply_precomputed_entry_count",
+                               std::to_string(precomputed_index_apply.entry_count)});
+    result.evidence.push_back({"mga_finality_authority",
+                               "engine_transaction_inventory"});
+    record_phase("index_apply_plan",
+                 direct_bulk_phase_start);
+    if (IparFaultPointRequested(request.option_envelopes, "index_append")) {
+      std::vector<EngineEvidenceReference> evidence = result.evidence;
+      AppendIparFaultEvidence(&evidence,
+                              "index_append",
+                              "rollback_required_after_direct_physical_row_append_before_index_append");
+      evidence.push_back({"ipar_fault_injection_row_versions_staged",
+                          std::to_string(staged_rows.size())});
+      return DirectBulkFailureWithEvidence(
+          request,
+          IparFaultDiagnostic("dml.direct_physical_bulk_append",
+                              "index_append",
+                              "phase=direct_physical_index_append"),
+          "ipar_fault_injection_index_append",
+          evidence,
+          result.dml_summary);
+    }
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    const auto index_appended = hot_append.AppendExactIndexEntryBatches(
+        precomputed_index_apply.exact_batches);
+    if (index_appended.error) {
+      if (strict_lifecycle.active) {
+        return DirectStrictPhysicalPublicationFailure(request,
+                                                      &strict_lifecycle,
+                                                      result,
+                                                      index_appended,
+                                                      "mga_index_append_refused",
+                                                      "index_append");
+      }
+      return DirectBulkFailure(request,
+                               index_appended,
+                               "mga_index_append_refused");
+    }
+    const auto index_flushed = hot_append.FlushIndexEntries();
+    record_phase("retail_index_append_flush",
+                 direct_bulk_phase_start);
+    if (index_flushed.error) {
+      if (strict_lifecycle.active) {
+        return DirectStrictPhysicalPublicationFailure(request,
+                                                      &strict_lifecycle,
+                                                      result,
+                                                      index_flushed,
+                                                      "mga_index_flush_refused",
+                                                      "index_flush");
+      }
+      return DirectBulkFailure(request,
+                               index_flushed,
+                               "mga_index_flush_refused");
+    }
+  } else if (!sorted_index_build.retail_indexes.empty()) {
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    const auto index_apply_plan = PlanLocalityAwareIndexApplyBatches(
+        DirectIndexAppendBatches(sorted_index_build.retail_indexes,
+                                 request.target_table.uuid.canonical,
+                                 index_rows));
+    record_phase("index_apply_plan",
+                 direct_bulk_phase_start);
     if (index_apply_plan.diagnostic.error) {
       if (strict_lifecycle.active) {
         return DirectStrictPhysicalPublicationFailure(
@@ -3744,60 +4257,76 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "index_apply_locality_plan_refused");
     }
     AddLocalityAwareIndexApplyEvidence(index_apply_plan, &result.evidence);
-  }
-  if (IparFaultPointRequested(request.option_envelopes, "index_append")) {
-    std::vector<EngineEvidenceReference> evidence = result.evidence;
-    AppendIparFaultEvidence(&evidence,
-                            "index_append",
-                            "rollback_required_after_direct_physical_row_append_before_index_append");
-    evidence.push_back({"ipar_fault_injection_row_versions_staged",
-                        std::to_string(staged_rows.size())});
-    return DirectBulkFailureWithEvidence(
-        request,
-        IparFaultDiagnostic("dml.direct_physical_bulk_append",
-                            "index_append",
-                            "phase=direct_physical_index_append"),
-        "ipar_fault_injection_index_append",
-        evidence,
-        result.dml_summary);
-  }
-  const auto index_appended = hot_append.AppendIndexEntryBatches(
-      index_apply_plan.batches);
-  if (index_appended.error) {
-    if (strict_lifecycle.active) {
-      return DirectStrictPhysicalPublicationFailure(request,
-                                                    &strict_lifecycle,
-                                                    result,
-                                                    index_appended,
-                                                    "mga_index_append_refused",
-                                                    "index_append");
+    if (IparFaultPointRequested(request.option_envelopes, "index_append")) {
+      std::vector<EngineEvidenceReference> evidence = result.evidence;
+      AppendIparFaultEvidence(&evidence,
+                              "index_append",
+                              "rollback_required_after_direct_physical_row_append_before_index_append");
+      evidence.push_back({"ipar_fault_injection_row_versions_staged",
+                          std::to_string(staged_rows.size())});
+      return DirectBulkFailureWithEvidence(
+          request,
+          IparFaultDiagnostic("dml.direct_physical_bulk_append",
+                              "index_append",
+                              "phase=direct_physical_index_append"),
+          "ipar_fault_injection_index_append",
+          evidence,
+          result.dml_summary);
     }
-    return DirectBulkFailure(request,
-                             index_appended,
-                             "mga_index_append_refused");
-  }
-  const auto index_flushed = hot_append.FlushIndexEntries();
-  if (index_flushed.error) {
-    if (strict_lifecycle.active) {
-      return DirectStrictPhysicalPublicationFailure(request,
-                                                    &strict_lifecycle,
-                                                    result,
-                                                    index_flushed,
-                                                    "mga_index_flush_refused",
-                                                    "index_flush");
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    const auto index_appended = hot_append.AppendIndexEntryBatches(
+        index_apply_plan.batches);
+    if (index_appended.error) {
+      if (strict_lifecycle.active) {
+        return DirectStrictPhysicalPublicationFailure(request,
+                                                      &strict_lifecycle,
+                                                      result,
+                                                      index_appended,
+                                                      "mga_index_append_refused",
+                                                      "index_append");
+      }
+      return DirectBulkFailure(request,
+                               index_appended,
+                               "mga_index_append_refused");
     }
-    return DirectBulkFailure(request,
-                             index_flushed,
-                             "mga_index_flush_refused");
+    const auto index_flushed = hot_append.FlushIndexEntries();
+    record_phase("retail_index_append_flush",
+                 direct_bulk_phase_start);
+    if (index_flushed.error) {
+      if (strict_lifecycle.active) {
+        return DirectStrictPhysicalPublicationFailure(request,
+                                                      &strict_lifecycle,
+                                                      result,
+                                                      index_flushed,
+                                                      "mga_index_flush_refused",
+                                                      "index_flush");
+      }
+      return DirectBulkFailure(request,
+                               index_flushed,
+                               "mga_index_flush_refused");
+    }
+  } else {
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    result.evidence.push_back({"retail_index_append_skipped",
+                               "all_synchronous_indexes_exact_sorted_bulk"});
+    record_phase("index_apply_plan",
+                 direct_bulk_phase_start);
+    direct_bulk_phase_start = DirectSteadyClock::now();
+    record_phase("retail_index_append_flush",
+                 direct_bulk_phase_start);
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   result = PublishDirectStrictBulkAfterPhysicalSuccess(request,
                                                        &strict_lifecycle,
                                                        std::move(result));
+  record_phase("strict_bulk_publish",
+               direct_bulk_phase_start);
   if (!result.ok) {
     return result;
   }
 
+  direct_bulk_phase_start = DirectSteadyClock::now();
   const auto hot_counters = hot_append.counters();
   if (hot_counters.row_versions_appended != 0) {
     ++result.dml_summary.append_calls;
@@ -3824,7 +4353,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       returning_row.row_uuid = row.row_uuid;
       returning_row.version_uuid = row.version_uuid;
       returning_row.deleted = false;
-      returning_row.values = logical_value_batch[index];
+      returning_row.values = row.values;
       returning_rows.push_back(std::move(returning_row));
       result.row_uuids.push_back({row.row_uuid});
     }
@@ -3868,6 +4397,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   AddHotAppendCounterEvidence(hot_counters, &result);
   AddInsertBatchEvidenceToResult(batch_context, &result);
   AddDmlSummaryEvidence(&result);
+  record_phase("result_finalize",
+               direct_bulk_phase_start);
+  const EngineApiU64 direct_bulk_total_us =
+      DirectElapsedMicros(direct_bulk_total_start, DirectSteadyClock::now());
+  AddDirectBulkPhaseTimingEvidence(direct_bulk_phase_timings,
+                                   direct_bulk_total_us,
+                                   &result);
+  WriteDirectBulkPhaseTraceIfRequested(request,
+                                       result,
+                                       direct_bulk_phase_timings,
+                                       direct_bulk_total_us);
   ApplyWriteResultPolicy(write_result_policy, &result);
   RecordInsertBatchMetric(batch_context,
                           "sb_dml_insert_batch_started_total",

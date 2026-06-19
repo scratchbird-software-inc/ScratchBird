@@ -35,6 +35,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -332,6 +333,95 @@ std::string JsonEscape(std::string_view input) {
     }
   }
   return out.str();
+}
+
+using ServerDispatchPhaseClock = std::chrono::steady_clock;
+
+std::uint64_t ServerDispatchElapsedMicros(ServerDispatchPhaseClock::time_point start,
+                                          ServerDispatchPhaseClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count());
+}
+
+struct ServerDispatchPhaseTiming {
+  std::string phase;
+  std::uint64_t elapsed_us = 0;
+};
+
+void WriteServerDispatchPhaseTraceIfRequested(
+    std::string_view operation_id,
+    std::uint64_t envelope_bytes,
+    std::uint64_t rows,
+    bool ok,
+    const std::vector<ServerDispatchPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SERVER_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"operation_id\":\"" << JsonEscape(operation_id) << "\""
+      << ",\"envelope_bytes\":" << envelope_bytes
+      << ",\"rows\":" << rows
+      << ",\"ok\":" << (ok ? "true" : "false")
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << JsonEscape(phase.phase) << "\":" << phase.elapsed_us;
+  }
+  out << "}}\n";
+}
+
+void WriteServerExecutePhaseTraceIfRequested(
+    std::string_view operation_id,
+    std::uint64_t request_payload_bytes,
+    std::uint64_t encoded_bytes,
+    std::uint64_t rows,
+    bool ok,
+    const std::vector<ServerDispatchPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SERVER_EXECUTE_SBLR_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"operation_id\":\"" << JsonEscape(operation_id) << "\""
+      << ",\"request_payload_bytes\":" << request_payload_bytes
+      << ",\"encoded_bytes\":" << encoded_bytes
+      << ",\"rows\":" << rows
+      << ",\"ok\":" << (ok ? "true" : "false")
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << JsonEscape(phase.phase) << "\":" << phase.elapsed_us;
+  }
+  out << "}}\n";
 }
 
 std::string EscapeOperationOperandField(std::string_view value) {
@@ -2546,6 +2636,72 @@ std::string JoinUuidList(const std::vector<std::array<std::uint8_t, 16>>& values
   return out;
 }
 
+void AppendSessionSecurityOperands(const ServerSessionRecord& session,
+                                   std::string* operation_envelope) {
+  if (operation_envelope == nullptr) return;
+  auto append_non_empty = [operation_envelope](std::string_view name,
+                                               const std::string& value) {
+    if (value.empty()) return;
+    AppendOperationOperand(operation_envelope, name, value);
+  };
+  append_non_empty("principal_name", session.principal_claim);
+  append_non_empty("requested_role_name", session.requested_role_name);
+  append_non_empty("active_role_name", session.requested_role_name);
+  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
+    append_non_empty("current_role_uuid", UuidBytesToText(session.active_role_uuid));
+  }
+  append_non_empty("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
+  append_non_empty("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
+  for (const auto& tag : session.engine_authorization_trace_tags) {
+    append_non_empty("authorization_tag", tag);
+  }
+}
+
+std::size_t FirstOperandLineOffset(std::string_view encoded) {
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    if (line.starts_with("operand=")) {
+      return start;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::string_view::npos;
+}
+
+bool CanUseNativeBulkPublicAbiFastPath(std::string_view encoded,
+                                       std::string_view operation_id,
+                                       std::string_view virtual_projection) {
+  return operation_id == "dml.execute_native_bulk_ingest" &&
+         virtual_projection.empty() &&
+         !LooksLikeBinarySblrEnvelope(encoded) &&
+         (encoded.find("operand=row_canonical:") != std::string_view::npos ||
+          encoded.find("operand=rowset_canonical:") != std::string_view::npos);
+}
+
+std::string BuildNativeBulkPublicAbiOperationEnvelope(const ServerSessionRecord& session,
+                                                      std::string_view encoded) {
+  const std::size_t first_operand = FirstOperandLineOffset(encoded);
+  if (first_operand == std::string_view::npos) {
+    return {};
+  }
+  std::string operation_envelope;
+  operation_envelope.reserve(encoded.size() + 512);
+  operation_envelope.append(encoded.substr(0, first_operand));
+  if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
+    operation_envelope.push_back('\n');
+  }
+  AppendSessionSecurityOperands(session, &operation_envelope);
+  operation_envelope.append(encoded.substr(first_operand));
+  if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
+    operation_envelope.push_back('\n');
+  }
+  return operation_envelope;
+}
+
 void ApplyBeginTransactionResultToSession(
     const engine_api::EngineBeginTransactionResult& result,
     ServerSessionRecord* session) {
@@ -2967,7 +3123,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
                                          std::string_view operation_family) {
   std::string_view dispatch_operation_id = operation_id;
   std::string_view dispatch_operation_family = operation_family;
-  const std::string virtual_projection = ServerVirtualProjectionForTarget(encoded);
+  const std::string virtual_projection =
+      operation_id == "dml.select_rows" ? ServerVirtualProjectionForTarget(encoded) : std::string{};
   if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty()) {
     return std::string(encoded);
   }
@@ -2980,6 +3137,38 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   }
   const char* opcode = PublicAbiOpcodeForOperation(dispatch_operation_id);
   if (opcode == nullptr) return std::string(encoded);
+
+  auto encode_operation_envelope = [&](const std::string& operation_envelope) {
+    if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
+        trace_path != nullptr && trace_path[0] != '\0') {
+      std::ofstream trace(trace_path, std::ios::app);
+      if (trace) {
+        trace << "----- " << CurrentUtcTimestampText() << " -----\n";
+        trace << operation_envelope;
+        if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
+          trace << '\n';
+        }
+      }
+    }
+
+    const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
+                            .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)
+                            .append_bytes(
+                                reinterpret_cast<const std::uint8_t*>(operation_envelope.data()),
+                                operation_envelope.size())
+                            .encode();
+    return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
+  };
+
+  if (CanUseNativeBulkPublicAbiFastPath(encoded,
+                                        dispatch_operation_id,
+                                        virtual_projection)) {
+    const std::string native_bulk_operation_envelope =
+        BuildNativeBulkPublicAbiOperationEnvelope(session, encoded);
+    if (!native_bulk_operation_envelope.empty()) {
+      return encode_operation_envelope(native_bulk_operation_envelope);
+    }
+  }
 
   std::string operation_envelope;
   operation_envelope += "operation_id=";
@@ -3086,26 +3275,12 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       AppendOperationOperand(&operation_envelope, field, value);
     }
   }
+  AppendSessionSecurityOperands(session, &operation_envelope);
   auto append_session_operand = [&operation_envelope](std::string_view name,
                                                       const std::string& value) {
     if (value.empty()) { return; }
-    operation_envelope += "operand=text\t";
-    operation_envelope += name;
-    operation_envelope += "\t";
-    operation_envelope += EscapeOperationOperandField(value);
-    operation_envelope += "\n";
+    AppendOperationOperand(&operation_envelope, name, value);
   };
-  append_session_operand("principal_name", session.principal_claim);
-  append_session_operand("requested_role_name", session.requested_role_name);
-  append_session_operand("active_role_name", session.requested_role_name);
-  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    append_session_operand("current_role_uuid", UuidBytesToText(session.active_role_uuid));
-  }
-  append_session_operand("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
-  append_session_operand("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
-  for (const auto& tag : session.engine_authorization_trace_tags) {
-    append_session_operand("authorization_tag", tag);
-  }
   if (const auto savepoint_name = SavepointOperandForDispatch(encoded, dispatch_operation_id)) {
     operation_envelope += "savepoint_name=";
     operation_envelope += EscapeOperationOperandField(*savepoint_name);
@@ -4063,6 +4238,43 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       }
     }
   }
+  if (dispatch_operation_id == "observability.explain_operation") {
+    constexpr std::string_view kExplainPlanFields[] = {
+        "query_operation", "target_object_uuid", "target_object_kind",
+        "predicate_kind", "predicate_column", "predicate_value",
+        "predicate_value_type", "additional_predicate_kind",
+        "additional_predicate_column", "additional_predicate_value",
+        "additional_predicate_value_type", "order_by", "order_direction",
+        "limit", "offset", "aggregate_function", "aggregate_value_field",
+        "aggregate_value_column", "aggregate_pair_value_field",
+        "aggregate_pair_value_column", "group_key_field", "group_key_column",
+        "having_predicate", "having_threshold", "having_aggregate_function",
+        "having_value_field", "having_value_column", "join_algorithm",
+        "left_key_field", "right_key_field", "left_key_column",
+        "right_key_column", "right_null_filter_field", "partition_by",
+        "partition_column", "window_function", "window_value_field",
+        "window_value_column", "window_n", "window_bucket_count",
+        "set_operation", "set_by_name"};
+    for (const auto field : kExplainPlanFields) {
+      std::string value = JsonTextField(encoded, std::string(field)).value_or(
+          TextLineValue(encoded, std::string(field)).value_or(""));
+      if (value.empty()) {
+        value = JsonPrimitiveField(encoded, field).value_or("");
+      }
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+    for (std::size_t index = 0; index < 16; ++index) {
+      const std::string prefix = "related_object_" + std::to_string(index) + "_";
+      for (const auto suffix : {"uuid", "kind"}) {
+        const std::string field = prefix + suffix;
+        const auto value = JsonTextField(encoded, field).value_or(
+            TextLineValue(encoded, field).value_or(""));
+        if (value.empty()) continue;
+        AppendOperationOperand(&operation_envelope, field, value);
+      }
+    }
+  }
   if (dispatch_operation_id == "query.plan_operation" &&
       (encoded.find("\"query_envelope_kind\":\"values_rowset\"") != std::string_view::npos ||
        encoded.find("query_envelope_kind=values_rowset") != std::string_view::npos)) {
@@ -4424,6 +4636,28 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id == "query.plan_operation" &&
+      (encoded.find("\"query_envelope_kind\":\"table_scalar_aggregate\"") != std::string_view::npos ||
+       encoded.find("query_envelope_kind=table_scalar_aggregate") != std::string_view::npos)) {
+    operation_envelope += "operand=text\texecute\ttrue\n";
+    operation_envelope += "operand=text\tquery_operation\taggregate_scalar\n";
+    constexpr std::string_view kScalarAggregateFields[] = {
+        "target_object_uuid", "target_object_kind",
+        "aggregate_value_field", "aggregate_value_column",
+        "aggregate_function", "result_projection",
+        "assertion_id", "actual_column_name",
+        "expected_column_name", "expected_value"};
+    for (const auto field : kScalarAggregateFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id == "query.plan_operation" &&
       (encoded.find("\"query_envelope_kind\":\"table_count\"") != std::string_view::npos ||
        encoded.find("query_envelope_kind=table_count") != std::string_view::npos)) {
     operation_envelope += "operand=text\texecute\ttrue\n";
@@ -4500,6 +4734,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "result_projection", "aggregate_function",
         "assertion_id", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
+        "expected_value_type", "assertion_value_field",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type", "assignment_column", "assignment_value",
         "assignment_value_type", "assignment_plan",
@@ -4539,24 +4774,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   }
   AppendExistingOperationOperands(encoded, &operation_envelope);
 
-  if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
-      trace_path != nullptr && trace_path[0] != '\0') {
-    std::ofstream trace(trace_path, std::ios::app);
-    if (trace) {
-      trace << "----- " << CurrentUtcTimestampText() << " -----\n";
-      trace << operation_envelope;
-      if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
-        trace << '\n';
-      }
-    }
-  }
-
-  const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
-                          .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)
-                          .append_bytes(reinterpret_cast<const std::uint8_t*>(operation_envelope.data()),
-                                        operation_envelope.size())
-                          .encode();
-  return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
+  return encode_operation_envelope(operation_envelope);
 }
 
 void ApplyTransactionResultToSession(std::string_view operation_id,
@@ -4795,8 +5013,13 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
                                                  bool retain_result_handle) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
+  std::vector<ServerDispatchPhaseTiming> phases;
+  auto phase_start = ServerDispatchPhaseClock::now();
   const std::string public_abi_envelope =
       PublicAbiEnvelopeForDispatch(session, encoded, operation_id, operation_family);
+  auto phase_finish = ServerDispatchPhaseClock::now();
+  phases.push_back({"build_public_abi_envelope",
+                    ServerDispatchElapsedMicros(phase_start, phase_finish)});
   sb_engine_open_params_v1_t open_params{};
   open_params.struct_size = sizeof(open_params);
   open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -4804,11 +5027,21 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
   open_params.database_path_size = static_cast<std::uint64_t>(session.database_path.size());
   open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
   sb_engine_handle_t engine = nullptr;
+  phase_start = ServerDispatchPhaseClock::now();
   if (sb_engine_open(&open_params, &engine, nullptr) != SB_ENGINE_STATUS_OK || engine == nullptr) {
+    phase_finish = ServerDispatchPhaseClock::now();
+    phases.push_back({"engine_open", ServerDispatchElapsedMicros(phase_start, phase_finish)});
     dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
     dispatch_result.diagnostic_detail = "engine_open_failed";
+    WriteServerDispatchPhaseTraceIfRequested(operation_id,
+                                             public_abi_envelope.size(),
+                                             dispatch_result.row_count,
+                                             dispatch_result.ok,
+                                             phases);
     return dispatch_result;
   }
+  phase_finish = ServerDispatchPhaseClock::now();
+  phases.push_back({"engine_open", ServerDispatchElapsedMicros(phase_start, phase_finish)});
   sb_engine_session_params_v1_t session_params{};
   session_params.struct_size = sizeof(session_params);
   session_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -4819,8 +5052,11 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
   session_params.default_language_utf8 = "en";
   session_params.default_language_size = 2;
   sb_engine_session_t engine_session = nullptr;
+  phase_start = ServerDispatchPhaseClock::now();
   if (sb_engine_session_begin(engine, &session_params, &engine_session, nullptr) == SB_ENGINE_STATUS_OK &&
       engine_session != nullptr) {
+    phase_finish = ServerDispatchPhaseClock::now();
+    phases.push_back({"session_begin", ServerDispatchElapsedMicros(phase_start, phase_finish)});
     sb_engine_request_context_v1_t context{};
     context.struct_size = sizeof(context);
     context.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -4838,12 +5074,21 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
     dispatch.envelope_bytes = reinterpret_cast<const std::uint8_t*>(public_abi_envelope.data());
     dispatch.envelope_size_bytes = static_cast<std::uint64_t>(public_abi_envelope.size());
     sb_engine_result_t abi_result = nullptr;
+    phase_start = ServerDispatchPhaseClock::now();
     const auto status = sb_engine_dispatch_sblr(engine_session, nullptr, &context, &dispatch, &abi_result);
+    phase_finish = ServerDispatchPhaseClock::now();
+    phases.push_back({"dispatch_sblr", ServerDispatchElapsedMicros(phase_start, phase_finish)});
     dispatch_result.ok = status == SB_ENGINE_STATUS_OK;
     if (abi_result != nullptr) {
+      phase_start = ServerDispatchPhaseClock::now();
       sb_engine_execution_summary_view_v1_t summary{};
       if (sb_engine_result_summary(abi_result, &summary) == SB_ENGINE_STATUS_OK) {
         dispatch_result.row_count = summary.rows_produced;
+      }
+      sb_engine_command_completion_view_v1_t completion{};
+      if (sb_engine_result_completion(abi_result, &completion) == SB_ENGINE_STATUS_OK &&
+          completion.affected_rows != 0) {
+        dispatch_result.row_count = completion.affected_rows;
       }
       if (!dispatch_result.ok || !retain_result_handle) {
         sb_engine_string_view_t payload{};
@@ -4860,6 +5105,9 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
       } else {
         (void)sb_engine_result_release(abi_result);
       }
+      phase_finish = ServerDispatchPhaseClock::now();
+      phases.push_back({"result_materialize_release",
+                        ServerDispatchElapsedMicros(phase_start, phase_finish)});
     }
     if (!dispatch_result.ok && dispatch_result.diagnostic_code.empty()) {
       dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
@@ -4869,12 +5117,25 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& sess
     end_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     end_params.rollback_active_transactions = 1;
     end_params.cancel_open_results = 1;
+    phase_start = ServerDispatchPhaseClock::now();
     (void)sb_engine_session_end(engine_session, &end_params, nullptr);
+    phase_finish = ServerDispatchPhaseClock::now();
+    phases.push_back({"session_end", ServerDispatchElapsedMicros(phase_start, phase_finish)});
   } else {
+    phase_finish = ServerDispatchPhaseClock::now();
+    phases.push_back({"session_begin", ServerDispatchElapsedMicros(phase_start, phase_finish)});
     dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
     dispatch_result.diagnostic_detail = "engine_session_begin_failed";
   }
+  phase_start = ServerDispatchPhaseClock::now();
   (void)sb_engine_close(engine, nullptr);
+  phase_finish = ServerDispatchPhaseClock::now();
+  phases.push_back({"engine_close", ServerDispatchElapsedMicros(phase_start, phase_finish)});
+  WriteServerDispatchPhaseTraceIfRequested(operation_id,
+                                           public_abi_envelope.size(),
+                                           dispatch_result.row_count,
+                                           dispatch_result.ok,
+                                           phases);
   return dispatch_result;
 }
 
@@ -5227,7 +5488,17 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request,
                                          const ServerIparProjectionSourceFactory* ipar_source_factory) {
+  std::vector<ServerDispatchPhaseTiming> execute_phases;
+  auto phase_start = ServerDispatchPhaseClock::now();
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = ServerDispatchPhaseClock::now();
+    execute_phases.push_back(
+        ServerDispatchPhaseTiming{std::move(phase),
+                                  ServerDispatchElapsedMicros(phase_start, now)});
+    phase_start = now;
+  };
   auto decoded = DecodeExecutePayload(request.payload);
+  mark_phase("decode_execute_payload");
   if (!decoded) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                    kSchemaExecuteResultTestV1,
@@ -5237,6 +5508,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                    "execute_invalid");
   }
   ServerSessionRecord* session = FindMutableSession(registry, decoded->session_uuid);
+  mark_phase("session_lookup");
   if (session == nullptr) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                    kSchemaExecuteResultTestV1,
@@ -5250,11 +5522,13 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                                        *session,
                                                        "execute_sblr",
                                                        "sblr.dispatch.pending");
-  std::string encoded = decoded->encoded_sblr_envelope;
+  mark_phase("request_lifecycle_register");
+  std::string encoded = std::move(decoded->encoded_sblr_envelope);
   bool cursor_requested = decoded->cursor_requested;
   const auto prepared_it = registry->prepared_by_uuid.find(UuidBytesToText(decoded->prepared_statement_uuid));
   const ServerPreparedStatementRecord* prepared_statement =
       prepared_it == registry->prepared_by_uuid.end() ? nullptr : &prepared_it->second;
+  mark_phase("payload_move_and_prepared_lookup");
   if (encoded.empty() && prepared_statement == nullptr) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -5304,6 +5578,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     }
   }
   auto admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
+  mark_phase("admit_sblr_envelope");
   if (!admission.admitted) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -5683,9 +5958,9 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                      "The prepared SBLR statement is not available for this session.",
                      detail);
     }
-    encoded = prepared->encoded_sblr_envelope;
-    cursor_requested = cursor_requested || JsonBoolField(decoded->encoded_sblr_envelope,
+    cursor_requested = cursor_requested || JsonBoolField(encoded,
                                                         "prepared_cursor_requested");
+    encoded = prepared->encoded_sblr_envelope;
     LinkServerRequestPreparedStatement(registry,
                                        request_record.request_uuid,
                                        prepared->prepared_statement_uuid);
@@ -6409,25 +6684,45 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   }
   const auto cursor_uuid = cursor_requested ? sbps::MakeUuidV7Bytes() : std::array<std::uint8_t, 16>{};
   const auto request_uuid = request.header.request_uuid;
-  const auto requested_stream_rows = JsonU64Field(encoded, "stream_row_count");
-  const auto requested_cursor_max_chunk_rows = JsonU64Field(encoded, "cursor_max_chunk_rows").value_or(
-      TextLineU64(encoded, "cursor_max_chunk_rows").value_or(0));
-  const auto requested_cursor_max_chunk_bytes = JsonU64Field(encoded, "cursor_max_chunk_bytes").value_or(
-      TextLineU64(encoded, "cursor_max_chunk_bytes").value_or(0));
-  const std::string bulk_stream_kind = JsonTextField(encoded, "copy_stream_kind").value_or(
-      TextLineValue(encoded, "copy_stream_kind").value_or(""));
-  const std::uint64_t requested_copy_total_rows = JsonU64Field(encoded, "copy_total_rows").value_or(
-      TextLineU64(encoded, "copy_total_rows").value_or(0));
-  const std::uint64_t requested_copy_reject_rows = JsonU64Field(encoded, "copy_reject_rows").value_or(
-      TextLineU64(encoded, "copy_reject_rows").value_or(0));
-  const auto multi_result_count = JsonU64Field(encoded, "multi_result_count");
-  const auto warning_chain_count = JsonU64Field(encoded, "warning_chain_count");
-  const auto partial_result_rows = JsonU64Field(encoded, "partial_result_rows");
-  const auto finality_kind = JsonTextField(encoded, "stream_finality_mode");
-  const auto finality_after_fetches = JsonU64Field(encoded, "stream_finality_after_fetches");
+  std::optional<std::uint64_t> requested_stream_rows;
+  std::uint64_t requested_cursor_max_chunk_rows = 0;
+  std::uint64_t requested_cursor_max_chunk_bytes = 0;
+  std::string bulk_stream_kind;
+  std::uint64_t requested_copy_total_rows = 0;
+  std::uint64_t requested_copy_reject_rows = 0;
+  std::optional<std::uint64_t> multi_result_count;
+  std::optional<std::uint64_t> warning_chain_count;
+  std::optional<std::uint64_t> partial_result_rows;
+  std::optional<std::string> finality_kind;
+  std::optional<std::uint64_t> finality_after_fetches;
+  if (cursor_requested) {
+    requested_stream_rows = JsonU64Field(encoded, "stream_row_count");
+    requested_cursor_max_chunk_rows = JsonU64Field(encoded, "cursor_max_chunk_rows").value_or(
+        TextLineU64(encoded, "cursor_max_chunk_rows").value_or(0));
+    requested_cursor_max_chunk_bytes = JsonU64Field(encoded, "cursor_max_chunk_bytes").value_or(
+        TextLineU64(encoded, "cursor_max_chunk_bytes").value_or(0));
+    bulk_stream_kind = JsonTextField(encoded, "copy_stream_kind").value_or(
+        TextLineValue(encoded, "copy_stream_kind").value_or(""));
+    requested_copy_total_rows = JsonU64Field(encoded, "copy_total_rows").value_or(
+        TextLineU64(encoded, "copy_total_rows").value_or(0));
+    requested_copy_reject_rows = JsonU64Field(encoded, "copy_reject_rows").value_or(
+        TextLineU64(encoded, "copy_reject_rows").value_or(0));
+    multi_result_count = JsonU64Field(encoded, "multi_result_count");
+    warning_chain_count = JsonU64Field(encoded, "warning_chain_count");
+    partial_result_rows = JsonU64Field(encoded, "partial_result_rows");
+    finality_kind = JsonTextField(encoded, "stream_finality_mode");
+    finality_after_fetches = JsonU64Field(encoded, "stream_finality_after_fetches");
+  }
+  const std::size_t first_operand_offset = FirstOperandLineOffset(encoded);
+  const std::string_view encoded_header =
+      first_operand_offset == std::string_view::npos ? std::string_view(encoded)
+                                                     : std::string_view(encoded).substr(0, first_operand_offset);
+  const bool text_operation_envelope =
+      !encoded.empty() && encoded.front() != '{' && !LooksLikeBinarySblrEnvelope(encoded);
   const bool autocommit_emulation =
       admission.operation_id != "dml.plan_import_rows" &&
-      AutocommitEmulationRequested(encoded);
+      (text_operation_envelope ? TextBoolField(encoded_header, "autocommit_emulation", false)
+                               : JsonBoolField(encoded, "autocommit_emulation", false));
   const bool bulk_stream_cursor = cursor_requested && !bulk_stream_kind.empty();
   const bool multi_result_cursor = cursor_requested && multi_result_count.has_value();
   const bool warning_stream_cursor =
@@ -6445,6 +6740,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   std::vector<std::string> bulk_reject_records;
   std::uint64_t bulk_total_rows = bulk_stream_cursor ? requested_copy_total_rows : 0;
   std::uint64_t bulk_rejected_rows = bulk_stream_cursor ? requested_copy_reject_rows : 0;
+  mark_phase("route_shape_prepare");
   if (admission.requires_public_abi_dispatch) {
     if (admission.operation_id == "transaction.begin" &&
         session->local_transaction_id != 0) {
@@ -6454,18 +6750,22 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       row_count = 0;
     } else {
       const auto retain_engine_result = cursor_requested && !synthetic_stream_cursor && !bulk_stream_cursor;
+      const bool operation_can_use_server_live_ipar_projection =
+          admission.operation_id == "observability.show_catalog" ||
+          admission.operation_id == "dml.select_rows";
       const bool server_live_ipar_catalog_projection =
+          operation_can_use_server_live_ipar_projection &&
           IsServerLiveIparCatalogProjection(encoded);
       const bool use_server_live_ipar_projection =
           server_live_ipar_catalog_projection &&
-          (admission.operation_id == "observability.show_catalog" ||
-           admission.operation_id == "dml.select_rows") &&
           ipar_source_factory != nullptr &&
           ipar_source_factory->build != nullptr;
       ServerIparProjectionSources live_ipar_sources;
       if (use_server_live_ipar_projection) {
         live_ipar_sources = ipar_source_factory->build(ipar_source_factory->context);
       }
+      mark_phase("public_abi_dispatch_prepare");
+      const auto public_dispatch_start = ServerDispatchPhaseClock::now();
       auto public_abi = use_server_live_ipar_projection
                             ? DispatchServerLiveIparCatalogProjection(*session,
                                                                       encoded,
@@ -6475,6 +6775,12 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                                        admission.operation_family,
                                                        encoded,
                                                        retain_engine_result);
+      const auto public_dispatch_finish = ServerDispatchPhaseClock::now();
+      execute_phases.push_back(
+          ServerDispatchPhaseTiming{
+              "public_abi_dispatch",
+              ServerDispatchElapsedMicros(public_dispatch_start, public_dispatch_finish)});
+      phase_start = public_dispatch_finish;
       if (!public_abi.ok) {
         if (autocommit_emulation) {
           const auto autocommit = FinalizeAutocommitBoundaryForSession(session,
@@ -6604,6 +6910,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   } else {
     row_packet = ResultPacket(admission.operation_id, true, row_count);
   }
+  mark_phase("post_dispatch_result_prepare");
   if (cursor_requested) {
     ServerCursorRecord cursor;
     cursor.cursor_uuid = cursor_uuid;
@@ -6660,6 +6967,13 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                        row_count,
                                        admission.operation_id,
                                        cursor_requested ? "" : row_packet);
+  mark_phase("execute_result_payload_encode");
+  WriteServerExecutePhaseTraceIfRequested(admission.operation_id,
+                                          static_cast<std::uint64_t>(request.payload.size()),
+                                          static_cast<std::uint64_t>(encoded.size()),
+                                          row_count,
+                                          true,
+                                          execute_phases);
   return result;
 }
 

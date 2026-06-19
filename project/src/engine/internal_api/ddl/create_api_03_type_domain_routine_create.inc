@@ -81,12 +81,9 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
         "ddl.create_index",
         UnsupportedCrudFeatureDiagnostic("ddl.create_index", "direct_key_or_supported_expression_required"));
   }
-  if (created_index.family == kCrudIndexFamilyPartial && created_index.predicate_kind.empty()) {
-    return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
-        request.context,
-        "ddl.create_index",
-        UnsupportedCrudFeatureDiagnostic("ddl.create_index", "partial_predicate_required"));
-  }
+  const bool partial_family_without_filter =
+      created_index.family == kCrudIndexFamilyPartial &&
+      created_index.predicate_kind.empty();
   if (created_index.family == kCrudIndexFamilyExpression && !StartsWithLocal(created_index.key_envelopes.front(), "lower:") &&
       !SupportedExpressionEnvelope(created_index.key_envelopes.front())) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
@@ -162,6 +159,11 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
   result.evidence.push_back({"mga_relation_metadata", "index_create"});
   result.evidence.push_back({"index_family", created_index.family});
+  if (partial_family_without_filter) {
+    result.evidence.push_back({"partial_index_filter", "none"});
+  } else if (!created_index.predicate_kind.empty()) {
+    result.evidence.push_back({"partial_index_filter", created_index.predicate_kind});
+  }
   if (!target_table->temporary && sorted_build.selected) {
     result.evidence.insert(result.evidence.end(),
                            sorted_build.evidence.begin(),

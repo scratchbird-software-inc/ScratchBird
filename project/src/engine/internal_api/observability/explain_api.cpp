@@ -15,6 +15,36 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
+std::string ExplainOptionValue(const EngineApiRequest& request,
+                               const std::string& prefix) {
+  for (const auto& option : request.option_envelopes) {
+    if (option.rfind(prefix, 0) == 0) {
+      return option.substr(prefix.size());
+    }
+  }
+  return {};
+}
+
+EngineApiU64 ExplainOptionU64(const EngineApiRequest& request,
+                              const std::string& prefix) {
+  const auto value = ExplainOptionValue(request, prefix);
+  if (value.empty()) return 0;
+  EngineApiU64 parsed = 0;
+  for (const unsigned char ch : value) {
+    if (ch < '0' || ch > '9') return 0;
+    parsed = parsed * 10u + static_cast<EngineApiU64>(ch - '0');
+  }
+  return parsed;
+}
+
+bool ExplainOptionBool(const EngineApiRequest& request,
+                       const std::string& prefix,
+                       bool fallback = false) {
+  const auto value = ExplainOptionValue(request, prefix);
+  if (value.empty()) return fallback;
+  return value == "true" || value == "1" || value == "yes" || value == "on";
+}
+
 EnginePlanOperationRequest PlanRequestFromExplain(const EngineExplainOperationRequest& request) {
   EnginePlanOperationRequest plan;
   plan.context = request.context;
@@ -31,7 +61,21 @@ EnginePlanOperationRequest PlanRequestFromExplain(const EngineExplainOperationRe
   plan.projection = request.projection;
   plan.ordering = request.ordering;
   plan.option_envelopes = request.option_envelopes;
-  if (request.operation_id == "query.join") {
+  for (std::size_t index = 0; index < 16; ++index) {
+    const std::string prefix = "related_object_" + std::to_string(index) + "_";
+    EngineObjectReference related;
+    related.uuid.canonical = ExplainOptionValue(request, prefix + "uuid:");
+    related.object_kind = ExplainOptionValue(request, prefix + "kind:");
+    if (!related.uuid.canonical.empty()) {
+      if (related.object_kind.empty()) related.object_kind = "table";
+      plan.related_objects.push_back(std::move(related));
+    }
+  }
+  const std::string lowered_query_operation =
+      ExplainOptionValue(request, "query_operation:");
+  if (!lowered_query_operation.empty()) {
+    plan.query_operation = lowered_query_operation;
+  } else if (request.operation_id == "query.join") {
     plan.query_operation = "join";
   } else if (request.operation_id == "query.aggregate") {
     plan.query_operation = "aggregate";
@@ -44,6 +88,44 @@ EnginePlanOperationRequest PlanRequestFromExplain(const EngineExplainOperationRe
   } else {
     plan.query_operation = "scan";
   }
+  plan.join_algorithm = ExplainOptionValue(request, "join_algorithm:");
+  if (plan.join_algorithm.empty()) plan.join_algorithm = "hash";
+  const auto set_operation = ExplainOptionValue(request, "set_operation:");
+  if (!set_operation.empty()) plan.set_operation = set_operation;
+  plan.set_by_name = ExplainOptionBool(request, "set_by_name:", false);
+  plan.left_key_column = ExplainOptionU64(request, "left_key_column:");
+  plan.right_key_column = ExplainOptionU64(request, "right_key_column:");
+  plan.left_key_field = ExplainOptionValue(request, "left_key_field:");
+  plan.right_key_field = ExplainOptionValue(request, "right_key_field:");
+  plan.group_key_column = ExplainOptionU64(request, "group_key_column:");
+  plan.aggregate_value_column = ExplainOptionU64(request, "aggregate_value_column:");
+  plan.aggregate_pair_value_column =
+      ExplainOptionU64(request, "aggregate_pair_value_column:");
+  plan.group_key_field = ExplainOptionValue(request, "group_key_field:");
+  plan.aggregate_value_field =
+      ExplainOptionValue(request, "aggregate_value_field:");
+  plan.aggregate_pair_value_field =
+      ExplainOptionValue(request, "aggregate_pair_value_field:");
+  const auto aggregate_function =
+      ExplainOptionValue(request, "aggregate_function:");
+  if (!aggregate_function.empty()) plan.aggregate_function = aggregate_function;
+  plan.order_column = ExplainOptionU64(request, "order_column:");
+  plan.order_field = ExplainOptionValue(request, "order_by:");
+  const auto order_direction = ExplainOptionValue(request, "order_direction:");
+  if (!order_direction.empty()) plan.ascending = order_direction != "desc";
+  plan.window_function = ExplainOptionValue(request, "window_function:");
+  if (plan.window_function.empty()) plan.window_function = "row_number";
+  plan.window_value_column = ExplainOptionU64(request, "window_value_column:");
+  plan.window_value_field = ExplainOptionValue(request, "window_value_field:");
+  plan.partition_key_column = ExplainOptionU64(request, "partition_column:");
+  plan.partition_key_field = ExplainOptionValue(request, "partition_by:");
+  plan.window_n = ExplainOptionU64(request, "window_n:");
+  if (plan.window_n == 0) {
+    plan.window_n = ExplainOptionU64(request, "window_bucket_count:");
+  }
+  if (plan.window_n == 0) plan.window_n = 1;
+  plan.limit = ExplainOptionU64(request, "limit:");
+  plan.offset = ExplainOptionU64(request, "offset:");
   return plan;
 }
 

@@ -62,6 +62,14 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
     std::string mutation_phase);
 
+DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& option_envelopes,
+    const CrudState& state,
+    const std::string& table_uuid,
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::string mutation_phase);
+
 void AddDmlPageAllocationRuntimeEvidence(const DmlPageAllocationRuntimeResult& allocation,
                                          EngineApiResult* result);
 

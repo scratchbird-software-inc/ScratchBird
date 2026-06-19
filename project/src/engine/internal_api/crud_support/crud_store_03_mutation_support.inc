@@ -113,7 +113,7 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
   if (profile == "hnsw" || profile == "native_hnsw") { return "vector_hnsw"; }
   if (profile == "ivfflat" || profile == "ivf_flat" || profile == "ivf" || profile == "native_ivf") { return "vector_ivf"; }
   if (profile == "native_vector_exact") { return "vector_exact"; }
-  if (profile == "adjacency" || profile == "graph_adjacency" || profile == "native_graph_lookup") { return "graph_adjacency"; }
+  if (profile == "adjacency" || profile == "graph" || profile == "graph_adjacency" || profile == "native_graph_lookup") { return "graph_adjacency"; }
   if (profile == "time_partition" || profile == "time-partition" || profile == "native_columnar_zone") { return "columnar_zone"; }
   if (profile == "native_zone_summary") { return "brin_zone"; }
   if (profile == "native_bloom_summary") { return "bloom"; }
@@ -125,6 +125,8 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
   if (profile == "native_temporary_work") { return "temporary_work"; }
   if (profile == "native_in_memory") { return "in_memory"; }
   if (profile == "native_reference_emulated") { return "reference_emulated"; }
+  if (profile == "unique_btree") { return "btree_unique"; }
+  if (profile == "policy_blocked" || profile == "native_policy_blocked") { return "policy_blocked"; }
   if (profile == "hash" || profile == "bitmap" || profile == "brin_zone" || profile == "bloom" ||
       profile == "full_text" || profile == "gin" || profile == "inverted" || profile == "ngram" ||
       profile == "sparse_wand" || profile == "spatial" || profile == "rtree" || profile == "gist" ||
@@ -132,7 +134,7 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
       profile == "vector_ivf" || profile == "columnar_zone" || profile == "document_path" ||
       profile == "graph_adjacency" || profile == "expression" || profile == "partial" ||
       profile == "covering" || profile == "temporary_work" || profile == "in_memory" ||
-      profile == "reference_emulated") {
+      profile == "reference_emulated" || profile == "policy_blocked") {
     return profile;
   }
   if (StartsWith(profile, "reference:") || StartsWith(profile, "postgres_") || StartsWith(profile, "mysql_") ||
@@ -172,6 +174,7 @@ std::string CrudIndexFamilyForProfile(const std::string& profile) {
   if (normalized == "temporary_work") { return kCrudIndexFamilyTemporaryWork; }
   if (normalized == "in_memory") { return kCrudIndexFamilyInMemory; }
   if (normalized == "reference_emulated") { return kCrudIndexFamilyReferenceEmulated; }
+  if (normalized == "policy_blocked") { return kCrudIndexFamilyPolicyBlocked; }
   return {};
 }
 

@@ -162,6 +162,64 @@ bool AppendScopedRelationLine(const std::string& path, const std::string& line) 
   return AppendLine(path, line);
 }
 
+EngineApiDiagnostic AppendScopedRelationBufferedLine(
+    std::map<std::string, std::ofstream>* streams,
+    std::set<std::string>* dirty_paths,
+    const std::string& path,
+    const std::string& line,
+    std::string_view operation_id,
+    std::string_view failure_reason) {
+  if (streams == nullptr || dirty_paths == nullptr || path.empty()) {
+    return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                        std::string(failure_reason));
+  }
+  auto it = streams->find(path);
+  if (it == streams->end()) {
+    std::error_code ignored;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(),
+                                        ignored);
+    auto [inserted, _] = streams->emplace(path, std::ofstream{});
+    it = inserted;
+    it->second.open(path, std::ios::app | std::ios::binary);
+    if (!it->second) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                          std::string(failure_reason));
+    }
+  }
+  it->second << line << '\n';
+  if (!it->second) {
+    return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                        std::string(failure_reason));
+  }
+  dirty_paths->insert(path);
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic FlushScopedRelationBufferedLines(
+    std::map<std::string, std::ofstream>* streams,
+    std::set<std::string>* dirty_paths,
+    std::string_view operation_id,
+    std::string_view failure_reason) {
+  if (streams == nullptr || dirty_paths == nullptr) {
+    return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                        std::string(failure_reason));
+  }
+  for (const auto& path : *dirty_paths) {
+    auto it = streams->find(path);
+    if (it == streams->end() || !it->second.is_open()) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                          std::string(failure_reason));
+    }
+    it->second.flush();
+    if (!it->second) {
+      return MakeInvalidRequestDiagnostic(std::string(operation_id),
+                                          std::string(failure_reason));
+    }
+  }
+  dirty_paths->clear();
+  return OkDiagnostic();
+}
+
 std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> lines;
   std::ifstream in(path, std::ios::binary);
@@ -2618,6 +2676,10 @@ struct MgaRelationHotAppendContext::Impl {
   EngineRequestContext context;
   std::ofstream row_out;
   std::ofstream index_out;
+  std::map<std::string, std::ofstream> scoped_row_out;
+  std::map<std::string, std::ofstream> scoped_index_out;
+  std::set<std::string> scoped_row_dirty_paths;
+  std::set<std::string> scoped_index_dirty_paths;
   bool row_dirty = false;
   bool index_dirty = false;
   MgaRelationHotAppendCounters counters;
@@ -2687,9 +2749,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     if (!impl_->row_out) {
       return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
     }
-    (void)AppendScopedRelationLine(
+    const auto scoped_appended = AppendScopedRelationBufferedLine(
+        &impl_->scoped_row_out,
+        &impl_->scoped_row_dirty_paths,
         ScopedRowStorePath(impl_->context, writable.table_uuid),
-        line);
+        line,
+        "mga.row_store",
+        "scoped_row_version_append_failed");
+    if (scoped_appended.error) {
+      return scoped_appended;
+    }
     impl_->row_dirty = true;
     ++impl_->counters.row_versions_appended;
     if (written_event_sequences != nullptr) {
@@ -2706,6 +2775,14 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
   impl_->row_out.flush();
   if (!impl_->row_out) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
+  }
+  const auto scoped_flushed = FlushScopedRelationBufferedLines(
+      &impl_->scoped_row_out,
+      &impl_->scoped_row_dirty_paths,
+      "mga.row_store",
+      "scoped_row_version_append_failed");
+  if (scoped_flushed.error) {
+    return scoped_flushed;
   }
   impl_->row_dirty = false;
   ++impl_->counters.row_stream_flushes;
@@ -2768,9 +2845,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
         if (!impl_->index_out) {
           return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
         }
-        (void)AppendScopedRelationLine(
+        const auto scoped_appended = AppendScopedRelationBufferedLine(
+            &impl_->scoped_index_out,
+            &impl_->scoped_index_dirty_paths,
             ScopedIndexStorePath(impl_->context, table_uuid),
-            line);
+            line,
+            "mga.index_store",
+            "scoped_index_entry_append_failed");
+        if (scoped_appended.error) {
+          return scoped_appended;
+        }
         impl_->index_dirty = true;
         ++impl_->counters.index_entries_appended;
       }
@@ -2832,9 +2916,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       if (!impl_->index_out) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
       }
-      (void)AppendScopedRelationLine(
+      const auto scoped_appended = AppendScopedRelationBufferedLine(
+          &impl_->scoped_index_out,
+          &impl_->scoped_index_dirty_paths,
           ScopedIndexStorePath(impl_->context, table_uuid),
-          line);
+          line,
+          "mga.index_store",
+          "scoped_index_entry_append_failed");
+      if (scoped_appended.error) {
+        return scoped_appended;
+      }
       impl_->index_dirty = true;
       ++impl_->counters.index_entries_appended;
     }
@@ -2849,6 +2940,14 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
   impl_->index_out.flush();
   if (!impl_->index_out) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
+  }
+  const auto scoped_flushed = FlushScopedRelationBufferedLines(
+      &impl_->scoped_index_out,
+      &impl_->scoped_index_dirty_paths,
+      "mga.index_store",
+      "scoped_index_entry_append_failed");
+  if (scoped_flushed.error) {
+    return scoped_flushed;
   }
   impl_->index_dirty = false;
   ++impl_->counters.index_stream_flushes;

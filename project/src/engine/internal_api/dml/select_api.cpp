@@ -109,6 +109,37 @@ EngineResultShape CountAssertionResultShape(const EngineSelectRowsRequest& reque
   return shape;
 }
 
+EngineResultShape ValueAssertionResultShape(const EngineSelectRowsRequest& request,
+                                            const std::vector<CrudRowVersionRecord>& rows,
+                                            std::string* error_detail) {
+  if (rows.size() != 1) {
+    if (error_detail != nullptr) { *error_detail = "dml_select_value_assertion_requires_one_visible_row"; }
+    return {};
+  }
+  const std::string assertion_id = OptionValue(request, "assertion_id:");
+  const std::string value_field = OptionValue(request, "assertion_value_field:");
+  if (value_field.empty()) {
+    if (error_detail != nullptr) { *error_detail = "dml_select_value_assertion_field_required"; }
+    return {};
+  }
+  std::string actual_column = OptionValue(request, "actual_column_name:");
+  if (actual_column.empty()) { actual_column = "actual_value"; }
+  std::string expected_column = OptionValue(request, "expected_column_name:");
+  if (expected_column.empty()) { expected_column = "expected_value"; }
+
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(TextDescriptor());
+  EngineRowValue out;
+  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
+  out.fields.push_back({actual_column, TextValue(CrudFieldValue(rows.front().values, value_field))});
+  out.fields.push_back({expected_column, TextValue(OptionValue(request, "expected_value:"))});
+  shape.rows.push_back(std::move(out));
+  return shape;
+}
+
 std::string OrderingColumn(const EngineOrderingEnvelope& ordering) {
   if (ordering.canonical_ordering_envelopes.empty()) { return {}; }
   std::string column = ordering.canonical_ordering_envelopes.front();
@@ -391,7 +422,8 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
   result.visible_count = rows.size();
-  if (OptionValue(request, "result_projection:") == "count_assertion") {
+  const std::string result_projection = OptionValue(request, "result_projection:");
+  if (result_projection == "count_assertion") {
     std::string error_detail;
     result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
     if (!error_detail.empty()) {
@@ -401,6 +433,18 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
           MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
     }
     result.evidence.push_back({"dml_result_projection", "count_assertion"});
+  } else if (result_projection == "value_assertion") {
+    std::string error_detail;
+    result.result_shape = ValueAssertionResultShape(request, rows, &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    result.evidence.push_back({"dml_result_projection", "value_assertion"});
+    result.evidence.push_back({"dml_assertion_value_field",
+                               OptionValue(request, "assertion_value_field:")});
   } else {
     ApplyProjection(projection, &rows);
     result.result_shape = CrudRowsToResultShape(rows);

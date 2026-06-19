@@ -193,7 +193,10 @@ std::vector<std::string> DecodeCrudList(const std::string& encoded) {
 }
 
 bool IsDirectiveEnvelope(const std::string& envelope) {
-  return envelope == "unique" || StartsWith(envelope, "include:") || StartsWith(envelope, "where_eq:");
+  return envelope == "unique" ||
+         StartsWith(envelope, "include:") ||
+         StartsWith(envelope, "where_eq:") ||
+         StartsWith(envelope, "where_mod_eq:");
 }
 
 std::vector<std::string> CrudIndexKeyColumns(const CrudIndexRecord& index) {

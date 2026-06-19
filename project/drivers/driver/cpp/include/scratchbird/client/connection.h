@@ -68,8 +68,8 @@ struct ConnectionConfig {
     uint32_t query_timeout_ms{30000};
     uint32_t read_timeout_ms{30000};
     uint32_t write_timeout_ms{30000};
-    uint32_t copy_window_bytes{65536};
-    uint32_t copy_chunk_bytes{16384};
+    uint32_t copy_window_bytes{1024u * 1024u};
+    uint32_t copy_chunk_bytes{1024u * 1024u};
     bool enable_copy_streaming{false};
     bool binary_transfer{true};
     bool enable_compression{false};

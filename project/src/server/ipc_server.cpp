@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <csignal>
 #include <ctime>
 #include <cstring>
@@ -73,6 +74,38 @@ namespace {
 namespace engine_api = scratchbird::engine::internal_api;
 
 std::atomic_bool g_stop_requested{false};
+
+std::uint64_t SteadyNowMicros() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+void AppendSbpsServerPhaseTrace(const sbps::Frame& frame,
+                                std::size_t response_frame_bytes,
+                                bool ok,
+                                std::uint64_t read_us,
+                                std::uint64_t execute_us,
+                                std::uint64_t response_build_us,
+                                std::uint64_t write_us,
+                                std::uint64_t total_us) {
+  const char* path = std::getenv("SCRATCHBIRD_SBPS_SERVER_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') return;
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  out << "{\"component\":\"sbps_server\","
+      << "\"message_type\":" << frame.header.message_type << ','
+      << "\"schema_id\":" << frame.header.payload_schema_id << ','
+      << "\"ok\":" << (ok ? "true" : "false") << ','
+      << "\"request_payload_bytes\":" << frame.payload.size() << ','
+      << "\"response_frame_bytes\":" << response_frame_bytes << ','
+      << "\"phases\":{\"read_us\":" << read_us
+      << ",\"execute_us\":" << execute_us
+      << ",\"response_build_us\":" << response_build_us
+      << ",\"write_us\":" << write_us
+      << "},\"total_us\":" << total_us << "}\n";
+}
 
 std::string CurrentUtcTimestampText() {
   const auto now = std::chrono::system_clock::now();
@@ -1334,10 +1367,15 @@ void HandleClient(IpcSocketHandle client_fd,
                   ServerAgentRuntime* agent_runtime,
                   ServerObservabilityState* observability,
                   bool* release_heap_after_close) {
+  const auto trace_total_start_us = SteadyNowMicros();
   sbps::Frame frame;
   std::vector<ServerDiagnostic> frame_diagnostics;
-  if (!ReadPhysicalFrame(client_fd, config, &frame, &frame_diagnostics) ||
-      !AssembleChunkedFrame(client_fd, config, &frame, &frame_diagnostics)) {
+  const auto read_start_us = SteadyNowMicros();
+  const bool frame_read_ok = ReadPhysicalFrame(client_fd, config, &frame, &frame_diagnostics);
+  const bool frame_assembled_ok =
+      frame_read_ok && AssembleChunkedFrame(client_fd, config, &frame, &frame_diagnostics);
+  const auto read_us = SteadyNowMicros() - read_start_us;
+  if (!frame_read_ok || !frame_assembled_ok) {
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.frame.invalid_total",
                           1,
@@ -1348,6 +1386,14 @@ void HandleClient(IpcSocketHandle client_fd,
                            "invalid parser-server IPC frame",
                            frame_diagnostics.empty() ? "" : frame_diagnostics.front().code);
     WriteAll(client_fd, ErrorFrame(frame_diagnostics, frame.header.request_uuid, frame.header.sequence_number));
+    AppendSbpsServerPhaseTrace(frame,
+                               0,
+                               false,
+                               read_us,
+                               0,
+                               0,
+                               0,
+                               SteadyNowMicros() - trace_total_start_us);
     return;
   }
   const bool session_bound_message =
@@ -1632,10 +1678,12 @@ void HandleClient(IpcSocketHandle client_fd,
     ServerIparProjectionSourceFactory ipar_factory;
     ipar_factory.context = &ipar_context;
     ipar_factory.build = &BuildIparProjectionSourcesForServer;
+    const auto execute_start_us = SteadyNowMicros();
     const auto operation = HandleExecuteSblr(session_registry,
                                              engine_state,
                                              frame,
                                              &ipar_factory);
+    const auto execute_us = SteadyNowMicros() - execute_start_us;
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.sblr.execute_microseconds",
                           1,
@@ -1645,7 +1693,20 @@ void HandleClient(IpcSocketHandle client_fd,
                            operation.accepted ? "completed" : "rejected",
                            "SBLR execute processed",
                            operation.diagnostics.empty() ? "" : operation.diagnostics.front().code);
-    WriteAll(client_fd, SessionOperationFrame(frame, operation));
+    const auto response_build_start_us = SteadyNowMicros();
+    const auto response_frame = SessionOperationFrame(frame, operation);
+    const auto response_build_us = SteadyNowMicros() - response_build_start_us;
+    const auto write_start_us = SteadyNowMicros();
+    const bool write_ok = WriteAll(client_fd, response_frame);
+    const auto write_us = SteadyNowMicros() - write_start_us;
+    AppendSbpsServerPhaseTrace(frame,
+                               response_frame.size(),
+                               write_ok && operation.accepted,
+                               read_us,
+                               execute_us,
+                               response_build_us,
+                               write_us,
+                               SteadyNowMicros() - trace_total_start_us);
     if (operation.accepted) {
       PumpEventNotifications(client_fd, frame, engine_state, session_registry, event_router);
     }

@@ -13,8 +13,20 @@
 bool IndexTouchesOpaqueColumn(const EngineIndexDefinition& definition,
                               const std::vector<std::pair<std::string, std::string>>& columns) {
   for (const auto& envelope : definition.key_envelopes) {
+    if (envelope == "unique") {
+      continue;
+    }
     if (StartsWithLocal(envelope, "include:")) {
       if (DescriptorIsOpaqueRenderOnly(ColumnDescriptorForName(columns, envelope.substr(8)))) { return true; }
+      continue;
+    }
+    if (StartsWithLocal(envelope, "where_mod_eq:")) {
+      const std::string condition = envelope.substr(13);
+      const auto pos = condition.find(':');
+      if (pos != std::string::npos &&
+          DescriptorIsOpaqueRenderOnly(ColumnDescriptorForName(columns, condition.substr(0, pos)))) {
+        return true;
+      }
       continue;
     }
     if (StartsWithLocal(envelope, "where_eq:")) {
@@ -59,11 +71,26 @@ CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
         index.predicate_column = condition.substr(0, pos);
         index.predicate_value = condition.substr(pos + 1);
       }
+    } else if (StartsWithLocal(envelope, "where_mod_eq:")) {
+      const std::string condition = envelope.substr(13);
+      const auto divisor_pos = condition.find(':');
+      const auto value_pos = condition.find('=', divisor_pos == std::string::npos ? 0 : divisor_pos + 1);
+      if (divisor_pos != std::string::npos && value_pos != std::string::npos &&
+          divisor_pos < value_pos) {
+        index.predicate_kind = "where_mod_eq";
+        index.predicate_column = condition.substr(0, divisor_pos);
+        index.predicate_value = condition.substr(divisor_pos + 1, value_pos - divisor_pos - 1);
+        index.predicate_value += ":";
+        index.predicate_value += condition.substr(value_pos + 1);
+      }
     } else if (!envelope.empty()) {
       index.key_envelopes.push_back(envelope);
     }
   }
-  if (!index.key_envelopes.empty()) { index.column_name = index.key_envelopes.front(); }
+  if (!index.key_envelopes.empty()) {
+    index.column_name = ColumnNameFromIndexEnvelope(index.key_envelopes.front());
+    if (index.column_name.empty()) { index.column_name = index.key_envelopes.front(); }
+  }
   return index;
 }
 

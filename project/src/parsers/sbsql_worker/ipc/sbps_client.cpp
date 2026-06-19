@@ -13,7 +13,9 @@
 #include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <string_view>
@@ -101,6 +103,44 @@ std::string LanguageProfileForTag(std::string_view value) {
 std::string InputFallbackTagForTag(std::string_view value) {
   const std::string tag = NormalizeLanguageTag(value);
   return tag == "en" ? std::string{} : "en";
+}
+
+std::uint64_t SteadyNowMicros() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+void AppendSbpsClientPhaseTrace(std::uint16_t message_type,
+                                std::uint32_t schema_id,
+                                std::size_t request_payload_bytes,
+                                std::size_t encoded_frame_bytes,
+                                std::size_t response_payload_bytes,
+                                bool ok,
+                                std::uint64_t connect_us,
+                                std::uint64_t encode_us,
+                                std::uint64_t write_us,
+                                std::uint64_t read_us,
+                                std::uint64_t assemble_us,
+                                std::uint64_t total_us) {
+  const char* path = std::getenv("SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') return;
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  out << "{\"component\":\"sbps_client\","
+      << "\"message_type\":" << message_type << ','
+      << "\"schema_id\":" << schema_id << ','
+      << "\"ok\":" << (ok ? "true" : "false") << ','
+      << "\"request_payload_bytes\":" << request_payload_bytes << ','
+      << "\"encoded_frame_bytes\":" << encoded_frame_bytes << ','
+      << "\"response_payload_bytes\":" << response_payload_bytes << ','
+      << "\"phases\":{\"connect_us\":" << connect_us
+      << ",\"encode_us\":" << encode_us
+      << ",\"write_us\":" << write_us
+      << ",\"read_us\":" << read_us
+      << ",\"assemble_us\":" << assemble_us
+      << "},\"total_us\":" << total_us << "}\n";
 }
 
 void ApplySbpsLanguageContext(SessionContext* session,
@@ -773,39 +813,81 @@ bool SendRequest(const std::string& endpoint,
                  Frame* response,
                  MessageVectorSet* messages,
                  std::uint32_t timeout_ms = kDefaultSbpsRequestTimeoutMs) {
+  const auto trace_total_start_us = SteadyNowMicros();
+  std::uint64_t connect_us = 0;
+  std::uint64_t encode_us = 0;
+  std::uint64_t write_us = 0;
+  std::uint64_t read_us = 0;
+  std::uint64_t assemble_us = 0;
+  std::size_t encoded_frame_bytes = 0;
+  auto trace_and_return = [&](bool ok) {
+    AppendSbpsClientPhaseTrace(header.message_type,
+                               header.schema_id,
+                               payload.size(),
+                               encoded_frame_bytes,
+                               response == nullptr ? 0 : response->payload.size(),
+                               ok,
+                               connect_us,
+                               encode_us,
+                               write_us,
+                               read_us,
+                               assemble_us,
+                               SteadyNowMicros() - trace_total_start_us);
+    return ok;
+  };
   const auto path = EndpointPath(endpoint);
-  if (!ValidateEndpointPath(path, messages)) return false;
+  if (!ValidateEndpointPath(path, messages)) return trace_and_return(false);
 #ifdef _WIN32
   if (!EnsureWinsockInitialized()) {
     AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "Winsock initialization failed for the SBPS client.");
-    return false;
+    return trace_and_return(false);
   }
 #endif
   Fd fd(::socket(AF_UNIX, SOCK_STREAM, 0));
   if (!fd.valid()) {
     AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "The parser could not create an SBPS socket.");
-    return false;
+    return trace_and_return(false);
   }
   (void)SetSocketTimeouts(fd.get(), timeout_ms);
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   if (path.size() >= sizeof(addr.sun_path)) {
     AddDiagnostic(messages, "PARSER_SERVER_IPC.ENDPOINT_PATH_TOO_LONG", "The parser-server IPC endpoint path is too long.");
-    return false;
+    return trace_and_return(false);
   }
   std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
+  const auto connect_start_us = SteadyNowMicros();
   if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    connect_us = SteadyNowMicros() - connect_start_us;
     AddDiagnostic(messages, "PARSER_SERVER_IPC.CONNECT_FAILED", "The parser could not connect to sb_server.");
-    return false;
+    return trace_and_return(false);
   }
-  for (const auto& encoded : EncodeFrameSequence(header, payload)) {
+  connect_us = SteadyNowMicros() - connect_start_us;
+  const auto encode_start_us = SteadyNowMicros();
+  const auto encoded_frames = EncodeFrameSequence(header, payload);
+  for (const auto& encoded : encoded_frames) {
+    encoded_frame_bytes += encoded.size();
+  }
+  encode_us = SteadyNowMicros() - encode_start_us;
+  const auto write_start_us = SteadyNowMicros();
+  for (const auto& encoded : encoded_frames) {
     if (!WriteAll(fd.get(), encoded)) {
+      write_us = SteadyNowMicros() - write_start_us;
       AddDiagnostic(messages, "PARSER_SERVER_IPC.WRITE_FAILED", "The parser could not write to sb_server.");
-      return false;
+      return trace_and_return(false);
     }
   }
-  if (!ReadPhysicalFrame(fd.get(), response, messages)) return false;
-  return AssembleChunkedFrame(fd.get(), response, messages);
+  write_us = SteadyNowMicros() - write_start_us;
+  const auto read_start_us = SteadyNowMicros();
+  if (!ReadPhysicalFrame(fd.get(), response, messages)) {
+    read_us = SteadyNowMicros() - read_start_us;
+    return trace_and_return(false);
+  }
+  read_us = SteadyNowMicros() - read_start_us;
+  const auto assemble_start_us = SteadyNowMicros();
+  const bool assembled = AssembleChunkedFrame(fd.get(), response, messages);
+  assemble_us = SteadyNowMicros() - assemble_start_us;
+  return trace_and_return(assembled);
 }
 
 FrameHeader BaseHeader(std::uint16_t message_type,

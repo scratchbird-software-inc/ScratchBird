@@ -1921,14 +1921,16 @@ void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metr
     return;
   }
   if (metric == "sb_index_insert_unique_physical_probe_total") {
-    const auto count = static_cast<std::uint64_t>(value);
-    for (std::uint64_t index = 0; index < count; ++index) {
-      (void)scratchbird::core::metrics::RecordInsertUniquePhysicalProbe(
-          context.target_object_uuid,
-          InsertBatchModeName(context.insert_mode),
-          result,
-          reason.empty() ? "index_backed_unique_preflight" : reason);
-    }
+    (void)scratchbird::core::metrics::IncrementCounter(
+        "sb_index_insert_unique_physical_probe_total",
+        scratchbird::core::metrics::Labels(
+            {{"component", "engine.insert"},
+             {"object_uuid", context.target_object_uuid},
+             {"operation", InsertBatchModeName(context.insert_mode)},
+             {"result", result},
+             {"reason", reason.empty() ? "index_backed_unique_preflight" : reason}}),
+        value,
+        kInsertMetricsProducer);
     return;
   }
   (void)scratchbird::core::metrics::IncrementCounter(

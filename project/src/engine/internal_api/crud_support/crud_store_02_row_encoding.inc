@@ -216,25 +216,54 @@ bool ExpressionEnvelopeSupported(const std::string& expression) {
          !ExtractFunctionArgument(expression, "upper").empty() || !ExtractFunctionArgument(expression, "length").empty();
 }
 
+std::string CrudIndexKeyComponentForValues(const std::string& envelope,
+                                           const std::vector<std::pair<std::string, std::string>>& values) {
+  return ExpressionEnvelopeSupported(envelope)
+             ? ExpressionKeyForValues(envelope, values)
+             : CrudFieldValue(values, envelope);
+}
+
+std::string BuildCompositeIndexKey(const std::vector<std::pair<std::string, std::string>>& values,
+                                   const std::vector<std::string>& envelopes) {
+  std::string key;
+  for (const auto& envelope : envelopes) {
+    if (!key.empty()) { key.push_back(kCompositeSeparator); }
+    key += CrudIndexKeyComponentForValues(envelope, values);
+  }
+  return key;
+}
+
 std::vector<std::string> CrudIndexEntryKeysForValues(const CrudIndexRecord& index,
                                                      const std::vector<std::pair<std::string, std::string>>& values) {
   if (!index.predicate_kind.empty()) {
     if (index.predicate_kind == "where_eq" && CrudFieldValue(values, index.predicate_column) != index.predicate_value) { return {}; }
+    if (index.predicate_kind == "where_mod_eq") {
+      const auto sep = index.predicate_value.find(':');
+      if (sep == std::string::npos) return {};
+      try {
+        const auto divisor = std::stoll(index.predicate_value.substr(0, sep));
+        const auto expected = std::stoll(index.predicate_value.substr(sep + 1));
+        const auto value = std::stoll(CrudFieldValue(values, index.predicate_column));
+        if (divisor == 0 || value % divisor != expected) return {};
+      } catch (...) {
+        return {};
+      }
+    }
   }
   const auto columns = CrudIndexKeyColumns(index);
   const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
   if (columns.empty()) { return {}; }
   if (CrudTokenIndexFamily(family)) {
-    return TokenizeCrudText(CrudFieldValue(values, columns.front()));
+    return TokenizeCrudText(CrudIndexKeyComponentForValues(columns.front(), values));
   }
   if (CrudNgramIndexFamily(family)) {
-    return TokenizeCrudNgrams(CrudFieldValue(values, columns.front()));
+    return TokenizeCrudNgrams(CrudIndexKeyComponentForValues(columns.front(), values));
   }
   if (family == kCrudIndexFamilyDocumentPath) {
-    return TokenizeCrudDocumentPath(CrudFieldValue(values, columns.front()));
+    return TokenizeCrudDocumentPath(CrudIndexKeyComponentForValues(columns.front(), values));
   }
   if (family == kCrudIndexFamilyExpression) { return {ExpressionKeyForValues(columns.front(), values)}; }
-  return {BuildCompositeKey(values, columns)};
+  return {BuildCompositeIndexKey(values, columns)};
 }
 
 std::string CrudIndexPayloadForValues(const CrudIndexRecord& index,

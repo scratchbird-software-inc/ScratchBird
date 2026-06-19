@@ -138,6 +138,30 @@ std::string Trim(std::string_view value) {
   return std::string(value.substr(first, last - first));
 }
 
+std::string_view TrimView(std::string_view value) {
+  std::size_t first = 0;
+  while (first < value.size() &&
+         (value[first] == ' ' || value[first] == '\t' || value[first] == '\r' ||
+          value[first] == '\n')) {
+    ++first;
+  }
+  std::size_t last = value.size();
+  while (last > first &&
+         (value[last - 1] == ' ' || value[last - 1] == '\t' ||
+          value[last - 1] == '\r' || value[last - 1] == '\n')) {
+    --last;
+  }
+  return value.substr(first, last - first);
+}
+
+std::string_view TextOperationHeader(std::string_view encoded) {
+  const std::size_t first_operand = encoded.find("\noperand=");
+  if (first_operand == std::string_view::npos) {
+    return encoded;
+  }
+  return encoded.substr(0, first_operand);
+}
+
 bool EqualAsciiInsensitive(char lhs, char rhs) {
   return static_cast<char>(std::tolower(static_cast<unsigned char>(lhs))) ==
          static_cast<char>(std::tolower(static_cast<unsigned char>(rhs)));
@@ -149,7 +173,7 @@ bool StartsWithInsensitive(std::string_view value, std::string_view prefix) {
 }
 
 bool LooksLikeRawSql(std::string_view payload) {
-  const std::string trimmed = Trim(payload);
+  const std::string_view trimmed = TrimView(payload);
   return StartsWithInsensitive(trimmed, "select") || StartsWithInsensitive(trimmed, "insert") ||
          StartsWithInsensitive(trimmed, "update") || StartsWithInsensitive(trimmed, "delete") ||
          StartsWithInsensitive(trimmed, "create") || StartsWithInsensitive(trimmed, "alter") ||
@@ -841,6 +865,11 @@ bool IsUmbrellaSblrFamily(std::string_view family) {
          family == "sblr.query.multimodel_or_ddl.v3";
 }
 
+bool IsObservabilityInspectOperationId(std::string_view operation_id) {
+  return operation_id == "observability.explain_operation" ||
+         operation_id.starts_with("observability.show_");
+}
+
 std::string FamilyForPublicEnvelope(scratchbird::engine::SblrOperationFamily family) {
   using scratchbird::engine::SblrOperationFamily;
   switch (family) {
@@ -1317,58 +1346,59 @@ ServerSblrAdmissionResult AdmitFamily(std::string family,
 ServerSblrAdmissionResult AdmitTextOperationEnvelope(std::string_view encoded,
                                                     bool public_abi_dispatch,
                                                     bool cluster_authority_active) {
-  if (ContainsSqlTextMarker(encoded)) {
+  const std::string_view header = TextOperationHeader(encoded);
+  if (ContainsSqlTextMarker(header)) {
     return Reject("SBLR.SQL_TEXT_FORBIDDEN",
                   "The engine accepts canonical SBLR only.",
                   "raw_sql_forbidden");
   }
-  if (const auto duplicate = DuplicateTextField(encoded)) {
+  if (const auto duplicate = DuplicateTextField(header)) {
     return Reject("PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD",
                   "SBLR operation envelopes must not contain duplicate authority fields.",
                   *duplicate);
   }
-  if (const auto envelope = TextField(encoded, "envelope");
+  if (const auto envelope = TextField(header, "envelope");
       envelope.has_value() && envelope->starts_with("SBLRExecutionEnvelope.") &&
       *envelope != "SBLRExecutionEnvelope.v3") {
     return Reject("PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
                   "The SBLR envelope version is unsupported by this server.",
                   "unsupported_sblr_execution_envelope_version");
   }
-  if (const auto major = TextField(encoded, "envelope_major");
+  if (const auto major = TextField(header, "envelope_major");
       major.has_value() && *major != "3") {
     return Reject("PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
                   "The SBLR envelope major version is unsupported by this server.",
                   "unsupported_sblr_envelope_major");
   }
-  if (const auto version = TextField(encoded, "sblr_version");
+  if (const auto version = TextField(header, "sblr_version");
       version.has_value() && *version != "sblr_v3") {
     return Reject("PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
                   "The SBLR envelope version is unsupported by this server.",
                   "unsupported_sblr_version");
   }
-  const auto operation_id = TextField(encoded, "operation_id").value_or("");
+  const auto operation_id = TextField(header, "operation_id").value_or("");
   if (operation_id.empty()) {
     return Reject("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
                   "SBLR operation envelopes require an operation_id.",
                   "operation_id_required");
   }
-  if (TextField(encoded, "result_shape").value_or("").empty()) {
+  if (TextField(header, "result_shape").value_or("").empty()) {
     return Reject("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
                   "SBLR operation envelopes require a result_shape.",
                   "result_shape_required");
   }
-  if (TextField(encoded, "diagnostic_shape").value_or("").empty()) {
+  if (TextField(header, "diagnostic_shape").value_or("").empty()) {
     return Reject("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
                   "SBLR operation envelopes require a diagnostic_shape.",
                   "diagnostic_shape_required");
   }
-  if (TextField(encoded, "parser_resolved_names_to_uuids").value_or("false") != "true") {
+  if (TextField(header, "parser_resolved_names_to_uuids").value_or("false") != "true") {
     return Reject("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
                   "Parser-generated SBLR must resolve names to UUIDs before server admission.",
                   "names_not_resolved_to_uuids");
   }
   const bool requires_cluster =
-      TextField(encoded, "requires_cluster_authority").value_or("false") == "true";
+      TextField(header, "requires_cluster_authority").value_or("false") == "true";
   if (requires_cluster && !IsClusterOperationId(operation_id)) {
     return Reject("SBLR.CLUSTER_MAPPING.UNAVAILABLE",
                   "Cluster authority cannot be attached to a non-cluster SBLR operation.",
@@ -1379,26 +1409,32 @@ ServerSblrAdmissionResult AdmitTextOperationEnvelope(std::string_view encoded,
                   "Cluster SBLR requires a mapped cluster provider operation.",
                   "cluster_mapping_unavailable");
   }
-  std::string family = TextField(encoded, "sblr_operation_family").value_or("");
+  const bool effective_public_abi_dispatch =
+      public_abi_dispatch || RequiresEnginePublicAbiDispatch(operation_id);
+  std::string family = TextField(header, "sblr_operation_family").value_or("");
   const bool prefer_primary_family =
       public_abi_dispatch ||
-      Contains(encoded, "public_sbsql_exact_command=true") ||
-      Contains(encoded, "engine_api_command_route=true") ||
-      Contains(encoded, "cluster_provider_dispatch=true");
+      Contains(header, "public_sbsql_exact_command=true") ||
+      Contains(header, "engine_api_command_route=true") ||
+      Contains(header, "cluster_provider_dispatch=true");
   const bool preserve_query_plan_route_family =
-      Contains(encoded, "sbsfc081_descriptor_expression_residual=true") ||
-      Contains(encoded, "sbsfc083_grammar_surface=true") ||
-      Contains(encoded, "sbsfc085_grammar_surface=true");
+      Contains(header, "sbsfc081_descriptor_expression_residual=true") ||
+      Contains(header, "sbsfc083_grammar_surface=true") ||
+      Contains(header, "sbsfc085_grammar_surface=true");
   family = ReconciledExplicitServerFamily(std::move(family),
                                           operation_id,
                                           prefer_primary_family,
                                           preserve_query_plan_route_family);
   if (family.empty()) {
-    const auto resolved_family = FamilyForOperationId(operation_id);
-    if (!resolved_family.has_value()) {
-      return RejectFamilyReconciliationRequired(operation_id);
+    if (!prefer_primary_family && IsObservabilityInspectOperationId(operation_id)) {
+      family = "sblr.observability.inspect.v3";
+    } else {
+      const auto resolved_family = FamilyForOperationId(operation_id);
+      if (!resolved_family.has_value()) {
+        return RejectFamilyReconciliationRequired(operation_id);
+      }
+      family = *resolved_family;
     }
-    family = *resolved_family;
   }
   if (requires_cluster) {
     const auto cluster_family = FamilyForClusterOperationId(operation_id);
@@ -1407,7 +1443,10 @@ ServerSblrAdmissionResult AdmitTextOperationEnvelope(std::string_view encoded,
     }
     family = *cluster_family;
   }
-  return AdmitFamily(std::move(family), operation_id, public_abi_dispatch, cluster_authority_active);
+  return AdmitFamily(std::move(family),
+                     operation_id,
+                     effective_public_abi_dispatch,
+                     cluster_authority_active);
 }
 
 ServerSblrAdmissionResult AdmitParserJsonEnvelope(std::string_view encoded,
@@ -1505,7 +1544,7 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   if (LooksLikeBinarySblrEnvelope(raw)) {
     return AdmitBinaryEnvelope(raw, request.cluster_authority_active);
   }
-  const std::string encoded = Trim(raw);
+  const std::string_view encoded = TrimView(raw);
   if (encoded.empty()) {
     return Reject("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
                   "The SBLR envelope payload is empty.",
@@ -1516,7 +1555,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "The engine accepts canonical SBLR only.",
                   "raw_sql_forbidden");
   }
-  if (TextField(encoded, "operation_id").has_value()) {
+  const std::string_view text_header = TextOperationHeader(encoded);
+  if (TextField(text_header, "operation_id").has_value()) {
     return AdmitTextOperationEnvelope(encoded, false, request.cluster_authority_active);
   }
   if (const auto envelope = JsonStringField(encoded, "envelope");
@@ -1535,7 +1575,7 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return RejectFamilyReconciliationRequired(encoded);
   }
   if (FindFamily(encoded) != nullptr) {
-    return AdmitFamily(encoded, {}, false, request.cluster_authority_active);
+    return AdmitFamily(std::string(encoded), {}, false, request.cluster_authority_active);
   }
   if (auto family = FamilyForLegacyEnvelope(encoded)) {
     return AdmitFamily(std::move(*family),

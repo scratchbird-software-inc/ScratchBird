@@ -12,15 +12,103 @@
 #include "dml/insert_physical_integration.hpp"
 #include "security/security_model.hpp"
 
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
 #include <span>
+#include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
 
 constexpr const char* kOperationId = "dml.execute_native_bulk_ingest";
 constexpr const char* kDisabledDiagnostic = "DML.NATIVE_BULK_INGEST.DISABLED";
+
+using NativeBulkPhaseClock = std::chrono::steady_clock;
+
+struct NativeBulkPhaseTiming {
+  std::string phase;
+  std::uint64_t elapsed_us = 0;
+};
+
+std::uint64_t NativeBulkElapsedMicros(NativeBulkPhaseClock::time_point start,
+                                      NativeBulkPhaseClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start).count());
+}
+
+std::string NativeBulkTraceJsonEscape(std::string_view value) {
+  std::ostringstream out;
+  for (const unsigned char ch : value) {
+    switch (ch) {
+      case '\\':
+        out << "\\\\";
+        break;
+      case '"':
+        out << "\\\"";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        if (ch < 0x20) {
+          constexpr char kHex[] = "0123456789abcdef";
+          out << "\\u00" << kHex[(ch >> 4u) & 0x0fu] << kHex[ch & 0x0fu];
+        } else {
+          out << static_cast<char>(ch);
+        }
+    }
+  }
+  return out.str();
+}
+
+void WriteNativeBulkPhaseTraceIfRequested(
+    const EngineExecuteNativeBulkIngestRequest& request,
+    bool ok,
+    std::uint64_t rows,
+    const std::vector<NativeBulkPhaseTiming>& phases) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_NATIVE_BULK_API_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  std::uint64_t total_us = 0;
+  for (const auto& phase : phases) {
+    total_us += phase.elapsed_us;
+  }
+  out << "{\"operation_id\":\"" << kOperationId << "\""
+      << ",\"table_uuid\":\""
+      << NativeBulkTraceJsonEscape(request.target_table.uuid.canonical) << "\""
+      << ",\"rows\":" << rows
+      << ",\"ok\":" << (ok ? "true" : "false")
+      << ",\"total_us\":" << total_us
+      << ",\"phases\":{";
+  bool first = true;
+  for (const auto& phase : phases) {
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << '"' << NativeBulkTraceJsonEscape(phase.phase)
+        << "\":" << phase.elapsed_us;
+  }
+  out << "}}\n";
+}
 
 void AddNativeBulkIngestEvidence(EngineExecuteNativeBulkIngestResult* result,
                                  bool enabled) {
@@ -125,7 +213,19 @@ EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
 
 EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
     const EngineExecuteNativeBulkIngestRequest& request) {
+  std::vector<NativeBulkPhaseTiming> phase_timings;
+  auto phase_start = NativeBulkPhaseClock::now();
+  auto record_phase = [&](std::string phase,
+                          NativeBulkPhaseClock::time_point start) {
+    if (std::getenv("SCRATCHBIRD_NATIVE_BULK_API_PHASE_TRACE_FILE") == nullptr) {
+      return;
+    }
+    phase_timings.push_back(
+        {std::move(phase),
+         NativeBulkElapsedMicros(start, NativeBulkPhaseClock::now())});
+  };
   const bool enabled = NativeBulkIngestEnabled(request);
+  record_phase("policy_enabled_check", phase_start);
   if (!enabled) {
     return NativeFailure(
         request,
@@ -160,10 +260,22 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         true);
   }
 
-  return WrapDirectPhysicalResult(
-      request,
+  phase_start = NativeBulkPhaseClock::now();
+  auto direct_request = MakeDirectPhysicalRequest(request);
+  record_phase("make_direct_request", phase_start);
+  phase_start = NativeBulkPhaseClock::now();
+  auto direct_result =
       scratchbird::engine::internal_api::dml::ExecuteDirectPhysicalBulkAppend(
-          MakeDirectPhysicalRequest(request)));
+          direct_request);
+  record_phase("execute_direct_physical", phase_start);
+  phase_start = NativeBulkPhaseClock::now();
+  auto result = WrapDirectPhysicalResult(request, std::move(direct_result));
+  record_phase("wrap_direct_result", phase_start);
+  WriteNativeBulkPhaseTraceIfRequested(request,
+                                       result.ok,
+                                       result.accepted_rows,
+                                       phase_timings);
+  return result;
 }
 
 }  // namespace scratchbird::engine::internal_api

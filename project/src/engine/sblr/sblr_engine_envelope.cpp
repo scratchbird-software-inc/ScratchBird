@@ -110,6 +110,9 @@ std::string EscapeOperandField(std::string_view value) {
 }
 
 std::string UnescapeOperandField(std::string_view value) {
+  if (value.find('\\') == std::string_view::npos) {
+    return std::string(value);
+  }
   std::string out;
   bool escaped = false;
   for (const char ch : value) {

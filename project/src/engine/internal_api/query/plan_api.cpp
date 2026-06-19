@@ -829,6 +829,7 @@ std::string RelationObjectUuid(const EngineQueryRelation& relation) {
 
 bool PredicateCanUseScalarBtree(const EnginePredicateEnvelope& predicate) {
   return predicate.predicate_kind == "column_equals" ||
+         predicate.predicate_kind == "columns_all_equal" ||
          predicate.predicate_kind == "expression_equals";
 }
 
@@ -2579,6 +2580,66 @@ std::optional<double> EvaluateRecursiveCteAggregateAssertion(const exec::Batch& 
   return value;
 }
 
+std::optional<double> EvaluateRelationScalarAggregateAssertion(
+    const EngineQueryRelation& relation,
+    const std::string& aggregate_leaf,
+    std::string value_field,
+    std::size_t fallback_column,
+    std::string* error_detail) {
+  if (aggregate_leaf == "count") {
+    return static_cast<double>(relation.rows.size());
+  }
+  if (value_field.empty()) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_scalar_aggregate_value_field_required";
+    }
+    return std::nullopt;
+  }
+  const std::size_t value_column =
+      ColumnIndexForRelation(relation, value_field, fallback_column);
+  bool saw_value = false;
+  double value = 0.0;
+  for (const auto& row : relation.rows) {
+    if (value_column >= row.fields.size()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_scalar_aggregate_value_column_out_of_range";
+      }
+      return std::nullopt;
+    }
+    const auto typed = NormalizeTypedValue(row.fields[value_column].second);
+    if (typed.is_null) continue;
+    double current = 0.0;
+    if (!TryParseReal64Value(typed.encoded_value, &current)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_scalar_aggregate_numeric_value_required";
+      }
+      return std::nullopt;
+    }
+    if (aggregate_leaf == "sum") {
+      value += current;
+      saw_value = true;
+    } else if (aggregate_leaf == "min") {
+      value = saw_value ? std::min(value, current) : current;
+      saw_value = true;
+    } else if (aggregate_leaf == "max") {
+      value = saw_value ? std::max(value, current) : current;
+      saw_value = true;
+    } else {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_scalar_aggregate_current_route_unsupported";
+      }
+      return std::nullopt;
+    }
+  }
+  if (!saw_value) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_scalar_aggregate_empty_input";
+    }
+    return std::nullopt;
+  }
+  return value;
+}
+
 std::size_t RelationWidth(const EngineQueryRelation& relation) {
   std::size_t width = relation.columns.size();
   for (const auto& row : relation.rows) {
@@ -3413,6 +3474,19 @@ bool SqlLikePatternMatches(std::string_view value, std::string_view pattern) {
   return previous[pattern.size()];
 }
 
+int CompareProjectionScalar(const std::string& left, const std::string& right) {
+  std::int64_t left_i64 = 0;
+  std::int64_t right_i64 = 0;
+  if (TryParseI64Value(left, &left_i64) && TryParseI64Value(right, &right_i64)) {
+    if (left_i64 < right_i64) return -1;
+    if (left_i64 > right_i64) return 1;
+    return 0;
+  }
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 bool ProjectionRowMatchesPredicate(const EngineRowValue& row,
                                    const EnginePredicateEnvelope& predicate) {
   if (predicate.predicate_kind.empty()) return true;
@@ -3484,6 +3558,15 @@ bool ProjectionRowMatchesPredicate(const EngineRowValue& row,
       if (*value == bound.encoded_value) return false;
     }
     return true;
+  }
+  if (predicate.predicate_kind == "column_range") {
+    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
+    if (!value) return false;
+    const bool lower_ok = predicate.bound_values.empty() ||
+                          CompareProjectionScalar(*value, predicate.bound_values[0].encoded_value) >= 0;
+    const bool upper_ok = predicate.bound_values.size() < 2 ||
+                          CompareProjectionScalar(*value, predicate.bound_values[1].encoded_value) <= 0;
+    return lower_ok && upper_ok;
   }
   if (predicate.predicate_kind == "column_like" ||
       predicate.predicate_kind == "column_not_like") {
@@ -3860,7 +3943,8 @@ plan::PhysicalAccessKind AccessKindForQueryOperation(const std::string& operatio
       operation == "join_window_max_assertion") {
     return plan::PhysicalAccessKind::kJoinHash;
   }
-  if (operation == "aggregate" || operation == "group" || operation == "group_by" ||
+  if (operation == "aggregate" || operation == "aggregate_scalar" ||
+      operation == "scalar_aggregate" || operation == "group" || operation == "group_by" ||
       operation == "count" || operation == "count_all") {
     return plan::PhysicalAccessKind::kAggregateHash;
   }
@@ -4497,6 +4581,58 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         result.evidence.push_back({"query_aggregate_value_binding",
                                    request.aggregate_value_field.empty() ? "ordinal" : "descriptor_field"});
       }
+      result.evidence.push_back({"query_relation_count", std::to_string(relations->size())});
+      result.evidence.push_back({"query_output_row_count", std::to_string(result.result_shape.rows.size())});
+      return result;
+    }
+    if (operation == "aggregate_scalar" || operation == "scalar_aggregate") {
+      result.evidence.push_back({"query_executor", "local_noncluster"});
+      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
+      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+        return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+      }
+      std::string aggregate_function = request.aggregate_function;
+      if (aggregate_function.empty()) aggregate_function = OptionValue(request, "aggregate_function:");
+      if (aggregate_function.empty()) aggregate_function = "sum";
+      const std::string aggregate_leaf = AggregateFunctionLeaf(aggregate_function);
+      const std::string aggregate_value_field =
+          request.aggregate_value_field.empty()
+              ? OptionValue(request, "aggregate_value_field:")
+              : request.aggregate_value_field;
+      const std::size_t aggregate_value_column =
+          ColumnIndexForRelation(relations->front(),
+                                 aggregate_value_field,
+                                 request.aggregate_value_column);
+      const auto actual_value = EvaluateRelationScalarAggregateAssertion(
+          relations->front(),
+          aggregate_leaf,
+          aggregate_value_field,
+          aggregate_value_column,
+          &error_detail);
+      if (!actual_value) {
+        return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+      }
+      const std::string result_projection = LowerAscii(OptionValue(request, "result_projection:"));
+      if (result_projection != "aggregate_assertion") {
+        return QueryFailure<EnginePlanOperationResult>(
+            request.context,
+            "query_plan_scalar_aggregate_current_route_requires_assertion_projection");
+      }
+      result.result_shape = NumericAssertionResultShape(request, *actual_value, &error_detail);
+      if (!error_detail.empty()) {
+        return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+      }
+      result.plan_kind = operation;
+      result.output_row_count = result.result_shape.rows.size();
+      AddApiBehaviorEvidence(&result, "query_execution", operation);
+      result.evidence.push_back({"query_scalar_aggregate", aggregate_leaf});
+      result.evidence.push_back({"query_aggregate_function_requested", aggregate_leaf});
+      result.evidence.push_back({"query_aggregate_value_column",
+                                 std::to_string(aggregate_value_column)});
+      result.evidence.push_back({"query_aggregate_value_binding",
+                                 aggregate_value_field.empty() ? "ordinal" : "descriptor_field"});
+      result.evidence.push_back({"query_scalar_aggregate_result_projection", "aggregate_assertion"});
       result.evidence.push_back({"query_relation_count", std::to_string(relations->size())});
       result.evidence.push_back({"query_output_row_count", std::to_string(result.result_shape.rows.size())});
       return result;

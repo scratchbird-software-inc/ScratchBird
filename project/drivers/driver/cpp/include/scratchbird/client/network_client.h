@@ -63,8 +63,8 @@ struct NetworkClientConfig {
     uint32_t connect_timeout_ms{network::DEFAULT_CONNECT_TIMEOUT_MS};
     uint32_t read_timeout_ms{network::DEFAULT_READ_TIMEOUT_MS};
     uint32_t write_timeout_ms{network::DEFAULT_WRITE_TIMEOUT_MS};
-    uint32_t copy_window_bytes{65536};
-    uint32_t copy_chunk_bytes{16384};
+    uint32_t copy_window_bytes{1024u * 1024u};
+    uint32_t copy_chunk_bytes{1024u * 1024u};
     bool enable_copy_streaming{false};
 
     network::SSLMode ssl_mode{network::SSLMode::REQUIRE};

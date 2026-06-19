@@ -599,6 +599,7 @@ struct DmlRouteInfo {
   bool has_insert_values{false};
   bool has_insert_select_recursive_cte{false};
   bool count_assertion_projection{false};
+  bool row_assertion_projection{false};
   bool insert_column_list_present{false};
   bool insert_values_include_opaque_extension{false};
   std::size_t insert_column_count{0};
@@ -652,6 +653,8 @@ struct DmlRouteInfo {
   std::string expected_column_name;
   std::string expected_count;
   std::string expected_value;
+  std::string expected_value_type;
+  std::string assertion_value_field;
   std::vector<std::string> conflict_update_columns;
   std::vector<std::string> keyword_surface_ids;
   std::vector<std::vector<DmlInsertFieldInfo>> insert_rows;
@@ -759,6 +762,17 @@ struct ObservabilityRouteInfo {
   bool active{false};
   std::string route_kind;
   std::vector<std::string> row_surface_ids;
+};
+
+struct ExplainPlanOnlyInfo {
+  bool active{false};
+  bool valid{false};
+  std::string invalid_reason;
+  std::string query_operation{"scan"};
+  std::string target_object_uuid;
+  std::vector<std::string> related_object_uuids;
+  std::string group_key_field;
+  std::string aggregate_function{"sb.aggregate.sum"};
 };
 
 struct PublicExactCommandSpec {
@@ -1276,6 +1290,19 @@ struct GroupByAggregateInfo {
   std::string listagg_max_output_bytes;
   std::string listagg_truncation_indicator;
   std::string listagg_with_count;
+};
+
+struct ScalarAggregateInfo {
+  bool active{false};
+  bool valid{false};
+  std::string invalid_reason;
+  std::string object_uuid;
+  std::string aggregate_field;
+  std::string aggregate_function{"sb.aggregate.sum"};
+  std::string assertion_id;
+  std::string actual_column_name;
+  std::string expected_column_name;
+  std::string expected_value;
 };
 
 struct TableCountInfo {
@@ -6684,6 +6711,127 @@ std::vector<const Token*> MeaningfulTokenPtrs(const CstDocument& cst) {
   return out;
 }
 
+std::optional<CstDocument> BuildExplainInnerQueryCst(const CstDocument& cst) {
+  const auto tokens = MeaningfulTokenPtrs(cst);
+  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "EXPLAIN") {
+    return std::nullopt;
+  }
+  std::size_t cursor = 1;
+  if (cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "PLAN") {
+    ++cursor;
+    if (cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "FOR") {
+      ++cursor;
+    }
+  }
+  if (cursor < tokens.size() && tokens[cursor]->text == "(") {
+    std::size_t depth = 0;
+    while (cursor < tokens.size()) {
+      if (tokens[cursor]->text == "(") {
+        ++depth;
+      } else if (tokens[cursor]->text == ")") {
+        if (depth == 0) break;
+        --depth;
+        if (depth == 0) {
+          ++cursor;
+          break;
+        }
+      }
+      ++cursor;
+    }
+  }
+  if (cursor >= tokens.size()) return std::nullopt;
+  const std::string first = ToUpperAscii(tokens[cursor]->text);
+  if (first != "SELECT" && first != "WITH" && first != "VALUES") {
+    return std::nullopt;
+  }
+  return BuildCst(std::string_view(cst.source).substr(tokens[cursor]->offset));
+}
+
+std::size_t FindExplainTopLevelKeyword(const std::vector<const Token*>& tokens,
+                                       std::string_view keyword) {
+  int depth = 0;
+  for (std::size_t index = 0; index < tokens.size(); ++index) {
+    const std::string text = ToUpperAscii(tokens[index]->text);
+    if (tokens[index]->text == "(") {
+      ++depth;
+      continue;
+    }
+    if (tokens[index]->text == ")") {
+      if (depth > 0) --depth;
+      continue;
+    }
+    if (depth == 0 && text == keyword) return index;
+  }
+  return tokens.size();
+}
+
+std::string ExplainAggregateFunctionId(const std::vector<const Token*>& tokens) {
+  int depth = 0;
+  for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
+    if (tokens[index]->text == "(") {
+      ++depth;
+      continue;
+    }
+    if (tokens[index]->text == ")") {
+      if (depth > 0) --depth;
+      continue;
+    }
+    const std::string function = ToUpperAscii(tokens[index]->text);
+    if (tokens[index + 1]->text != "(") continue;
+    if (function == "SUM") return "sb.aggregate.sum";
+    if (function == "COUNT") return "sb.aggregate.count";
+    if (function == "AVG") return "sb.aggregate.avg";
+    if (function == "MIN") return "sb.aggregate.min";
+    if (function == "MAX") return "sb.aggregate.max";
+  }
+  return "sb.aggregate.sum";
+}
+
+ExplainPlanOnlyInfo AnalyzeExplainPlanOnlyRoute(
+    const std::optional<CstDocument>& inner_query,
+    const std::vector<std::string>& resolved_object_uuids) {
+  ExplainPlanOnlyInfo info;
+  if (!inner_query) return info;
+  const auto tokens = MeaningfulTokenPtrs(*inner_query);
+  if (tokens.empty()) return info;
+  info.active = true;
+
+  const std::string first = ToUpperAscii(tokens.front()->text);
+  if (first == "VALUES") {
+    info.query_operation = "values";
+    info.valid = true;
+    return info;
+  }
+  if (first == "WITH") {
+    info.query_operation = "materialized_cte";
+  } else if (FindExplainTopLevelKeyword(tokens, "JOIN") != tokens.size()) {
+    info.query_operation = "inner_join";
+  } else if (FindExplainTopLevelKeyword(tokens, "GROUP") != tokens.size()) {
+    info.query_operation = "group_by";
+    info.aggregate_function = ExplainAggregateFunctionId(tokens);
+    const std::size_t group_index = FindExplainTopLevelKeyword(tokens, "GROUP");
+    if (group_index + 2 < tokens.size() &&
+        ToUpperAscii(tokens[group_index + 1]->text) == "BY") {
+      info.group_key_field = LowerAscii(tokens[group_index + 2]->text);
+    }
+  } else {
+    info.query_operation = "scan";
+  }
+
+  if (!resolved_object_uuids.empty()) {
+    info.target_object_uuid = resolved_object_uuids.front();
+    for (std::size_t index = 1; index < resolved_object_uuids.size(); ++index) {
+      info.related_object_uuids.push_back(resolved_object_uuids[index]);
+    }
+  }
+  if (info.target_object_uuid.empty()) {
+    info.invalid_reason = "explain_plan_only_requires_uuid_resolved_relation";
+    return info;
+  }
+  info.valid = true;
+  return info;
+}
+
 bool IsUnsignedIntegerLiteral(const Token& token) {
   if (token.kind != TokenKind::kNumericLiteral || token.text.empty()) return false;
   for (const unsigned char ch : token.text) {
@@ -7090,6 +7238,47 @@ bool ConsumeSelectColumnInListPredicate(const std::vector<const Token*>& tokens,
   return true;
 }
 
+bool ConsumeSelectColumnRangePredicate(const std::vector<const Token*>& tokens,
+                                       std::size_t* index,
+                                       std::string* predicate_column,
+                                       std::string* predicate_values,
+                                       std::string* predicate_value_types) {
+  if (index == nullptr || predicate_column == nullptr ||
+      predicate_values == nullptr || predicate_value_types == nullptr) {
+    return false;
+  }
+  std::size_t cursor = *index;
+  std::string predicate_leaf;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &predicate_leaf) ||
+      cursor >= tokens.size() ||
+      ToUpperAscii(tokens[cursor]->text) != "BETWEEN") {
+    return false;
+  }
+  ++cursor;
+  if (cursor >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[cursor])) {
+    return false;
+  }
+  const std::string lower_value = DmlLiteralPayload(*tokens[cursor]);
+  const std::string lower_type = BoundedWhereEqualityLiteralType(*tokens[cursor]);
+  ++cursor;
+  if (cursor >= tokens.size() || ToUpperAscii(tokens[cursor]->text) != "AND") {
+    return false;
+  }
+  ++cursor;
+  if (cursor >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[cursor])) {
+    return false;
+  }
+  const std::string upper_value = DmlLiteralPayload(*tokens[cursor]);
+  const std::string upper_type = BoundedWhereEqualityLiteralType(*tokens[cursor]);
+  ++cursor;
+
+  *predicate_column = std::move(predicate_leaf);
+  *predicate_values = lower_value + "," + upper_value;
+  *predicate_value_types = lower_type + "," + upper_type;
+  *index = cursor;
+  return true;
+}
+
 bool ConsumeSelectColumnLikePredicate(const std::vector<const Token*>& tokens,
                                       std::size_t* index,
                                       std::string* predicate_column,
@@ -7478,6 +7667,80 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
   info->unsupported_feature = "merge_on_clause_required";
 }
 
+bool ConsumeDmlProjectionAlias(const std::vector<const Token*>& tokens,
+                               std::size_t* index,
+                               std::string* alias) {
+  if (index == nullptr || alias == nullptr || *index >= tokens.size()) return false;
+  if (ToUpperAscii(tokens[*index]->text) == "AS") {
+    ++(*index);
+    if (*index >= tokens.size() || !IsIdentifierLikeToken(*tokens[*index])) return false;
+    *alias = LowerAscii(tokens[*index]->text);
+    ++(*index);
+    return true;
+  }
+  if (!IsIdentifierLikeToken(*tokens[*index])) return false;
+  *alias = LowerAscii(tokens[*index]->text);
+  ++(*index);
+  return true;
+}
+
+bool ConsumeSelectRowAssertionProjection(const std::vector<const Token*>& tokens,
+                                         std::size_t from_index,
+                                         DmlRouteInfo* info) {
+  if (info == nullptr || from_index == tokens.size() || from_index < 9 ||
+      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
+    return false;
+  }
+  std::size_t index = 1;
+  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
+  const std::string assertion_id = tokens[index]->text;
+  ++index;
+
+  std::string assertion_alias;
+  if (!ConsumeDmlProjectionAlias(tokens, &index, &assertion_alias) ||
+      assertion_alias != "assertion_id") {
+    return false;
+  }
+  if (index >= tokens.size() || tokens[index]->text != ",") return false;
+  ++index;
+
+  std::string projected_field;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &projected_field)) return false;
+  projected_field = LowerAscii(projected_field);
+
+  std::string actual_alias;
+  if (!ConsumeDmlProjectionAlias(tokens, &index, &actual_alias) ||
+      actual_alias.rfind("actual_", 0) != 0) {
+    return false;
+  }
+  if (index >= tokens.size() || tokens[index]->text != ",") return false;
+  ++index;
+
+  if (index >= from_index || !IsBoundedWhereEqualityLiteral(*tokens[index])) return false;
+  const std::string expected_value = DmlLiteralPayload(*tokens[index]);
+  const std::string expected_value_type = BoundedWhereEqualityLiteralType(*tokens[index]);
+  ++index;
+
+  std::string expected_alias;
+  if (!ConsumeDmlProjectionAlias(tokens, &index, &expected_alias) ||
+      expected_alias.rfind("expected_", 0) != 0) {
+    return false;
+  }
+  if (index != from_index) return false;
+  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
+  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
+  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
+
+  info->row_assertion_projection = true;
+  info->assertion_id = assertion_id;
+  info->actual_column_name = actual_alias;
+  info->expected_column_name = expected_alias;
+  info->expected_value = expected_value;
+  info->expected_value_type = expected_value_type;
+  info->assertion_value_field = std::move(projected_field);
+  return true;
+}
+
 void AnalyzeSelectOrderLimitOffset(const CstDocument& cst, DmlRouteInfo* info) {
   if (info == nullptr || !info->read) return;
   const auto tokens = MeaningfulTokenPtrs(cst);
@@ -7501,6 +7764,8 @@ void AnalyzeSelectOrderLimitOffset(const CstDocument& cst, DmlRouteInfo* info) {
     info->expected_column_name = count_assertion_projection.expected_column_name;
     info->expected_count = count_assertion_projection.expected_count;
     info->expected_value = count_assertion_projection.expected_value;
+  } else {
+    ConsumeSelectRowAssertionProjection(tokens, from_index, info);
   }
 
   if (tokens.size() > 1 && ToUpperAscii(tokens[1]->text) == "TOP") {
@@ -7630,6 +7895,22 @@ void AnalyzeSelectOrderLimitOffset(const CstDocument& cst, DmlRouteInfo* info) {
         info->predicate_column = std::move(in_list_column);
         info->predicate_value = std::move(in_list_values);
         info->predicate_value_type = std::move(in_list_value_types);
+        continue;
+      }
+      index = predicate_start;
+      std::string range_column;
+      std::string range_values;
+      std::string range_value_types;
+      if (ConsumeSelectColumnRangePredicate(tokens,
+                                            &index,
+                                            &range_column,
+                                            &range_values,
+                                            &range_value_types)) {
+        info->has_where_equality_predicate = true;
+        info->predicate_kind = "column_range";
+        info->predicate_column = std::move(range_column);
+        info->predicate_value = std::move(range_values);
+        info->predicate_value_type = std::move(range_value_types);
         continue;
       }
       index = predicate_start;
@@ -7933,25 +8214,41 @@ void AnalyzeUpdateAssignmentPredicate(const CstDocument& cst, DmlRouteInfo* info
     info->predicate_value_type = std::move(modulo_value_types);
   } else {
     index = predicate_start;
-    std::string predicate_leaf;
-    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &predicate_leaf) ||
-        index >= tokens.size() || tokens[index]->text != "=") {
-      info->unsupported_query_family = true;
-      info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
-      return;
+    std::string range_column;
+    std::string range_values;
+    std::string range_value_types;
+    if (ConsumeSelectColumnRangePredicate(tokens,
+                                          &index,
+                                          &range_column,
+                                          &range_values,
+                                          &range_value_types)) {
+      info->has_where_equality_predicate = true;
+      info->predicate_kind = "column_range";
+      info->predicate_column = std::move(range_column);
+      info->predicate_value = std::move(range_values);
+      info->predicate_value_type = std::move(range_value_types);
+    } else {
+      index = predicate_start;
+      std::string predicate_leaf;
+      if (!ConsumeTokenQualifiedLeaf(tokens, &index, &predicate_leaf) ||
+          index >= tokens.size() || tokens[index]->text != "=") {
+        info->unsupported_query_family = true;
+        info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
+        return;
+      }
+      ++index;
+      if (index >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[index])) {
+        info->unsupported_query_family = true;
+        info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
+        return;
+      }
+      info->has_where_equality_predicate = true;
+      info->predicate_kind = "column_equals";
+      info->predicate_column = std::move(predicate_leaf);
+      info->predicate_value = DmlLiteralPayload(*tokens[index]);
+      info->predicate_value_type = BoundedWhereEqualityLiteralType(*tokens[index]);
+      ++index;
     }
-    ++index;
-    if (index >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[index])) {
-      info->unsupported_query_family = true;
-      info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
-      return;
-    }
-    info->has_where_equality_predicate = true;
-    info->predicate_kind = "column_equals";
-    info->predicate_column = std::move(predicate_leaf);
-    info->predicate_value = DmlLiteralPayload(*tokens[index]);
-    info->predicate_value_type = BoundedWhereEqualityLiteralType(*tokens[index]);
-    ++index;
   }
   if (index < tokens.size()) {
     if (ToUpperAscii(tokens[index]->text) == "RETURNING") {
@@ -8042,23 +8339,39 @@ void AnalyzeDeletePredicate(const CstDocument& cst, DmlRouteInfo* info) {
         info->predicate_value_type = std::move(in_list_value_types);
       } else {
         index = predicate_start;
-        std::string predicate_expression;
-        std::string predicate_expression_value;
-        std::string predicate_expression_value_type;
-        if (ConsumeSelectExpressionEqualityPredicate(tokens,
-                                                     &index,
-                                                     &predicate_expression,
-                                                     &predicate_expression_value,
-                                                     &predicate_expression_value_type)) {
+        std::string range_column;
+        std::string range_values;
+        std::string range_value_types;
+        if (ConsumeSelectColumnRangePredicate(tokens,
+                                              &index,
+                                              &range_column,
+                                              &range_values,
+                                              &range_value_types)) {
           info->has_where_equality_predicate = true;
-          info->predicate_kind = "expression_equals";
-          info->predicate_column = std::move(predicate_expression);
-          info->predicate_value = std::move(predicate_expression_value);
-          info->predicate_value_type = std::move(predicate_expression_value_type);
+          info->predicate_kind = "column_range";
+          info->predicate_column = std::move(range_column);
+          info->predicate_value = std::move(range_values);
+          info->predicate_value_type = std::move(range_value_types);
         } else {
-          info->unsupported_query_family = true;
-          info->unsupported_feature = "delete_where_requires_descriptor_bound_predicate";
-          return;
+          index = predicate_start;
+          std::string predicate_expression;
+          std::string predicate_expression_value;
+          std::string predicate_expression_value_type;
+          if (ConsumeSelectExpressionEqualityPredicate(tokens,
+                                                       &index,
+                                                       &predicate_expression,
+                                                       &predicate_expression_value,
+                                                       &predicate_expression_value_type)) {
+            info->has_where_equality_predicate = true;
+            info->predicate_kind = "expression_equals";
+            info->predicate_column = std::move(predicate_expression);
+            info->predicate_value = std::move(predicate_expression_value);
+            info->predicate_value_type = std::move(predicate_expression_value_type);
+          } else {
+            info->unsupported_query_family = true;
+            info->unsupported_feature = "delete_where_requires_descriptor_bound_predicate";
+            return;
+          }
         }
       }
     }
@@ -15726,6 +16039,74 @@ bool ConsumeSelectJoinCountAssertionProjection(const std::vector<const Token*>& 
   return true;
 }
 
+bool ConsumeAggregateAssertionFunctionCall(const std::vector<const Token*>& tokens,
+                                           std::size_t* index,
+                                           std::string* aggregate_function_id,
+                                           std::string* aggregate_field) {
+  if (index == nullptr || aggregate_function_id == nullptr || aggregate_field == nullptr ||
+      *index >= tokens.size()) {
+    return false;
+  }
+  std::size_t cursor = *index;
+  const bool cast_wrapper = TokenTextEquals(tokens, cursor, "CAST");
+  if (cast_wrapper) {
+    ++cursor;
+    if (!TokenTextEquals(tokens, cursor, "(")) return false;
+    ++cursor;
+  }
+
+  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, cursor);
+  if (!aggregate_function) return false;
+  const auto parsed_aggregate_id =
+      AggregateFunctionIdForGroupRoute(aggregate_function->text);
+  if (!parsed_aggregate_id) return false;
+  cursor = aggregate_function->end_index;
+  if (!TokenTextEquals(tokens, cursor, "(")) return false;
+  ++cursor;
+
+  std::string parsed_field;
+  if (*parsed_aggregate_id == "sb.aggregate.count" &&
+      TokenTextEquals(tokens, cursor, "*")) {
+    parsed_field.clear();
+    ++cursor;
+  } else if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &parsed_field)) {
+    return false;
+  }
+  if (!TokenTextEquals(tokens, cursor, ")")) return false;
+  ++cursor;
+
+  if (cast_wrapper) {
+    if (!TokenTextEquals(tokens, cursor, "AS")) return false;
+    ++cursor;
+    bool consumed_type = false;
+    int type_depth = 0;
+    while (cursor < tokens.size()) {
+      if (tokens[cursor]->text == "(") {
+        ++type_depth;
+        consumed_type = true;
+        ++cursor;
+        continue;
+      }
+      if (tokens[cursor]->text == ")") {
+        if (type_depth == 0) break;
+        --type_depth;
+        consumed_type = true;
+        ++cursor;
+        continue;
+      }
+      consumed_type = true;
+      ++cursor;
+    }
+    if (!consumed_type || !TokenTextEquals(tokens, cursor, ")")) return false;
+    ++cursor;
+  }
+
+  *index = cursor;
+  *aggregate_function_id = *parsed_aggregate_id;
+  *aggregate_field = LowerAscii(parsed_field);
+  return true;
+}
+
 bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& tokens,
                                                std::size_t from_index,
                                                TableJoinInfo* info) {
@@ -15746,17 +16127,14 @@ bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& 
   if (!TokenTextEquals(tokens, index, ",")) return false;
   ++index;
 
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  if (!aggregate_function_id) return false;
-  index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) return false;
-  ++index;
+  std::string aggregate_function_id;
   std::string projected_aggregate_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &projected_aggregate_field)) return false;
-  if (!TokenTextEquals(tokens, index, ")")) return false;
-  ++index;
+  if (!ConsumeAggregateAssertionFunctionCall(tokens,
+                                             &index,
+                                             &aggregate_function_id,
+                                             &projected_aggregate_field)) {
+    return false;
+  }
 
   std::string actual_alias;
   if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
@@ -15787,7 +16165,7 @@ bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& 
   info->assertion_id = assertion_id;
   info->actual_column_name = actual_alias;
   info->expected_column_name = expected_alias;
-  info->aggregate_function = *aggregate_function_id;
+  info->aggregate_function = aggregate_function_id;
   info->aggregate_field = LowerAscii(projected_aggregate_field);
   info->expected_value = expected_value;
   return true;
@@ -18033,6 +18411,51 @@ GroupByAggregateInfo AnalyzeGroupByAggregateRoute(
   return info;
 }
 
+ScalarAggregateInfo AnalyzeScalarAggregateRoute(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids) {
+  ScalarAggregateInfo info;
+  const auto tokens = MeaningfulTokenPtrs(cst);
+  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
+  const std::size_t from_index = FindTopLevelRouteKeyword(tokens, "FROM");
+  if (from_index == tokens.size()) return info;
+
+  TableJoinInfo projection;
+  if (!ConsumeSelectAggregateAssertionProjection(tokens, from_index, &projection)) {
+    return info;
+  }
+  if (projection.aggregate_function == "sb.aggregate.count") {
+    return info;
+  }
+  info.active = true;
+  info.aggregate_function = projection.aggregate_function;
+  info.aggregate_field = projection.aggregate_field;
+  info.assertion_id = projection.assertion_id;
+  info.actual_column_name = projection.actual_column_name;
+  info.expected_column_name = projection.expected_column_name;
+  info.expected_value = projection.expected_value;
+
+  std::size_t index = from_index + 1;
+  std::string source_relation_path;
+  std::string ignored_table;
+  if (!ConsumeTokenQualifiedPath(tokens, &index, &source_relation_path, &ignored_table)) {
+    info.invalid_reason = "scalar_aggregate_relation_invalid";
+    return info;
+  }
+  ConsumeOptionalTokenAlias(tokens, &index);
+  if (index != tokens.size()) {
+    info.invalid_reason = "scalar_aggregate_current_route_requires_single_relation_without_filter";
+    return info;
+  }
+  if (resolved_object_uuids.empty()) {
+    info.invalid_reason = "scalar_aggregate_requires_uuid_resolved_relation";
+    return info;
+  }
+  info.object_uuid = resolved_object_uuids.front();
+  info.valid = true;
+  return info;
+}
+
 TableCountInfo AnalyzeTableCountRoute(
     const CstDocument& cst,
     const std::vector<std::string>& resolved_object_uuids) {
@@ -18171,6 +18594,22 @@ TableCountInfo AnalyzeTableCountRoute(
         info.predicate_column = std::move(in_list_column);
         info.predicate_value = std::move(in_list_values);
         info.predicate_value_type = std::move(in_list_value_types);
+        continue;
+      }
+      index = predicate_start;
+      std::string range_column;
+      std::string range_values;
+      std::string range_value_types;
+      if (ConsumeSelectColumnRangePredicate(tokens,
+                                            &index,
+                                            &range_column,
+                                            &range_values,
+                                            &range_value_types)) {
+        info.has_where_predicate = true;
+        info.predicate_kind = "column_range";
+        info.predicate_column = std::move(range_column);
+        info.predicate_value = std::move(range_values);
+        info.predicate_value_type = std::move(range_value_types);
         continue;
       }
       index = predicate_start;
@@ -19913,8 +20352,55 @@ bool ConsumeCreateIndexKeyList(const CstDocument& cst,
       ++cursor;
       continue;
     }
+    std::string envelope;
+    if (ToUpperAscii(token.text) == "CAST") {
+      std::size_t probe = cursor + 1;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || cst.tokens[probe].text != "(") return false;
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[probe])) return false;
+      envelope = "identity:" + cst.tokens[probe].text;
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || ToUpperAscii(cst.tokens[probe].text) != "AS") return false;
+      ++probe;
+      int type_depth = 0;
+      bool consumed_type = false;
+      while (probe < cst.tokens.size()) {
+        if (cst.tokens[probe].text == "(") {
+          ++type_depth;
+          consumed_type = true;
+          ++probe;
+          continue;
+        }
+        if (cst.tokens[probe].text == ")") {
+          if (type_depth == 0) break;
+          --type_depth;
+          consumed_type = true;
+          ++probe;
+          continue;
+        }
+        if (cst.tokens[probe].kind == TokenKind::kEnd ||
+            cst.tokens[probe].kind == TokenKind::kStatementTerminator) {
+          return false;
+        }
+        consumed_type = true;
+        ++probe;
+      }
+      if (!consumed_type || probe >= cst.tokens.size() || cst.tokens[probe].text != ")") {
+        return false;
+      }
+      ++probe;
+      if (expression_key_present != nullptr) *expression_key_present = true;
+      key_envelopes->push_back(std::move(envelope));
+      ++count;
+      expect_key = false;
+      cursor = probe;
+      continue;
+    }
     if (!IsIdentifierLikeToken(token)) return false;
-    std::string envelope = token.text;
+    envelope = token.text;
     std::size_t probe = cursor + 1;
     while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
     if (probe < cst.tokens.size() && cst.tokens[probe].text == "(") {
@@ -21054,6 +21540,8 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
   }
   if (info.index_profile == "gin") info.index_profile = "full_text";
   if (info.index_profile == "fulltext") info.index_profile = "full_text";
+  if (info.index_profile == "unique_btree") info.index_profile = "btree_unique";
+  if (info.index_profile == "graph") info.index_profile = "graph_adjacency";
   if (info.unique && info.index_profile == "btree") info.index_profile = "btree_unique";
   bool expression_key_present = false;
   if (!ConsumeCreateIndexKeyList(cst,
@@ -21066,6 +21554,22 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
   }
   if (expression_key_present && info.index_profile == "btree") {
     info.index_profile = "expression";
+  }
+  if (info.index_profile == "expression") {
+    for (auto& envelope : info.key_envelopes) {
+      if (envelope.rfind("lower:", 0) == 0 ||
+          envelope.rfind("upper:", 0) == 0 ||
+          envelope.rfind("length:", 0) == 0 ||
+          envelope.rfind("identity:", 0) == 0 ||
+          envelope.rfind("include:", 0) == 0 ||
+          envelope.rfind("where_", 0) == 0) {
+        continue;
+      }
+      envelope = "identity:" + envelope;
+    }
+  }
+  if (info.unique) {
+    AppendIfMissing(&info.key_envelopes, "unique");
   }
   while (true) {
     if (ConsumeKeyword(cst, &index, "INCLUDE")) {
@@ -21094,8 +21598,35 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
     if (ConsumeKeyword(cst, &index, "WHERE")) {
       std::size_t predicate_parts = 0;
       const std::size_t predicate_begin = index;
-      if (!ConsumeQualifiedName(cst, &index, &predicate_parts) ||
-          !ConsumeSymbolText(cst, &index, "=")) {
+      if (!ConsumeQualifiedName(cst, &index, &predicate_parts)) {
+        info.invalid_reason = "index_where_predicate_invalid";
+        return info;
+      }
+      const std::string predicate_column = LastQualifiedNameLeaf(cst, predicate_begin, index);
+      if (ConsumeSymbolText(cst, &index, "%")) {
+        while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+        if (index >= cst.tokens.size() || !IsUnsignedIntegerLiteral(cst.tokens[index])) {
+          info.invalid_reason = "index_where_predicate_value_required";
+          return info;
+        }
+        const std::string divisor = cst.tokens[index].text;
+        ++index;
+        if (!ConsumeSymbolText(cst, &index, "=")) {
+          info.invalid_reason = "index_where_predicate_invalid";
+          return info;
+        }
+        while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+        if (index >= cst.tokens.size() || !IsUnsignedIntegerLiteral(cst.tokens[index])) {
+          info.invalid_reason = "index_where_predicate_value_required";
+          return info;
+        }
+        info.key_envelopes.push_back("where_mod_eq:" + predicate_column +
+                                     ":" + divisor + "=" + cst.tokens[index].text);
+        ++index;
+        if (info.index_profile == "btree") info.index_profile = "partial";
+        continue;
+      }
+      if (!ConsumeSymbolText(cst, &index, "=")) {
         info.invalid_reason = "index_where_predicate_invalid";
         return info;
       }
@@ -21114,9 +21645,7 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
       }
       predicate_value = DmlLiteralPayload(value_token);
       ++index;
-      info.key_envelopes.push_back("where_eq:" +
-                                   LastQualifiedNameLeaf(cst, predicate_begin, index) +
-                                   "=" + predicate_value);
+      info.key_envelopes.push_back("where_eq:" + predicate_column + "=" + predicate_value);
       if (info.index_profile == "btree") info.index_profile = "partial";
       continue;
     }
@@ -24910,6 +25439,32 @@ void PopulateGroupByAggregateAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
 
+void PopulateScalarAggregateAuthority(SblrEnvelope* envelope,
+                                      const ScalarAggregateInfo& info) {
+  if (!info.active || !info.valid) return;
+  envelope->operation_id = "query.plan_operation";
+  envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
+  envelope->engine_api_operation_id = envelope->operation_id;
+  envelope->operation_family = "sblr.query.relational.v3";
+  envelope->sblr_operation_key = "sblr.query.relational.v3";
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.server.resolve_name_registry_public");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.server.security_policy_context_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.server.transaction_context_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.query_plan_api_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_snapshot_visibility_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
+  AppendIfMissing(&envelope->required_rights, "right.read");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.query.aggregate_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->policy_refs, "query_aggregate_authorization_policy");
+  AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
+}
+
 void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& info) {
   if (!info.active || !info.valid) return;
   if (info.catalog_projection_count) {
@@ -26336,9 +26891,24 @@ void AppendSimpleCreateStatisticsJson(std::ostream& out, const SimpleCreateStati
 void AppendSimpleCreateIndexJson(std::ostream& out, const SimpleCreateIndexInfo& info) {
   if (!info.active || !info.valid) return;
   std::ostringstream key_envelopes;
+  bool expression_keys_included = false;
+  bool predicate_included = false;
+  bool include_columns_included = false;
   for (std::size_t index = 0; index < info.key_envelopes.size(); ++index) {
     if (index != 0) key_envelopes << ',';
     key_envelopes << info.key_envelopes[index];
+    if (info.key_envelopes[index].rfind("identity:", 0) == 0 ||
+        info.key_envelopes[index].rfind("lower:", 0) == 0 ||
+        info.key_envelopes[index].rfind("upper:", 0) == 0 ||
+        info.key_envelopes[index].rfind("length:", 0) == 0) {
+      expression_keys_included = true;
+    }
+    if (info.key_envelopes[index].rfind("where_", 0) == 0) {
+      predicate_included = true;
+    }
+    if (info.key_envelopes[index].rfind("include:", 0) == 0) {
+      include_columns_included = true;
+    }
   }
   out << "\"catalog_envelope_kind\":\"create_index_ddl\","
       << "\"catalog_authority\":\"sys.catalog.index\","
@@ -26360,9 +26930,9 @@ void AppendSimpleCreateIndexJson(std::ostream& out, const SimpleCreateIndexInfo&
       << "\"mga_catalog_commit_required\":true,"
       << "\"mga_table_visibility_required\":true,"
       << "\"index_key_envelopes_bound_by_engine\":true,"
-      << "\"index_expression_keys_included\":false,"
-      << "\"index_predicate_included\":false,"
-      << "\"index_include_columns_included\":false,"
+      << "\"index_expression_keys_included\":" << (expression_keys_included ? "true" : "false") << ','
+      << "\"index_predicate_included\":" << (predicate_included ? "true" : "false") << ','
+      << "\"index_include_columns_included\":" << (include_columns_included ? "true" : "false") << ','
       << "\"index_options_included\":false,"
       << "\"name_text_included\":false,"
       << "\"sql_text_included\":false,";
@@ -26848,6 +27418,33 @@ void AppendObservabilityRouteJson(std::ostream& out, const ObservabilityRouteInf
   }
 }
 
+void AppendExplainPlanOnlyJson(std::ostream& out,
+                               const ExplainPlanOnlyInfo& info) {
+  if (!info.active || !info.valid) return;
+  out << "\"explain_plan_only\":true,"
+      << "\"query_execute\":false,"
+      << "\"query_operation\":\"" << EscapeJson(info.query_operation) << "\","
+      << "\"target_object_kind\":\"table\","
+      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+      << "\"source_relation_required\":true,"
+      << "\"row_storage_touched\":false,"
+      << "\"mga_transaction_context_required\":true,"
+      << "\"object_name_text_included\":false,"
+      << "\"sql_text_included\":false,";
+  if (!info.group_key_field.empty()) {
+    out << "\"group_key_field\":\"" << EscapeJson(info.group_key_field) << "\","
+        << "\"group_key_column\":\"0\",";
+  }
+  if (info.query_operation == "group_by") {
+    out << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\",";
+  }
+  for (std::size_t index = 0; index < info.related_object_uuids.size(); ++index) {
+    out << "\"related_object_" << index << "_uuid\":\""
+        << EscapeJson(info.related_object_uuids[index]) << "\","
+        << "\"related_object_" << index << "_kind\":\"table\",";
+  }
+}
+
 void AppendPublicExactCommandJson(std::ostream& out,
                                 const PublicExactCommandRouteInfo& info) {
   if (!info.active || !info.valid || info.spec == nullptr) return;
@@ -27034,6 +27631,16 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
         << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
         << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
+  } else if (info.row_assertion_projection) {
+    out << "\"result_projection\":\"value_assertion\","
+        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
+        << "\"assertion_value_field\":\"" << EscapeJson(info.assertion_value_field) << "\","
+        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
+        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
+        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\","
+        << "\"expected_value_type\":\"" << EscapeJson(info.expected_value_type) << "\","
+        << "\"projection_binding_model\":\"engine_row_descriptor_field\","
+        << "\"projection_descriptor_bound\":true,";
   }
   if (info.has_update_assignment) {
     if (!info.assignment_plan.empty()) {
@@ -28236,6 +28843,30 @@ void AppendGroupByAggregateJson(std::ostream& out,
       << "\"sql_text_included\":false,";
 }
 
+void AppendScalarAggregateJson(std::ostream& out,
+                               const ScalarAggregateInfo& info) {
+  if (!info.active || !info.valid) return;
+  out << "\"query_envelope_kind\":\"table_scalar_aggregate\","
+      << "\"query_operation\":\"aggregate_scalar\","
+      << "\"query_execute\":\"true\","
+      << "\"target_object_kind\":\"table\","
+      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
+      << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
+      << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
+      << "\"aggregate_value_column\":\"1\","
+      << "\"result_projection\":\"aggregate_assertion\","
+      << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
+      << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
+      << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
+      << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\","
+      << "\"aggregate_binding_model\":\"engine_row_descriptor_scalar_aggregate_assertion\","
+      << "\"source_relation_required\":true,"
+      << "\"row_storage_touched\":true,"
+      << "\"mga_transaction_context_required\":true,"
+      << "\"object_name_text_included\":false,"
+      << "\"sql_text_included\":false,";
+}
+
 void AppendTableCountJson(std::ostream& out, const TableCountInfo& info) {
   if (!info.active || !info.valid) return;
   if (info.catalog_projection_count) {
@@ -28873,6 +29504,7 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (AnalyzePivotRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeUnpivotRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeRowNumberWindowRoute(cst, {}).active) return "query.plan_operation";
+  if (AnalyzeScalarAggregateRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeGroupByAggregateRoute(cst, {}).active) return "query.plan_operation";
   if (const auto table_count_route = AnalyzeTableCountRoute(cst, {});
       table_count_route.active) {
@@ -29022,6 +29654,16 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto observability_route = AnalyzeObservabilityRoute(cst);
   const bool source_explain_observability_route =
       LifecycleCommandStartsWith(cst.source, "EXPLAIN");
+  const auto explain_inner_query_cst =
+      source_explain_observability_route ? BuildExplainInnerQueryCst(cst)
+                                         : std::optional<CstDocument>{};
+  const CstDocument& query_route_cst =
+      explain_inner_query_cst ? *explain_inner_query_cst : cst;
+  const auto explain_plan_only =
+      source_explain_observability_route
+          ? AnalyzeExplainPlanOnlyRoute(explain_inner_query_cst,
+                                        bound.resolved_object_uuids)
+          : ExplainPlanOnlyInfo{};
   const bool observability_statement_route =
       observability_route.active || source_explain_observability_route;
   const auto cursor_control = (bridge_route.active || exact_command_route.active)
@@ -29528,46 +30170,49 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       index_template_ddl.active ? SimpleCreateIndexInfo{} :
                                   AnalyzeSimpleCreateIndex(cst, envelope.resolved_object_uuids);
   const auto join_group_aggregate =
-      AnalyzeJoinGroupAggregateAssertionRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeJoinGroupAggregateAssertionRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto join_window_max =
       join_group_aggregate.active
           ? TableJoinInfo{}
-          : AnalyzeJoinWindowMaxAssertionRoute(cst, envelope.resolved_object_uuids);
+          : AnalyzeJoinWindowMaxAssertionRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto parsed_table_join =
       (join_group_aggregate.active || join_window_max.active)
           ? TableJoinInfo{}
-          : AnalyzeTableJoinRoute(cst, envelope.resolved_object_uuids);
+          : AnalyzeTableJoinRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto table_join =
       join_group_aggregate.active ? join_group_aggregate
       : join_window_max.active ? join_window_max
       : parsed_table_join.active ? parsed_table_join
-                               : AnalyzeExistsCountRoute(cst, envelope.resolved_object_uuids);
+                               : AnalyzeExistsCountRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto recursive_cte_insert =
-      AnalyzeRecursiveCteInsertRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeRecursiveCteInsertRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto materialized_cte =
       recursive_cte_insert.active ? MaterializedCteInfo{} :
-                                    AnalyzeMaterializedCteRoute(cst, envelope.resolved_object_uuids);
+                                    AnalyzeMaterializedCteRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto table_set_operation =
       materialized_cte.active ? TableSetOperationInfo{} :
-                                AnalyzeTableSetOperationRoute(cst, envelope.resolved_object_uuids);
+                                AnalyzeTableSetOperationRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto table_sample =
-      AnalyzeTableSampleRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeTableSampleRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto pivot_route =
-      AnalyzePivotRoute(cst, envelope.resolved_object_uuids);
+      AnalyzePivotRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto unpivot_route =
-      AnalyzeUnpivotRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeUnpivotRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto row_number_window =
-      AnalyzeRowNumberWindowRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeRowNumberWindowRoute(query_route_cst, envelope.resolved_object_uuids);
+  const auto scalar_aggregate =
+      AnalyzeScalarAggregateRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto group_by_aggregate =
-      AnalyzeGroupByAggregateRoute(cst, envelope.resolved_object_uuids);
+      scalar_aggregate.active ? GroupByAggregateInfo{} :
+                                AnalyzeGroupByAggregateRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto table_count =
       (table_join.active || table_set_operation.active || materialized_cte.active ||
        table_sample.active || pivot_route.active || unpivot_route.active ||
-       row_number_window.active || group_by_aggregate.active)
+       row_number_window.active || scalar_aggregate.active || group_by_aggregate.active)
           ? TableCountInfo{}
-          : AnalyzeTableCountRoute(cst, envelope.resolved_object_uuids);
+          : AnalyzeTableCountRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto scalar_subquery =
-      AnalyzeScalarSubqueryRoute(cst, envelope.resolved_object_uuids);
+      AnalyzeScalarSubqueryRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto cast_value = AnalyzeCastValueRoute(cst);
   const auto scalar_projection =
       (observability_statement_route || cast_value.active || scalar_subquery.active ||
@@ -29590,13 +30235,14 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                          : (table_join.active || table_set_operation.active ||
                           table_sample.active ||
                           pivot_route.active || unpivot_route.active ||
-                          row_number_window.active || group_by_aggregate.active ||
+                          row_number_window.active || scalar_aggregate.active ||
+                          group_by_aggregate.active ||
                           table_count.active ||
                           materialized_cte.active || scalar_subquery.active ||
                           vector_search.active || vector_collection_operation.active ||
                           multimodel_nosql.active)
                              ? DmlRouteInfo{}
-                             : AnalyzeDmlRoute(cst, envelope.resolved_object_uuids);
+                             : AnalyzeDmlRoute(query_route_cst, envelope.resolved_object_uuids);
   const auto show_create = AnalyzeShowCreateRoute(cst, envelope.resolved_object_uuids);
   const auto security_dcl = AnalyzeSecurityDcl(cst, envelope.resolved_object_uuids);
   const auto security_policy_route =
@@ -29633,6 +30279,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulatePivotAuthority(&envelope, pivot_route);
   PopulateUnpivotAuthority(&envelope, unpivot_route);
   PopulateRowNumberWindowAuthority(&envelope, row_number_window);
+  PopulateScalarAggregateAuthority(&envelope, scalar_aggregate);
   PopulateGroupByAggregateAuthority(&envelope, group_by_aggregate);
   PopulateTableCountAuthority(&envelope, table_count);
   PopulateMaterializedCteAuthority(&envelope, materialized_cte);
@@ -29662,6 +30309,15 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.engine.observability_api_required");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_sql_text_execution");
+    if (explain_plan_only.valid) {
+      AppendIfMissing(&envelope.required_authority_steps,
+                      "authority.engine.query_plan_api_required");
+      AppendIfMissing(&envelope.required_authority_steps,
+                      "authority.parser.syntax_evidence_only");
+      AppendIfMissing(&envelope.descriptor_refs, "sys.query.plan_descriptor");
+      AppendIfMissing(&envelope.descriptor_refs, "sys.catalog.object_descriptor");
+      AppendIfMissing(&envelope.descriptor_refs, "sys.name_registry");
+    }
   }
   if (job_route.active) {
     AppendIfMissing(&envelope.required_authority_steps,
@@ -30019,7 +30675,9 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                      "SHOW CREATE currently requires exactly SHOW CREATE TABLE name with server-resolved object UUID",
                      {{"feature", show_create.invalid_reason}});
   }
-  if (table_join.active && !table_join.valid) {
+  const bool explain_plan_only_valid =
+      source_explain_observability_route && explain_plan_only.valid;
+  if (table_join.active && !table_join.valid && !explain_plan_only_valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.JOIN_ROUTE_UNSUPPORTED",
                      "table join query is not supported by this exact route",
                      {{"feature", table_join.invalid_reason}});
@@ -30039,10 +30697,16 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.UNPIVOT_ROUTE_UNSUPPORTED",
                      "UNPIVOT query is not supported by this exact route",
                      {{"feature", unpivot_route.invalid_reason}});
-  } else if (group_by_aggregate.active && !group_by_aggregate.valid) {
+  } else if (group_by_aggregate.active && !group_by_aggregate.valid &&
+             !explain_plan_only_valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.GROUP_ROUTE_UNSUPPORTED",
                      "grouped aggregate query is not supported by this exact route",
                      {{"feature", group_by_aggregate.invalid_reason}});
+  } else if (scalar_aggregate.active && !scalar_aggregate.valid &&
+             !explain_plan_only_valid) {
+    AddVerifierError(&envelope.messages, "SBSQL.QUERY.SCALAR_AGGREGATE_ROUTE_UNSUPPORTED",
+                     "scalar aggregate query is not supported by this exact route",
+                     {{"feature", scalar_aggregate.invalid_reason}});
   } else if (table_count.active && !table_count.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.COUNT_ROUTE_UNSUPPORTED",
                      "COUNT aggregate query requires a UUID-resolved table and bounded COUNT argument",
@@ -30051,7 +30715,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.WINDOW_ROUTE_UNSUPPORTED",
                      "window query is not supported by this exact route",
                      {{"feature", row_number_window.invalid_reason}});
-  } else if (materialized_cte.active && !materialized_cte.valid) {
+  } else if (materialized_cte.active && !materialized_cte.valid &&
+             !explain_plan_only_valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.CTE_ROUTE_UNSUPPORTED",
                      "CTE query is not supported by this exact route",
                      {{"feature", materialized_cte.invalid_reason}});
@@ -30127,7 +30792,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       !dml_route.active && !table_join.active && !table_set_operation.active &&
       !table_sample.active &&
       !pivot_route.active && !unpivot_route.active &&
-      !row_number_window.active && !group_by_aggregate.active &&
+      !row_number_window.active && !scalar_aggregate.active &&
+      !group_by_aggregate.active &&
       !table_count.active &&
       !materialized_cte.active && !scalar_subquery.active) {
     if (const auto unsupported_query = UnsupportedQueryFamilyReason(cst)) {
@@ -30218,6 +30884,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendSynonymDdlJson(out, synonym_ddl);
   AppendShowCreateJson(out, show_create);
   AppendObservabilityRouteJson(out, observability_route);
+  AppendExplainPlanOnlyJson(out, explain_plan_only);
   AppendCastValueJson(out, cast_value);
   AppendVectorSearchJson(out, vector_search);
   AppendVectorCollectionOperationJson(out, vector_collection_operation);
@@ -30229,6 +30896,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendPivotJson(out, pivot_route);
   AppendUnpivotJson(out, unpivot_route);
   AppendRowNumberWindowJson(out, row_number_window);
+  AppendScalarAggregateJson(out, scalar_aggregate);
   AppendGroupByAggregateJson(out, group_by_aggregate);
   AppendTableCountJson(out, table_count);
   AppendMaterializedCteJson(out, materialized_cte);
@@ -31135,9 +31803,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"index_target_uuid\"") == std::string::npos ||
         envelope.payload.find("\"index_key_count\"") == std::string::npos ||
         envelope.payload.find("\"index_profile\"") == std::string::npos ||
-        envelope.payload.find("\"index_expression_keys_included\":false") == std::string::npos ||
-        envelope.payload.find("\"index_predicate_included\":false") == std::string::npos ||
-        envelope.payload.find("\"index_include_columns_included\":false") == std::string::npos ||
+        envelope.payload.find("\"index_expression_keys_included\"") == std::string::npos ||
+        envelope.payload.find("\"index_predicate_included\"") == std::string::npos ||
+        envelope.payload.find("\"index_include_columns_included\"") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_rights, "right.catalog_mutate") ||
@@ -32463,6 +33131,44 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
   }
   if (envelope.operation_id == "query.plan_operation" &&
+      envelope.payload.find("\"query_envelope_kind\":\"table_scalar_aggregate\"") != std::string::npos) {
+    const bool valid_scalar_aggregate =
+        envelope.payload.find("\"aggregate_function\":\"sb.aggregate.sum\"") != std::string::npos ||
+        envelope.payload.find("\"aggregate_function\":\"sb.aggregate.min\"") != std::string::npos ||
+        envelope.payload.find("\"aggregate_function\":\"sb.aggregate.max\"") != std::string::npos;
+    if (envelope.sblr_opcode != "SBLR_QUERY_PLAN_OPERATION" ||
+        envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
+        !HasValue(envelope.required_authority_steps, "authority.engine.query_plan_api_required") ||
+        !HasValue(envelope.required_authority_steps, "authority.server.resolve_name_registry_public") ||
+        !HasValue(envelope.required_authority_steps, "authority.server.transaction_context_required") ||
+        !HasValue(envelope.required_authority_steps, "authority.engine.mga_snapshot_visibility_required") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
+        !HasValue(envelope.descriptor_refs, "sys.query.aggregate_descriptor") ||
+        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
+        envelope.payload.find("\"query_operation\":\"aggregate_scalar\"") == std::string::npos ||
+        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        envelope.payload.find("\"aggregate_value_field\"") == std::string::npos ||
+        envelope.payload.find("\"result_projection\":\"aggregate_assertion\"") == std::string::npos ||
+        envelope.payload.find("\"assertion_id\"") == std::string::npos ||
+        envelope.payload.find("\"actual_column_name\"") == std::string::npos ||
+        envelope.payload.find("\"expected_column_name\"") == std::string::npos ||
+        envelope.payload.find("\"expected_value\"") == std::string::npos ||
+        !valid_scalar_aggregate ||
+        envelope.payload.find("\"aggregate_binding_model\":\"engine_row_descriptor_scalar_aggregate_assertion\"") == std::string::npos ||
+        envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
+        envelope.payload.find("\"row_storage_touched\":true") == std::string::npos ||
+        envelope.payload.find("\"mga_transaction_context_required\":true") == std::string::npos ||
+        envelope.payload.find("\"object_name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
+      AddVerifierError(&result.messages, "SBSQL.SBLR.TABLE_SCALAR_AGGREGATE_AUTHORITY_INVALID",
+                       "scalar aggregate assertions must use engine query plan authority with UUID-bound relations and MGA snapshot visibility");
+    }
+  }
+  if (envelope.operation_id == "query.plan_operation" &&
       (envelope.payload.find("\"query_envelope_kind\":\"table_group_sum\"") != std::string::npos ||
        envelope.payload.find("\"query_envelope_kind\":\"table_group_aggregate\"") != std::string::npos)) {
     const bool has_valid_aggregate_function =
@@ -32732,6 +33438,19 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                                 !column_or_null_predicate && !modulo_predicate)) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.DML_PREDICATE_AUTHORITY_INVALID",
                          "SELECT predicate SBLR must use a bounded descriptor-bound predicate");
+      }
+    }
+    if (envelope.operation_id == "dml.select_rows" &&
+        envelope.payload.find("\"result_projection\":\"value_assertion\"") != std::string::npos) {
+      if (envelope.payload.find("\"assertion_id\"") == std::string::npos ||
+          envelope.payload.find("\"assertion_value_field\"") == std::string::npos ||
+          envelope.payload.find("\"actual_column_name\"") == std::string::npos ||
+          envelope.payload.find("\"expected_column_name\"") == std::string::npos ||
+          envelope.payload.find("\"expected_value\"") == std::string::npos ||
+          envelope.payload.find("\"projection_binding_model\":\"engine_row_descriptor_field\"") == std::string::npos ||
+          envelope.payload.find("\"projection_descriptor_bound\":true") == std::string::npos) {
+        AddVerifierError(&result.messages, "SBSQL.SBLR.DML_VALUE_ASSERTION_INVALID",
+                         "SELECT value assertions must carry descriptor-bound projection and assertion fields");
       }
     }
     if (envelope.operation_id == "dml.plan_import_rows" &&
