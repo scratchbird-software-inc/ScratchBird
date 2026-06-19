@@ -254,6 +254,27 @@ void TestFilespaceCapacityManagerSuccessMetadataEvidenceMetricsAndRecovery() {
   Require(result.operation.physical_file_expected_size_after_bytes ==
               result.operation.physical_file_size_after_bytes,
           "physical expected size mismatch");
+  Require(result.operation.extent_preallocation_attempted,
+          "platform extent preallocation was not attempted");
+  Require(result.operation.extent_preallocation_bytes ==
+              request.requested_growth_pages * request.page_size_bytes,
+          "extent preallocation byte count mismatch");
+  Require(result.operation.extent_preallocation_offset_bytes ==
+              result.operation.physical_file_size_before_bytes,
+          "extent preallocation offset mismatch");
+  Require(!result.operation.extent_preallocation_strategy.empty(),
+          "extent preallocation strategy was not recorded");
+  Require(result.operation.extent_preallocation_succeeded ||
+              result.operation.extent_preallocation_fallback_used,
+          "extent preallocation neither succeeded nor recorded fallback");
+#if defined(__linux__)
+  Require(result.operation.extent_preallocation_succeeded,
+          "linux extent preallocation did not succeed");
+  Require(result.operation.extent_preallocation_strategy == "posix_fallocate",
+          "linux extent preallocation did not use posix_fallocate");
+  Require(!result.operation.extent_preallocation_fallback_used,
+          "linux extent preallocation used fallback");
+#endif
 
   Require(ledger.physical_growth_evidence.size() == 1, "success evidence count mismatch");
   Require(ledger.physical_growth_operations.size() == 1, "success operation count mismatch");
@@ -268,6 +289,18 @@ void TestFilespaceCapacityManagerSuccessMetadataEvidenceMetricsAndRecovery() {
           "evidence completed state missing");
   Require(ledger.physical_growth_evidence.front().metadata_commit_after_physical_extension,
           "evidence did not record physical-before-metadata ordering");
+  Require(ledger.physical_growth_evidence.front().extent_preallocation_bytes ==
+              result.operation.extent_preallocation_bytes,
+          "evidence extent preallocation bytes mismatch");
+  Require(ledger.physical_growth_evidence.front().extent_preallocation_strategy ==
+              result.operation.extent_preallocation_strategy,
+          "evidence extent preallocation strategy mismatch");
+  Require(ledger.physical_growth_evidence.front().extent_preallocation_succeeded ==
+              result.operation.extent_preallocation_succeeded,
+          "evidence extent preallocation success mismatch");
+  Require(ledger.physical_growth_evidence.front().extent_preallocation_fallback_used ==
+              result.operation.extent_preallocation_fallback_used,
+          "evidence extent preallocation fallback mismatch");
   Require(ledger.preallocated_extents.front().page_count == request.requested_growth_pages,
           "reserved-free extent page count mismatch");
   Require(ledger.preallocated_extents.front().start_page_number == 1068,

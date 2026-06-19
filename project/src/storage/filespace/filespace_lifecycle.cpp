@@ -302,11 +302,40 @@ FilespaceClassDecision FilespaceClassError(std::string diagnostic_code,
   return result;
 }
 
+FilespacePlacementDecision FilespacePlacementError(std::string diagnostic_code,
+                                                   std::string message_key,
+                                                   std::string detail = {}) {
+  FilespacePlacementDecision result;
+  result.status = FilespaceErrorStatus();
+  result.admitted = false;
+  result.filespace_class = FilespaceClass::forbidden;
+  result.diagnostic = MakeFilespaceDiagnostic(result.status,
+                                              std::move(diagnostic_code),
+                                              std::move(message_key),
+                                              std::move(detail));
+  result.evidence.push_back("filespace_placement_admitted=false");
+  result.evidence.push_back("filespace_class=forbidden");
+  result.evidence.push_back("finality_authority=false");
+  result.evidence.push_back("visibility_authority=false");
+  result.evidence.push_back("mga_visibility_authority=durable_transaction_inventory");
+  return result;
+}
+
 FilespaceDescriptor* FindMutable(FilespaceRegistry* registry, const TypedUuid& filespace_uuid) {
   if (registry == nullptr) {
     return nullptr;
   }
   for (FilespaceDescriptor& descriptor : registry->filespaces) {
+    if (descriptor.filespace_uuid.value == filespace_uuid.value) {
+      return &descriptor;
+    }
+  }
+  return nullptr;
+}
+
+const FilespaceDescriptor* FindDescriptor(const FilespaceRegistry& registry,
+                                          const TypedUuid& filespace_uuid) {
+  for (const FilespaceDescriptor& descriptor : registry.filespaces) {
     if (descriptor.filespace_uuid.value == filespace_uuid.value) {
       return &descriptor;
     }
@@ -323,6 +352,45 @@ const FilespaceDescriptor* FindPrimary(const FilespaceRegistry& registry) {
     }
   }
   return nullptr;
+}
+
+bool PlacementDescriptorUsable(const FilespaceDescriptor& descriptor,
+                               const FilespacePlacementRequest& request) {
+  if (!descriptor.active || descriptor.state == FilespaceState::forbidden ||
+      descriptor.state == FilespaceState::quarantine ||
+      descriptor.state == FilespaceState::drop_pending ||
+      descriptor.state == FilespaceState::deleted) {
+    return false;
+  }
+  if (request.policy.require_online &&
+      descriptor.state != FilespaceState::online &&
+      descriptor.state != FilespaceState::attached) {
+    return false;
+  }
+  if (request.policy.require_writable &&
+      (descriptor.read_only || descriptor.state == FilespaceState::read_only)) {
+    return false;
+  }
+  return true;
+}
+
+const FilespacePlacementBinding* FindPlacementBinding(
+    const FilespacePlacementPolicy& policy,
+    FilespaceObjectClass object_class,
+    const std::string& page_family) {
+  const FilespacePlacementBinding* class_only = nullptr;
+  for (const auto& binding : policy.bindings) {
+    if (binding.object_class != object_class || !binding.filespace_uuid.valid()) {
+      continue;
+    }
+    if (!binding.page_family.empty() && binding.page_family == page_family) {
+      return &binding;
+    }
+    if (binding.page_family.empty() && class_only == nullptr) {
+      class_only = &binding;
+    }
+  }
+  return class_only;
 }
 
 bool IsPrimaryCapableRole(FilespaceRole role) {
@@ -1132,6 +1200,148 @@ FilespaceClassDecision ResolveFilespaceClass(const FilespaceClassRequest& reques
   result.evidence.push_back("uuid_ordering_finality_authority=false");
   result.evidence.push_back("mga_visibility_authority=durable_transaction_inventory");
   result.evidence.push_back("timestamp_lifecycle_ordering_finality_authority=false");
+  return result;
+}
+
+FilespacePlacementDecision ResolveFilespacePlacement(
+    const FilespaceRegistry& registry,
+    const FilespacePlacementRequest& request) {
+  if (!IsTypedEngineIdentity(request.database_uuid, UuidKind::database)) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-DATABASE-UUID-INVALID",
+                                   "storage.filespace_placement.database_uuid_invalid");
+  }
+  if (request.page_size != 0 &&
+      !scratchbird::storage::disk::IsSupportedDatabasePageSize(request.page_size)) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-PAGE-SIZE-INVALID",
+                                   "storage.filespace_placement.page_size_invalid",
+                                   std::to_string(request.page_size));
+  }
+  FilespaceObjectClass object_class = request.object_class;
+  if (object_class == FilespaceObjectClass::unspecified) {
+    object_class = DefaultFilespaceObjectClassForPageFamily(request.page_family);
+  }
+  if (!IsTypedEngineIdentity(request.owner_object_uuid, UuidKind::object)) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-OWNER-OBJECT-UUID-INVALID",
+                                   "storage.filespace_placement.owner_object_uuid_invalid",
+                                   FilespaceObjectClassName(object_class));
+  }
+
+  const auto class_descriptor = DescriptorForObjectClass(object_class);
+  if (class_descriptor.filespace_class == FilespaceClass::unknown) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-OBJECT-CLASS-UNKNOWN",
+                                   "storage.filespace_placement.object_class_unknown",
+                                   FilespaceObjectClassName(object_class));
+  }
+
+  const FilespacePlacementBinding* binding = nullptr;
+  if (request.policy.present) {
+    binding = FindPlacementBinding(request.policy, object_class, request.page_family);
+    if (binding == nullptr && request.policy.require_explicit_binding) {
+      return FilespacePlacementError("SB-FILESPACE-PLACEMENT-BINDING-MISSING",
+                                     "storage.filespace_placement.binding_missing",
+                                     FilespaceObjectClassName(object_class));
+    }
+  }
+
+  TypedUuid selected_filespace_uuid =
+      binding == nullptr ? request.preferred_filespace_uuid : binding->filespace_uuid;
+  const FilespaceDescriptor* selected = nullptr;
+  if (selected_filespace_uuid.valid()) {
+    selected = FindDescriptor(registry, selected_filespace_uuid);
+  } else {
+    for (const auto& descriptor : registry.filespaces) {
+      if (descriptor.database_uuid.value == request.database_uuid.value &&
+          descriptor.role == class_descriptor.role &&
+          (request.page_size == 0 || descriptor.page_size == request.page_size) &&
+          PlacementDescriptorUsable(descriptor, request)) {
+        selected = &descriptor;
+        selected_filespace_uuid = descriptor.filespace_uuid;
+        break;
+      }
+    }
+  }
+
+  if (selected == nullptr) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-FILESPACE-NOT-FOUND",
+                                   "storage.filespace_placement.filespace_not_found",
+                                   FilespaceObjectClassName(object_class));
+  }
+  if (selected->database_uuid.value != request.database_uuid.value) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-DATABASE-MISMATCH",
+                                   "storage.filespace_placement.database_mismatch",
+                                   FilespaceObjectClassName(object_class));
+  }
+  if (selected->role != class_descriptor.role) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-ROLE-MISMATCH",
+                                   "storage.filespace_placement.role_mismatch",
+                                   std::string(FilespaceRoleName(selected->role)) + ":" +
+                                       FilespaceRoleName(class_descriptor.role));
+  }
+  if (request.page_size != 0 && selected->page_size != request.page_size) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-PAGE-SIZE-MISMATCH",
+                                   "storage.filespace_placement.page_size_mismatch",
+                                   std::to_string(selected->page_size) + ":" +
+                                       std::to_string(request.page_size));
+  }
+  if (!PlacementDescriptorUsable(*selected, request)) {
+    return FilespacePlacementError("SB-FILESPACE-PLACEMENT-FILESPACE-UNAVAILABLE",
+                                   "storage.filespace_placement.filespace_unavailable",
+                                   FilespaceStateName(selected->state));
+  }
+
+  FilespaceClassRequest class_request;
+  class_request.database_uuid = request.database_uuid;
+  class_request.filespace_uuid = selected->filespace_uuid;
+  class_request.owner_object_uuid = request.owner_object_uuid;
+  class_request.object_class = object_class;
+  class_request.page_family = request.page_family;
+  class_request.reason = request.reason.empty() ? "filespace_placement" : request.reason;
+  class_request.explicit_object_class = true;
+  const auto class_decision = ResolveFilespaceClass(class_request);
+  if (!class_decision.ok()) {
+    return FilespacePlacementError(class_decision.diagnostic.diagnostic_code,
+                                   class_decision.diagnostic.message_key,
+                                   FilespaceObjectClassName(object_class));
+  }
+
+  FilespacePlacementDecision result;
+  result.status = FilespaceOkStatus();
+  result.admitted = true;
+  result.descriptor = *selected;
+  result.object_class = object_class;
+  result.filespace_class = class_decision.filespace_class;
+  result.recommended_role = class_decision.recommended_role;
+  result.preallocation_required =
+      request.require_preallocation ||
+      (binding != nullptr && binding->preallocate_before_use);
+  result.preallocation_page_count =
+      binding != nullptr && binding->preallocate_page_count != 0
+          ? binding->preallocate_page_count
+          : (request.requested_preallocation_pages != 0
+                 ? request.requested_preallocation_pages
+                 : request.policy.default_preallocate_page_count);
+  if (result.preallocation_required && result.preallocation_page_count == 0) {
+    result.preallocation_page_count = 1;
+  }
+  result.diagnostic = MakeFilespaceDiagnostic(
+      result.status,
+      "SB-FILESPACE-PLACEMENT-RESOLVED",
+      "storage.filespace_placement.resolved",
+      FilespaceObjectClassName(object_class));
+  result.evidence = class_decision.evidence;
+  result.evidence.push_back("filespace_placement_admitted=true");
+  result.evidence.push_back(std::string("filespace_placement_binding=") +
+                            (binding == nullptr ? "role_default" : "explicit_policy"));
+  result.evidence.push_back(std::string("filespace_uuid=") +
+                            scratchbird::core::uuid::UuidToString(
+                                selected->filespace_uuid.value));
+  result.evidence.push_back(std::string("filespace_role=") +
+                            FilespaceRoleName(selected->role));
+  result.evidence.push_back(std::string("preallocation_required=") +
+                            (result.preallocation_required ? "true" : "false"));
+  result.evidence.push_back("finality_authority=false");
+  result.evidence.push_back("visibility_authority=false");
+  result.evidence.push_back("mga_visibility_authority=durable_transaction_inventory");
   return result;
 }
 

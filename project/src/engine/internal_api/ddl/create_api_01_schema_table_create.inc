@@ -199,7 +199,12 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   record.localized_names = names;
   record.default_name = SchemaTreeDefaultName(names, "unnamed_schema");
   for (const auto& option : request.option_envelopes) {
-    if (StartsWithLocal(option, "comment:")) {
+    if (StartsWithLocal(option, "unresolved_schema_parent_path:")) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context,
+          "ddl.create_schema",
+          MakeInvalidRequestDiagnostic("ddl.create_schema", "parent_schema_not_visible"));
+    } else if (StartsWithLocal(option, "comment:")) {
       const std::string text = option.substr(8);
       record.localized_comments.push_back({"und", text});
     } else if (StartsWithLocal(option, "localized_comment:")) {

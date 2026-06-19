@@ -59,6 +59,13 @@ struct PhysicalFilespaceCapacityGrowthResult {
   u64 file_size_before_bytes = 0;
   u64 file_size_after_bytes = 0;
   u64 expected_capacity_after_bytes = 0;
+  u64 extent_preallocation_offset_bytes = 0;
+  u64 extent_preallocation_bytes = 0;
+  std::string extent_preallocation_strategy;
+  std::string extent_preallocation_fallback_reason;
+  bool extent_preallocation_attempted = false;
+  bool extent_preallocation_succeeded = false;
+  bool extent_preallocation_fallback_used = false;
   bool physical_extension_completed = false;
   bool physical_extension_synced = false;
   bool header_updated = false;

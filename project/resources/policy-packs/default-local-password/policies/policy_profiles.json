@@ -20,7 +20,8 @@
     {
       "profile_uuid": "018f7a10-1280-7000-8000-000000000403",
       "area": "memory_resource_governance",
-      "mode": "configured_policy_required"
+      "mode": "configured_policy_required",
+      "resource_file": "policies/server_memory_cache_policy.json"
     },
     {
       "profile_uuid": "018f7a10-1280-7000-8000-000000000404",

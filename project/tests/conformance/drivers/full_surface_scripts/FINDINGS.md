@@ -3,47 +3,39 @@
 Status: round-2 (language-surface extension) analysis
 Scope: extending the driver full-surface conformance suite to the full SBsql language.
 
-This file records (1) a harness limitation that bounds what the suite can test, and
-(2) constructs that could not be grounded in the sources (so they were omitted
-rather than guessed). These are candidate partial-implementation / harness gaps
-for the engine and driver teams.
+This file records (1) runner requirements for executing the suite exactly as
+written, and (2) syntax names that could not be grounded in executable source
+or a confirmed result shape. Those names are not guessed into the suite.
 
-## A. HARNESS LIMITATION — the runner cannot carry multi-statement procedural bodies
+## A. Runner requirement — SET TERM- and comment-aware statement chunking
 
-**Finding.** The driver runners split the compiled chain into statements with a
-**quote-aware, top-level `;`** splitter and **no terminator directive** (`SET TERM`
-is not honored) and **no procedural-block awareness**:
+**Finding.** The full-surface suite includes procedural functions, procedures,
+selectable procedures, dynamic execution, triggers, and in-band COPY payload
+markers. Driver runners must use the shared statement chunker semantics:
 
-- Python: `scratchbird.sql.split_top_level_statements` (drivers/driver/python/src/scratchbird/sql.py) — splits on `;` outside single/double quotes.
-- C++: `splitStatements` (drivers/driver/cpp/tools/sb_isql_cpp.cpp:103) — same rule (`ch == ';' && !single && !dbl`).
-- The compiler (`compile_full_surface_script_suite.py`) does **not** split at all; it substitutes placeholders and concatenates. Splitting is entirely the runner's job.
+- Honor `SET TERM <terminator> ;` client directives.
+- Preserve routine/trigger bodies as one executable statement.
+- Treat line comments before a statement as statement trivia, not as the first
+  command token.
+- Allow `-- SB_COPY_INPUT ...` rows to travel with the following `COPY ... FROM
+  STDIN` statement so the runner can stream those rows as SBWP CopyData frames.
 
-**Consequence.** A normal SBsql procedural body uses inner `;` and relies on a
-terminator change (`SET TERM ^` … `^`) to be submitted as one statement. Because
-the runners ignore `SET TERM` and split on every top-level `;`, any body containing
-inner `;` is **mis-split into fragments** and cannot be executed as one statement.
+**Consequence.** A runner that falls back to a simple semicolon splitter will
+mis-split routine/trigger bodies and will fail the procedural scripts. A runner
+that ignores the `SB_COPY_INPUT` marker will fail the COPY script by sending
+CopyFail or an empty stream.
 
-This blocks end-to-end testing of, per `function.md` grammar
-(`function_body ::= procedural_block | RETURN expression | EXTERNAL UDR …`):
+Current covered procedural/COPY scripts:
 
-| Construct | Carriable by current harness? |
+| Construct | Script(s) |
 | --- | --- |
-| **Expression-body function** (`AS return <expr>;`) | **Yes** — single statement, no inner `;` |
-| Procedural-block function (`AS begin … ; … end;`) | **No** — inner `;` mis-split |
-| `CREATE PROCEDURE` with a body | **No** — inner `;` mis-split |
-| `CREATE TRIGGER` with a multi-statement body | **No** — inner `;` mis-split |
-| Procedural language (`procedural_sql_blocks/_control_flow/_cursors/_exceptions`) | **No** — only exercisable inside a body |
-
-**What this round therefore does:** it tests `CREATE FUNCTION` via the
-**expression-body** form (create → invoke → assert), which is grounded and
-carriable, and it records the procedural-body surface as **blocked by the harness**.
-
-**Recommended fix (engine/driver team, out of scope here):** teach the driver
-runners' statement splitter to honor a terminator directive (`SET TERM`) or to be
-procedural-block aware (track `BEGIN … END` / routine bodies). Until then, the
-suite cannot exercise the procedural-SQL surface end-to-end. This is itself a
-high-value gap: a procedural body that "parses but does not execute" cannot be
-caught by this suite as currently built.
+| Expression-body function | `052` |
+| Procedural-body function | `054` |
+| Non-selectable procedure | `056` |
+| Selectable procedure | `057` |
+| Dynamic execution result-set procedure | `058` |
+| Trigger bodies | `053` |
+| COPY FROM STDIN | `059` |
 
 ## B. Refusal mechanism note (for authors)
 
@@ -54,15 +46,10 @@ Negative tests must therefore be placed at a known statement index, registered i
 the script's `expected_refusals` (manifest) and in `expected_refusals.json`
 (`statement_ids` + `expected_diagnostics`).
 
-## C. Constructs omitted because they could not be grounded / are not carriable
+## C. Source-grounding boundaries
 
-Harness-blocked (per §A — multi-statement bodies):
-- Procedural-SQL surface — procedures, procedural-block functions, multi-statement
-  triggers, control flow, cursors, exceptions (`procedural_sql*`, `procedure.md`,
-  `trigger.md`). Only expression-body functions are carriable (covered in `052`).
-- Table-valued functions (`RETURNS TABLE` with `FOR … SUSPEND`) — procedural body.
-
-Not documented in the cited source (omitted rather than guessed):
+Not documented in the cited source and therefore not guessed into executable
+driver scripts:
 - `NATURAL JOIN` — not in `from.md` `join_type` grammar (only INNER/LEFT/RIGHT/FULL).
 - `DISTINCT ON (expr)` — not in `select.md` (`set_quantifier` is only `ALL | DISTINCT`).
 - `COLLATE` in `ORDER BY` — not in `order_by_limit_offset.md` `sort_spec`.
@@ -73,13 +60,11 @@ Not documented in the cited source (omitted rather than guessed):
 - `RENAME SCHEMA`, `SHOW/DESCRIBE SCHEMA` as assertion rows — documented but conflict with
   harness teardown / not assertion-row-shaped; omitted.
 - `DROP CLUSTER`, distributed-transaction cluster verbs — not in `cluster_gated_statements.md`
-  EBNF; omitted (would conflate refusal vectors).
+  EBNF; including them would conflate cluster refusal vectors with executable driver behavior.
 
-Deferred (grounded but needs follow-up data/scope):
-- `INTERSECT ALL` / `EXCEPT ALL` — grammar allows `ALL`, but a deterministic assertion needs
-  deliberate cross-side duplicate data; only `UNION ALL` asserted in `045`.
-- `ALTER TABLE ADD FOREIGN KEY` — needs a second table; deferred to a join-lifecycle script.
-- Updatable-view `WITH CHECK OPTION` refused-DML — needs a mid-script refusal interaction.
+The suite does not invent forms from prose-only mentions. When the executable
+source grammar expands, new statements must be added as positive tests or as
+registered refusals in `expected_refusals.json`.
 
 ## D. Unconfirmed introspection surfaces — assertions that may need name correction
 
@@ -117,18 +102,33 @@ Verified against the authoritative SHOW-command → `sys.*` surface mapping in
 Notes: (a) `086` assertions are now **count-based (`COUNT(*) >= 1`)** on the confirmed
 surfaces, because the `rs.security.principal.v1` / `rs.security.policy.v1` result-shape
 **column names are still unconfirmed** (so name/`schema_id` filters were dropped) — matches
-the `080` `sys.security.users` precedent. (b) Real surfaces for sequences/functions are
-`sys.catalog.sequence` / `sys.catalog.function` (DDL descriptor refs), but their SELECT-
-queryability and columns are unconfirmed, so `012` (sequence) and `052` (function) prove via
-substitute/invocation rather than those surfaces. (c) `014` schema parent-linkage column is
-still unconfirmed; nesting is proved functionally. These open items remain in the private
-workplan `CATALOG_SURFACE_VERIFICATION.csv`.
+  the `080` `sys.security.users` precedent. (b) Real surfaces for sequences/functions are
+`sys.catalog.sequence` / `sys.catalog.function` (DDL descriptor refs), but their SELECT
+queryability and columns are not used by the suite, so `012` (sequence) and `052` (function)
+prove via substitute/invocation rather than those surfaces. (c) `014` proves nested schema
+resolution functionally without relying on an unconfirmed parent-linkage column.
 
-## E. Out of scope for this round (feasible, future expansion)
+## E. Required executable-script coverage
 
-Not yet covered, but carriable in a later round: `copy.md` (in-band COPY), `multimodel_statements.md`
-(needs backing-object CREATE DDL to be confirmed — see the example-DB findings), `database.md`,
-`filespace.md`, `agent.md`, `backup_restore_replication_migration.md`,
-`management_and_operations.md`, `catalog_artifacts_and_external_git.md`, `set`/session config.
-`script_tokens_and_identifiers.md` is lexical (implicitly exercised); `refusal_vectors.md` is a
-concept page whose mechanism is exercised via `expected_refusals`; `README.md` is not a statement page.
+The required executable driver scripts now include positive coverage for COPY,
+multimodel routes, and admin/session/artifact route families:
+
+| Family | Script(s) | Coverage |
+| --- | --- | --- |
+| COPY | `059` | in-band `COPY ... FROM STDIN` through SBWP CopyData/CopyDone |
+| Multimodel | `092` | document collection, KV, graph, time-series, search, vector descriptors and operations |
+| Database/filespace/agent/admin | `093` | database lifecycle, filespace, agent, management, configuration, backup/restore/archive/replication/changefeed/migration |
+| Catalog artifacts/external Git | `093` | export snapshot, diff snapshot, and rollback-plan routes through server ABI |
+
+`script_tokens_and_identifiers.md` is lexical and is exercised by every script;
+`refusal_vectors.md` is a concept page whose mechanism is exercised via
+`expected_refusals`; `README.md` is not a statement page.
+
+COPY is now covered by `SBDFS-059`: the runner extracts in-band `SB_COPY_INPUT`
+rows, streams them as SBWP CopyData, sends CopyDone, and the script asserts the
+imported rows through normal SELECTs.
+
+External Git support is a catalog review/convenience surface only: it exports,
+diffs, and plans rollback from catalog artifacts while preserving
+`git_runtime_authority=false` and `external_git_repository_authority=false`.
+Applying changes remains under the normal ScratchBird catalog/security path.

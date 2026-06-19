@@ -30,6 +30,14 @@ struct ServerExecutionResult {
   MessageVectorSet messages;
 };
 
+struct ServerPrepareSblrResult {
+  bool accepted{false};
+  std::string prepared_statement_uuid;
+  std::string operation_id;
+  std::string detail;
+  MessageVectorSet messages;
+};
+
 struct ServerFetchResult {
   bool accepted{false};
   std::string cursor_uuid;
@@ -103,6 +111,12 @@ class SbpsClient {
   ServerExecutionResult ExecuteSblr(const SessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false) const;
+  ServerPrepareSblrResult PrepareSblr(const SessionContext& session,
+                                      std::string_view encoded_sblr_envelope) const;
+  ServerExecutionResult ExecutePreparedSblr(const SessionContext& session,
+                                            std::string_view prepared_statement_uuid,
+                                            std::string_view encoded_sblr_envelope = {},
+                                            bool cursor_requested = false) const;
   ServerFetchResult FetchCursor(const SessionContext& session,
                                 std::string_view cursor_uuid,
                                 std::uint64_t max_rows = 1,

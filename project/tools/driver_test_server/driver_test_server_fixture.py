@@ -182,7 +182,7 @@ def verify_fixture_contract(
     runtime_checked = False
     if latest_json is not None:
         latest = read_json(latest_json)
-        validate_latest_runtime(latest, issues)
+        validate_latest_runtime(latest, manifest, issues)
         runtime_checked = True
     if commands_file is not None:
         validate_commands_file(commands_file, issues)
@@ -273,7 +273,16 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
         "OBS_METRICS_READ_ALL",
         "OBS_RUNTIME_ALL",
         "OBS_INDEX_PROFILE_READ",
+        "OBS_AGENT_STATE_READ",
+        "OBS_AGENT_EVIDENCE_READ",
+        "OBS_AGENT_CONTROL",
+        "OBS_POLICY_READ",
+        "OBS_POLICY_VALIDATE",
+        "FILESPACE_LIFECYCLE_CONTROL",
+        "MIGRATE_DATABASE",
         "MGA_TRANSACTION_INSPECT",
+        "MGA_HORIZON_INSPECT",
+        "MGA_LINEAGE_INSPECT",
         "UDR_MANAGE",
         "UDR_INSPECT",
         "BACKUP_CREATE",
@@ -303,7 +312,7 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
             issues.append(f"fixture_manifest:missing_diagnostic:{code}")
 
 
-def validate_latest_runtime(latest: dict[str, Any], issues: list[str]) -> None:
+def validate_latest_runtime(latest: dict[str, Any], manifest: dict[str, Any], issues: list[str]) -> None:
     if latest.get("schema_version") != "scratchbird_driver_test_server_v1":
         issues.append("fixture_runtime:invalid_latest_schema")
     server = latest.get("server", {})

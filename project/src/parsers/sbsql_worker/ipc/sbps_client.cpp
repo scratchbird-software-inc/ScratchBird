@@ -51,6 +51,7 @@ constexpr std::uint32_t kFlagPayloadChunk = 1u << 3;
 constexpr std::uint32_t kSchemaHelloRequestV1 = 1001;
 constexpr std::uint32_t kSchemaAuthHandoffV1 = 3001;
 constexpr std::uint32_t kSchemaAttachRequestV1 = 3003;
+constexpr std::uint32_t kSchemaPrepareSblrV1 = 4001;
 constexpr std::uint32_t kSchemaExecuteSblrV1 = 4003;
 constexpr std::uint32_t kSchemaFetchV1 = 4005;
 constexpr std::uint32_t kSchemaCloseCursorV1 = 4007;
@@ -70,6 +71,8 @@ constexpr std::uint16_t kMessageResolveNameRequest = 32;
 constexpr std::uint16_t kMessageResolveNameResult = 33;
 constexpr std::uint16_t kMessageRenderUuidRequest = 34;
 constexpr std::uint16_t kMessageRenderUuidResult = 35;
+constexpr std::uint16_t kMessagePrepareSblr = 40;
+constexpr std::uint16_t kMessagePrepareResult = 41;
 constexpr std::uint16_t kMessageExecuteSblr = 42;
 constexpr std::uint16_t kMessageExecuteResult = 43;
 constexpr std::uint16_t kMessageFetch = 44;
@@ -893,6 +896,32 @@ std::vector<std::uint8_t> EncodeExecutePayload(const std::array<std::uint8_t, 16
   return out;
 }
 
+std::vector<std::uint8_t> EncodePreparePayload(const SessionContext& session,
+                                               const std::array<std::uint8_t, 16>& session_uuid,
+                                               std::string_view encoded_sblr_envelope) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, session_uuid);
+  PutUuid(&out, MakeUuidV7Bytes());
+  PutU64(&out, session.catalog_epoch);
+  PutU64(&out, session.security_policy_epoch);
+  PutU64(&out, session.security_policy_epoch);
+  PutString(&out, encoded_sblr_envelope);
+  return out;
+}
+
+std::vector<std::uint8_t> EncodeExecutePreparedPayload(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
+    std::string_view encoded_sblr_envelope,
+    bool cursor_requested) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, session_uuid);
+  PutUuid(&out, prepared_statement_uuid);
+  PutU8(&out, cursor_requested ? 1 : 0);
+  PutString(&out, encoded_sblr_envelope);
+  return out;
+}
+
 std::vector<std::uint8_t> EncodeCursorPayload(const std::array<std::uint8_t, 16>& session_uuid,
                                               std::string_view cursor_uuid,
                                               std::uint64_t max_rows = 1,
@@ -1354,6 +1383,117 @@ ServerExecutionResult SbpsClient::ExecuteSblr(const SessionContext& session,
   std::string outcome;
   if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted") {
     AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_REJECTED", "The server rejected SBLR execution.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (offset + 16 + 16 + 8 > response.payload.size()) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  offset += 16; // server request UUID
+  result.cursor_uuid = UuidToText(GetUuid(response.payload, offset));
+  offset += 16;
+  result.row_count = GetU64(response.payload, offset);
+  offset += 8;
+  if (!ReadString(response.payload, &offset, &result.operation_id) ||
+      !ReadString(response.payload, &offset, &result.row_packet)) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  PopulateTransactionStateFromPayload(result.row_packet, &result);
+  result.accepted = true;
+  return result;
+}
+
+ServerPrepareSblrResult SbpsClient::PrepareSblr(
+    const SessionContext& session,
+    std::string_view encoded_sblr_envelope) const {
+  ServerPrepareSblrResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  MessageVectorSet messages;
+  Frame response;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessagePrepareSblr,
+                              kSchemaPrepareSblrV1,
+                              session_uuid,
+                              connection_uuid),
+                   EncodePreparePayload(session, session_uuid, encoded_sblr_envelope),
+                   &response,
+                   &messages)) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessagePrepareResult || IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  std::size_t offset = 0;
+  std::string outcome;
+  if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted") {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.PREPARE_REJECTED", "The server rejected SBLR prepare.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (offset + 16 > response.payload.size()) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.PREPARE_RESULT_INVALID", "The server prepare result payload is malformed.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.prepared_statement_uuid = UuidToText(GetUuid(response.payload, offset));
+  offset += 16;
+  if (!ReadString(response.payload, &offset, &result.operation_id) ||
+      !ReadString(response.payload, &offset, &result.detail)) {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.PREPARE_RESULT_INVALID", "The server prepare result payload is malformed.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
+ServerExecutionResult SbpsClient::ExecutePreparedSblr(
+    const SessionContext& session,
+    std::string_view prepared_statement_uuid,
+    std::string_view encoded_sblr_envelope,
+    bool cursor_requested) const {
+  ServerExecutionResult result;
+  if (prepared_statement_uuid.empty()) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.PREPARED_HANDLE_REQUIRED",
+                  "Prepared SBLR execution requires a prepared statement UUID.");
+    return result;
+  }
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  MessageVectorSet messages;
+  Frame response;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageExecuteSblr,
+                              kSchemaExecuteSblrV1,
+                              session_uuid,
+                              connection_uuid),
+                   EncodeExecutePreparedPayload(session_uuid,
+                                                TextToUuid(prepared_statement_uuid),
+                                                encoded_sblr_envelope,
+                                                cursor_requested),
+                   &response,
+                   &messages)) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageExecuteResult || IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  std::size_t offset = 0;
+  std::string outcome;
+  if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted") {
+    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_REJECTED", "The server rejected prepared SBLR execution.");
     result.messages = std::move(messages);
     return result;
   }

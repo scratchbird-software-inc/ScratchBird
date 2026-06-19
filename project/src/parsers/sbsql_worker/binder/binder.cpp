@@ -58,6 +58,68 @@ bool IsSourceFreeCteRoute(const CstDocument& cst) {
   return false;
 }
 
+bool IsQualifiedNamePartToken(const Token& token) {
+  return token.kind == TokenKind::kIdentifier || token.kind == TokenKind::kKeyword;
+}
+
+bool ConsumeQualifiedPathStartsWithSys(const std::vector<const Token*>& tokens,
+                                       std::size_t* index) {
+  if (index == nullptr) return false;
+  std::size_t cursor = *index;
+  std::vector<std::string> parts;
+  bool expect_part = true;
+  while (cursor < tokens.size()) {
+    const auto& token = *tokens[cursor];
+    if (expect_part) {
+      if (!IsQualifiedNamePartToken(token)) break;
+      parts.push_back(ToUpperAscii(token.text));
+      expect_part = false;
+      ++cursor;
+      continue;
+    }
+    if (token.text == ".") {
+      expect_part = true;
+      ++cursor;
+      continue;
+    }
+    break;
+  }
+  if (parts.size() < 2 || expect_part || parts.front() != "SYS") return false;
+  *index = cursor;
+  return true;
+}
+
+bool IsSourceFreeCatalogProjectionCountRoute(const CstDocument& cst) {
+  std::vector<const Token*> tokens;
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token)) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.empty() || !TokenTextIs(*tokens.front(), "SELECT")) return false;
+
+  std::size_t from_index = tokens.size();
+  int paren_depth = 0;
+  bool saw_count_projection = false;
+  for (std::size_t index = 1; index < tokens.size(); ++index) {
+    if (tokens[index]->text == "(") {
+      ++paren_depth;
+    } else if (tokens[index]->text == ")" && paren_depth > 0) {
+      --paren_depth;
+    }
+    if (paren_depth == 0 && TokenTextIs(*tokens[index], "FROM")) {
+      from_index = index;
+      break;
+    }
+    if (TokenTextIs(*tokens[index], "COUNT")) {
+      saw_count_projection = true;
+    }
+  }
+  if (!saw_count_projection || from_index == tokens.size()) return false;
+
+  std::size_t relation_index = from_index + 1;
+  return ConsumeQualifiedPathStartsWithSys(tokens, &relation_index);
+}
+
 std::string ResultShapeFor(const AstDocument& ast) {
   if (ast.family == StatementFamily::kQuery || ast.family == StatementFamily::kValues) {
     return "result.shape.rowset";
@@ -239,7 +301,7 @@ BoundStatement BindAst(const AstDocument& ast,
       bound.bound = true;
       return bound;
     }
-    if (IsSourceFreeCteRoute(cst)) {
+    if (IsSourceFreeCteRoute(cst) || IsSourceFreeCatalogProjectionCountRoute(cst)) {
       bound.bound = true;
       return bound;
     }

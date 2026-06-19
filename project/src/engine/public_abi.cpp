@@ -567,7 +567,8 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
       result->result_kind = "native_bulk_ingest_summary";
     }
   } else if (summary_only_dml_write) {
-    result->rows_produced = dispatch_result.api_result.dml_summary.rows_changed;
+    result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
+    result->rows_produced = 0;
     if (result->result_kind.empty()) {
       result->result_kind = "dml_write_summary";
     }

@@ -195,8 +195,18 @@ void TestCompiledDefaults() {
           "PCR-123 log level default must not be debug");
   Require(defaults.log_file == "stderr",
           "PCR-123 foreground log default drifted");
-  Require(defaults.memory_policy_name == "server_production_default",
+  Require(defaults.memory_policy_name == "default_local_server_memory_cache_v1",
           "PCR-123 memory policy default drifted");
+  Require(defaults.memory_hard_limit_bytes >= 1024ull * 1024ull * 1024ull,
+          "PCR-123 memory hard limit default is below 1 GiB");
+  Require(defaults.memory_page_buffer_pool_limit_bytes >= 512ull * 1024ull * 1024ull,
+          "PCR-123 page-buffer pool default is below 512 MiB");
+  Require(defaults.memory_adaptive_page_cache_enabled,
+          "PCR-123 adaptive page cache default is disabled");
+  Require(defaults.memory_index_read_cache_enabled,
+          "PCR-123 index read cache default is disabled");
+  Require(!defaults.memory_trim_heap_on_disconnect,
+          "PCR-123 disconnect heap trim should not defeat adaptive cache by default");
   Require(defaults.memory_failure_mode == memory::AllocationFailureMode::return_error,
           "PCR-123 memory failure mode default is not fail-closed");
   Require(defaults.memory_zero_memory_on_release,
@@ -207,7 +217,7 @@ void TestCompiledDefaults() {
   Require(resolved.ok(), "PCR-123 compiled memory defaults do not resolve");
   Require(!resolved.policy.refuse_all_allocations,
           "PCR-123 resolved production memory policy refuses all allocations");
-  Require(resolved.policy.policy_name == "server_production_default",
+  Require(resolved.policy.policy_name == "default_local_server_memory_cache_v1",
           "PCR-123 resolved memory policy name drifted");
 }
 
@@ -224,7 +234,7 @@ void TestServiceProfileResolution(const std::filesystem::path& root) {
           "PCR-123 service log default did not move away from stderr");
   Require(loaded.config.security_provider_family == "local_password",
           "PCR-123 service security provider did not canonicalize");
-  Require(loaded.config.memory_policy_name == "server_production_default",
+  Require(loaded.config.memory_policy_name == "default_local_server_memory_cache_v1",
           "PCR-123 service memory policy default drifted");
   Require(!loaded.config.memory_enable_platform_memory_probe,
           "PCR-123 explicit deterministic memory probe setting was not applied");

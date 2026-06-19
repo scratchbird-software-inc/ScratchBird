@@ -51,6 +51,11 @@ enum class SysInformationSourceKind : std::uint16_t {
   agent_action,
   agent_evidence,
   storage_agent_state,
+  ipar_agent_lifecycle,
+  ipar_metric_counter,
+  ipar_telemetry_control,
+  ipar_slow_path_reason,
+  ipar_contention_quota,
 };
 
 struct SysInformationProjectionColumn {
@@ -168,6 +173,21 @@ struct SysInformationColumnSource {
   std::string column_default;
   std::string comment_text;
   std::uint64_t catalog_generation_id = 0;
+  bool hidden = false;
+};
+
+struct SysInformationDomainSource {
+  std::string domain_uuid;
+  std::string row_uuid;
+  std::string schema_uuid;
+  std::string source_type_name;
+  std::string base_type_name;
+  std::string domain_kind = "scalar";
+  std::string nullable = "YES";
+  std::string default_expression_envelope;
+  std::string check_constraint_envelope;
+  std::uint64_t catalog_generation_id = 0;
+  std::uint64_t created_local_transaction_id = 0;
   bool hidden = false;
 };
 
@@ -383,6 +403,110 @@ struct SysInformationFilespaceShrinkReadinessSource {
   bool hidden = false;
 };
 
+struct SysInformationIparAgentLifecycleSource {
+  std::string runtime_id;
+  std::string source_kind = "server_agent_runtime";
+  std::string lifecycle_state = "stopped";
+  std::string idle_state = "idle";
+  std::string worker_wake_policy;
+  std::uint64_t worker_thread_count = 0;
+  std::uint64_t background_worker_slots = 0;
+  std::uint64_t foreground_reserved_capacity = 0;
+  std::uint64_t scheduler_ticks = 0;
+  std::uint64_t total_worker_ticks = 0;
+  std::uint64_t total_actions_accepted = 0;
+  std::uint64_t total_actions_refused = 0;
+  std::uint64_t total_actions_failed = 0;
+  std::uint64_t scheduled_worker_count = 0;
+  std::uint64_t min_worker_ticks = 0;
+  std::uint64_t max_worker_ticks = 0;
+  std::uint64_t starvation_events = 0;
+  std::string last_diagnostic_agent_type_id;
+  std::string last_diagnostic_action;
+  std::string last_diagnostic_outcome;
+  std::string last_diagnostic_code;
+  std::string last_diagnostic_detail;
+  std::uint64_t durable_lease_count = 0;
+  std::uint64_t durable_action_backlog_count = 0;
+  std::uint64_t durable_replay_pending_action_count = 0;
+  std::uint64_t process_rss_kb = 0;
+  std::uint64_t process_vsize_kb = 0;
+  std::string source_state = "observed";
+  std::uint64_t catalog_generation_id = 0;
+  bool started = false;
+  bool stopping = false;
+  bool hidden = false;
+};
+
+struct SysInformationIparMetricCounterSource {
+  std::string metric_id;
+  std::string metric_path;
+  std::string metric_type = "counter";
+  std::string metric_unit = "count";
+  std::string label_summary;
+  std::string producer;
+  std::string source_state = "observed";
+  std::uint64_t value = 0;
+  std::uint64_t sample_count = 0;
+  std::uint64_t catalog_generation_id = 0;
+  bool hidden = false;
+};
+
+struct SysInformationIparTelemetryControlSource {
+  std::string budget_id = "IPAR-M031";
+  std::string control_name;
+  std::string metric_path;
+  std::string source_state = "observed";
+  std::string overhead_budget_percent = "5.0";
+  std::uint64_t configured_value = 0;
+  std::uint64_t observed_value = 0;
+  std::uint64_t sample_rate_per_mille = 0;
+  std::uint64_t persist_stride = 0;
+  std::uint64_t skipped_count = 0;
+  std::uint64_t dropped_metric_count = 0;
+  std::uint64_t catalog_generation_id = 0;
+  bool hidden = false;
+};
+
+struct SysInformationIparSlowPathReasonSource {
+  std::string metric_id = "IPAR-M035";
+  std::string statement_id;
+  std::string chosen_path = "fast_path";
+  std::string reason_code;
+  std::string validation_stage;
+  std::string driver_visible_message;
+  std::string diagnostic_code;
+  std::string source_state = "observed";
+  std::uint64_t fallback_count = 0;
+  std::uint64_t sample_count = 0;
+  std::uint64_t catalog_generation_id = 0;
+  bool hidden = false;
+};
+
+struct SysInformationIparContentionQuotaSource {
+  std::string row_id;
+  std::string metric_id = "IPAR-P4-06/IPAR-P6-06";
+  std::string category;
+  std::string subject;
+  std::string metric_path;
+  std::string metric_type = "gauge";
+  std::string metric_unit = "count";
+  std::string producer;
+  std::string source_kind = "server_observability_metric";
+  std::string source_ref;
+  std::string provenance = "recorded_metric_hook";
+  std::string diagnostic_code;
+  std::string source_state = "observed";
+  std::uint64_t observed_value = 0;
+  std::uint64_t limit_value = 0;
+  std::uint64_t refusal_count = 0;
+  std::uint64_t wait_count = 0;
+  std::uint64_t queue_depth = 0;
+  std::uint64_t sample_count = 0;
+  std::uint64_t catalog_generation_id = 0;
+  bool hidden = false;
+};
+
 struct SysInformationProtectedMaterialSource {
   std::string material_path;
   std::string material_name;
@@ -486,6 +610,12 @@ SysInformationProjectionResult BuildSysInformationProjection(
     const std::vector<SysInformationAgentAuditSource>& agent_audit = {},
     const std::vector<SysInformationFilespaceCapacityAgentStateSource>& filespace_capacity_agent_state = {},
     const std::vector<SysInformationPageAllocationAgentStateSource>& page_allocation_agent_state = {},
-    const std::vector<SysInformationFilespaceShrinkReadinessSource>& filespace_shrink_readiness = {});
+    const std::vector<SysInformationFilespaceShrinkReadinessSource>& filespace_shrink_readiness = {},
+    const std::vector<SysInformationDomainSource>& domains = {},
+    const std::vector<SysInformationIparAgentLifecycleSource>& ipar_agent_lifecycle = {},
+    const std::vector<SysInformationIparMetricCounterSource>& ipar_metric_counters = {},
+    const std::vector<SysInformationIparTelemetryControlSource>& ipar_telemetry_controls = {},
+    const std::vector<SysInformationIparSlowPathReasonSource>& ipar_slow_path_reasons = {},
+    const std::vector<SysInformationIparContentionQuotaSource>& ipar_contention_quota = {});
 
 }  // namespace scratchbird::engine::internal_api

@@ -33,7 +33,11 @@ EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
     const EngineSetTransactionCharacteristicsRequest& request);
 
 struct EngineCommitTransactionRequest : EngineApiRequest {};
-struct EngineCommitTransactionResult : EngineApiResult {};
+struct EngineCommitTransactionResult : EngineApiResult {
+  std::string commit_finality_state = "not_final";
+  bool engine_finality_known = false;
+  bool post_inventory_secondary_failure = false;
+};
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request);
 
 struct EngineRollbackTransactionRequest : EngineApiRequest {};

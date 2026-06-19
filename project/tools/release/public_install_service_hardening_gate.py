@@ -81,7 +81,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "mode = service",
             "/var/log/scratchbird/sb_server.log",
             "TestServiceProfileResolution",
-            "server_production_default",
+            "default_local_server_memory_cache_v1",
         ),
     },
     {

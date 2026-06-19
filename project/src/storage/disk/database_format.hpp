@@ -31,6 +31,7 @@ inline constexpr std::array<byte, 8> kScratchBirdDatabaseMagic = {'S', 'B', 'D',
 using SerializedDatabaseHeader = std::array<byte, kDatabaseHeaderSerializedBytes>;
 
 enum class PageSizeProfile : u32 {
+  profile_4k = 4096,
   profile_8k = 8192,
   profile_16k = 16384,
   profile_32k = 32768,
@@ -38,7 +39,8 @@ enum class PageSizeProfile : u32 {
   profile_128k = 131072
 };
 
-inline constexpr std::array<u32, 5> kSupportedDatabasePageSizes = {
+inline constexpr std::array<u32, 6> kSupportedDatabasePageSizes = {
+    static_cast<u32>(PageSizeProfile::profile_4k),
     static_cast<u32>(PageSizeProfile::profile_8k),
     static_cast<u32>(PageSizeProfile::profile_16k),
     static_cast<u32>(PageSizeProfile::profile_32k),

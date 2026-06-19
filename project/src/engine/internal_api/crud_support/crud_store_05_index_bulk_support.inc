@@ -138,8 +138,11 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
   if (predicate.predicate_kind == "column_equals") {
     return predicate.canonical_predicate_envelope == first_column &&
            (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyHash || family == kCrudIndexFamilyBitmap ||
+            family == kCrudIndexFamilyBrinZone || family == kCrudIndexFamilyBloom ||
             family == kCrudIndexFamilyCovering || family == kCrudIndexFamilyColumnarZone ||
-            family == kCrudIndexFamilyInMemory || family == kCrudIndexFamilyReferenceEmulated);
+            family == kCrudIndexFamilyDocumentPath || family == kCrudIndexFamilyGraphAdjacency ||
+            family == kCrudIndexFamilyTemporaryWork || family == kCrudIndexFamilyInMemory ||
+            family == kCrudIndexFamilyReferenceEmulated);
   }
   if (predicate.predicate_kind == "columns_all_equal") {
     const auto predicate_columns = Split(predicate.canonical_predicate_envelope, ',');
@@ -151,22 +154,32 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
       if (columns[index] != predicate_columns[index]) return false;
     }
     return family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyHash ||
-           family == kCrudIndexFamilyBitmap || family == kCrudIndexFamilyCovering ||
-           family == kCrudIndexFamilyReferenceEmulated;
+           family == kCrudIndexFamilyBitmap || family == kCrudIndexFamilyBrinZone ||
+           family == kCrudIndexFamilyBloom || family == kCrudIndexFamilyCovering ||
+           family == kCrudIndexFamilyColumnarZone || family == kCrudIndexFamilyDocumentPath ||
+           family == kCrudIndexFamilyGraphAdjacency || family == kCrudIndexFamilyTemporaryWork ||
+           family == kCrudIndexFamilyInMemory || family == kCrudIndexFamilyReferenceEmulated;
   }
   if (predicate.predicate_kind == "column_in_list") {
     return predicate.canonical_predicate_envelope == first_column &&
-           (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyBitmap);
+           (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyBitmap ||
+            family == kCrudIndexFamilyBloom || family == kCrudIndexFamilyDocumentPath ||
+            family == kCrudIndexFamilyInMemory);
   }
   if (predicate.predicate_kind == "column_range") {
     return predicate.canonical_predicate_envelope == first_column &&
-           (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyColumnarZone);
+           (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyBrinZone ||
+            family == kCrudIndexFamilyColumnarZone);
   }
   if (predicate.predicate_kind == "text_term_contains" || predicate.predicate_kind == "text_all_terms") {
-    return family == kCrudIndexFamilyFullText && predicate.canonical_predicate_envelope == first_column;
+    return (CrudTokenIndexFamily(family) || CrudNgramIndexFamily(family) ||
+            family == kCrudIndexFamilyDocumentPath) &&
+           predicate.canonical_predicate_envelope == first_column;
   }
   if (predicate.predicate_kind == "spatial_bbox_intersects" || predicate.predicate_kind == "spatial_bbox_contains") {
-    return family == kCrudIndexFamilySpatial && predicate.canonical_predicate_envelope == first_column;
+    return (family == kCrudIndexFamilySpatial || family == kCrudIndexFamilyRtree ||
+            family == kCrudIndexFamilyGist || family == kCrudIndexFamilySpgist) &&
+           predicate.canonical_predicate_envelope == first_column;
   }
   if (predicate.predicate_kind == "vector_exact_nearest") {
     return family == kCrudIndexFamilyVectorExact && predicate.canonical_predicate_envelope == first_column;

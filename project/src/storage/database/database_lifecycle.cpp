@@ -192,6 +192,7 @@ using scratchbird::storage::page::PageCacheLedger;
 using scratchbird::storage::page::PageCacheLifecycleInput;
 using scratchbird::storage::page::PageCacheLifecycleState;
 using scratchbird::storage::page::PageCachePolicy;
+using scratchbird::storage::page::MakeAdaptivePageCachePolicyFromMemoryPolicy;
 using scratchbird::storage::page::PageManagerContext;
 using scratchbird::storage::page::CheckedPageBodyOffset;
 using scratchbird::storage::page::CheckedPageOffset;
@@ -3928,9 +3929,10 @@ DatabaseLifecycleResult RecordPageCachePreloadEvidence(FileDevice* device,
   }
 
   PageCacheLedger ledger;
-  PageCachePolicy policy;
-  policy.max_resident_pages = 16;
-  policy.max_resident_bytes = 16ull * static_cast<u64>(page_size);
+  PageCachePolicy policy = MakeAdaptivePageCachePolicyFromMemoryPolicy(
+      DefaultMemoryManager().policy(),
+      page_size,
+      std::max<u64>(16, entries.size()));
   const auto input = MakePageCacheLifecycleInput(database_uuid,
                                                 *startup_state,
                                                 DatabaseLifecyclePhase::opened);
@@ -3973,9 +3975,10 @@ DatabaseLifecycleResult RecordPageCacheShutdownFlushEvidence(FileDevice* device,
   }
 
   PageCacheLedger ledger;
-  PageCachePolicy policy;
-  policy.max_resident_pages = 16;
-  policy.max_resident_bytes = 16ull * static_cast<u64>(page_size);
+  PageCachePolicy policy = MakeAdaptivePageCachePolicyFromMemoryPolicy(
+      DefaultMemoryManager().policy(),
+      page_size,
+      std::max<u64>(16, entries.size()));
   auto input = MakePageCacheLifecycleInput(database_uuid,
                                           *startup_state,
                                           DatabaseLifecyclePhase::closed);
@@ -4840,7 +4843,7 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   descriptor.manifest_relative_path =
       "resources/policy-packs/default-local-password/POLICY_PACK_MANIFEST.json";
   descriptor.content_sha256 =
-      "992acf2a852b96db5cd49ae21aefe6a9d4d436298ebb39abc9a55c70363ba3f6";
+      "45da12f80d12ac70034741f4f2401ed906284e0b71fdeb1137245924f27ebcf5";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;
@@ -5497,6 +5500,17 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
     }
   }
 
+  if (config.ipar_fault_injection_point == "restart_classification") {
+    return LifecycleError(
+        "SB-IPAR-P7-06-RESTART-CLASSIFICATION-INJECTED",
+        "storage.database_lifecycle.ipar_fault.restart_classification",
+        config.path,
+        "authority=durable_mga_transaction_inventory;startup_classification=" +
+            std::string(StartupRecoveryClassificationName(classification)) +
+            ";transaction_inventory_recovery=" +
+            (config.read_only ? "classified" : "applied_or_clean"));
+  }
+
   if (!config.read_only) {
     startup_state.state.write_admission_fenced = false;
     startup_state.state.config_authority_loaded = true;
@@ -5690,9 +5704,12 @@ DatabaseLifecycleResult RepairDatabaseLifecycle(const DatabaseLifecycleRepairCon
                               config.path,
                               "repair_requires_restricted_or_maintenance_admission_and_mutation_authority");
   }
-  if (!ExpectedIdentityMatches(verified.state,
-                               config.expected_database_uuid,
-                               config.expected_filespace_uuid)) {
+  const bool identity_matches =
+      ExpectedIdentityMatches(verified.state,
+                              config.expected_database_uuid,
+                              config.expected_filespace_uuid) ||
+      config.engine_read_identity_proof;
+  if (!identity_matches) {
     return DblcLifecycleError("ENGINE.DBLC_REPAIR_REFUSED",
                               "storage.database_lifecycle.repair_refused",
                               config.path,

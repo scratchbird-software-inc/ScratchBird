@@ -556,6 +556,52 @@ bool NativeFileSize(void* file_handle, u64* size_bytes, std::string* detail) {
   return true;
 }
 
+bool NativePreallocateExtent(void* file_handle,
+                             u64 offset,
+                             u64 bytes,
+                             std::string* strategy,
+                             bool* unsupported,
+                             std::string* detail) {
+  if (unsupported != nullptr) {
+    *unsupported = false;
+  }
+  if (AddWouldOverflow(offset, bytes)) {
+    if (detail != nullptr) {
+      *detail = "requested extent exceeds Windows allocation range";
+    }
+    return false;
+  }
+  const u64 end = offset + bytes;
+  if (end > static_cast<u64>(std::numeric_limits<LONGLONG>::max())) {
+    if (detail != nullptr) {
+      *detail = "requested extent exceeds Windows allocation range";
+    }
+    return false;
+  }
+  end = offset + bytes;
+  FILE_ALLOCATION_INFO allocation_info{};
+  allocation_info.AllocationSize.QuadPart = static_cast<LONGLONG>(end);
+  if (::SetFileInformationByHandle(static_cast<HANDLE>(file_handle),
+                                   FileAllocationInfo,
+                                   &allocation_info,
+                                   sizeof(allocation_info)) != 0) {
+    if (strategy != nullptr) {
+      *strategy = "windows_file_allocation_info";
+    }
+    return true;
+  }
+  const DWORD error = ::GetLastError();
+  if (unsupported != nullptr) {
+    *unsupported = error == ERROR_INVALID_PARAMETER ||
+                   error == ERROR_INVALID_FUNCTION ||
+                   error == ERROR_NOT_SUPPORTED;
+  }
+  if (detail != nullptr) {
+    *detail = WindowsLastErrorText(error);
+  }
+  return false;
+}
+
 RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
                                           std::string* detail) {
   const std::string route_lock_path = path + ".sb.route.owner.lock";
@@ -787,6 +833,56 @@ bool NativeFileSize(int fd, u64* size_bytes, std::string* detail) {
   return true;
 }
 
+bool NativePreallocateExtent(int fd,
+                             u64 offset,
+                             u64 bytes,
+                             std::string* strategy,
+                             bool* unsupported,
+                             std::string* detail) {
+  if (unsupported != nullptr) {
+    *unsupported = false;
+  }
+  if (bytes == 0) {
+    if (strategy != nullptr) {
+      *strategy = "posix_fallocate";
+    }
+    return true;
+  }
+  if (offset > static_cast<u64>(std::numeric_limits<off_t>::max()) ||
+      bytes > static_cast<u64>(std::numeric_limits<off_t>::max())) {
+    if (detail != nullptr) {
+      *detail = "requested extent exceeds off_t range";
+    }
+    return false;
+  }
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  const int rc = ::posix_fallocate(fd,
+                                   static_cast<off_t>(offset),
+                                   static_cast<off_t>(bytes));
+  if (rc == 0) {
+    if (strategy != nullptr) {
+      *strategy = "posix_fallocate";
+    }
+    return true;
+  }
+  if (unsupported != nullptr) {
+    *unsupported = rc == EOPNOTSUPP || rc == ENOSYS;
+  }
+  if (detail != nullptr) {
+    *detail = std::strerror(rc);
+  }
+  return false;
+#else
+  if (unsupported != nullptr) {
+    *unsupported = true;
+  }
+  if (detail != nullptr) {
+    *detail = "platform extent preallocation API unavailable";
+  }
+  return false;
+#endif
+}
+
 RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
                                           std::string* detail) {
   const std::string route_lock_path = path + ".sb.route.owner.lock";
@@ -875,10 +971,12 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   }
   const bool route_owned_by_current_process =
       route_owner_probe == RouteOwnerProbeResult::kHeldByCurrentProcess;
-  std::unique_lock<std::recursive_mutex> route_owner_storage_guard;
-  if (route_owned_by_current_process) {
-    route_owner_storage_guard = AcquireRouteOwnedStorageGuard(path);
-  }
+  // Serialize same-process opens for the same database path before taking the
+  // cross-process owner lock. This keeps concurrent local sessions from racing
+  // each other into a nonblocking owner-lock refusal while preserving the
+  // cross-process fail-closed lock semantics.
+  std::unique_lock<std::recursive_mutex> route_owner_storage_guard =
+      AcquireRouteOwnedStorageGuard(path);
 
   const std::string prospective_owner_lock_path = path + ".sb.owner.lock";
 #ifdef _WIN32
@@ -1098,6 +1196,11 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   owner_lock_held_ = !route_owned_by_current_process;
   owner_lock_exclusive_ = !route_owned_by_current_process && !read_only_open;
   capabilities_.write_at = !read_only_;
+#if defined(_WIN32) || defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  capabilities_.extent_preallocation = !read_only_;
+#else
+  capabilities_.extent_preallocation = false;
+#endif
   if (metric_device_class_.empty()) {
     metric_device_class_ = "file";
   }
@@ -1161,6 +1264,7 @@ IoResult FileDevice::Close() {
   owner_lock_exclusive_ = false;
   route_owner_storage_guard_ = std::unique_lock<std::recursive_mutex>{};
   capabilities_.write_at = true;
+  capabilities_.extent_preallocation = false;
 
   IoResult result;
   result.status = DiskOkStatus();
@@ -1296,6 +1400,131 @@ IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
         metric_filespace_role_,
         metric_device_class_.empty() ? "file" : metric_device_class_);
   }
+  return result;
+}
+
+PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
+  PreallocateExtentResult result;
+  result.status = DiskOkStatus();
+  result.offset = offset;
+  result.bytes = bytes;
+
+  if (!is_open()) {
+    result.status = DiskErrorStatus();
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           "SB-STORAGE-DISK-NOT-OPEN",
+                                           "storage.disk.not_open",
+                                           path_);
+    return result;
+  }
+  if (read_only_) {
+    RecordDiskPolicyViolation("read_only_preallocation_rejected",
+                              DiskDevicePolicy{},
+                              path_);
+    result.status = DiskErrorStatus();
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           "SB-STORAGE-DISK-PREALLOCATE-READ-ONLY",
+                                           "storage.disk.preallocate_read_only",
+                                           path_,
+                                           std::to_string(offset));
+    return result;
+  }
+  if (bytes == 0) {
+    result.strategy = "noop";
+    return result;
+  }
+  if (AddWouldOverflow(offset, bytes)) {
+    result.status = DiskErrorStatus();
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           "SB-STORAGE-DISK-PREALLOCATE-RANGE-OVERFLOW",
+                                           "storage.disk.preallocate_range_overflow",
+                                           path_,
+                                           std::to_string(offset) + ":" +
+                                               std::to_string(bytes));
+    return result;
+  }
+  const auto checked_extent = CheckFileDeviceExtent(offset, bytes);
+  if (!checked_extent.ok()) {
+    result.status = checked_extent.status;
+    result.diagnostic = checked_extent.diagnostic;
+    return result;
+  }
+
+  result.platform_preallocation_attempted = true;
+  bool unsupported = false;
+  std::string strategy;
+  std::string preallocate_detail;
+#ifdef _WIN32
+  const bool platform_ok = NativePreallocateExtent(file_handle_,
+                                                   offset,
+                                                   bytes,
+                                                   &strategy,
+                                                   &unsupported,
+                                                   &preallocate_detail);
+#else
+  const bool platform_ok = NativePreallocateExtent(file_fd_,
+                                                   offset,
+                                                   bytes,
+                                                   &strategy,
+                                                   &unsupported,
+                                                   &preallocate_detail);
+#endif
+  if (platform_ok) {
+    const u64 expected_end = offset + bytes;
+    const auto size_after_preallocate = Size();
+    if (!size_after_preallocate.ok()) {
+      result.status = size_after_preallocate.status;
+      result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
+      result.diagnostic = size_after_preallocate.diagnostic;
+      return result;
+    }
+    if (size_after_preallocate.size_bytes < expected_end) {
+      const unsigned char zero = 0;
+      const auto extend = WriteAt(expected_end - 1, &zero, sizeof(zero));
+      if (!extend.ok()) {
+        result.status = extend.status;
+        result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
+        result.diagnostic = extend.diagnostic;
+        return result;
+      }
+    }
+    result.platform_preallocation_succeeded = true;
+    result.logical_size_extended = true;
+    result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
+    return result;
+  }
+
+  if (!unsupported) {
+    result.status = DiskErrorStatus();
+    result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           "SB-STORAGE-DISK-PREALLOCATE-FAILED",
+                                           "storage.disk.preallocate_failed",
+                                           path_,
+                                           preallocate_detail.empty()
+                                               ? std::to_string(offset) + ":" +
+                                                     std::to_string(bytes)
+                                               : preallocate_detail);
+    return result;
+  }
+
+  const unsigned char zero = 0;
+  const auto extend = WriteAt(offset + bytes - 1, &zero, sizeof(zero));
+  if (!extend.ok()) {
+    result.status = extend.status;
+    result.strategy = "last_byte_extend";
+    result.fallback_reason = preallocate_detail.empty()
+                                 ? "platform extent preallocation unsupported"
+                                 : preallocate_detail;
+    result.diagnostic = extend.diagnostic;
+    return result;
+  }
+  result.strategy = "last_byte_extend";
+  result.fallback_reason = preallocate_detail.empty()
+                               ? "platform extent preallocation unsupported"
+                               : preallocate_detail;
+  result.fallback_extension_used = true;
+  result.logical_size_extended = true;
   return result;
 }
 

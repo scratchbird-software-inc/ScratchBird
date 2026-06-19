@@ -43,6 +43,8 @@ struct PhysicalMgaCowMutationRequest {
   TypedUuid relation_uuid;
   TypedUuid row_uuid;
   TypedUuid transaction_uuid;
+  scratchbird::transaction::mga::LocalTransactionId existing_local_transaction_id;
+  bool use_existing_transaction = false;
   PhysicalMgaCowMutationKind kind = PhysicalMgaCowMutationKind::insert;
   u64 page_number = 0;
   u64 begin_unix_epoch_millis = 0;

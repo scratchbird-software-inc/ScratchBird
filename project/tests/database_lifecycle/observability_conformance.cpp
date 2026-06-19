@@ -12,6 +12,7 @@
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/metrics_api.hpp"
 #include "security/audit_api.hpp"
+#include "server_agent_runtime.hpp"
 #include "server_observability.hpp"
 
 #include <cstdlib>
@@ -243,6 +244,89 @@ void TestEngineMetricsAndAudit(const std::filesystem::path& temp_dir) {
   Require(found, "engine lifecycle metric not exposed through sys.metrics.current");
 }
 
+void TestIparProjectionSourceAdapters(const std::filesystem::path& temp_dir) {
+  const auto config = Config(temp_dir);
+  const auto artifacts = Artifacts();
+  const auto engine = Engine(temp_dir);
+  server::ParserPackageRegistry parser_registry;
+  server::ServerListenerOrchestrator listeners;
+  auto observability =
+      server::InitializeServerObservability(config, artifacts, engine, parser_registry, listeners);
+
+  server::SetServerMetric(&observability,
+                          "sys.metrics.ipar.script.prepared_descriptor_hits",
+                          17,
+                          "counter",
+                          {{"metric_id", "IPAR-M001"},
+                           {"script_id", "SBDFS-020"}});
+  for (int i = 0; i < 130; ++i) {
+    server::IncrementServerMetric(&observability,
+                                  "sys.metrics.lifecycle.operation_total",
+                                  1,
+                                  {{"operation", "all"}, {"outcome", "all"}});
+  }
+
+  const auto counters = server::BuildIparMetricCounterProjectionSources(observability);
+  bool found_counter = false;
+  for (const auto& counter : counters) {
+    if (counter.metric_path == "sys.metrics.ipar.script.prepared_descriptor_hits" &&
+        counter.metric_id == "IPAR-M001" &&
+        counter.value == 17 &&
+        Contains(counter.label_summary, "script_id=SBDFS-020")) {
+      found_counter = true;
+    }
+  }
+  Require(found_counter, "IPAR metric counter projection source missing real server metric");
+
+  const auto telemetry =
+      server::BuildIparTelemetryControlProjectionSources(observability);
+  bool saw_stride = false;
+  bool saw_skipped = false;
+  bool saw_drop_counter = false;
+  for (const auto& control : telemetry) {
+    if (control.metric_path == "sys.metrics.ipar.telemetry.metric_persist_stride" &&
+        control.observed_value == observability.metric_persist_stride) {
+      saw_stride = true;
+    }
+    if (control.metric_path == "sys.metrics.ipar.telemetry.metric_persist_skipped" &&
+        control.observed_value == observability.metric_persist_skipped &&
+        observability.metric_persist_skipped > 0) {
+      saw_skipped = true;
+    }
+    if (control.metric_path == "sys.metrics.ipar.telemetry.dropped_metric_count" &&
+        control.dropped_metric_count == 0) {
+      saw_drop_counter = true;
+    }
+  }
+  Require(saw_stride, "IPAR telemetry stride source missing");
+  Require(saw_skipped, "IPAR telemetry skipped-count source missing");
+  Require(saw_drop_counter, "IPAR telemetry dropped-count source missing");
+
+  server::ServerAgentRuntimeSnapshot snapshot;
+  snapshot.started = true;
+  snapshot.worker_thread_count = 5;
+  snapshot.background_worker_slots = 5;
+  snapshot.foreground_reserved_capacity = 1;
+  snapshot.worker_wake_policy = "staggered_worker_per_scheduler_tick";
+  snapshot.scheduler_ticks = 12;
+  snapshot.total_worker_ticks = 15;
+  snapshot.total_actions_accepted = 2;
+  snapshot.total_actions_refused = 1;
+  snapshot.durable_lease_count = 5;
+  snapshot.durable_action_backlog_count = 0;
+  snapshot.durable_replay_pending_action_count = 0;
+  snapshot.process_rss_kb = 64000;
+  snapshot.process_vsize_kb = 128000;
+  const auto lifecycle = server::BuildIparAgentLifecycleProjectionSource(snapshot);
+  Require(lifecycle.lifecycle_state == "running",
+          "IPAR agent lifecycle source did not report running state");
+  Require(lifecycle.idle_state == "idle_resident",
+          "IPAR agent lifecycle source did not report idle resident state");
+  Require(lifecycle.worker_thread_count == 5 &&
+              lifecycle.foreground_reserved_capacity == 1,
+          "IPAR agent lifecycle source did not preserve worker capacity fields");
+}
+
 void TestParserRendering() {
   api::EngineApiResult result;
   result.ok = false;
@@ -283,6 +367,7 @@ int main() {
   TestDiagnosticShapes();
   TestServerLifecycleObservability(temp_dir);
   TestEngineMetricsAndAudit(temp_dir);
+  TestIparProjectionSourceAdapters(temp_dir);
   TestParserRendering();
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;

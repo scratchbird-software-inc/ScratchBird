@@ -19,15 +19,20 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
+#include "sblr_sequence_runtime.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 
@@ -92,6 +97,77 @@ std::string DescriptorFieldLocal(const std::map<std::string, std::string>& field
     if (found != fields.end()) { return found->second; }
   }
   return {};
+}
+
+std::vector<std::string> SplitQualifiedIdentifierLocal(const std::string& path) {
+  std::vector<std::string> parts;
+  std::string current;
+  bool quoted = false;
+  for (std::size_t index = 0; index < path.size(); ++index) {
+    const char ch = path[index];
+    if (quoted) {
+      if (ch == '"') {
+        if (index + 1 < path.size() && path[index + 1] == '"') {
+          current.push_back('"');
+          ++index;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current.push_back(ch);
+      }
+      continue;
+    }
+    if (ch == '"') {
+      quoted = true;
+      continue;
+    }
+    if (ch == '.') {
+      const std::string trimmed = TrimAsciiLocal(current);
+      if (!trimmed.empty()) { parts.push_back(trimmed); }
+      current.clear();
+      continue;
+    }
+    current.push_back(ch);
+  }
+  const std::string trimmed = TrimAsciiLocal(current);
+  if (!trimmed.empty()) { parts.push_back(trimmed); }
+  return parts;
+}
+
+std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& request,
+                                                      const std::string& column_descriptor,
+                                                      bool* lookup_required,
+                                                      std::string* requested_type_name) {
+  if (lookup_required != nullptr) { *lookup_required = false; }
+  if (requested_type_name != nullptr) { requested_type_name->clear(); }
+  const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
+  const std::string type_name =
+      DescriptorFieldLocal(descriptor_fields, {"domain_uuid", "domain", "type", "canonical"});
+  if (type_name.empty() || type_name.find('.') == std::string::npos) { return {}; }
+  if (requested_type_name != nullptr) { *requested_type_name = type_name; }
+  if (lookup_required != nullptr) { *lookup_required = true; }
+  if (StartsWithLocal(type_name, "019")) { return type_name; }
+  const auto parts = SplitQualifiedIdentifierLocal(type_name);
+  if (parts.empty()) { return {}; }
+
+  EngineApiRequest resolve_request = request;
+  resolve_request.localized_names.clear();
+  resolve_request.option_envelopes.clear();
+  resolve_request.sql_object_reference = {};
+  resolve_request.sql_object_reference.expected_object_type = "domain";
+  resolve_request.sql_object_reference.path_type = parts.size() > 1 ? "qualified" : "unqualified";
+  resolve_request.sql_object_reference.no_search_path = parts.size() > 1;
+  for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+    EngineIdentifierAtom segment;
+    segment.raw_text = parts[index];
+    resolve_request.sql_object_reference.path_components.push_back(std::move(segment));
+  }
+  resolve_request.sql_object_reference.object_name.raw_text = parts.back();
+
+  const auto resolved = ResolveNameRegistryPublic(resolve_request, "domain");
+  if (!resolved.ok || resolved.matches.size() != 1) { return {}; }
+  return resolved.matches.front().object_uuid;
 }
 
 bool DescriptorBoolLocal(const std::map<std::string, std::string>& fields,

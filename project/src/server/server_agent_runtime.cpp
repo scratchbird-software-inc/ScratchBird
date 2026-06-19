@@ -105,6 +105,78 @@ std::string ThreadIdText(std::thread::id id) {
   return out.str();
 }
 
+std::string_view AgentActionOutcomeName(ServerAgentActionOutcome outcome) {
+  switch (outcome) {
+    case ServerAgentActionOutcome::kNone: return "none";
+    case ServerAgentActionOutcome::kAccepted: return "accepted";
+    case ServerAgentActionOutcome::kRefused: return "refused";
+    case ServerAgentActionOutcome::kFailed: return "failed_closed";
+  }
+  return "unknown";
+}
+
+struct ServerAgentActionTestHook {
+  ServerAgentActionOutcome outcome = ServerAgentActionOutcome::kNone;
+  std::string diagnostic_code;
+  std::string diagnostic_detail;
+};
+
+std::optional<ServerAgentActionTestHook> TryParseServerAgentActionTestHook(
+    std::string_view option,
+    std::string_view agent_type_id,
+    std::string_view action_name) {
+  constexpr std::string_view kPrefix = "server_agent_runtime_test.";
+  if (option.rfind(kPrefix, 0) != 0) {
+    return std::nullopt;
+  }
+  option.remove_prefix(kPrefix.size());
+  const auto outcome_end = option.find(':');
+  if (outcome_end == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const auto agent_end = option.find(':', outcome_end + 1);
+  if (agent_end == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const auto action_end = option.find(':', agent_end + 1);
+  if (action_end == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const std::string_view outcome_text = option.substr(0, outcome_end);
+  const std::string_view option_agent =
+      option.substr(outcome_end + 1, agent_end - outcome_end - 1);
+  const std::string_view option_action =
+      option.substr(agent_end + 1, action_end - agent_end - 1);
+  if (option_agent != agent_type_id || option_action != action_name) {
+    return std::nullopt;
+  }
+
+  ServerAgentActionTestHook hook;
+  if (outcome_text == "refuse_once") {
+    hook.outcome = ServerAgentActionOutcome::kRefused;
+  } else if (outcome_text == "fail_once") {
+    hook.outcome = ServerAgentActionOutcome::kFailed;
+  } else {
+    return std::nullopt;
+  }
+
+  const auto detail_start = action_end + 1;
+  const auto code_end = option.find(':', detail_start);
+  const std::string_view code =
+      code_end == std::string_view::npos
+          ? option.substr(detail_start)
+          : option.substr(detail_start, code_end - detail_start);
+  if (code.empty()) {
+    return std::nullopt;
+  }
+  hook.diagnostic_code = std::string(code);
+  hook.diagnostic_detail =
+      code_end == std::string_view::npos
+          ? "server_agent_runtime_test_hook"
+          : std::string(option.substr(code_end + 1));
+  return hook;
+}
+
 std::string NewTypedUuidText(platform::UuidKind kind,
                              const std::string& key,
                              std::uint64_t salt) {
@@ -508,10 +580,32 @@ void AddCommonActionFields(engine_api::EngineAgentActionHookRequest* request,
   request->option_envelopes.push_back("agent_metric_snapshot_source_quality:trusted");
   request->option_envelopes.push_back("agent_metric_snapshot_trust_provenance:server_agent_runtime");
   request->option_envelopes.push_back("agent_metric_snapshot_scope_uuid:" + database_uuid);
+  request->option_envelopes.push_back("agent_metric_snapshot_source_count:2");
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_source_id:server-agent-runtime-source:" +
+      agent_type);
+  request->option_envelopes.push_back("agent_metric_snapshot_source_sequence:1");
   request->option_envelopes.push_back("agent_metric_snapshot_generation:" + std::to_string(generation));
   request->option_envelopes.push_back("agent_metric_snapshot_observed_wall_us:" + std::to_string(wall_now_us));
   request->option_envelopes.push_back(
       "agent_metric_snapshot_digest:sha256:server-agent-runtime:" +
+      agent_type + ":" + std::to_string(generation));
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_value_digest:sha256:server-agent-runtime-value:" +
+      agent_type + ":" + std::to_string(generation));
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_schema_digest:sha256:server-agent-runtime-schema:" +
+      agent_type);
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_attestation_key_id:server-agent-runtime-key:" +
+      agent_type);
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_attestation_digest:sha256:server-agent-runtime-attest:" +
+      agent_type + ":" + std::to_string(generation));
+  request->option_envelopes.push_back("agent_metric_snapshot_attestation_verified:true");
+  request->option_envelopes.push_back("agent_metric_snapshot_redacted:true");
+  request->option_envelopes.push_back(
+      "agent_metric_snapshot_provenance_record:server-agent-runtime-provenance:" +
       agent_type + ":" + std::to_string(generation));
   request->option_envelopes.push_back(
       "agent_metric_snapshot_id:server-agent-runtime:" +
@@ -609,6 +703,8 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     background_worker_slots_ = bounded_worker_count;
     worker_wake_policy_ = "staggered_worker_per_scheduler_tick";
     selected_agents_ = std::move(assignments);
+    server_agent_runtime_test_options_ =
+        config.server_agent_runtime_test_options;
     {
       std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
       scheduled_generation_ = 0;
@@ -957,6 +1053,7 @@ void ServerAgentRuntime::Stop() {
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     started_ = false;
+    stopping_.store(false);
   }
   WriteStatusSnapshot();
 }
@@ -978,10 +1075,55 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.worker_thread_count = static_cast<std::uint32_t>(worker_evidence_.size());
   snapshot.worker_wake_policy = worker_wake_policy_;
   snapshot.scheduler_ticks = scheduler_ticks_;
+  snapshot.workers.reserve(worker_evidence_.size());
+  bool saw_worker = false;
+  std::uint64_t latest_fail_closed_generation = 0;
   for (const auto& worker : worker_evidence_) {
     snapshot.total_worker_ticks += worker.ticks;
     snapshot.total_actions_accepted += worker.actions_accepted;
     snapshot.total_actions_refused += worker.actions_refused;
+    snapshot.total_actions_failed += worker.actions_failed;
+    if (worker.ticks > 0) {
+      ++snapshot.scheduled_worker_count;
+    }
+    if (!saw_worker) {
+      snapshot.min_worker_ticks = worker.ticks;
+      snapshot.max_worker_ticks = worker.ticks;
+      saw_worker = true;
+    } else {
+      snapshot.min_worker_ticks =
+          std::min<std::uint64_t>(snapshot.min_worker_ticks, worker.ticks);
+      snapshot.max_worker_ticks =
+          std::max<std::uint64_t>(snapshot.max_worker_ticks, worker.ticks);
+    }
+    if (scheduler_ticks_ >= worker_evidence_.size() && worker.ticks == 0) {
+      ++snapshot.starvation_events;
+    }
+    if (worker.last_diagnostic_generation >= latest_fail_closed_generation &&
+        (worker.last_action_outcome == "refused" ||
+         worker.last_action_outcome == "failed_closed")) {
+      latest_fail_closed_generation = worker.last_diagnostic_generation;
+      snapshot.last_diagnostic_agent_type_id = worker.agent_type_id;
+      snapshot.last_diagnostic_action = worker.last_action;
+      snapshot.last_diagnostic_outcome = worker.last_action_outcome;
+      snapshot.last_diagnostic_code = worker.last_diagnostic_code;
+      snapshot.last_diagnostic_detail = worker.last_diagnostic_detail;
+    }
+    ServerAgentRuntimeWorkerSnapshot worker_snapshot;
+    worker_snapshot.name = worker.name;
+    worker_snapshot.role = worker.role;
+    worker_snapshot.agent_type_id = worker.agent_type_id;
+    worker_snapshot.instance_uuid = worker.instance_uuid;
+    worker_snapshot.ticks = worker.ticks;
+    worker_snapshot.actions_accepted = worker.actions_accepted;
+    worker_snapshot.actions_refused = worker.actions_refused;
+    worker_snapshot.actions_failed = worker.actions_failed;
+    worker_snapshot.last_action = worker.last_action;
+    worker_snapshot.last_action_outcome = worker.last_action_outcome;
+    worker_snapshot.last_diagnostic_code = worker.last_diagnostic_code;
+    worker_snapshot.last_diagnostic_detail = worker.last_diagnostic_detail;
+    worker_snapshot.last_diagnostic_generation = worker.last_diagnostic_generation;
+    snapshot.workers.push_back(std::move(worker_snapshot));
   }
   snapshot.durable_catalog_generation = durable_catalog_generation_;
   snapshot.durable_lease_count = durable_lease_count_;
@@ -1128,10 +1270,10 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     authority_epochs.name_resolution_epoch = name_resolution_epoch_;
   }
 
-  bool action_attempted = false;
-  bool action_accepted = false;
+  ServerAgentActionOutcome action_outcome = ServerAgentActionOutcome::kNone;
   std::string last_action = "tick_health";
   std::string diagnostic = "SB_AGENT_THREAD_TICK_OK";
+  std::string diagnostic_detail = "worker_tick_ok";
 
   agents::DurableLeaseRequest lease;
   lease.lease_uuid = lease_uuid;
@@ -1154,10 +1296,11 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         "worker-lease-" + std::to_string(worker_index));
     if (!lease_tx.ok) {
       RecordWorkerTick(worker_index,
+                       generation,
                        "lease_acquire",
-                       true,
-                       false,
-                       lease_tx.diagnostic_code);
+                       ServerAgentActionOutcome::kFailed,
+                       lease_tx.diagnostic_code,
+                       lease_tx.diagnostic_detail);
       return;
     }
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
@@ -1175,10 +1318,11 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     if (!lease_result.status.ok) {
       RollbackServerAgentTransaction(lease_tx.context);
       RecordWorkerTick(worker_index,
+                       generation,
                        "lease_acquire",
-                       true,
-                       false,
-                       lease_result.status.diagnostic_code);
+                       ServerAgentActionOutcome::kFailed,
+                       lease_result.status.diagnostic_code,
+                       lease_result.status.detail);
       return;
     }
     std::string tx_diagnostic;
@@ -1187,10 +1331,11 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                                       &tx_diagnostic,
                                       &tx_detail)) {
       RecordWorkerTick(worker_index,
+                       generation,
                        "lease_acquire",
-                       true,
-                       false,
-                       tx_diagnostic);
+                       ServerAgentActionOutcome::kFailed,
+                       tx_diagnostic,
+                       tx_detail);
       return;
     }
     durable_lease_acquired = true;
@@ -1200,10 +1345,33 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   const bool action_cycle =
       worker_ticks_so_far == 0 ||
       ((worker_ticks_so_far + 1) % kActionEveryWorkerTicks == 0);
+  auto consume_test_hook =
+      [&](std::string_view action_name) -> std::optional<ServerAgentActionTestHook> {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    for (std::size_t i = 0; i < server_agent_runtime_test_options_.size(); ++i) {
+      auto hook = TryParseServerAgentActionTestHook(
+          server_agent_runtime_test_options_[i], agent_type, action_name);
+      if (hook.has_value()) {
+        server_agent_runtime_test_options_.erase(
+            server_agent_runtime_test_options_.begin() +
+            static_cast<std::ptrdiff_t>(i));
+        return hook;
+      }
+    }
+    return std::nullopt;
+  };
   if (action_cycle && IsPrimaryWorkerForAgent(worker_index, "page_allocation_manager") &&
       agent_type == "page_allocation_manager") {
-    action_attempted = true;
     last_action = "page_preallocation_request";
+    if (auto hook = consume_test_hook(last_action)) {
+      RecordWorkerTick(worker_index,
+                       generation,
+                       last_action,
+                       hook->outcome,
+                       hook->diagnostic_code,
+                       hook->diagnostic_detail);
+      return;
+    }
     std::lock_guard<std::mutex> transaction_guard(database_transaction_mutex_);
     auto action_tx = BeginServerAgentTransaction(
         database_path,
@@ -1213,6 +1381,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         "page-preallocation");
     if (!action_tx.ok) {
       diagnostic = action_tx.diagnostic_code;
+      diagnostic_detail = action_tx.diagnostic_detail;
+      action_outcome = ServerAgentActionOutcome::kFailed;
     } else {
       engine_api::EngineRequestPagePreallocationRequest request;
       request.context = action_tx.context;
@@ -1226,19 +1396,35 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
       request.page_type = "relation";
       request.requested_pages = 8;
       const auto result = engine_api::EngineRequestPagePreallocation(request);
-      action_accepted = result.ok && result.action_accepted;
+      const bool action_accepted = result.ok && result.action_accepted;
+      action_outcome = result.ok
+                           ? (action_accepted
+                                  ? ServerAgentActionOutcome::kAccepted
+                                  : ServerAgentActionOutcome::kRefused)
+                           : ServerAgentActionOutcome::kFailed;
       diagnostic = result.diagnostics.empty()
-          ? (action_accepted ? "SB_AGENT_THREAD_PAGE_PREALLOCATION_ACCEPTED"
-                             : "SB_AGENT_THREAD_PAGE_PREALLOCATION_REFUSED")
+          ? (action_outcome == ServerAgentActionOutcome::kAccepted
+                 ? "SB_AGENT_THREAD_PAGE_PREALLOCATION_ACCEPTED"
+                 : (action_outcome == ServerAgentActionOutcome::kRefused
+                        ? "SB_AGENT_THREAD_PAGE_PREALLOCATION_REFUSED"
+                        : "SB_AGENT_THREAD_PAGE_PREALLOCATION_FAILED"))
           : result.diagnostics.front().code;
+      diagnostic_detail = FirstDiagnosticDetail(
+          result,
+          action_outcome == ServerAgentActionOutcome::kAccepted
+              ? "page_preallocation_accepted"
+              : (action_outcome == ServerAgentActionOutcome::kRefused
+                     ? "page_preallocation_refused"
+                     : "page_preallocation_failed"));
       if (result.ok) {
         std::string tx_diagnostic;
         std::string tx_detail;
         if (!CommitServerAgentTransaction(action_tx.context,
                                           &tx_diagnostic,
                                           &tx_detail)) {
-          action_accepted = false;
           diagnostic = tx_diagnostic;
+          diagnostic_detail = tx_detail;
+          action_outcome = ServerAgentActionOutcome::kFailed;
         }
       } else {
         RollbackServerAgentTransaction(action_tx.context);
@@ -1246,8 +1432,16 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     }
   } else if (action_cycle && IsPrimaryWorkerForAgent(worker_index, "filespace_capacity_manager") &&
              agent_type == "filespace_capacity_manager") {
-    action_attempted = true;
     last_action = "filespace_growth_request";
+    if (auto hook = consume_test_hook(last_action)) {
+      RecordWorkerTick(worker_index,
+                       generation,
+                       last_action,
+                       hook->outcome,
+                       hook->diagnostic_code,
+                       hook->diagnostic_detail);
+      return;
+    }
     std::lock_guard<std::mutex> transaction_guard(database_transaction_mutex_);
     auto action_tx = BeginServerAgentTransaction(
         database_path,
@@ -1257,6 +1451,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         "filespace-growth");
     if (!action_tx.ok) {
       diagnostic = action_tx.diagnostic_code;
+      diagnostic_detail = action_tx.diagnostic_detail;
+      action_outcome = ServerAgentActionOutcome::kFailed;
     } else {
       engine_api::EngineRequestFilespaceGrowthRequest request;
       request.context = action_tx.context;
@@ -1273,19 +1469,35 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
       request.option_envelopes.push_back("filespace.maximum_pages:4096");
       request.option_envelopes.push_back("filespace.reserve_growth_as_preallocated:true");
       const auto result = engine_api::EngineRequestFilespaceGrowth(request);
-      action_accepted = result.ok && result.action_accepted;
+      const bool action_accepted = result.ok && result.action_accepted;
+      action_outcome = result.ok
+                           ? (action_accepted
+                                  ? ServerAgentActionOutcome::kAccepted
+                                  : ServerAgentActionOutcome::kRefused)
+                           : ServerAgentActionOutcome::kFailed;
       diagnostic = result.diagnostics.empty()
-          ? (action_accepted ? "SB_AGENT_THREAD_FILESPACE_GROWTH_ACCEPTED"
-                             : "SB_AGENT_THREAD_FILESPACE_GROWTH_REFUSED")
+          ? (action_outcome == ServerAgentActionOutcome::kAccepted
+                 ? "SB_AGENT_THREAD_FILESPACE_GROWTH_ACCEPTED"
+                 : (action_outcome == ServerAgentActionOutcome::kRefused
+                        ? "SB_AGENT_THREAD_FILESPACE_GROWTH_REFUSED"
+                        : "SB_AGENT_THREAD_FILESPACE_GROWTH_FAILED"))
           : result.diagnostics.front().code;
+      diagnostic_detail = FirstDiagnosticDetail(
+          result,
+          action_outcome == ServerAgentActionOutcome::kAccepted
+              ? "filespace_growth_accepted"
+              : (action_outcome == ServerAgentActionOutcome::kRefused
+                     ? "filespace_growth_refused"
+                     : "filespace_growth_failed"));
       if (result.ok) {
         std::string tx_diagnostic;
         std::string tx_detail;
         if (!CommitServerAgentTransaction(action_tx.context,
                                           &tx_diagnostic,
                                           &tx_detail)) {
-          action_accepted = false;
           diagnostic = tx_diagnostic;
+          diagnostic_detail = tx_detail;
+          action_outcome = ServerAgentActionOutcome::kFailed;
         }
       } else {
         RollbackServerAgentTransaction(action_tx.context);
@@ -1315,6 +1527,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     if (!heartbeat_tx.ok) {
       if (diagnostic == "SB_AGENT_THREAD_TICK_OK") {
         diagnostic = heartbeat_tx.diagnostic_code;
+        diagnostic_detail = heartbeat_tx.diagnostic_detail;
       }
     } else {
       std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
@@ -1331,6 +1544,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
       if (!heartbeat.status.ok && diagnostic == "SB_AGENT_THREAD_TICK_OK") {
         RollbackServerAgentTransaction(heartbeat_tx.context);
         diagnostic = heartbeat.status.diagnostic_code;
+        diagnostic_detail = heartbeat.status.detail;
         if (heartbeat.status.diagnostic_code == "SB_AGENT_LEASE.EXPIRED") {
           std::lock_guard<std::mutex> guard(state_mutex_);
           if (worker_index < worker_evidence_.size()) {
@@ -1346,38 +1560,50 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                                           &tx_detail) &&
             diagnostic == "SB_AGENT_THREAD_TICK_OK") {
           diagnostic = tx_diagnostic;
+          diagnostic_detail = tx_detail;
         }
       }
     }
   }
 
   RecordWorkerTick(worker_index,
+                   generation,
                    std::move(last_action),
-                   action_attempted,
-                   action_accepted,
-                   std::move(diagnostic));
+                   action_outcome,
+                   std::move(diagnostic),
+                   std::move(diagnostic_detail));
 }
 
 void ServerAgentRuntime::RecordWorkerTick(std::size_t worker_index,
+                                          std::uint64_t generation,
                                           std::string last_action,
-                                          bool action_attempted,
-                                          bool action_accepted,
-                                          std::string diagnostic_code) {
+                                          ServerAgentActionOutcome action_outcome,
+                                          std::string diagnostic_code,
+                                          std::string diagnostic_detail) {
   std::lock_guard<std::mutex> guard(state_mutex_);
   if (worker_index >= worker_evidence_.size()) {
     return;
   }
   auto& evidence = worker_evidence_[worker_index];
   ++evidence.ticks;
-  if (action_attempted) {
-    if (action_accepted) {
+  switch (action_outcome) {
+    case ServerAgentActionOutcome::kAccepted:
       ++evidence.actions_accepted;
-    } else {
+      break;
+    case ServerAgentActionOutcome::kRefused:
       ++evidence.actions_refused;
-    }
+      break;
+    case ServerAgentActionOutcome::kFailed:
+      ++evidence.actions_failed;
+      break;
+    case ServerAgentActionOutcome::kNone:
+      break;
   }
   evidence.last_action = std::move(last_action);
+  evidence.last_action_outcome = std::string(AgentActionOutcomeName(action_outcome));
   evidence.last_diagnostic_code = std::move(diagnostic_code);
+  evidence.last_diagnostic_detail = std::move(diagnostic_detail);
+  evidence.last_diagnostic_generation = generation;
 }
 
 void ServerAgentRuntime::UpdateRuntimeCatalogSnapshotLocked(
@@ -1450,10 +1676,47 @@ std::string ServerAgentRuntime::StatusJson() const {
   std::uint64_t total_ticks = 0;
   std::uint64_t total_accepted = 0;
   std::uint64_t total_refused = 0;
+  std::uint64_t total_failed = 0;
+  std::uint64_t scheduled_worker_count = 0;
+  std::uint64_t min_worker_ticks = 0;
+  std::uint64_t max_worker_ticks = 0;
+  std::uint64_t starvation_events = 0;
+  std::uint64_t latest_fail_closed_generation = 0;
+  std::string last_diagnostic_agent_type_id;
+  std::string last_diagnostic_action;
+  std::string last_diagnostic_outcome;
+  std::string last_diagnostic_code;
+  std::string last_diagnostic_detail;
+  bool saw_worker = false;
   for (const auto& worker : worker_evidence_) {
     total_ticks += worker.ticks;
     total_accepted += worker.actions_accepted;
     total_refused += worker.actions_refused;
+    total_failed += worker.actions_failed;
+    if (worker.ticks > 0) {
+      ++scheduled_worker_count;
+    }
+    if (!saw_worker) {
+      min_worker_ticks = worker.ticks;
+      max_worker_ticks = worker.ticks;
+      saw_worker = true;
+    } else {
+      min_worker_ticks = std::min<std::uint64_t>(min_worker_ticks, worker.ticks);
+      max_worker_ticks = std::max<std::uint64_t>(max_worker_ticks, worker.ticks);
+    }
+    if (scheduler_ticks_ >= worker_evidence_.size() && worker.ticks == 0) {
+      ++starvation_events;
+    }
+    if (worker.last_diagnostic_generation >= latest_fail_closed_generation &&
+        (worker.last_action_outcome == "refused" ||
+         worker.last_action_outcome == "failed_closed")) {
+      latest_fail_closed_generation = worker.last_diagnostic_generation;
+      last_diagnostic_agent_type_id = worker.agent_type_id;
+      last_diagnostic_action = worker.last_action;
+      last_diagnostic_outcome = worker.last_action_outcome;
+      last_diagnostic_code = worker.last_diagnostic_code;
+      last_diagnostic_detail = worker.last_diagnostic_detail;
+    }
   }
 
   std::ostringstream out;
@@ -1492,6 +1755,21 @@ std::string ServerAgentRuntime::StatusJson() const {
       << "\"total_worker_ticks\":" << total_ticks << ','
       << "\"total_actions_accepted\":" << total_accepted << ','
       << "\"total_actions_refused\":" << total_refused << ','
+      << "\"total_actions_failed\":" << total_failed << ','
+      << "\"scheduled_worker_count\":" << scheduled_worker_count << ','
+      << "\"min_worker_ticks\":" << min_worker_ticks << ','
+      << "\"max_worker_ticks\":" << max_worker_ticks << ','
+      << "\"starvation_events\":" << starvation_events << ','
+      << "\"last_diagnostic_agent_type_id\":\""
+      << JsonEscape(last_diagnostic_agent_type_id) << "\","
+      << "\"last_diagnostic_action\":\""
+      << JsonEscape(last_diagnostic_action) << "\","
+      << "\"last_diagnostic_outcome\":\""
+      << JsonEscape(last_diagnostic_outcome) << "\","
+      << "\"last_diagnostic_code\":\""
+      << JsonEscape(last_diagnostic_code) << "\","
+      << "\"last_diagnostic_detail\":\""
+      << JsonEscape(last_diagnostic_detail) << "\","
       << "\"threads\":[";
   for (std::size_t i = 0; i < worker_evidence_.size(); ++i) {
     const auto& worker = worker_evidence_[i];
@@ -1507,11 +1785,64 @@ std::string ServerAgentRuntime::StatusJson() const {
         << "\"ticks\":" << worker.ticks << ','
         << "\"actions_accepted\":" << worker.actions_accepted << ','
         << "\"actions_refused\":" << worker.actions_refused << ','
+        << "\"actions_failed\":" << worker.actions_failed << ','
         << "\"last_action\":\"" << JsonEscape(worker.last_action) << "\","
-        << "\"last_diagnostic_code\":\"" << JsonEscape(worker.last_diagnostic_code) << "\"}";
+        << "\"last_action_outcome\":\""
+        << JsonEscape(worker.last_action_outcome) << "\","
+        << "\"last_diagnostic_code\":\""
+        << JsonEscape(worker.last_diagnostic_code) << "\","
+        << "\"last_diagnostic_detail\":\""
+        << JsonEscape(worker.last_diagnostic_detail) << "\","
+        << "\"last_diagnostic_generation\":"
+        << worker.last_diagnostic_generation << "}";
   }
   out << "]}}\n";
   return out.str();
+}
+
+scratchbird::engine::internal_api::SysInformationIparAgentLifecycleSource
+BuildIparAgentLifecycleProjectionSource(const ServerAgentRuntimeSnapshot& snapshot) {
+  scratchbird::engine::internal_api::SysInformationIparAgentLifecycleSource source;
+  source.runtime_id = "server_agent_runtime";
+  source.source_kind = "server_agent_runtime_snapshot";
+  source.lifecycle_state = snapshot.stopping
+                               ? "stopping"
+                               : (snapshot.started ? "running" : "stopped");
+  source.idle_state =
+      !snapshot.started
+          ? "idle"
+          : (snapshot.durable_action_backlog_count == 0 &&
+                     snapshot.durable_replay_pending_action_count == 0
+                 ? "idle_resident"
+                 : "active");
+  source.worker_wake_policy = snapshot.worker_wake_policy;
+  source.worker_thread_count = snapshot.worker_thread_count;
+  source.background_worker_slots = snapshot.background_worker_slots;
+  source.foreground_reserved_capacity = snapshot.foreground_reserved_capacity;
+  source.scheduler_ticks = snapshot.scheduler_ticks;
+  source.total_worker_ticks = snapshot.total_worker_ticks;
+  source.total_actions_accepted = snapshot.total_actions_accepted;
+  source.total_actions_refused = snapshot.total_actions_refused;
+  source.total_actions_failed = snapshot.total_actions_failed;
+  source.scheduled_worker_count = snapshot.scheduled_worker_count;
+  source.min_worker_ticks = snapshot.min_worker_ticks;
+  source.max_worker_ticks = snapshot.max_worker_ticks;
+  source.starvation_events = snapshot.starvation_events;
+  source.last_diagnostic_agent_type_id = snapshot.last_diagnostic_agent_type_id;
+  source.last_diagnostic_action = snapshot.last_diagnostic_action;
+  source.last_diagnostic_outcome = snapshot.last_diagnostic_outcome;
+  source.last_diagnostic_code = snapshot.last_diagnostic_code;
+  source.last_diagnostic_detail = snapshot.last_diagnostic_detail;
+  source.durable_lease_count = snapshot.durable_lease_count;
+  source.durable_action_backlog_count = snapshot.durable_action_backlog_count;
+  source.durable_replay_pending_action_count =
+      snapshot.durable_replay_pending_action_count;
+  source.process_rss_kb = snapshot.process_rss_kb;
+  source.process_vsize_kb = snapshot.process_vsize_kb;
+  source.source_state = snapshot.started ? "observed" : "not_started";
+  source.started = snapshot.started;
+  source.stopping = snapshot.stopping;
+  return source;
 }
 
 }  // namespace scratchbird::server

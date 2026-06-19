@@ -84,7 +84,7 @@ constexpr std::array<FamilyRule, 62> kServerSblrFamilies{{
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
     {"sblr.routine.define.v3", "routine.define", false},
-    {"sblr.routine.execute.v3", "extensibility.invoke_udr_package", false},
+    {"sblr.routine.execute.v3", "routine.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
     {"sblr.session.management.v3", "session.prepare_statement", false},
     {"sblr.statement.management.v3", "session.prepare_statement", false},
@@ -437,8 +437,10 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
     return "sblr.security.mutation.v3";
   }
   if (operation_id == "management.inspect_runtime" ||
-      operation_id == "op.sbsql.surface_replay" ||
-      operation_id == "op.show.management.config" ||
+      operation_id == "op.sbsql.surface_replay") {
+    return "sblr.management.report.v3";
+  }
+  if (operation_id == "op.show.management.config" ||
       operation_id == "op.show.management.drift" ||
       operation_id == "op.show.management.instructions" ||
       operation_id == "op.show.management.listeners" ||
@@ -448,7 +450,7 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
       operation_id == "op.show.management.servers" ||
       operation_id == "op.show.management.support_bundle_safety" ||
       operation_id == "op.show.management.support_bundles") {
-    return "sblr.management.report.v3";
+    return "sblr.management.runtime_operation.v3";
   }
   if (StartsWith(operation_id, "op.gpu.") ||
       StartsWith(operation_id, "op.native_compile.") ||
@@ -500,6 +502,9 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "dml.normalize_import_reject_model" ||
          operation_id == "artifact.export_catalog" ||
          operation_id == "artifact.import_catalog" ||
+         operation_id == "artifact.external_git.export_snapshot" ||
+         operation_id == "artifact.external_git.diff_snapshot" ||
+         operation_id == "artifact.external_git.rollback_plan" ||
          operation_id == "ddl.create_database" ||
          operation_id == "catalog.resolve_name" ||
          operation_id == "catalog.map_uuid_to_name" ||
@@ -571,6 +576,9 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          StartsWith(operation_id, "extensibility.unload_udr_package") ||
          StartsWith(operation_id, "extensibility.inspect_udr_packages") ||
          StartsWith(operation_id, "extensibility.invoke_udr_package") ||
+         operation_id == "routine.procedure_invoke" ||
+         operation_id == "routine.function_invoke" ||
+         StartsWith(operation_id, "routine.execute") ||
          operation_id == "extensibility.inspect_gpu_capability" ||
          operation_id == "extensibility.compile_llvm_module" ||
          operation_id == "observability.show_version" ||
@@ -1183,7 +1191,11 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
     return "sblr.acceleration.gpu.v3";
   }
   if (operation_id.starts_with("routine.define")) return "sblr.routine.define.v3";
-  if (operation_id.starts_with("routine.execute")) return "sblr.routine.execute.v3";
+  if (operation_id == "routine.procedure_invoke" ||
+      operation_id == "routine.function_invoke" ||
+      operation_id.starts_with("routine.execute")) {
+    return "sblr.routine.execute.v3";
+  }
   if (operation_id.starts_with("diagnostic.refusal")) return "sblr.diagnostic.refusal.v3";
   if (operation_id.starts_with("diagnostic.")) return "sblr.diagnostic.control.v3";
   if (operation_id.starts_with("mga.control.")) return "sblr.mga.control.v3";

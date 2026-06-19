@@ -5,13 +5,13 @@
 --          execution; verify via SELECT FROM proc(args); DROP.
 -- namespace placeholder: __SB_NAMESPACE__
 --
--- POSITIVE EXECUTION TEST (grounded in procedural_sql_blocks.md "Dynamic
--- Execution Boundary"):
---   This script asserts that EXECUTE STATEMENT actually EXECUTES and returns a
---   result set — it is not an expected-refusal script. Every assertion below is
---   positive. If a build only parses EXECUTE STATEMENT but does not execute it,
---   the dynamic SELECTs error and the assertions fail; that failure is the real
---   partial-implementation finding this suite exists to catch.
+-- POSITIVE EXECUTION TEST:
+--   This script asserts that EXECUTE STATEMENT is converted by the SBsql
+--   parser-support UDR into SBLR/UUID, revalidated under the invoking session,
+--   and then executed by the engine as admitted SBLR/UUID. The engine must not
+--   parse or execute SQL text directly. Every assertion below is positive. If a
+--   build only parses EXECUTE STATEMENT, skips parser-support UDR conversion, or
+--   bypasses SBLR/UUID admission, the dynamic SELECTs fail visibly.
 --
 -- HARD CONSTRAINTS OBSERVED:
 --   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
@@ -53,8 +53,9 @@ INSERT INTO __SB_NAMESPACE__.dynproc_keys (row_key, multiplier) VALUES (3, 30);
 --   Returns: row_key INTEGER, computed_value INTEGER.
 --   p_factor: scalar factor multiplied against each row's multiplier value.
 --
---   No exception handler: if EXECUTE STATEMENT is not executed by the build, the
---   error propagates to the invoking SELECT and the assertion fails visibly.
+--   No exception handler: if EXECUTE STATEMENT is not converted by the
+--   parser-support UDR and executed as verified SBLR/UUID, the error propagates
+--   to the invoking SELECT and the assertion fails visibly.
 -- ──────────────────────────────────────────────────────────────────────────────
 
 SET TERM ^ ;
@@ -86,9 +87,10 @@ BEGIN
             || ' * ' || CAST(p_factor AS VARCHAR(20))
             || ' AS INTEGER)';
 
-    -- Single-row INTO dynamic execution (documented form). Positive assertion
-    -- that the engine executes EXECUTE STATEMENT; on a parse-only build the
-    -- SELECT that invokes this procedure errors and its assertion fails.
+    -- Single-row INTO dynamic execution. The runtime must send this dynamic
+    -- SBsql to the parser-support UDR, then execute only the revalidated
+    -- SBLR/UUID envelope. On a parse-only or engine-SQL-text build, the SELECT
+    -- that invokes this procedure errors and its assertion fails.
     EXECUTE STATEMENT :v_sql INTO :v_computed;
 
     row_key = v_cur_key;

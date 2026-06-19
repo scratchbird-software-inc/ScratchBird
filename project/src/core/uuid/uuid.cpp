@@ -11,9 +11,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <sstream>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -97,13 +100,33 @@ Uuid MakeV1Layout(u8 version, u64 gregorian_100ns_timestamp, u16 clock_sequence,
 
 std::array<byte, 16> RandomBytes16() {
   std::array<byte, 16> bytes{};
-  std::random_device random;
-  for (std::size_t i = 0; i < bytes.size(); i += 4) {
-    const unsigned int value = random();
-    bytes[i] = static_cast<byte>((value >> 24) & 0xffu);
-    bytes[i + 1] = static_cast<byte>((value >> 16) & 0xffu);
-    bytes[i + 2] = static_cast<byte>((value >> 8) & 0xffu);
-    bytes[i + 3] = static_cast<byte>(value & 0xffu);
+  thread_local std::mt19937_64 rng = [] {
+    std::random_device random;
+    const auto now = static_cast<u64>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    const auto thread_hash = static_cast<u64>(
+        std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    std::seed_seq seed{
+        random(),
+        random(),
+        random(),
+        random(),
+        static_cast<unsigned int>(now & 0xffffffffull),
+        static_cast<unsigned int>((now >> 32) & 0xffffffffull),
+        static_cast<unsigned int>(thread_hash & 0xffffffffull),
+        static_cast<unsigned int>((thread_hash >> 32) & 0xffffffffull)};
+    return std::mt19937_64(seed);
+  }();
+  for (std::size_t i = 0; i < bytes.size(); i += 8) {
+    const auto value = rng();
+    bytes[i] = static_cast<byte>((value >> 56) & 0xffu);
+    bytes[i + 1] = static_cast<byte>((value >> 48) & 0xffu);
+    bytes[i + 2] = static_cast<byte>((value >> 40) & 0xffu);
+    bytes[i + 3] = static_cast<byte>((value >> 32) & 0xffu);
+    bytes[i + 4] = static_cast<byte>((value >> 24) & 0xffu);
+    bytes[i + 5] = static_cast<byte>((value >> 16) & 0xffu);
+    bytes[i + 6] = static_cast<byte>((value >> 8) & 0xffu);
+    bytes[i + 7] = static_cast<byte>(value & 0xffu);
   }
   return bytes;
 }

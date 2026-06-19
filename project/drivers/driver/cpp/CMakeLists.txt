@@ -92,6 +92,23 @@ if (BUILD_TESTING)
         LABELS "MMCH-016;driver;c_api;memory_ownership;mga_transaction_regression"
     )
 
+    add_executable(scratchbird_client_prepared_handle_authority_test
+        tests/test_prepared_handle_authority.cpp
+    )
+    target_compile_features(scratchbird_client_prepared_handle_authority_test PRIVATE cxx_std_17)
+    target_compile_definitions(scratchbird_client_prepared_handle_authority_test PRIVATE SCRATCHBIRD_TEST_HOOKS)
+    target_link_libraries(scratchbird_client_prepared_handle_authority_test
+        PRIVATE
+            scratchbird_client
+    )
+    add_test(
+        NAME scratchbird_client_prepared_handle_authority_test
+        COMMAND scratchbird_client_prepared_handle_authority_test
+    )
+    set_tests_properties(scratchbird_client_prepared_handle_authority_test PROPERTIES
+        LABELS "IPAR-P1-03;IPAR-P5-04;driver;prepared_handle_authority;mga_transaction_regression"
+    )
+
     find_package(GTest)
     if (GTest_FOUND)
         add_executable(scratchbird_client_checkout_leak_detector_gate

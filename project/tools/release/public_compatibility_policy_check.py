@@ -96,7 +96,7 @@ EVIDENCE_CHECKS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "PUBLIC_DEFAULT_CONFIG_CHECK",
             "security_default_policy_installed",
-            "server_production_default",
+            "default_local_server_memory_cache_v1",
         ),
     },
     {

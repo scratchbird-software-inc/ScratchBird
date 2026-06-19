@@ -38,7 +38,11 @@
     }
   }
   for (const auto& option : request.option_envelopes) {
-    if (StartsWithLocal(option, "default_expression:")) {
+    if (option == "nullable:true") {
+      record.nullable = true;
+    } else if (option == "nullable:false") {
+      record.nullable = false;
+    } else if (StartsWithLocal(option, "default_expression:")) {
       record.default_expression_envelope = option.substr(19);
     } else if (StartsWithLocal(option, "check_constraint:")) {
       record.check_constraint_envelope = option.substr(17);
@@ -152,8 +156,176 @@
   return result;
 }
 
+namespace {
+
+std::string CreateSequenceOptionValue(const EngineCreateSequenceRequest& request,
+                                      std::string_view prefix) {
+  return SecurityOptionValue(request, std::string(prefix));
+}
+
+bool ParseSequenceI64(std::string value, std::int64_t* out) {
+  if (out == nullptr || value.empty() || value == "default") return false;
+  bool negative = false;
+  std::size_t index = 0;
+  if (value[index] == '-' || value[index] == '+') {
+    negative = value[index] == '-';
+    ++index;
+    if (index == value.size()) return false;
+  }
+  std::int64_t parsed = 0;
+  for (; index < value.size(); ++index) {
+    const unsigned char ch = static_cast<unsigned char>(value[index]);
+    if (!std::isdigit(ch)) return false;
+    const int digit = static_cast<int>(ch - '0');
+    if (parsed > (std::numeric_limits<std::int64_t>::max() - digit) / 10) return false;
+    parsed = parsed * 10 + digit;
+  }
+  *out = negative ? -parsed : parsed;
+  return true;
+}
+
+std::uint64_t ParseSequenceU64(std::string value, std::uint64_t fallback) {
+  if (value.empty() || value == "default" || value == "none") return fallback;
+  std::uint64_t parsed = 0;
+  for (const unsigned char ch : value) {
+    if (!std::isdigit(ch)) return fallback;
+    parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
+  }
+  return parsed == 0 ? fallback : parsed;
+}
+
+scratchbird::engine::sblr::SblrExecutionContext SequenceSblrContext(
+    const EngineRequestContext& context) {
+  scratchbird::engine::sblr::SblrExecutionContext out;
+  out.database_path = context.database_path;
+  out.database_uuid = context.database_uuid.canonical;
+  out.cluster_uuid = context.cluster_uuid.canonical;
+  out.node_uuid = context.node_uuid.canonical;
+  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.local_transaction_id = context.local_transaction_id;
+  out.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  out.transaction_isolation_level = context.transaction_isolation_level;
+  out.statement_uuid = context.statement_uuid.canonical;
+  out.session_uuid = context.session_uuid.canonical;
+  out.user_uuid = context.principal_uuid.canonical;
+  out.current_role_uuid = context.current_role_uuid.canonical;
+  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_timestamp = context.statement_timestamp;
+  out.transaction_timestamp = context.transaction_timestamp;
+  out.current_timestamp = context.current_timestamp;
+  out.current_monotonic_ns = context.current_monotonic_ns;
+  out.security_context_present = context.security_context_present;
+  out.transaction_context_present =
+      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+  out.cluster_authority_available = context.cluster_authority_available;
+  out.read_only_mode = context.read_only_mode;
+  return out;
+}
+
+scratchbird::engine::sblr::SblrSequenceDefinition BuildSequenceDefinition(
+    const EngineCreateSequenceRequest& request,
+    const std::string& sequence_uuid) {
+  scratchbird::engine::sblr::SblrSequenceDefinition definition;
+  definition.sequence_uuid = sequence_uuid;
+  std::string descriptor = CreateSequenceOptionValue(request, "sequence_descriptor:");
+  const auto fields = DescriptorFieldsLocal(descriptor);
+  const std::string type =
+      CreateSequenceOptionValue(request, "sequence_type:").empty()
+          ? DescriptorFieldLocal(fields, {"type", "descriptor", "canonical_type"})
+          : CreateSequenceOptionValue(request, "sequence_type:");
+  definition.descriptor_id = type.empty() ? "int64" : LowerAsciiLocal(type);
+  std::int64_t parsed = 0;
+  if (ParseSequenceI64(CreateSequenceOptionValue(request, "sequence_start_value:"), &parsed) ||
+      ParseSequenceI64(DescriptorFieldLocal(fields, {"start", "start_value"}), &parsed)) {
+    definition.start_value = parsed;
+  }
+  if (ParseSequenceI64(CreateSequenceOptionValue(request, "sequence_increment:"), &parsed) ||
+      ParseSequenceI64(DescriptorFieldLocal(fields, {"increment", "increment_by"}), &parsed)) {
+    definition.increment = parsed;
+  }
+  if (ParseSequenceI64(CreateSequenceOptionValue(request, "sequence_min_value:"), &parsed) ||
+      ParseSequenceI64(DescriptorFieldLocal(fields, {"min", "minvalue"}), &parsed)) {
+    definition.minimum_value = parsed;
+  }
+  if (ParseSequenceI64(CreateSequenceOptionValue(request, "sequence_max_value:"), &parsed) ||
+      ParseSequenceI64(DescriptorFieldLocal(fields, {"max", "maxvalue"}), &parsed)) {
+    definition.maximum_value = parsed;
+  }
+  const bool no_cache = SecurityOptionBool(request, "sequence_no_cache:", false) ||
+                        LowerAsciiLocal(DescriptorFieldLocal(fields, {"cache"})) == "none";
+  if (no_cache) {
+    definition.cache_size = 1;
+  } else {
+    definition.cache_size = ParseSequenceU64(
+        CreateSequenceOptionValue(request, "sequence_cache:").empty()
+            ? DescriptorFieldLocal(fields, {"cache"})
+            : CreateSequenceOptionValue(request, "sequence_cache:"),
+        1);
+  }
+  const std::string cycle_option = CreateSequenceOptionValue(request, "sequence_cycle:").empty()
+                                       ? DescriptorFieldLocal(fields, {"cycle"})
+                                       : CreateSequenceOptionValue(request, "sequence_cycle:");
+  definition.cycle = LowerAsciiLocal(cycle_option) == "true" ||
+                     LowerAsciiLocal(cycle_option) == "1" ||
+                     LowerAsciiLocal(cycle_option) == "yes";
+  return definition;
+}
+
+EngineApiDiagnostic RegisterSequenceDefinitionAlias(
+    const EngineCreateSequenceRequest& request,
+    scratchbird::engine::sblr::SblrSequenceDefinition definition,
+    std::string sequence_key) {
+  if (sequence_key.empty()) {
+    return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
+  definition.sequence_uuid = LowerAsciiLocal(std::move(sequence_key));
+  const auto registered = scratchbird::engine::sblr::RegisterSblrSequence(
+      &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
+      definition,
+      SequenceSblrContext(request.context));
+  if (registered.ok()) {
+    return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
+  const std::string detail = registered.diagnostics.empty()
+                                 ? "sequence_definition_registration_failed"
+                                 : registered.diagnostics.front().detail;
+  return MakeInvalidRequestDiagnostic("ddl.create_sequence", detail);
+}
+
+}  // namespace
+
 EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceRequest& request) {
-  return PersistedCreateWithNameRegistry<EngineCreateSequenceResult>(request, "ddl.create_sequence", "sequence", true, "created");
+  auto result = PersistedCreateWithNameRegistry<EngineCreateSequenceResult>(
+      request, "ddl.create_sequence", "sequence", true, "created");
+  if (!result.ok) { return result; }
+
+  auto definition = BuildSequenceDefinition(request, result.primary_object.uuid.canonical);
+  auto diagnostic = RegisterSequenceDefinitionAlias(
+      request, definition, result.primary_object.uuid.canonical);
+  if (diagnostic.error) {
+    return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
+        request.context, "ddl.create_sequence", diagnostic);
+  }
+  const std::string lookup_key = CreateSequenceOptionValue(request, "sequence_lookup_key:");
+  diagnostic = RegisterSequenceDefinitionAlias(request, definition, lookup_key);
+  if (diagnostic.error) {
+    return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
+        request.context, "ddl.create_sequence", diagnostic);
+  }
+  const std::string name = ApiBehaviorPrimaryName(request, "sequence");
+  if (!name.empty() && LowerAsciiLocal(name) != LowerAsciiLocal(lookup_key)) {
+    diagnostic = RegisterSequenceDefinitionAlias(request, definition, name);
+    if (diagnostic.error) {
+      return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
+          request.context, "ddl.create_sequence", diagnostic);
+    }
+  }
+  result.evidence.push_back({"sequence_runtime_definition", result.primary_object.uuid.canonical});
+  if (!lookup_key.empty()) {
+    result.evidence.push_back({"sequence_runtime_lookup_key", LowerAsciiLocal(lookup_key)});
+  }
+  return result;
 }
 
 EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) {

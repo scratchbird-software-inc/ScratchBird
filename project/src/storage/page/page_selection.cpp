@@ -184,6 +184,12 @@ bool CandidateMatches(const InsertPageCandidate& candidate, const InsertPageSele
          candidate.page_family == request.page_family;
 }
 
+bool CandidateMatchesReservationFilespace(const InsertPageCandidate& candidate,
+                                          const PageReservationEntry* reservation) {
+  return reservation == nullptr ||
+         candidate.filespace_uuid.value == reservation->filespace_uuid.value;
+}
+
 }  // namespace
 
 const char* PageSelectionStateName(PageSelectionState state) {
@@ -287,6 +293,9 @@ InsertPageSelectionResult SelectInsertTargetPage(PageSelectionLedger* selection_
   bool matching_page_seen = false;
   for (const auto& candidate : selection_ledger->candidates) {
     if (!CandidateMatches(candidate, request)) {
+      continue;
+    }
+    if (!CandidateMatchesReservationFilespace(candidate, reservation)) {
       continue;
     }
     matching_page_seen = true;

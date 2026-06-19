@@ -58,6 +58,53 @@ constexpr int64_t kMicrosPerSecond = 1000000LL;
 constexpr int64_t kMicrosPerDay = 86400LL * kMicrosPerSecond;
 constexpr int64_t kDaysFrom1970To2000 = 10957;
 
+bool isZeroUuidBytes(const std::array<uint8_t, 16>& uuid) {
+    return std::all_of(uuid.begin(), uuid.end(), [](uint8_t byte) {
+        return byte == 0;
+    });
+}
+
+bool uuidBytesEqual(const std::array<uint8_t, 16>& left,
+                    const std::array<uint8_t, 16>& right) {
+    return std::equal(left.begin(), left.end(), right.begin(), right.end());
+}
+
+std::array<uint8_t, 16> randomProtocolUuid() {
+    std::array<uint8_t, 16> out{};
+    if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1) {
+        std::random_device rd;
+        for (auto& byte : out) {
+            byte = static_cast<uint8_t>(rd() & 0xffu);
+        }
+    }
+    out[6] = static_cast<uint8_t>((out[6] & 0x0fu) | 0x70u);
+    out[8] = static_cast<uint8_t>((out[8] & 0x3fu) | 0x80u);
+    return out;
+}
+
+uint64_t fnv1a64(std::string_view text) {
+    uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char ch : text) {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+NetworkTransactionFinality toNetworkFinality(const protocol::TxnFinalityStatus& status) {
+    NetworkTransactionFinality out;
+    out.state = status.state;
+    out.flags = status.flags;
+    out.idempotency_key = status.idempotency_key;
+    out.finality_token = status.finality_token;
+    out.request_fingerprint = status.request_fingerprint;
+    out.original_txn_id = status.original_txn_id;
+    out.replacement_txn_id = status.replacement_txn_id;
+    out.diagnostic_code = status.diagnostic_code;
+    out.detail = status.detail;
+    return out;
+}
+
 // manager MCP uses the SBDB frame header before switching to byte-proxy mode.
 constexpr uint32_t kManagerProtocolMagic = 0x42444253;  // "SBDB"
 constexpr uint16_t kManagerProtocolVersion = 0x0101;    // 1.1
@@ -104,6 +151,12 @@ const char* messageTypeName(protocol::MessageType type) {
         case protocol::MessageType::ParameterStatus: return "ParameterStatus";
         case protocol::MessageType::Notification: return "Notification";
         case protocol::MessageType::TxnStatus: return "TxnStatus";
+        case protocol::MessageType::CopyInResponse: return "CopyInResponse";
+        case protocol::MessageType::CopyOutResponse: return "CopyOutResponse";
+        case protocol::MessageType::CopyBothResponse: return "CopyBothResponse";
+        case protocol::MessageType::CopyData: return "CopyData";
+        case protocol::MessageType::CopyDone: return "CopyDone";
+        case protocol::MessageType::CopyFail: return "CopyFail";
         default: return "Other";
     }
 }
@@ -198,6 +251,83 @@ bool querySupportsServerAutocommit(std::string_view sql) {
         return false;
     }
     return !token.empty();
+}
+
+std::vector<uint32_t> inferParameterTypesFromSql(std::string_view sql) {
+    std::size_t question_count = 0;
+    std::size_t max_dollar_index = 0;
+    bool in_single = false;
+    bool in_double = false;
+    bool in_line_comment = false;
+    bool in_block_comment = false;
+    for (std::size_t index = 0; index < sql.size();) {
+        const char ch = sql[index];
+        const char next = index + 1 < sql.size() ? sql[index + 1] : '\0';
+        if (in_line_comment) {
+            in_line_comment = ch != '\n';
+            ++index;
+            continue;
+        }
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                index += 2;
+            } else {
+                ++index;
+            }
+            continue;
+        }
+        if (!in_single && !in_double && ch == '-' && next == '-') {
+            in_line_comment = true;
+            index += 2;
+            continue;
+        }
+        if (!in_single && !in_double && ch == '/' && next == '*') {
+            in_block_comment = true;
+            index += 2;
+            continue;
+        }
+        if (ch == '\'' && !in_double) {
+            if (in_single && next == '\'') {
+                index += 2;
+                continue;
+            }
+            in_single = !in_single;
+            ++index;
+            continue;
+        }
+        if (ch == '"' && !in_single) {
+            if (in_double && next == '"') {
+                index += 2;
+                continue;
+            }
+            in_double = !in_double;
+            ++index;
+            continue;
+        }
+        if (!in_single && !in_double && ch == '?') {
+            ++question_count;
+            ++index;
+            continue;
+        }
+        if (!in_single && !in_double && ch == '$' &&
+            index + 1 < sql.size() &&
+            std::isdigit(static_cast<unsigned char>(sql[index + 1]))) {
+            std::size_t cursor = index + 1;
+            std::size_t value = 0;
+            while (cursor < sql.size() &&
+                   std::isdigit(static_cast<unsigned char>(sql[cursor]))) {
+                value = value * 10u + static_cast<std::size_t>(sql[cursor] - '0');
+                ++cursor;
+            }
+            max_dollar_index = std::max(max_dollar_index, value);
+            index = cursor;
+            continue;
+        }
+        ++index;
+    }
+    const std::size_t count = std::max(question_count, max_dollar_index);
+    return std::vector<uint32_t>(count, 0);
 }
 
 bool isManagedTransport(const std::string& value) {
@@ -1597,6 +1727,8 @@ void NetworkClient::disconnect() {
     explicit_transaction_active_ = false;
     server_autocommit_requested_ = false;
     current_txn_id_ = 0;
+    last_commit_finality_ = NetworkTransactionFinality{};
+    last_commit_finality_present_ = false;
     last_error_.clear();
 }
 
@@ -1854,12 +1986,43 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 break;
             }
             case protocol::MessageType::CopyInResponse: {
+                protocol::CopyInResponse response;
+                status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
                 status = sendCopyInputStream(ctx);
                 if (status != core::Status::OK) {
                     return status;
                 }
                 break;
             }
+            case protocol::MessageType::CopyOutResponse:
+                status = handleCopyOutResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyBothResponse:
+                status = handleCopyBothResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                status = sendCopyInputStream(ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyData:
+                status = handleCopyDataMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyDone:
+                break;
+            case protocol::MessageType::CopyFail:
+                return handleCopyFailMessage(msg, ctx);
             case protocol::MessageType::CommandComplete: {
                 uint8_t command_type = 0;
                 uint64_t rows = 0;
@@ -1890,9 +2053,15 @@ core::Status NetworkClient::prepare(const std::string& sql,
     stmt = NetworkPreparedStatement{};
     stmt.sql_ = sql;
     stmt.statement_name_ = "stmt_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    stmt.param_type_oids_ = inferParameterTypesFromSql(sql);
+    stmt.params_.resize(stmt.param_type_oids_.size());
+    stmt.param_count_ = stmt.param_type_oids_.size();
+    stmt.prepared_type_oids_ = stmt.param_type_oids_;
+    stmt.owner_session_id_ = session_id_;
+    stmt.owner_client_token_ = reinterpret_cast<uintptr_t>(this);
 
     traceWireEvent("prepare_parse_send", protocol::MessageType::Parse, next_sequence_, in_transaction_);
-    auto parse_payload = protocol::buildParsePayload(stmt.statement_name_, sql, {});
+    auto parse_payload = protocol::buildParsePayload(stmt.statement_name_, sql, stmt.param_type_oids_);
     auto status = sendMessage(protocol::MessageType::Parse, parse_payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
         return status;
@@ -1928,6 +2097,13 @@ core::Status NetworkClient::prepare(const std::string& sql,
                     return status;
                 }
                 stmt.param_count_ = types.size();
+                stmt.prepared_type_oids_ = types;
+                if (stmt.param_type_oids_.size() < types.size()) {
+                    stmt.param_type_oids_.resize(types.size());
+                }
+                if (stmt.params_.size() < types.size()) {
+                    stmt.params_.resize(types.size());
+                }
                 break;
             }
             case protocol::MessageType::Error:
@@ -1949,8 +2125,85 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
     if (!stmt.valid_) {
         return setError(ctx, core::Status::INVALID_ARGUMENT, "Prepared statement is not valid");
     }
+    if (stmt.owner_client_token_ != reinterpret_cast<uintptr_t>(this) ||
+        stmt.owner_session_id_ != session_id_ ||
+        isZeroUuidBytes(stmt.owner_session_id_)) {
+        return setError(ctx, core::Status::INVALID_ARGUMENT,
+                        "Prepared statement is not valid for this client session");
+    }
     results = NetworkResultSet{};
     server_autocommit_requested_ = false;
+
+    std::vector<uint32_t> current_types = stmt.param_type_oids_;
+    if (current_types.size() < stmt.params_.size()) {
+        current_types.resize(stmt.params_.size());
+    }
+    if (current_types.size() < stmt.param_count_) {
+        current_types.resize(stmt.param_count_);
+    }
+    for (size_t index = 0; index < stmt.params_.size(); ++index) {
+        if (current_types[index] == 0 && stmt.params_[index].type_oid != 0) {
+            current_types[index] = stmt.params_[index].type_oid;
+        }
+    }
+    if (current_types != stmt.prepared_type_oids_) {
+        traceWireEvent("execute_prepared_reparse_send", protocol::MessageType::Parse, next_sequence_, in_transaction_);
+        auto parse_payload = protocol::buildParsePayload(stmt.statement_name_, stmt.sql_, current_types);
+        auto reparse_status = sendMessage(protocol::MessageType::Parse, parse_payload, 0, false, nullptr, ctx);
+        if (reparse_status != core::Status::OK) {
+            return reparse_status;
+        }
+        auto describe_payload = protocol::buildDescribePayload(kDescribeStatement, stmt.statement_name_);
+        reparse_status = sendMessage(protocol::MessageType::Describe, describe_payload, 0, false, nullptr, ctx);
+        if (reparse_status != core::Status::OK) {
+            return reparse_status;
+        }
+        reparse_status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
+        if (reparse_status != core::Status::OK) {
+            return reparse_status;
+        }
+        while (true) {
+            protocol::ProtocolMessage msg;
+            reparse_status = receiveMessage(msg, ctx);
+            if (reparse_status != core::Status::OK) {
+                return reparse_status;
+            }
+            traceWireEvent("execute_prepared_reparse_recv", msg.header.type, msg.header.sequence, in_transaction_);
+            if (handleAsyncMessage(msg, ctx) == core::Status::OK &&
+                isAsyncMessageType(msg.header.type)) {
+                continue;
+            }
+            if (msg.header.type == protocol::MessageType::ParameterDescription) {
+                std::vector<uint32_t> described_types;
+                reparse_status = protocol::parseParameterDescription(msg.body, described_types, ctx);
+                if (reparse_status != core::Status::OK) {
+                    return reparse_status;
+                }
+                stmt.param_count_ = described_types.size();
+                stmt.prepared_type_oids_ = described_types;
+                if (stmt.param_type_oids_.size() < described_types.size()) {
+                    stmt.param_type_oids_.resize(described_types.size());
+                }
+                if (stmt.params_.size() < described_types.size()) {
+                    stmt.params_.resize(described_types.size());
+                }
+                continue;
+            }
+            if (msg.header.type == protocol::MessageType::Error) {
+                return handleErrorResponse(msg, ctx);
+            }
+            if (msg.header.type == protocol::MessageType::Ready) {
+                reparse_status = parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                if (reparse_status != core::Status::OK) {
+                    return reparse_status;
+                }
+                if (stmt.prepared_type_oids_ != current_types) {
+                    stmt.prepared_type_oids_ = current_types;
+                }
+                break;
+            }
+        }
+    }
 
     std::string portal_name = "portal_" + std::to_string(next_sequence_);
     traceWireEvent("execute_prepared_bind_send", protocol::MessageType::Bind, next_sequence_, in_transaction_);
@@ -2014,6 +2267,44 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
                 results.rows.push_back(std::move(values));
                 break;
             }
+            case protocol::MessageType::CopyInResponse: {
+                protocol::CopyInResponse response;
+                status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                status = sendCopyInputStream(ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            }
+            case protocol::MessageType::CopyOutResponse:
+                status = handleCopyOutResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyBothResponse:
+                status = handleCopyBothResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                status = sendCopyInputStream(ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyData:
+                status = handleCopyDataMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyDone:
+                break;
+            case protocol::MessageType::CopyFail:
+                return handleCopyFailMessage(msg, ctx);
             case protocol::MessageType::CommandComplete: {
                 uint8_t command_type = 0;
                 uint64_t rows = 0;
@@ -2127,6 +2418,44 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
                 results.rows.push_back(std::move(values));
                 break;
             }
+            case protocol::MessageType::CopyInResponse: {
+                protocol::CopyInResponse response;
+                status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                status = sendCopyInputStream(ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            }
+            case protocol::MessageType::CopyOutResponse:
+                status = handleCopyOutResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyBothResponse:
+                status = handleCopyBothResponseMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                status = sendCopyInputStream(ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyData:
+                status = handleCopyDataMessage(msg, results, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            case protocol::MessageType::CopyDone:
+                break;
+            case protocol::MessageType::CopyFail:
+                return handleCopyFailMessage(msg, ctx);
             case protocol::MessageType::CommandComplete: {
                 uint8_t command_type = 0;
                 uint64_t rows = 0;
@@ -2513,16 +2842,165 @@ core::Status NetworkClient::commit(core::ErrorContext* ctx) {
                    protocol::MessageType::TxnCommit,
                    next_sequence_,
                    in_transaction_);
-    auto payload = protocol::buildTxnCommitPayload(0);
+    protocol::TxnCommitRequest request;
+    request.contract_flags = protocol::kTxnCommitFlagHasIdempotencyKey |
+                             protocol::kTxnCommitFlagStatementHasSideEffects;
+    request.idempotency_key = randomProtocolUuid();
+    request.request_fingerprint = fnv1a64("transaction.commit");
+    request.expected_txn_id = current_txn_id_;
+    last_commit_finality_ = NetworkTransactionFinality{};
+    last_commit_finality_.state = protocol::TxnFinalityState::Unknown;
+    last_commit_finality_.idempotency_key = request.idempotency_key;
+    last_commit_finality_.request_fingerprint = request.request_fingerprint;
+    last_commit_finality_.original_txn_id = current_txn_id_;
+    last_commit_finality_.diagnostic_code = "SBWP.COMMIT.FINALITY_PENDING";
+    last_commit_finality_.detail = "commit_outcome_pending_engine_finality_report";
+    last_commit_finality_present_ = true;
+
+    auto payload = protocol::buildTxnCommitPayload(request);
     auto status = sendMessage(protocol::MessageType::TxnCommit, payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
+        last_commit_finality_.diagnostic_code = "SBWP.COMMIT.SEND_FAILED_FINALITY_UNKNOWN";
+        last_commit_finality_.detail = "commit_send_failed_before_engine_finality_report";
         return status;
     }
-    status = drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    std::string command_tag;
+    status = drainUntilReady(&command_tag, nullptr, nullptr, ctx);
+    if (status != core::Status::OK) {
+        last_commit_finality_.state = protocol::TxnFinalityState::Unknown;
+        last_commit_finality_.flags &= static_cast<uint16_t>(~protocol::kTxnFinalityFlagEngineKnown);
+        last_commit_finality_.diagnostic_code = "SBWP.COMMIT.READY_LOST_FINALITY_UNKNOWN";
+        last_commit_finality_.detail = "commit_outcome_unknown_until_engine_finality_query";
+        return status;
+    }
     if (status == core::Status::OK) {
+        if (last_commit_finality_.state == protocol::TxnFinalityState::Unknown &&
+            command_tag == "COMMIT" &&
+            last_commit_finality_.diagnostic_code == "SBWP.COMMIT.FINALITY_PENDING") {
+            last_commit_finality_.state = protocol::TxnFinalityState::Committed;
+            last_commit_finality_.flags = protocol::kTxnFinalityFlagEngineKnown |
+                                          protocol::kTxnFinalityFlagSameIdempotencyKeyReplayable;
+            last_commit_finality_.replacement_txn_id = current_txn_id_;
+            last_commit_finality_.diagnostic_code = "SBWP.COMMIT.READY_COMMITTED";
+            last_commit_finality_.detail = "legacy_ready_after_commit_reported_replacement_boundary";
+        }
         explicit_transaction_active_ = false;
     }
     return status;
+}
+
+core::Status NetworkClient::queryLastCommitFinality(core::ErrorContext* ctx) {
+    NetworkTransactionFinality queried;
+    auto status = queryCommitFinality(last_commit_finality_.idempotency_key,
+                                      last_commit_finality_.finality_token,
+                                      queried,
+                                      ctx);
+    if (status == core::Status::OK) {
+        last_commit_finality_ = queried;
+        last_commit_finality_present_ = true;
+    }
+    return status;
+}
+
+core::Status NetworkClient::queryCommitFinality(
+    const std::array<uint8_t, 16>& idempotency_key,
+    const std::array<uint8_t, 16>& finality_token,
+    NetworkTransactionFinality& finality,
+    core::ErrorContext* ctx) {
+    protocol::TxnFinalityQuery query;
+    query.idempotency_key = idempotency_key;
+    query.finality_token = finality_token;
+    query.expected_txn_id = current_txn_id_;
+    const auto payload = protocol::buildTxnFinalityQueryPayload(query);
+    auto status = sendMessage(protocol::MessageType::TxnStatus, payload, 0, false, nullptr, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    bool saw_status = false;
+    NetworkTransactionFinality observed;
+    while (true) {
+        protocol::ProtocolMessage msg;
+        status = receiveMessage(msg, ctx);
+        if (status != core::Status::OK) {
+            return status;
+        }
+        if (handleAsyncMessage(msg, ctx) == core::Status::OK &&
+            isAsyncMessageType(msg.header.type)) {
+            continue;
+        }
+        switch (msg.header.type) {
+            case protocol::MessageType::TxnStatus: {
+                status = handleTxnStatusMessage(msg, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                observed = last_commit_finality_;
+                saw_status = true;
+                break;
+            }
+            case protocol::MessageType::Ready: {
+                auto ready_status =
+                    parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                if (ready_status != core::Status::OK) {
+                    return ready_status;
+                }
+                if (!saw_status) {
+                    return setError(ctx,
+                                    core::Status::PROTOCOL_VIOLATION,
+                                    "TxnStatus query completed without a finality status");
+                }
+                finality = observed;
+                return core::Status::OK;
+            }
+            case protocol::MessageType::Error:
+                return handleErrorResponse(msg, ctx);
+            default:
+                break;
+        }
+    }
+}
+
+core::Status NetworkClient::validateRetryAfterCommitUncertainty(
+    const std::array<uint8_t, 16>& idempotency_key,
+    bool statement_has_side_effects,
+    bool caller_acknowledged_retry_boundary,
+    core::ErrorContext* ctx) const {
+    if (!last_commit_finality_present_) {
+        return setError(ctx,
+                        core::Status::INVALID_TRANSACTION_STATE,
+                        "No commit finality record is available for retry validation");
+    }
+    if (!last_commit_finality_.engineFinalityKnown()) {
+        const auto status =
+            setError(ctx,
+                     core::Status::CONNECTION_FAILURE,
+                     "Retry refused until engine MGA finality is queried");
+        if (ctx) {
+            ctx->setSQLState("08007");
+        }
+        return status;
+    }
+    if (!uuidBytesEqual(idempotency_key, last_commit_finality_.idempotency_key)) {
+        const auto status =
+            setError(ctx,
+                     core::Status::INVALID_TRANSACTION_STATE,
+                     "Retry idempotency key differs from the recorded commit key");
+        if (ctx) {
+            ctx->setSQLState("40003");
+        }
+        return status;
+    }
+    if (statement_has_side_effects && !caller_acknowledged_retry_boundary) {
+        const auto status =
+            setError(ctx,
+                     core::Status::INVALID_TRANSACTION_STATE,
+                     "Side-effecting retry requires caller acknowledgement");
+        if (ctx) {
+            ctx->setSQLState("40003");
+        }
+        return status;
+    }
+    return core::Status::OK;
 }
 
 core::Status NetworkClient::rollback(core::ErrorContext* ctx) {
@@ -2882,9 +3360,8 @@ core::Status NetworkClient::readExactWithTimeout(void* buffer, size_t size,
 
 core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     if (!copy_input_stream_) {
-        std::vector<uint8_t> fail_payload;
         const std::string message = "COPY FROM STDIN requires a client input stream";
-        fail_payload.insert(fail_payload.end(), message.begin(), message.end());
+        const auto fail_payload = protocol::buildCopyFailPayload(message);
         auto fail_status = sendMessage(protocol::MessageType::CopyFail, fail_payload, 0, false, nullptr, ctx);
         if (fail_status != core::Status::OK) {
             return fail_status;
@@ -2893,10 +3370,10 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     }
 
     const size_t chunk_size = std::max<uint32_t>(1, config_.copy_chunk_bytes);
-    std::string payload_text;
-    payload_text.reserve(chunk_size);
-    auto send_payload = [&](const std::string& text) -> core::Status {
-        std::vector<uint8_t> payload(text.begin(), text.end());
+    std::vector<uint8_t> buffer(chunk_size);
+    auto send_payload = [&](const uint8_t* data, size_t size) -> core::Status {
+        std::vector<uint8_t> chunk(data, data + size);
+        const auto payload = protocol::buildCopyDataPayload(chunk);
         auto status = sendMessage(protocol::MessageType::CopyData, payload, 0, false, nullptr, ctx);
         if (status != core::Status::OK) {
             return status;
@@ -2904,35 +3381,91 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
         return core::Status::OK;
     };
 
-    std::string line;
-    while (std::getline(*copy_input_stream_, line)) {
-        line.push_back('\n');
-        if (!payload_text.empty() && payload_text.size() + line.size() > chunk_size) {
-            auto status = send_payload(payload_text);
+    while (*copy_input_stream_) {
+        copy_input_stream_->read(reinterpret_cast<char*>(buffer.data()),
+                                 static_cast<std::streamsize>(buffer.size()));
+        const auto bytes_read = copy_input_stream_->gcount();
+        if (bytes_read > 0) {
+            auto status = send_payload(buffer.data(), static_cast<size_t>(bytes_read));
             if (status != core::Status::OK) {
                 return status;
             }
-            payload_text.clear();
         }
-        if (line.size() > chunk_size && payload_text.empty()) {
-            auto status = send_payload(line);
-            if (status != core::Status::OK) {
-                return status;
-            }
-            continue;
+        if (copy_input_stream_->eof()) {
+            break;
         }
-        payload_text += line;
     }
     if (copy_input_stream_->bad()) {
-        return setError(ctx, core::Status::IO_ERROR, "COPY input stream read failed");
-    }
-    if (!payload_text.empty()) {
-        auto status = send_payload(payload_text);
-        if (status != core::Status::OK) {
-            return status;
+        const std::string message = "COPY input stream read failed";
+        const auto fail_payload = protocol::buildCopyFailPayload(message);
+        auto fail_status = sendMessage(protocol::MessageType::CopyFail, fail_payload, 0, false, nullptr, ctx);
+        if (fail_status != core::Status::OK) {
+            return fail_status;
         }
+        return setError(ctx, core::Status::IO_ERROR, message);
     }
-    return sendMessage(protocol::MessageType::CopyDone, {}, 0, false, nullptr, ctx);
+    const auto done_payload = protocol::buildCopyDonePayload();
+    return sendMessage(protocol::MessageType::CopyDone, done_payload, 0, false, nullptr, ctx);
+}
+
+core::Status NetworkClient::handleCopyOutResponseMessage(const protocol::ProtocolMessage& msg,
+                                                         NetworkResultSet& results,
+                                                         core::ErrorContext* ctx) {
+    protocol::CopyOutResponse response;
+    auto status = protocol::parseCopyOutResponse(msg.body, response, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    results.copy_active = true;
+    results.copy_format = response.format;
+    results.copy_column_formats = std::move(response.column_formats);
+    return core::Status::OK;
+}
+
+core::Status NetworkClient::handleCopyBothResponseMessage(const protocol::ProtocolMessage& msg,
+                                                          NetworkResultSet& results,
+                                                          core::ErrorContext* ctx) {
+    protocol::CopyBothResponse response;
+    auto status = protocol::parseCopyBothResponse(msg.body, response, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    results.copy_active = true;
+    results.copy_format = response.format;
+    return core::Status::OK;
+}
+
+core::Status NetworkClient::handleCopyDataMessage(const protocol::ProtocolMessage& msg,
+                                                  NetworkResultSet& results,
+                                                  core::ErrorContext* ctx) {
+    protocol::CopyData data;
+    auto status = protocol::parseCopyData(msg.body, data, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    if (!data.data.empty()) {
+        if (copy_output_stream_) {
+            copy_output_stream_->write(reinterpret_cast<const char*>(data.data.data()),
+                                       static_cast<std::streamsize>(data.data.size()));
+            if (!*copy_output_stream_) {
+                return setError(ctx, core::Status::IO_ERROR, "COPY output stream write failed");
+            }
+        }
+        results.copy_data.insert(results.copy_data.end(), data.data.begin(), data.data.end());
+    }
+    return core::Status::OK;
+}
+
+core::Status NetworkClient::handleCopyFailMessage(const protocol::ProtocolMessage& msg,
+                                                  core::ErrorContext* ctx) {
+    protocol::CopyFailInfo fail;
+    auto status = protocol::parseCopyFail(msg.body, fail, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    return setError(ctx,
+                    core::Status::INTERNAL_ERROR,
+                    fail.error_message.empty() ? "COPY failed" : "COPY failed: " + fail.error_message);
 }
 
 core::Status NetworkClient::handleAsyncMessage(const protocol::ProtocolMessage& msg,
@@ -2991,6 +3524,18 @@ core::Status NetworkClient::handleAsyncMessage(const protocol::ProtocolMessage& 
     }
 }
 
+core::Status NetworkClient::handleTxnStatusMessage(const protocol::ProtocolMessage& msg,
+                                                   core::ErrorContext* ctx) {
+    protocol::TxnFinalityStatus status;
+    auto parsed = protocol::parseTxnFinalityStatus(msg.body, status, ctx);
+    if (parsed != core::Status::OK) {
+        return parsed;
+    }
+    last_commit_finality_ = toNetworkFinality(status);
+    last_commit_finality_present_ = true;
+    return core::Status::OK;
+}
+
 core::Status NetworkClient::handleErrorResponse(const protocol::ProtocolMessage& msg,
                                                 core::ErrorContext* ctx) {
     const core::Status mapped = mapProtocolError(msg, ctx);
@@ -3011,6 +3556,10 @@ core::Status NetworkClient::handleErrorResponse(const protocol::ProtocolMessage&
             continue;
         }
         if (trailing.header.type == protocol::MessageType::Error) {
+            continue;
+        }
+        if (trailing.header.type == protocol::MessageType::TxnStatus) {
+            (void)handleTxnStatusMessage(trailing, &trailing_ctx);
             continue;
         }
         if (trailing.header.type == protocol::MessageType::Ready) {
@@ -3053,6 +3602,13 @@ core::Status NetworkClient::drainUntilReady(std::string* command_tag,
                 }
                 break;
             }
+            case protocol::MessageType::TxnStatus: {
+                status = handleTxnStatusMessage(msg, ctx);
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                break;
+            }
             case protocol::MessageType::Error:
                 return handleErrorResponse(msg, ctx);
             case protocol::MessageType::Ready: {
@@ -3090,14 +3646,47 @@ core::Status NetworkClient::finishAutocommitStatement(bool statement_succeeded,
                    finality_type,
                    next_sequence_,
                    in_transaction_);
-    const auto payload = statement_succeeded
-        ? protocol::buildTxnCommitPayload(0)
-        : protocol::buildTxnRollbackPayload(0);
+    std::vector<uint8_t> payload;
+    if (statement_succeeded) {
+        protocol::TxnCommitRequest request;
+        request.contract_flags = protocol::kTxnCommitFlagHasIdempotencyKey |
+                                 protocol::kTxnCommitFlagStatementHasSideEffects;
+        request.idempotency_key = randomProtocolUuid();
+        request.request_fingerprint = fnv1a64("transaction.autocommit.commit");
+        request.expected_txn_id = current_txn_id_;
+        last_commit_finality_ = NetworkTransactionFinality{};
+        last_commit_finality_.state = protocol::TxnFinalityState::Unknown;
+        last_commit_finality_.idempotency_key = request.idempotency_key;
+        last_commit_finality_.request_fingerprint = request.request_fingerprint;
+        last_commit_finality_.original_txn_id = current_txn_id_;
+        last_commit_finality_.diagnostic_code = "SBWP.AUTOCOMMIT.FINALITY_PENDING";
+        last_commit_finality_.detail = "autocommit_outcome_pending_engine_finality_report";
+        last_commit_finality_present_ = true;
+        payload = protocol::buildTxnCommitPayload(request);
+    } else {
+        payload = protocol::buildTxnRollbackPayload(0);
+    }
     auto status = sendMessage(finality_type, payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
+        if (statement_succeeded) {
+            last_commit_finality_.diagnostic_code =
+                "SBWP.AUTOCOMMIT.SEND_FAILED_FINALITY_UNKNOWN";
+            last_commit_finality_.detail =
+                "autocommit_send_failed_before_engine_finality_report";
+        }
         return status;
     }
-    return drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    status = drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    if (statement_succeeded && status != core::Status::OK) {
+        last_commit_finality_.state = protocol::TxnFinalityState::Unknown;
+        last_commit_finality_.flags &=
+            static_cast<uint16_t>(~protocol::kTxnFinalityFlagEngineKnown);
+        last_commit_finality_.diagnostic_code =
+            "SBWP.AUTOCOMMIT.READY_LOST_FINALITY_UNKNOWN";
+        last_commit_finality_.detail =
+            "autocommit_outcome_unknown_until_engine_finality_query";
+    }
+    return status;
 }
 
 bool NetworkClient::serverAutocommitRequested() const {
@@ -3168,6 +3757,8 @@ core::Status NetworkClient::handshake(core::ErrorContext* ctx) {
     next_sequence_ = 1;
     parameter_status_.clear();
     session_id_.fill(0);
+    last_commit_finality_ = NetworkTransactionFinality{};
+    last_commit_finality_present_ = false;
 
     uint64_t features = 0;
     std::map<std::string, std::string> params;

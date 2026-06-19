@@ -247,10 +247,23 @@ FilespacePhysicalGrowthEvidenceRecord BuildPhysicalGrowthEvidence(
   evidence.physical_file_size_after_bytes = entry.physical_file_size_after_bytes;
   evidence.physical_file_expected_size_after_bytes =
       entry.physical_file_expected_size_after_bytes;
+  evidence.extent_preallocation_offset_bytes =
+      entry.extent_preallocation_offset_bytes;
+  evidence.extent_preallocation_bytes = entry.extent_preallocation_bytes;
+  evidence.extent_preallocation_strategy =
+      entry.extent_preallocation_strategy;
+  evidence.extent_preallocation_fallback_reason =
+      entry.extent_preallocation_fallback_reason;
   evidence.policy_generation = entry.policy_generation;
   evidence.catalog_generation = entry.catalog_generation;
   evidence.diagnostic_code = std::move(diagnostic_code);
   evidence.reason = std::move(reason);
+  evidence.extent_preallocation_attempted =
+      entry.extent_preallocation_attempted;
+  evidence.extent_preallocation_succeeded =
+      entry.extent_preallocation_succeeded;
+  evidence.extent_preallocation_fallback_used =
+      entry.extent_preallocation_fallback_used;
   evidence.physical_extension_required = entry.physical_extension_required;
   evidence.physical_extension_completed = entry.physical_extension_completed;
   evidence.physical_extension_synced = entry.physical_extension_synced;
@@ -1521,6 +1534,20 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
   entry.physical_file_size_after_bytes = physical_growth.file_size_after_bytes;
   entry.physical_file_expected_size_after_bytes =
       physical_growth.expected_capacity_after_bytes;
+  entry.extent_preallocation_offset_bytes =
+      physical_growth.extent_preallocation_offset_bytes;
+  entry.extent_preallocation_bytes =
+      physical_growth.extent_preallocation_bytes;
+  entry.extent_preallocation_strategy =
+      physical_growth.extent_preallocation_strategy;
+  entry.extent_preallocation_fallback_reason =
+      physical_growth.extent_preallocation_fallback_reason;
+  entry.extent_preallocation_attempted =
+      physical_growth.extent_preallocation_attempted;
+  entry.extent_preallocation_succeeded =
+      physical_growth.extent_preallocation_succeeded;
+  entry.extent_preallocation_fallback_used =
+      physical_growth.extent_preallocation_fallback_used;
   entry.physical_extension_completed = physical_growth.physical_extension_completed;
   entry.physical_extension_synced = physical_growth.physical_extension_synced;
   entry.physical_header_updated = physical_growth.header_updated;
@@ -1804,6 +1831,16 @@ FilespacePhysicalGrowthRecoveryClassification ClassifyFilespacePhysicalGrowthFor
           !operation.physical_extension_synced ||
           !operation.physical_header_updated ||
           !operation.metadata_commit_after_physical_extension ||
+          operation.extent_preallocation_bytes == 0 ||
+          operation.extent_preallocation_strategy.empty() ||
+          !operation.extent_preallocation_attempted ||
+          (!operation.extent_preallocation_succeeded &&
+           !operation.extent_preallocation_fallback_used) ||
+          operation.physical_file_size_after_bytes <
+              operation.physical_file_size_before_bytes ||
+          operation.extent_preallocation_bytes !=
+              (operation.physical_file_size_after_bytes -
+               operation.physical_file_size_before_bytes) ||
           operation.physical_file_size_after_bytes !=
               operation.physical_file_expected_size_after_bytes) {
         classification.action = FilespacePhysicalGrowthRecoveryAction::fail_closed;

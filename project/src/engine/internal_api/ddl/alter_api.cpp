@@ -14,11 +14,32 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "security/security_model.hpp"
+#include "sblr_sequence_runtime.hpp"
+
+#include <charconv>
+#include <optional>
+#include <string_view>
+#include <system_error>
 
 namespace scratchbird::engine::internal_api {
 namespace {
 
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
+
+std::string StripAllConstraintPrefix(const std::string& envelope) {
+  return StartsWith(envelope, "all:") ? envelope.substr(4) : envelope;
+}
+
+std::string MergeDomainCheckConstraint(const std::string& existing, const std::string& incoming) {
+  if (incoming.empty()) return existing;
+  if (existing.empty()) return incoming;
+  std::string merged = "all:";
+  merged.append(StripAllConstraintPrefix(existing));
+  merged.push_back(';');
+  merged.append(StripAllConstraintPrefix(incoming));
+  return merged;
+}
 
 std::string LocalizedNamesEnvelope(const std::vector<EngineLocalizedName>& names) {
   std::string out;
@@ -62,6 +83,72 @@ void SetDomainValidationHookStatus(DomainRecord* record) {
     return;
   }
   record->validation_hook_status = "not_required";
+}
+
+std::optional<std::int64_t> ParseI64(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  std::int64_t value = 0;
+  const auto* first = text.data();
+  const auto* last = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(first, last, value);
+  if (ec != std::errc{} || ptr != last) return std::nullopt;
+  return value;
+}
+
+std::optional<std::uint64_t> ParseU64(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  std::uint64_t value = 0;
+  const auto* first = text.data();
+  const auto* last = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(first, last, value);
+  if (ec != std::errc{} || ptr != last) return std::nullopt;
+  return value;
+}
+
+scratchbird::engine::sblr::SblrExecutionContext AlterSblrContext(
+    const EngineRequestContext& context) {
+  scratchbird::engine::sblr::SblrExecutionContext out;
+  out.database_path = context.database_path;
+  out.database_uuid = context.database_uuid.canonical;
+  out.cluster_uuid = context.cluster_uuid.canonical;
+  out.node_uuid = context.node_uuid.canonical;
+  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.local_transaction_id = context.local_transaction_id;
+  out.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  out.transaction_isolation_level = context.transaction_isolation_level;
+  out.statement_uuid = context.statement_uuid.canonical;
+  out.session_uuid = context.session_uuid.canonical;
+  out.user_uuid = context.principal_uuid.canonical;
+  out.current_role_uuid = context.current_role_uuid.canonical;
+  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_timestamp = context.statement_timestamp;
+  out.transaction_timestamp = context.transaction_timestamp;
+  out.current_timestamp = context.current_timestamp;
+  out.current_monotonic_ns = context.current_monotonic_ns;
+  out.security_context_present = context.security_context_present;
+  out.transaction_context_present =
+      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+  out.cluster_authority_available = context.cluster_authority_available;
+  out.read_only_mode = context.read_only_mode;
+  return out;
+}
+
+EngineApiDiagnostic SequenceRuntimeDiagnostic(const std::string& operation_id,
+                                              const scratchbird::engine::sblr::SblrResult& result) {
+  if (!result.diagnostics.empty()) {
+    const auto& diagnostic = result.diagnostics.front();
+    return MakeEngineApiDiagnostic(diagnostic.diagnostic_id.empty()
+                                       ? "SEQUENCE.RUNTIME.FAILED"
+                                       : diagnostic.diagnostic_id,
+                                   diagnostic.message_key.empty()
+                                       ? "sequence_runtime_failed"
+                                       : diagnostic.message_key,
+                                   diagnostic.detail.empty()
+                                       ? "sequence runtime operation failed"
+                                       : diagnostic.detail);
+  }
+  return MakeInvalidRequestDiagnostic(operation_id, "sequence_runtime_operation_failed");
 }
 
 }  // namespace
@@ -177,6 +264,111 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
                                 {"payload", updated.payload}});
     return result;
   }
+  if (request.target_object.object_kind == "sequence") {
+    if (request.context.local_transaction_id == 0) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
+    }
+    const std::string lookup_key = SecurityOptionValue(request, "sequence_lookup_key:");
+    std::vector<std::string> runtime_keys;
+    if (!lookup_key.empty()) runtime_keys.push_back(lookup_key);
+    if (!request.target_object.uuid.canonical.empty() &&
+        request.target_object.uuid.canonical != lookup_key) {
+      runtime_keys.push_back(request.target_object.uuid.canonical);
+    }
+    if (runtime_keys.empty()) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_sequence_uuid_required"));
+    }
+    scratchbird::engine::sblr::SblrSequenceAlteration alteration;
+    const std::string cache_value = SecurityOptionValue(request, "sequence_cache:");
+    if (!cache_value.empty()) {
+      const auto parsed = ParseU64(cache_value);
+      if (!parsed.has_value() || *parsed == 0) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "sequence_cache_invalid"));
+      }
+      alteration.cache_size = *parsed;
+    }
+    const std::string max_value = SecurityOptionValue(request, "sequence_max_value:");
+    if (!max_value.empty()) {
+      const auto parsed = ParseI64(max_value);
+      if (!parsed.has_value()) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "sequence_maxvalue_invalid"));
+      }
+      alteration.maximum_value = *parsed;
+    }
+    const std::string restart_value = SecurityOptionValue(request, "sequence_restart_value:");
+    std::optional<std::int64_t> restart;
+    if (!restart_value.empty()) {
+      restart = ParseI64(restart_value);
+      if (!restart.has_value()) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "sequence_restart_invalid"));
+      }
+    }
+    const auto sblr_context = AlterSblrContext(request.context);
+    for (const auto& key : runtime_keys) {
+      alteration.sequence_uuid = key;
+      const auto altered = scratchbird::engine::sblr::AlterSblrSequence(
+          &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
+          alteration,
+          sblr_context);
+      if (!altered.ok()) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            SequenceRuntimeDiagnostic("ddl.alter_object", altered));
+      }
+      if (restart.has_value()) {
+        scratchbird::engine::sblr::SblrSequenceRequest sequence_request;
+        sequence_request.context = sblr_context;
+        sequence_request.sequence_uuid = key;
+        sequence_request.result_descriptor_id = "int64";
+        sequence_request.set_value = *restart;
+        sequence_request.is_called = false;
+        const auto restarted = scratchbird::engine::sblr::SetSblrSequenceValue(
+            &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
+            sequence_request);
+        if (!restarted.ok()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              SequenceRuntimeDiagnostic("ddl.alter_object", restarted));
+        }
+      }
+    }
+    auto result = PersistedRecordResult<EngineAlterObjectResult>(
+        request,
+        "ddl.alter_object",
+        "sequence",
+        true,
+        "altered");
+    if (!result.ok) return result;
+    result.primary_object = request.target_object;
+    AddApiBehaviorEvidence(&result, "sequence_runtime_alter", runtime_keys.front());
+    if (alteration.cache_size.has_value()) {
+      AddApiBehaviorEvidence(&result, "sequence_runtime_cache", std::to_string(*alteration.cache_size));
+    }
+    if (alteration.maximum_value.has_value()) {
+      AddApiBehaviorEvidence(&result, "sequence_runtime_max_value", std::to_string(*alteration.maximum_value));
+    }
+    if (restart.has_value()) {
+      AddApiBehaviorEvidence(&result, "sequence_runtime_restart", std::to_string(*restart));
+    }
+    return result;
+  }
   if (request.target_object.object_kind == "domain") {
     if (request.context.local_transaction_id == 0) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -239,6 +431,13 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
         updated.reference_alias_envelope.append(profile.substr(12));
       }
     }
+    bool append_check_constraint = false;
+    for (const auto& option : request.option_envelopes) {
+      if (option == "check_constraint_append:true") {
+        append_check_constraint = true;
+        break;
+      }
+    }
     for (const auto& option : request.option_envelopes) {
       if (option == "nullable:true") {
         updated.nullable = true;
@@ -256,8 +455,14 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
         updated.check_constraint_envelope.clear();
       } else if (StartsWith(option, "default_expression:")) {
         updated.default_expression_envelope = option.substr(19);
+      } else if (StartsWith(option, "check_constraint_append:")) {
+        continue;
       } else if (StartsWith(option, "check_constraint:")) {
-        updated.check_constraint_envelope = option.substr(17);
+        const std::string incoming_constraint = option.substr(17);
+        updated.check_constraint_envelope =
+            append_check_constraint
+                ? MergeDomainCheckConstraint(updated.check_constraint_envelope, incoming_constraint)
+                : incoming_constraint;
         if (!IsSupportedDomainCheckEnvelope(updated.check_constraint_envelope)) {
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
               request.context,
