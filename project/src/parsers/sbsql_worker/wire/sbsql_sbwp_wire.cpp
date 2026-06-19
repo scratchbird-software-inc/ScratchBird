@@ -2729,15 +2729,19 @@ std::vector<std::uint8_t> DataRowPayload(const std::vector<std::optional<std::st
 }
 
 std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
+  const auto normalized = Upper(StripSqlTerminator(std::string(sql)));
+  const bool sql_surface_is_copy = normalized.starts_with("COPY");
   if (!result.server_operation_id.empty()) {
     if (result.server_operation_id == "transaction.begin") return "BEGIN";
     if (result.server_operation_id == "transaction.commit") return "COMMIT";
     if (result.server_operation_id == "transaction.rollback") return "ROLLBACK";
     if (result.server_operation_id == "dml.execute_native_bulk_ingest") {
+      if (sql_surface_is_copy) {
+        return "COPY " + std::to_string(result.server_row_count);
+      }
       return "NATIVE_BULK_INGEST " + std::to_string(result.server_row_count);
     }
   }
-  const auto normalized = Upper(StripSqlTerminator(std::string(sql)));
   std::string token;
   for (char ch : normalized) {
     if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(') break;
@@ -2880,16 +2884,11 @@ bool SendPipelineResult(ClientIo* io,
     }
     if (result.server_operation_id == "dml.execute_import_rows" ||
         result.server_operation_id == "dml.execute_native_bulk_ingest") {
-      const std::string command_tag =
-          result.server_operation_id == "dml.execute_native_bulk_ingest"
-              ? "NATIVE_BULK_INGEST "
-              : "COPY ";
       return SendFrame(io,
                        state,
                        kCommandComplete,
                        CommandCompletePayload(result.server_row_count,
-                                              command_tag +
-                                                  std::to_string(result.server_row_count)));
+                                              CommandTagFor(sql, result)));
     }
     return SendFrame(io,
                      state,
@@ -3415,8 +3414,11 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     }
     state->copy_import = CopyImportState{};
     state->copy_import.active = true;
-    state->copy_import.native_bulk_ingest = NativeBulkIngestRequested(sql);
-    state->copy_import.native_bulk_ingest_enabled = NativeBulkIngestEnabledRequested(sql);
+    const bool native_bulk_ingest_requested = NativeBulkIngestRequested(sql);
+    const bool native_bulk_ingest_enabled = NativeBulkIngestEnabledRequested(sql);
+    state->copy_import.native_bulk_ingest_enabled = native_bulk_ingest_enabled;
+    state->copy_import.native_bulk_ingest =
+        native_bulk_ingest_enabled || native_bulk_ingest_requested;
     state->copy_import.sql = sql;
     state->copy_import.target_object_uuid = *target_uuid;
     if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload())) return false;

@@ -350,27 +350,238 @@ std::string secondTokenLower(const std::string& sql) {
     return lower(second);
 }
 
-std::string copyInputForStatement(const std::string& sql) {
+bool skipSqlTrivia(const std::string& text, std::size_t* pos) {
+    bool advanced = false;
+    while (*pos < text.size()) {
+        while (*pos < text.size() && std::isspace(static_cast<unsigned char>(text[*pos]))) {
+            ++(*pos);
+            advanced = true;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '-' && text[*pos + 1] == '-') {
+            const std::size_t newline = text.find('\n', *pos + 2);
+            *pos = newline == std::string::npos ? text.size() : newline + 1;
+            advanced = true;
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '/' && text[*pos + 1] == '*') {
+            const std::size_t close = text.find("*/", *pos + 2);
+            *pos = close == std::string::npos ? text.size() : close + 2;
+            advanced = true;
+            continue;
+        }
+        break;
+    }
+    return advanced;
+}
+
+void skipSqlStringLiteral(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '\'') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '\'') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+void skipSqlQuotedIdentifier(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '"') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '"') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '"') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+std::string readSqlTokenLower(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size()) {
+        return "";
+    }
+    if (text[*pos] == '"') {
+        std::string token;
+        ++(*pos);
+        while (*pos < text.size()) {
+            if (text[*pos] == '"') {
+                ++(*pos);
+                if (*pos < text.size() && text[*pos] == '"') {
+                    token.push_back('"');
+                    ++(*pos);
+                    continue;
+                }
+                break;
+            }
+            token.push_back(text[*pos]);
+            ++(*pos);
+        }
+        return lower(token);
+    }
+    const std::size_t begin = *pos;
+    while (*pos < text.size()) {
+        const char ch = text[*pos];
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' || ch == ')' ||
+            ch == ',' || ch == ';') {
+            break;
+        }
+        if (ch == '-' && *pos + 1 < text.size() && text[*pos + 1] == '-') {
+            break;
+        }
+        if (ch == '/' && *pos + 1 < text.size() && text[*pos + 1] == '*') {
+            break;
+        }
+        ++(*pos);
+    }
+    return lower(text.substr(begin, *pos - begin));
+}
+
+bool skipSqlParenthesized(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size() || text[*pos] != '(') {
+        return false;
+    }
+    int depth = 0;
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            skipSqlStringLiteral(text, pos);
+            continue;
+        }
+        if (text[*pos] == '"') {
+            skipSqlQuotedIdentifier(text, pos);
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '-' && text[*pos + 1] == '-') {
+            skipSqlTrivia(text, pos);
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '/' && text[*pos + 1] == '*') {
+            skipSqlTrivia(text, pos);
+            continue;
+        }
+        if (text[*pos] == '(') {
+            ++depth;
+            ++(*pos);
+            continue;
+        }
+        if (text[*pos] == ')') {
+            --depth;
+            ++(*pos);
+            if (depth == 0) {
+                return true;
+            }
+            continue;
+        }
+        ++(*pos);
+    }
+    return false;
+}
+
+std::string mainStatementTokenLower(const std::string& sql) {
+    const std::string text = stripLeadingTrivia(sql);
+    std::size_t pos = 0;
+    std::string token = readSqlTokenLower(text, &pos);
+    if (token != "with") {
+        return token;
+    }
+
+    token = readSqlTokenLower(text, &pos);
+    if (token == "recursive") {
+        token = readSqlTokenLower(text, &pos);
+    }
+
+    while (!token.empty()) {
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == '(') {
+            if (!skipSqlParenthesized(text, &pos)) {
+                return "with";
+            }
+        }
+
+        bool sawAs = false;
+        for (int guard = 0; guard < 32; ++guard) {
+            const std::string word = readSqlTokenLower(text, &pos);
+            if (word.empty()) {
+                return "with";
+            }
+            if (word == "as") {
+                sawAs = true;
+                break;
+            }
+        }
+        if (!sawAs) {
+            return "with";
+        }
+
+        std::size_t beforeOptional = pos;
+        std::string optional = readSqlTokenLower(text, &pos);
+        if (optional == "not") {
+            std::size_t afterNot = pos;
+            if (readSqlTokenLower(text, &pos) != "materialized") {
+                pos = afterNot;
+            }
+        } else if (optional != "materialized") {
+            pos = beforeOptional;
+        }
+
+        if (!skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            token = readSqlTokenLower(text, &pos);
+            continue;
+        }
+        const std::string main = readSqlTokenLower(text, &pos);
+        return main.empty() ? "with" : main;
+    }
+    return "with";
+}
+
+struct CopyHarnessInput {
+    std::string payload;
+    std::string executable_sql;
+    std::size_t marker_count = 0;
+};
+
+CopyHarnessInput copyHarnessInputForStatement(const std::string& sql) {
     static const std::string kMarker = "-- SB_COPY_INPUT ";
     std::istringstream lines(sql);
     std::string line;
-    std::string payload;
+    CopyHarnessInput out;
     while (std::getline(lines, line)) {
         const size_t start = line.find_first_not_of(" \t");
-        if (start == std::string::npos) {
+        if (start != std::string::npos &&
+            line.compare(start, kMarker.size(), kMarker) == 0) {
+            std::string row = line.substr(start + kMarker.size());
+            if (!row.empty() && row.back() == '\r') {
+                row.pop_back();
+            }
+            out.payload += row;
+            out.payload += '\n';
+            ++out.marker_count;
             continue;
         }
-        if (line.compare(start, kMarker.size(), kMarker) != 0) {
-            continue;
-        }
-        std::string row = line.substr(start + kMarker.size());
-        if (!row.empty() && row.back() == '\r') {
-            row.pop_back();
-        }
-        payload += row;
-        payload += '\n';
+        out.executable_sql += line;
+        out.executable_sql += '\n';
     }
-    return payload;
+    return out;
 }
 
 std::string savepointName(const std::string& sql) {
@@ -1748,15 +1959,17 @@ int main(int argc, char** argv) {
                     json columns = json::array();
                     std::string commandTag;
                     bool failureRecordedForStatement = false;
-                    const bool copyStatement = firstTokenLower(sql) == "copy";
+                    const std::string first = mainStatementTokenLower(sql);
+                    const std::string second = secondTokenLower(sql);
+                    const bool copyStatement = first == "copy";
+                    int64_t copyHarnessNormalizeElapsedNs = -1;
+                    int64_t copyDriverExecuteElapsedNs = -1;
                     std::string copyInputPayload;
                     std::istringstream copyInput;
                     std::ostringstream copyOutput;
                     bool preparedHandleUsed = false;
 
                     scratchbird::core::ErrorContext statementCtx;
-                    const std::string first = firstTokenLower(sql);
-                    const std::string second = secondTokenLower(sql);
                     if (group == "transaction") {
                         if (first == "begin" || (first == "start" && second == "transaction")) {
                             status = conn.beginTransaction(&statementCtx);
@@ -1782,33 +1995,48 @@ int main(int argc, char** argv) {
                         commandTag = "TRANSACTION";
                         resultDigest = sha256Text(commandTag + ":" + std::to_string(rowsAffected));
                     } else {
+                        const std::string* sqlForExecution = &sql;
+                        CopyHarnessInput copyHarnessInput;
                         if (copyStatement) {
-                            copyInputPayload = copyInputForStatement(sql);
+                            const int64_t normalizeStarted = nowNs();
+                            copyHarnessInput = copyHarnessInputForStatement(sql);
+                            copyInputPayload = std::move(copyHarnessInput.payload);
+                            sqlForExecution = &copyHarnessInput.executable_sql;
+                            copyHarnessNormalizeElapsedNs = nowNs() - normalizeStarted;
                             if (!copyInputPayload.empty()) {
                                 copyInput.str(copyInputPayload);
                                 conn.setCopyInputStream(&copyInput);
                             }
                             conn.setCopyOutputStream(&copyOutput);
+                            appendJsonl(paths.at("wire"), {{"event", "copy_harness_sql_normalized"},
+                                                           {"statement_id", statementId},
+                                                           {"original_sql_bytes", sql.size()},
+                                                           {"execution_sql_bytes", sqlForExecution->size()},
+                                                           {"copy_input_bytes", copyInputPayload.size()},
+                                                           {"copy_input_rows", copyHarnessInput.marker_count},
+                                                           {"normalize_elapsed_ns", copyHarnessNormalizeElapsedNs},
+                                                           {"engine_sql_text_execution", false},
+                                                           {"mga_authority", "engine"}});
                         }
-                        if (statementReturnsRows(sql)) {
+                        if (statementReturnsRows(*sqlForExecution)) {
                             appendJsonl(paths.at("wire"), {{"event", "execute_query_start"},
                                                            {"statement_id", statementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(sql) &&
+                                                                statementPreparedCacheEligible(*sqlForExecution) &&
                                                                 !expectsRefusal}});
                             scratchbird::client::ResultSet resultSet;
                             if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(sql) &&
+                                statementPreparedCacheEligible(*sqlForExecution) &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(sql,
+                                status = executePreparedCached(*sqlForExecution,
                                                                statementId,
                                                                &resultSet,
                                                                nullptr,
                                                                &statementCtx,
                                                                &preparedHandleUsed);
                             } else {
-                                status = conn.executeQuery(sql, &resultSet, &statementCtx);
+                                status = conn.executeQuery(*sqlForExecution, &resultSet, &statementCtx);
                             }
                             api["executeQuery"]++;
                             api["execute"]++;
@@ -1830,21 +2058,25 @@ int main(int argc, char** argv) {
                                                            {"statement_id", statementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(sql) &&
+                                                                statementPreparedCacheEligible(*sqlForExecution) &&
                                                                 !copyStatement &&
                                                                 !expectsRefusal}});
                             if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(sql) &&
+                                statementPreparedCacheEligible(*sqlForExecution) &&
                                 !copyStatement &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(sql,
+                                status = executePreparedCached(*sqlForExecution,
                                                                statementId,
                                                                nullptr,
                                                                &rowsAffected,
                                                                &statementCtx,
                                                                &preparedHandleUsed);
                             } else {
-                                status = conn.execute(sql, &rowsAffected, &statementCtx);
+                                const int64_t executeStarted = nowNs();
+                                status = conn.execute(*sqlForExecution, &rowsAffected, &statementCtx);
+                                if (copyStatement) {
+                                    copyDriverExecuteElapsedNs = nowNs() - executeStarted;
+                                }
                             }
                             api["execute"]++;
                             commandTag = "COMMAND";
@@ -1857,6 +2089,8 @@ int main(int argc, char** argv) {
                                                            {"statement_id", statementId},
                                                            {"copy_input_bytes", copyInputPayload.size()},
                                                            {"copy_output_bytes", copyOutput.str().size()},
+                                                           {"driver_execute_elapsed_ns", copyDriverExecuteElapsedNs},
+                                                           {"harness_normalize_elapsed_ns", copyHarnessNormalizeElapsedNs},
                                                            {"copy_output_sha256", sha256Text(copyOutput.str())}});
                         }
                     }

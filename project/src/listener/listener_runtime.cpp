@@ -34,6 +34,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -67,6 +68,19 @@ std::string SocketErrorString(int error_code) {
   return "WSA error " + std::to_string(error_code);
 #else
   return std::strerror(error_code);
+#endif
+}
+
+void SetTcpNoDelayBestEffort(ListenerRuntimeSocketHandle fd) {
+  int one = 1;
+#ifdef _WIN32
+  (void)::setsockopt(static_cast<SOCKET>(fd),
+                     IPPROTO_TCP,
+                     TCP_NODELAY,
+                     reinterpret_cast<const char*>(&one),
+                     sizeof(one));
+#else
+  (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 #endif
 }
 
@@ -874,6 +888,7 @@ void ListenerRuntime::AcceptLoop(ListenerRuntimeSocketHandle listen_fd) {
 #ifndef _WIN32
         (void)SetCloseOnExec(client_fd);
 #endif
+        SetTcpNoDelayBestEffort(client_fd);
         const auto connection_id = next_connection_id_.fetch_add(1, std::memory_order_relaxed);
         last_accept_sequence_.store(connection_id, std::memory_order_release);
         last_accept_stage_.store(static_cast<std::uint32_t>(AcceptLoopStage::kAccepted), std::memory_order_release);

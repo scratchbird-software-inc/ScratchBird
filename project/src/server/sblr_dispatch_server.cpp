@@ -1669,6 +1669,14 @@ std::string ResolveSchemaParentPathForDispatch(
   return resolved.ok ? resolved.primary_object.uuid.canonical : std::string{};
 }
 
+std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) {
+  for (std::string_view candidate : {"users.public", "public", "app"}) {
+    const std::string resolved = ResolveSchemaParentPathForDispatch(session, candidate);
+    if (!resolved.empty()) return resolved;
+  }
+  return {};
+}
+
 std::uint64_t ParseU64Text(const std::string& value) {
   std::uint64_t parsed = 0;
   if (value.empty()) return 0;
@@ -3572,6 +3580,22 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
                 TextLineValue(encoded, field).value_or("")));
         if (value.empty()) continue;
         AppendOperationOperand(&operation_envelope, field, value);
+      }
+    }
+    const bool has_explicit_schema_target =
+        !JsonTextField(encoded, "target_schema_uuid").value_or(
+            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty() ||
+        !JsonTextField(encoded, "schema_uuid").value_or(
+            TextLineValue(encoded, "schema_uuid").value_or("")).empty() ||
+        !JsonTextField(encoded, "schema_parent_uuid").value_or(
+            TextLineValue(encoded, "schema_parent_uuid").value_or("")).empty() ||
+        !JsonTextField(encoded, "schema_parent_path").value_or(
+            TextLineValue(encoded, "schema_parent_path").value_or("")).empty();
+    if (!has_explicit_schema_target) {
+      const std::string default_schema_uuid = ResolveDefaultSchemaForDispatch(session);
+      if (!default_schema_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "target_schema_uuid", default_schema_uuid);
+        AppendOperationOperand(&operation_envelope, "schema_uuid", default_schema_uuid);
       }
     }
     const std::string table_uuid = JsonTextField(encoded, "table_object_uuid").value_or(

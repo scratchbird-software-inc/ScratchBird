@@ -22,6 +22,7 @@
 namespace scratchbird::parser::sbsql {
 
 struct AuthCredentialEnvelope;
+struct CstDocument;
 struct PublicNameResolutionResult;
 struct ServerCloseCursorResult;
 struct ServerExecutionResult;
@@ -95,6 +96,16 @@ class SbsqlTestWireSession {
   PublicNameResolutionResult ResolveNameOnRoute(std::string_view presented_name,
                                                 bool quoted,
                                                 std::string_view object_class);
+  void ClearNameResolutionCache();
+  void StoreNameResolutionCacheEntry(std::string_view presented_name,
+                                     bool quoted,
+                                     std::string_view object_class,
+                                     std::string_view object_uuid,
+                                     std::string_view canonical_name,
+                                     std::uint64_t catalog_epoch,
+                                     std::uint64_t security_epoch);
+  void SeedCreatedDdlNameResolutionCache(const CstDocument& cst,
+                                         const PipelineResult& result);
   bool DisconnectExecutionRoute(MessageVectorSet* messages);
   PipelineResult RunServerManagementCommand(const ServerManagementCommand& command);
   int ServeSbwp(std::intptr_t fd);
