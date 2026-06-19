@@ -2901,6 +2901,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr
+      sbu_sbsql_parser_support
   )
   add_test(
     NAME sbsql_sbsfc_077_non_general_residual_exact_route_conformance

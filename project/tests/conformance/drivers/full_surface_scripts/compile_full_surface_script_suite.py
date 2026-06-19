@@ -54,6 +54,9 @@ def ensure_output_policy(repo_root: Path, output_root: Path) -> None:
 
 
 def substitution_map(args: argparse.Namespace) -> dict[str, str]:
+    artifact_root = args.artifact_root
+    if artifact_root is None:
+        artifact_root = args.output_root / "artifacts"
     return {
         "__SB_NAMESPACE__": args.namespace,
         "__SB_DRIVER__": args.driver,
@@ -61,6 +64,7 @@ def substitution_map(args: argparse.Namespace) -> dict[str, str]:
         "__SB_ROUTE__": args.route,
         "__SB_PARSER_MODE__": args.parser_mode,
         "__SB_PAGE_SIZE__": args.page_size,
+        "__SB_ARTIFACT_ROOT__": str(artifact_root.resolve()),
     }
 
 
@@ -261,6 +265,8 @@ def compile_suite(
     manifest = load_json(suite_root / MANIFEST_NAME)
     output_scripts = output_root / "scripts"
     output_scripts.mkdir(parents=True, exist_ok=True)
+    artifact_root = Path(values.get("__SB_ARTIFACT_ROOT__", str(output_root / "artifacts")))
+    artifact_root.mkdir(parents=True, exist_ok=True)
 
     compiled_scripts: list[dict[str, Any]] = []
     chain_parts: list[str] = [
@@ -388,6 +394,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--route", required=True)
     parser.add_argument("--parser-mode", required=True)
     parser.add_argument("--page-size", required=True)
+    parser.add_argument("--artifact-root", type=Path)
     return parser.parse_args()
 
 

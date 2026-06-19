@@ -391,7 +391,25 @@ std::string DescriptorField(const std::string& descriptor, const std::string& ke
 }
 
 EngineApiDiagnostic DomainValidationDiagnostic(const std::string& detail) {
-  return MakeInvalidRequestDiagnostic("domain.validate_value", detail);
+  if (StartsWith(detail, "domain_check_")) {
+    return MakeEngineApiDiagnostic("SBSQL_DOMAIN_CHECK_VIOLATION",
+                                   "sbsql.domain.check_violation",
+                                   "domain.validate_value:" + detail);
+  }
+  if (detail == "domain_null_forbidden" ||
+      StartsWith(detail, "domain_required_column_missing:")) {
+    return MakeEngineApiDiagnostic("SBSQL_CONSTRAINT_VIOLATION",
+                                   "sbsql.constraint.violation",
+                                   "domain.validate_value:" + detail);
+  }
+  if (detail.find("_denied") != std::string::npos) {
+    return MakeEngineApiDiagnostic("SECURITY.AUTHORIZATION.DENIED",
+                                   "security.authorization.denied",
+                                   "domain.validate_value:" + detail);
+  }
+  return MakeEngineApiDiagnostic("SBSQL_DOMAIN_VALIDATION_FAILED",
+                                 "sbsql.domain.validation_failed",
+                                 "domain.validate_value:" + detail);
 }
 
 bool NumberCompare(const std::string& left, const std::string& op, const std::string& right) {
@@ -438,6 +456,14 @@ bool IsLengthDomainCheckOp(const std::string& op) {
 
 bool IsSupportedDomainCheckPredicate(const std::string& predicate) {
   if (predicate == "not_empty") { return true; }
+  if (StartsWith(predicate, "all:")) {
+    const auto parts = Split(predicate.substr(4), ';');
+    if (parts.empty()) { return false; }
+    for (const auto& part : parts) {
+      if (part.empty() || !IsSupportedDomainCheckPredicate(part)) { return false; }
+    }
+    return true;
+  }
   const auto pos = predicate.find(':');
   if (pos == std::string::npos) { return false; }
   const std::string op = predicate.substr(0, pos);
@@ -454,6 +480,21 @@ bool EvaluateDomainCheckPredicate(const std::string& predicate,
     if (!value.empty()) { return true; }
     *rejection_detail = "domain_check_not_empty_failed";
     return false;
+  }
+  if (StartsWith(predicate, "all:")) {
+    const auto parts = Split(predicate.substr(4), ';');
+    if (parts.empty()) {
+      *rejection_detail = "domain_check_constraint_requires_executor_expression_support";
+      return false;
+    }
+    for (const auto& part : parts) {
+      if (part.empty()) {
+        *rejection_detail = "domain_check_constraint_requires_executor_expression_support";
+        return false;
+      }
+      if (!EvaluateDomainCheckPredicate(part, value, rejection_detail)) { return false; }
+    }
+    return true;
   }
   const auto pos = predicate.find(':');
   if (pos == std::string::npos) {

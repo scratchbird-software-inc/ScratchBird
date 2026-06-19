@@ -88,6 +88,52 @@ std::string MetricSampleJson(const ServerMetricSample& sample) {
   return out.str();
 }
 
+std::string MetricLabelSummary(const std::map<std::string, std::string>& labels) {
+  std::ostringstream out;
+  bool first = true;
+  for (const auto& [key, value] : labels) {
+    if (!first) {
+      out << ';';
+    }
+    first = false;
+    out << key << '=' << value;
+  }
+  return out.str();
+}
+
+bool ShouldPersistMetricIncrement(ServerObservabilityState* state) {
+  if (state == nullptr) return false;
+  ++state->metric_observation_count;
+  if (state->metric_persist_stride == 0) return true;
+  if ((state->metric_observation_count % state->metric_persist_stride) == 0) return true;
+  ++state->metric_persist_skipped;
+  return false;
+}
+
+bool PersistCurrentMetricSnapshot(ServerObservabilityState* state) {
+  if (state == nullptr || !state->metrics_enabled) return false;
+  bool ok = true;
+  for (const auto& [_, sample] : state->metrics) {
+    ok = AppendLine(state->metrics_path, MetricSampleJson(sample)) && ok;
+  }
+  return ok;
+}
+
+bool ShouldPersistAuditEvent(ServerObservabilityState* state,
+                             const ServerAuditEvent& event) {
+  if (state == nullptr) return false;
+  const bool high_volume_success =
+      event.event_type == "server.sblr.execute" &&
+      event.outcome == "completed" &&
+      event.diagnostic_code.empty();
+  if (!high_volume_success) return true;
+  ++state->audit_observation_count;
+  if (state->audit_persist_stride == 0) return true;
+  if ((state->audit_observation_count % state->audit_persist_stride) == 0) return true;
+  ++state->audit_persist_skipped;
+  return false;
+}
+
 bool SensitiveKeyAt(const std::string& text, std::size_t pos, const char* key) {
   std::size_t i = 0;
   while (key[i] != '\0') {
@@ -129,6 +175,65 @@ bool IsOutcomeSuccess(std::string_view outcome) {
          outcome.find("refused") == std::string_view::npos;
 }
 
+std::string LabelValue(const std::map<std::string, std::string>& labels,
+                       std::string_view key,
+                       std::string fallback = {}) {
+  const auto found = labels.find(std::string(key));
+  return found == labels.end() || found->second.empty() ? std::move(fallback) : found->second;
+}
+
+std::uint64_t LabelValueU64(const std::map<std::string, std::string>& labels,
+                            std::string_view key,
+                            std::uint64_t fallback) {
+  const auto found = labels.find(std::string(key));
+  if (found == labels.end() || found->second.empty()) {
+    return fallback;
+  }
+  std::uint64_t value = 0;
+  for (const unsigned char ch : found->second) {
+    if (ch < '0' || ch > '9') {
+      return fallback;
+    }
+    value = (value * 10) + static_cast<std::uint64_t>(ch - '0');
+  }
+  return value;
+}
+
+std::string MetricPathToken(std::string value) {
+  std::string out;
+  out.reserve(value.size());
+  bool previous_underscore = false;
+  for (const unsigned char ch : value) {
+    char next = '_';
+    if (std::isalnum(ch)) {
+      next = static_cast<char>(std::tolower(ch));
+    }
+    if (next == '_') {
+      if (previous_underscore) {
+        continue;
+      }
+      previous_underscore = true;
+    } else {
+      previous_underscore = false;
+    }
+    out.push_back(next);
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out.empty() ? "unknown" : out;
+}
+
+bool IsIparSlowPathMetricSample(const ServerMetricSample& sample) {
+  if (sample.path.find("slow_path") != std::string::npos ||
+      sample.path.find("fallback") != std::string::npos) {
+    return true;
+  }
+  return sample.labels.find("reason") != sample.labels.end() &&
+         (sample.labels.find("chosen_path") != sample.labels.end() ||
+          sample.labels.find("result") != sample.labels.end());
+}
+
 std::string LifecycleMetricOutcome(std::string_view outcome) {
   return IsOutcomeSuccess(outcome) ? "success" : "failure";
 }
@@ -165,6 +270,48 @@ void SeedMetric(ServerObservabilityState* state,
   SetServerMetric(state, path, value, type, std::move(labels));
 }
 
+void SeedIparTelemetryMetrics(ServerObservabilityState* state) {
+  if (state == nullptr) return;
+  const std::map<std::string, std::string> labels{{"budget_id", "IPAR-M031"}};
+  const std::uint64_t sample_rate_per_mille =
+      state->metric_persist_stride == 0 ? 1000 : 1000 / state->metric_persist_stride;
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.metrics_enabled",
+             "gauge",
+             state->metrics_enabled ? 1 : 0,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.metric_persist_stride",
+             "gauge",
+             state->metric_persist_stride,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.metric_persist_skipped",
+             "counter",
+             state->metric_persist_skipped,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.audit_persist_stride",
+             "gauge",
+             state->audit_persist_stride,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.audit_persist_skipped",
+             "counter",
+             state->audit_persist_skipped,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.persist_sample_rate_per_mille",
+             "gauge",
+             sample_rate_per_mille,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.dropped_metric_count",
+             "counter",
+             0,
+             labels);
+}
+
 }  // namespace
 
 ServerObservabilityState InitializeServerObservability(const ServerBootstrapConfig& config,
@@ -195,6 +342,23 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
              engine_state.databases.empty() ? 0 : 1,
              {{"open_mode", config.database_open_mode}});
   SeedMetric(&state, "sys.metrics.server.session.active", "gauge", 0);
+  SeedMetric(&state, "sys.metrics.server.memory.policy.hard_limit_bytes",
+             "gauge",
+             config.memory_hard_limit_bytes,
+             {{"policy_name", config.memory_policy_name},
+              {"provenance", config.memory_policy_provenance}});
+  SeedMetric(&state, "sys.metrics.server.memory.policy.page_buffer_pool_limit_bytes",
+             "gauge",
+             config.memory_page_buffer_pool_limit_bytes,
+             {{"policy_name", config.memory_policy_name},
+              {"adaptive_page_cache",
+               config.memory_adaptive_page_cache_enabled ? "enabled" : "disabled"},
+              {"index_read_cache",
+               config.memory_index_read_cache_enabled ? "enabled" : "disabled"}});
+  SeedMetric(&state, "sys.metrics.server.memory.heap_trim_total", "counter", 0,
+             {{"reason", "all"}});
+  SeedMetric(&state, "sys.metrics.server.memory.heap_trim_skipped_total", "counter", 0,
+             {{"reason", "all"}});
   SeedMetric(&state, "sys.metrics.ipc.parser_server.channel.open_total", "counter", 0,
              {{"parser_family_uuid", "all"}, {"outcome", "accepted"}});
   SeedMetric(&state, "sys.metrics.ipc.parser_server.frame.invalid_total", "counter", 0,
@@ -233,6 +397,7 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
              {{"operation", "all"}, {"outcome", "all"}});
   SeedMetric(&state, "sys.metrics.parser.lifecycle_render_total", "counter", 0,
              {{"operation", "all"}, {"reference_profile", "all"}, {"outcome", "all"}});
+  SeedIparTelemetryMetrics(&state);
 
   RecordServerAuditEvent(&state, "server.startup", "completed", "server observability initialized");
   RecordServerLog(&state, {"server.startup", "info", "sb_server", {}, "server observability initialized", "clean"});
@@ -271,7 +436,67 @@ void IncrementServerMetric(ServerObservabilityState* state,
     return;
   }
   found->second.value += amount;
-  AppendLine(state->metrics_path, MetricSampleJson(found->second));
+  if (ShouldPersistMetricIncrement(state)) {
+    AppendLine(state->metrics_path, MetricSampleJson(found->second));
+  }
+}
+
+void RecordIparContentionQuotaObservation(ServerObservabilityState* state,
+                                          ServerIparContentionQuotaObservation observation) {
+  if (state == nullptr) return;
+  if (observation.metric_id.empty()) {
+    observation.metric_id = "IPAR-P4-06/IPAR-P6-06";
+  }
+  if (observation.category.empty()) {
+    observation.category = "unspecified";
+  }
+  if (observation.subject.empty()) {
+    observation.subject = "unspecified";
+  }
+  if (observation.metric_type.empty()) {
+    observation.metric_type = "gauge";
+  }
+  if (observation.metric_unit.empty()) {
+    observation.metric_unit = "count";
+  }
+  if (observation.producer.empty()) {
+    observation.producer = "server_observability";
+  }
+  if (observation.source_kind.empty()) {
+    observation.source_kind = "server_observability_hook";
+  }
+  if (observation.source_ref.empty()) {
+    observation.source_ref = observation.category + ":" + observation.subject;
+  }
+  if (observation.provenance.empty()) {
+    observation.provenance = "server_observability.record_ipar_contention_quota";
+  }
+  if (observation.sample_count == 0) {
+    observation.sample_count = 1;
+  }
+
+  const std::string path =
+      "sys.metrics.ipar.contention_quota." +
+      MetricPathToken(observation.category) + "." +
+      MetricPathToken(observation.subject);
+  SetServerMetric(state,
+                  path,
+                  observation.observed_value,
+                  observation.metric_type,
+                  {{"metric_id", observation.metric_id},
+                   {"category", observation.category},
+                   {"subject", observation.subject},
+                   {"metric_unit", observation.metric_unit},
+                   {"producer", observation.producer},
+                   {"source_kind", observation.source_kind},
+                   {"source_ref", observation.source_ref},
+                   {"provenance", observation.provenance},
+                   {"diagnostic_code", observation.diagnostic_code},
+                   {"limit_value", std::to_string(observation.limit_value)},
+                   {"refusal_count", std::to_string(observation.refusal_count)},
+                   {"wait_count", std::to_string(observation.wait_count)},
+                   {"queue_depth", std::to_string(observation.queue_depth)},
+                   {"sample_count", std::to_string(observation.sample_count)}});
 }
 
 std::string RecordServerAuditEvent(ServerObservabilityState* state,
@@ -288,7 +513,9 @@ std::string RecordServerAuditEvent(ServerObservabilityState* state,
   event.diagnostic_code = RedactSupportabilityText(std::move(diagnostic_code));
   event.sequence = ++state->audit_sequence;
   state->audit_events.push_back(event);
-  AppendLine(state->audit_path, AuditEventJson(event));
+  if (ShouldPersistAuditEvent(state, event)) {
+    AppendLine(state->audit_path, AuditEventJson(event));
+  }
   return event.event_uuid;
 }
 
@@ -521,12 +748,17 @@ ServerSupportabilityFlushResult FlushServerObservability(ServerObservabilityStat
   }
   const std::string safe_reason = RedactSupportabilityText(std::move(reason));
   const std::string flush_uuid = AuditUuid();
-  result.metrics_flushed = AppendLine(state->metrics_path,
-                                      "{\"supportability_flush\":{\"flush_uuid\":\"" +
-                                          JsonEscape(flush_uuid) +
-                                          "\",\"target\":\"metrics\",\"reason\":\"" +
-                                          JsonEscape(safe_reason) + "\"}}");
+  const bool metric_snapshot_flushed = PersistCurrentMetricSnapshot(state);
+  const bool metric_flush_marker =
+      AppendLine(state->metrics_path,
+                 "{\"supportability_flush\":{\"flush_uuid\":\"" +
+                     JsonEscape(flush_uuid) +
+                     "\",\"target\":\"metrics\",\"reason\":\"" +
+                     JsonEscape(safe_reason) + "\"}}");
+  result.metrics_flushed = metric_snapshot_flushed && metric_flush_marker;
   result.audit_flushed = AppendLine(state->audit_path,
+                                    ServerAuditSnapshotJson(*state)) &&
+                         AppendLine(state->audit_path,
                                     "{\"supportability_flush\":{\"flush_uuid\":\"" +
                                         JsonEscape(flush_uuid) +
                                         "\",\"target\":\"audit\",\"reason\":\"" +
@@ -600,7 +832,11 @@ ServerSupportabilityFlushResult RotateServerOperationalLog(ServerObservabilitySt
 std::string ServerMetricsSnapshotJson(const ServerObservabilityState& state) {
   std::ostringstream out;
   out << "{\"server_metrics\":{\"generation\":" << state.metric_generation
-      << ",\"persistence\":\"enabled\",\"retention_policy_ref\":\"server.metrics.default_retention.v1\","
+      << ",\"persistence\":\"enabled\",\"persist_mode\":\"coalesced_jsonl\","
+      << "\"metric_observation_count\":" << state.metric_observation_count
+      << ",\"metric_persist_stride\":" << state.metric_persist_stride
+      << ",\"metric_persist_skipped\":" << state.metric_persist_skipped
+      << ",\"retention_policy_ref\":\"server.metrics.default_retention.v1\","
       << "\"samples\":[";
   bool first = true;
   for (const auto& [_, sample] : state.metrics) {
@@ -614,13 +850,212 @@ std::string ServerMetricsSnapshotJson(const ServerObservabilityState& state) {
 
 std::string ServerAuditSnapshotJson(const ServerObservabilityState& state) {
   std::ostringstream out;
-  out << "{\"server_audit\":{\"event_count\":" << state.audit_events.size() << ",\"events\":[";
+  out << "{\"server_audit\":{\"event_count\":" << state.audit_events.size()
+      << ",\"persist_mode\":\"coalesced_jsonl\","
+      << "\"audit_observation_count\":" << state.audit_observation_count
+      << ",\"audit_persist_stride\":" << state.audit_persist_stride
+      << ",\"audit_persist_skipped\":" << state.audit_persist_skipped
+      << ",\"events\":[";
   for (std::size_t i = 0; i < state.audit_events.size(); ++i) {
     if (i != 0) out << ',';
     out << AuditEventJson(state.audit_events[i]);
   }
   out << "]}}\n";
   return out.str();
+}
+
+std::vector<scratchbird::engine::internal_api::SysInformationIparMetricCounterSource>
+BuildIparMetricCounterProjectionSources(const ServerObservabilityState& state) {
+  std::vector<scratchbird::engine::internal_api::SysInformationIparMetricCounterSource> out;
+  for (const auto& [_, sample] : state.metrics) {
+    if (sample.path.rfind("sys.metrics.ipar.", 0) != 0) {
+      continue;
+    }
+    scratchbird::engine::internal_api::SysInformationIparMetricCounterSource source;
+    const auto metric_id = sample.labels.find("metric_id");
+    const auto budget_id = sample.labels.find("budget_id");
+    source.metric_id = metric_id != sample.labels.end()
+                           ? metric_id->second
+                           : (budget_id != sample.labels.end() ? budget_id->second : "IPAR");
+    source.metric_path = sample.path;
+    source.metric_type = sample.type;
+    source.metric_unit = sample.type == "gauge" ? "value" : "count";
+    source.label_summary = MetricLabelSummary(sample.labels);
+    source.producer = "server_observability";
+    source.source_state = state.metrics_enabled ? "observed" : "metrics_disabled";
+    source.value = sample.value;
+    source.sample_count = 1;
+    out.push_back(std::move(source));
+  }
+  return out;
+}
+
+std::vector<scratchbird::engine::internal_api::SysInformationIparTelemetryControlSource>
+BuildIparTelemetryControlProjectionSources(const ServerObservabilityState& state) {
+  using scratchbird::engine::internal_api::SysInformationIparTelemetryControlSource;
+  const std::uint64_t metric_sample_rate =
+      state.metric_persist_stride == 0 ? 1000 : 1000 / state.metric_persist_stride;
+  const std::uint64_t audit_sample_rate =
+      state.audit_persist_stride == 0 ? 1000 : 1000 / state.audit_persist_stride;
+  const std::string source_state = state.metrics_enabled ? "observed" : "metrics_disabled";
+  std::vector<SysInformationIparTelemetryControlSource> out;
+  auto push = [&](std::string control_name,
+                  std::string metric_path,
+                  std::uint64_t configured_value,
+                  std::uint64_t observed_value,
+                  std::uint64_t sample_rate_per_mille,
+                  std::uint64_t persist_stride,
+                  std::uint64_t skipped_count,
+                  std::uint64_t dropped_metric_count) {
+    SysInformationIparTelemetryControlSource source;
+    source.control_name = std::move(control_name);
+    source.metric_path = std::move(metric_path);
+    source.source_state = source_state;
+    source.configured_value = configured_value;
+    source.observed_value = observed_value;
+    source.sample_rate_per_mille = sample_rate_per_mille;
+    source.persist_stride = persist_stride;
+    source.skipped_count = skipped_count;
+    source.dropped_metric_count = dropped_metric_count;
+    out.push_back(std::move(source));
+  };
+  push("metrics_enabled",
+       "sys.metrics.ipar.telemetry.metrics_enabled",
+       state.metrics_enabled ? 1 : 0,
+       state.metrics_enabled ? 1 : 0,
+       metric_sample_rate,
+       state.metric_persist_stride,
+       state.metric_persist_skipped,
+       0);
+  push("metric_persist_stride",
+       "sys.metrics.ipar.telemetry.metric_persist_stride",
+       state.metric_persist_stride,
+       state.metric_persist_stride,
+       metric_sample_rate,
+       state.metric_persist_stride,
+       state.metric_persist_skipped,
+       0);
+  push("metric_persist_skipped",
+       "sys.metrics.ipar.telemetry.metric_persist_skipped",
+       state.metric_persist_skipped,
+       state.metric_persist_skipped,
+       metric_sample_rate,
+       state.metric_persist_stride,
+       state.metric_persist_skipped,
+       0);
+  push("audit_persist_stride",
+       "sys.metrics.ipar.telemetry.audit_persist_stride",
+       state.audit_persist_stride,
+       state.audit_persist_stride,
+       audit_sample_rate,
+       state.audit_persist_stride,
+       state.audit_persist_skipped,
+       0);
+  push("audit_persist_skipped",
+       "sys.metrics.ipar.telemetry.audit_persist_skipped",
+       state.audit_persist_skipped,
+       state.audit_persist_skipped,
+       audit_sample_rate,
+       state.audit_persist_stride,
+       state.audit_persist_skipped,
+       0);
+  push("persist_sample_rate_per_mille",
+       "sys.metrics.ipar.telemetry.persist_sample_rate_per_mille",
+       metric_sample_rate,
+       metric_sample_rate,
+       metric_sample_rate,
+       state.metric_persist_stride,
+       state.metric_persist_skipped,
+       0);
+  push("dropped_metric_count",
+       "sys.metrics.ipar.telemetry.dropped_metric_count",
+       0,
+       0,
+       metric_sample_rate,
+       state.metric_persist_stride,
+       state.metric_persist_skipped,
+       0);
+  return out;
+}
+
+std::vector<scratchbird::engine::internal_api::SysInformationIparSlowPathReasonSource>
+BuildIparSlowPathReasonProjectionSources(const ServerObservabilityState& state) {
+  using scratchbird::engine::internal_api::SysInformationIparSlowPathReasonSource;
+  std::vector<SysInformationIparSlowPathReasonSource> out;
+  for (const auto& [_, sample] : state.metrics) {
+    if (!IsIparSlowPathMetricSample(sample)) {
+      continue;
+    }
+    const std::string reason = LabelValue(sample.labels, "reason", "unspecified");
+    const std::string chosen_path =
+        LabelValue(sample.labels, "chosen_path", LabelValue(sample.labels, "result", "degraded_path"));
+    SysInformationIparSlowPathReasonSource source;
+    source.metric_id = LabelValue(sample.labels, "metric_id", "IPAR-M035");
+    source.statement_id = LabelValue(sample.labels, "statement_id");
+    if (source.statement_id.empty()) {
+      source.statement_id = LabelValue(sample.labels, "script_id");
+    }
+    if (source.statement_id.empty()) {
+      source.statement_id = "aggregate:" + chosen_path + ":" + reason;
+    }
+    source.chosen_path = chosen_path;
+    source.reason_code = reason;
+    source.validation_stage =
+        LabelValue(sample.labels, "validation_stage", "runtime_execution");
+    source.driver_visible_message =
+        LabelValue(sample.labels,
+                   "driver_visible_message",
+                   "Slow path selected during " + source.validation_stage + ": " + reason);
+    source.diagnostic_code =
+        LabelValue(sample.labels,
+                   "diagnostic_code",
+                   "SB_IPAR_SLOW_PATH_REASON_RECORDED");
+    source.source_state = state.metrics_enabled ? "observed" : "metrics_disabled";
+    source.fallback_count = sample.value;
+    source.sample_count = LabelValueU64(sample.labels, "sample_count", 1);
+    out.push_back(std::move(source));
+  }
+  return out;
+}
+
+std::vector<scratchbird::engine::internal_api::SysInformationIparContentionQuotaSource>
+BuildIparContentionQuotaProjectionSources(const ServerObservabilityState& state) {
+  using scratchbird::engine::internal_api::SysInformationIparContentionQuotaSource;
+  std::vector<SysInformationIparContentionQuotaSource> out;
+  for (const auto& [_, sample] : state.metrics) {
+    if (sample.path.rfind("sys.metrics.ipar.contention_quota.", 0) != 0) {
+      continue;
+    }
+    const std::string category = LabelValue(sample.labels, "category", "unspecified");
+    const std::string subject = LabelValue(sample.labels, "subject", "unspecified");
+    SysInformationIparContentionQuotaSource source;
+    source.row_id = LabelValue(sample.labels, "row_id", category + ":" + subject);
+    source.metric_id = LabelValue(sample.labels, "metric_id", "IPAR-P4-06/IPAR-P6-06");
+    source.category = category;
+    source.subject = subject;
+    source.metric_path = sample.path;
+    source.metric_type = sample.type;
+    source.metric_unit = LabelValue(sample.labels,
+                                    "metric_unit",
+                                    sample.type == "gauge" ? "value" : "count");
+    source.producer = LabelValue(sample.labels, "producer", "server_observability");
+    source.source_kind =
+        LabelValue(sample.labels, "source_kind", "server_observability_metric");
+    source.source_ref = LabelValue(sample.labels, "source_ref", source.row_id);
+    source.provenance = LabelValue(sample.labels,
+                                   "provenance",
+                                   "server_observability.record_ipar_contention_quota");
+    source.diagnostic_code = LabelValue(sample.labels, "diagnostic_code");
+    source.source_state = state.metrics_enabled ? "observed" : "metrics_disabled";
+    source.observed_value = sample.value;
+    source.limit_value = LabelValueU64(sample.labels, "limit_value", 0);
+    source.refusal_count = LabelValueU64(sample.labels, "refusal_count", 0);
+    source.wait_count = LabelValueU64(sample.labels, "wait_count", 0);
+    source.queue_depth = LabelValueU64(sample.labels, "queue_depth", 0);
+    source.sample_count = LabelValueU64(sample.labels, "sample_count", 1);
+    out.push_back(std::move(source));
+  }
+  return out;
 }
 
 ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilityState& state,

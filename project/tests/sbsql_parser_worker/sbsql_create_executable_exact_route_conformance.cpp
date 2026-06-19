@@ -145,12 +145,17 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline(std::string_view sql) {
+PipelineArtifacts RunPipeline(std::string_view sql,
+                              std::vector<std::string> resolved_object_uuids = {}) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
+  artifacts.bound = BindAst(artifacts.ast,
+                            artifacts.cst,
+                            ParserConfigForTest(),
+                            session,
+                            std::move(resolved_object_uuids));
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -382,6 +387,102 @@ void RequireCursorRoutineArgumentRoute() {
   RequireServerAdmission(route, artifacts.envelope);
 }
 
+void RequireRoutineInvocationRoute() {
+  constexpr std::string_view kProcedureUuid = "019f0000-0000-7000-8000-000000e30042";
+  constexpr std::string_view kProcedureSchemaUuid = "019f0000-0000-7000-8000-000000e300ff";
+  const auto artifacts = RunPipeline(
+      "EXECUTE PROCEDURE replay_procedure(1);",
+      {std::string(kProcedureUuid), std::string(kProcedureSchemaUuid)});
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(), "routine invocation CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "routine invocation AST failed");
+  Require(artifacts.bound.bound, "routine invocation bind failed");
+  Require(artifacts.verifier.admitted, "routine invocation verifier rejected exact route");
+  Require(artifacts.envelope.operation_family == "sblr.routine.execute.v3",
+          "routine invocation operation family mismatch");
+  Require(artifacts.envelope.sblr_operation_key == "sblr.routine.execute.v3",
+          "routine invocation operation key mismatch");
+  Require(artifacts.envelope.operation_id == "routine.procedure_invoke",
+          "routine invocation operation id mismatch");
+  Require(artifacts.envelope.engine_api_operation_id == "routine.procedure_invoke",
+          "routine invocation engine API operation id mismatch");
+  Require(artifacts.envelope.engine_api_function == "EngineInvokeExecutableObject",
+          "routine invocation engine API function mismatch");
+  Require(artifacts.envelope.sblr_opcode == "SBLR_PROCEDURE_INVOKE",
+          "routine invocation SBLR opcode mismatch");
+  Require(HasValue(artifacts.envelope.required_rights, "right.execute"),
+          "routine invocation execute right missing");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.server.sblr_uuid_admission_required"),
+          "routine invocation server UUID admission step missing");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.engine.executable_object_invoke_api_required"),
+          "routine invocation engine executable-object authority step missing");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_sql_text_execution"),
+          "routine invocation parser no-SQL-execution authority step missing");
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.catalog.procedure"),
+          "routine invocation procedure catalog descriptor ref missing");
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.routine_descriptor"),
+          "routine invocation routine descriptor ref missing");
+  Require(!artifacts.envelope.parser_executes_sql,
+          "routine invocation lowering allowed parser SQL execution");
+  Require(!artifacts.envelope.real_file_effects,
+          "routine invocation lowering allowed reference/file effects");
+  Require(Contains(artifacts.envelope.payload, "\"routine_invocation\":true"),
+          "routine invocation payload missing invocation marker");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_invocation_kind\":\"procedure\""),
+          "routine invocation payload missing procedure marker");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"runtime_invocation_included\":true"),
+          "routine invocation payload missing runtime invocation marker");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"server_revalidates_sblr_uuid\":true"),
+          "routine invocation payload missing server revalidation marker");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_argument_count\":1"),
+          "routine invocation payload missing argument count");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_argument_0_type\":\"bigint\""),
+          "routine invocation payload missing literal argument type");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"target_object_uuid\":\"019f0000-0000-7000-8000-000000e30042\""),
+          "routine invocation payload missing target UUID");
+  Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
+          "routine invocation payload did not prove parser_executes_sql=false");
+  Require(Contains(artifacts.envelope.payload, "\"parser_executes_routine\":false"),
+          "routine invocation payload did not prove parser_executes_routine=false");
+  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
+          "routine invocation payload did not prove no SQL text authority");
+  Require(!Contains(artifacts.envelope.payload, "EXECUTE PROCEDURE") &&
+              !Contains(artifacts.envelope.payload, "replay_procedure(1)") &&
+              !Contains(artifacts.envelope.payload, "reference"),
+          "routine invocation payload embedded source SQL text or reference authority");
+
+  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+  Require(admission.admitted, "server admission rejected routine invocation route");
+  Require(admission.requires_public_abi_dispatch,
+          "server admission did not require public ABI dispatch for routine invocation");
+  Require(admission.operation_id == "routine.procedure_invoke",
+          "server admission routine invocation operation id mismatch");
+  Require(admission.operation_family == "sblr.routine.execute.v3",
+          "server admission routine invocation family mismatch");
+  const auto* opcode_entry = sblr::LookupSblrOperation("routine.procedure_invoke");
+  Require(opcode_entry != nullptr, "routine invocation opcode registry row missing");
+  Require(opcode_entry->opcode == "SBLR_PROCEDURE_INVOKE",
+          "routine invocation opcode registry opcode drifted");
+  Require(opcode_entry->requires_security_context,
+          "routine invocation opcode registry security context drifted");
+  Require(opcode_entry->requires_transaction_context,
+          "routine invocation opcode registry transaction context drifted");
+}
+
 std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -554,6 +655,7 @@ int main() {
     RequireServerAdmission(route, artifacts.envelope);
   }
   RequireCursorRoutineArgumentRoute();
+  RequireRoutineInvocationRoute();
   RequireEngineDispatch();
   std::cout << "sbsql_create_executable_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

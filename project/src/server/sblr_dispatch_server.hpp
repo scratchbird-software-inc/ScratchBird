@@ -12,12 +12,29 @@
 
 #include "engine_host.hpp"
 #include "session_registry.hpp"
+#include "catalog/sys_information_projection.hpp"
 
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace scratchbird::server {
+
+struct ServerIparProjectionSources {
+  std::vector<scratchbird::engine::internal_api::SysInformationIparAgentLifecycleSource>
+      agent_lifecycle;
+  std::vector<scratchbird::engine::internal_api::SysInformationIparMetricCounterSource>
+      metric_counters;
+  std::vector<scratchbird::engine::internal_api::SysInformationIparTelemetryControlSource>
+      telemetry_controls;
+  std::vector<scratchbird::engine::internal_api::SysInformationIparSlowPathReasonSource>
+      slow_path_reasons;
+};
+
+struct ServerIparProjectionSourceFactory {
+  void* context = nullptr;
+  ServerIparProjectionSources (*build)(void* context) = nullptr;
+};
 
 std::vector<std::uint8_t> EncodePrepareSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -80,7 +97,8 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                          const sbps::Frame& request);
 SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
-                                         const sbps::Frame& request);
+                                         const sbps::Frame& request,
+                                         const ServerIparProjectionSourceFactory* ipar_source_factory = nullptr);
 SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                    const sbps::Frame& request);
 SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,

@@ -21,12 +21,15 @@ from typing import Any
 
 from compile_full_surface_script_suite import compile_suite
 from exhaustive_generators import GENERATED_SCRIPT_SPECS, source_summary
+from ipar_performance_proof_gate import SCHEMA_NAME as IPAR_SCHEMA_NAME
+from ipar_performance_proof_gate import validate_ipar_schema
 
 
 SUITE_ROOT = Path(__file__).resolve().parent
 MANIFEST_NAME = "manifest.json"
 EXPECTED_ASSERTIONS_REL = Path("expected/expected_assertions.json")
 EXPECTED_REFUSALS_REL = Path("expected/expected_refusals.json")
+IPAR_SCHEMA_REL = Path(IPAR_SCHEMA_NAME)
 LANGUAGE_MANIFEST_REL = Path(
     "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/"
     "SBSQL_LANGUAGE_ELEMENT_MANIFEST.json"
@@ -77,6 +80,7 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
         "__SB_ROUTE__",
         "__SB_PARSER_MODE__",
         "__SB_PAGE_SIZE__",
+        "__SB_ARTIFACT_ROOT__",
     }
     if placeholders != required_placeholders:
         errors.append("manifest:compile_placeholders_drift")
@@ -349,6 +353,7 @@ def validate_compiled_sample(
                 "__SB_ROUTE__": "listener-parser",
                 "__SB_PARSER_MODE__": "server-parser",
                 "__SB_PAGE_SIZE__": "8k",
+                "__SB_ARTIFACT_ROOT__": str((output_root / "artifacts").resolve()),
             },
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
@@ -451,6 +456,11 @@ def main() -> int:
     except (OSError, json.JSONDecodeError) as exc:
         expected_refusals = {}
         errors.append(f"expected_refusals:load_failed:{exc}")
+    try:
+        ipar_schema = load_json(suite_root / IPAR_SCHEMA_REL)
+    except (OSError, json.JSONDecodeError) as exc:
+        ipar_schema = {}
+        errors.append(f"ipar_schema:load_failed:{exc}")
 
     if manifest:
         language_manifest, language_errors = read_language_manifest(repo_root)
@@ -461,6 +471,8 @@ def main() -> int:
             errors.extend(validate_builtin_fixture_sources(repo_root, manifest, language_manifest))
         errors.extend(validate_exhaustive_sources(repo_root, manifest))
         errors.extend(validate_compiled_sample(repo_root, suite_root, output_root, manifest))
+        if ipar_schema:
+            errors.extend(validate_ipar_schema(ipar_schema, manifest))
     if manifest and expected_assertions and expected_refusals:
         errors.extend(validate_expected_files(manifest, expected_assertions, expected_refusals))
 

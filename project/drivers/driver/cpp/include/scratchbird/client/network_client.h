@@ -131,8 +131,43 @@ struct NetworkColumn {
 struct NetworkResultSet {
     std::vector<NetworkColumn> columns;
     std::vector<std::vector<protocol::ColumnValue>> rows;
+    std::vector<uint8_t> copy_data;
+    std::vector<uint32_t> copy_column_formats;
     int64_t rows_affected{0};
     std::string command_tag;
+    uint8_t copy_format{protocol::kFormatText};
+    bool copy_active{false};
+};
+
+struct NetworkTransactionFinality {
+    protocol::TxnFinalityState state{protocol::TxnFinalityState::Unknown};
+    uint16_t flags{0};
+    std::array<uint8_t, 16> idempotency_key{};
+    std::array<uint8_t, 16> finality_token{};
+    uint64_t request_fingerprint{0};
+    uint64_t original_txn_id{0};
+    uint64_t replacement_txn_id{0};
+    std::string diagnostic_code;
+    std::string detail;
+
+    bool engineFinalityKnown() const {
+        return (flags & protocol::kTxnFinalityFlagEngineKnown) != 0;
+    }
+    bool retryAllowed() const {
+        return (flags & protocol::kTxnFinalityFlagRetryAllowed) != 0;
+    }
+    bool retryRefused() const {
+        return (flags & protocol::kTxnFinalityFlagRetryRefused) != 0;
+    }
+    bool sideEffectRetryRefused() const {
+        return (flags & protocol::kTxnFinalityFlagSideEffectRetryRefused) != 0;
+    }
+    bool sameIdempotencyKeyReplayable() const {
+        return (flags & protocol::kTxnFinalityFlagSameIdempotencyKeyReplayable) != 0;
+    }
+    bool postInventorySecondaryFailure() const {
+        return (flags & protocol::kTxnFinalityFlagPostInventorySecondaryFailure) != 0;
+    }
 };
 
 class NetworkPreparedStatement {
@@ -175,6 +210,9 @@ private:
     size_t param_count_{0};
     std::vector<protocol::ParamValue> params_;
     std::vector<uint32_t> param_type_oids_;
+    std::vector<uint32_t> prepared_type_oids_;
+    std::array<uint8_t, 16> owner_session_id_{};
+    uintptr_t owner_client_token_{0};
     bool valid_{false};
 };
 
@@ -292,6 +330,22 @@ public:
                                   core::ErrorContext* ctx = nullptr);
     core::Status beginTransaction(core::ErrorContext* ctx = nullptr);
     core::Status commit(core::ErrorContext* ctx = nullptr);
+    const NetworkTransactionFinality& lastCommitFinality() const {
+        return last_commit_finality_;
+    }
+    std::array<uint8_t, 16> lastCommitIdempotencyKey() const {
+        return last_commit_finality_.idempotency_key;
+    }
+    core::Status queryLastCommitFinality(core::ErrorContext* ctx = nullptr);
+    core::Status queryCommitFinality(const std::array<uint8_t, 16>& idempotency_key,
+                                     const std::array<uint8_t, 16>& finality_token,
+                                     NetworkTransactionFinality& finality,
+                                     core::ErrorContext* ctx = nullptr);
+    core::Status validateRetryAfterCommitUncertainty(
+        const std::array<uint8_t, 16>& idempotency_key,
+        bool statement_has_side_effects,
+        bool caller_acknowledged_retry_boundary,
+        core::ErrorContext* ctx = nullptr) const;
     core::Status rollback(core::ErrorContext* ctx = nullptr);
     core::Status savepoint(const std::string& name,
                            core::ErrorContext* ctx = nullptr);
@@ -340,8 +394,21 @@ private:
     core::Status readExactWithTimeout(void* buffer, size_t size,
                                       core::ErrorContext* ctx = nullptr);
     core::Status sendCopyInputStream(core::ErrorContext* ctx = nullptr);
+    core::Status handleCopyOutResponseMessage(const protocol::ProtocolMessage& msg,
+                                              NetworkResultSet& results,
+                                              core::ErrorContext* ctx = nullptr);
+    core::Status handleCopyBothResponseMessage(const protocol::ProtocolMessage& msg,
+                                               NetworkResultSet& results,
+                                               core::ErrorContext* ctx = nullptr);
+    core::Status handleCopyDataMessage(const protocol::ProtocolMessage& msg,
+                                       NetworkResultSet& results,
+                                       core::ErrorContext* ctx = nullptr);
+    core::Status handleCopyFailMessage(const protocol::ProtocolMessage& msg,
+                                       core::ErrorContext* ctx = nullptr);
     core::Status handleAsyncMessage(const protocol::ProtocolMessage& msg,
                                     core::ErrorContext* ctx = nullptr);
+    core::Status handleTxnStatusMessage(const protocol::ProtocolMessage& msg,
+                                        core::ErrorContext* ctx = nullptr);
     core::Status handleErrorResponse(const protocol::ProtocolMessage& msg,
                                      core::ErrorContext* ctx = nullptr);
     core::Status drainUntilReady(std::string* command_tag,
@@ -376,6 +443,8 @@ private:
     bool explicit_transaction_active_{false};
     bool server_autocommit_requested_{false};
     uint64_t current_txn_id_{0};
+    NetworkTransactionFinality last_commit_finality_{};
+    bool last_commit_finality_present_{false};
     std::string last_error_;
     ResolvedAuthContext resolved_auth_context_{};
     uint32_t next_sequence_{0};

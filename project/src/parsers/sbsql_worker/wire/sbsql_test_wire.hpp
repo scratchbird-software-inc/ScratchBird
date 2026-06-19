@@ -13,6 +13,8 @@
 #include "metrics/parser_metrics.hpp"
 
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <string>
 #include <string_view>
 #include <memory>
@@ -25,12 +27,21 @@ struct ServerCloseCursorResult;
 struct ServerExecutionResult;
 struct ServerFetchResult;
 struct ServerManagementResult;
+struct ServerPrepareSblrResult;
 class EmbeddedEngineClient;
 struct ServerManagementCommand {
   std::string operation_key;
   std::string operation_id;
   std::string mode;
   std::string audit_reason;
+};
+
+struct CachedPublicNameResolution {
+  std::string object_uuid;
+  std::string canonical_name;
+  std::string object_class;
+  std::uint64_t catalog_epoch{0};
+  std::uint64_t security_epoch{0};
 };
 
 struct WireResponse {
@@ -51,12 +62,19 @@ class SbsqlTestWireSession {
                              bool autocommit_emulation = false);
   PipelineResult RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                  bool cursor_requested = false);
+  ServerPrepareSblrResult PrepareSblrForWire(std::string_view encoded_sblr_envelope);
+  PipelineResult RunPreparedSblrEnvelopeForWire(std::string_view prepared_statement_uuid,
+                                                std::string_view encoded_sblr_envelope,
+                                                bool cursor_requested = false);
   ServerFetchResult FetchCursorOnRoute(std::string_view cursor_uuid,
                                        std::uint64_t max_rows = 1,
                                        std::uint64_t max_bytes = 0,
                                        std::uint32_t fetch_flags = 0);
   ServerCloseCursorResult CloseCursorOnRoute(std::string_view cursor_uuid);
   ServerCloseCursorResult CancelCursorOnRoute(std::string_view cursor_uuid);
+  PublicNameResolutionResult ResolvePublicNameForWire(std::string_view presented_name,
+                                                      bool quoted,
+                                                      std::string_view object_class);
   bool AuthenticateCredentials(const AuthCredentialEnvelope& credentials,
                                MessageVectorSet* messages);
   [[nodiscard]] const SessionContext& session() const { return session_; }
@@ -68,6 +86,8 @@ class SbsqlTestWireSession {
   SessionContext session_;
   std::string last_cursor_uuid_;
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
+  std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
+  std::deque<std::string> name_resolution_lru_;
 
   bool HasExecutionRoute() const;
   ServerExecutionResult ExecuteSblrOnRoute(std::string_view encoded_sblr_envelope,

@@ -11,6 +11,7 @@
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "memory.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
@@ -336,14 +337,34 @@ constexpr std::array<TypeKeywordDescriptorEvidence, 157> kTypeKeywordRows{{
     {"SBSQL-21CD801DC871", "multiset_type", "CREATE TABLE customer (value multiset)", "multiset", "value"},
     {"SBSQL-FE7C52C9B04B", "vector_type", "CREATE TABLE customer (value vector)", "vector", "value"},
     {"SBSQL-5F9E4A5DE8CE", "vector_element_type", "CREATE TABLE customer (value vector)", "vector", "value"},
-    {"SBSQL-610831D44746", "opaque_type", "CREATE TABLE customer (value opaque)", "opaque", "value"},
+    {"SBSQL-610831D44746",
+     "opaque_type",
+     "CREATE TABLE customer (value opaque)",
+     "opaque_extension",
+     "value"},
     {"SBSQL-93136A0C48EE", "container_type", "CREATE TABLE customer (value array)", "array", "value"},
     {"SBSQL-9CAF1533E76A", "map_type", "CREATE TABLE customer (value map)", "map", "value"},
-    {"SBSQL-1AC7734F20A8", "Nested(...)", "CREATE TABLE customer (value Nested(id int))", "nested(...)", "value"},
+    {"SBSQL-1AC7734F20A8",
+     "Nested(...)",
+     "CREATE TABLE customer (value Nested(id int))",
+     "nested(...)",
+     "value"},
     {"SBSQL-1C8A34E4FC94", "LowCardinality(T)", "CREATE TABLE customer (value LowCardinality(varchar))", "lowcardinality(t)", "value"},
-    {"SBSQL-24A975C07E32", "MAP(...)", "CREATE TABLE customer (value Map(varchar,int))", "map(...)", "value"},
-    {"SBSQL-52AF08327FA9", "Tuple(...)", "CREATE TABLE customer (value Tuple(int,varchar))", "tuple(...)", "value"},
-    {"SBSQL-6FEAAA1C3A42", "Variant(...)", "CREATE TABLE customer (value Variant(int,varchar))", "variant(...)", "value"},
+    {"SBSQL-24A975C07E32",
+     "MAP(...)",
+     "CREATE TABLE customer (value Map(varchar,int))",
+     "map(varchar,int)",
+     "value"},
+    {"SBSQL-52AF08327FA9",
+     "Tuple(...)",
+     "CREATE TABLE customer (value Tuple(int,varchar))",
+     "tuple(...)",
+     "value"},
+    {"SBSQL-6FEAAA1C3A42",
+     "Variant(...)",
+     "CREATE TABLE customer (value Variant(int,varchar))",
+     "variant(int,varchar)",
+     "value"},
     {"SBSQL-9DC227D53826", "Nullable(T)", "CREATE TABLE customer (value Nullable(int))", "nullable(t)", "value"},
     {"SBSQL-FA7A440034CD", "stream_type", "CREATE TABLE customer (value stream)", "stream", "value"},
     {"SBSQL-9529ADAEF499", "locator_type", "CREATE TABLE customer (value locator)", "locator", "value"},
@@ -653,11 +674,13 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
           "CREATE TABLE payload claimed indexes");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
           "CREATE TABLE payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, "\"customer\"") &&
-              !Contains(artifacts.envelope.payload,
-                        std::string("\"") + std::string(column_name) + "\"") &&
-              !Contains(artifacts.envelope.payload, std::string(sql)),
-          "CREATE TABLE payload embedded SQL text or identifier names as authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
+          "CREATE TABLE payload did not mark requested names as metadata");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
+          "CREATE TABLE payload did not limit requested names to name-registry metadata");
+  Require(!Contains(artifacts.envelope.payload, std::string(sql)),
+          "CREATE TABLE payload embedded source SQL text as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "CREATE TABLE payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
@@ -724,18 +747,22 @@ void RequireTypeKeywordDescriptorRoute(const TypeKeywordDescriptorEvidence& row)
   const std::string expected_type =
       std::string("\"canonical_type_name\":\"") + std::string(row.canonical_type_name) + "\"";
   Require(Contains(artifacts.envelope.payload, expected_type),
-          "type keyword payload missing expected descriptor type");
+          std::string("type keyword payload missing expected descriptor type for ") +
+              std::string(row.canonical_name) + " from " + std::string(row.sql) +
+              " expected " + expected_type + " payload " + artifacts.envelope.payload);
   Require(Contains(artifacts.envelope.payload, row.surface_id),
           "type keyword payload missing row-identifiable function surface evidence");
   for (const auto& core_row : kCreateTableCoreRows) {
     Require(Contains(artifacts.envelope.payload, core_row.surface_id),
             "type keyword payload missing core CREATE TABLE row evidence");
   }
-  Require(!Contains(artifacts.envelope.payload, "\"customer\"") &&
-              !Contains(artifacts.envelope.payload,
-                        std::string("\"") + std::string(row.column_name) + "\"") &&
-              !Contains(artifacts.envelope.payload, std::string(row.sql)),
-          "type keyword payload embedded SQL text or identifier names as authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
+          "type keyword payload did not mark requested names as metadata");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
+          "type keyword payload did not limit requested names to name-registry metadata");
+  Require(!Contains(artifacts.envelope.payload, std::string(row.sql)),
+          "type keyword payload embedded source SQL text as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "type keyword payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
@@ -809,7 +836,7 @@ api::EngineRequestContext EngineContext(const std::string& database_uuid) {
   context.database_uuid.canonical = database_uuid;
   context.session_uuid.canonical = "019f0000-0000-7000-8000-000000020202";
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000020203";
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000020205";
+  context.current_schema_uuid.canonical.clear();
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -818,6 +845,17 @@ api::EngineRequestContext EngineContext(const std::string& database_uuid) {
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-E4E0E6EB328C");
   return context;
+}
+
+std::string SchemaUuidForPath(const api::EngineRequestContext& context,
+                              const std::string& path) {
+  for (const auto& schema : api::VisibleSchemaTreeRecords(context,
+                                                          context.local_transaction_id)) {
+    for (const auto& name : schema.localized_names) {
+      if (name.path == path) return schema.schema_uuid;
+    }
+  }
+  return {};
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
@@ -847,9 +885,10 @@ api::EngineRequestContext BeginEngineTransaction(const std::string& database_uui
 }
 
 api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_type_name,
-                                                  std::string_view column_name) {
+                                                  std::string_view column_name,
+                                                  std::string_view schema_uuid) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = "019f0000-0000-7000-8000-000000020205";
+  request.target_schema.uuid.canonical = std::string(schema_uuid);
   request.target_schema.object_kind = "schema";
   request.target_object.uuid.canonical = "019f0000-0000-7000-8000-000000020206";
   request.target_object.object_kind = "table";
@@ -884,7 +923,12 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                            std::string_view on_commit_action) {
   const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
-  auto api_request = EngineCreateTableApiRequest(canonical_type_name, column_name);
+  context.current_schema_uuid.canonical = SchemaUuidForPath(context, "users.public");
+  Require(!context.current_schema_uuid.canonical.empty(),
+          "CREATE TABLE engine dispatch users.public schema missing");
+  auto api_request = EngineCreateTableApiRequest(canonical_type_name,
+                                                column_name,
+                                                context.current_schema_uuid.canonical);
   if (temporary) {
     api_request.option_envelopes.push_back("temporary:true");
     api_request.option_envelopes.push_back("temporary_scope:private");

@@ -668,6 +668,7 @@ bool parseQueryPayloadSql(const std::vector<uint8_t>& payload,
 bool parseParsePayloadStatementAndSql(const std::vector<uint8_t>& payload,
                                       std::string& statement_out,
                                       std::string& sql_out,
+                                      std::vector<uint32_t>& param_types_out,
                                       std::string& error_out) {
     if (payload.size() < 12) {
         error_out = "parse payload truncated";
@@ -691,7 +692,34 @@ bool parseParsePayloadStatementAndSql(const std::vector<uint8_t>& payload,
         return false;
     }
     sql_out.assign(reinterpret_cast<const char*>(payload.data() + offset), sql_len);
+    offset += sql_len;
+
+    if (offset + 4 > payload.size()) {
+        error_out = "parse payload parameter section truncated";
+        return false;
+    }
+    const uint16_t param_count = readU16Le(payload.data() + offset);
+    offset += 4;
+    param_types_out.clear();
+    param_types_out.reserve(param_count);
+    for (uint16_t index = 0; index < param_count; ++index) {
+        if (offset + 4 > payload.size()) {
+            error_out = "parse payload parameter type truncated";
+            return false;
+        }
+        param_types_out.push_back(readU32Le(payload.data() + offset));
+        offset += 4;
+    }
     return true;
+}
+
+bool parseParsePayloadStatementAndSql(const std::vector<uint8_t>& payload,
+                                      std::string& statement_out,
+                                      std::string& sql_out,
+                                      std::string& error_out) {
+    std::vector<uint32_t> ignored_types;
+    return parseParsePayloadStatementAndSql(
+        payload, statement_out, sql_out, ignored_types, error_out);
 }
 
 bool parseTxnNamePayload(const std::vector<uint8_t>& payload,
@@ -742,6 +770,67 @@ bool parseTxnBeginPayload(const std::vector<uint8_t>& payload,
         read_committed_mode_out = payload[12];
     }
     return true;
+}
+
+std::array<uint8_t, 16> testUuid(uint8_t seed) {
+    std::array<uint8_t, 16> uuid{};
+    for (size_t i = 0; i < uuid.size(); ++i) {
+        uuid[i] = static_cast<uint8_t>(seed + i);
+    }
+    uuid[6] = static_cast<uint8_t>((uuid[6] & 0x0Fu) | 0x70u);
+    uuid[8] = static_cast<uint8_t>((uuid[8] & 0x3Fu) | 0x80u);
+    return uuid;
+}
+
+bool isZeroUuid(const std::array<uint8_t, 16>& uuid) {
+    return std::all_of(uuid.begin(), uuid.end(), [](uint8_t value) {
+        return value == 0;
+    });
+}
+
+scratchbird::protocol::TxnFinalityStatus makeTxnFinalityStatus(
+    scratchbird::protocol::TxnFinalityState state,
+    uint16_t flags,
+    const std::array<uint8_t, 16>& idempotency_key,
+    const std::array<uint8_t, 16>& finality_token,
+    uint64_t request_fingerprint,
+    uint64_t original_txn_id,
+    uint64_t replacement_txn_id,
+    std::string diagnostic_code,
+    std::string detail) {
+    scratchbird::protocol::TxnFinalityStatus status;
+    status.state = state;
+    status.flags = flags;
+    status.idempotency_key = idempotency_key;
+    status.finality_token = finality_token;
+    status.request_fingerprint = request_fingerprint;
+    status.original_txn_id = original_txn_id;
+    status.replacement_txn_id = replacement_txn_id;
+    status.diagnostic_code = std::move(diagnostic_code);
+    status.detail = std::move(detail);
+    return status;
+}
+
+std::vector<uint8_t> buildTxnFinalityStatusPayload(
+    scratchbird::protocol::TxnFinalityState state,
+    uint16_t flags,
+    const std::array<uint8_t, 16>& idempotency_key,
+    const std::array<uint8_t, 16>& finality_token,
+    uint64_t request_fingerprint,
+    uint64_t original_txn_id,
+    uint64_t replacement_txn_id,
+    const std::string& diagnostic_code,
+    const std::string& detail) {
+    return scratchbird::protocol::buildTxnFinalityStatusPayload(
+        makeTxnFinalityStatus(state,
+                              flags,
+                              idempotency_key,
+                              finality_token,
+                              request_fingerprint,
+                              original_txn_id,
+                              replacement_txn_id,
+                              diagnostic_code,
+                              detail));
 }
 
 bool parseCancelPayload(const std::vector<uint8_t>& payload,
@@ -797,6 +886,7 @@ bool parseSblrPayload(const std::vector<uint8_t>& payload,
 struct ScriptedResponse {
     scratchbird::protocol::MessageType type;
     std::vector<uint8_t> payload;
+    std::function<std::vector<uint8_t>(const scratchbird::protocol::ProtocolMessage&)> payload_builder;
 };
 
 struct ScriptedExchange {
@@ -987,7 +1077,9 @@ private:
                 return;
             }
             for (const auto& response : exchange.responses) {
-                status = sendMessage(client.get(), response.type, response.payload, next_sequence++, &ctx);
+                const auto payload =
+                    response.payload_builder ? response.payload_builder(request) : response.payload;
+                status = sendMessage(client.get(), response.type, payload, next_sequence++, &ctx);
                 if (status != scratchbird::core::Status::OK) {
                     error = "write scripted response failed: " + ctx.message;
                     return;
@@ -1961,8 +2053,27 @@ TEST(DriverTxnExecParityTest, TransactionRoundTripBeginCommitRollback) {
            buildCommandCompletePayload(0, 0, 0, "COMMIT")},
           {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 2, 2)}},
          [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
-             if (msg.body.size() != 4) {
-                 error = "txn commit payload size mismatch";
+             scratchbird::protocol::TxnCommitRequest request;
+             scratchbird::core::ErrorContext parse_ctx;
+             if (scratchbird::protocol::parseTxnCommitRequest(msg.body, request, &parse_ctx) !=
+                 scratchbird::core::Status::OK) {
+                 error = "txn commit payload parse failed: " + parse_ctx.message;
+                 return false;
+             }
+             if (msg.body.size() != 36) {
+                 error = "txn commit finality payload size mismatch";
+                 return false;
+             }
+             if ((request.contract_flags &
+                  scratchbird::protocol::kTxnCommitFlagHasIdempotencyKey) == 0 ||
+                 (request.contract_flags &
+                  scratchbird::protocol::kTxnCommitFlagStatementHasSideEffects) == 0 ||
+                 isZeroUuid(request.idempotency_key)) {
+                 error = "txn commit idempotency contract missing";
+                 return false;
+             }
+             if (request.expected_txn_id != 1) {
+                 error = "txn commit expected transaction mismatch";
                  return false;
              }
              return true;
@@ -1988,6 +2099,219 @@ TEST(DriverTxnExecParityTest, TransactionRoundTripBeginCommitRollback) {
     EXPECT_EQ(client.rollback(&ctx), scratchbird::core::Status::OK) << ctx.message;
     client.disconnect();
 
+    harness.stop();
+    EXPECT_TRUE(harness.error.empty()) << harness.error;
+}
+
+TEST(DriverTxnExecParityTest, CommitLostReadyLeavesUnknownFinalityAndRefusesRetry) {
+    scratchbird::network::NetworkInitGuard guard;
+    ASSERT_TRUE(guard.isInitialized());
+
+    std::array<uint8_t, 16> captured_key{};
+    ServerHarnessConfig harness_cfg;
+    harness_cfg.exchanges = {
+        {scratchbird::protocol::MessageType::TxnCommit,
+         {{scratchbird::protocol::MessageType::CommandComplete,
+           buildCommandCompletePayload(0, 0, 0, "COMMIT")}},
+         [&captured_key](const scratchbird::protocol::ProtocolMessage& msg,
+                         std::string& error) {
+             scratchbird::protocol::TxnCommitRequest request;
+             scratchbird::core::ErrorContext parse_ctx;
+             if (scratchbird::protocol::parseTxnCommitRequest(msg.body, request, &parse_ctx) !=
+                 scratchbird::core::Status::OK) {
+                 error = "txn commit payload parse failed: " + parse_ctx.message;
+                 return false;
+             }
+             captured_key = request.idempotency_key;
+             if (isZeroUuid(captured_key)) {
+                 error = "commit idempotency key was zero";
+                 return false;
+             }
+             return true;
+         }}
+    };
+
+    ServerHarness harness(std::move(harness_cfg));
+    setupIpv4Listener(harness);
+    harness.start();
+
+    scratchbird::client::NetworkClient client;
+    auto cfg = makeLoopbackConfig(harness.port);
+    scratchbird::core::ErrorContext ctx;
+    ASSERT_EQ(client.connect(cfg, &ctx), scratchbird::core::Status::OK) << ctx.message;
+
+    scratchbird::core::ErrorContext commit_ctx;
+    EXPECT_NE(client.commit(&commit_ctx), scratchbird::core::Status::OK);
+    const auto& finality = client.lastCommitFinality();
+    EXPECT_EQ(finality.state, scratchbird::protocol::TxnFinalityState::Unknown);
+    EXPECT_FALSE(finality.engineFinalityKnown());
+    EXPECT_EQ(finality.idempotency_key, captured_key);
+    EXPECT_EQ(finality.diagnostic_code, "SBWP.COMMIT.READY_LOST_FINALITY_UNKNOWN");
+
+    scratchbird::core::ErrorContext retry_ctx;
+    EXPECT_EQ(client.validateRetryAfterCommitUncertainty(captured_key, true, true, &retry_ctx),
+              scratchbird::core::Status::CONNECTION_FAILURE);
+    EXPECT_STREQ(retry_ctx.sqlstate, "08007");
+
+    client.disconnect();
+    harness.stop();
+    EXPECT_TRUE(harness.error.empty()) << harness.error;
+}
+
+TEST(DriverTxnExecParityTest, CommitFinalityQueryMakesSameKeyReplayableAndDifferentKeyRefused) {
+    scratchbird::network::NetworkInitGuard guard;
+    ASSERT_TRUE(guard.isInitialized());
+
+    std::array<uint8_t, 16> captured_key{};
+    std::array<uint8_t, 16> finality_token = testUuid(0xA0);
+    uint64_t captured_fingerprint = 0;
+    bool saw_query = false;
+
+    ServerHarnessConfig harness_cfg;
+    harness_cfg.exchanges = {
+        {scratchbird::protocol::MessageType::TxnCommit,
+         {{scratchbird::protocol::MessageType::CommandComplete,
+           buildCommandCompletePayload(0, 0, 0, "COMMIT")},
+          {scratchbird::protocol::MessageType::TxnStatus,
+           {},
+           [&captured_key, &captured_fingerprint, &finality_token](
+               const scratchbird::protocol::ProtocolMessage&) {
+               return buildTxnFinalityStatusPayload(
+                   scratchbird::protocol::TxnFinalityState::Unknown,
+                   0,
+                   captured_key,
+                   finality_token,
+                   captured_fingerprint,
+                   1,
+                   0,
+                   "SBWP.COMMIT.FINALITY_UNKNOWN",
+                   "unknown_until_engine_finality_report");
+           }},
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 2, 2)}},
+         [&captured_key, &captured_fingerprint](
+             const scratchbird::protocol::ProtocolMessage& msg,
+             std::string& error) {
+             scratchbird::protocol::TxnCommitRequest request;
+             scratchbird::core::ErrorContext parse_ctx;
+             if (scratchbird::protocol::parseTxnCommitRequest(msg.body, request, &parse_ctx) !=
+                 scratchbird::core::Status::OK) {
+                 error = "txn commit payload parse failed: " + parse_ctx.message;
+                 return false;
+             }
+             if ((request.contract_flags &
+                  scratchbird::protocol::kTxnCommitFlagHasIdempotencyKey) == 0 ||
+                 (request.contract_flags &
+                  scratchbird::protocol::kTxnCommitFlagStatementHasSideEffects) == 0 ||
+                 isZeroUuid(request.idempotency_key)) {
+                 error = "commit idempotency contract missing";
+                 return false;
+             }
+             captured_key = request.idempotency_key;
+             captured_fingerprint = request.request_fingerprint;
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::TxnStatus,
+         {{scratchbird::protocol::MessageType::TxnStatus,
+           {},
+           [&captured_key, &captured_fingerprint, &finality_token](
+               const scratchbird::protocol::ProtocolMessage&) {
+               return buildTxnFinalityStatusPayload(
+                   scratchbird::protocol::TxnFinalityState::Committed,
+                   scratchbird::protocol::kTxnFinalityFlagEngineKnown |
+                       scratchbird::protocol::kTxnFinalityFlagSameIdempotencyKeyReplayable,
+                   captured_key,
+                   finality_token,
+                   captured_fingerprint,
+                   1,
+                   2,
+                   "SBWP.COMMIT.FINALITY_COMMITTED_BY_MGA_INVENTORY",
+                   "committed_by_engine_mga_inventory");
+           }},
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 2, 2)}},
+         [&captured_key, &finality_token, &saw_query](
+             const scratchbird::protocol::ProtocolMessage& msg,
+             std::string& error) {
+             scratchbird::protocol::TxnFinalityQuery query;
+             scratchbird::core::ErrorContext parse_ctx;
+             if (scratchbird::protocol::parseTxnFinalityQuery(msg.body, query, &parse_ctx) !=
+                 scratchbird::core::Status::OK) {
+                 error = "txn finality query parse failed: " + parse_ctx.message;
+                 return false;
+             }
+             if (query.idempotency_key != captured_key) {
+                 error = "finality query idempotency key mismatch";
+                 return false;
+             }
+             if (query.finality_token != finality_token) {
+                 error = "finality query token mismatch";
+                 return false;
+             }
+             saw_query = true;
+             return true;
+         }}
+    };
+
+    ServerHarness harness(std::move(harness_cfg));
+    setupIpv4Listener(harness);
+    harness.start();
+
+    scratchbird::client::NetworkClient client;
+    auto cfg = makeLoopbackConfig(harness.port);
+    scratchbird::core::ErrorContext ctx;
+    ASSERT_EQ(client.connect(cfg, &ctx), scratchbird::core::Status::OK) << ctx.message;
+
+    ASSERT_EQ(client.commit(&ctx), scratchbird::core::Status::OK) << ctx.message;
+    EXPECT_EQ(client.lastCommitFinality().state,
+              scratchbird::protocol::TxnFinalityState::Unknown);
+    EXPECT_FALSE(client.lastCommitFinality().engineFinalityKnown());
+
+    scratchbird::core::ErrorContext retry_before_query_ctx;
+    EXPECT_EQ(client.validateRetryAfterCommitUncertainty(captured_key,
+                                                         true,
+                                                         true,
+                                                         &retry_before_query_ctx),
+              scratchbird::core::Status::CONNECTION_FAILURE);
+    EXPECT_STREQ(retry_before_query_ctx.sqlstate, "08007");
+
+    ASSERT_EQ(client.queryLastCommitFinality(&ctx), scratchbird::core::Status::OK)
+        << ctx.message;
+    EXPECT_TRUE(saw_query);
+    const auto& finality = client.lastCommitFinality();
+    EXPECT_EQ(finality.state, scratchbird::protocol::TxnFinalityState::Committed);
+    EXPECT_TRUE(finality.engineFinalityKnown());
+    EXPECT_TRUE(finality.sameIdempotencyKeyReplayable());
+    EXPECT_EQ(finality.idempotency_key, captured_key);
+    EXPECT_EQ(finality.finality_token, finality_token);
+    EXPECT_EQ(finality.request_fingerprint, captured_fingerprint);
+    EXPECT_EQ(finality.original_txn_id, 1u);
+    EXPECT_EQ(finality.replacement_txn_id, 2u);
+    EXPECT_EQ(finality.diagnostic_code,
+              "SBWP.COMMIT.FINALITY_COMMITTED_BY_MGA_INVENTORY");
+
+    scratchbird::core::ErrorContext side_effect_ctx;
+    EXPECT_EQ(client.validateRetryAfterCommitUncertainty(captured_key,
+                                                         true,
+                                                         false,
+                                                         &side_effect_ctx),
+              scratchbird::core::Status::INVALID_TRANSACTION_STATE);
+    EXPECT_STREQ(side_effect_ctx.sqlstate, "40003");
+
+    scratchbird::core::ErrorContext acknowledged_ctx;
+    EXPECT_EQ(client.validateRetryAfterCommitUncertainty(captured_key,
+                                                         true,
+                                                         true,
+                                                         &acknowledged_ctx),
+              scratchbird::core::Status::OK);
+
+    scratchbird::core::ErrorContext different_key_ctx;
+    EXPECT_EQ(client.validateRetryAfterCommitUncertainty(testUuid(0xB0),
+                                                         false,
+                                                         true,
+                                                         &different_key_ctx),
+              scratchbird::core::Status::INVALID_TRANSACTION_STATE);
+    EXPECT_STREQ(different_key_ctx.sqlstate, "40003");
+
+    client.disconnect();
     harness.stop();
     EXPECT_TRUE(harness.error.empty()) << harness.error;
 }
@@ -2487,6 +2811,101 @@ TEST(DriverTxnExecParityTest, PrepareAndExecutePreparedRoundTrip) {
     EXPECT_EQ(status, scratchbird::core::Status::OK) << ctx.message;
     EXPECT_EQ(results.rows_affected, 1);
     EXPECT_EQ(results.command_tag, "UPDATE 1");
+    client.disconnect();
+
+    harness.stop();
+    EXPECT_TRUE(harness.error.empty()) << harness.error;
+}
+
+TEST(DriverTxnExecParityTest, QuestionPlaceholderPrepareReparsesWithBoundTypes) {
+    scratchbird::network::NetworkInitGuard guard;
+    ASSERT_TRUE(guard.isInitialized());
+
+    constexpr const char* kSql = "INSERT INTO users.public.t(id, name) VALUES (?, ?)";
+
+    ServerHarnessConfig harness_cfg;
+    harness_cfg.exchanges = {
+        {scratchbird::protocol::MessageType::Parse,
+         {},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string statement;
+             std::string sql;
+             std::vector<uint32_t> types;
+             if (!parseParsePayloadStatementAndSql(msg.body, statement, sql, types, error)) {
+                 return false;
+             }
+             if (sql != kSql) {
+                 error = "unexpected initial prepared SQL";
+                 return false;
+             }
+             if (types != std::vector<uint32_t>({0, 0})) {
+                 error = "initial PARSE did not advertise two unknown parameters";
+                 return false;
+             }
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::Describe, {}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::ParameterDescription,
+           buildParameterDescriptionPayload({0, 0})},
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 20, 20)}}},
+        {scratchbird::protocol::MessageType::Parse,
+         {},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string statement;
+             std::string sql;
+             std::vector<uint32_t> types;
+             if (!parseParsePayloadStatementAndSql(msg.body, statement, sql, types, error)) {
+                 return false;
+             }
+             if (sql != kSql) {
+                 error = "unexpected typed prepared SQL";
+                 return false;
+             }
+             if (types != std::vector<uint32_t>(
+                              {scratchbird::protocol::kOidInt4,
+                               scratchbird::protocol::kOidText})) {
+                 error = "typed PARSE did not use bound parameter OIDs";
+                 return false;
+             }
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::Describe, {}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::ParameterDescription,
+           buildParameterDescriptionPayload({scratchbird::protocol::kOidInt4,
+                                             scratchbird::protocol::kOidText})},
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 21, 21)}}},
+        {scratchbird::protocol::MessageType::Bind, {}},
+        {scratchbird::protocol::MessageType::Execute,
+         {{scratchbird::protocol::MessageType::CommandComplete,
+           buildCommandCompletePayload(0, 1, 0, "INSERT 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 22, 22)}}}
+    };
+
+    ServerHarness harness(std::move(harness_cfg));
+    setupIpv4Listener(harness);
+    harness.start();
+
+    scratchbird::client::NetworkClient client;
+    auto cfg = makeLoopbackConfig(harness.port);
+    scratchbird::core::ErrorContext ctx;
+    ASSERT_EQ(client.connect(cfg, &ctx), scratchbird::core::Status::OK) << ctx.message;
+
+    scratchbird::client::NetworkPreparedStatement stmt;
+    auto status = client.prepare(kSql, stmt, &ctx);
+    EXPECT_EQ(status, scratchbird::core::Status::OK) << ctx.message;
+    EXPECT_TRUE(stmt.isValid());
+    EXPECT_EQ(stmt.getParameterCount(), 2u);
+    stmt.setInt32(1, 7);
+    stmt.setString(2, "alpha");
+
+    scratchbird::client::NetworkResultSet results;
+    status = client.executePrepared(stmt, results, &ctx);
+    EXPECT_EQ(status, scratchbird::core::Status::OK) << ctx.message;
+    EXPECT_EQ(results.rows_affected, 1);
+    EXPECT_EQ(results.command_tag, "INSERT 1");
     client.disconnect();
 
     harness.stop();

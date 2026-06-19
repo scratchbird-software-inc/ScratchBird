@@ -342,6 +342,21 @@ std::vector<mga::SerializableKeyRange> RangesForRows(
     TypedUuid relation_uuid,
     std::span<const EngineRowValue> rows) {
   std::vector<mga::SerializableKeyRange> ranges;
+  constexpr std::size_t kMaxPointRangesForRowMutation = 1024;
+  std::size_t projected_range_count = 0;
+  for (const auto& row : rows) {
+    if (!row.requested_row_uuid.canonical.empty()) {
+      ++projected_range_count;
+    }
+    projected_range_count += row.fields.size();
+    if (projected_range_count > kMaxPointRangesForRowMutation) {
+      auto range = FullRelationRange(relation_uuid);
+      range.predicate_digest =
+          "bulk_row_mutation:" + std::to_string(rows.size()) + ":rows";
+      ranges.push_back(std::move(range));
+      return ranges;
+    }
+  }
   for (const auto& row : rows) {
     if (!row.requested_row_uuid.canonical.empty()) {
       ranges.push_back(mga::MakeSerializablePointRange(
@@ -815,6 +830,9 @@ SerializableDmlAdmissionResult CheckSerializableInsertMutation(
     std::string relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
+  if (!IsSerializableContext(context)) {
+    return InactiveResult();
+  }
   const TypedUuid relation = ParseRelationUuid(relation_uuid);
   return CheckWriteOnly(
       context,
@@ -832,6 +850,9 @@ SerializableDmlAdmissionResult RecordSerializableInsertMutation(
     std::string relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
+  if (!IsSerializableContext(context)) {
+    return InactiveResult();
+  }
   const TypedUuid relation = ParseRelationUuid(relation_uuid);
   return RecordReadOrWrite(
       context,

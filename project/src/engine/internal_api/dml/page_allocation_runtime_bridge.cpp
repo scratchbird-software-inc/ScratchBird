@@ -12,6 +12,7 @@
 #include "agents/filespace_capacity_manager.hpp"
 #include "agents/page_allocation_manager.hpp"
 #include "api_diagnostics.hpp"
+#include "ipar_fault_injection.hpp"
 #include "page_allocation_lifecycle.hpp"
 #include "strict_bulk_load_lifecycle.hpp"
 #include "uuid.hpp"
@@ -45,6 +46,12 @@ constexpr const char* kDemandMaxPagesOption = "dml_demand_hints.max_pages=";
 constexpr const char* kDemandCapacityPagesOption = "dml_demand_hints.available_capacity_pages=";
 constexpr const char* kDemandMinimumFreePagesOption = "dml_demand_hints.minimum_free_pages=";
 constexpr const char* kDemandTargetFreePagesOption = "dml_demand_hints.target_free_pages=";
+constexpr const char* kResourceQuotaMaxPagesOption =
+    "resource_quota.max_pages_per_reservation=";
+constexpr const char* kResourceQuotaAgentQueueLimitOption =
+    "resource_quota.agent_queue_max_depth=";
+constexpr const char* kResourceQuotaObservedAgentQueueDepthOption =
+    "resource_quota.observed_agent_queue_depth=";
 
 struct RuntimeLedger {
   page::PageAllocationLedger ledger;
@@ -64,6 +71,17 @@ struct DemandRuntimeOutcome {
   bool refused = false;
   platform::u64 requested_pages = 0;
   platform::u64 granted_pages = 0;
+};
+
+struct ResourceQuotaDecision {
+  bool configured = false;
+  bool refused = false;
+  std::string reason = "within_quota";
+  platform::u64 requested_pages = 0;
+  platform::u64 max_pages_per_reservation = 0;
+  platform::u64 agent_queue_depth = 0;
+  platform::u64 agent_queue_depth_limit = 0;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 std::mutex& RuntimeMutex() {
@@ -148,6 +166,26 @@ platform::u64 ParseU64Option(const std::vector<std::string>& options,
     return static_cast<platform::u64>(std::stoull(value));
   } catch (...) {
     return fallback;
+  }
+}
+
+bool ParsePresentU64Option(const std::vector<std::string>& options,
+                           const std::string& prefix,
+                           platform::u64* parsed) {
+  const auto value = OptionValue(options, prefix);
+  if (value.empty()) {
+    return false;
+  }
+  try {
+    if (parsed != nullptr) {
+      *parsed = static_cast<platform::u64>(std::stoull(value));
+    }
+    return true;
+  } catch (...) {
+    if (parsed != nullptr) {
+      *parsed = 0;
+    }
+    return true;
   }
 }
 
@@ -240,6 +278,100 @@ void AddEvidence(std::vector<EngineEvidenceReference>* evidence,
   if (evidence != nullptr) {
     evidence->push_back({std::move(kind), std::move(id)});
   }
+}
+
+ResourceQuotaDecision EvaluateResourceQuota(
+    const RuntimeLedger& runtime,
+    const std::vector<std::string>& option_envelopes,
+    platform::u64 requested_pages,
+    const std::string& mutation_phase) {
+  ResourceQuotaDecision decision;
+  decision.requested_pages = requested_pages == 0 ? 1 : requested_pages;
+  platform::u64 max_pages = 0;
+  const bool max_pages_present = ParsePresentU64Option(
+      option_envelopes,
+      kResourceQuotaMaxPagesOption,
+      &max_pages);
+  platform::u64 queue_limit = 0;
+  const bool queue_limit_present = ParsePresentU64Option(
+      option_envelopes,
+      kResourceQuotaAgentQueueLimitOption,
+      &queue_limit);
+  platform::u64 observed_queue_depth = 0;
+  const bool observed_queue_present = ParsePresentU64Option(
+      option_envelopes,
+      kResourceQuotaObservedAgentQueueDepthOption,
+      &observed_queue_depth);
+
+  decision.configured =
+      max_pages_present || queue_limit_present || observed_queue_present;
+  if (!decision.configured) {
+    return decision;
+  }
+
+  decision.max_pages_per_reservation = max_pages_present ? max_pages : 0;
+  decision.agent_queue_depth =
+      std::max<platform::u64>(static_cast<platform::u64>(runtime.agent_queue.records.size()),
+                              observed_queue_depth);
+  decision.agent_queue_depth_limit = queue_limit_present ? queue_limit : 0;
+
+  AddEvidence(&decision.evidence, "resource_quota_policy", "evaluated");
+  AddEvidence(&decision.evidence, "resource_quota_phase", mutation_phase);
+  AddEvidence(&decision.evidence,
+              "resource_quota_requested_pages",
+              std::to_string(decision.requested_pages));
+  AddEvidence(&decision.evidence,
+              "resource_quota_max_pages_per_reservation",
+              max_pages_present ? std::to_string(max_pages) : "unbounded");
+  AddEvidence(&decision.evidence,
+              "resource_quota_agent_queue_depth",
+              std::to_string(decision.agent_queue_depth));
+  AddEvidence(&decision.evidence,
+              "resource_quota_agent_queue_depth_limit",
+              queue_limit_present ? std::to_string(queue_limit) : "unbounded");
+
+  if (max_pages_present && decision.requested_pages > max_pages) {
+    decision.refused = true;
+    decision.reason = "page_reservation_limit";
+  } else if (queue_limit_present && decision.agent_queue_depth > queue_limit) {
+    decision.refused = true;
+    decision.reason = "agent_queue_backpressure";
+  }
+  AddEvidence(&decision.evidence,
+              "resource_quota_decision",
+              decision.refused ? "refuse" : "admit");
+  AddEvidence(&decision.evidence,
+              "resource_quota_reason",
+              decision.reason);
+  return decision;
+}
+
+DmlPageAllocationRuntimeResult ResourceQuotaRefusalResult(
+    const ResourceQuotaDecision& decision,
+    DmlPageAllocationRuntimeFamily family,
+    const std::string& mutation_phase) {
+  DmlPageAllocationRuntimeResult result;
+  result.active = true;
+  result.requested_pages = decision.requested_pages;
+  result.preallocation_refused = true;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      "SB-IPAR-RESOURCE-QUOTA-REFUSED",
+      "dml.resource_quota.refused",
+      mutation_phase + ":" + decision.reason,
+      true);
+  result.evidence = decision.evidence;
+  result.evidence.push_back({"page_allocation_runtime", "active"});
+  result.evidence.push_back({"page_allocation_action", "refused"});
+  result.evidence.push_back({"page_allocation_source",
+                             "SB-IPAR-RESOURCE-QUOTA-REFUSED"});
+  result.evidence.push_back({"page_allocation_diagnostic",
+                             "SB-IPAR-RESOURCE-QUOTA-REFUSED"});
+  result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
+                                 ? "index_page_allocation_source"
+                                 : "row_page_allocation_source",
+                             "SB-IPAR-RESOURCE-QUOTA-REFUSED"});
+  result.evidence.push_back({"page_allocation_runtime_phase", mutation_phase});
+  return result;
 }
 
 const agent_runtime::AgentWorkerCapacityAssignment* FindWorkerAssignment(
@@ -1019,6 +1151,23 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
                           &owner_uuid)) {
     return result;
   }
+  if (IparFaultPointRequested(option_envelopes, "disk_preallocation")) {
+    result.active = true;
+    result.requested_pages = requested_pages;
+    result.preallocation_requested = true;
+    result.preallocation_refused = true;
+    result.diagnostic = IparFaultDiagnostic("dml.page_allocation_runtime",
+                                            "disk_preallocation",
+                                            "phase=" + mutation_phase);
+    result.evidence.push_back({"page_allocation_runtime", "active"});
+    result.evidence.push_back({"page_allocation_runtime_phase", mutation_phase});
+    result.evidence.push_back({"page_allocation_diagnostic", result.diagnostic.code});
+    result.evidence.push_back({"disk_preallocation_refused", "ipar_fault_injection"});
+    AppendIparFaultEvidence(&result.evidence,
+                            "disk_preallocation",
+                            "mutation_refused_before_preallocation_publish");
+    return result;
+  }
 
   const std::lock_guard<std::mutex> guard(RuntimeMutex());
   RuntimeLedger& runtime = EnsureRuntimeLedger(context, database_uuid);
@@ -1040,6 +1189,13 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
       family == DmlPageAllocationRuntimeFamily::index
           ? ParseU64Option(option_envelopes, kIndexPagesOption, requested_pages)
           : ParseU64Option(option_envelopes, kRowPagesOption, requested_pages);
+  const auto quota = EvaluateResourceQuota(runtime,
+                                           option_envelopes,
+                                           override_pages,
+                                           mutation_phase);
+  if (quota.refused) {
+    return ResourceQuotaRefusalResult(quota, family, mutation_phase);
+  }
   DemandRuntimeOutcome outcome;
   std::vector<EngineEvidenceReference> demand_evidence =
       PublishDmlDemandHintLocked(&runtime,
@@ -1064,6 +1220,11 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
     reserved.evidence.insert(reserved.evidence.begin(),
                              demand_evidence.begin(),
                              demand_evidence.end());
+  }
+  if (quota.configured) {
+    reserved.evidence.insert(reserved.evidence.begin(),
+                             quota.evidence.begin(),
+                             quota.evidence.end());
   }
   reserved.preallocation_requested = outcome.requested;
   reserved.preallocation_granted = outcome.granted;

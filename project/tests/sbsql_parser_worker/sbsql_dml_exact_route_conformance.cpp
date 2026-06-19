@@ -858,6 +858,15 @@ bool DiagnosticsContain(const MessageVectorSet& messages, std::string_view needl
   return false;
 }
 
+void PrintMessageSet(const MessageVectorSet& messages) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    for (const auto& field : diagnostic.fields) {
+      std::cerr << "  " << field.name << '=' << field.value << '\n';
+    }
+  }
+}
+
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -2597,6 +2606,46 @@ void RequireWhereEqualityPredicateLowering() {
           "server admission SELECT WHERE equality operation id mismatch");
   Require(admission.operation_family == "sblr.query.relational.v3",
           "server admission SELECT WHERE equality family mismatch");
+
+  const auto like_artifacts =
+      RunPipeline("SELECT * FROM customer WHERE note LIKE 'a%'",
+                  {std::string(kTargetUuid)});
+  Require(like_artifacts.bound.bound, "SELECT WHERE LIKE statement did not bind");
+  Require(like_artifacts.verifier.admitted,
+          "SELECT WHERE LIKE verifier rejected bounded exact route");
+  Require(like_artifacts.envelope.operation_family == "sblr.query.relational.v3",
+          "SELECT WHERE LIKE operation family mismatch");
+  Require(like_artifacts.envelope.operation_id == "dml.select_rows",
+          "SELECT WHERE LIKE operation id mismatch");
+  Require(like_artifacts.envelope.sblr_opcode == "SBLR_DML_SELECT_ROWS",
+          "SELECT WHERE LIKE opcode mismatch");
+  Require(Contains(like_artifacts.envelope.payload, "\"predicate_kind\":\"column_like\""),
+          "SELECT WHERE LIKE payload missing column_like predicate");
+  Require(Contains(like_artifacts.envelope.payload, "\"predicate_column\":\"note\""),
+          "SELECT WHERE LIKE payload missing predicate column");
+  Require(Contains(like_artifacts.envelope.payload, "\"predicate_value\":\"a%\""),
+          "SELECT WHERE LIKE payload missing predicate value");
+  Require(Contains(like_artifacts.envelope.payload, "\"predicate_value_type\":\"text\""),
+          "SELECT WHERE LIKE payload missing predicate value type");
+  Require(Contains(like_artifacts.envelope.payload,
+                   "\"predicate_binding_model\":\"engine_row_descriptor_field\""),
+          "SELECT WHERE LIKE payload missing descriptor predicate binding");
+  Require(Contains(like_artifacts.envelope.payload, "\"predicate_descriptor_bound\":true"),
+          "SELECT WHERE LIKE payload missing descriptor-bound predicate marker");
+  Require(!Contains(like_artifacts.envelope.payload, "customer"),
+          "SELECT WHERE LIKE envelope embedded source table name");
+  Require(!Contains(like_artifacts.envelope.payload, "LIKE"),
+          "SELECT WHERE LIKE envelope embedded SQL syntax text");
+
+  const auto like_admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{like_artifacts.envelope.payload, false});
+  Require(like_admission.admitted, "server admission rejected SELECT WHERE LIKE route");
+  Require(like_admission.requires_public_abi_dispatch,
+          "server admission did not require engine public ABI dispatch for SELECT WHERE LIKE");
+  Require(like_admission.operation_id == "dml.select_rows",
+          "server admission SELECT WHERE LIKE operation id mismatch");
+  Require(like_admission.operation_family == "sblr.query.relational.v3",
+          "server admission SELECT WHERE LIKE family mismatch");
 }
 
 void RequireSimpleSelectSkeletonLowering() {
@@ -4089,6 +4138,58 @@ void RequireTableCountLowering() {
           "COUNT NOT IN assertion payload missing predicate values");
   Require(!Contains(count_not_in.envelope.payload, "SELECT 'SBDFS-100-004'"),
           "COUNT NOT IN assertion payload embedded SQL text");
+
+  const auto catalog_count = RunPipeline(
+      "SELECT 'SBDFS-056-007' AS assertion_id, "
+      "COUNT(*) AS actual_remaining_proc_tables, "
+      "0 AS expected_remaining_proc_tables "
+      "FROM sys.tables "
+      "WHERE table_name = 'proc_tasks' "
+      "AND schema_id IN (SELECT schema_id FROM sys.schemas "
+      "WHERE schema_name = 'users.public.p5_proc')");
+  if (!catalog_count.verifier.admitted) {
+    PrintMessageSet(catalog_count.bound.messages);
+    PrintMessageSet(catalog_count.envelope.messages);
+    PrintMessageSet(catalog_count.verifier.messages);
+  }
+  Require(catalog_count.verifier.admitted,
+          "catalog COUNT subquery verifier rejected exact route");
+  Require(catalog_count.envelope.operation_family == "sblr.observability.inspect.v3",
+          "catalog COUNT subquery operation family mismatch");
+  Require(catalog_count.envelope.operation_id == "observability.show_catalog",
+          "catalog COUNT subquery operation id mismatch");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"observability_envelope_kind\":\"catalog_projection_count\""),
+          "catalog COUNT subquery payload missing catalog count marker");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"catalog_projection\":\"sys.tables\""),
+          "catalog COUNT subquery payload missing sys.tables projection");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"predicate_kind\":\"column_in_projection\""),
+          "catalog COUNT subquery payload missing column_in_projection predicate");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"predicate_column\":\"schema_id\""),
+          "catalog COUNT subquery payload missing outer predicate column");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"additional_predicate_kind\":\"column_equals\""),
+          "catalog COUNT subquery payload missing additional equality predicate kind");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"additional_predicate_column\":\"table_name\""),
+          "catalog COUNT subquery payload missing additional equality predicate column");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"additional_predicate_value\":\"proc_tasks\""),
+          "catalog COUNT subquery payload missing additional equality predicate value");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"subquery_projection\":\"sys.schemas\""),
+          "catalog COUNT subquery payload missing sys.schemas subquery projection");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"subquery_predicate_column\":\"schema_name\""),
+          "catalog COUNT subquery payload missing subquery predicate column");
+  Require(Contains(catalog_count.envelope.payload,
+                   "\"subquery_predicate_value\":\"users.public.p5_proc\""),
+          "catalog COUNT subquery payload missing subquery predicate value");
+  Require(!Contains(catalog_count.envelope.payload, "SELECT 'SBDFS-056-007'"),
+          "catalog COUNT subquery payload embedded SQL text");
 }
 
 void RequireMaterializedCteLowering() {
@@ -4448,7 +4549,6 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
       "SELECT (SELECT note FROM customer)",
       "SELECT (SELECT id FROM customer WHERE id = 1)",
       "SELECT (SELECT id FROM customer), 1",
-      "SELECT * FROM customer WHERE note LIKE 'a%'",
       "SELECT * FROM customer WHERE id > 1",
       "SELECT * FROM customer WHERE id = 1 AND note = 'x'",
       "SELECT * FROM customer WHERE EXISTS (SELECT id FROM customer)"};
@@ -4456,7 +4556,8 @@ void RequireUnsupportedQueryFamiliesFailClosed() {
     const auto artifacts = RunPipeline(sql, {std::string(kTargetUuid)});
     Require(!artifacts.bound.bound || artifacts.envelope.messages.has_errors() ||
                 artifacts.verifier.messages.has_errors(),
-            "unsupported query row family did not fail closed");
+            std::string("unsupported query row family did not fail closed: ") +
+                std::string(sql));
   }
 }
 

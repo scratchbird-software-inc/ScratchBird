@@ -38,6 +38,15 @@ struct MgaRelationStoreResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   MgaRelationStoreState state;
+  bool full_state_load = false;
+  bool scoped_state_load = false;
+  std::uint64_t row_versions_scanned = 0;
+  std::uint64_t row_versions_retained = 0;
+  std::uint64_t index_entries_scanned = 0;
+  std::uint64_t index_entries_retained = 0;
+  bool scoped_physical_segments_used = false;
+  bool scoped_physical_segments_fallback = false;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 struct MgaTemporaryTableVisibilityResult {
@@ -144,6 +153,25 @@ struct MgaRelationHotAppendCounters {
   std::uint64_t index_entries_appended = 0;
 };
 
+struct MgaLargeValuePersistBatchRowInput {
+  std::string table_uuid;
+  std::string row_uuid;
+  std::string version_uuid;
+  bool force_large_value = false;
+  std::vector<std::pair<std::string, std::string>>* values = nullptr;
+};
+
+struct MgaLargeValuePersistBatchCounters {
+  std::uint64_t rows_seen = 0;
+  std::uint64_t values_overflowed = 0;
+  std::uint64_t chunks_appended = 0;
+  std::uint64_t preallocated_chunk_slots = 0;
+  std::uint64_t payload_bytes = 0;
+  std::uint64_t store_lines_appended = 0;
+  std::uint64_t stream_opens = 0;
+  std::uint64_t stream_flushes = 0;
+};
+
 class MgaRelationHotAppendContext {
  public:
   explicit MgaRelationHotAppendContext(const EngineRequestContext& context);
@@ -201,6 +229,7 @@ struct MgaSecondaryIndexDeltaMergeAgentRequest {
   std::uint64_t max_records_to_scan = 1024;
   std::uint64_t max_records_to_merge = 256;
   bool merge_disabled = false;
+  std::string ipar_fault_injection_point;
 };
 
 struct MgaSecondaryIndexDeltaMergeAgentResult {
@@ -313,6 +342,9 @@ struct MgaIndexedRowsLookupResult {
 };
 
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context);
+MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state);
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,
@@ -404,6 +436,11 @@ EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& cont
                                                 bool force_large_value,
                                                 std::vector<std::pair<std::string, std::string>>* values,
                                                 std::vector<EngineEvidenceReference>* evidence);
+EngineApiDiagnostic PersistMgaLargeValuesForRows(
+    const EngineRequestContext& context,
+    const std::vector<MgaLargeValuePersistBatchRowInput>& rows,
+    MgaLargeValuePersistBatchCounters* counters,
+    std::vector<EngineEvidenceReference>* evidence);
 
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name);
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name);

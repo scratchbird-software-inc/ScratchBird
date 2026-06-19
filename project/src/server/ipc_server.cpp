@@ -232,7 +232,15 @@ void RemoveEndpointPath(const std::string& endpoint) {
   std::filesystem::remove(endpoint, ec);
 }
 
-void ReleaseIdleConnectionHeap(ServerObservabilityState* observability) {
+void ReleaseIdleConnectionHeap(const ServerBootstrapConfig& config,
+                               ServerObservabilityState* observability) {
+  if (!config.memory_trim_heap_on_disconnect) {
+    IncrementServerMetric(observability,
+                          "sys.metrics.server.memory.heap_trim_skipped_total",
+                          1,
+                          {{"reason", "policy_retains_adaptive_cache"}});
+    return;
+  }
 #if defined(__GLIBC__)
   const int trimmed = ::malloc_trim(0);
   if (trimmed != 0) {
@@ -242,6 +250,7 @@ void ReleaseIdleConnectionHeap(ServerObservabilityState* observability) {
                           {{"reason", "disconnect"}});
   }
 #else
+  (void)config;
   (void)observability;
 #endif
 }
@@ -1287,6 +1296,32 @@ std::vector<std::uint8_t> RenderUuidPublicFrame(const sbps::Frame& frame,
       false);
 }
 
+struct IparProjectionSourceContext {
+  ServerAgentRuntime* agent_runtime = nullptr;
+  ServerObservabilityState* observability = nullptr;
+};
+
+ServerIparProjectionSources BuildIparProjectionSourcesForServer(void* opaque_context) {
+  ServerIparProjectionSources sources;
+  auto* context = static_cast<IparProjectionSourceContext*>(opaque_context);
+  if (context == nullptr) {
+    return sources;
+  }
+  if (context->agent_runtime != nullptr) {
+    sources.agent_lifecycle.push_back(
+        BuildIparAgentLifecycleProjectionSource(context->agent_runtime->Snapshot()));
+  }
+  if (context->observability != nullptr) {
+    sources.metric_counters =
+        BuildIparMetricCounterProjectionSources(*context->observability);
+    sources.telemetry_controls =
+        BuildIparTelemetryControlProjectionSources(*context->observability);
+    sources.slow_path_reasons =
+        BuildIparSlowPathReasonProjectionSources(*context->observability);
+  }
+  return sources;
+}
+
 void HandleClient(IpcSocketHandle client_fd,
                   const ServerBootstrapConfig& config,
                   const ServerLifecycleArtifacts& artifacts,
@@ -1296,6 +1331,7 @@ void HandleClient(IpcSocketHandle client_fd,
                   ParserEventNotificationRouter* event_router,
                   ServerListenerOrchestrator* listener_orchestrator,
                   ServerMaintenanceCoordinator* maintenance_coordinator,
+                  ServerAgentRuntime* agent_runtime,
                   ServerObservabilityState* observability,
                   bool* release_heap_after_close) {
   sbps::Frame frame;
@@ -1592,7 +1628,14 @@ void HandleClient(IpcSocketHandle client_fd,
                              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult)));
       return;
     }
-    const auto operation = HandleExecuteSblr(session_registry, engine_state, frame);
+    IparProjectionSourceContext ipar_context{agent_runtime, observability};
+    ServerIparProjectionSourceFactory ipar_factory;
+    ipar_factory.context = &ipar_context;
+    ipar_factory.build = &BuildIparProjectionSourcesForServer;
+    const auto operation = HandleExecuteSblr(session_registry,
+                                             engine_state,
+                                             frame,
+                                             &ipar_factory);
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.sblr.execute_microseconds",
                           1,
@@ -1863,11 +1906,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                  &event_router,
                  &listener_orchestrator,
                  &maintenance_coordinator,
+                 &agent_runtime,
                  &observability,
                  &release_heap_after_close);
     CloseIpcSocket(client_fd);
     if (release_heap_after_close) {
-      ReleaseIdleConnectionHeap(&observability);
+      ReleaseIdleConnectionHeap(config, &observability);
     }
     if (maintenance_coordinator.shutdown_requested) {
       g_stop_requested.store(true);

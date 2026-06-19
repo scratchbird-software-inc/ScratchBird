@@ -955,7 +955,7 @@ add_test(
   COMMAND optimizer_deficiency_odf_046_gate
 )
 set_tests_properties(optimizer_deficiency_odf_046_gate PROPERTIES
-  LABELS "optimizer_deficiency_odf_046_gate;ODF-046;optimizer_deficiency;bulk;constraints;dml;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_odf_046_gate;ODF-046;IPAR-P4-05;optimizer_deficiency;bulk;constraints;dml;benchmark_clean;mga_transaction_regression"
 )
 
 add_executable(

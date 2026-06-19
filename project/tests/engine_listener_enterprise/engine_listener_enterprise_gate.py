@@ -10973,7 +10973,7 @@ def validate_release_profile_completeness(project_root: Path,
         "bool database_auto_create = false",
         "bool listener_native_enabled = false",
         "bool listener_native_tls_required = true",
-        'std::string memory_policy_name = "server_production_default"',
+        'std::string memory_policy_name = "default_local_server_memory_cache_v1"',
         "bool memory_zero_memory_on_release = true",
     ):
         require_token(config_header, token, "release_profile_runtime_defaults")
@@ -11007,7 +11007,7 @@ def validate_release_profile_completeness(project_root: Path,
     runtime_defaults = (
         "security=database_local/local_password;db_auto_create=false;"
         "native_listener=false;tls_required=true;"
-        "memory_policy=server_production_default"
+        "memory_policy=default_local_server_memory_cache_v1"
     )
     rows: list[dict[str, str]] = [
         matrix_row("noncluster_engine_profile",

@@ -3581,7 +3581,12 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
       std::vector<SysInformationAgentAuditSource>{},
       std::vector<SysInformationFilespaceCapacityAgentStateSource>{},
       std::vector<SysInformationPageAllocationAgentStateSource>{},
-      std::vector<SysInformationFilespaceShrinkReadinessSource>{});
+      std::vector<SysInformationFilespaceShrinkReadinessSource>{},
+      std::vector<SysInformationDomainSource>{},
+      request.ipar_agent_lifecycle,
+      request.ipar_metric_counters,
+      request.ipar_telemetry_controls,
+      request.ipar_slow_path_reasons);
   if (!projection_result.ok) {
     if (error_detail != nullptr) {
       *error_detail = projection_result.diagnostic_detail.empty()

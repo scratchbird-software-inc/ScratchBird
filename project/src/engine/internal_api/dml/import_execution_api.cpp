@@ -21,9 +21,11 @@
 #include <vector>
 
 #include "api_diagnostics.hpp"
+#include "crud_support/crud_store.hpp"
 #include "dml/import_reject_model.hpp"
 #include "dml/insert_physical_integration.hpp"
 #include "dml/write_result_policy.hpp"
+#include "ipar_fault_injection.hpp"
 #include "observability/dml_summary_counters.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -33,7 +35,21 @@ constexpr EngineApiU64 kDefaultCopyAppendBatchRows = 1024;
 
 struct CopyAppendBatchPolicy {
   bool enabled = true;
+  bool adaptive_enabled = true;
   EngineApiU64 max_rows = kDefaultCopyAppendBatchRows;
+  EngineApiU64 configured_max_rows = kDefaultCopyAppendBatchRows;
+  EngineApiU64 requested_rows = 0;
+  EngineApiU64 admitted_rows = 0;
+  EngineApiU64 estimated_row_bytes = 0;
+  EngineApiU64 admitted_bytes = 0;
+  bool reduced = false;
+  std::string reason = "within_policy";
+};
+
+struct ImportExecutionControlDecision {
+  bool admitted = true;
+  EngineApiDiagnostic diagnostic;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 std::string LowerAscii(std::string value) {
@@ -68,6 +84,88 @@ std::string ImportOptionValue(const EngineExecuteImportRowsRequest& request,
   return {};
 }
 
+bool ImportOptionTruthy(const EngineExecuteImportRowsRequest& request,
+                        const std::string& key) {
+  const std::string value = LowerAscii(ImportOptionValue(request, key));
+  return IsTruthyOptionValue(value);
+}
+
+std::string ImportExecutionControlReason(
+    const EngineExecuteImportRowsRequest& request,
+    const std::string& default_reason) {
+  std::string reason = ImportOptionValue(request, "execution.control_reason");
+  if (reason.empty()) {
+    reason = ImportOptionValue(request, "dml.import.control_reason");
+  }
+  if (reason.empty()) {
+    reason = ImportOptionValue(request, "copy.control_reason");
+  }
+  return reason.empty() ? default_reason : reason;
+}
+
+ImportExecutionControlDecision EvaluateImportExecutionControl(
+    const EngineExecuteImportRowsRequest& request) {
+  ImportExecutionControlDecision decision;
+  decision.evidence.push_back({"copy_execution_control_policy", "evaluated"});
+  decision.evidence.push_back({"copy_execution_control_stage", "pre_write"});
+  decision.evidence.push_back({"copy_execution_control_boundary",
+                               "before_plan_direct_physical_or_insert_delegate"});
+  decision.evidence.push_back({"copy_execution_control_input_rows",
+                               std::to_string(request.canonical_rows.size())});
+
+  const bool cancel_requested =
+      ImportOptionTruthy(request, "execution.cancel_requested") ||
+      ImportOptionTruthy(request, "dml.import.cancel_requested") ||
+      ImportOptionTruthy(request, "copy.cancel_requested");
+  const bool timeout_elapsed =
+      ImportOptionTruthy(request, "execution.timeout_elapsed") ||
+      ImportOptionTruthy(request, "execution.deadline_exceeded") ||
+      ImportOptionTruthy(request, "dml.import.timeout_elapsed") ||
+      ImportOptionTruthy(request, "dml.import.deadline_exceeded") ||
+      ImportOptionTruthy(request, "copy.timeout_elapsed") ||
+      ImportOptionTruthy(request, "copy.deadline_exceeded");
+
+  if (cancel_requested) {
+    decision.admitted = false;
+    const std::string reason =
+        ImportExecutionControlReason(request, "cancel_requested_before_write");
+    decision.diagnostic = MakeEngineApiDiagnostic("SB-IPAR-COPY-CANCELLED",
+                                                  "dml.import.cancelled",
+                                                  "dml.execute_import_rows:" + reason,
+                                                  true);
+    decision.evidence.push_back({"copy_execution_control_decision", "refuse"});
+    decision.evidence.push_back({"copy_execution_control_reason", reason});
+    decision.evidence.push_back({"copy_execution_control_retry_class", "cancelled"});
+    decision.evidence.push_back({"copy_execution_control_rows_published", "0"});
+    decision.evidence.push_back({"copy_execution_control_partial_publication", "false"});
+    decision.evidence.push_back({"copy_execution_control_valid_transaction_boundary",
+                                 "caller_transaction_unchanged"});
+    return decision;
+  }
+
+  if (timeout_elapsed) {
+    decision.admitted = false;
+    const std::string reason =
+        ImportExecutionControlReason(request, "timeout_before_write");
+    decision.diagnostic = MakeEngineApiDiagnostic("SB-IPAR-COPY-TIMEOUT",
+                                                  "dml.import.timeout",
+                                                  "dml.execute_import_rows:" + reason,
+                                                  true);
+    decision.evidence.push_back({"copy_execution_control_decision", "refuse"});
+    decision.evidence.push_back({"copy_execution_control_reason", reason});
+    decision.evidence.push_back({"copy_execution_control_retry_class", "timeout"});
+    decision.evidence.push_back({"copy_execution_control_rows_published", "0"});
+    decision.evidence.push_back({"copy_execution_control_partial_publication", "false"});
+    decision.evidence.push_back({"copy_execution_control_valid_transaction_boundary",
+                                 "caller_transaction_unchanged"});
+    return decision;
+  }
+
+  decision.evidence.push_back({"copy_execution_control_decision", "admit"});
+  decision.evidence.push_back({"copy_execution_control_reason", "within_policy"});
+  return decision;
+}
+
 EngineApiU64 ParsePositiveU64(const std::string& value, EngineApiU64 fallback) {
   if (value.empty()) {
     return fallback;
@@ -86,6 +184,39 @@ EngineApiU64 ParsePositiveU64(const std::string& value, EngineApiU64 fallback) {
   return parsed == 0 ? fallback : parsed;
 }
 
+EngineApiU64 EstimateCopyRowBytes(const EngineRowValue& row) {
+  EngineApiU64 total = 16;
+  for (const auto& field : row.fields) {
+    total += static_cast<EngineApiU64>(field.first.size() +
+                                       field.second.encoded_value.size() + 16);
+    total += static_cast<EngineApiU64>(
+        field.second.descriptor.encoded_descriptor.size());
+  }
+  return std::max<EngineApiU64>(1, total);
+}
+
+EngineApiU64 EstimateCopyBatchRowBytes(const EngineExecuteImportRowsRequest& request,
+                                       bool* large_value_pressure) {
+  if (large_value_pressure != nullptr) {
+    *large_value_pressure = false;
+  }
+  if (request.canonical_rows.empty()) {
+    return 1;
+  }
+  const std::size_t sample_count =
+      std::min<std::size_t>(request.canonical_rows.size(), 32);
+  EngineApiU64 total = 0;
+  for (std::size_t index = 0; index < sample_count; ++index) {
+    const EngineApiU64 row_bytes = EstimateCopyRowBytes(request.canonical_rows[index]);
+    total += row_bytes;
+    if (large_value_pressure != nullptr &&
+        row_bytes > kCrudVerticalSliceMaxEncodedValueBytes) {
+      *large_value_pressure = true;
+    }
+  }
+  return std::max<EngineApiU64>(1, total / sample_count);
+}
+
 CopyAppendBatchPolicy ResolveCopyAppendBatchPolicy(
     const EngineExecuteImportRowsRequest& request) {
   CopyAppendBatchPolicy policy;
@@ -95,9 +226,77 @@ CopyAppendBatchPolicy ResolveCopyAppendBatchPolicy(
   } else if (IsTruthyOptionValue(enabled)) {
     policy.enabled = true;
   }
-  policy.max_rows = ParsePositiveU64(
+  const std::string adaptive =
+      LowerAscii(ImportOptionValue(request, "copy_append_adaptive_batching"));
+  if (IsFalsyOptionValue(adaptive)) {
+    policy.adaptive_enabled = false;
+  } else if (IsTruthyOptionValue(adaptive)) {
+    policy.adaptive_enabled = true;
+  }
+  const bool adaptive_split_requested = IsTruthyOptionValue(adaptive);
+  const std::string budget_option =
+      ImportOptionValue(request, "copy_append_batch_budget_bytes");
+  const bool budget_split_requested = !budget_option.empty();
+  policy.configured_max_rows = ParsePositiveU64(
       ImportOptionValue(request, "copy_append_batch_rows"),
       kDefaultCopyAppendBatchRows);
+  policy.max_rows = policy.configured_max_rows;
+  if (policy.enabled && request.import_policy.reject_mode == "fail_fast" &&
+      !adaptive_split_requested && !budget_split_requested) {
+    policy.max_rows =
+        std::max<EngineApiU64>(1,
+                               static_cast<EngineApiU64>(request.canonical_rows.size()));
+    policy.requested_rows = policy.max_rows;
+    policy.estimated_row_bytes =
+        EstimateCopyBatchRowBytes(request, nullptr);
+    policy.admitted_rows = policy.max_rows;
+    policy.admitted_bytes = policy.admitted_rows * policy.estimated_row_bytes;
+    return policy;
+  }
+  policy.requested_rows =
+      policy.enabled
+          ? std::min<EngineApiU64>(
+                static_cast<EngineApiU64>(request.canonical_rows.size()),
+                policy.configured_max_rows)
+          : 1;
+  bool large_value_pressure = false;
+  policy.estimated_row_bytes =
+      EstimateCopyBatchRowBytes(request, &large_value_pressure);
+  if (policy.enabled && policy.adaptive_enabled) {
+    const EngineApiU64 budget_bytes = ParsePositiveU64(
+        budget_option,
+        4 * 1024 * 1024);
+    const EngineApiU64 by_memory =
+        std::max<EngineApiU64>(1, budget_bytes / policy.estimated_row_bytes);
+    EngineApiU64 policy_cap = policy.configured_max_rows;
+    if (large_value_pressure) {
+      policy_cap = std::min<EngineApiU64>(policy_cap, 256);
+    }
+    if (policy.estimated_row_bytes >= 16 * 1024) {
+      policy_cap = std::min<EngineApiU64>(policy_cap, 128);
+    } else if (policy.estimated_row_bytes >= 4 * 1024) {
+      policy_cap = std::min<EngineApiU64>(policy_cap, 512);
+    }
+    policy.max_rows =
+        std::max<EngineApiU64>(1,
+                               std::min({policy.configured_max_rows,
+                                         by_memory,
+                                         policy_cap}));
+    policy.reduced = policy.max_rows < policy.configured_max_rows ||
+                     policy.max_rows < policy.requested_rows;
+    if (policy.reduced) {
+      if (by_memory <= policy_cap && by_memory < policy.configured_max_rows) {
+        policy.reason = "memory_budget";
+      } else if (large_value_pressure) {
+        policy.reason = "large_value_pressure";
+      } else {
+        policy.reason = "row_width";
+      }
+    }
+  }
+  policy.admitted_rows =
+      policy.enabled ? std::max<EngineApiU64>(1, policy.max_rows) : 1;
+  policy.admitted_bytes = policy.admitted_rows * policy.estimated_row_bytes;
   return policy;
 }
 
@@ -406,6 +605,21 @@ void AddCopyAppendBatchEvidence(const CopyAppendBatchPolicy& policy,
                                 std::vector<EngineEvidenceReference>* evidence) {
   evidence->push_back({"copy_append_batching", policy.enabled ? "enabled" : "disabled"});
   evidence->push_back({"copy_append_batch_rows", std::to_string(actual_batch_rows)});
+  evidence->push_back({"copy_append_adaptive_batching",
+                       policy.adaptive_enabled ? "enabled" : "disabled"});
+  evidence->push_back({"copy_append_adaptive_requested_rows",
+                       std::to_string(policy.requested_rows)});
+  evidence->push_back({"copy_append_adaptive_admitted_rows",
+                       std::to_string(policy.admitted_rows)});
+  evidence->push_back({"copy_append_adaptive_estimated_row_bytes",
+                       std::to_string(policy.estimated_row_bytes)});
+  evidence->push_back({"copy_append_adaptive_reason", policy.reason});
+  evidence->push_back({"copy_append_adaptive_reduced",
+                       policy.reduced ? "true" : "false"});
+  if (policy.reduced) {
+    evidence->push_back({"copy_slow_path", "adaptive_batch_reduced"});
+    evidence->push_back({"copy_slow_path_reason", policy.reason});
+  }
   if (policy.enabled && actual_batch_rows != policy.max_rows) {
     evidence->push_back({"copy_append_batch_policy_rows", std::to_string(policy.max_rows)});
   }
@@ -413,6 +627,8 @@ void AddCopyAppendBatchEvidence(const CopyAppendBatchPolicy& policy,
   if (singleton_fallback_batches != 0) {
     evidence->push_back({"copy_append_singleton_fallback_batches",
                          std::to_string(singleton_fallback_batches)});
+    evidence->push_back({"copy_slow_path", "reject_bisection_singleton_fallback"});
+    evidence->push_back({"copy_slow_path_reason", "rejectable_insert_diagnostic"});
   }
 }
 
@@ -467,12 +683,15 @@ bool DirectPhysicalLaneEnabled(const EngineExecuteImportRowsRequest& request) {
 
 dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalRequestForRows(
     const EngineExecuteImportRowsRequest& request,
-    std::span<const EngineRowValue> rows) {
+    std::span<const EngineRowValue> rows,
+    EngineApiU64 row_offset) {
   dml::DirectPhysicalBulkAppendRequest direct;
   direct.context = request.context;
   direct.target_table = request.target_table;
   direct.borrowed_input_rows = rows;
   direct.option_envelopes = StripWriteResultPolicyOptions(request.option_envelopes);
+  direct.option_envelopes.push_back("physical_mga_cow.row_offset=" +
+                                    std::to_string(row_offset));
   direct.diagnostic_options = request.diagnostic_options;
   direct.estimated_row_count = static_cast<EngineApiU64>(rows.size());
   direct.lane_operation = "copy_import";
@@ -500,7 +719,7 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
   EngineApiU64 batch_count = 0;
   const EngineApiU64 effective_batch_rows =
       copy_append_policy.enabled
-          ? static_cast<EngineApiU64>(request.canonical_rows.size())
+          ? std::max<EngineApiU64>(1, copy_append_policy.max_rows)
           : 1;
 
   for (std::size_t row_index = 0; row_index < request.canonical_rows.size();) {
@@ -513,7 +732,8 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
     const auto direct = dml::ExecuteDirectPhysicalBulkAppend(
         MakeDirectPhysicalRequestForRows(
             request,
-            BorrowRows(request.canonical_rows, row_index, row_count)));
+            BorrowRows(request.canonical_rows, row_index, row_count),
+            static_cast<EngineApiU64>(row_index)));
     if (!direct.ok) {
       return ImportExecutionFailureFromDirectPhysical(direct, std::move(evidence));
     }
@@ -524,6 +744,46 @@ EngineExecuteImportRowsResult ExecuteImportRowsDirectPhysical(
     AppendRows(&result_shape, direct.result_shape);
     evidence.insert(evidence.end(), direct.evidence.begin(), direct.evidence.end());
     AddDmlSummaryCounters(&summary, direct.dml_summary);
+    if (IparFaultPointRequested(request.option_envelopes, "copy_batch") &&
+        batch_count >= IparFaultOptionU64(request.option_envelopes,
+                                          "ipar.fault_injection.after_batches",
+                                          1)) {
+      AppendIparFaultEvidence(&evidence,
+                              "copy_batch",
+                              "rollback_required_after_copy_batch_before_commit");
+      evidence.push_back({"ipar_fault_injection_copy_batches_completed",
+                          std::to_string(batch_count)});
+      EngineExecuteImportRowsResult failure;
+      failure.ok = false;
+      failure.operation_id = "dml.execute_import_rows";
+      failure.primary_object = request.target_table;
+      failure.local_transaction_id = request.context.local_transaction_id;
+      failure.transaction_uuid = request.context.transaction_uuid;
+      failure.accepted_rows = inserted_rows;
+      failure.inserted_rows = inserted_rows;
+      failure.row_uuids = row_uuids;
+      failure.result_shape = result_shape;
+      failure.normalized_source_kind = plan.normalized_source_kind;
+      failure.normalized_format_family = plan.normalized_format_family;
+      failure.normalized_insert_mode = plan.normalized_insert_mode;
+      failure.normalized_reject_mode = reject_model.normalized_reject_mode;
+      failure.normalized_checkpoint_mode = checkpoint_model.normalized_checkpoint_mode;
+      failure.delegated_to_insert_rows = false;
+      failure.checkpoint_model_normalized = true;
+      failure.reject_model_normalized = true;
+      failure.dml_summary = summary;
+      failure.diagnostics.push_back(IparFaultDiagnostic("dml.execute_import_rows",
+                                                        "copy_batch",
+                                                        "phase=copy_append_batch"));
+      failure.evidence = std::move(evidence);
+      AddCopyAppendBatchEvidence(copy_append_policy,
+                                 effective_batch_rows,
+                                 batch_count,
+                                 0,
+                                 &failure.evidence);
+      AddDmlSummaryEvidence(&failure);
+      return failure;
+    }
     row_index += row_count;
   }
 
@@ -603,6 +863,10 @@ RejectBisectionResult ExecuteRejectWindowByBisection(
     state->evidence->insert(state->evidence->end(),
                             inserted.evidence.begin(),
                             inserted.evidence.end());
+    state->evidence->push_back({"copy_append_bisection_batch_outcome",
+                                "accepted_sub_batch"});
+    state->evidence->push_back({"copy_append_bisection_accepted_sub_batch_rows",
+                                std::to_string(row_count)});
     AddDmlSummaryCounters(state->dml_summary, inserted.dml_summary);
     return {};
   }
@@ -617,6 +881,8 @@ RejectBisectionResult ExecuteRejectWindowByBisection(
 
   if (row_count > 1) {
     ++(*state->split_count);
+    state->evidence->push_back({"copy_append_bisection_split_reason",
+                                "rejectable_insert_diagnostic"});
     const std::size_t left_count = row_count / 2;
     const std::size_t right_count = row_count - left_count;
     auto left = ExecuteRejectWindowByBisection(
@@ -630,7 +896,19 @@ RejectBisectionResult ExecuteRejectWindowByBisection(
 
   ++(*state->terminal_singleton_count);
   ++(*state->rejected_rows);
+  state->evidence->push_back({"copy_append_bisection_batch_outcome",
+                              "rejected_singleton"});
   if (state->reject_limit != 0 && *state->rejected_rows > state->reject_limit) {
+    state->evidence->push_back({"copy_append_reject_fallback", "bisection"});
+    state->evidence->push_back({"copy_slow_path",
+                                "reject_bisection_singleton_fallback"});
+    state->evidence->push_back({"copy_slow_path_reason", "reject_limit_exceeded"});
+    state->evidence->push_back({"copy_append_bisection_split_count",
+                                std::to_string(*state->split_count)});
+    state->evidence->push_back({"copy_append_bisection_terminal_singleton_count",
+                                std::to_string(*state->terminal_singleton_count)});
+    state->evidence->push_back({"copy_append_bisection_batch_attempt_count",
+                                std::to_string(*state->batch_attempt_count)});
     RejectBisectionResult result;
     result.ok = false;
     result.failure = ImportExecutionFailureRejectLimitExceeded(
@@ -695,6 +973,18 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
   }
   if (request.canonical_rows.empty()) {
     return ImportExecutionFailure("canonical_rows_required");
+  }
+  const auto execution_control = EvaluateImportExecutionControl(request);
+  if (!execution_control.admitted) {
+    EngineExecuteImportRowsResult result;
+    result.ok = false;
+    result.operation_id = "dml.execute_import_rows";
+    result.primary_object = request.target_table;
+    result.local_transaction_id = request.context.local_transaction_id;
+    result.transaction_uuid = request.context.transaction_uuid;
+    result.diagnostics.push_back(execution_control.diagnostic);
+    result.evidence = execution_control.evidence;
+    return result;
   }
   const auto write_result_policy =
       ResolveWriteResultPolicy(request, "dml.execute_import_rows");
@@ -810,6 +1100,9 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
     result.dml_summary = std::move(dml_summary);
     result.dml_summary.rows_changed = result.inserted_rows;
     result.evidence = std::move(evidence);
+    result.evidence.insert(result.evidence.end(),
+                           execution_control.evidence.begin(),
+                           execution_control.evidence.end());
     result.evidence.push_back({"import_execution", "delegated_to_dml.insert_rows"});
     AddImportExecutionCompletionEvidence(&result.evidence);
     result.evidence.push_back({"import_canonical_rows", std::to_string(request.canonical_rows.size())});
@@ -834,6 +1127,9 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
                                                 checkpoint_model,
                                                 copy_append_policy);
   if (result.ok) {
+    result.evidence.insert(result.evidence.end(),
+                           execution_control.evidence.begin(),
+                           execution_control.evidence.end());
     ApplyWriteResultPolicy(write_result_policy, &result);
   }
   return result;

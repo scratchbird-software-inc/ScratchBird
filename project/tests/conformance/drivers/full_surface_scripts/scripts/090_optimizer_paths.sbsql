@@ -1,26 +1,68 @@
 -- script_id: SBDFS-090
 -- Purpose: optimizer path coverage through plans and query shapes.
 
+CREATE TABLE __SB_NAMESPACE__.optimizer_fact (
+    fact_id INTEGER PRIMARY KEY,
+    tenant_id INTEGER NOT NULL,
+    bucket_id INTEGER NOT NULL,
+    payload VARCHAR(64) NOT NULL,
+    measure DECIMAL(18, 2) NOT NULL,
+    is_active BOOLEAN NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.optimizer_fact VALUES
+    (100, 7, 3, 'payload-100', 10.00, TRUE),
+    (128, 7, 3, 'payload-128', 12.80, TRUE),
+    (150, 7, 4, 'payload-150', 15.00, FALSE),
+    (175, 8, 3, 'payload-175', 17.50, TRUE),
+    (220, 9, 5, 'payload-220', 22.00, FALSE);
+
+CREATE INDEX idx_optimizer_fact_tenant_bucket ON __SB_NAMESPACE__.optimizer_fact (tenant_id, bucket_id);
+CREATE INDEX idx_optimizer_fact_active_measure ON __SB_NAMESPACE__.optimizer_fact (is_active, measure);
+
+CREATE TABLE __SB_NAMESPACE__.optimizer_customer (
+    customer_id INTEGER PRIMARY KEY,
+    customer_name VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.optimizer_order (
+    order_id INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    order_status VARCHAR(16) NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.optimizer_customer VALUES
+    (1, 'Ada'),
+    (2, 'Grace'),
+    (3, 'Linus');
+
+INSERT INTO __SB_NAMESPACE__.optimizer_order VALUES
+    (101, 1, 10.00, 'open'),
+    (102, 1, 15.00, 'closed'),
+    (103, 2, 20.00, 'open'),
+    (104, 3, 30.00, 'open');
+
 EXPLAIN SELECT *
-FROM __SB_NAMESPACE__.large_fact
+FROM __SB_NAMESPACE__.optimizer_fact
 WHERE tenant_id = 7
   AND bucket_id = 3;
 
 EXPLAIN SELECT tenant_id, COUNT(*), SUM(measure)
-FROM __SB_NAMESPACE__.large_fact
+FROM __SB_NAMESPACE__.optimizer_fact
 GROUP BY tenant_id
 HAVING COUNT(*) > 10
 ORDER BY tenant_id;
 
 EXPLAIN SELECT c.customer_name, SUM(o.amount)
-FROM __SB_NAMESPACE__.query_customer AS c
-JOIN __SB_NAMESPACE__.query_order AS o ON c.customer_id = o.customer_id
+FROM __SB_NAMESPACE__.optimizer_customer AS c
+JOIN __SB_NAMESPACE__.optimizer_order AS o ON c.customer_id = o.customer_id
 WHERE o.order_status = 'open'
 GROUP BY c.customer_name;
 
 EXPLAIN WITH recent AS (
     SELECT *
-    FROM __SB_NAMESPACE__.large_fact
+    FROM __SB_NAMESPACE__.optimizer_fact
     WHERE fact_id BETWEEN 100 AND 200
 )
 SELECT bucket_id, AVG(measure)
@@ -30,5 +72,5 @@ GROUP BY bucket_id;
 SELECT 'SBDFS-090-001' AS assertion_id,
        COUNT(*) AS actual_count,
        1 AS expected_count
-FROM __SB_NAMESPACE__.large_fact
+FROM __SB_NAMESPACE__.optimizer_fact
 WHERE fact_id = 128;

@@ -87,6 +87,7 @@ page::PageCachePolicy Policy(std::uint64_t pages) {
   policy.max_resident_bytes = pages * kPageSize;
   policy.allow_dirty_eviction = false;
   policy.require_memory_manager_frames = true;
+  policy.index_read_ring_pages = 2;
   policy.bulk_read_ring_pages = 2;
   policy.bulk_write_ring_pages = 2;
   policy.vacuum_cleanup_ring_pages = 2;
@@ -106,6 +107,14 @@ page::PageCacheEntry Entry(const TypedUuid& database_uuid,
   entry.page_number = index;
   entry.page_generation = 1;
   entry.page_size = kPageSize;
+  return entry;
+}
+
+page::PageCacheEntry IndexEntry(const TypedUuid& database_uuid,
+                                const TypedUuid& filespace_uuid,
+                                std::uint64_t index) {
+  auto entry = Entry(database_uuid, filespace_uuid, index);
+  entry.page_type = PageType::index_btree_leaf;
   return entry;
 }
 
@@ -271,6 +280,73 @@ void HotNormalAndPinnedDirtyProtection() {
           "MMCH-052 pressure did not flush but retain pinned dirty page");
 }
 
+void IndexReadPagesUseHotReadResidencyLane() {
+  auto manager = Manager(3);
+  page::PageCacheLedger ledger;
+  page::BindPageCacheMemoryManager(&ledger, &manager);
+  auto policy = Policy(1);
+  policy.index_read_ring_pages = 1;
+  policy.bulk_read_ring_pages = 1;
+  const auto database_uuid = MakeUuid(UuidKind::database, 41);
+  const auto filespace_uuid = MakeUuid(UuidKind::filespace, 42);
+
+  page::PageCacheIoContext parsed_context = page::PageCacheIoContext::normal;
+  Require(page::PageCacheIoContextFromName("index_read", &parsed_context) &&
+              parsed_context == page::PageCacheIoContext::index_read,
+          "MMCH-052 index_read context name was not registered");
+  Require(page::PageCacheIoContextRingLimit(policy,
+                                            page::PageCacheIoContext::index_read) == 1,
+          "MMCH-052 index_read ring limit was not policy driven");
+
+  auto index_page =
+      page::AdmitPageCacheEntry(&ledger, policy, IndexEntry(database_uuid, filespace_uuid, 1));
+  Require(index_page.ok(), "MMCH-052 index-read admission failed");
+  Require(index_page.entry.io_context == page::PageCacheIoContext::index_read &&
+              index_page.entry.cache_hot,
+          "MMCH-052 index page did not enter hot index_read lane");
+  const auto index_snapshot =
+      page::SnapshotPageCacheContext(ledger, page::PageCacheIoContext::index_read);
+  Require(index_snapshot.resident_pages == 1 &&
+              index_snapshot.resident_bytes == kPageSize,
+          "MMCH-052 index_read context did not retain admitted index page");
+
+  auto bulk_refused = page::AdmitPageCacheEntryForContext(
+      &ledger,
+      policy,
+      Entry(database_uuid, filespace_uuid, 2),
+      page::PageCacheIoContext::bulk_read);
+  Require(!bulk_refused.ok(),
+          "MMCH-052 bulk work evicted a hot index-read page despite policy protection");
+  Require(page::SnapshotPageCacheContext(ledger,
+                                         page::PageCacheIoContext::index_read).resident_pages == 1,
+          "MMCH-052 hot index-read page was not retained after bulk refusal");
+  RequireFrameEvidence(bulk_refused.evidence);
+}
+
+void AdaptivePolicyUsesMemoryPageBufferBudget() {
+  auto memory_policy = mem::DefaultLocalEngineMemoryPolicy();
+  memory_policy.page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
+  const auto policy = page::MakeAdaptivePageCachePolicyFromMemoryPolicy(
+      memory_policy,
+      kPageSize,
+      16);
+  Require(policy.max_resident_bytes == 512ull * 1024ull * 1024ull,
+          "MMCH-052 adaptive policy did not use page-buffer pool bytes");
+  Require(policy.max_resident_pages ==
+              (512ull * 1024ull * 1024ull) / kPageSize,
+          "MMCH-052 adaptive policy resident pages mismatch");
+  Require(policy.index_build_ring_pages > policy.bulk_read_ring_pages,
+          "MMCH-052 adaptive policy did not reserve larger index-build ring");
+  Require(policy.index_read_ring_pages > policy.index_build_ring_pages,
+          "MMCH-052 adaptive policy did not reserve larger index-read ring");
+  Require(policy.index_read_ring_pages <= policy.max_resident_pages,
+          "MMCH-052 adaptive index-read ring exceeded resident page cap");
+  Require(!policy.allow_dirty_eviction,
+          "MMCH-052 adaptive policy must not evict dirty pages without writeback");
+  Require(policy.require_memory_manager_frames,
+          "MMCH-052 adaptive policy must use memory-manager frames");
+}
+
 }  // namespace
 
 int main() {
@@ -281,5 +357,7 @@ int main() {
   MemoryPressureShrinksCleanFrames();
   BulkRingCannotGrowUnbounded();
   HotNormalAndPinnedDirtyProtection();
+  IndexReadPagesUseHotReadResidencyLane();
+  AdaptivePolicyUsesMemoryPageBufferBudget();
   return EXIT_SUCCESS;
 }

@@ -166,6 +166,8 @@ const std::set<std::string>& KnownKeys() {
       "server.security.provider_state",
       "server.security.default_policy_installed",
       "server.database.default_path",
+      "server.database.resource_seed_pack_root",
+      "server.database.policy_seed_pack_root",
       "server.database.auto_create",
       "server.database.open_mode",
       "server.database.daemon_scope",
@@ -188,11 +190,15 @@ const std::set<std::string>& KnownKeys() {
       "server.memory.soft_limit_bytes",
       "server.memory.per_context_limit_bytes",
       "server.memory.page_buffer_pool_limit_bytes",
+      "server.memory.min_startup_available_bytes",
       "server.memory.failure_mode",
       "server.memory.track_allocations",
       "server.memory.zero_memory_on_allocate",
       "server.memory.zero_memory_on_release",
       "server.memory.reject_over_soft_limit",
+      "server.memory.adaptive_page_cache_enabled",
+      "server.memory.index_read_cache_enabled",
+      "server.memory.trim_heap_on_disconnect",
       "server.memory.policy_provenance",
       "server.memory.policy_generation",
       "server.memory.enable_platform_memory_probe",
@@ -284,6 +290,104 @@ std::filesystem::path NormalizePath(const std::string& raw) {
   return path.lexically_normal();
 }
 
+std::filesystem::path NormalizePath(const std::filesystem::path& raw) {
+  if (raw.empty()) {
+    return {};
+  }
+  std::filesystem::path path = raw;
+  if (path.is_relative()) {
+    path = std::filesystem::current_path() / path;
+  }
+  return path.lexically_normal();
+}
+
+std::filesystem::path ExistingDirectoryOrEmpty(const std::filesystem::path& raw) {
+  if (raw.empty()) {
+    return {};
+  }
+  const auto candidate = NormalizePath(raw);
+  std::error_code ec;
+  if (std::filesystem::is_directory(candidate, ec)) {
+    return candidate;
+  }
+  return {};
+}
+
+std::filesystem::path EnvironmentPathOrEmpty(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    return {};
+  }
+  return NormalizePath(std::string(value));
+}
+
+std::filesystem::path DefaultResourceSeedPackRoot() {
+  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+          "SCRATCHBIRD_RESOURCE_SEED_PACK_ROOT"));
+      !path.empty()) {
+    return path;
+  }
+
+  std::error_code ec;
+  const auto cwd = std::filesystem::current_path(ec);
+  if (!ec) {
+    if (auto path = ExistingDirectoryOrEmpty(
+            cwd / "project" / "resources" / "seed-packs" /
+            "initial-resource-pack");
+        !path.empty()) {
+      return path;
+    }
+  }
+
+  if (auto path = ExistingDirectoryOrEmpty(
+          "/usr/share/scratchbird/resources/seed-packs/initial-resource-pack");
+      !path.empty()) {
+    return path;
+  }
+  if (auto path = ExistingDirectoryOrEmpty(
+          "/opt/scratchbird/resources/seed-packs/initial-resource-pack");
+      !path.empty()) {
+    return path;
+  }
+  return {};
+}
+
+std::filesystem::path DefaultPolicySeedPackRoot() {
+  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+          "SCRATCHBIRD_POLICY_SEED_PACK_ROOT"));
+      !path.empty()) {
+    return path;
+  }
+  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+          "SCRATCHBIRD_POLICY_PACK_ROOT"));
+      !path.empty()) {
+    return path;
+  }
+
+  std::error_code ec;
+  const auto cwd = std::filesystem::current_path(ec);
+  if (!ec) {
+    if (auto path = ExistingDirectoryOrEmpty(
+            cwd / "project" / "resources" / "policy-packs" /
+            "default-local-password");
+        !path.empty()) {
+      return path;
+    }
+  }
+
+  if (auto path = ExistingDirectoryOrEmpty(
+          "/usr/share/scratchbird/resources/policy-packs/default-local-password");
+      !path.empty()) {
+    return path;
+  }
+  if (auto path = ExistingDirectoryOrEmpty(
+          "/opt/scratchbird/resources/policy-packs/default-local-password");
+      !path.empty()) {
+    return path;
+  }
+  return {};
+}
+
 std::string StablePathScopeId(const std::filesystem::path& path) {
   std::uint64_t hash = 1469598103934665603ull;
   const auto text = path.lexically_normal().string();
@@ -373,7 +477,7 @@ std::optional<std::filesystem::path> DiscoverConfigFile(const ServerCliOptions& 
     return NormalizePath(cli.config_path);
   }
   if (const char* env = std::getenv("SCRATCHBIRD_CONFIG"); env != nullptr && *env != '\0') {
-    return NormalizePath(env);
+    return NormalizePath(std::string(env));
   }
   const auto current = std::filesystem::current_path() / "sb_server.conf";
   if (std::filesystem::is_regular_file(current)) {
@@ -430,6 +534,274 @@ bool PublicStartupAuthProviderFamilyAllowed(const std::string& value,
   return true;
 }
 
+std::optional<std::size_t> JsonValueOffset(const std::string& text,
+                                           const std::string& key) {
+  const std::string marker = "\"" + key + "\"";
+  const auto key_pos = text.find(marker);
+  if (key_pos == std::string::npos) {
+    return std::nullopt;
+  }
+  const auto colon = text.find(':', key_pos + marker.size());
+  if (colon == std::string::npos) {
+    return std::nullopt;
+  }
+  auto value_pos = colon + 1;
+  while (value_pos < text.size() &&
+         (text[value_pos] == ' ' || text[value_pos] == '\t' ||
+          text[value_pos] == '\r' || text[value_pos] == '\n')) {
+    ++value_pos;
+  }
+  return value_pos;
+}
+
+bool ExtractJsonStringField(const std::string& text,
+                            const std::string& key,
+                            std::string* out) {
+  const auto value_pos = JsonValueOffset(text, key);
+  if (!value_pos || *value_pos >= text.size() || text[*value_pos] != '"') {
+    return false;
+  }
+  std::string value;
+  bool escaped = false;
+  for (std::size_t i = *value_pos + 1; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (escaped) {
+      value.push_back(ch);
+      escaped = false;
+      continue;
+    }
+    if (ch == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch == '"') {
+      *out = std::move(value);
+      return true;
+    }
+    value.push_back(ch);
+  }
+  return false;
+}
+
+bool ExtractJsonUint64Field(const std::string& text,
+                            const std::string& key,
+                            std::uint64_t* out) {
+  const auto value_pos = JsonValueOffset(text, key);
+  if (!value_pos) {
+    return false;
+  }
+  std::size_t end = *value_pos;
+  while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
+    ++end;
+  }
+  if (end == *value_pos) {
+    return false;
+  }
+  return ParseUint64(text.substr(*value_pos, end - *value_pos), out);
+}
+
+bool ExtractJsonBoolField(const std::string& text,
+                          const std::string& key,
+                          bool* out) {
+  const auto value_pos = JsonValueOffset(text, key);
+  if (!value_pos) {
+    return false;
+  }
+  if (text.compare(*value_pos, 4, "true") == 0) {
+    *out = true;
+    return true;
+  }
+  if (text.compare(*value_pos, 5, "false") == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+std::set<std::string> ExplicitServerMemoryKeys(const ParsedConfig* parsed) {
+  std::set<std::string> keys;
+  if (parsed == nullptr) {
+    return keys;
+  }
+  for (const auto& [key, value] : parsed->values) {
+    (void)value;
+    if (key.rfind("server.memory.", 0) == 0) {
+      keys.insert(key);
+    }
+  }
+  return keys;
+}
+
+bool ExplicitlyConfigured(const std::set<std::string>& keys,
+                          const std::string& key) {
+  return keys.find(key) != keys.end();
+}
+
+bool ApplyDefaultMemoryPolicyFromPolicyPack(
+    ServerBootstrapConfig* config,
+    const std::set<std::string>& explicit_memory_keys,
+    std::vector<ServerDiagnostic>* diagnostics) {
+  if (config == nullptr || diagnostics == nullptr ||
+      config->database_policy_seed_pack_root.empty()) {
+    return true;
+  }
+
+  const auto path = config->database_policy_seed_pack_root /
+                    "policies" / "server_memory_cache_policy.json";
+  std::ifstream input(path);
+  if (!input) {
+    diagnostics->push_back(ConfigDiagnostic(
+        "CONFIG.DEFAULT_MEMORY_POLICY_UNAVAILABLE",
+        "config.default_memory_policy_unavailable",
+        "The default server memory/cache policy could not be read.",
+        {{"path_redacted", path.string()}}));
+    return false;
+  }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const std::string text = buffer.str();
+
+  std::string profile_area;
+  std::string policy_name;
+  std::string provenance;
+  std::string failure_mode;
+  std::uint64_t schema_version = 0;
+  std::uint64_t policy_generation = 0;
+  std::uint64_t hard_limit_bytes = 0;
+  std::uint64_t soft_limit_bytes = 0;
+  std::uint64_t per_context_limit_bytes = 0;
+  std::uint64_t page_buffer_pool_limit_bytes = 0;
+  std::uint64_t min_startup_available_bytes = 0;
+  bool track_allocations = false;
+  bool zero_memory_on_allocate = false;
+  bool zero_memory_on_release = false;
+  bool reject_over_soft_limit = false;
+  bool enable_platform_memory_probe = false;
+  bool require_platform_memory_ceiling = false;
+  bool adaptive_page_cache_enabled = false;
+  bool index_read_cache_enabled = false;
+  bool trim_heap_on_disconnect = true;
+  bool cache_finality_authority = true;
+  bool cache_visibility_authority = true;
+  bool wal_or_redo_authority = true;
+  bool dirty_writeback_required = false;
+
+  if (!ExtractJsonUint64Field(text, "schema_version", &schema_version) ||
+      schema_version != 1 ||
+      !ExtractJsonUint64Field(text, "policy_generation", &policy_generation) ||
+      policy_generation == 0 ||
+      !ExtractJsonStringField(text, "profile_area", &profile_area) ||
+      profile_area != "memory_resource_governance" ||
+      !ExtractJsonStringField(text, "policy_name", &policy_name) ||
+      !ExtractJsonStringField(text, "provenance", &provenance) ||
+      !ExtractJsonUint64Field(text, "hard_limit_bytes", &hard_limit_bytes) ||
+      !ExtractJsonUint64Field(text, "soft_limit_bytes", &soft_limit_bytes) ||
+      !ExtractJsonUint64Field(text, "per_context_limit_bytes", &per_context_limit_bytes) ||
+      !ExtractJsonUint64Field(text, "page_buffer_pool_limit_bytes",
+                              &page_buffer_pool_limit_bytes) ||
+      !ExtractJsonUint64Field(text, "min_startup_available_bytes",
+                              &min_startup_available_bytes) ||
+      !ExtractJsonStringField(text, "failure_mode", &failure_mode) ||
+      !ExtractJsonBoolField(text, "track_allocations", &track_allocations) ||
+      !ExtractJsonBoolField(text, "zero_memory_on_allocate", &zero_memory_on_allocate) ||
+      !ExtractJsonBoolField(text, "zero_memory_on_release", &zero_memory_on_release) ||
+      !ExtractJsonBoolField(text, "reject_over_soft_limit", &reject_over_soft_limit) ||
+      !ExtractJsonBoolField(text, "enable_platform_memory_probe",
+                            &enable_platform_memory_probe) ||
+      !ExtractJsonBoolField(text, "require_platform_memory_ceiling",
+                            &require_platform_memory_ceiling) ||
+      !ExtractJsonBoolField(text, "enabled", &adaptive_page_cache_enabled) ||
+      !ExtractJsonBoolField(text, "index_read_optimization", &index_read_cache_enabled) ||
+      !ExtractJsonBoolField(text, "ordinary_disconnect_heap_trim",
+                            &trim_heap_on_disconnect) ||
+      !ExtractJsonBoolField(text, "dirty_writeback_required", &dirty_writeback_required) ||
+      !ExtractJsonBoolField(text, "cache_finality_authority", &cache_finality_authority) ||
+      !ExtractJsonBoolField(text, "cache_visibility_authority", &cache_visibility_authority) ||
+      !ExtractJsonBoolField(text, "wal_or_redo_authority", &wal_or_redo_authority)) {
+    diagnostics->push_back(ConfigDiagnostic(
+        "CONFIG.DEFAULT_MEMORY_POLICY_MALFORMED",
+        "config.default_memory_policy_malformed",
+        "The default server memory/cache policy is malformed.",
+        {{"path_redacted", path.string()}}));
+    return false;
+  }
+
+  memory::AllocationFailureMode parsed_failure_mode{};
+  if (!memory::ParseAllocationFailureMode(failure_mode, &parsed_failure_mode) ||
+      hard_limit_bytes < min_startup_available_bytes ||
+      soft_limit_bytes > hard_limit_bytes ||
+      per_context_limit_bytes > hard_limit_bytes ||
+      page_buffer_pool_limit_bytes > hard_limit_bytes ||
+      !dirty_writeback_required ||
+      cache_finality_authority ||
+      cache_visibility_authority ||
+      wal_or_redo_authority) {
+    diagnostics->push_back(ConfigDiagnostic(
+        "CONFIG.DEFAULT_MEMORY_POLICY_INVALID",
+        "config.default_memory_policy_invalid",
+        "The default server memory/cache policy violates the ScratchBird authority or limit contract.",
+        {{"path_redacted", path.string()},
+         {"policy_name", policy_name},
+         {"provenance", provenance}}));
+    return false;
+  }
+
+  auto apply_string = [&](const std::string& key, std::string value, std::string* target) {
+    if (!ExplicitlyConfigured(explicit_memory_keys, key)) {
+      *target = std::move(value);
+    }
+  };
+  auto apply_u64 = [&](const std::string& key, std::uint64_t value, std::uint64_t* target) {
+    if (!ExplicitlyConfigured(explicit_memory_keys, key)) {
+      *target = value;
+    }
+  };
+  auto apply_bool = [&](const std::string& key, bool value, bool* target) {
+    if (!ExplicitlyConfigured(explicit_memory_keys, key)) {
+      *target = value;
+    }
+  };
+
+  apply_string("server.memory.policy_name", policy_name, &config->memory_policy_name);
+  apply_u64("server.memory.hard_limit_bytes", hard_limit_bytes,
+            &config->memory_hard_limit_bytes);
+  apply_u64("server.memory.soft_limit_bytes", soft_limit_bytes,
+            &config->memory_soft_limit_bytes);
+  apply_u64("server.memory.per_context_limit_bytes", per_context_limit_bytes,
+            &config->memory_per_context_limit_bytes);
+  apply_u64("server.memory.page_buffer_pool_limit_bytes", page_buffer_pool_limit_bytes,
+            &config->memory_page_buffer_pool_limit_bytes);
+  apply_u64("server.memory.min_startup_available_bytes", min_startup_available_bytes,
+            &config->memory_min_startup_available_bytes);
+  if (!ExplicitlyConfigured(explicit_memory_keys, "server.memory.failure_mode")) {
+    config->memory_failure_mode = parsed_failure_mode;
+  }
+  apply_bool("server.memory.track_allocations", track_allocations,
+             &config->memory_track_allocations);
+  apply_bool("server.memory.zero_memory_on_allocate", zero_memory_on_allocate,
+             &config->memory_zero_memory_on_allocate);
+  apply_bool("server.memory.zero_memory_on_release", zero_memory_on_release,
+             &config->memory_zero_memory_on_release);
+  apply_bool("server.memory.reject_over_soft_limit", reject_over_soft_limit,
+             &config->memory_reject_over_soft_limit);
+  apply_bool("server.memory.adaptive_page_cache_enabled", adaptive_page_cache_enabled,
+             &config->memory_adaptive_page_cache_enabled);
+  apply_bool("server.memory.index_read_cache_enabled", index_read_cache_enabled,
+             &config->memory_index_read_cache_enabled);
+  apply_bool("server.memory.trim_heap_on_disconnect", trim_heap_on_disconnect,
+             &config->memory_trim_heap_on_disconnect);
+  apply_string("server.memory.policy_provenance", provenance,
+               &config->memory_policy_provenance);
+  apply_u64("server.memory.policy_generation", policy_generation,
+            &config->memory_policy_generation);
+  apply_bool("server.memory.enable_platform_memory_probe", enable_platform_memory_probe,
+             &config->memory_enable_platform_memory_probe);
+  apply_bool("server.memory.require_platform_memory_ceiling",
+             require_platform_memory_ceiling,
+             &config->memory_require_platform_memory_ceiling);
+  return true;
+}
+
 memory::MemoryPolicyConfig BuildMemoryPolicyConfig(const ServerBootstrapConfig& config) {
   memory::MemoryPolicyConfig memory_config;
   memory_config.policy_name = config.memory_policy_name;
@@ -454,23 +826,34 @@ memory::MemoryPolicyConfig BuildMemoryPolicyConfig(const ServerBootstrapConfig& 
 bool ValidateServerMemoryPolicy(const ServerBootstrapConfig& config,
                                 std::vector<ServerDiagnostic>* diagnostics) {
   const auto resolved = memory::ResolveMemoryPolicyConfig(BuildMemoryPolicyConfig(config));
-  if (resolved.ok()) {
-    return true;
-  }
-  for (const auto& diagnostic : resolved.diagnostics) {
-    std::vector<ServerDiagnosticField> fields;
-    fields.push_back({"source_component", diagnostic.source_component});
-    fields.push_back({"provenance", config.memory_policy_provenance});
-    fields.push_back({"policy_generation", std::to_string(config.memory_policy_generation)});
-    for (const auto& argument : diagnostic.arguments) {
-      fields.push_back({argument.key, argument.value});
+  if (!resolved.ok()) {
+    for (const auto& diagnostic : resolved.diagnostics) {
+      std::vector<ServerDiagnosticField> fields;
+      fields.push_back({"source_component", diagnostic.source_component});
+      fields.push_back({"provenance", config.memory_policy_provenance});
+      fields.push_back({"policy_generation", std::to_string(config.memory_policy_generation)});
+      for (const auto& argument : diagnostic.arguments) {
+        fields.push_back({argument.key, argument.value});
+      }
+      diagnostics->push_back(ConfigDiagnostic(diagnostic.diagnostic_code,
+                                              diagnostic.message_key,
+                                              "The configured production memory policy is invalid.",
+                                              std::move(fields)));
     }
-    diagnostics->push_back(ConfigDiagnostic(diagnostic.diagnostic_code,
-                                            diagnostic.message_key,
-                                            "The configured production memory policy is invalid.",
-                                            std::move(fields)));
+    return false;
   }
-  return false;
+  if (config.memory_hard_limit_bytes < config.memory_min_startup_available_bytes) {
+    diagnostics->push_back(ConfigDiagnostic(
+        "CONFIG.MEMORY_POLICY_MIN_STARTUP_UNAVAILABLE",
+        "config.memory_policy_min_startup_unavailable",
+        "The configured memory hard limit is below the startup memory availability floor.",
+        {{"hard_limit_bytes", std::to_string(config.memory_hard_limit_bytes)},
+         {"min_startup_available_bytes",
+          std::to_string(config.memory_min_startup_available_bytes)},
+         {"provenance", config.memory_policy_provenance}}));
+    return false;
+  }
+  return true;
 }
 
 bool ApplyParsedConfig(const ParsedConfig& parsed,
@@ -573,6 +956,10 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       }
     } else if (key == "server.database.default_path") {
       config->database_default_path = NormalizePath(value);
+    } else if (key == "server.database.resource_seed_pack_root") {
+      config->database_resource_seed_pack_root = NormalizePath(value);
+    } else if (key == "server.database.policy_seed_pack_root") {
+      config->database_policy_seed_pack_root = NormalizePath(value);
     } else if (key == "server.database.auto_create") {
       if (!ParseBool(value, &config->database_auto_create)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.database.open_mode") {
@@ -631,6 +1018,10 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       if (!ParseUint64(value, &config->memory_page_buffer_pool_limit_bytes)) {
         return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
       }
+    } else if (key == "server.memory.min_startup_available_bytes") {
+      if (!ParseUint64(value, &config->memory_min_startup_available_bytes)) {
+        return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+      }
     } else if (key == "server.memory.failure_mode") {
       if (!memory::ParseAllocationFailureMode(value, &config->memory_failure_mode)) {
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
@@ -649,6 +1040,18 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       }
     } else if (key == "server.memory.reject_over_soft_limit") {
       if (!ParseBool(value, &config->memory_reject_over_soft_limit)) {
+        return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+      }
+    } else if (key == "server.memory.adaptive_page_cache_enabled") {
+      if (!ParseBool(value, &config->memory_adaptive_page_cache_enabled)) {
+        return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+      }
+    } else if (key == "server.memory.index_read_cache_enabled") {
+      if (!ParseBool(value, &config->memory_index_read_cache_enabled)) {
+        return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+      }
+    } else if (key == "server.memory.trim_heap_on_disconnect") {
+      if (!ParseBool(value, &config->memory_trim_heap_on_disconnect)) {
         return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
       }
     } else if (key == "server.memory.policy_provenance") {
@@ -684,7 +1087,7 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       if (!ParseDurationMs(value, &config->sbps_hello_timeout_ms)) return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
     }
   }
-  return ValidateServerMemoryPolicy(*config, diagnostics);
+  return true;
 }
 
 void ApplyCliOverrides(const ServerCliOptions& cli, ServerBootstrapConfig* config) {
@@ -736,6 +1139,12 @@ void FinalizeDerivedPaths(ServerBootstrapConfig* config) {
   }
   if (config->sbps_endpoint.empty()) {
     config->sbps_endpoint = config->control_dir / "sb_server.sbps.sock";
+  }
+  if (config->database_resource_seed_pack_root.empty()) {
+    config->database_resource_seed_pack_root = DefaultResourceSeedPackRoot();
+  }
+  if (config->database_policy_seed_pack_root.empty()) {
+    config->database_policy_seed_pack_root = DefaultPolicySeedPackRoot();
   }
   if (config->listener_native_control_dir.empty()) {
     config->listener_native_control_dir = config->control_dir / "listeners";
@@ -874,6 +1283,7 @@ memory::MemoryPolicyConfigResolveResult ResolveServerMemoryAllocationPolicy(
 ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli) {
   ServerConfigLoadResult result;
   auto selected = DiscoverConfigFile(cli);
+  std::optional<ParsedConfig> parsed_config;
   if (selected) {
     result.config.selected_config_path = *selected;
     result.config.selected_config_source = cli.config_path.empty() ? "discovered_file" : "explicit_file";
@@ -884,9 +1294,20 @@ ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli)
     if (!ApplyParsedConfig(*parsed, &result.config, &result.diagnostics)) {
       return result;
     }
+    parsed_config = std::move(*parsed);
   }
   ApplyCliOverrides(cli, &result.config);
   FinalizeDerivedPaths(&result.config);
+  const auto explicit_memory_keys =
+      ExplicitServerMemoryKeys(parsed_config ? &*parsed_config : nullptr);
+  if (!ApplyDefaultMemoryPolicyFromPolicyPack(&result.config,
+                                              explicit_memory_keys,
+                                              &result.diagnostics)) {
+    return result;
+  }
+  if (!ValidateServerMemoryPolicy(result.config, &result.diagnostics)) {
+    return result;
+  }
   return result;
 }
 

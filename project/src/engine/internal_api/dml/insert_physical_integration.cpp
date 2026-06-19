@@ -19,15 +19,19 @@
 #include "dml/write_result_policy.hpp"
 #include "bulk_placement_order.hpp"
 #include "domain_support/domain_store.hpp"
+#include "ipar_fault_injection.hpp"
+#include "metric_contracts.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "ordered_ingest.hpp"
 #include "observability/dml_summary_counters.hpp"
 #include "index_bulk_publish_recovery.hpp"
 #include "index_root_generation_publish.hpp"
+#include "physical_mga_cow_store.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -38,6 +42,8 @@
 
 namespace scratchbird::engine::internal_api::dml {
 namespace {
+
+using DirectSteadyClock = std::chrono::steady_clock;
 
 using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
@@ -1503,6 +1509,131 @@ std::uint64_t DirectOptionU64(const DirectPhysicalBulkAppendRequest& request,
   return parsed == 0 ? fallback : parsed;
 }
 
+bool DirectPhysicalMgaCowRequested(const DirectPhysicalBulkAppendRequest& request) {
+  const std::string value = DirectOptionValue(request, "physical_mga_cow");
+  if (value.empty()) {
+    return true;
+  }
+  return !IsDirectFalsyValue(value);
+}
+
+bool DirectPhysicalMgaCowRequired(const DirectPhysicalBulkAppendRequest& request) {
+  const std::string value = DirectOptionValue(request, "physical_mga_cow");
+  return LowerAscii(value) == "required" ||
+         IsDirectTruthyValue(DirectOptionValue(request, "physical_mga_cow.required"));
+}
+
+scratchbird::storage::page::RowDataCell DirectPhysicalCell(
+    std::uint16_t ordinal,
+    const EngineTypedValue& value) {
+  scratchbird::storage::page::RowDataCell cell;
+  cell.column_ordinal = ordinal;
+  cell.value.type_id = scratchbird::core::datatypes::CanonicalTypeId::character;
+  cell.value.is_null = value.state == EngineValueState::sql_null || value.is_null;
+  cell.value.payload.assign(value.encoded_value.begin(), value.encoded_value.end());
+  return cell;
+}
+
+std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
+    const std::vector<std::pair<std::string, std::string>>& values) {
+  std::vector<scratchbird::storage::page::RowDataCell> cells;
+  cells.reserve(values.size());
+  std::uint16_t ordinal = 1;
+  for (const auto& value : values) {
+    EngineTypedValue typed;
+    typed.encoded_value = value.second;
+    typed.state = EngineValueState::value;
+    cells.push_back(DirectPhysicalCell(ordinal++, typed));
+  }
+  return cells;
+}
+
+struct DirectPhysicalMgaCowWriteResult {
+  bool ok = true;
+  EngineApiDiagnostic diagnostic;
+  std::vector<EngineEvidenceReference> evidence;
+  std::uint64_t written_rows = 0;
+};
+
+DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
+    const DirectPhysicalBulkAppendRequest& request,
+    const std::vector<CrudRowVersionRecord>& staged_rows) {
+  DirectPhysicalMgaCowWriteResult result;
+  if (!DirectPhysicalMgaCowRequested(request)) {
+    result.evidence.push_back({"direct_physical_bulk_row_page_writer", "disabled"});
+    return result;
+  }
+
+  const TypedUuid relation_uuid =
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+  const TypedUuid transaction_uuid =
+      ParseDirectTypedUuid(UuidKind::transaction,
+                           request.context.transaction_uuid.canonical);
+  if (!relation_uuid.valid() || !transaction_uuid.valid() ||
+      request.context.local_transaction_id == 0) {
+    result.ok = false;
+    result.diagnostic =
+        MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                     "physical_mga_cow_authority_missing");
+    return result;
+  }
+
+  const std::uint64_t base_page =
+      DirectOptionU64(request, "physical_mga_cow.page_number", 1024);
+  const std::uint64_t rows_per_page =
+      DirectOptionU64(request, "physical_mga_cow.rows_per_page", 16);
+  const std::uint64_t row_offset =
+      DirectOptionU64(request, "physical_mga_cow.row_offset", 0);
+  for (std::size_t index = 0; index < staged_rows.size(); ++index) {
+    const auto& row = staged_rows[index];
+    const std::uint64_t absolute_index =
+        row_offset + static_cast<std::uint64_t>(index);
+    scratchbird::storage::database::PhysicalMgaCowMutationRequest cow;
+    cow.database_path = request.context.database_path;
+    cow.relation_uuid = relation_uuid;
+    cow.row_uuid = ParseDirectTypedUuid(UuidKind::row, row.row_uuid);
+    cow.transaction_uuid = transaction_uuid;
+    cow.existing_local_transaction_id =
+        scratchbird::transaction::mga::MakeLocalTransactionId(
+            request.context.local_transaction_id);
+    cow.use_existing_transaction = true;
+    cow.kind = scratchbird::storage::database::PhysicalMgaCowMutationKind::insert;
+    cow.page_number =
+        base_page + (absolute_index / std::max<std::uint64_t>(1, rows_per_page));
+    cow.begin_unix_epoch_millis = 0;
+    cow.stable_slot_id = static_cast<std::uint32_t>(absolute_index + 1);
+    cow.cells = DirectPhysicalCells(row.values);
+    const auto written =
+        scratchbird::storage::database::WritePhysicalMgaCowUnpublishedMutation(cow);
+    if (!written.ok()) {
+      result.ok = false;
+      result.diagnostic = MakeEngineApiDiagnostic(
+          written.diagnostic.diagnostic_code.empty()
+              ? "SB-IPAR-PHYSICAL-MGA-COW-WRITE-FAILED"
+              : written.diagnostic.diagnostic_code,
+          written.diagnostic.message_key.empty()
+              ? "dml.direct_physical_bulk.physical_mga_cow_failed"
+              : written.diagnostic.message_key,
+          "row=" + row.row_uuid,
+          true);
+      return result;
+    }
+    ++result.written_rows;
+    for (const auto& item : written.evidence) {
+      result.evidence.push_back({"direct_physical_bulk_row_page_evidence", item});
+    }
+  }
+  result.evidence.push_back({"direct_physical_bulk_row_page_writer",
+                             "physical_mga_cow"});
+  result.evidence.push_back({"direct_physical_bulk_row_page_written_rows",
+                             std::to_string(result.written_rows)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_finality_authority",
+                             "false"});
+  result.evidence.push_back({"direct_physical_bulk_row_page_visibility_authority",
+                             "durable_transaction_inventory"});
+  return result;
+}
+
 bool DirectOrderedIngestRequested(const DirectPhysicalBulkAppendRequest& request) {
   const std::string primary = DirectOptionValue(request, "ordered_ingest");
   if (!primary.empty()) {
@@ -1862,6 +1993,171 @@ void AddPreallocationRuntimeCounters(const DmlPageAllocationRuntimeResult& alloc
   summary->preallocation_granted_pages += allocation.granted_preallocation_pages;
   summary->preallocation_capped += allocation.preallocation_capped ? 1 : 0;
   summary->preallocation_refused += allocation.preallocation_refused ? 1 : 0;
+}
+
+EngineApiU64 DirectElapsedMicros(DirectSteadyClock::time_point start,
+                                 DirectSteadyClock::time_point finish) {
+  return static_cast<EngineApiU64>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+std::string DirectPreallocationOutcome(
+    const DmlPageAllocationRuntimeResult& allocation) {
+  if (!allocation.active) {
+    return "runtime_inactive";
+  }
+  if (!allocation.preallocation_requested) {
+    return "reservation_only";
+  }
+  if (allocation.preallocation_refused) {
+    return "preallocation_refused";
+  }
+  if (allocation.preallocation_capped) {
+    return allocation.preallocation_granted ? "preallocation_capped"
+                                            : "preallocation_cap_refused";
+  }
+  if (allocation.preallocation_granted ||
+      allocation.granted_preallocation_pages != 0) {
+    return "preallocated";
+  }
+  return "reservation_only";
+}
+
+std::string DirectPreallocationFallbackReason(
+    const DmlPageAllocationRuntimeResult& allocation,
+    const std::string& family) {
+  if (!allocation.active) {
+    return family + "_page_allocation_runtime_inactive";
+  }
+  if (!allocation.preallocation_requested) {
+    return {};
+  }
+  if (allocation.preallocation_refused) {
+    return family + "_page_preallocation_refused";
+  }
+  if (allocation.preallocation_capped && !allocation.preallocation_granted) {
+    return family + "_page_preallocation_cap_refused";
+  }
+  if (!allocation.preallocation_granted &&
+      allocation.granted_preallocation_pages == 0) {
+    return family + "_page_preallocation_reservation_only";
+  }
+  return {};
+}
+
+EngineApiU64 DirectAllocationEvidenceU64(
+    const DmlPageAllocationRuntimeResult& allocation,
+    const std::string& kind) {
+  for (const auto& item : allocation.evidence) {
+    if (item.evidence_kind != kind) {
+      continue;
+    }
+    std::istringstream in(item.evidence_id);
+    EngineApiU64 value = 0;
+    in >> value;
+    return in.fail() ? 0 : value;
+  }
+  return 0;
+}
+
+EngineApiU64 DirectFilespaceGrowthPages(
+    const DmlPageAllocationRuntimeResult& allocation) {
+  return DirectAllocationEvidenceU64(
+      allocation,
+      "filespace_runtime_capacity_window_materialized");
+}
+
+void AddDirectAllocationResourceSummary(
+    const DmlPageAllocationRuntimeResult& allocation,
+    const std::string& family,
+    EngineApiU64 row_count,
+    EngineApiU64 elapsed_microseconds,
+    const InsertBatchContext& batch_context,
+    bool update_summary,
+    DirectPhysicalBulkAppendResult* result) {
+  if (result == nullptr) {
+    return;
+  }
+  if (allocation.active && update_summary) {
+    if (family == "row") {
+      result->dml_summary.row_extent_reservations += row_count;
+      result->dml_summary.version_extent_reservations += row_count;
+      result->dml_summary.page_extent_reservations += allocation.requested_pages;
+    } else if (family == "index") {
+      result->dml_summary.index_extent_reservations += allocation.requested_pages;
+    }
+    AddPreallocationRuntimeCounters(allocation, &result->dml_summary);
+  }
+  result->evidence.push_back({family + "_page_allocation_runtime",
+                              allocation.active ? "active" : "inactive"});
+  result->evidence.push_back({family + "_page_reservation_requested_pages",
+                              std::to_string(allocation.requested_pages)});
+  result->evidence.push_back({family + "_page_preallocation_requested",
+                              allocation.preallocation_requested ? "true" : "false"});
+  result->evidence.push_back({family + "_page_preallocation_granted_pages",
+                              std::to_string(allocation.granted_preallocation_pages)});
+  result->evidence.push_back({family + "_page_preallocation_outcome",
+                              DirectPreallocationOutcome(allocation)});
+  result->evidence.push_back({family + "_page_preallocation_claim",
+                              allocation.granted_preallocation_pages != 0
+                                  ? "physical_preallocated_pages"
+                                  : "reservation_or_no_runtime_only"});
+  const std::string fallback =
+      DirectPreallocationFallbackReason(allocation, family);
+  if (!fallback.empty()) {
+    result->evidence.push_back({family + "_page_preallocation_degraded_reason",
+                                fallback});
+  }
+  const EngineApiU64 growth_pages = DirectFilespaceGrowthPages(allocation);
+  const EngineApiU64 growth_agent_pages =
+      DirectAllocationEvidenceU64(allocation, "filespace_agent_granted_pages");
+  result->evidence.push_back({family + "_filespace_growth_pages",
+                              std::to_string(growth_pages)});
+  if (growth_agent_pages != 0 || growth_pages != 0) {
+    result->evidence.push_back({family + "_filespace_growth_agent_granted_pages",
+                                std::to_string(growth_agent_pages)});
+  }
+  result->evidence.push_back({family + "_filespace_growth_claim",
+                              growth_pages != 0
+                                  ? "capacity_window_materialized"
+                                  : (allocation.active ? "not_materialized"
+                                                       : "runtime_inactive")});
+  result->evidence.push_back({family + "_allocation_stall_microseconds",
+                              std::to_string(elapsed_microseconds)});
+  if (allocation.active && allocation.granted_preallocation_pages != 0) {
+    (void)scratchbird::core::metrics::RecordInsertPreallocatedPages(
+        static_cast<double>(allocation.granted_preallocation_pages),
+        batch_context.target_object_uuid,
+        InsertBatchModeName(batch_context.insert_mode),
+        family,
+        DirectPreallocationOutcome(allocation),
+        fallback.empty() ? "none" : fallback);
+  }
+  RecordInsertBatchMetric(batch_context,
+                          "sb_dml_insert_allocation_stall_microseconds",
+                          static_cast<double>(elapsed_microseconds),
+                          allocation.active ? "ok" : "inactive",
+                          family + "_page_allocation");
+  if (growth_pages != 0) {
+    RecordInsertBatchMetric(batch_context,
+                            "sb_filespace_insert_growth_request_total",
+                            static_cast<double>(growth_pages),
+                            "capacity_window_materialized",
+                            family + "_filespace_growth");
+    RecordInsertBatchMetric(batch_context,
+                            "sb_filespace_insert_growth_wait_microseconds",
+                            static_cast<double>(elapsed_microseconds),
+                            "ok",
+                            family + "_filespace_growth");
+  }
+  if (!fallback.empty() && allocation.preallocation_requested) {
+    RecordInsertBatchMetric(batch_context,
+                            "sb_dml_insert_slow_path_total",
+                            1.0,
+                            "resource_degraded",
+                            fallback);
+  }
 }
 
 void AddRequiredPreallocationSummary(
@@ -2306,6 +2602,130 @@ InsertPhysicalIntegrationResult ExecuteInsertPhysicalIntegration(
   }
 
   InsertPhysicalIntegrationResult result;
+  TypedUuid resolved_filespace_uuid = request.filespace_uuid;
+  auto resolved_object_class = request.placement_object_class;
+  auto resolved_growth_role = request.growth_filespace_role;
+
+  const bool placement_resolution_required =
+      request.require_placement_policy ||
+      request.placement_policy.present ||
+      request.placement_object_class !=
+          scratchbird::storage::filespace::FilespaceObjectClass::unspecified;
+  if (placement_resolution_required) {
+    if (context->filespace_registry == nullptr) {
+      return Refuse("insert_physical_integration_missing_placement_registry",
+                    "engine.insert.physical.missing_placement_registry",
+                    "filespace registry is required for placement policy resolution");
+    }
+    scratchbird::storage::filespace::FilespacePlacementRequest placement_request;
+    placement_request.database_uuid = request.database_uuid;
+    placement_request.preferred_filespace_uuid = request.filespace_uuid;
+    placement_request.owner_object_uuid = request.object_uuid;
+    placement_request.policy_uuid = request.policy_uuid;
+    placement_request.object_class = request.placement_object_class;
+    placement_request.page_family = request.page_family;
+    placement_request.page_size = request.page_size;
+    placement_request.require_preallocation =
+        request.require_placement_preallocation;
+    placement_request.requested_preallocation_pages =
+        request.placement_preallocation_pages;
+    placement_request.reason = "insert_physical_integration";
+    placement_request.policy = request.placement_policy;
+    const auto placement = scratchbird::storage::filespace::ResolveFilespacePlacement(
+        *context->filespace_registry,
+        placement_request);
+    if (!placement.ok()) {
+      return Refuse(placement.diagnostic.diagnostic_code,
+                    placement.diagnostic.message_key,
+                    "filespace placement refused");
+    }
+    resolved_filespace_uuid = placement.descriptor.filespace_uuid;
+    resolved_object_class = placement.object_class;
+    resolved_growth_role = placement.descriptor.role;
+    result.filespace_placement_resolved = true;
+    result.resolved_filespace_uuid = resolved_filespace_uuid;
+    result.resolved_filespace_class =
+        scratchbird::storage::filespace::FilespaceClassName(
+            placement.filespace_class);
+    result.resolved_filespace_role =
+        scratchbird::storage::filespace::FilespaceRoleName(
+            placement.descriptor.role);
+    result.evidence_refs.push_back(EvidenceRef("filespace_placement",
+                                               resolved_filespace_uuid));
+    for (const auto& evidence : placement.evidence) {
+      result.evidence_refs.push_back("filespace_placement:" + evidence);
+    }
+
+    if (placement.preallocation_required) {
+      if (context->filespace_growth_ledger == nullptr) {
+        return Refuse("insert_physical_integration_missing_preallocation_ledger",
+                      "engine.insert.physical.missing_preallocation_ledger",
+                      "filespace growth ledger is required for placement preallocation");
+      }
+      scratchbird::storage::filespace::FilespacePreallocationRequest preallocate;
+      preallocate.request_uuid = request.request_id.valid()
+                                     ? request.request_id
+                                     : GeneratedId(UuidKind::object, 300010);
+      preallocate.database_uuid = request.database_uuid;
+      preallocate.filespace_uuid = resolved_filespace_uuid;
+      preallocate.policy_uuid = request.policy_uuid;
+      preallocate.storage_profile_uuid =
+          placement.descriptor.writer_identity_uuid.valid()
+              ? placement.descriptor.writer_identity_uuid
+              : GeneratedId(UuidKind::object, 300011);
+      preallocate.requested_page_count = placement.preallocation_page_count;
+      preallocate.page_size_bytes = request.page_size;
+      preallocate.policy_generation = 1;
+      preallocate.observed_policy_generation = 1;
+      preallocate.catalog_generation =
+          placement.descriptor.generation == 0 ? 1 : placement.descriptor.generation;
+      preallocate.observed_catalog_generation = preallocate.catalog_generation;
+      preallocate.member_capacity.present = true;
+      preallocate.member_capacity.explicit_capacity_context = true;
+      preallocate.member_capacity.file_member_uuid =
+          placement.descriptor.writer_identity_uuid.valid()
+              ? placement.descriptor.writer_identity_uuid
+              : GeneratedId(UuidKind::object, 300012);
+      preallocate.member_capacity.start_page_number = 0;
+      preallocate.member_capacity.current_page_count =
+          placement.descriptor.total_pages;
+      preallocate.member_capacity.preallocated_page_count =
+          placement.descriptor.preallocated_pages;
+      preallocate.member_capacity.maximum_page_count =
+          placement.descriptor.total_pages +
+          placement.descriptor.preallocated_pages +
+          placement.preallocation_page_count + 1024;
+      preallocate.member_capacity.physical_path = placement.descriptor.path;
+      preallocate.member_capacity.online = true;
+      preallocate.member_capacity.writable = !placement.descriptor.read_only;
+      preallocate.transaction_context.present = true;
+      preallocate.transaction_context.transaction_uuid = request.transaction_uuid;
+      preallocate.transaction_context.transaction_number =
+          request.local_transaction_id;
+      preallocate.transaction_context.durable_inventory_admitted = true;
+      preallocate.transaction_context.write_intent = true;
+      preallocate.transaction_context.durability_fence_satisfied = true;
+      preallocate.evidence_store_present = true;
+      preallocate.evidence_before_success = true;
+      preallocate.require_mga_transaction_context = true;
+      preallocate.reason = "insert_physical_integration.placement_preallocation";
+      const auto preallocated =
+          scratchbird::storage::filespace::PreallocateFilespace(
+              context->filespace_growth_ledger,
+              *context->filespace_registry,
+              preallocate);
+      if (!preallocated.ok()) {
+        return Refuse(preallocated.diagnostic.diagnostic_code,
+                      preallocated.diagnostic.message_key,
+                      "filespace placement preallocation refused");
+      }
+      result.filespace_preallocation_admitted = true;
+      result.preallocation_operation_id =
+          preallocated.operation.preallocation_operation_id;
+      result.evidence_refs.push_back(EvidenceRef("filespace_preallocation",
+                                                 result.preallocation_operation_id));
+    }
+  }
 
   scratchbird::storage::page::InsertPageReservationRequest reservation_request;
   reservation_request.database_uuid = request.database_uuid;
@@ -2315,9 +2735,10 @@ InsertPhysicalIntegrationResult ExecuteInsertPhysicalIntegration(
   reservation_request.page_family = request.page_family;
   reservation_request.estimated_row_count = request.estimated_row_count;
   reservation_request.estimated_payload_bytes = request.estimated_payload_bytes;
-  reservation_request.preferred_filespace_uuid = request.filespace_uuid;
+  reservation_request.preferred_filespace_uuid = resolved_filespace_uuid;
   reservation_request.policy_uuid = request.policy_uuid;
   reservation_request.request_id = request.request_id.valid() ? request.request_id : GeneratedId(UuidKind::object, 300000);
+  reservation_request.object_class = resolved_object_class;
   reservation_request.page_size = request.page_size;
   reservation_request.current_time_authority_tick = request.time_authority_tick;
   reservation_request.lease_duration_ticks = request.reservation_lease_ticks;
@@ -2366,8 +2787,8 @@ InsertPhysicalIntegrationResult ExecuteInsertPhysicalIntegration(
     }
     scratchbird::storage::filespace::InsertFilespaceGrowthRequest growth_request;
     growth_request.database_uuid = request.database_uuid;
-    growth_request.filespace_uuid = request.filespace_uuid;
-    growth_request.filespace_role = request.growth_filespace_role;
+    growth_request.filespace_uuid = resolved_filespace_uuid;
+    growth_request.filespace_role = resolved_growth_role;
     growth_request.page_family = request.page_family;
     growth_request.requested_page_count = request.growth_page_count == 0 ? 1 : request.growth_page_count;
     growth_request.urgency_class = request.growth_urgency;
@@ -2651,7 +3072,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         "direct_physical_lane_duplicate_mode_unsupported");
   }
 
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  const auto loaded = LoadMgaRelationStoreStateForInsertTarget(
+      request.context,
+      request.target_table.uuid.canonical);
+  (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
+      request.target_table.uuid.canonical,
+      "copy_import",
+      loaded.full_state_load,
+      loaded.scoped_state_load,
+      "direct_physical_bulk_insert_target_scoped");
   if (!loaded.ok) {
     return DirectBulkFailure(request,
                              loaded.diagnostic,
@@ -2753,6 +3182,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   result.direct_lane_selected = true;
   AddEmbeddedTrustModeEvidence(request.context, &result);
   AddDirectLaneBaseEvidence(request, &result);
+  result.evidence.insert(result.evidence.end(),
+                         loaded.evidence.begin(),
+                         loaded.evidence.end());
+  result.evidence.push_back({"relation_state_full_loads",
+                             loaded.full_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_scoped_loads",
+                             loaded.scoped_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_load_reason",
+                             "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
                              relation_descriptor.descriptor_uuid.canonical});
   const DirectBulkUuidBatch uuid_batch = BuildDirectBulkUuidBatch(request);
@@ -2777,10 +3215,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                    "direct_physical_bulk.row.convert",
                    "row",
                    std::to_string(batch_context.actual_row_count));
-    PreparedInsertRow prepared =
-        PrepareInsertRowForBatch(synthetic_insert,
-                                 input_row,
-                                 batch_context.row_template);
+	    PreparedInsertRow prepared =
+	        PrepareInsertRowForBatch(synthetic_insert,
+	                                 input_row,
+	                                 batch_context.row_template,
+	                                 batch_context.row_encoder_plan);
     prepared.row_uuid = uuid_batch.row_uuids[row_ordinal];
     auto values = prepared.values;
     const auto default_validation =
@@ -2947,6 +3386,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          ordered_ingest.evidence.begin(),
                          ordered_ingest.evidence.end());
 
+  const auto row_allocation_start = DirectSteadyClock::now();
   const auto row_allocation = ReserveDmlPageAllocationRuntime(
       request.context,
       request.option_envelopes,
@@ -2954,7 +3394,21 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       DmlPageAllocationRuntimeFamily::row_data,
       static_cast<std::uint64_t>(staged_rows.size()),
       "direct_physical_bulk.row_data");
+  const EngineApiU64 row_allocation_elapsed =
+      DirectElapsedMicros(row_allocation_start, DirectSteadyClock::now());
   if (!row_allocation.ok()) {
+    AddDirectAllocationResourceSummary(
+        row_allocation,
+        "row",
+        static_cast<EngineApiU64>(staged_rows.size()),
+        row_allocation_elapsed,
+        batch_context,
+        false,
+        &result);
+    auto evidence = result.evidence;
+    evidence.insert(evidence.end(),
+                    row_allocation.evidence.begin(),
+                    row_allocation.evidence.end());
     const std::string reason =
         DirectPageExtentPreallocationRequired(request)
             ? RequiredPreallocationFailureReason(row_allocation, "row")
@@ -2970,10 +3424,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         request,
         row_allocation.diagnostic,
         reason.empty() ? "row_page_allocation_refused" : reason,
-        row_allocation.evidence,
+        evidence,
         summary);
   }
   AddDmlPageAllocationRuntimeEvidence(row_allocation, &result);
+  AddDirectAllocationResourceSummary(
+      row_allocation,
+      "row",
+      static_cast<EngineApiU64>(staged_rows.size()),
+      row_allocation_elapsed,
+      batch_context,
+      !DirectPageExtentPreallocationRequired(request),
+      &result);
   if (row_allocation.active) {
     ++result.dml_summary.page_reservations;
   }
@@ -2995,6 +3457,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
   }
 
+  const auto index_allocation_start = DirectSteadyClock::now();
   const auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
       request.context,
       request.option_envelopes,
@@ -3002,7 +3465,16 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       request.target_table.uuid.canonical,
       logical_value_batch,
       "direct_physical_bulk.index");
+  const EngineApiU64 index_allocation_elapsed =
+      DirectElapsedMicros(index_allocation_start, DirectSteadyClock::now());
   if (!index_allocation.ok()) {
+    AddDirectAllocationResourceSummary(index_allocation,
+                                       "index",
+                                       0,
+                                       index_allocation_elapsed,
+                                       batch_context,
+                                       false,
+                                       &result);
     auto evidence = result.evidence;
     evidence.insert(evidence.end(),
                     index_allocation.evidence.begin(),
@@ -3026,6 +3498,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         summary);
   }
   AddDmlPageAllocationRuntimeEvidence(index_allocation, &result);
+  AddDirectAllocationResourceSummary(index_allocation,
+                                     "index",
+                                     0,
+                                     index_allocation_elapsed,
+                                     batch_context,
+                                     !DirectPageExtentPreallocationRequired(request),
+                                     &result);
   if (index_allocation.active) {
     ++result.dml_summary.page_reservations;
   }
@@ -3070,6 +3549,26 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     staged_rows[index].values = std::move(storage_values);
   }
 
+  const auto row_page_write =
+      WriteDirectPhysicalMgaCowRows(request, staged_rows);
+  result.evidence.insert(result.evidence.end(),
+                         row_page_write.evidence.begin(),
+                         row_page_write.evidence.end());
+  if (!row_page_write.ok) {
+    if (DirectPhysicalMgaCowRequired(request)) {
+      return DirectBulkFailureWithEvidence(
+          request,
+          row_page_write.diagnostic,
+          "physical_mga_cow_row_page_refused",
+          result.evidence,
+          result.dml_summary);
+    }
+    result.evidence.push_back({"direct_physical_bulk_row_page_writer",
+                               "fallback"});
+    result.evidence.push_back({"direct_physical_bulk_row_page_fallback_reason",
+                               row_page_write.diagnostic.detail});
+  }
+
   auto strict_lifecycle = RunDirectStrictBulkLifecycle(
       request,
       batch_context,
@@ -3106,8 +3605,24 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         "row_append");
   }
   const auto rows_appended =
+      IparFaultPointRequested(request.option_envelopes, "row_append")
+          ? IparFaultDiagnostic("dml.direct_physical_bulk_append",
+                                "row_append",
+                                "phase=direct_physical_row_append")
+          :
       hot_append.AppendRowVersions(&staged_rows, &written_event_sequences);
   if (rows_appended.error) {
+    if (IparFaultPointRequested(request.option_envelopes, "row_append")) {
+      std::vector<EngineEvidenceReference> evidence = result.evidence;
+      AppendIparFaultEvidence(&evidence,
+                              "row_append",
+                              "rollback_required_before_direct_physical_row_append");
+      return DirectBulkFailureWithEvidence(request,
+                                           rows_appended,
+                                           "ipar_fault_injection_row_append",
+                                           evidence,
+                                           result.dml_summary);
+    }
     if (strict_lifecycle.active) {
       return DirectStrictPhysicalPublicationFailure(request,
                                                     &strict_lifecycle,
@@ -3230,6 +3745,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
     AddLocalityAwareIndexApplyEvidence(index_apply_plan, &result.evidence);
   }
+  if (IparFaultPointRequested(request.option_envelopes, "index_append")) {
+    std::vector<EngineEvidenceReference> evidence = result.evidence;
+    AppendIparFaultEvidence(&evidence,
+                            "index_append",
+                            "rollback_required_after_direct_physical_row_append_before_index_append");
+    evidence.push_back({"ipar_fault_injection_row_versions_staged",
+                        std::to_string(staged_rows.size())});
+    return DirectBulkFailureWithEvidence(
+        request,
+        IparFaultDiagnostic("dml.direct_physical_bulk_append",
+                            "index_append",
+                            "phase=direct_physical_index_append"),
+        "ipar_fault_injection_index_append",
+        evidence,
+        result.dml_summary);
+  }
   const auto index_appended = hot_append.AppendIndexEntryBatches(
       index_apply_plan.batches);
   if (index_appended.error) {
@@ -3326,6 +3857,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              "engine.internal_api.dml+storage.mga_relation_store"});
   result.evidence.push_back({"direct_physical_bulk_row_count",
                              std::to_string(result.inserted_rows)});
+  result.evidence.push_back({"unique_index_physical_probes", "0"});
+  result.evidence.push_back({"unique_index_scan_fallbacks", "0"});
+  result.evidence.push_back({"unique_index_bulk_proof_probes",
+                             std::to_string(result.dml_summary.index_probes)});
   result.evidence.push_back({"row_uuid_generation",
                              request.require_generated_row_uuid ? "required"
                                                                 : "caller_allowed"});
@@ -3338,6 +3873,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                           "sb_dml_insert_batch_started_total",
                           1.0,
                           "ok");
+  if (result.dml_summary.index_probes != 0) {
+    RecordInsertBatchMetric(batch_context,
+                            "sb_index_insert_unique_physical_probe_total",
+                            static_cast<double>(result.dml_summary.index_probes),
+                            "bulk_unique_proof",
+                            "direct_copy_bulk_unique_proof");
+  }
   RecordInsertBatchMetric(batch_context,
                           "sb_dml_insert_rows_inserted_total",
                           static_cast<double>(result.inserted_rows),

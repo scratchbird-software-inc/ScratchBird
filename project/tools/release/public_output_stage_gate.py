@@ -61,6 +61,7 @@ REQUIRED_FILES = (
     "share/scratchbird/resources/policy-packs/default-local-password/policies/groups.json",
     "share/scratchbird/resources/policy-packs/default-local-password/policies/grants.json",
     "share/scratchbird/resources/policy-packs/default-local-password/policies/policy_profiles.json",
+    "share/scratchbird/resources/policy-packs/default-local-password/policies/server_memory_cache_policy.json",
     "share/scratchbird/resources/policy-packs/default-local-password/policies/default_policy_catalog.json",
     "share/scratchbird/docs/public_api/CORE_BETA_PUBLIC_API_ABI_MANIFEST.json",
     "share/scratchbird/docs/release/PUBLIC_SUPPORT_MAINTENANCE_POLICY.md",

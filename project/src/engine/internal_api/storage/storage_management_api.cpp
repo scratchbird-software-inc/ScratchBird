@@ -221,6 +221,45 @@ EngineObjectReference TargetFilespace(const EngineApiRequest& request) {
   return target;
 }
 
+bool VisibleFilespaceCatalogDescriptorExists(const EngineRequestContext& context,
+                                             const std::string& filespace_uuid) {
+  if (filespace_uuid.empty()) {
+    return false;
+  }
+  const auto record =
+      FindVisibleApiBehaviorRecord(context, filespace_uuid, context.local_transaction_id);
+  if (record.has_value() && record->object_kind == "filespace") {
+    return true;
+  }
+  const auto parsed_filespace = ParseEngineIdentity(platform::UuidKind::filespace, filespace_uuid);
+  if (!parsed_filespace.valid()) {
+    return false;
+  }
+  const std::string path = context.database_path.empty() ? std::string("database_path_absent")
+                                                         : context.database_path;
+  const std::string database = context.database_uuid.canonical.empty()
+                                   ? std::string("database_uuid_absent")
+                                   : context.database_uuid.canonical;
+  const std::string key = path + "|" + database + "|filespace.lifecycle";
+  std::lock_guard<std::mutex> lock(FilespaceLifecycleRouteMutex());
+  const auto runtime = FilespaceLifecycleRouteRegistries().find(key);
+  if (runtime == FilespaceLifecycleRouteRegistries().end()) {
+    return false;
+  }
+  return std::any_of(runtime->second.registry.filespaces.begin(),
+                     runtime->second.registry.filespaces.end(),
+                     [&](const filespace::FilespaceDescriptor& descriptor) {
+                       return descriptor.filespace_uuid.value == parsed_filespace.value;
+                     });
+}
+
+EngineApiDiagnostic FilespaceCatalogDescriptorNotFoundDiagnostic(const char* operation) {
+  return MakeEngineApiDiagnostic("FILESPACE.CATALOG_DESCRIPTOR_NOT_FOUND",
+                                 "filespace.catalog_descriptor_not_found",
+                                 operation,
+                                 true);
+}
+
 std::string LifecycleRegistryKey(const EngineRequestContext& context) {
   const std::string path = context.database_path.empty() ? std::string("database_path_absent")
                                                          : context.database_path;
@@ -321,6 +360,101 @@ platform::u64 RequestedPreallocationPages(const EngineApiRequest& request,
     return 0;
   }
   return (requested_bytes + page_size - 1) / page_size;
+}
+
+filespace::FilespaceDescriptor FilespaceDescriptorFromRequest(
+    const EngineApiRequest& request,
+    const EngineObjectReference& target,
+    const platform::TypedUuid& database_uuid,
+    const platform::TypedUuid& filespace_uuid,
+    const platform::TypedUuid& writer_identity_uuid,
+    filespace::FilespaceOperation operation) {
+  filespace::FilespaceDescriptor descriptor;
+  descriptor.database_uuid = database_uuid;
+  descriptor.filespace_uuid = filespace_uuid;
+  descriptor.path = DefaultLifecyclePath(request, target);
+  descriptor.role = LifecycleRoleValue(request, operation);
+  descriptor.state = filespace::FilespaceState::online;
+  descriptor.page_size = PageSizeBytes(request);
+  if (descriptor.page_size == 0) {
+    descriptor.page_size =
+        static_cast<platform::u32>(scratchbird::storage::disk::PageSizeProfile::profile_16k);
+  }
+  descriptor.generation = 1;
+  descriptor.read_only = false;
+  descriptor.active = true;
+  descriptor.physical_filespace_id =
+      static_cast<platform::u16>(OptionU64(request, "filespace.physical_id:", 1));
+  descriptor.total_pages = OptionU64(request, "filespace.total_pages:", 64);
+  descriptor.free_pages = OptionU64(request, "filespace.free_pages:", 32);
+  descriptor.preallocated_pages = OptionU64(request, "filespace.preallocated_pages:", 0);
+  descriptor.allocation_root_page = OptionU64(request, "filespace.allocation_root_page:", 4);
+  descriptor.header_generation = OptionU64(request, "filespace.header_generation:", 1);
+  descriptor.writer_identity_uuid = writer_identity_uuid;
+  return descriptor;
+}
+
+filespace::FilespaceDescriptor* FindRuntimeFilespace(filespace::FilespaceRegistry* registry,
+                                                     const platform::TypedUuid& filespace_uuid) {
+  if (registry == nullptr) {
+    return nullptr;
+  }
+  for (auto& descriptor : registry->filespaces) {
+    if (descriptor.filespace_uuid.value == filespace_uuid.value) {
+      return &descriptor;
+    }
+  }
+  return nullptr;
+}
+
+void EnsureFilespaceLifecycleRuntime(FilespaceLifecycleRouteRuntime* runtime,
+                                     const EngineApiRequest& request,
+                                     const EngineObjectReference& target,
+                                     const platform::TypedUuid& database_uuid,
+                                     const platform::TypedUuid& filespace_uuid,
+                                     filespace::FilespaceOperation operation) {
+  if (runtime == nullptr) {
+    return;
+  }
+  if (FindRuntimeFilespace(&runtime->registry, filespace_uuid) != nullptr) {
+    return;
+  }
+  runtime->registry.filespaces.push_back(FilespaceDescriptorFromRequest(
+      request, target, database_uuid, filespace_uuid, runtime->writer_identity_uuid, operation));
+}
+
+void UpsertFilespaceLifecycleRuntimeFromPreallocation(
+    const EngineApiRequest& request,
+    const EngineObjectReference& target,
+    const platform::TypedUuid& database_uuid,
+    const platform::TypedUuid& filespace_uuid,
+    const filespace::FilespacePreallocationResult& storage) {
+  const std::string key = LifecycleRegistryKey(request.context);
+  std::lock_guard<std::mutex> lock(FilespaceLifecycleRouteMutex());
+  auto& runtime = FilespaceLifecycleRouteRegistries()[key];
+  if (!runtime.writer_identity_uuid.valid()) {
+    runtime.writer_identity_uuid = GeneratedIdentity(platform::UuidKind::object, key, 71);
+  }
+  auto descriptor = FilespaceDescriptorFromRequest(
+      request,
+      target,
+      database_uuid,
+      filespace_uuid,
+      runtime.writer_identity_uuid,
+      filespace::FilespaceOperation::verify_filespace);
+  descriptor.total_pages = storage.member_capacity_window.physical_page_count == 0
+                               ? descriptor.total_pages
+                               : storage.member_capacity_window.physical_page_count;
+  descriptor.preallocated_pages = storage.member_capacity_window.preallocated_page_count == 0
+                                      ? descriptor.preallocated_pages
+                                      : storage.member_capacity_window.preallocated_page_count;
+  if (auto* existing = FindRuntimeFilespace(&runtime.registry, filespace_uuid);
+      existing != nullptr) {
+    descriptor.generation = existing->generation + 1;
+    *existing = std::move(descriptor);
+  } else {
+    runtime.registry.filespaces.push_back(std::move(descriptor));
+  }
 }
 
 platform::TypedUuid OptionalObjectIdentity(const EngineApiRequest& request,
@@ -1978,13 +2112,27 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
         effective_operation,
         MakeInvalidRequestDiagnostic(effective_operation, "target_filespace_uuid_invalid_for_storage_route"));
   }
-
   const auto lifecycle_operation = LifecycleOperationFor(effective_operation);
+  const bool creates_or_attaches_descriptor =
+      lifecycle_operation == filespace::FilespaceOperation::create_filespace ||
+      lifecycle_operation == filespace::FilespaceOperation::attach_filespace;
+  if (!creates_or_attaches_descriptor &&
+      !VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid.canonical)) {
+    return FilespaceLifecycleFailure(
+        request,
+        effective_operation,
+        FilespaceCatalogDescriptorNotFoundDiagnostic(effective_operation.c_str()));
+  }
+
   const std::string key = LifecycleRegistryKey(request.context);
   std::lock_guard<std::mutex> lock(FilespaceLifecycleRouteMutex());
   auto& runtime = FilespaceLifecycleRouteRegistries()[key];
   if (!runtime.writer_identity_uuid.valid()) {
     runtime.writer_identity_uuid = GeneratedIdentity(platform::UuidKind::object, key, 71);
+  }
+  if (!creates_or_attaches_descriptor) {
+    EnsureFilespaceLifecycleRuntime(
+        &runtime, request, target, database_uuid, filespace_uuid, lifecycle_operation);
   }
 
   filespace::FilespaceOperationRequest storage_request;
@@ -2207,6 +2355,10 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "target_filespace_uuid_invalid_for_storage_route"));
   }
+  if (!VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid.canonical)) {
+    return FilespacePreallocateFailure(
+        request, FilespaceCatalogDescriptorNotFoundDiagnostic(kOperation));
+  }
   if (!transaction_uuid.valid()) {
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "transaction_uuid_invalid_for_storage_route"));
@@ -2289,6 +2441,8 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
     return FilespacePreallocateFailure(request, DiagnosticFromPreallocation(storage));
   }
   runtime.ledger = std::move(candidate);
+  UpsertFilespaceLifecycleRuntimeFromPreallocation(
+      request, target, database_uuid, filespace_uuid, storage);
 
   auto result = MakeApiBehaviorSuccess<EngineFilespacePreallocateResult>(
       request.context, kOperation);

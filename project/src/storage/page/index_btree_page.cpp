@@ -46,6 +46,7 @@ using scratchbird::core::uuid::CompareUuid128;
 using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
 inline constexpr std::array<byte, 8> kIndexBtreeMagic = {'S', 'B', 'I', 'D', 'X', '0', '0', '1'};
+inline constexpr std::array<byte, 5> kIndexBtreeMagicPrefix = {'S', 'B', 'I', 'D', 'X'};
 inline constexpr std::array<byte, 4> kOrderPreservingKeyMagic = {'S', 'B', 'K', 'O'};
 inline constexpr std::array<byte, 4> kUnsafeLegacyKeyMagic = {'S', 'B', 'K', '1'};
 inline constexpr u32 kOffsetMagic = 0;
@@ -156,6 +157,10 @@ bool StartsWithBytes(const std::vector<byte>& bytes, const std::array<byte, N>& 
 
 bool IsOrderPreservingEncodedKey(const std::vector<byte>& bytes) {
   return StartsWithBytes(bytes, kOrderPreservingKeyMagic);
+}
+
+bool HasIndexBtreeMagicPrefix(const std::vector<byte>& serialized) {
+  return StartsWithBytes(serialized, kIndexBtreeMagicPrefix);
 }
 
 bool IsUnsafeLegacyEncodedKey(const std::vector<byte>& bytes) {
@@ -410,6 +415,11 @@ IndexBtreePageBodyResult ParseIndexBtreePageBody(const std::vector<byte>& serial
                           std::to_string(page_number));
   }
   if (!std::equal(kIndexBtreeMagic.begin(), kIndexBtreeMagic.end(), serialized.begin() + kOffsetMagic)) {
+    if (HasIndexBtreeMagicPrefix(serialized)) {
+      return IndexPageError("SB-INDEX-BTREE-PAGE-FORMAT-UNSUPPORTED",
+                            "storage.index_btree_page.format_unsupported",
+                            std::to_string(page_number));
+    }
     return IndexPageError("SB-INDEX-BTREE-PAGE-MAGIC-INVALID",
                           "storage.index_btree_page.magic_invalid",
                           std::to_string(page_number));

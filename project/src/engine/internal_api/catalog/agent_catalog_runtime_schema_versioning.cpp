@@ -36,6 +36,10 @@ constexpr std::string_view kDirectAgentStorageViews[] = {
     "sys.filespace_capacity_agent_state",
     "sys.page_allocation_agent_state",
     "sys.filespace_shrink_readiness",
+    "sys.ipar.agent_lifecycle",
+    "sys.ipar.metric_counters",
+    "sys.ipar.telemetry_controls",
+    "sys.ipar.slow_path_reasons",
 };
 
 std::string KindPrefix(AgentCatalogRuntimeSchemaSurfaceKind kind) {

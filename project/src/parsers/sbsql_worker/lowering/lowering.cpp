@@ -226,9 +226,12 @@ struct CreateVectorCollectionInfo {
   bool field_modifier_present{false};
   std::string invalid_reason;
   std::size_t collection_name_parts{0};
+  std::string collection_name;
+  std::string schema_parent_path;
   std::string dimension;
   std::string metric{"default"};
   std::string index_method{"default"};
+  std::vector<SimpleCreateTableColumnInfo> payload_columns;
   std::vector<std::string> row_surface_ids;
 };
 
@@ -341,6 +344,34 @@ struct AlterRenameDdlInfo {
   std::string new_name;
 };
 
+struct AlterDomainDdlInfo {
+  bool active{false};
+  bool valid{false};
+  std::string invalid_reason;
+  std::size_t domain_name_parts{0};
+  std::string target_object_uuid;
+  std::string target_schema_uuid;
+  std::string default_expression_envelope;
+  std::string check_constraint_envelope;
+  bool append_check_constraint{false};
+};
+
+struct AlterSequenceDdlInfo {
+  bool active{false};
+  bool valid{false};
+  bool cache_present{false};
+  bool maxvalue_present{false};
+  bool restart_present{false};
+  std::string invalid_reason;
+  std::size_t sequence_name_parts{0};
+  std::string sequence_lookup_key;
+  std::string target_object_uuid;
+  std::string target_schema_uuid;
+  std::string cache_value;
+  std::string max_value;
+  std::string restart_value;
+};
+
 struct SimpleDropObjectDdlInfo {
   bool active{false};
   bool valid{false};
@@ -358,8 +389,27 @@ struct SimpleCreateSequenceInfo {
   bool active{false};
   bool valid{false};
   bool if_not_exists{false};
+  bool type_present{false};
+  bool start_with_present{false};
+  bool increment_by_present{false};
+  bool minvalue_present{false};
+  bool maxvalue_present{false};
+  bool cache_present{false};
+  bool no_cache_present{false};
+  bool cycle_present{false};
+  bool no_cycle_present{false};
   std::string invalid_reason;
   std::size_t sequence_name_parts{0};
+  std::string sequence_name;
+  std::string schema_parent_path;
+  std::string sequence_lookup_key;
+  std::string canonical_type_name;
+  std::vector<std::string> type_surface_ids;
+  std::string start_value;
+  std::string increment_value;
+  std::string min_value;
+  std::string max_value;
+  std::string cache_value;
 };
 
 struct SimpleCreateViewInfo {
@@ -377,8 +427,13 @@ struct SimpleCreateDomainInfo {
   bool valid{false};
   std::string invalid_reason;
   std::size_t domain_name_parts{0};
+  std::string domain_name;
+  std::string schema_parent_path;
   std::string canonical_type_name;
   std::vector<std::string> type_surface_ids;
+  bool nullable{true};
+  std::string default_expression_envelope;
+  std::string check_constraint_envelope;
 };
 
 struct SimpleCreateExecutableObjectInfo {
@@ -401,6 +456,29 @@ struct SimpleCreateExecutableObjectInfo {
   std::vector<std::string> parameter_surface_ids;
 };
 
+struct RoutineInvocationArgumentInfo {
+  std::string descriptor_kind{"scalar"};
+  std::string type_name{"text"};
+  std::string value;
+  std::string binding{"literal"};
+};
+
+struct RoutineInvocationInfo {
+  bool active{false};
+  bool valid{false};
+  std::string invalid_reason;
+  std::string invocation_kind{"procedure"};
+  std::string operation_id{"routine.procedure_invoke"};
+  std::string sblr_opcode{"SBLR_PROCEDURE_INVOKE"};
+  std::string engine_api_function{"EngineInvokeExecutableObject"};
+  std::size_t routine_name_parts{0};
+  std::string routine_name;
+  std::string routine_object_uuid;
+  std::string target_schema_uuid;
+  std::vector<RoutineInvocationArgumentInfo> arguments;
+  std::vector<std::string> row_surface_ids;
+};
+
 struct CatalogDescriptorMutationInfo {
   bool active{false};
   bool valid{false};
@@ -417,6 +495,8 @@ struct CatalogDescriptorMutationInfo {
   std::string catalog_authority;
   std::string descriptor_ref;
   std::size_t name_parts{0};
+  std::string object_name;
+  std::string schema_parent_path;
   std::string target_object_uuid;
   std::vector<std::string> row_surface_ids;
 };
@@ -764,9 +844,12 @@ struct Sbsfc077NonGeneralResidualRouteInfo {
   std::string runtime_evidence_kind;
   std::string runtime_evidence_id;
   std::string object_kind{"sbsfc077_surface"};
+  std::string target_object_uuid;
+  std::string requested_pages;
   std::string compile_statement_name;
   std::string compile_module_symbol;
   std::string compile_mode;
+  bool dynamic_sbsql_udr_route{false};
   bool requires_transaction_context{false};
 };
 
@@ -956,6 +1039,7 @@ struct ArchiveReplicationRouteInfo {
   bool changefeed{false};
   bool option_list_present{false};
   bool format_json{false};
+  bool verify_only{false};
   std::string operation_id;
   std::string opcode;
   std::string archive_operation;
@@ -1199,6 +1283,8 @@ struct TableCountInfo {
   bool valid{false};
   std::string invalid_reason;
   std::string object_uuid;
+  bool catalog_projection_count{false};
+  std::string catalog_projection_path;
   bool count_all{true};
   bool count_distinct{false};
   bool count_assertion_projection{false};
@@ -1213,6 +1299,22 @@ struct TableCountInfo {
   std::string predicate_column;
   std::string predicate_value;
   std::string predicate_value_type;
+  std::string additional_predicate_kind;
+  std::string additional_predicate_column;
+  std::string additional_predicate_value;
+  std::string additional_predicate_value_type;
+  std::string subquery_projection;
+  std::string subquery_select_column;
+  std::string subquery_predicate_kind;
+  std::string subquery_predicate_column;
+  std::string subquery_predicate_value;
+  std::string subquery_predicate_value_type;
+  std::string subquery_nested_projection;
+  std::string subquery_nested_select_column;
+  std::string subquery_nested_predicate_kind;
+  std::string subquery_nested_predicate_column;
+  std::string subquery_nested_predicate_value;
+  std::string subquery_nested_predicate_value_type;
 };
 
 struct MaterializedCteInfo {
@@ -1399,6 +1501,184 @@ bool ConsumeQualifiedNameWithParts(const CstDocument& cst,
   if (consumed.empty() || expect_part) return false;
   *parts = std::move(consumed);
   return true;
+}
+
+bool IsSourceIdentifierChar(char ch) {
+  return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+         (ch >= '0' && ch <= '9') || ch == '_' || ch == '$';
+}
+
+void SkipSourceWhitespace(std::string_view source, std::size_t* cursor) {
+  while (*cursor < source.size()) {
+    const char ch = source[*cursor];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') return;
+    ++(*cursor);
+  }
+}
+
+bool SourceKeywordBoundary(std::string_view source, std::size_t cursor) {
+  return cursor >= source.size() || !IsSourceIdentifierChar(source[cursor]);
+}
+
+bool ConsumeSourceKeyword(std::string_view source,
+                          std::size_t* cursor,
+                          std::string_view keyword) {
+  SkipSourceWhitespace(source, cursor);
+  if (*cursor + keyword.size() > source.size()) return false;
+  const std::string got = ToUpperAscii(source.substr(*cursor, keyword.size()));
+  if (got != ToUpperAscii(keyword)) return false;
+  if (!SourceKeywordBoundary(source, *cursor + keyword.size())) return false;
+  *cursor += keyword.size();
+  return true;
+}
+
+bool ConsumeSourceIdentifierPart(std::string_view source,
+                                 std::size_t* cursor,
+                                 std::string* out) {
+  SkipSourceWhitespace(source, cursor);
+  if (*cursor >= source.size() || out == nullptr) return false;
+  std::string value;
+  if (source[*cursor] == '"') {
+    ++(*cursor);
+    while (*cursor < source.size()) {
+      const char ch = source[*cursor];
+      if (ch == '"') {
+        if (*cursor + 1 < source.size() && source[*cursor + 1] == '"') {
+          value.push_back('"');
+          *cursor += 2;
+          continue;
+        }
+        ++(*cursor);
+        *out = std::move(value);
+        return !out->empty();
+      }
+      value.push_back(ch);
+      ++(*cursor);
+    }
+    return false;
+  }
+  while (*cursor < source.size() && IsSourceIdentifierChar(source[*cursor])) {
+    value.push_back(source[*cursor]);
+    ++(*cursor);
+  }
+  if (value.empty()) return false;
+  *out = std::move(value);
+  return true;
+}
+
+bool ExtractSourceQualifiedNameAfterPrefix(std::string_view source,
+                                           std::string_view prefix,
+                                           std::vector<std::string>* parts) {
+  if (parts == nullptr || !LifecycleCommandStartsWith(source, prefix)) return false;
+  std::size_t cursor = prefix.size();
+  std::vector<std::string> consumed;
+  if (ConsumeSourceKeyword(source, &cursor, "IF")) {
+    if (!ConsumeSourceKeyword(source, &cursor, "NOT") ||
+        !ConsumeSourceKeyword(source, &cursor, "EXISTS")) {
+      return false;
+    }
+  }
+  while (true) {
+    std::string part;
+    if (!ConsumeSourceIdentifierPart(source, &cursor, &part)) return false;
+    consumed.push_back(std::move(part));
+    SkipSourceWhitespace(source, &cursor);
+    if (cursor >= source.size() || source[cursor] != '.') break;
+    ++cursor;
+  }
+  if (consumed.empty()) return false;
+  *parts = std::move(consumed);
+  return true;
+}
+
+bool LifecycleDatabaseNameLooksReserved(const std::vector<std::string>& parts) {
+  if (parts.empty()) return true;
+  const auto first = ToUpperAscii(parts.front());
+  return first == "ENTER" || first == "EXIT" || first == "SET" ||
+         first == "CLEAR" || first == "FORCE" || first == "LOGICAL" ||
+         first == "PRESERVE" || first == "WITH" || first == "CASCADE" ||
+         first == "RESTRICT" || first == "MAINTENANCE" ||
+         first == "RESTRICTED" || first == "OPEN";
+}
+
+bool ExtractLifecycleDatabaseNameParts(std::string_view source,
+                                       std::vector<std::string>* parts) {
+  static constexpr std::string_view kPrefixes[] = {
+      "CREATE DATABASE",
+      "ALTER DATABASE",
+      "MAINTENANCE DATABASE",
+      "REPAIR DATABASE",
+      "DROP DATABASE",
+      "VERIFY DATABASE",
+      "INSPECT DATABASE",
+      "DIAGNOSE DATABASE",
+      "SHUTDOWN DATABASE",
+      "FORCE SHUTDOWN DATABASE",
+      "ACKNOWLEDGE SHUTDOWN DATABASE",
+      "ATTACH DATABASE",
+      "OPEN DATABASE",
+      "USE DATABASE",
+      "DETACH DATABASE",
+  };
+  for (const auto prefix : kPrefixes) {
+    std::vector<std::string> candidate;
+    if (ExtractSourceQualifiedNameAfterPrefix(source, prefix, &candidate) &&
+        !LifecycleDatabaseNameLooksReserved(candidate)) {
+      *parts = std::move(candidate);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ExtractSourceIdentifierAfterKeywordSequence(
+    std::string_view source,
+    std::initializer_list<std::string_view> keywords,
+    std::string* out) {
+  if (out == nullptr || keywords.size() == 0) return false;
+  for (std::size_t start = 0; start < source.size(); ++start) {
+    if (start > 0 && IsSourceIdentifierChar(source[start - 1])) {
+      continue;
+    }
+    std::size_t cursor = start;
+    bool matched = true;
+    for (const auto keyword : keywords) {
+      if (!ConsumeSourceKeyword(source, &cursor, keyword)) {
+        matched = false;
+        break;
+      }
+    }
+    if (!matched) continue;
+    std::string value;
+    if (ConsumeSourceIdentifierPart(source, &cursor, &value)) {
+      *out = std::move(value);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string LifecycleRepairPlanId(std::string_view source) {
+  std::string plan;
+  if (ExtractSourceIdentifierAfterKeywordSequence(source, {"WITH", "PLAN"}, &plan)) {
+    return plan;
+  }
+  if (ExtractSourceIdentifierAfterKeywordSequence(source, {"PLAN"}, &plan)) {
+    return plan;
+  }
+  return {};
+}
+
+std::string LifecycleDropMode(std::string_view source) {
+  const auto upper = ToUpperAscii(source);
+  if (upper.find(" PHYSICAL") != std::string::npos ||
+      upper.find(" DELETE") != std::string::npos) {
+    return "physical_delete";
+  }
+  if (upper.find(" QUARANTINE") != std::string::npos) {
+    return "quarantine";
+  }
+  return "logical";
 }
 
 bool ConsumeKeyword(const CstDocument& cst, std::size_t* index, std::string_view keyword) {
@@ -1840,7 +2120,7 @@ std::string PublicExactCommandOpcodeForOperation(std::string_view operation_id) 
   return {};
 }
 
-constexpr std::array<EngineApiCommandSpec, 51> kEngineApiCommandSpecs{{
+constexpr std::array<EngineApiCommandSpec, 54> kEngineApiCommandSpecs{{
     {"engine.agent.request_page_preallocation", "ENGINE AGENT REQUEST PAGE PREALLOCATION", "ENGINE AGENT REQUEST PAGE PREALLOCATION", "agents.request_page_preallocation", "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPagePreallocation", "agent_hook", "sys.agents.action_hooks", "right.agent_control", true, true},
     {"engine.agent.request_page_relocation", "ENGINE AGENT REQUEST PAGE RELOCATION", "ENGINE AGENT REQUEST PAGE RELOCATION", "agents.request_page_relocation", "SBLR_AGENT_REQUEST_PAGE_RELOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPageRelocation", "agent_hook", "sys.agents.action_hooks", "right.agent_control", true, true},
     {"engine.agent.request_filespace_growth", "ENGINE AGENT REQUEST FILESPACE GROWTH", "ENGINE AGENT REQUEST FILESPACE GROWTH", "agents.request_filespace_growth", "SBLR_AGENT_REQUEST_FILESPACE_GROWTH", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestFilespaceGrowth", "agent_hook", "sys.agents.action_hooks", "right.agent_control", true, true},
@@ -1849,6 +2129,9 @@ constexpr std::array<EngineApiCommandSpec, 51> kEngineApiCommandSpecs{{
     {"engine.agent.request_index_rebuild", "ENGINE AGENT REQUEST INDEX REBUILD", "ENGINE AGENT REQUEST INDEX REBUILD", "agents.request_index_rebuild_or_shadow_build", "SBLR_AGENT_REQUEST_INDEX_REBUILD_OR_SHADOW_BUILD", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestIndexRebuildOrShadowBuild", "agent_hook", "sys.agents.action_hooks", "right.agent_control", true, true},
     {"engine.artifact.export_catalog", "EXPORT CATALOG ARTIFACT", "EXPORT CATALOG ARTIFACT", "artifact.export_catalog", "SBLR_ARTIFACT_EXPORT_CATALOG", "sblr.catalog.mutation.v3", "result.shape.catalog_artifact_rows", "EngineExportCatalogArtifacts", "catalog_artifact_export", "sys.catalog.artifacts", "right.catalog_read", false, true},
     {"engine.artifact.import_catalog", "IMPORT CATALOG ARTIFACT", "IMPORT CATALOG ARTIFACT", "artifact.import_catalog", "SBLR_ARTIFACT_IMPORT_CATALOG", "sblr.catalog.mutation.v3", "result.shape.catalog_artifact_status", "EngineImportCatalogArtifacts", "catalog_artifact_import", "sys.catalog.artifacts", "right.catalog_mutate", true, true},
+    {"engine.artifact.external_git.export_snapshot", "EXPORT EXTERNAL GIT CATALOG SNAPSHOT", "EXPORT EXTERNAL GIT CATALOG SNAPSHOT", "artifact.external_git.export_snapshot", "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT", "sblr.catalog.mutation.v3", "result.shape.external_git_snapshot_rows", "EngineExportExternalGitSnapshot", "catalog_artifact_external_git", "sys.catalog.artifacts", "right.catalog_read", false, true},
+    {"engine.artifact.external_git.diff_snapshot", "DIFF EXTERNAL GIT CATALOG SNAPSHOT", "DIFF EXTERNAL GIT CATALOG SNAPSHOT", "artifact.external_git.diff_snapshot", "SBLR_ARTIFACT_EXTERNAL_GIT_DIFF_SNAPSHOT", "sblr.catalog.mutation.v3", "result.shape.external_git_diff_rows", "EngineDiffExternalGitSnapshot", "catalog_artifact_external_git", "sys.catalog.artifacts", "right.catalog_read", false, true},
+    {"engine.artifact.external_git.rollback_plan", "PLAN EXTERNAL GIT CATALOG ROLLBACK", "PLAN EXTERNAL GIT CATALOG ROLLBACK", "artifact.external_git.rollback_plan", "SBLR_ARTIFACT_EXTERNAL_GIT_ROLLBACK_PLAN", "sblr.catalog.mutation.v3", "result.shape.external_git_rollback_plan_rows", "EnginePlanExternalGitRollback", "catalog_artifact_external_git", "sys.catalog.artifacts", "right.catalog_read", false, true},
     {"engine.import.execute_rows", "ENGINE IMPORT ROWS EXECUTE", "ENGINE IMPORT ROWS EXECUTE", "dml.execute_import_rows", "SBLR_DML_EXECUTE_IMPORT_ROWS", "sblr.dml.operation.v3", "result.shape.import_execution_status", "EngineExecuteImportRows", "dml_import_execution", "sys.import.execution", "right.write", true, true},
     {"engine.import.normalize_checkpoint_model", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "dml.normalize_import_checkpoint_model", "SBLR_DML_IMPORT_CHECKPOINT_MODEL", "sblr.dml.operation.v3", "result.shape.import_checkpoint_model", "EngineNormalizeImportCheckpointModel", "dml_import_checkpoint_model", "sys.import.checkpoint_policy", "right.write", false, true},
     {"engine.import.normalize_reject_model", "ENGINE IMPORT REJECT MODEL NORMALIZE", "ENGINE IMPORT REJECT MODEL NORMALIZE", "dml.normalize_import_reject_model", "SBLR_DML_IMPORT_REJECT_MODEL", "sblr.dml.operation.v3", "result.shape.import_reject_model", "EngineNormalizeImportRejectModel", "dml_import_reject_model", "sys.import.reject_policy", "right.write", false, true},
@@ -1921,7 +2204,8 @@ std::string_view EngineApiCommandAuthorityStep(const EngineApiCommandSpec& spec)
   }
   if (spec.route_kind == "agent_hook") return "authority.engine.agent_management_api_required";
   if (spec.route_kind == "catalog_artifact_export" ||
-      spec.route_kind == "catalog_artifact_import") {
+      spec.route_kind == "catalog_artifact_import" ||
+      spec.route_kind == "catalog_artifact_external_git") {
     return "authority.engine.catalog_artifact_api_required";
   }
   if (spec.route_kind == "dml_import_execution" ||
@@ -2019,7 +2303,12 @@ EngineApiCommandRouteInfo AnalyzeEngineApiCommandRoute(const CstDocument& cst) {
       (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "PREPARE") &&
        PublicExactTokenEquals(tokens, 1, "TRANSACTION")) ||
       (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "EXPORT") &&
-       PublicExactTokenEquals(tokens, 1, "CATALOG")) ||
+       (PublicExactTokenEquals(tokens, 1, "CATALOG") ||
+        PublicExactTokenEquals(tokens, 1, "EXTERNAL"))) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "DIFF") &&
+       PublicExactTokenEquals(tokens, 1, "EXTERNAL")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "PLAN") &&
+       PublicExactTokenEquals(tokens, 1, "EXTERNAL")) ||
       (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "IMPORT") &&
        PublicExactTokenEquals(tokens, 1, "CATALOG")) ||
       (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 0, "ALTER") &&
@@ -3994,6 +4283,25 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077QueryPlanRoute(
                            "table_scan");
 }
 
+Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077DynamicSbsqlRoute(
+    std::string surface_id,
+    std::string canonical_name,
+    std::string route_kind) {
+  auto info = MakeSbsfc077Route(std::move(surface_id),
+                                std::move(canonical_name),
+                                "sblr.udr.operation.v3",
+                                "extensibility.invoke_udr_package",
+                                UdrOpcodeForOperation("extensibility.invoke_udr_package"),
+                                "EngineInvokeUdrPackage",
+                                std::move(route_kind),
+                                "authority.engine.udr_invoke_api_required",
+                                "parser_support_udr",
+                                "sbsql_parse_to_sblr_verified",
+                                true);
+  info.dynamic_sbsql_udr_route = true;
+  return info;
+}
+
 Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077GraphRoute(
     std::string surface_id,
     std::string canonical_name,
@@ -4083,6 +4391,29 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077FilespacePreallocateRoute(
                                 true);
   info.object_kind = "filespace";
   return info;
+}
+
+std::string DigitsFromNumericToken(const Token& token) {
+  if (token.kind != TokenKind::kNumericLiteral) return {};
+  std::string digits;
+  for (const char ch : token.text) {
+    if (ch >= '0' && ch <= '9') {
+      digits.push_back(ch);
+      continue;
+    }
+    break;
+  }
+  return digits;
+}
+
+std::string FilespacePageCountAfterKeyword(const CstDocument& cst,
+                                           std::string_view keyword) {
+  const auto tokens = MeaningfulTokens(cst);
+  for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
+    if (ToUpperAscii(tokens[index]->text) != keyword) continue;
+    return DigitsFromNumericToken(*tokens[index + 1]);
+  }
+  return {};
 }
 
 Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077ClusterProfileRoute(
@@ -5251,16 +5582,9 @@ Sbsfc077NonGeneralResidualRouteInfo AnalyzeSbsfc077NonGeneralResidualRoute(
   }
 
   if (StartsWithWords(words, {"PSQL", "EXECUTE", "STATEMENT"})) {
-    return MakeSbsfc077Route("SBSQL-65DE8F82E1EB",
-                             "psql_execute_statement",
-                             "sblr.observability.inspect.v3",
-                             "observability.show_statements",
-                             ObservabilityOpcodeForOperation("observability.show_statements"),
-                             "EngineShowStatements",
-                             "psql_execute_statement_inspect",
-                             "authority.engine.observability_api_required",
-                             "observability",
-                             "observability.show_statements");
+    return MakeSbsfc077DynamicSbsqlRoute("SBSQL-65DE8F82E1EB",
+                                         "psql_execute_statement",
+                                         "dynamic_sbsql_parser_support_udr");
   }
   if (StartsWithWords(words, {"PSQL", "STATEMENT"})) {
     return MakeSbsfc077Route("SBSQL-2F6F77257FD1",
@@ -5327,14 +5651,18 @@ Sbsfc077NonGeneralResidualRouteInfo AnalyzeSbsfc077NonGeneralResidualRoute(
     return MakeSbsfc077StorageRoute("SBSQL-407DF23BC3A4", "filespace_name", "filespace_profile");
   }
   if (StartsWithWords(words, {"GROW", "FILESPACE"})) {
-    return MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52001",
-                                                 "grow_filespace_stmt",
-                                                 "grow_filespace");
+    auto info = MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52001",
+                                                      "grow_filespace_stmt",
+                                                      "grow_filespace");
+    info.requested_pages = FilespacePageCountAfterKeyword(cst, "BY");
+    return info;
   }
   if (StartsWithWords(words, {"RESIZE", "FILESPACE"})) {
-    return MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52002",
-                                                 "resize_filespace_stmt",
-                                                 "resize_filespace");
+    auto info = MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52002",
+                                                      "resize_filespace_stmt",
+                                                      "resize_filespace");
+    info.requested_pages = FilespacePageCountAfterKeyword(cst, "TO");
+    return info;
   }
   if (StartsWithWords(words, {"ATTACH", "FILESPACE"})) {
     return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E51001",
@@ -6365,12 +6693,15 @@ bool IsUnsignedIntegerLiteral(const Token& token) {
 }
 
 bool IsBoundedWhereEqualityLiteral(const Token& token) {
-  return IsUnsignedIntegerLiteral(token) || token.kind == TokenKind::kStringLiteral ||
-         token.kind == TokenKind::kUuidLiteral || token.kind == TokenKind::kBooleanLiteral;
+  return token.kind == TokenKind::kNumericLiteral ||
+         token.kind == TokenKind::kStringLiteral ||
+         token.kind == TokenKind::kUuidLiteral ||
+         token.kind == TokenKind::kBooleanLiteral;
 }
 
 std::string BoundedWhereEqualityLiteralType(const Token& token) {
   if (IsUnsignedIntegerLiteral(token)) return "integer";
+  if (token.kind == TokenKind::kNumericLiteral) return "numeric";
   if (token.kind == TokenKind::kUuidLiteral) return "uuid";
   if (token.kind == TokenKind::kBooleanLiteral) return "boolean";
   return "text";
@@ -6795,6 +7126,67 @@ bool ConsumeSelectColumnLikePredicate(const std::vector<const Token*>& tokens,
   return true;
 }
 
+std::string JoinCommaSeparated(const std::vector<std::string>& values) {
+  std::ostringstream out;
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index != 0) out << ',';
+    out << values[index];
+  }
+  return out.str();
+}
+
+bool ConsumeSelectColumnLikeAnyPredicate(const std::vector<const Token*>& tokens,
+                                         std::size_t* index,
+                                         std::string* predicate_column,
+                                         std::string* predicate_value,
+                                         std::string* predicate_value_type) {
+  if (index == nullptr || predicate_column == nullptr ||
+      predicate_value == nullptr || predicate_value_type == nullptr) {
+    return false;
+  }
+  std::size_t cursor = *index;
+  std::string first_column;
+  std::string first_value;
+  std::string first_type;
+  bool first_negated = false;
+  if (!ConsumeSelectColumnLikePredicate(tokens,
+                                        &cursor,
+                                        &first_column,
+                                        &first_value,
+                                        &first_type,
+                                        &first_negated) ||
+      first_negated) {
+    return false;
+  }
+  std::vector<std::string> values{first_value};
+  std::vector<std::string> value_types{first_type};
+  while (cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "OR") {
+    ++cursor;
+    std::string next_column;
+    std::string next_value;
+    std::string next_type;
+    bool next_negated = false;
+    if (!ConsumeSelectColumnLikePredicate(tokens,
+                                          &cursor,
+                                          &next_column,
+                                          &next_value,
+                                          &next_type,
+                                          &next_negated) ||
+        next_negated ||
+        LowerAscii(next_column) != LowerAscii(first_column)) {
+      return false;
+    }
+    values.push_back(std::move(next_value));
+    value_types.push_back(std::move(next_type));
+  }
+  if (values.size() < 2) return false;
+  *predicate_column = std::move(first_column);
+  *predicate_value = JoinCommaSeparated(values);
+  *predicate_value_type = JoinCommaSeparated(value_types);
+  *index = cursor;
+  return true;
+}
+
 bool ConsumeSelectProjectionInSubqueryPredicate(const std::vector<const Token*>& tokens,
                                                 std::size_t* index,
                                                 DmlRouteInfo* info) {
@@ -6897,6 +7289,157 @@ bool ConsumeSelectProjectionInSubqueryPredicate(const std::vector<const Token*>&
   info->subquery_nested_predicate_value_type = std::move(nested_predicate_value_type);
   *index = cursor;
   return true;
+}
+
+bool ConsumeTableCountProjectionInSubqueryPredicate(const std::vector<const Token*>& tokens,
+                                                    std::size_t* index,
+                                                    TableCountInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  DmlRouteInfo parsed;
+  const std::size_t cursor = *index;
+  if (!ConsumeSelectProjectionInSubqueryPredicate(tokens, index, &parsed)) {
+    *index = cursor;
+    return false;
+  }
+  info->has_where_predicate = true;
+  info->predicate_kind = std::move(parsed.predicate_kind);
+  info->predicate_column = std::move(parsed.predicate_column);
+  info->predicate_value = std::move(parsed.predicate_value);
+  info->predicate_value_type = std::move(parsed.predicate_value_type);
+  info->subquery_projection = std::move(parsed.subquery_projection);
+  info->subquery_select_column = std::move(parsed.subquery_select_column);
+  info->subquery_predicate_kind = std::move(parsed.subquery_predicate_kind);
+  info->subquery_predicate_column = std::move(parsed.subquery_predicate_column);
+  info->subquery_predicate_value = std::move(parsed.subquery_predicate_value);
+  info->subquery_predicate_value_type = std::move(parsed.subquery_predicate_value_type);
+  info->subquery_nested_projection = std::move(parsed.subquery_nested_projection);
+  info->subquery_nested_select_column = std::move(parsed.subquery_nested_select_column);
+  info->subquery_nested_predicate_kind = std::move(parsed.subquery_nested_predicate_kind);
+  info->subquery_nested_predicate_column = std::move(parsed.subquery_nested_predicate_column);
+  info->subquery_nested_predicate_value = std::move(parsed.subquery_nested_predicate_value);
+  info->subquery_nested_predicate_value_type = std::move(parsed.subquery_nested_predicate_value_type);
+  return true;
+}
+
+bool ConsumeSingleColumnEqualityPredicate(const std::vector<const Token*>& tokens,
+                                          std::size_t* index,
+                                          std::string* predicate_column,
+                                          std::string* predicate_value,
+                                          std::string* predicate_value_type) {
+  if (index == nullptr || predicate_column == nullptr ||
+      predicate_value == nullptr || predicate_value_type == nullptr) {
+    return false;
+  }
+  std::size_t cursor = *index;
+  std::string predicate_leaf;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &predicate_leaf) ||
+      cursor >= tokens.size() || tokens[cursor]->text != "=") {
+    return false;
+  }
+  ++cursor;
+  if (cursor >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[cursor])) {
+    return false;
+  }
+  *predicate_column = std::move(predicate_leaf);
+  *predicate_value = DmlLiteralPayload(*tokens[cursor]);
+  *predicate_value_type = BoundedWhereEqualityLiteralType(*tokens[cursor]);
+  *index = cursor + 1;
+  return true;
+}
+
+bool ConsumeTableCountEqualityAndSubqueryPredicate(const std::vector<const Token*>& tokens,
+                                                   std::size_t* index,
+                                                   TableCountInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  const std::size_t start = *index;
+
+  auto install_additional_equality = [](TableCountInfo* target,
+                                        std::string column,
+                                        std::string value,
+                                        std::string value_type) {
+    target->additional_predicate_kind = "column_equals";
+    target->additional_predicate_column = std::move(column);
+    target->additional_predicate_value = std::move(value);
+    target->additional_predicate_value_type = std::move(value_type);
+  };
+  auto install_subquery_predicate = [](TableCountInfo* target, TableCountInfo parsed) {
+    target->has_where_predicate = true;
+    target->predicate_kind = std::move(parsed.predicate_kind);
+    target->predicate_column = std::move(parsed.predicate_column);
+    target->predicate_value = std::move(parsed.predicate_value);
+    target->predicate_value_type = std::move(parsed.predicate_value_type);
+    target->subquery_projection = std::move(parsed.subquery_projection);
+    target->subquery_select_column = std::move(parsed.subquery_select_column);
+    target->subquery_predicate_kind = std::move(parsed.subquery_predicate_kind);
+    target->subquery_predicate_column = std::move(parsed.subquery_predicate_column);
+    target->subquery_predicate_value = std::move(parsed.subquery_predicate_value);
+    target->subquery_predicate_value_type =
+        std::move(parsed.subquery_predicate_value_type);
+    target->subquery_nested_projection = std::move(parsed.subquery_nested_projection);
+    target->subquery_nested_select_column =
+        std::move(parsed.subquery_nested_select_column);
+    target->subquery_nested_predicate_kind =
+        std::move(parsed.subquery_nested_predicate_kind);
+    target->subquery_nested_predicate_column =
+        std::move(parsed.subquery_nested_predicate_column);
+    target->subquery_nested_predicate_value =
+        std::move(parsed.subquery_nested_predicate_value);
+    target->subquery_nested_predicate_value_type =
+        std::move(parsed.subquery_nested_predicate_value_type);
+  };
+
+  {
+    std::size_t cursor = start;
+    std::string equality_column;
+    std::string equality_value;
+    std::string equality_value_type;
+    if (ConsumeSingleColumnEqualityPredicate(tokens,
+                                             &cursor,
+                                             &equality_column,
+                                             &equality_value,
+                                             &equality_value_type) &&
+        cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "AND") {
+      ++cursor;
+      TableCountInfo parsed;
+      if (ConsumeTableCountProjectionInSubqueryPredicate(tokens, &cursor, &parsed)) {
+        install_subquery_predicate(info, std::move(parsed));
+        install_additional_equality(info,
+                                    std::move(equality_column),
+                                    std::move(equality_value),
+                                    std::move(equality_value_type));
+        *index = cursor;
+        return true;
+      }
+    }
+  }
+
+  {
+    std::size_t cursor = start;
+    TableCountInfo parsed;
+    if (ConsumeTableCountProjectionInSubqueryPredicate(tokens, &cursor, &parsed) &&
+        cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "AND") {
+      ++cursor;
+      std::string equality_column;
+      std::string equality_value;
+      std::string equality_value_type;
+      if (ConsumeSingleColumnEqualityPredicate(tokens,
+                                               &cursor,
+                                               &equality_column,
+                                               &equality_value,
+                                               &equality_value_type)) {
+        install_subquery_predicate(info, std::move(parsed));
+        install_additional_equality(info,
+                                    std::move(equality_column),
+                                    std::move(equality_value),
+                                    std::move(equality_value_type));
+        *index = cursor;
+        return true;
+      }
+    }
+  }
+
+  *index = start;
+  return false;
 }
 
 void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
@@ -7087,6 +7630,24 @@ void AnalyzeSelectOrderLimitOffset(const CstDocument& cst, DmlRouteInfo* info) {
         info->predicate_column = std::move(in_list_column);
         info->predicate_value = std::move(in_list_values);
         info->predicate_value_type = std::move(in_list_value_types);
+        continue;
+      }
+      index = predicate_start;
+      std::string like_column;
+      std::string like_value;
+      std::string like_value_type;
+      bool like_negated = false;
+      if (ConsumeSelectColumnLikePredicate(tokens,
+                                           &index,
+                                           &like_column,
+                                           &like_value,
+                                           &like_value_type,
+                                           &like_negated)) {
+        info->has_where_equality_predicate = true;
+        info->predicate_kind = like_negated ? "column_not_like" : "column_like";
+        info->predicate_column = std::move(like_column);
+        info->predicate_value = std::move(like_value);
+        info->predicate_value_type = std::move(like_value_type);
         continue;
       }
       index = predicate_start;
@@ -10286,9 +10847,51 @@ bool ParsePrimaryProjectionItem(const std::vector<const Token*>& tokens,
   return true;
 }
 
+bool ParseNextValueForProjectionItem(const std::vector<const Token*>& tokens,
+                                     std::size_t* index,
+                                     ScalarProjectionItem* item) {
+  if (index == nullptr || item == nullptr) return false;
+  std::size_t cursor = *index;
+  if (cursor >= tokens.size() || ToUpperAscii(tokens[cursor]->text) != "NEXT") return false;
+  ++cursor;
+  if (cursor >= tokens.size() || ToUpperAscii(tokens[cursor]->text) != "VALUE") return false;
+  ++cursor;
+  if (cursor >= tokens.size() || ToUpperAscii(tokens[cursor]->text) != "FOR") return false;
+  ++cursor;
+  if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) return false;
+  std::string sequence_name = tokens[cursor]->text;
+  ++cursor;
+  while (cursor + 1 < tokens.size() && tokens[cursor]->text == "." &&
+         IsIdentifierLikeToken(*tokens[cursor + 1])) {
+    sequence_name += ".";
+    sequence_name += tokens[cursor + 1]->text;
+    cursor += 2;
+  }
+
+  ScalarProjectionItem sequence_argument;
+  sequence_argument.expression_kind = "literal";
+  sequence_argument.type_name = "text";
+  sequence_argument.literal_family = "character";
+  sequence_argument.value = LowerAscii(sequence_name);
+  sequence_argument.is_null = false;
+
+  item->expression_kind = "function";
+  item->function_id = "sb.scalar.nextval";
+  item->type_name = "int64";
+  item->sblr_binding = "sblr.expr.sequence_nextval.v3";
+  item->engine_entrypoint = "sequence_nextval";
+  item->is_null = false;
+  item->arguments.push_back(std::move(sequence_argument));
+  AppendIfMissing(&item->expression_surface_ids, "SBSQL-C4FAF4EDAF96");
+  AppendIfMissing(&item->expression_surface_ids, "SBSQL-54956088D143");
+  *index = cursor;
+  return true;
+}
+
 bool ParseCaseValueProjectionItem(const std::vector<const Token*>& tokens,
                                   std::size_t* index,
                                   ScalarProjectionItem* item) {
+  if (ParseNextValueForProjectionItem(tokens, index, item)) return true;
   return ParseScalarLiteralProjectionItem(tokens, index, item) ||
          ParseCaseColumnRefProjectionItem(tokens, index, item);
 }
@@ -14233,6 +14836,7 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst) {
   if (!ParseSqlSpecialTextProjectionItem(tokens, &index, &item) &&
         !ParsePrefixNotProjectionItem(tokens, &index, &item) &&
         !ParseExtractSpecialProjectionItem(tokens, &index, &item) &&
+        !ParseNextValueForProjectionItem(tokens, &index, &item) &&
         !ParseSearchedCaseProjectionItem(tokens, &index, &item) &&
         !ParseSimpleCaseProjectionItem(tokens, &index, &item) &&
         !ParseArithmeticExpressionProjectionItem(tokens, &index, &item) &&
@@ -14399,6 +15003,11 @@ bool ConsumeArchiveOptions(const std::vector<const Token*>& tokens,
         *index + 1 < tokens.size() && TokenTextEquals(tokens, *index + 1, "JSON")) {
       info->format_json = true;
       *index += 2;
+      continue;
+    }
+    if (info->restore && TokenTextEquals(tokens, *index, "VERIFY")) {
+      info->verify_only = true;
+      ++(*index);
       continue;
     }
     ++(*index);
@@ -14785,6 +15394,9 @@ PreparedStatementControlInfo AnalyzePreparedStatementControl(const CstDocument& 
     return info;
   }
   if (first == "EXECUTE") {
+    if (tokens.size() >= 2 && ToUpperAscii(tokens[1]->text) == "PROCEDURE") {
+      return info;
+    }
     info.active = true;
     info.execute = true;
     info.operation_id = "session.execute_prepared_statement";
@@ -15488,7 +16100,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
     }
   }
   if (index != tokens.size()) {
-    info.invalid_reason = "join_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "join_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.size() < 2) {
@@ -15602,7 +16214,7 @@ TableJoinInfo AnalyzeExistsCountRoute(const CstDocument& cst,
   }
   ++index;
   if (index != tokens.size()) {
-    info.invalid_reason = "exists_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "exists_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.size() < 2) {
@@ -15806,7 +16418,7 @@ TableJoinInfo AnalyzeJoinGroupAggregateAssertionRoute(
   ++index;
   ConsumeOptionalTokenAlias(tokens, &index);
   if (index != tokens.size()) {
-    info.invalid_reason = "join_group_trailing_tokens_require_future_route";
+    info.invalid_reason = "join_group_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.size() < 2) {
@@ -15968,7 +16580,7 @@ TableJoinInfo AnalyzeJoinWindowMaxAssertionRoute(
   ++index;
   ConsumeOptionalTokenAlias(tokens, &index);
   if (index != tokens.size()) {
-    info.invalid_reason = "join_window_trailing_tokens_require_future_route";
+    info.invalid_reason = "join_window_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.size() < 2) {
@@ -16113,7 +16725,7 @@ TableSetOperationInfo AnalyzeTableSetOperationRoute(
         operation = set_word;
         parsed_first_operator = true;
       } else if (set_word != operation) {
-        info.invalid_reason = "set_operation_mixed_operators_require_future_query_plan_route";
+        info.invalid_reason = "set_operation_mixed_operators_require_query_plan_route";
         return info;
       }
       ++index;
@@ -16137,7 +16749,7 @@ TableSetOperationInfo AnalyzeTableSetOperationRoute(
         quantifier_seen = current_quantifier_seen;
       } else if (current_quantifier_seen &&
                  current_duplicate_preserving != duplicate_preserving) {
-        info.invalid_reason = "set_operation_mixed_quantifiers_require_future_query_plan_route";
+        info.invalid_reason = "set_operation_mixed_quantifiers_require_query_plan_route";
         return info;
       }
       std::string next_project_field;
@@ -16158,7 +16770,7 @@ TableSetOperationInfo AnalyzeTableSetOperationRoute(
     ++index;
     ConsumeOptionalTokenAlias(tokens, &index);
     if (index != tokens.size()) {
-      info.invalid_reason = "set_operation_trailing_tokens_require_future_query_plan_route";
+      info.invalid_reason = "set_operation_trailing_tokens_require_query_plan_route";
       return info;
     }
     if (resolved_object_uuids.size() < project_fields.size()) {
@@ -16213,7 +16825,7 @@ TableSetOperationInfo AnalyzeTableSetOperationRoute(
   }
   if (!ConsumeSelectStarFromRelation(tokens, &index, &info.invalid_reason)) return info;
   if (index != tokens.size()) {
-    info.invalid_reason = "set_operation_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "set_operation_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.size() < 2) {
@@ -16300,7 +16912,7 @@ TableSampleInfo AnalyzeTableSampleRoute(
   }
   ++index;
   if (index != tokens.size()) {
-    info.invalid_reason = "table_sample_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "table_sample_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -16513,7 +17125,7 @@ PivotRouteInfo AnalyzePivotRoute(
   if (!ConsumeTokenText(tokens, &index, ")") ||
       !ConsumeTokenText(tokens, &index, ")") ||
       index != tokens.size()) {
-    info.invalid_reason = "pivot_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "pivot_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -16633,7 +17245,7 @@ UnpivotRouteInfo AnalyzeUnpivotRoute(
   if (!ConsumeTokenText(tokens, &index, ")") ||
       !ConsumeTokenText(tokens, &index, ")") ||
       index != tokens.size()) {
-    info.invalid_reason = "unpivot_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "unpivot_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -16940,7 +17552,7 @@ RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
     }
     info.value_field = LowerAscii(info.value_field);
     if (index < tokens.size() && tokens[index]->text == ",") {
-      info.invalid_reason = "window_navigation_offset_default_requires_future_route";
+      info.invalid_reason = "window_navigation_offset_default_requires_query_plan_route";
       return info;
     }
     if (index >= tokens.size() || tokens[index]->text != ")") {
@@ -17014,7 +17626,7 @@ RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
     return info;
   }
   if (index != tokens.size()) {
-    info.invalid_reason = "window_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "window_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -17409,7 +18021,7 @@ GroupByAggregateInfo AnalyzeGroupByAggregateRoute(
     ++index;
   }
   if (index != tokens.size()) {
-    info.invalid_reason = "group_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "group_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -17494,11 +18106,13 @@ TableCountInfo AnalyzeTableCountRoute(
   }
   info.active = true;
   ++index;
+  std::string source_relation_path;
   std::string ignored_table;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table)) {
+  if (!ConsumeTokenQualifiedPath(tokens, &index, &source_relation_path, &ignored_table)) {
     info.invalid_reason = "count_relation_invalid";
     return info;
   }
+  source_relation_path = LowerAscii(source_relation_path);
   ConsumeOptionalTokenAlias(tokens, &index);
   while (index < tokens.size()) {
     const auto word = ToUpperAscii(tokens[index]->text);
@@ -17515,6 +18129,10 @@ TableCountInfo AnalyzeTableCountRoute(
         info.predicate_column = std::move(null_predicate_columns);
         info.predicate_value.clear();
         info.predicate_value_type.clear();
+        continue;
+      }
+      index = predicate_start;
+      if (ConsumeTableCountEqualityAndSubqueryPredicate(tokens, &index, &info)) {
         continue;
       }
       index = predicate_start;
@@ -17556,9 +18174,29 @@ TableCountInfo AnalyzeTableCountRoute(
         continue;
       }
       index = predicate_start;
+      if (ConsumeTableCountProjectionInSubqueryPredicate(tokens, &index, &info)) {
+        continue;
+      }
+      index = predicate_start;
       std::string like_column;
       std::string like_value;
       std::string like_value_type;
+      if (ConsumeSelectColumnLikeAnyPredicate(tokens,
+                                              &index,
+                                              &like_column,
+                                              &like_value,
+                                              &like_value_type)) {
+        info.has_where_predicate = true;
+        info.predicate_kind = "column_like_any";
+        info.predicate_column = std::move(like_column);
+        info.predicate_value = std::move(like_value);
+        info.predicate_value_type = std::move(like_value_type);
+        continue;
+      }
+      index = predicate_start;
+      like_column.clear();
+      like_value.clear();
+      like_value_type.clear();
       bool like_negated = false;
       if (ConsumeSelectColumnLikePredicate(tokens,
                                            &index,
@@ -17609,14 +18247,24 @@ TableCountInfo AnalyzeTableCountRoute(
       return info;
     }
     if (word == "LIMIT") {
-      info.invalid_reason = "count_limit_requires_future_query_plan_route";
+      info.invalid_reason = "count_limit_requires_query_plan_route";
       return info;
     }
     if (word == "OFFSET" || word == "ORDER" || word == "GROUP" || word == "HAVING") {
-      info.invalid_reason = "count_trailing_tokens_require_future_query_plan_route";
+      info.invalid_reason = "count_trailing_tokens_require_query_plan_route";
       return info;
     }
-    info.invalid_reason = "count_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "count_trailing_tokens_require_query_plan_route";
+    return info;
+  }
+  if (source_relation_path.rfind("sys.", 0) == 0) {
+    if (!info.count_all || info.count_distinct) {
+      info.invalid_reason = "catalog_projection_count_requires_count_all";
+      return info;
+    }
+    info.catalog_projection_count = true;
+    info.catalog_projection_path = std::move(source_relation_path);
+    info.valid = true;
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -17798,7 +18446,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
       ++index;
       ConsumeOptionalTokenAlias(tokens, &index);
       if (index != tokens.size()) {
-        info.invalid_reason = "derived_recursive_cte_trailing_tokens_require_future_query_plan_route";
+        info.invalid_reason = "derived_recursive_cte_trailing_tokens_require_query_plan_route";
         return info;
       }
       ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
@@ -17946,7 +18594,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
     }
     ConsumeOptionalTokenAlias(tokens, &index);
     if (index != tokens.size()) {
-      info.invalid_reason = "recursive_cte_trailing_tokens_require_future_query_plan_route";
+      info.invalid_reason = "recursive_cte_trailing_tokens_require_query_plan_route";
       return info;
     }
     ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
@@ -17992,7 +18640,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
   }
   ++index;
   if (index >= tokens.size() || tokens[index]->text == ",") {
-    info.invalid_reason = "cte_multiple_definitions_require_future_query_plan_route";
+    info.invalid_reason = "cte_multiple_definitions_require_query_plan_route";
     return info;
   }
   if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SELECT") {
@@ -18021,7 +18669,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
   }
   ConsumeOptionalTokenAlias(tokens, &index);
   if (index != tokens.size()) {
-    info.invalid_reason = "cte_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "cte_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -18071,7 +18719,7 @@ ScalarSubqueryInfo AnalyzeScalarSubqueryRoute(
   }
   ++index;
   if (index != tokens.size()) {
-    info.invalid_reason = "subquery_trailing_tokens_require_future_query_plan_route";
+    info.invalid_reason = "subquery_trailing_tokens_require_query_plan_route";
     return info;
   }
   if (resolved_object_uuids.empty()) {
@@ -18158,6 +18806,10 @@ bool ConsumeSimpleDropObjectKind(const CstDocument& cst,
   };
   static constexpr DropKind kDropKinds[] = {
       {"TABLE", "table", "sys.catalog.table", "SBSQL-5CCF87EB0C5C"},
+      {"DOMAIN", "domain", "sys.catalog.domain", "SBSQL-29FD0A67E249"},
+      {"SEQUENCE", "sequence", "sys.catalog.sequence", "SBSQL-1CE3E8923132"},
+      {"FUNCTION", "function", "sys.catalog.function", "SBSQL-66E94DC7813A"},
+      {"PROCEDURE", "procedure", "sys.catalog.procedure", "SBSQL-66E94DC7813A"},
       {"FILESPACE", "filespace", "sys.catalog.filespace", "SBSQL-1E702FF60BA0"},
       {"POLICY", "policy", "sys.security.policy", "SBSQL-25CE560681AB"},
       {"PRINCIPAL", "principal", "sys.security.principal", "SBSQL-EF85496DB350"},
@@ -18938,17 +19590,31 @@ bool ConsumeSimpleCreateTableType(const CstDocument& cst,
   } else if (upper == "MULTIPOLYGON") {
     assign("multipolygon", {"SBSQL-6E5D9BE92362", "SBSQL-AECC79213E90"});
   } else {
-    std::string parameter;
-    std::size_t parameter_index = next_index;
-    const std::string canonical_base = LowerAscii(token.text);
-    if (TryConsumeSimpleTypeParameter(cst, &parameter_index, &parameter)) {
-      next_index = parameter_index;
-      assign(canonical_base + "(" + parameter + ")", {"SBSQL-DB7AEEE23273"});
-    } else if (TryConsumeAngleTypeParameter(cst, &parameter_index, &parameter)) {
-      next_index = parameter_index;
-      assign(canonical_base + "<" + parameter + ">", {"SBSQL-DB7AEEE23273"});
+    std::size_t qualified_index = *index;
+    std::vector<std::string> qualified_parts;
+    if (ConsumeQualifiedNameWithParts(cst, &qualified_index, &qualified_parts) &&
+        qualified_parts.size() > 1) {
+      std::string qualified_type;
+      for (const auto& part : qualified_parts) {
+        if (part.empty()) continue;
+        if (!qualified_type.empty()) qualified_type.push_back('.');
+        qualified_type += LowerAscii(part);
+      }
+      next_index = qualified_index;
+      assign(qualified_type, {"SBSQL-F87AB69EA249", "SBSQL-DB7AEEE23273"});
     } else {
-      assign(canonical_base, {"SBSQL-DB7AEEE23273"});
+      std::string parameter;
+      std::size_t parameter_index = next_index;
+      const std::string canonical_base = LowerAscii(token.text);
+      if (TryConsumeSimpleTypeParameter(cst, &parameter_index, &parameter)) {
+        next_index = parameter_index;
+        assign(canonical_base + "(" + parameter + ")", {"SBSQL-DB7AEEE23273"});
+      } else if (TryConsumeAngleTypeParameter(cst, &parameter_index, &parameter)) {
+        next_index = parameter_index;
+        assign(canonical_base + "<" + parameter + ">", {"SBSQL-DB7AEEE23273"});
+      } else {
+        assign(canonical_base, {"SBSQL-DB7AEEE23273"});
+      }
     }
   }
   *index = next_index;
@@ -18965,6 +19631,10 @@ std::string JoinSimpleIdentifierParts(const std::vector<std::string>& parts,
     out += parts[index];
   }
   return out;
+}
+
+std::string NormalizedQualifiedLookupKey(const std::vector<std::string>& parts) {
+  return LowerAscii(JoinSimpleIdentifierParts(parts, 0, parts.size()));
 }
 
 void SkipSimpleCreateTableTrivia(const CstDocument& cst, std::size_t* index) {
@@ -18989,6 +19659,19 @@ bool ConsumeSimpleCreateTableDefaultExpression(const CstDocument& cst,
                                                std::string* expression) {
   if (index == nullptr || expression == nullptr) return false;
   std::size_t cursor = *index;
+  std::size_t sequence_cursor = cursor;
+  if (ConsumeKeyword(cst, &sequence_cursor, "NEXT") &&
+      ConsumeKeyword(cst, &sequence_cursor, "VALUE") &&
+      ConsumeKeyword(cst, &sequence_cursor, "FOR")) {
+    std::vector<std::string> sequence_parts;
+    if (!ConsumeQualifiedNameWithParts(cst, &sequence_cursor, &sequence_parts) ||
+        sequence_parts.empty()) {
+      return false;
+    }
+    *expression = "sequence_next:" + NormalizedQualifiedLookupKey(sequence_parts);
+    *index = sequence_cursor;
+    return true;
+  }
   int depth = 0;
   std::string rendered;
   while (cursor < cst.tokens.size()) {
@@ -19086,6 +19769,24 @@ bool ConsumeSimpleCreateTableColumn(const CstDocument& cst,
     return false;
   }
   column->encoded_descriptor = SimpleCreateTableColumnDescriptor(*column);
+  *index = cursor;
+  return true;
+}
+
+bool ConsumeSimpleTablePrimaryKeyConstraint(const CstDocument& cst,
+                                            std::size_t* index,
+                                            std::string* column_name) {
+  if (index == nullptr || column_name == nullptr) return false;
+  std::size_t cursor = *index;
+  SkipSimpleCreateTableTrivia(cst, &cursor);
+  if (!ConsumeKeyword(cst, &cursor, "PRIMARY")) return false;
+  if (!ConsumeKeyword(cst, &cursor, "KEY")) return false;
+  if (!ConsumeSymbolText(cst, &cursor, "(")) return false;
+  std::string key_column;
+  if (!ConsumeIdentifierText(cst, &cursor, &key_column)) return false;
+  SkipSimpleCreateTableTrivia(cst, &cursor);
+  if (!ConsumeSymbolText(cst, &cursor, ")")) return false;
+  *column_name = key_column;
   *index = cursor;
   return true;
 }
@@ -19382,11 +20083,29 @@ SimpleCreateTableInfo AnalyzeSimpleCreateTable(const CstDocument& cst) {
       break;
     }
     SimpleCreateTableColumnInfo column;
-    if (!ConsumeSimpleCreateTableColumn(cst, &index, &column)) return info;
-    for (const auto& type_surface_id : column.type_surface_ids) {
-      AppendIfMissing(&info.type_surface_ids, type_surface_id);
+    if (ConsumeSimpleCreateTableColumn(cst, &index, &column)) {
+      for (const auto& type_surface_id : column.type_surface_ids) {
+        AppendIfMissing(&info.type_surface_ids, type_surface_id);
+      }
+      info.columns.push_back(std::move(column));
+    } else {
+      std::string primary_key_column;
+      if (!ConsumeSimpleTablePrimaryKeyConstraint(cst, &index, &primary_key_column)) {
+        return info;
+      }
+      bool found = false;
+      for (auto& existing_column : info.columns) {
+        if (LowerAscii(existing_column.name) == LowerAscii(primary_key_column)) {
+          existing_column.primary_key = true;
+          existing_column.unique = true;
+          existing_column.nullable = false;
+          existing_column.encoded_descriptor = SimpleCreateTableColumnDescriptor(existing_column);
+          found = true;
+          break;
+        }
+      }
+      if (!found) return info;
     }
-    info.columns.push_back(std::move(column));
     SkipSimpleCreateTableTrivia(cst, &index);
     if (index >= cst.tokens.size()) return info;
     if (cst.tokens[index].text == ",") {
@@ -19440,31 +20159,178 @@ bool IsVectorMetricWord(std::string_view word) {
          word == "JACCARD";
 }
 
-bool ConsumeTokenQualifiedNameParts(const std::vector<const Token*>& tokens,
-                                    std::size_t* index,
-                                    std::size_t* part_count) {
-  if (index == nullptr || part_count == nullptr) return false;
-  std::size_t parts = 0;
+bool ConsumeTokenQualifiedNameWithParts(const std::vector<const Token*>& tokens,
+                                        std::size_t* index,
+                                        std::vector<std::string>* parts) {
+  if (index == nullptr || parts == nullptr) return false;
+  std::size_t cursor = *index;
+  std::vector<std::string> consumed;
   bool expect_part = true;
-  while (*index < tokens.size()) {
-    const auto& token = *tokens[*index];
+  while (cursor < tokens.size()) {
+    const auto& token = *tokens[cursor];
     if (expect_part) {
       if (!IsIdentifierLikeToken(token)) break;
-      ++parts;
+      consumed.push_back(token.text);
       expect_part = false;
-      ++(*index);
+      ++cursor;
       continue;
     }
     if (token.text == ".") {
       expect_part = true;
-      ++(*index);
+      ++cursor;
       continue;
     }
     break;
   }
-  if (parts == 0 || expect_part) return false;
-  *part_count = parts;
+  if (consumed.empty() || expect_part) return false;
+  *parts = std::move(consumed);
+  *index = cursor;
   return true;
+}
+
+bool ConsumeTokenQualifiedNameParts(const std::vector<const Token*>& tokens,
+                                    std::size_t* index,
+                                    std::size_t* part_count) {
+  if (index == nullptr || part_count == nullptr) return false;
+  std::vector<std::string> parts;
+  if (!ConsumeTokenQualifiedNameWithParts(tokens, index, &parts)) return false;
+  *part_count = parts.size();
+  return true;
+}
+
+std::string CanonicalVectorPayloadType(std::string_view type_text) {
+  const std::string upper = ToUpperAscii(type_text);
+  if (upper == "VECTOR") return "dense_vector";
+  if (upper == "INT" || upper == "INTEGER") return "int";
+  if (upper == "BIGINT" || upper == "INT64") return "bigint";
+  if (upper == "SMALLINT" || upper == "INT16") return "smallint";
+  if (upper == "TINYINT" || upper == "INT8") return "tinyint";
+  if (upper == "TEXT" || upper == "STRING" || upper == "VARCHAR") return "text";
+  if (upper == "UUID") return "uuid";
+  if (upper == "DOUBLE" || upper == "FLOAT64") return "double";
+  if (upper == "FLOAT" || upper == "REAL" || upper == "FLOAT32") return "float";
+  return LowerAscii(std::string(type_text));
+}
+
+std::string VectorColumnDescriptor(std::string_view dimension,
+                                   std::string_view metric,
+                                   std::string_view index_method) {
+  std::string descriptor = "type=dense_vector";
+  descriptor += ";dimension=";
+  descriptor += dimension;
+  if (!metric.empty() && metric != "default") {
+    descriptor += ";metric=";
+    descriptor += metric;
+  }
+  if (!index_method.empty() && index_method != "default") {
+    descriptor += ";index=";
+    descriptor += index_method;
+  }
+  descriptor += ";nullable=false";
+  return descriptor;
+}
+
+SimpleCreateTableColumnInfo DefaultVectorPayloadColumn(const CreateVectorCollectionInfo& info) {
+  SimpleCreateTableColumnInfo column;
+  column.name = "embedding";
+  column.canonical_type_name = "dense_vector";
+  column.encoded_descriptor =
+      VectorColumnDescriptor(info.dimension, info.metric, info.index_method);
+  column.nullable = false;
+  return column;
+}
+
+bool ConsumeVectorPayloadColumns(const std::vector<const Token*>& tokens,
+                                 std::size_t* index,
+                                 CreateVectorCollectionInfo* info) {
+  if (index == nullptr || info == nullptr || *index >= tokens.size() ||
+      tokens[*index]->text != "(") {
+    return false;
+  }
+  std::size_t cursor = *index + 1;
+  bool expect_column = true;
+  while (cursor < tokens.size()) {
+    if (tokens[cursor]->text == ")") {
+      if (expect_column && info->payload_columns.empty()) return false;
+      *index = cursor + 1;
+      return true;
+    }
+    if (!expect_column) {
+      if (tokens[cursor]->text != ",") return false;
+      expect_column = true;
+      ++cursor;
+      continue;
+    }
+    if (!IsIdentifierLikeToken(*tokens[cursor])) return false;
+    SimpleCreateTableColumnInfo column;
+    column.name = tokens[cursor]->text;
+    ++cursor;
+    if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) return false;
+    column.canonical_type_name = CanonicalVectorPayloadType(tokens[cursor]->text);
+    ++cursor;
+    const bool vector_column = column.canonical_type_name == "dense_vector";
+    std::string field_metric = info->metric;
+    std::string field_index_method = info->index_method;
+    while (cursor < tokens.size() && tokens[cursor]->text != "," &&
+           tokens[cursor]->text != ")") {
+      const std::string upper = ToUpperAscii(tokens[cursor]->text);
+      if (upper == "NOT" && cursor + 1 < tokens.size() &&
+          ToUpperAscii(tokens[cursor + 1]->text) == "NULL") {
+        column.nullable = false;
+        cursor += 2;
+        continue;
+      }
+      if (upper == "NULL") {
+        column.nullable = true;
+        ++cursor;
+        continue;
+      }
+      if (vector_column && upper == "METRIC") {
+        info->field_modifier_present = true;
+        AppendIfMissing(&info->row_surface_ids, "SBSQL-BD714DD6A2E8");
+        ++cursor;
+        if (cursor < tokens.size() && tokens[cursor]->text == "=") ++cursor;
+        if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) return false;
+        field_metric = LowerAscii(tokens[cursor]->text);
+        ++cursor;
+        continue;
+      }
+      if (vector_column && upper == "INDEX") {
+        info->field_modifier_present = true;
+        AppendIfMissing(&info->row_surface_ids, "SBSQL-BD714DD6A2E8");
+        ++cursor;
+        if (cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "METHOD") {
+          ++cursor;
+        }
+        if (cursor < tokens.size() && tokens[cursor]->text == "=") ++cursor;
+        if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) return false;
+        field_index_method = LowerAscii(tokens[cursor]->text);
+        ++cursor;
+        continue;
+      }
+      if (vector_column && upper == "METHOD") {
+        info->field_modifier_present = true;
+        AppendIfMissing(&info->row_surface_ids, "SBSQL-BD714DD6A2E8");
+        ++cursor;
+        if (cursor < tokens.size() && tokens[cursor]->text == "=") ++cursor;
+        if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) return false;
+        field_index_method = LowerAscii(tokens[cursor]->text);
+        ++cursor;
+        continue;
+      }
+      return false;
+    }
+    if (vector_column) {
+      column.nullable = false;
+      column.encoded_descriptor =
+          VectorColumnDescriptor(info->dimension, field_metric, field_index_method);
+    } else {
+      column.encoded_descriptor = SimpleCreateTableColumnDescriptor(column);
+    }
+    info->payload_columns.push_back(std::move(column));
+    expect_column = false;
+  }
+  return false;
 }
 
 void SkipVectorValueExpression(const std::vector<const Token*>& tokens,
@@ -19718,9 +20584,16 @@ CreateVectorCollectionInfo AnalyzeCreateVectorCollection(const CstDocument& cst)
     info.if_not_exists = true;
     index += 3;
   }
-  if (!ConsumeTokenQualifiedNameParts(tokens, &index, &info.collection_name_parts)) {
+  std::vector<std::string> collection_name_parts;
+  if (!ConsumeTokenQualifiedNameWithParts(tokens, &index, &collection_name_parts)) {
     info.invalid_reason = "vector_collection_name_required";
     return info;
+  }
+  info.collection_name_parts = collection_name_parts.size();
+  info.collection_name = collection_name_parts.empty() ? std::string{} : collection_name_parts.back();
+  if (collection_name_parts.size() > 1) {
+    info.schema_parent_path = JoinSimpleIdentifierParts(collection_name_parts, 0,
+                                                        collection_name_parts.size() - 1);
   }
   if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "DIMENSION") {
     info.invalid_reason = "vector_collection_dimension_required";
@@ -19761,29 +20634,13 @@ CreateVectorCollectionInfo AnalyzeCreateVectorCollection(const CstDocument& cst)
       info.payload_present = true;
       ++index;
       if (index < tokens.size() && tokens[index]->text == "(") {
-        int depth = 1;
-        ++index;
-        bool saw_vector_field = false;
-        bool saw_field_modifier = false;
-        while (index < tokens.size() && depth > 0) {
-          const std::string payload_word = ToUpperAscii(tokens[index]->text);
-          if (tokens[index]->text == "(") {
-            ++depth;
-          } else if (tokens[index]->text == ")") {
-            --depth;
-          } else if (payload_word == "VECTOR") {
-            saw_vector_field = true;
-          } else if (saw_vector_field &&
-                     (payload_word == "METRIC" || payload_word == "INDEX" ||
-                      payload_word == "METHOD")) {
-            saw_field_modifier = true;
-          }
-          ++index;
+        if (!ConsumeVectorPayloadColumns(tokens, &index, &info)) {
+          info.invalid_reason = "vector_collection_payload_invalid";
+          return info;
         }
-        if (saw_field_modifier) {
-          info.field_modifier_present = true;
-          AppendIfMissing(&info.row_surface_ids, "SBSQL-BD714DD6A2E8");
-        }
+      } else {
+        info.invalid_reason = "vector_collection_payload_columns_required";
+        return info;
       }
       continue;
     }
@@ -19793,6 +20650,9 @@ CreateVectorCollectionInfo AnalyzeCreateVectorCollection(const CstDocument& cst)
     }
     info.invalid_reason = "vector_collection_clause_unrecognized";
     return info;
+  }
+  if (info.payload_columns.empty()) {
+    info.payload_columns.push_back(DefaultVectorPayloadColumn(info));
   }
   info.valid = !info.dimension.empty();
   return info;
@@ -19992,6 +20852,7 @@ MultiModelNoSqlRouteInfo AnalyzeMultiModelNoSqlRoute(
   } else if (first == "KV") {
     info.row_surface_ids = {};
     ClassifyKvRoute(tokens, &info);
+    info.target_uuid_required = false;
   } else if (first == "TIMESERIES" || (first == "TIME" && second == "SERIES")) {
     AssignMultiModelRoute(&info,
                           "nosql.time_series_append",
@@ -20542,6 +21403,12 @@ SimpleDropObjectDdlInfo AnalyzeSimpleDropObjectDdl(
     info.invalid_reason = "drop_target_name_required";
     return info;
   }
+  if (ConsumeKeyword(cst, &index, "RESTRICT")) {
+    // RESTRICT is the bounded drop route default: dependencies remain engine-checked.
+  } else if (ConsumeKeyword(cst, &index, "CASCADE")) {
+    info.invalid_reason = "drop_cascade_requires_dependency_plan";
+    return info;
+  }
   if (!OnlyStatementTerminatorRemains(cst, index)) {
     info.invalid_reason = "drop_options_or_dependencies_out_of_slice";
     return info;
@@ -20570,8 +21437,147 @@ SimpleCreateSequenceInfo AnalyzeSimpleCreateSequence(const CstDocument& cst) {
     }
     info.if_not_exists = true;
   }
-  if (!ConsumeQualifiedName(cst, &index, &info.sequence_name_parts)) {
+  std::vector<std::string> sequence_name_parts;
+  if (!ConsumeQualifiedNameWithParts(cst, &index, &sequence_name_parts)) {
     info.invalid_reason = "sequence_name_required";
+    return info;
+  }
+  info.sequence_name_parts = sequence_name_parts.size();
+  info.sequence_name = sequence_name_parts.empty() ? std::string{} : sequence_name_parts.back();
+  info.sequence_lookup_key = NormalizedQualifiedLookupKey(sequence_name_parts);
+  if (sequence_name_parts.size() > 1) {
+    info.schema_parent_path =
+        JoinSimpleIdentifierParts(sequence_name_parts, 0, sequence_name_parts.size() - 1);
+  }
+  std::size_t type_probe = index;
+  for (; type_probe < cst.tokens.size() && IsTriviaToken(cst.tokens[type_probe]); ++type_probe) {}
+  if (type_probe < cst.tokens.size() && ToUpperAscii(cst.tokens[type_probe].text) == "AS") {
+    index = type_probe + 1;
+    if (!ConsumeSimpleCreateTableType(cst,
+                                      &index,
+                                      &info.canonical_type_name,
+                                      &info.type_surface_ids)) {
+      info.invalid_reason = "sequence_type_required";
+      return info;
+    }
+    info.type_present = true;
+  }
+  const auto consume_signed_integer = [&](std::string* value) {
+    if (value == nullptr) return false;
+    for (; index < cst.tokens.size() && IsTriviaToken(cst.tokens[index]); ++index) {}
+    bool negative = false;
+    if (index < cst.tokens.size() &&
+        (cst.tokens[index].text == "-" || cst.tokens[index].text == "+")) {
+      negative = cst.tokens[index].text == "-";
+      ++index;
+      for (; index < cst.tokens.size() && IsTriviaToken(cst.tokens[index]); ++index) {}
+    }
+    if (index >= cst.tokens.size() || !IsUnsignedIntegerLiteral(cst.tokens[index])) {
+      return false;
+    }
+    *value = (negative ? "-" : "") + cst.tokens[index].text;
+    ++index;
+    return true;
+  };
+  while (true) {
+    std::size_t probe = index;
+    for (; probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe]); ++probe) {}
+    if (probe >= cst.tokens.size() ||
+        cst.tokens[probe].kind == TokenKind::kEnd ||
+        cst.tokens[probe].kind == TokenKind::kStatementTerminator) {
+      break;
+    }
+    index = probe;
+    if (ConsumeKeyword(cst, &index, "START")) {
+      ConsumeKeyword(cst, &index, "WITH");
+      if (info.start_with_present || !consume_signed_integer(&info.start_value)) {
+        info.invalid_reason = "sequence_start_with_invalid";
+        return info;
+      }
+      info.start_with_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "INCREMENT")) {
+      ConsumeKeyword(cst, &index, "BY");
+      if (info.increment_by_present || !consume_signed_integer(&info.increment_value)) {
+        info.invalid_reason = "sequence_increment_by_invalid";
+        return info;
+      }
+      info.increment_by_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "MINVALUE")) {
+      if (info.minvalue_present || !consume_signed_integer(&info.min_value)) {
+        info.invalid_reason = "sequence_minvalue_invalid";
+        return info;
+      }
+      info.minvalue_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "MAXVALUE")) {
+      if (info.maxvalue_present || !consume_signed_integer(&info.max_value)) {
+        info.invalid_reason = "sequence_maxvalue_invalid";
+        return info;
+      }
+      info.maxvalue_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "CACHE")) {
+      if (info.cache_present || info.no_cache_present ||
+          !consume_signed_integer(&info.cache_value)) {
+        info.invalid_reason = "sequence_cache_invalid";
+        return info;
+      }
+      info.cache_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "CYCLE")) {
+      if (info.cycle_present || info.no_cycle_present) {
+        info.invalid_reason = "sequence_cycle_duplicate";
+        return info;
+      }
+      info.cycle_present = true;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "NO")) {
+      if (ConsumeKeyword(cst, &index, "MINVALUE")) {
+        if (info.minvalue_present) {
+          info.invalid_reason = "sequence_minvalue_duplicate";
+          return info;
+        }
+        info.minvalue_present = true;
+        info.min_value = "default";
+        continue;
+      }
+      if (ConsumeKeyword(cst, &index, "MAXVALUE")) {
+        if (info.maxvalue_present) {
+          info.invalid_reason = "sequence_maxvalue_duplicate";
+          return info;
+        }
+        info.maxvalue_present = true;
+        info.max_value = "default";
+        continue;
+      }
+      if (ConsumeKeyword(cst, &index, "CACHE")) {
+        if (info.cache_present || info.no_cache_present) {
+          info.invalid_reason = "sequence_cache_duplicate";
+          return info;
+        }
+        info.no_cache_present = true;
+        continue;
+      }
+      if (ConsumeKeyword(cst, &index, "CYCLE")) {
+        if (info.cycle_present || info.no_cycle_present) {
+          info.invalid_reason = "sequence_cycle_duplicate";
+          return info;
+        }
+        info.no_cycle_present = true;
+        continue;
+      }
+      info.invalid_reason = "sequence_no_option_invalid";
+      return info;
+    }
+    info.invalid_reason = "sequence_options_out_of_slice";
     return info;
   }
   if (!OnlyStatementTerminatorRemains(cst, index)) {
@@ -20665,15 +21671,171 @@ SimpleCreateViewInfo AnalyzeSimpleCreateView(const CstDocument& cst) {
   return info;
 }
 
+std::optional<std::string> DomainCheckOperator(std::string_view op,
+                                               std::string_view prefix = {}) {
+  if (op == ">") return std::string(prefix) + "gt";
+  if (op == ">=") return std::string(prefix) + "gte";
+  if (op == "<") return std::string(prefix) + "lt";
+  if (op == "<=") return std::string(prefix) + "lte";
+  if (op == "=") return std::string(prefix) + "eq";
+  return std::nullopt;
+}
+
+std::string RenderDomainLiteralToken(const Token& token) {
+  if (token.kind == TokenKind::kStringLiteral) return token.text;
+  return token.text;
+}
+
+std::optional<std::string> DomainCheckPredicateFromTokens(
+    const std::vector<const Token*>& tokens,
+    std::size_t begin,
+    std::size_t end) {
+  while (begin < end && IsTriviaToken(*tokens[begin])) ++begin;
+  while (end > begin && IsTriviaToken(*tokens[end - 1])) --end;
+  if (end <= begin) return std::nullopt;
+  const auto upper = [&](std::size_t index) {
+    return ToUpperAscii(tokens[index]->text);
+  };
+  if (end - begin == 3 && upper(begin) == "VALUE") {
+    const auto op = DomainCheckOperator(tokens[begin + 1]->text);
+    if (!op) return std::nullopt;
+    return *op + ":" + RenderDomainLiteralToken(*tokens[begin + 2]);
+  }
+  if (end - begin == 6 &&
+      (upper(begin) == "CHAR_LENGTH" || upper(begin) == "LENGTH") &&
+      tokens[begin + 1]->text == "(" &&
+      upper(begin + 2) == "VALUE" &&
+      tokens[begin + 3]->text == ")") {
+    const auto op = DomainCheckOperator(tokens[begin + 4]->text, "length_");
+    if (!op) return std::nullopt;
+    return *op + ":" + RenderDomainLiteralToken(*tokens[begin + 5]);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> DomainCheckEnvelopeFromTokens(
+    const std::vector<const Token*>& tokens) {
+  std::vector<std::string> predicates;
+  std::size_t begin = 0;
+  int depth = 0;
+  for (std::size_t index = 0; index <= tokens.size(); ++index) {
+    const bool at_end = index == tokens.size();
+    const bool at_and = !at_end && depth == 0 &&
+                        ToUpperAscii(tokens[index]->text) == "AND";
+    if (at_end || at_and) {
+      auto predicate = DomainCheckPredicateFromTokens(tokens, begin, index);
+      if (!predicate) return std::nullopt;
+      predicates.push_back(std::move(*predicate));
+      begin = index + 1;
+      continue;
+    }
+    if (tokens[index]->text == "(") {
+      ++depth;
+    } else if (tokens[index]->text == ")") {
+      if (depth == 0) return std::nullopt;
+      --depth;
+    }
+  }
+  if (predicates.empty()) return std::nullopt;
+  if (predicates.size() == 1) return predicates.front();
+  std::string envelope = "all:";
+  for (std::size_t index = 0; index < predicates.size(); ++index) {
+    if (index != 0) envelope.push_back(';');
+    envelope += predicates[index];
+  }
+  return envelope;
+}
+
+bool ConsumeDomainCheckExpression(const CstDocument& cst,
+                                  std::size_t* index,
+                                  std::string* envelope) {
+  if (index == nullptr || envelope == nullptr) return false;
+  std::size_t cursor = *index;
+  if (!ConsumeKeyword(cst, &cursor, "CHECK")) return false;
+  while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+  if (cursor >= cst.tokens.size() || cst.tokens[cursor].text != "(") return false;
+  ++cursor;
+  int depth = 1;
+  std::vector<const Token*> tokens;
+  for (; cursor < cst.tokens.size(); ++cursor) {
+    const auto& token = cst.tokens[cursor];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) return false;
+    if (token.text == "(") {
+      ++depth;
+      tokens.push_back(&token);
+      continue;
+    }
+    if (token.text == ")") {
+      --depth;
+      if (depth == 0) {
+        ++cursor;
+        break;
+      }
+      tokens.push_back(&token);
+      continue;
+    }
+    if (!IsTriviaToken(token)) tokens.push_back(&token);
+  }
+  if (depth != 0 || tokens.empty()) return false;
+  auto parsed = DomainCheckEnvelopeFromTokens(tokens);
+  if (!parsed) return false;
+  *envelope = std::move(*parsed);
+  *index = cursor;
+  return true;
+}
+
+bool ConsumeDomainDefaultExpression(const CstDocument& cst,
+                                    std::size_t* index,
+                                    std::string* envelope) {
+  if (index == nullptr || envelope == nullptr) return false;
+  std::size_t cursor = *index;
+  std::string rendered;
+  int depth = 0;
+  while (cursor < cst.tokens.size()) {
+    const auto& token = cst.tokens[cursor];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (depth == 0) {
+      const std::string upper = ToUpperAscii(token.text);
+      if (upper == "NOT" || upper == "NULL" || upper == "CHECK" ||
+          upper == "COLLATE" || upper == "CHARACTER" || upper == "CHARSET") {
+        break;
+      }
+    }
+    if (IsTriviaToken(token)) {
+      ++cursor;
+      continue;
+    }
+    if (token.text == "(" || token.text == "[" || token.text == "{") {
+      ++depth;
+    } else if (token.text == ")" || token.text == "]" || token.text == "}") {
+      if (depth == 0) break;
+      --depth;
+    }
+    rendered += RenderSimpleCreateTableExpressionToken(token);
+    ++cursor;
+  }
+  if (rendered.empty()) return false;
+  *envelope = "literal:" + rendered;
+  *index = cursor;
+  return true;
+}
+
 SimpleCreateDomainInfo AnalyzeSimpleCreateDomain(const CstDocument& cst) {
   SimpleCreateDomainInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
   if (!ConsumeKeyword(cst, &index, "DOMAIN")) return info;
   info.active = true;
-  if (!ConsumeQualifiedName(cst, &index, &info.domain_name_parts)) {
+  std::vector<std::string> domain_name_parts;
+  if (!ConsumeQualifiedNameWithParts(cst, &index, &domain_name_parts)) {
     info.invalid_reason = "domain_name_required";
     return info;
+  }
+  info.domain_name_parts = domain_name_parts.size();
+  info.domain_name = domain_name_parts.empty() ? std::string{} : domain_name_parts.back();
+  if (domain_name_parts.size() > 1) {
+    info.schema_parent_path = JoinSimpleIdentifierParts(domain_name_parts, 0,
+                                                        domain_name_parts.size() - 1);
   }
   if (!ConsumeKeyword(cst, &index, "AS")) {
     info.invalid_reason = "domain_as_required";
@@ -20684,10 +21846,188 @@ SimpleCreateDomainInfo AnalyzeSimpleCreateDomain(const CstDocument& cst) {
     info.invalid_reason = "domain_base_type_required";
     return info;
   }
+  while (!OnlyStatementTerminatorRemains(cst, index)) {
+    if (ConsumeKeyword(cst, &index, "DEFAULT")) {
+      if (!ConsumeDomainDefaultExpression(cst, &index, &info.default_expression_envelope)) {
+        info.invalid_reason = "domain_default_expression_required";
+        return info;
+      }
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "NOT")) {
+      if (!ConsumeKeyword(cst, &index, "NULL")) {
+        info.invalid_reason = "domain_not_null_expected";
+        return info;
+      }
+      info.nullable = false;
+      continue;
+    }
+    if (ConsumeKeyword(cst, &index, "NULL")) {
+      info.nullable = true;
+      continue;
+    }
+    if (PeekKeyword(cst, index, "CHECK")) {
+      if (!ConsumeDomainCheckExpression(cst, &index, &info.check_constraint_envelope)) {
+        info.invalid_reason = "domain_check_expression_unsupported";
+        return info;
+      }
+      continue;
+    }
+    info.invalid_reason = "domain_constraints_methods_or_options_out_of_slice";
+    return info;
+  }
   if (!OnlyStatementTerminatorRemains(cst, index)) {
     info.invalid_reason = "domain_constraints_methods_or_options_out_of_slice";
     return info;
   }
+  info.valid = true;
+  return info;
+}
+
+AlterDomainDdlInfo AnalyzeAlterDomainDdl(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids) {
+  AlterDomainDdlInfo info;
+  std::size_t index = 0;
+  if (!ConsumeKeyword(cst, &index, "ALTER")) return info;
+  if (!ConsumeKeyword(cst, &index, "DOMAIN")) return info;
+  info.active = true;
+  if (!ConsumeQualifiedName(cst, &index, &info.domain_name_parts)) {
+    info.invalid_reason = "domain_name_required";
+    return info;
+  }
+  if (ConsumeKeyword(cst, &index, "SET")) {
+    if (!ConsumeKeyword(cst, &index, "DEFAULT")) {
+      info.invalid_reason = "domain_set_default_required";
+      return info;
+    }
+    if (!ConsumeDomainDefaultExpression(cst, &index, &info.default_expression_envelope)) {
+      info.invalid_reason = "domain_default_expression_required";
+      return info;
+    }
+  } else if (ConsumeKeyword(cst, &index, "ADD")) {
+    if (ConsumeKeyword(cst, &index, "CONSTRAINT")) {
+      const std::string constraint_name = ConsumeIdentifierText(cst, &index);
+      if (constraint_name.empty()) {
+        info.invalid_reason = "domain_constraint_name_required";
+        return info;
+      }
+    }
+    if (!ConsumeDomainCheckExpression(cst, &index, &info.check_constraint_envelope)) {
+      info.invalid_reason = "domain_check_expression_unsupported";
+      return info;
+    }
+    info.append_check_constraint = true;
+  } else {
+    info.invalid_reason = "domain_alter_action_required";
+    return info;
+  }
+  if (!OnlyStatementTerminatorRemains(cst, index)) {
+    info.invalid_reason = "domain_alter_extra_tokens";
+    return info;
+  }
+  if (resolved_object_uuids.empty()) {
+    info.invalid_reason = "domain_target_uuid_required";
+    return info;
+  }
+  info.target_object_uuid = resolved_object_uuids.front();
+  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
+  info.valid = true;
+  return info;
+}
+
+AlterSequenceDdlInfo AnalyzeAlterSequenceDdl(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids) {
+  AlterSequenceDdlInfo info;
+  std::size_t index = 0;
+  if (!ConsumeKeyword(cst, &index, "ALTER")) return info;
+  if (!ConsumeKeyword(cst, &index, "SEQUENCE")) return info;
+  info.active = true;
+  std::vector<std::string> sequence_name_parts;
+  if (!ConsumeQualifiedNameWithParts(cst, &index, &sequence_name_parts) ||
+      sequence_name_parts.empty()) {
+    info.invalid_reason = "sequence_name_required";
+    return info;
+  }
+  info.sequence_name_parts = sequence_name_parts.size();
+  info.sequence_lookup_key = NormalizedQualifiedLookupKey(sequence_name_parts);
+
+  const auto consume_signed_integer = [&](std::string* value) {
+    if (value == nullptr) return false;
+    for (; index < cst.tokens.size() && IsTriviaToken(cst.tokens[index]); ++index) {}
+    bool negative = false;
+    if (index < cst.tokens.size() &&
+        (cst.tokens[index].text == "-" || cst.tokens[index].text == "+")) {
+      negative = cst.tokens[index].text == "-";
+      ++index;
+      for (; index < cst.tokens.size() && IsTriviaToken(cst.tokens[index]); ++index) {}
+    }
+    if (index >= cst.tokens.size() || !IsUnsignedIntegerLiteral(cst.tokens[index])) {
+      return false;
+    }
+    *value = (negative ? "-" : "") + cst.tokens[index].text;
+    ++index;
+    return true;
+  };
+
+  bool saw_action = false;
+  while (true) {
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index >= cst.tokens.size() ||
+        cst.tokens[index].kind == TokenKind::kEnd ||
+        cst.tokens[index].kind == TokenKind::kStatementTerminator) {
+      break;
+    }
+    if (ConsumeKeyword(cst, &index, "SET")) {
+      if (ConsumeKeyword(cst, &index, "CACHE")) {
+        if (info.cache_present || !consume_signed_integer(&info.cache_value)) {
+          info.invalid_reason = "sequence_cache_invalid";
+          return info;
+        }
+        info.cache_present = true;
+        saw_action = true;
+        continue;
+      }
+      if (ConsumeKeyword(cst, &index, "MAXVALUE")) {
+        if (info.maxvalue_present || !consume_signed_integer(&info.max_value)) {
+          info.invalid_reason = "sequence_maxvalue_invalid";
+          return info;
+        }
+        info.maxvalue_present = true;
+        saw_action = true;
+        continue;
+      }
+      info.invalid_reason = "sequence_set_option_invalid";
+      return info;
+    }
+    if (ConsumeKeyword(cst, &index, "RESTART")) {
+      ConsumeKeyword(cst, &index, "WITH");
+      if (info.restart_present || !consume_signed_integer(&info.restart_value)) {
+        info.invalid_reason = "sequence_restart_invalid";
+        return info;
+      }
+      info.restart_present = true;
+      saw_action = true;
+      continue;
+    }
+    info.invalid_reason = "sequence_alter_option_invalid";
+    return info;
+  }
+  if (!saw_action) {
+    info.invalid_reason = "sequence_alter_action_required";
+    return info;
+  }
+  if (!OnlyStatementTerminatorRemains(cst, index)) {
+    info.invalid_reason = "sequence_alter_trailing_tokens";
+    return info;
+  }
+  if (resolved_object_uuids.empty()) {
+    info.invalid_reason = "sequence_target_uuid_required";
+    return info;
+  }
+  info.target_object_uuid = resolved_object_uuids.front();
+  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
@@ -20752,6 +22092,110 @@ SimpleCreateExecutableObjectInfo AnalyzeSimpleCreateExecutableObject(const CstDo
     info.invalid_reason = "executable_object_signature_body_or_options_out_of_slice";
     return info;
   }
+  info.valid = true;
+  return info;
+}
+
+bool ConsumeRoutineInvocationArgument(const CstDocument& cst,
+                                      std::size_t* index,
+                                      RoutineInvocationInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+  if (*index >= cst.tokens.size()) return false;
+
+  const Token& token = cst.tokens[*index];
+  RoutineInvocationArgumentInfo argument;
+  if (IsScalarProjectionLiteral(token)) {
+    argument.type_name = ScalarProjectionTypeForToken(token);
+    argument.value = DmlLiteralPayload(token);
+    argument.binding = "literal";
+    ++(*index);
+    info->arguments.push_back(std::move(argument));
+    return true;
+  }
+
+  std::size_t qualified_parts = 0;
+  std::string leaf;
+  if (ConsumeQualifiedNameWithLeaf(cst, index, &qualified_parts, &leaf)) {
+    argument.type_name = "descriptor_reference";
+    argument.value = std::move(leaf);
+    argument.binding = qualified_parts > 1 ? "qualified_identifier" : "identifier";
+    info->arguments.push_back(std::move(argument));
+    return true;
+  }
+  return false;
+}
+
+bool ConsumeRoutineInvocationArguments(const CstDocument& cst,
+                                       std::size_t* index,
+                                       RoutineInvocationInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+  if (*index >= cst.tokens.size() ||
+      cst.tokens[*index].kind == TokenKind::kEnd ||
+      cst.tokens[*index].kind == TokenKind::kStatementTerminator) {
+    return true;
+  }
+  if (cst.tokens[*index].text != "(") {
+    info->invalid_reason = "routine_invocation_argument_list_expected";
+    return false;
+  }
+  ++(*index);
+  while (*index < cst.tokens.size()) {
+    while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ")") {
+      ++(*index);
+      return true;
+    }
+    if (!ConsumeRoutineInvocationArgument(cst, index, info)) {
+      info->invalid_reason = "routine_invocation_argument_descriptor_required";
+      return false;
+    }
+    while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ",") {
+      ++(*index);
+      continue;
+    }
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ")") {
+      ++(*index);
+      return true;
+    }
+    info->invalid_reason = "routine_invocation_argument_separator_required";
+    return false;
+  }
+  info->invalid_reason = "routine_invocation_argument_list_unclosed";
+  return false;
+}
+
+RoutineInvocationInfo AnalyzeRoutineInvocationRoute(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids) {
+  RoutineInvocationInfo info;
+  std::size_t index = 0;
+  if (!ConsumeKeyword(cst, &index, "EXECUTE")) return info;
+  if (!ConsumeKeyword(cst, &index, "PROCEDURE")) return info;
+  info.active = true;
+  AppendIfMissing(&info.row_surface_ids, "SBSQL-B5E9C0943E63");
+  AppendIfMissing(&info.row_surface_ids, "SBSQL-FAC34DDEAC9D");
+
+  if (!ConsumeQualifiedNameWithLeaf(cst, &index, &info.routine_name_parts,
+                                    &info.routine_name)) {
+    info.invalid_reason = "routine_invocation_name_required";
+    return info;
+  }
+  if (!ConsumeRoutineInvocationArguments(cst, &index, &info)) {
+    return info;
+  }
+  if (!OnlyStatementTerminatorRemains(cst, index)) {
+    info.invalid_reason = "routine_invocation_trailing_tokens";
+    return info;
+  }
+  if (resolved_object_uuids.empty()) {
+    info.invalid_reason = "routine_invocation_target_uuid_required";
+    return info;
+  }
+  info.routine_object_uuid = resolved_object_uuids.front();
+  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
@@ -21035,10 +22479,35 @@ CatalogDescriptorMutationInfo MakeCatalogDescriptorMutation(
   return info;
 }
 
+void ApplyCatalogDescriptorNameParts(CatalogDescriptorMutationInfo* info,
+                                     const std::vector<std::string>& name_parts) {
+  if (info == nullptr || name_parts.empty()) return;
+  info->name_parts = name_parts.size();
+  info->object_name = name_parts.back();
+  info->schema_parent_path.clear();
+  if (name_parts.size() > 1) {
+    info->schema_parent_path =
+        JoinSimpleIdentifierParts(name_parts, 0, name_parts.size() - 1);
+  }
+}
+
 CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
     const CstDocument& cst,
     const std::vector<std::string>& resolved_object_uuids) {
-  const auto words = MeaningfulUpperTokens(cst);
+  auto words = MeaningfulUpperTokens(cst);
+  std::vector<std::string> source_create_materialized_view_name_parts;
+  const bool source_create_materialized_view =
+      LifecycleCommandStartsWith(cst.source, "CREATE MATERIALIZED VIEW");
+  const bool source_create_materialized_view_name =
+      source_create_materialized_view &&
+      ExtractSourceQualifiedNameAfterPrefix(
+          cst.source, "CREATE MATERIALIZED VIEW",
+          &source_create_materialized_view_name_parts);
+  if (source_create_materialized_view &&
+      (words.size() < 3 || words[0] != "CREATE" || words[1] != "MATERIALIZED" ||
+       words[2] != "VIEW")) {
+    words = {"CREATE", "MATERIALIZED", "VIEW", "__SOURCE_NAME__"};
+  }
   if (words.empty()) return {};
   CatalogDescriptorMutationInfo info;
 
@@ -21216,7 +22685,16 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
   }
 
   std::size_t index = 0;
-  if (words[0] == "CREATE") {
+  if (source_create_materialized_view &&
+      info.operation_id == "catalog.mutation.create_materialized_view") {
+    if (!source_create_materialized_view_name) {
+      info.valid = false;
+      info.invalid_reason = "catalog_descriptor_name_required";
+    } else {
+      ApplyCatalogDescriptorNameParts(&info,
+                                      source_create_materialized_view_name_parts);
+    }
+  } else if (words[0] == "CREATE") {
     ConsumeKeyword(cst, &index, "CREATE");
     if (PeekKeyword(cst, index, "MATERIALIZED")) ConsumeKeyword(cst, &index, "MATERIALIZED");
     if (PeekKeyword(cst, index, "TIME")) {
@@ -21237,9 +22715,12 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
       if (PeekKeyword(cst, index, "BODY")) ConsumeKeyword(cst, &index, "BODY");
     } else if (PeekKeyword(cst, index, "GRAPH")) {
       ConsumeKeyword(cst, &index, "GRAPH");
-      if (PeekKeyword(cst, index, "NODE") || PeekKeyword(cst, index, "EDGE") ||
-          PeekKeyword(cst, index, "INDEX")) {
-        (void)ConsumeIdentifierText(cst, &index);
+      if (PeekKeyword(cst, index, "NODE")) {
+        ConsumeKeyword(cst, &index, "NODE");
+      } else if (PeekKeyword(cst, index, "EDGE")) {
+        ConsumeKeyword(cst, &index, "EDGE");
+      } else if (PeekKeyword(cst, index, "INDEX")) {
+        ConsumeKeyword(cst, &index, "INDEX");
       }
     } else if (PeekKeyword(cst, index, "FILESPACE")) {
       ConsumeKeyword(cst, &index, "FILESPACE");
@@ -21247,9 +22728,12 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
     } else {
       (void)ConsumeIdentifierText(cst, &index);
     }
-    if (!ConsumeQualifiedName(cst, &index, &info.name_parts)) {
+    std::vector<std::string> name_parts;
+    if (!ConsumeQualifiedNameWithParts(cst, &index, &name_parts)) {
       info.valid = false;
       info.invalid_reason = "catalog_descriptor_name_required";
+    } else {
+      ApplyCatalogDescriptorNameParts(&info, name_parts);
     }
   } else if (words[0] == "ALTER" || words[0] == "REFRESH" || words[0] == "LOCK" ||
              words[0] == "SHOW" || words[0] == "CYPHER") {
@@ -22214,6 +23698,55 @@ void PopulateAlterRenameDdlAuthority(SblrEnvelope* envelope, const AlterRenameDd
   AppendIfMissing(&envelope->policy_refs, "ddl_alter_object_authorization_policy");
 }
 
+void PopulateAlterDomainDdlAuthority(SblrEnvelope* envelope, const AlterDomainDdlInfo& info) {
+  if (!info.active || !info.valid) return;
+  envelope->operation_id = "ddl.alter_object";
+  envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
+  envelope->engine_api_operation_id = "ddl.alter_object";
+  envelope->operation_family = "sblr.catalog.mutation.v3";
+  envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.server.resolve_name_registry_public");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.security_policy_context_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.transaction_context_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.ddl_alter_object_api_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_catalog_commit_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
+  AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.domain");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->policy_refs, "ddl_alter_domain_authorization_policy");
+}
+
+void PopulateAlterSequenceDdlAuthority(SblrEnvelope* envelope, const AlterSequenceDdlInfo& info) {
+  if (!info.active || !info.valid) return;
+  envelope->operation_id = "ddl.alter_object";
+  envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
+  envelope->engine_api_operation_id = "ddl.alter_object";
+  envelope->operation_family = "sblr.catalog.mutation.v3";
+  envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.server.resolve_name_registry_public");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.security_policy_context_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.transaction_context_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.ddl_alter_object_api_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_catalog_commit_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.sequence_runtime_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
+  AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.sequence");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->policy_refs, "ddl_alter_sequence_authorization_policy");
+}
+
 void PopulateSimpleDropObjectAuthority(SblrEnvelope* envelope, const SimpleDropObjectDdlInfo& info) {
   if (!info.active || !info.valid) return;
   envelope->operation_id = "ddl.drop_object";
@@ -22344,6 +23877,39 @@ void PopulateSimpleCreateExecutableObjectAuthority(SblrEnvelope* envelope,
   }
   AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_executable_object_authorization_policy");
+}
+
+void PopulateRoutineInvocationAuthority(SblrEnvelope* envelope,
+                                        const RoutineInvocationInfo& info) {
+  if (!info.active || !info.valid) return;
+  envelope->operation_id = info.operation_id;
+  envelope->sblr_opcode = info.sblr_opcode;
+  envelope->engine_api_operation_id = info.operation_id;
+  envelope->engine_api_function = info.engine_api_function;
+  envelope->operation_family = "sblr.routine.execute.v3";
+  envelope->sblr_operation_key = "sblr.routine.execute.v3";
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.resolve_name_registry_public");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.security_policy_context_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.transaction_context_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.server.sblr_uuid_admission_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.engine.executable_object_invoke_api_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.engine.mga_statement_context_required");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
+  AppendIfMissing(&envelope->required_rights, "right.execute");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.procedure");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.routine_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.executable_object_descriptor");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->policy_refs, "routine_execute_authorization_policy");
+  AppendIfMissing(&envelope->resolved_object_uuids, info.routine_object_uuid);
 }
 
 void PopulateCatalogDescriptorMutationAuthority(SblrEnvelope* envelope,
@@ -22769,6 +24335,9 @@ std::string EngineApiCommandResourceContract(const EngineApiCommandSpec& spec) {
   if (spec.route_kind == "agent_hook") return "resource.contract.agent_control";
   if (spec.route_kind == "catalog_artifact_export") return "resource.contract.catalog_export";
   if (spec.route_kind == "catalog_artifact_import") return "resource.contract.catalog_import";
+  if (spec.route_kind == "catalog_artifact_external_git") {
+    return "resource.contract.catalog_external_git_review";
+  }
   if (spec.route_kind == "dml_import_execution") return "resource.contract.row_mutation";
   if (spec.route_kind == "dml_import_checkpoint_model" ||
       spec.route_kind == "dml_import_reject_model") {
@@ -23343,6 +24912,26 @@ void PopulateGroupByAggregateAuthority(SblrEnvelope* envelope,
 
 void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.catalog_projection_count) {
+    envelope->operation_id = "observability.show_catalog";
+    envelope->sblr_opcode = ObservabilityOpcodeForOperation(envelope->operation_id);
+    envelope->engine_api_operation_id = envelope->operation_id;
+    envelope->operation_family = "sblr.observability.inspect.v3";
+    envelope->sblr_operation_key = "sblr.observability.inspect.v3";
+    AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.security_policy_context_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.engine.observability_api_required");
+    AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
+    AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
+    AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
+    AppendIfMissing(&envelope->required_rights, "right.observe");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.projection");
+    AppendIfMissing(&envelope->policy_refs, "catalog_projection_authorization_policy");
+    return;
+  }
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -23651,6 +25240,26 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
   } else if (info.operation_id.rfind("observability.", 0) == 0) {
     AppendIfMissing(&envelope->descriptor_refs, "sys.observability.runtime");
     AppendIfMissing(&envelope->required_rights, "right.observe");
+  } else if (info.operation_id == "extensibility.invoke_udr_package") {
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.transaction_context_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.sblr_uuid_admission_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.parser_support_udr_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.engine.udr_invoke_api_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.udr.dynamic_sbsql_generates_sblr_uuid_only");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.engine.accepts_revalidated_sblr_uuid_only");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.parser.no_udr_execution");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.udr_package_registry");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.parser_package_registry");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.sblr.envelope_descriptor");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+    AppendIfMissing(&envelope->required_rights, "right.execute");
   } else if (info.operation_id.rfind("extensibility.", 0) == 0) {
     AppendIfMissing(&envelope->descriptor_refs, "sys.acceleration.capability");
     AppendIfMissing(&envelope->required_rights, "right.execute");
@@ -24047,7 +25656,7 @@ void AppendMultiModelNoSqlJson(std::ostream& out,
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
       << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"target_name_parts\":" << info.target_name_parts << ','
-      << "\"source_relation_required\":true,"
+      << "\"source_relation_required\":" << (info.target_uuid_required ? "true," : "false,")
       << "\"row_storage_touched\":" << (info.mutation ? "true" : "false") << ','
       << "\"mga_transaction_context_required\":true,"
       << "\"object_name_text_included\":false,"
@@ -24110,16 +25719,39 @@ void AppendSbsfc077NonGeneralResidualJson(
       << "\"target_object_kind\":\"" << EscapeJson(info.object_kind) << "\","
       << "\"compile_statement_route\":"
       << (!info.compile_module_symbol.empty() ? "true" : "false") << ','
+      << "\"dynamic_sbsql_udr_route\":"
+      << (info.dynamic_sbsql_udr_route ? "true" : "false") << ','
+      << "\"udr_envelope_kind\":\""
+      << (info.dynamic_sbsql_udr_route ? "dynamic_sbsql_parser_support_udr"
+                                       : "not_udr_package_route")
+      << "\","
+      << "\"runtime_component\":\""
+      << (info.dynamic_sbsql_udr_route ? "sbsql_parser_support_udr"
+                                       : "sbsfc077_exact_route")
+      << "\","
       << "\"compile_statement_name\":\"" << EscapeJson(info.compile_statement_name) << "\","
       << "\"compile_module_symbol\":\"" << EscapeJson(info.compile_module_symbol) << "\","
       << "\"compile_mode\":\"" << EscapeJson(info.compile_mode) << "\","
-      << "\"source_relation_required\":false,"
+      << "\"source_relation_required\":"
+      << (info.object_kind == "filespace" ? "true," : "false,")
       << "\"row_storage_touched\":false,"
       << "\"mga_transaction_context_required\":"
       << (info.requires_transaction_context ? "true" : "false") << ','
       << "\"parser_authorizes\":false,"
       << "\"parser_updates_session_state\":false,"
+      << "\"parser_executes_udr\":false,"
       << "\"parser_executes_source_statement\":false,"
+      << "\"parser_support_udr_required\":"
+      << (info.dynamic_sbsql_udr_route ? "true" : "false") << ','
+      << "\"dynamic_sbsql_to_sblr_uuid\":"
+      << (info.dynamic_sbsql_udr_route ? "true" : "false") << ','
+      << "\"server_revalidates_generated_sblr_uuid\":"
+      << (info.dynamic_sbsql_udr_route ? "true" : "false") << ','
+      << "\"source_sql_to_udr_parse_only\":"
+      << (info.dynamic_sbsql_udr_route ? "true" : "false") << ','
+      << "\"original_sql_reference_packet_only\":true,"
+      << "\"engine_accepts_dynamic_sql_text\":false,"
+      << "\"engine_accepts_revalidated_sblr_uuid_only\":true,"
       << "\"parser_claims_transaction_finality\":false,"
       << "\"name_text_included\":false,"
       << "\"object_name_text_included\":false,"
@@ -24128,6 +25760,13 @@ void AppendSbsfc077NonGeneralResidualJson(
       << "\"private_error_vector_route\":false,"
       << "\"cluster_provider_dispatch\":false,"
       << "\"private_cluster_execution\":false,";
+  if (!info.target_object_uuid.empty()) {
+    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+        << "\"target_filespace_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
+  }
+  if (!info.requested_pages.empty()) {
+    out << "\"requested_pages\":\"" << EscapeJson(info.requested_pages) << "\",";
+  }
   AppendJsonStringArray(out, "row_surface_ids", {info.surface_id});
   out << ',';
 }
@@ -24401,17 +26040,43 @@ void AppendCreateVectorCollectionJson(std::ostream& out,
       << "\"ddl_operation_id\":\"ddl.create_table\","
       << "\"target_object_kind\":\"vector_collection\","
       << "\"collection_name_parts\":" << info.collection_name_parts << ','
+      << "\"table_name\":\"" << EscapeJson(info.collection_name) << "\",";
+  if (!info.schema_parent_path.empty()) {
+    out << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\",";
+  }
+  out
       << "\"dimension\":" << info.dimension << ','
       << "\"metric\":\"" << EscapeJson(info.metric) << "\","
       << "\"index_method\":\"" << EscapeJson(info.index_method) << "\","
+      << "\"physical_profile\":\"vector_collection:dimension=" << EscapeJson(info.dimension)
+      << ";metric=" << EscapeJson(info.metric)
+      << ";index=" << EscapeJson(info.index_method) << "\","
+      << "\"column_count\":" << info.payload_columns.size() << ','
+      << "\"column_definition_count\":" << info.payload_columns.size() << ','
+      << "\"canonical_type_name\":\""
+      << EscapeJson(info.payload_columns.empty() ? "dense_vector"
+                                                 : info.payload_columns.front().canonical_type_name)
+      << "\","
       << "\"if_not_exists\":" << (info.if_not_exists ? "true" : "false") << ','
       << "\"payload_present\":" << (info.payload_present ? "true" : "false") << ','
       << "\"field_modifier_present\":"
       << (info.field_modifier_present ? "true" : "false") << ','
-      << "\"vector_column_descriptor_embedded\":false,"
+      << "\"vector_column_descriptor_embedded\":true,";
+  for (std::size_t index = 0; index < info.payload_columns.size(); ++index) {
+    const auto& column = info.payload_columns[index];
+    out << "\"column_" << index << "_name\":\"" << EscapeJson(column.name) << "\","
+        << "\"column_" << index << "_type\":\"" << EscapeJson(column.canonical_type_name)
+        << "\","
+        << "\"column_" << index << "_descriptor\":\""
+        << EscapeJson(column.encoded_descriptor) << "\","
+        << "\"column_" << index << "_nullable\":"
+        << (column.nullable ? "true" : "false") << ',';
+  }
+  out
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":\"metadata_only_engine_name_registry\","
       << "\"sql_text_included\":false,";
   AppendJsonStringArray(out, "row_surface_ids", info.row_surface_ids);
   out << ',';
@@ -24423,12 +26088,15 @@ void AppendCatalogDescriptorMutationJson(std::ostream& out,
   out << "\"catalog_envelope_kind\":\"catalog_descriptor_mutation\","
       << "\"catalog_authority\":\"" << EscapeJson(info.catalog_authority) << "\","
       << "\"catalog_action\":\"" << EscapeJson(info.action) << "_descriptor\","
+      << "\"descriptor_ref\":\"" << EscapeJson(info.descriptor_ref) << "\","
       << "\"catalog_descriptor_mutation\":true,"
       << "\"catalog_descriptor_read_only\":" << (!info.mutating ? "true" : "false") << ','
       << "\"ddl_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.object_kind) << "\","
       << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"target_name_parts\":" << info.name_parts << ','
+      << "\"name\":\"" << EscapeJson(info.object_name) << "\","
+      << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\","
       << "\"engine_api_function\":\"" << EscapeJson(info.engine_api_function) << "\","
       << "\"surface_id\":\"" << EscapeJson(info.surface_id) << "\","
       << "\"surface_name\":\"" << EscapeJson(info.canonical_name) << "\","
@@ -24436,7 +26104,8 @@ void AppendCatalogDescriptorMutationJson(std::ostream& out,
       << "\"name_registry_required\":true,"
       << "\"security_context_required\":true,"
       << "\"mga_catalog_commit_required\":true,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":\"metadata_only_engine_name_registry\","
       << "\"sql_text_included\":false,"
       << "\"parser_executes_sql\":false,";
   AppendJsonStringArray(out, "row_surface_ids", info.row_surface_ids);
@@ -24606,7 +26275,8 @@ void AppendSimpleCreateTableJson(std::ostream& out, const SimpleCreateTableInfo&
   }
   out
       << "\"index_definitions_included\":false,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":\"metadata_only_engine_name_registry\","
       << "\"sql_text_included\":false,";
 }
 
@@ -24809,6 +26479,75 @@ void AppendAlterRenameDdlJson(std::ostream& out, const AlterRenameDdlInfo& info)
       << "\"sql_text_included\":false,";
 }
 
+void AppendAlterDomainDdlJson(std::ostream& out, const AlterDomainDdlInfo& info) {
+  if (!info.active || !info.valid) return;
+  out << "\"catalog_envelope_kind\":\"alter_domain_ddl\","
+      << "\"catalog_authority\":\"sys.catalog.domain\","
+      << "\"catalog_action\":\"alter_domain_descriptor\","
+      << "\"ddl_operation_id\":\"ddl.alter_object\","
+      << "\"target_object_kind\":\"domain\","
+      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+      << "\"domain_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+      << "\"domain_name_parts\":" << info.domain_name_parts << ',';
+  if (!info.target_schema_uuid.empty()) {
+    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
+        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
+  }
+  if (!info.default_expression_envelope.empty()) {
+    out << "\"default_expression\":\"" << EscapeJson(info.default_expression_envelope) << "\",";
+  }
+  if (!info.check_constraint_envelope.empty()) {
+    out << "\"check_constraint\":\"" << EscapeJson(info.check_constraint_envelope) << "\",";
+  }
+  if (info.append_check_constraint) {
+    out << "\"check_constraint_append\":true,";
+  }
+  AppendJsonStringArray(out,
+                        "row_surface_ids",
+                        {"SBSQL-29FD0A67E249",
+                         "SBSQL-F87AB69EA249"});
+  out << ','
+      << "\"target_uuid_resolution\":\"server_name_registry_required\","
+      << "\"mga_catalog_commit_required\":true,"
+      << "\"domain_constraints_included\":"
+      << (!info.check_constraint_envelope.empty() ? "true" : "false") << ','
+      << "\"name_text_included\":false,"
+      << "\"sql_text_included\":false,";
+}
+
+void AppendAlterSequenceDdlJson(std::ostream& out, const AlterSequenceDdlInfo& info) {
+  if (!info.active || !info.valid) return;
+  out << "\"catalog_envelope_kind\":\"alter_sequence_ddl\","
+      << "\"catalog_authority\":\"sys.catalog.sequence\","
+      << "\"catalog_action\":\"alter_sequence_descriptor\","
+      << "\"ddl_operation_id\":\"ddl.alter_object\","
+      << "\"target_object_kind\":\"sequence\","
+      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+      << "\"sequence_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+      << "\"sequence_name_parts\":" << info.sequence_name_parts << ','
+      << "\"sequence_lookup_key\":\"" << EscapeJson(info.sequence_lookup_key) << "\",";
+  if (!info.target_schema_uuid.empty()) {
+    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
+        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
+  }
+  if (info.cache_present) {
+    out << "\"sequence_cache\":\"" << EscapeJson(info.cache_value) << "\",";
+  }
+  if (info.maxvalue_present) {
+    out << "\"sequence_max_value\":\"" << EscapeJson(info.max_value) << "\",";
+  }
+  if (info.restart_present) {
+    out << "\"sequence_restart_value\":\"" << EscapeJson(info.restart_value) << "\",";
+  }
+  AppendJsonStringArray(out, "row_surface_ids", {"SBSQL-517729E44BFA"});
+  out << ','
+      << "\"target_uuid_resolution\":\"server_name_registry_required\","
+      << "\"mga_catalog_commit_required\":true,"
+      << "\"sequence_options_included\":true,"
+      << "\"name_text_included\":false,"
+      << "\"sql_text_included\":false,";
+}
+
 void AppendSimpleDropObjectJson(std::ostream& out, const SimpleDropObjectDdlInfo& info) {
   if (!info.active || !info.valid) return;
   out << "\"catalog_envelope_kind\":\"drop_object_ddl\","
@@ -24845,20 +26584,81 @@ void AppendSimpleDropObjectJson(std::ostream& out, const SimpleDropObjectDdlInfo
 
 void AppendSimpleCreateSequenceJson(std::ostream& out, const SimpleCreateSequenceInfo& info) {
   if (!info.active || !info.valid) return;
+  const bool options_included =
+      info.type_present || info.start_with_present || info.increment_by_present ||
+      info.minvalue_present || info.maxvalue_present ||
+      info.cache_present || info.no_cache_present ||
+      info.cycle_present || info.no_cycle_present;
   out << "\"catalog_envelope_kind\":\"create_sequence_ddl\","
       << "\"catalog_authority\":\"sys.catalog.sequence\","
       << "\"catalog_action\":\"create_sequence_descriptor\","
       << "\"ddl_operation_id\":\"ddl.create_sequence\","
       << "\"target_object_kind\":\"sequence\","
       << "\"sequence_name_parts\":" << info.sequence_name_parts << ','
+      << "\"sequence_name\":\"" << EscapeJson(info.sequence_name) << "\","
+      << "\"sequence_lookup_key\":\"" << EscapeJson(info.sequence_lookup_key) << "\","
       << "\"if_not_exists\":" << (info.if_not_exists ? "true" : "false") << ',';
-  AppendJsonStringArray(out,
-                        "row_surface_ids",
-                        {"SBSQL-AF9CF8BF1987", "SBSQL-F74CA2CEFF16"});
+  if (!info.schema_parent_path.empty()) {
+    out << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\",";
+  }
+  if (info.type_present) {
+    out << "\"sequence_type\":\"" << EscapeJson(info.canonical_type_name) << "\",";
+  }
+  if (info.start_with_present) {
+    out << "\"sequence_start_value\":\"" << EscapeJson(info.start_value) << "\",";
+  }
+  if (info.increment_by_present) {
+    out << "\"sequence_increment\":\"" << EscapeJson(info.increment_value) << "\",";
+  }
+  if (info.minvalue_present) {
+    out << "\"sequence_min_value\":\"" << EscapeJson(info.min_value) << "\",";
+  }
+  if (info.maxvalue_present) {
+    out << "\"sequence_max_value\":\"" << EscapeJson(info.max_value) << "\",";
+  }
+  if (info.cache_present) {
+    out << "\"sequence_cache\":\"" << EscapeJson(info.cache_value) << "\",";
+  }
+  if (info.no_cache_present) {
+    out << "\"sequence_no_cache\":true,";
+  }
+  if (info.cycle_present || info.no_cycle_present) {
+    out << "\"sequence_cycle\":\"" << (info.cycle_present ? "true" : "false") << "\",";
+  }
+  if (options_included) {
+    out << "\"sequence_descriptor\":\""
+        << (info.type_present
+                ? "type=" + EscapeJson(info.canonical_type_name) + ";"
+                : "")
+        << (info.start_with_present
+                ? "start=" + EscapeJson(info.start_value) + ";"
+                : "")
+        << (info.increment_by_present
+                ? "increment=" + EscapeJson(info.increment_value) + ";"
+                : "")
+        << (info.minvalue_present
+                ? "min=" + EscapeJson(info.min_value) + ";"
+                : "")
+        << (info.maxvalue_present
+                ? "max=" + EscapeJson(info.max_value) + ";"
+                : "")
+        << (info.cache_present
+                ? "cache=" + EscapeJson(info.cache_value) + ";"
+                : "")
+        << (info.no_cache_present ? "cache=none;" : "")
+        << (info.cycle_present ? "cycle=true;" : "")
+        << (info.no_cycle_present ? "cycle=false;" : "")
+        << "\",";
+  }
+  std::vector<std::string> row_surface_ids = {"SBSQL-AF9CF8BF1987", "SBSQL-F74CA2CEFF16"};
+  for (const auto& surface_id : info.type_surface_ids) {
+    AppendIfMissing(&row_surface_ids, surface_id);
+  }
+  AppendJsonStringArray(out, "row_surface_ids", row_surface_ids);
   out << ','
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
-      << "\"sequence_options_included\":false,"
+      << "\"sequence_options_included\":" << (options_included ? "true" : "false") << ','
       << "\"name_text_included\":false,"
       << "\"sql_text_included\":false,";
 }
@@ -24895,9 +26695,20 @@ void AppendSimpleCreateDomainJson(std::ostream& out, const SimpleCreateDomainInf
       << "\"ddl_operation_id\":\"ddl.create_domain\","
       << "\"target_object_kind\":\"domain\","
       << "\"domain_name_parts\":" << info.domain_name_parts << ','
+      << "\"domain_name\":\"" << EscapeJson(info.domain_name) << "\","
       << "\"base_canonical_type_name\":\"" << EscapeJson(info.canonical_type_name) << "\","
       << "\"base_descriptor_kind\":\"scalar\","
       << "\"base_encoded_descriptor\":\"type=" << EscapeJson(info.canonical_type_name) << "\",";
+  if (!info.schema_parent_path.empty()) {
+    out << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\",";
+  }
+  if (!info.default_expression_envelope.empty()) {
+    out << "\"default_expression\":\"" << EscapeJson(info.default_expression_envelope) << "\",";
+  }
+  if (!info.check_constraint_envelope.empty()) {
+    out << "\"check_constraint\":\"" << EscapeJson(info.check_constraint_envelope) << "\",";
+  }
+  out << "\"nullable\":" << (info.nullable ? "true" : "false") << ',';
   AppendJsonStringArray(out, "row_surface_ids", {"SBSQL-8E675F371A9C"});
   out << ',';
   AppendJsonStringArray(out, "base_type_surface_ids", info.type_surface_ids);
@@ -24905,10 +26716,12 @@ void AppendSimpleCreateDomainJson(std::ostream& out, const SimpleCreateDomainInf
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
       << "\"base_descriptor_embedded\":true,"
-      << "\"domain_constraints_included\":false,"
+      << "\"domain_constraints_included\":"
+      << (!info.check_constraint_envelope.empty() ? "true" : "false") << ','
       << "\"domain_methods_included\":false,"
       << "\"base_domain_reference_included\":false,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":\"metadata_only_engine_name_registry\","
       << "\"sql_text_included\":false,";
 }
 
@@ -24963,6 +26776,44 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
       << "\"runtime_invocation_included\":false,"
       << "\"name_registry_required\":true,"
       << "\"name_text_included\":false,"
+      << "\"sql_text_included\":false,";
+}
+
+void AppendRoutineInvocationJson(std::ostream& out,
+                                 const RoutineInvocationInfo& info) {
+  if (!info.active || !info.valid) return;
+  out << "\"routine_invocation\":true,"
+      << "\"routine_invocation_kind\":\"" << EscapeJson(info.invocation_kind) << "\","
+      << "\"routine_invocation_operation\":\"" << EscapeJson(info.operation_id) << "\","
+      << "\"target_object_kind\":\"" << EscapeJson(info.invocation_kind) << "\","
+      << "\"routine_name\":\"" << EscapeJson(info.routine_name) << "\","
+      << "\"routine_name_parts\":" << info.routine_name_parts << ','
+      << "\"routine_object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\","
+      << "\"target_object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\","
+      << "\"object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\",";
+  if (!info.target_schema_uuid.empty()) {
+    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
+  }
+  AppendJsonStringArray(out, "row_surface_ids", info.row_surface_ids);
+  out << ','
+      << "\"routine_argument_count\":" << info.arguments.size() << ',';
+  for (std::size_t index = 0; index < info.arguments.size(); ++index) {
+    const auto& argument = info.arguments[index];
+    out << "\"routine_argument_" << index << "_descriptor_kind\":\""
+        << EscapeJson(argument.descriptor_kind) << "\","
+        << "\"routine_argument_" << index << "_type\":\""
+        << EscapeJson(argument.type_name) << "\","
+        << "\"routine_argument_" << index << "_binding\":\""
+        << EscapeJson(argument.binding) << "\","
+        << "\"routine_argument_" << index << "_value\":\""
+        << EscapeJson(argument.value) << "\",";
+  }
+  out << "\"target_uuid_resolution\":\"server_name_registry_required\","
+      << "\"runtime_invocation_included\":true,"
+      << "\"engine_invocation_api_required\":true,"
+      << "\"server_revalidates_sblr_uuid\":true,"
+      << "\"parser_executes_sql\":false,"
+      << "\"parser_executes_routine\":false,"
       << "\"sql_text_included\":false,";
 }
 
@@ -25601,6 +27452,7 @@ void AppendArchiveReplicationJson(std::ostream& out,
       << "\"archive_requested\":" << (info.archive ? "true" : "false") << ','
       << "\"replication_requested\":" << (info.replicate ? "true" : "false") << ','
       << "\"changefeed_requested\":" << (info.changefeed ? "true" : "false") << ','
+      << "\"restore_verify_only\":" << (info.verify_only ? "true" : "false") << ','
       << "\"option_list_present\":"
       << (info.option_list_present ? "true" : "false") << ','
       << "\"changefeed_format_json\":"
@@ -26386,6 +28238,70 @@ void AppendGroupByAggregateJson(std::ostream& out,
 
 void AppendTableCountJson(std::ostream& out, const TableCountInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.catalog_projection_count) {
+    out << "\"observability_envelope_kind\":\"catalog_projection_count\","
+        << "\"observability_route_kind\":\"catalog_projection\","
+        << "\"observability_read_only\":true,"
+        << "\"catalog_read_only\":true,"
+        << "\"projection\":\"" << EscapeJson(info.catalog_projection_path) << "\","
+        << "\"catalog_projection\":\"" << EscapeJson(info.catalog_projection_path) << "\","
+        << "\"aggregate_function\":\"sb.aggregate.count\",";
+    if (info.count_assertion_projection) {
+      out << "\"result_projection\":\"count_assertion\","
+          << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
+          << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
+          << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
+          << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
+          << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
+    }
+    if (info.has_where_predicate) {
+      out << "\"predicate_kind\":\"" << EscapeJson(info.predicate_kind) << "\","
+          << "\"predicate_column\":\"" << EscapeJson(info.predicate_column) << "\","
+          << "\"predicate_value\":\"" << EscapeJson(info.predicate_value) << "\","
+          << "\"predicate_value_type\":\"" << EscapeJson(info.predicate_value_type) << "\",";
+      if (!info.additional_predicate_kind.empty()) {
+        out << "\"additional_predicate_kind\":\""
+            << EscapeJson(info.additional_predicate_kind) << "\","
+            << "\"additional_predicate_column\":\""
+            << EscapeJson(info.additional_predicate_column) << "\","
+            << "\"additional_predicate_value\":\""
+            << EscapeJson(info.additional_predicate_value) << "\","
+            << "\"additional_predicate_value_type\":\""
+            << EscapeJson(info.additional_predicate_value_type) << "\",";
+      }
+      if (!info.subquery_projection.empty()) {
+        out << "\"subquery_projection\":\"" << EscapeJson(info.subquery_projection) << "\","
+            << "\"subquery_select_column\":\"" << EscapeJson(info.subquery_select_column) << "\","
+            << "\"subquery_predicate_kind\":\"" << EscapeJson(info.subquery_predicate_kind) << "\","
+            << "\"subquery_predicate_column\":\"" << EscapeJson(info.subquery_predicate_column) << "\","
+            << "\"subquery_predicate_value\":\"" << EscapeJson(info.subquery_predicate_value) << "\","
+            << "\"subquery_predicate_value_type\":\""
+            << EscapeJson(info.subquery_predicate_value_type) << "\",";
+        if (!info.subquery_nested_projection.empty()) {
+          out << "\"subquery_nested_projection\":\""
+              << EscapeJson(info.subquery_nested_projection) << "\","
+              << "\"subquery_nested_select_column\":\""
+              << EscapeJson(info.subquery_nested_select_column) << "\","
+              << "\"subquery_nested_predicate_kind\":\""
+              << EscapeJson(info.subquery_nested_predicate_kind) << "\","
+              << "\"subquery_nested_predicate_column\":\""
+              << EscapeJson(info.subquery_nested_predicate_column) << "\","
+              << "\"subquery_nested_predicate_value\":\""
+              << EscapeJson(info.subquery_nested_predicate_value) << "\","
+              << "\"subquery_nested_predicate_value_type\":\""
+              << EscapeJson(info.subquery_nested_predicate_value_type) << "\",";
+        }
+      }
+      out << "\"predicate_binding_model\":\"catalog_projection_field\","
+          << "\"predicate_descriptor_bound\":true,";
+    }
+    out << "\"source_relation_required\":false,"
+        << "\"row_storage_touched\":false,"
+        << "\"mga_transaction_context_required\":false,"
+        << "\"object_name_text_included\":false,"
+        << "\"sql_text_included\":false,";
+    return;
+  }
   out << "\"query_envelope_kind\":\"table_count\","
       << "\"query_operation\":\"count_all\","
       << "\"query_keyword_surface_ids\":[\"SBSQL-2C97BBAE2A81\",\"SBSQL-92A32408C70E\"],"
@@ -26594,6 +28510,19 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
   PopulateLifecycleAuthority(&envelope, mapping, session);
   if (envelope.messages.has_errors()) return envelope;
 
+  std::vector<std::string> lifecycle_database_name_parts;
+  const bool lifecycle_database_name_present =
+      ExtractLifecycleDatabaseNameParts(cst.source,
+                                        &lifecycle_database_name_parts);
+  const std::string lifecycle_repair_plan_id =
+      mapping.operation_id == "lifecycle.repair_database"
+          ? LifecycleRepairPlanId(cst.source)
+          : std::string{};
+  const std::string lifecycle_drop_mode =
+      mapping.operation_id == "lifecycle.drop_database"
+          ? LifecycleDropMode(cst.source)
+          : std::string{};
+
   std::ostringstream out;
   const auto lifecycle_surface_ids = LifecycleSurfaceIdsForCommand(mapping, cst.source);
   out << "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
@@ -26632,6 +28561,20 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
       << "\"bound_object_uuid_inputs\":\"" << EscapeJson(mapping.bound_object_uuid_inputs) << "\","
       << "\"database_uuid_generated_by_engine\":"
       << (IsLifecycleCreate(mapping) ? "true" : "false") << ',';
+  if (lifecycle_database_name_present) {
+    out << "\"database_name\":\""
+        << EscapeJson(lifecycle_database_name_parts.back()) << "\",";
+    AppendJsonStringArray(out,
+                          "database_name_parts",
+                          lifecycle_database_name_parts);
+    out << ',';
+  }
+  if (!lifecycle_repair_plan_id.empty()) {
+    out << "\"repair_plan_id\":\"" << EscapeJson(lifecycle_repair_plan_id) << "\",";
+  }
+  if (!lifecycle_drop_mode.empty()) {
+    out << "\"drop_mode\":\"" << EscapeJson(lifecycle_drop_mode) << "\",";
+  }
   AppendJsonStringArray(out, "row_surface_ids", lifecycle_surface_ids);
   out << ',';
   AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
@@ -26931,7 +28874,12 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (AnalyzeUnpivotRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeRowNumberWindowRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeGroupByAggregateRoute(cst, {}).active) return "query.plan_operation";
-  if (AnalyzeTableCountRoute(cst, {}).active) return "query.plan_operation";
+  if (const auto table_count_route = AnalyzeTableCountRoute(cst, {});
+      table_count_route.active) {
+    return table_count_route.catalog_projection_count
+               ? "observability.show_catalog"
+               : "query.plan_operation";
+  }
   if (const auto recursive_cte_insert = AnalyzeRecursiveCteInsertRoute(cst, bound.resolved_object_uuids);
       recursive_cte_insert.active) {
     return recursive_cte_insert.operation_id;
@@ -26952,6 +28900,12 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (AnalyzeCommentOnDdl(cst, bound.resolved_object_uuids).active) {
     return "ddl.comment_on_object";
   }
+  if (AnalyzeAlterDomainDdl(cst, bound.resolved_object_uuids).active) {
+    return "ddl.alter_object";
+  }
+  if (AnalyzeAlterSequenceDdl(cst, bound.resolved_object_uuids).active) {
+    return "ddl.alter_object";
+  }
   if (AnalyzeAlterRenameDdl(cst, bound.resolved_object_uuids).active) {
     return "ddl.alter_object";
   }
@@ -26967,6 +28921,11 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (const auto executable_object = AnalyzeSimpleCreateExecutableObject(cst);
       executable_object.active) {
     return executable_object.operation_id;
+  }
+  if (const auto routine_invocation =
+          AnalyzeRoutineInvocationRoute(cst, bound.resolved_object_uuids);
+      routine_invocation.active) {
+    return routine_invocation.operation_id;
   }
   if (AnalyzeSimpleCreateSequence(cst).active) return "ddl.create_sequence";
   if (AnalyzeSimpleCreateView(cst).active) return "ddl.create_view";
@@ -27022,11 +28981,16 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto simple_create_sequence = AnalyzeSimpleCreateSequence(cst);
   const auto simple_create_view = AnalyzeSimpleCreateView(cst);
   const auto simple_create_domain = AnalyzeSimpleCreateDomain(cst);
+  const auto alter_domain_ddl = AnalyzeAlterDomainDdl(cst, bound.resolved_object_uuids);
+  const auto alter_sequence_ddl = AnalyzeAlterSequenceDdl(cst, bound.resolved_object_uuids);
   const auto constraint_ddl =
-      (simple_create_domain.active || (simple_create_table.active && simple_create_table.valid))
+      (simple_create_domain.active || alter_domain_ddl.active || alter_sequence_ddl.active ||
+       (simple_create_table.active && simple_create_table.valid))
           ? ConstraintDdlInfo{}
           : AnalyzeConstraintDdl(cst);
   const auto simple_create_executable_object = AnalyzeSimpleCreateExecutableObject(cst);
+  const auto routine_invocation =
+      AnalyzeRoutineInvocationRoute(cst, bound.resolved_object_uuids);
   const auto transaction_lock_route = AnalyzeTransactionLockRoute(cst);
   const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
   const auto language_control_route = AnalyzeLanguageControlRoute(cst);
@@ -27513,6 +29477,11 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
   if (!(exact_command_route.active && exact_command_route.valid) &&
       sbsfc077_residual.active && sbsfc077_residual.valid) {
+    if (sbsfc077_residual.object_kind == "filespace" &&
+        sbsfc077_residual.target_object_uuid.empty() &&
+        !envelope.resolved_object_uuids.empty()) {
+      sbsfc077_residual.target_object_uuid = envelope.resolved_object_uuids.front();
+    }
     PopulateSbsfc077NonGeneralResidualAuthority(&envelope, sbsfc077_residual);
     if (!bound.bound || envelope.messages.has_errors()) return envelope;
 
@@ -27602,7 +29571,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto cast_value = AnalyzeCastValueRoute(cst);
   const auto scalar_projection =
       (observability_statement_route || cast_value.active || scalar_subquery.active ||
-       cursor_control.active || prepared_control.active || job_route.active ||
+       cursor_control.active || prepared_control.active || routine_invocation.active ||
+       job_route.active ||
        archive_route.active || engine_api_command_route.active || bridge_route.active)
           ? ScalarProjectionInfo{}
           : AnalyzeScalarProjection(cst);
@@ -27634,6 +29604,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateConstraintDdlAuthority(&envelope, constraint_ddl);
   PopulateIndexTemplateDdlAuthority(&envelope, index_template_ddl);
   PopulateCommentOnDdlAuthority(&envelope, comment_on_ddl);
+  PopulateAlterDomainDdlAuthority(&envelope, alter_domain_ddl);
+  PopulateAlterSequenceDdlAuthority(&envelope, alter_sequence_ddl);
   PopulateAlterRenameDdlAuthority(&envelope, alter_rename_ddl);
   PopulateSimpleDropObjectAuthority(&envelope, simple_drop_object);
   PopulateSimpleCreateIndexAuthority(&envelope, simple_create_index);
@@ -27642,6 +29614,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateSimpleCreateViewAuthority(&envelope, simple_create_view);
   PopulateSimpleCreateDomainAuthority(&envelope, simple_create_domain);
   PopulateSimpleCreateExecutableObjectAuthority(&envelope, simple_create_executable_object);
+  PopulateRoutineInvocationAuthority(&envelope, routine_invocation);
   PopulateTransactionLockAuthority(&envelope, transaction_lock_route);
   PopulateCatalogDescriptorMutationAuthority(&envelope, catalog_descriptor_mutation);
   PopulateSimpleCreateSchemaAuthority(&envelope, simple_create_schema);
@@ -27876,6 +29849,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                      "COMMENT ON requires a supported object class, resolved target UUID, and string or NULL comment payload",
                      {{"feature", comment_on_ddl.invalid_reason}});
   }
+  if (alter_domain_ddl.active && !alter_domain_ddl.valid) {
+    AddVerifierError(&envelope.messages,
+                     "SBSQL.ALTER_DOMAIN_DDL.UNSUPPORTED_SHAPE",
+                     "ALTER DOMAIN requires a resolved target UUID and supported SET DEFAULT or ADD CHECK form",
+                     {{"feature", alter_domain_ddl.invalid_reason}});
+  }
   if (alter_rename_ddl.active && !alter_rename_ddl.valid) {
     AddVerifierError(&envelope.messages,
                      "SBSQL.ALTER_RENAME_DDL.UNSUPPORTED_SHAPE",
@@ -27903,7 +29882,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   if (simple_create_domain.active && !simple_create_domain.valid) {
     AddVerifierError(&envelope.messages,
                      "SBSQL.CREATE_DOMAIN_DDL.UNSUPPORTED_SHAPE",
-                     "this bounded CREATE DOMAIN route supports exactly CREATE DOMAIN name AS scalar_type",
+                     "CREATE DOMAIN requires a scalar base type and supported DEFAULT, NULL/NOT NULL, and CHECK predicates",
                      {{"feature", simple_create_domain.invalid_reason}});
   }
   if (simple_create_executable_object.active && !simple_create_executable_object.valid) {
@@ -27911,6 +29890,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                      "SBSQL.CREATE_EXECUTABLE_OBJECT_DDL.UNSUPPORTED_SHAPE",
                      "this bounded CREATE FUNCTION/PROCEDURE/TRIGGER route supports exactly CREATE object_kind name as descriptor creation",
                      {{"feature", simple_create_executable_object.invalid_reason}});
+  }
+  if (routine_invocation.active && !routine_invocation.valid) {
+    AddVerifierError(&envelope.messages,
+                     "SBSQL.ROUTINE_INVOCATION.UNSUPPORTED_SHAPE",
+                     "EXECUTE PROCEDURE requires a UUID-resolved routine target and descriptor-bound argument list",
+                     {{"feature", routine_invocation.invalid_reason}});
   }
   if (catalog_descriptor_mutation.active && !catalog_descriptor_mutation.valid) {
     AddVerifierError(&envelope.messages,
@@ -28107,6 +30092,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       !cast_value.active &&
       !index_template_ddl.active &&
       !comment_on_ddl.active &&
+      !alter_domain_ddl.active &&
+      !alter_sequence_ddl.active &&
       !alter_rename_ddl.active &&
       !simple_drop_object.active &&
       !simple_create_index.active &&
@@ -28115,6 +30102,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       !simple_create_view.active &&
       !simple_create_domain.active &&
       !simple_create_executable_object.active &&
+      !routine_invocation.active &&
       !transaction_lock_route.active &&
       !catalog_descriptor_mutation.active &&
       !simple_create_schema.active &&
@@ -28211,6 +30199,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendConstraintDdlJson(out, constraint_ddl);
   AppendIndexTemplateDdlJson(out, index_template_ddl);
   AppendCommentOnDdlJson(out, comment_on_ddl);
+  AppendAlterDomainDdlJson(out, alter_domain_ddl);
+  AppendAlterSequenceDdlJson(out, alter_sequence_ddl);
   AppendAlterRenameDdlJson(out, alter_rename_ddl);
   AppendSimpleDropObjectJson(out, simple_drop_object);
   AppendSimpleCreateIndexJson(out, simple_create_index);
@@ -28219,6 +30209,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendSimpleCreateViewJson(out, simple_create_view);
   AppendSimpleCreateDomainJson(out, simple_create_domain);
   AppendSimpleCreateExecutableObjectJson(out, simple_create_executable_object);
+  AppendRoutineInvocationJson(out, routine_invocation);
   AppendTransactionLockJson(out, transaction_lock_route);
   AppendCatalogDescriptorMutationJson(out, catalog_descriptor_mutation);
   AppendSimpleCreateSchemaJson(out, simple_create_schema);
@@ -28601,7 +30592,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"target_object_kind\":\"vector_collection\"") ==
             std::string::npos ||
         envelope.payload.find("\"dimension\"") == std::string::npos ||
-        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"vector_column_descriptor_embedded\":true") ==
+            std::string::npos ||
+        envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
+        envelope.payload.find(
+            "\"name_text_authority\":\"metadata_only_engine_name_registry\"") ==
+            std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_rights, "right.catalog_mutate") ||
         !HasValue(envelope.required_authority_steps,
@@ -28687,6 +30683,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (expected_opcode.empty()) expected_opcode = ClusterProfileOpcodeForOperation(envelope.operation_id);
     if (expected_opcode.empty()) expected_opcode = StorageOpcodeForOperation(envelope.operation_id);
     if (expected_opcode.empty()) expected_opcode = TransactionOpcodeForOperation(envelope.operation_id);
+    if (expected_opcode.empty()) expected_opcode = UdrOpcodeForOperation(envelope.operation_id);
     if (expected_opcode.empty()) expected_opcode = ObservabilityOpcodeForOperation(envelope.operation_id);
 
     if (expected_opcode.empty() || envelope.sblr_opcode != expected_opcode) {
@@ -29366,7 +31363,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"catalog_authority\":\"sys.catalog.domain\"") == std::string::npos ||
         envelope.payload.find("\"target_object_kind\":\"domain\"") == std::string::npos ||
         envelope.payload.find("\"base_descriptor_embedded\":true") == std::string::npos ||
-        envelope.payload.find("\"domain_constraints_included\":false") == std::string::npos ||
+        envelope.payload.find("\"domain_constraints_included\":") == std::string::npos ||
         envelope.payload.find("\"domain_methods_included\":false") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
@@ -29433,6 +31430,34 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (envelope.payload.find("\"parser_executes_sql\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.PARSER_AUTHORITY_BYPASS",
                        "CREATE executable object SBLR cannot execute parser-side SQL");
+    }
+  }
+  if (envelope.payload.find("\"routine_invocation\":true") != std::string::npos) {
+    if (envelope.operation_family != "sblr.routine.execute.v3" ||
+        envelope.sblr_operation_key != "sblr.routine.execute.v3" ||
+        envelope.operation_id != "routine.procedure_invoke" ||
+        envelope.sblr_opcode != "SBLR_PROCEDURE_INVOKE" ||
+        envelope.engine_api_function != "EngineInvokeExecutableObject" ||
+        envelope.payload.find("\"target_object_kind\":\"procedure\"") == std::string::npos ||
+        envelope.payload.find("\"target_object_uuid\":\"") == std::string::npos ||
+        envelope.payload.find("\"object_uuid\":\"") == std::string::npos ||
+        envelope.payload.find("\"server_revalidates_sblr_uuid\":true") == std::string::npos ||
+        envelope.payload.find("\"runtime_invocation_included\":true") == std::string::npos ||
+        envelope.payload.find("\"parser_executes_sql\":false") == std::string::npos ||
+        envelope.payload.find("\"parser_executes_routine\":false") == std::string::npos ||
+        envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
+        !HasValue(envelope.required_rights, "right.execute") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.server.sblr_uuid_admission_required") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.engine.executable_object_invoke_api_required") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
+        !HasValue(envelope.descriptor_refs, "sys.catalog.procedure") ||
+        !HasValue(envelope.descriptor_refs, "sys.routine_descriptor") ||
+        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+      AddVerifierError(&result.messages, "SBSQL.SBLR.ROUTINE_INVOCATION_ENVELOPE_INVALID",
+                       "EXECUTE PROCEDURE SBLR must carry UUID-bound routine invocation authority without parser SQL execution");
     }
   }
   if (IsSupportedAgentRuntimeOperation(envelope.operation_id)) {
@@ -29524,6 +31549,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
   }
   if (IsSupportedUdrPackageOperation(envelope.operation_id)) {
+    const bool dynamic_udr_route =
+        envelope.operation_id == "extensibility.invoke_udr_package" &&
+        envelope.payload.find("\"dynamic_sbsql_udr_route\":true") != std::string::npos;
     if (envelope.sblr_opcode != UdrOpcodeForOperation(envelope.operation_id)) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.UDR_OPCODE_MISMATCH",
                        "UDR SBLR operation id and opcode do not match");
@@ -29533,7 +31561,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         (!HasValue(envelope.required_authority_steps,
                    "authority.engine.udr_inspect_api_required") &&
          !HasValue(envelope.required_authority_steps,
-                   "authority.engine.udr_manage_api_required")) ||
+                   "authority.engine.udr_manage_api_required") &&
+         !HasValue(envelope.required_authority_steps,
+                   "authority.engine.udr_invoke_api_required")) ||
         !HasValue(envelope.required_authority_steps,
                   "authority.server.security_policy_context_required") ||
         !HasValue(envelope.required_authority_steps,
@@ -29543,14 +31573,43 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_udr_execution") ||
         !HasValue(envelope.descriptor_refs, "sys.udr_package_registry") ||
-        envelope.payload.find("\"udr_envelope_kind\":\"udr_package_inspect\"") ==
-            std::string::npos ||
-        envelope.payload.find("\"runtime_component\":\"udr_packages\"") ==
-            std::string::npos ||
+        (!dynamic_udr_route &&
+         (envelope.payload.find("\"udr_envelope_kind\":\"udr_package_inspect\"") ==
+              std::string::npos ||
+          envelope.payload.find("\"runtime_component\":\"udr_packages\"") ==
+              std::string::npos)) ||
+        (dynamic_udr_route &&
+         (envelope.payload.find(
+              "\"udr_envelope_kind\":\"dynamic_sbsql_parser_support_udr\"") ==
+              std::string::npos ||
+          envelope.payload.find("\"runtime_component\":\"sbsql_parser_support_udr\"") ==
+              std::string::npos)) ||
         envelope.payload.find("\"parser_executes_udr\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.UDR_AUTHORITY_INVALID",
                        "UDR package SBLR must route through engine UDR authority without parser UDR execution");
+    }
+    if (envelope.operation_id == "extensibility.invoke_udr_package" &&
+        (!HasValue(envelope.required_authority_steps,
+                   "authority.server.sblr_uuid_admission_required") ||
+         !HasValue(envelope.required_authority_steps,
+                   "authority.server.parser_support_udr_required") ||
+         !HasValue(envelope.required_authority_steps,
+                   "authority.udr.dynamic_sbsql_generates_sblr_uuid_only") ||
+         !HasValue(envelope.required_authority_steps,
+                   "authority.engine.accepts_revalidated_sblr_uuid_only") ||
+         !HasValue(envelope.descriptor_refs, "sys.parser_package_registry") ||
+         !HasValue(envelope.descriptor_refs, "sys.sblr.envelope_descriptor") ||
+         envelope.payload.find("\"dynamic_sbsql_udr_route\":true") == std::string::npos ||
+         envelope.payload.find("\"parser_support_udr_required\":true") == std::string::npos ||
+         envelope.payload.find("\"dynamic_sbsql_to_sblr_uuid\":true") == std::string::npos ||
+         envelope.payload.find("\"server_revalidates_generated_sblr_uuid\":true") == std::string::npos ||
+         envelope.payload.find("\"source_sql_to_udr_parse_only\":true") == std::string::npos ||
+         envelope.payload.find("\"original_sql_reference_packet_only\":true") == std::string::npos ||
+         envelope.payload.find("\"engine_accepts_dynamic_sql_text\":false") == std::string::npos ||
+         envelope.payload.find("\"engine_accepts_revalidated_sblr_uuid_only\":true") == std::string::npos)) {
+      AddVerifierError(&result.messages, "SBSQL.SBLR.DYNAMIC_SQL_UDR_AUTHORITY_INVALID",
+                       "dynamic SBsql must route through parser-support UDR and revalidated generated SBLR/UUID");
     }
   }
   if (IsSupportedEventNotificationOperation(envelope.operation_id)) {
@@ -30034,7 +32093,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"catalog_envelope_kind\":\"catalog_descriptor_mutation\"") == std::string::npos ||
         envelope.payload.find("\"catalog_descriptor_mutation\":true") == std::string::npos ||
         envelope.payload.find("\"mga_catalog_commit_required\":true") == std::string::npos ||
-        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
+        envelope.payload.find(
+            "\"name_text_authority\":\"metadata_only_engine_name_registry\"") ==
+            std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"parser_executes_sql\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CATALOG_MUTATION_AUTHORITY_INVALID",
@@ -30652,6 +32714,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       const bool in_list_predicate =
           envelope.payload.find("\"predicate_kind\":\"column_in_list\"") != std::string::npos &&
           envelope.payload.find("\"predicate_value\"") != std::string::npos;
+      const bool like_predicate =
+          (envelope.payload.find("\"predicate_kind\":\"column_like\"") != std::string::npos ||
+           envelope.payload.find("\"predicate_kind\":\"column_not_like\"") != std::string::npos) &&
+          envelope.payload.find("\"predicate_value\"") != std::string::npos;
       const bool all_null_predicate =
           envelope.payload.find("\"predicate_kind\":\"columns_all_null\"") != std::string::npos;
       const bool all_not_null_predicate =
@@ -30661,7 +32727,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       const bool modulo_predicate =
           envelope.payload.find("\"predicate_kind\":\"column_mod_equals\"") != std::string::npos &&
           envelope.payload.find("\"predicate_value\"") != std::string::npos;
-      if (!descriptor_bound || (!equality_predicate && !in_list_predicate &&
+      if (!descriptor_bound || (!equality_predicate && !in_list_predicate && !like_predicate &&
                                 !all_null_predicate && !all_not_null_predicate &&
                                 !column_or_null_predicate && !modulo_predicate)) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.DML_PREDICATE_AUTHORITY_INVALID",

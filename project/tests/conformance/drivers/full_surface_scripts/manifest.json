@@ -8,7 +8,8 @@
     "__SB_RUN_ID__",
     "__SB_ROUTE__",
     "__SB_PARSER_MODE__",
-    "__SB_PAGE_SIZE__"
+    "__SB_PAGE_SIZE__",
+    "__SB_ARTIFACT_ROOT__"
   ],
   "minimum_language_catalog_counts": {
     "surface_function": 1317,
@@ -52,6 +53,7 @@
   "exhaustive_generated_assertion_count": 0,
   "required_coverage": [
     "aggregate_functions",
+    "agent_management",
     "all_table_column_type_families",
     "alter_domain_add_constraint",
     "alter_domain_set_default",
@@ -69,11 +71,13 @@
     "authorization_refusal",
     "bitmap_index",
     "btree_index",
+    "backup_restore_replication_migration",
     "called_on_null_input",
     "catalog_introspection_domain_descriptor",
     "catalog_introspection_sys_columns",
     "catalog_introspection_sys_schemas",
     "catalog_introspection_sys_tables",
+    "catalog_external_git",
     "cluster_compile_link_stub",
     "cluster_gated_statement",
     "cluster_inspection_refusal",
@@ -85,10 +89,12 @@
     "comment_on_table",
     "comment_on_view",
     "comparison_operators",
+    "copy",
     "covering_index",
     "cross_join",
     "cross_user_sblr_replay_refusal",
     "cube",
+    "database_lifecycle",
     "delete",
     "descending_index",
     "deterministic_attribute",
@@ -111,6 +117,8 @@
     "expression_body_function",
     "expression_index",
     "fetch_first_rows_only",
+    "filespace_lifecycle",
+    "filespace_management",
     "full_outer_join",
     "fulltext_index",
     "function_catalog_introspection",
@@ -139,6 +147,7 @@
     "limit_offset",
     "limit_zero",
     "logical_operators",
+    "management_operations",
     "mask_ddl",
     "materialized_view_base_mutation",
     "materialized_view_create",
@@ -149,6 +158,8 @@
     "mga_begin_commit",
     "mga_rollback",
     "mga_savepoint",
+    "multimodel_descriptor_ddl",
+    "multimodel_statements",
     "on_conflict",
     "operator_expected_output_fixture_pack",
     "optimizer_cte",
@@ -194,15 +205,19 @@
     "sequence_next_value_for",
     "sequence_no_cycle",
     "sequence_start_with",
+    "session_configuration",
     "set_operation",
     "type_boundaries",
     "union_all",
     "update",
     "upsert",
     "uuid_functions",
+    "vector_collection_ddl",
+    "vector_collection_operation",
     "vector_exact_index",
     "vector_functions",
     "vector_hnsw_index",
+    "vector_search",
     "view_create",
     "view_predicate_filter",
     "view_row_visibility",
@@ -725,6 +740,19 @@
       ]
     },
     {
+      "script_id": "SBDFS-059",
+      "path": "scripts/059_copy_in_band_copy.sbsql",
+      "coverage": [
+        "copy"
+      ],
+      "assertions": [
+        "SBDFS-059-001",
+        "SBDFS-059-002",
+        "SBDFS-059-003",
+        "SBDFS-059-004"
+      ]
+    },
+    {
       "script_id": "SBDFS-055",
       "path": "generated/scripts/055_builtin_fixture_manifest.sbsql",
       "generated_from": "project/tests/sbsql_parser_worker/generated/full_surface/*.csv",
@@ -847,6 +875,39 @@
       ],
       "assertions": [
         "SBDFS-090-001"
+      ]
+    },
+    {
+      "script_id": "SBDFS-092",
+      "path": "scripts/092_multimodel_descriptor_routes.sbsql",
+      "coverage": [
+        "multimodel_descriptor_ddl",
+        "multimodel_statements",
+        "vector_collection_ddl",
+        "vector_collection_operation",
+        "vector_search"
+      ],
+      "assertions": [
+        "SBDFS-092-001",
+        "SBDFS-092-002"
+      ]
+    },
+    {
+      "script_id": "SBDFS-093",
+      "path": "scripts/093_admin_session_artifact_routes.sbsql",
+      "coverage": [
+        "agent_management",
+        "backup_restore_replication_migration",
+        "catalog_external_git",
+        "database_lifecycle",
+        "filespace_lifecycle",
+        "filespace_management",
+        "management_operations",
+        "session_configuration"
+      ],
+      "assertions": [
+        "SBDFS-093-001",
+        "SBDFS-093-002"
       ]
     },
     {

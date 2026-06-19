@@ -315,6 +315,8 @@ void ApplyDatabaseHealthToSession(ServerSessionRecord* session,
   session->database_engine_agent_ordinary_admission_allowed =
       database.database_engine_agent_ordinary_admission_allowed;
   session->database_engine_agent_health_json = database.database_engine_agent_health_json;
+  session->resource_seed_pack_root = database.resource_seed_pack_root;
+  session->policy_seed_pack_root = database.policy_seed_pack_root;
   session->config_source_epoch = database.config_source_epoch;
   session->config_reload_generation = database.config_reload_generation;
   session->capability_policy_generation =
@@ -784,6 +786,13 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
 
   session->role_set_hash = UuidSetHash("roles", session->effective_role_uuids);
   session->group_set_hash = UuidSetHash("groups", session->effective_group_uuids);
+  for (const auto& grant : materialized.context.grants) {
+    if (grant.right.empty() || !grant.target_uuid.canonical.empty()) {
+      continue;
+    }
+    AddUniqueTraceTag(&session->engine_authorization_trace_tags,
+                      std::string(grant.deny ? "deny:" : "right:") + grant.right);
+  }
   for (const auto& role : session->effective_role_uuids) {
     AddUniqueTraceTag(&session->engine_authorization_trace_tags,
                       "role_uuid:" + UuidBytesToText(role));

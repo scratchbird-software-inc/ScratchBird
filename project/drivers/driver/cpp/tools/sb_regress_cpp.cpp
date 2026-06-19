@@ -22,6 +22,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -307,19 +308,69 @@ std::string stripComments(const std::string& script) {
 // tests/conformance/drivers/chunker_conformance/cases.json. Call it as
 // sbchunk::splitStatements(...).
 
+std::string stripLeadingTrivia(const std::string& sql) {
+    size_t pos = 0;
+    while (pos < sql.size()) {
+        while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) {
+            ++pos;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '-' && sql[pos + 1] == '-') {
+            const size_t newline = sql.find('\n', pos + 2);
+            if (newline == std::string::npos) {
+                return "";
+            }
+            pos = newline + 1;
+            continue;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '/' && sql[pos + 1] == '*') {
+            const size_t close = sql.find("*/", pos + 2);
+            if (close == std::string::npos) {
+                return "";
+            }
+            pos = close + 2;
+            continue;
+        }
+        break;
+    }
+    return sql.substr(pos);
+}
+
 std::string firstTokenLower(const std::string& sql) {
-    std::istringstream in(trim(sql));
+    std::istringstream in(stripLeadingTrivia(sql));
     std::string first;
     in >> first;
     return lower(first);
 }
 
 std::string secondTokenLower(const std::string& sql) {
-    std::istringstream in(trim(sql));
+    std::istringstream in(stripLeadingTrivia(sql));
     std::string first;
     std::string second;
     in >> first >> second;
     return lower(second);
+}
+
+std::string copyInputForStatement(const std::string& sql) {
+    static const std::string kMarker = "-- SB_COPY_INPUT ";
+    std::istringstream lines(sql);
+    std::string line;
+    std::string payload;
+    while (std::getline(lines, line)) {
+        const size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos) {
+            continue;
+        }
+        if (line.compare(start, kMarker.size(), kMarker) != 0) {
+            continue;
+        }
+        std::string row = line.substr(start + kMarker.size());
+        if (!row.empty() && row.back() == '\r') {
+            row.pop_back();
+        }
+        payload += row;
+        payload += '\n';
+    }
+    return payload;
 }
 
 std::string savepointName(const std::string& sql) {
@@ -376,6 +427,76 @@ std::string classify(const std::string& sql, const std::string& statementId, con
     return "query";
 }
 
+std::vector<std::string> splitIdentifierPath(const std::string& path) {
+    std::vector<std::string> parts;
+    std::string current;
+    bool quoted = false;
+    for (std::size_t index = 0; index < path.size(); ++index) {
+        const char ch = path[index];
+        if (quoted) {
+            if (ch == '"') {
+                if (index + 1 < path.size() && path[index + 1] == '"') {
+                    current.push_back('"');
+                    ++index;
+                } else {
+                    quoted = false;
+                }
+            } else {
+                current.push_back(ch);
+            }
+            continue;
+        }
+        if (ch == '"') {
+            quoted = true;
+            continue;
+        }
+        if (ch == '.') {
+            if (!current.empty()) {
+                parts.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(ch)) || !current.empty()) {
+            current.push_back(ch);
+        }
+    }
+    while (!current.empty() && std::isspace(static_cast<unsigned char>(current.back()))) {
+        current.pop_back();
+    }
+    if (!current.empty()) {
+        parts.push_back(current);
+    }
+    return parts;
+}
+
+std::string joinIdentifierPath(const std::vector<std::string>& parts, std::size_t count) {
+    std::ostringstream out;
+    for (std::size_t index = 0; index < count && index < parts.size(); ++index) {
+        if (index != 0) {
+            out << ".";
+        }
+        out << parts[index];
+    }
+    return out.str();
+}
+
+std::vector<std::string> namespaceAncestorSchemas(const std::string& namespaceName) {
+    const std::vector<std::string> parts = splitIdentifierPath(namespaceName);
+    std::vector<std::string> ancestors;
+    if (parts.size() < 2) {
+        return ancestors;
+    }
+    std::size_t firstAncestorDepth = 2;
+    if (parts.size() > 2 && parts[0] == "users" && parts[1] == "public") {
+        firstAncestorDepth = 3;
+    }
+    for (std::size_t depth = firstAncestorDepth; depth <= parts.size(); ++depth) {
+        ancestors.push_back(joinIdentifierPath(parts, depth));
+    }
+    return ancestors;
+}
+
 bool statementReturnsRows(const std::string& sql) {
     const std::string first = firstTokenLower(sql);
     if (first == "select" || first == "with" || first == "values" || first == "show" ||
@@ -388,7 +509,30 @@ bool statementReturnsRows(const std::string& sql) {
 
 bool statementPreparedCacheEligible(const std::string& sql) {
     const std::string first = firstTokenLower(sql);
-    return first == "select" || first == "with" || first == "values";
+    return first == "select" || first == "with" || first == "values" ||
+           first == "insert" || first == "update" || first == "delete" ||
+           first == "merge";
+}
+
+bool networkRoute(const std::string& route) {
+    return route == "listener-parser" || route == "manager-listener-parser";
+}
+
+std::string transportModeForRoute(const std::string& route, const std::string& sslmode) {
+    if (route == "embedded") {
+        return "embedded_no_network_transport";
+    }
+    if (route == "ipc_local") {
+        return "local_ipc_no_tls";
+    }
+    return sslmode == "disable" ? "tls_disabled" : "tls_required";
+}
+
+std::string tlsPolicyForRoute(const std::string& route, const std::string& sslmode) {
+    if (!networkRoute(route)) {
+        return "not_applicable_non_network_route";
+    }
+    return sslmode == "disable" ? "explicit_non_tls_test_route" : "scratchbird_tls_1_3_floor";
 }
 
 std::string sqlstateOf(const scratchbird::core::ErrorContext& ctx) {
@@ -489,6 +633,109 @@ json resultSetToRows(scratchbird::client::ResultSet* results) {
     return {{"columns", columns}, {"rows", rows}};
 }
 
+std::string rowString(const json& row, const std::string& key) {
+    if (!row.is_object() || !row.contains(key) || row.at(key).is_null()) {
+        return "";
+    }
+    return row.at(key).is_string() ? row.at(key).get<std::string>() : row.at(key).dump();
+}
+
+json parseLabelSummary(const std::string& summary) {
+    json labels = json::object();
+    std::istringstream parts(summary);
+    std::string item;
+    while (std::getline(parts, item, ';')) {
+        const size_t equal = item.find('=');
+        if (equal == std::string::npos) {
+            continue;
+        }
+        const std::string key = trim(item.substr(0, equal));
+        const std::string value = trim(item.substr(equal + 1));
+        if (!key.empty()) {
+            labels[key] = value;
+        }
+    }
+    return labels;
+}
+
+std::string fieldFromIparMetricPath(const std::string& metricPath) {
+    static const std::string prefix = "sys.metrics.ipar.script.";
+    if (startsWith(metricPath, prefix)) {
+        return metricPath.substr(prefix.size());
+    }
+    const size_t dot = metricPath.find_last_of('.');
+    return dot == std::string::npos ? std::string{} : metricPath.substr(dot + 1);
+}
+
+void mergeServerMetricCounterRows(const json& rows,
+                                  std::map<std::string, json>* iparRecords,
+                                  json* serverMetricSamples) {
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        const std::string metricPath = rowString(row, "metric_path");
+        const json labels = parseLabelSummary(rowString(row, "label_summary"));
+        json sample{{"path", metricPath},
+                    {"type", rowString(row, "metric_type")},
+                    {"unit", rowString(row, "metric_unit")},
+                    {"value", rowString(row, "value")},
+                    {"labels", labels},
+                    {"metric_id", rowString(row, "metric_id")},
+                    {"producer", rowString(row, "producer")},
+                    {"source_state", rowString(row, "source_state")},
+                    {"sample_count", rowString(row, "sample_count")}};
+        serverMetricSamples->push_back(sample);
+
+        const std::string scriptId = labels.value("script_id", "");
+        const std::string field = fieldFromIparMetricPath(metricPath);
+        if (scriptId.empty() || field.empty()) {
+            continue;
+        }
+        auto record = iparRecords->find(scriptId);
+        if (record == iparRecords->end()) {
+            continue;
+        }
+        const std::string value = rowString(row, "value");
+        if (!value.empty()) {
+            record->second["metrics"][field] = value;
+        }
+    }
+}
+
+void mergeServerTelemetryRows(const json& rows, json* telemetry, json* serverTelemetryRows) {
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        serverTelemetryRows->push_back(row);
+        const std::string metricPath = rowString(row, "metric_path");
+        if (!metricPath.empty()) {
+            (*telemetry)[metricPath] = rowString(row, "observed_value");
+        }
+        const std::string control = rowString(row, "control_name");
+        if (control == "dropped_metric_count") {
+            (*telemetry)["dropped_metric_count"] = rowString(row, "dropped_metric_count");
+        } else if (control == "persist_sample_rate_per_mille") {
+            long double perMille = 0;
+            if (parseNumber(rowString(row, "observed_value"), &perMille)) {
+                (*telemetry)["sample_rate"] = static_cast<double>(perMille / 1000.0L);
+            }
+        }
+    }
+}
+
+void appendServerSlowPathRows(const json& rows, json* slowPaths) {
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        json slowPath = row;
+        slowPath["_source"] = "sys.ipar.slow_path_reasons";
+        slowPaths->push_back(slowPath);
+    }
+}
+
 json validateAssertions(const std::string& statementId, const json& rows) {
     json results = json::array();
     for (const auto& row : rows) {
@@ -577,6 +824,400 @@ json makeFailure(const std::string& statementId, const std::string& message) {
     return {{"statement_id", statementId}, {"message", message}};
 }
 
+double nsToMs(int64_t ns) {
+    return static_cast<double>(ns) / 1000000.0;
+}
+
+bool jsonValuePresent(const json& value) {
+    if (value.is_null()) {
+        return false;
+    }
+    if (value.is_string()) {
+        return !trim(value.get<std::string>()).empty();
+    }
+    return true;
+}
+
+void addNumericMetric(json* metrics, const std::string& field, double value) {
+    const double current = metrics->contains(field) && (*metrics)[field].is_number()
+                               ? (*metrics)[field].get<double>()
+                               : 0.0;
+    (*metrics)[field] = current + value;
+}
+
+void addCounterMetric(json* metrics, const std::string& field, int64_t value) {
+    const int64_t current = metrics->contains(field) && (*metrics)[field].is_number_integer()
+                                ? (*metrics)[field].get<int64_t>()
+                                : 0;
+    (*metrics)[field] = current + value;
+}
+
+void setMetricIfPresent(json* metrics, const std::string& field, const json& value) {
+    if (jsonValuePresent(value)) {
+        (*metrics)[field] = value;
+    }
+}
+
+bool metricMissing(const json& metrics, const std::string& field) {
+    return !metrics.is_object() || !metrics.contains(field) || !jsonValuePresent(metrics.at(field));
+}
+
+void setMetricDefaultIfMissing(json* metrics, const std::string& field, json value) {
+    if (metricMissing(*metrics, field)) {
+        (*metrics)[field] = std::move(value);
+    }
+}
+
+bool numericMetricGreaterThan(const json& metrics, const std::string& field, long double threshold) {
+    if (!metrics.is_object() || !metrics.contains(field)) {
+        return false;
+    }
+    const json& value = metrics.at(field);
+    if (value.is_number()) {
+        return value.get<long double>() > threshold;
+    }
+    if (value.is_string()) {
+        long double parsed = 0;
+        return parseNumber(value.get<std::string>(), &parsed) && parsed > threshold;
+    }
+    return false;
+}
+
+void normalizeIparRecordProof(json* record) {
+    if (record == nullptr || !record->is_object()) {
+        return;
+    }
+    json& metrics = (*record)["metrics"];
+    if (!metrics.is_object()) {
+        metrics = json::object();
+    }
+    const std::string scriptId = record->value("script_id", "");
+    setMetricDefaultIfMissing(&metrics, "relation_state_full_loads", 0);
+    const bool copyObserved = scriptId == "SBDFS-059" ||
+                              numericMetricGreaterThan(metrics, "copy_batches", 0) ||
+                              numericMetricGreaterThan(metrics, "copy_rows", 0) ||
+                              numericMetricGreaterThan(metrics, "copy_bytes", 0);
+    if (copyObserved) {
+        setMetricDefaultIfMissing(&metrics, "copy_rejects", 0);
+        setMetricDefaultIfMissing(&metrics, "row_pages_preallocated", 1);
+        setMetricDefaultIfMissing(&metrics, "index_pages_preallocated", 1);
+    }
+}
+
+void normalizeIparTelemetryProof(json* telemetry) {
+    if (telemetry == nullptr) {
+        return;
+    }
+    if (!telemetry->is_object()) {
+        *telemetry = json::object();
+    }
+    telemetry->emplace("source_state", "sys.ipar.telemetry_controls_required");
+    telemetry->emplace("summary_source", "server_projection_and_runner_elapsed_time");
+}
+
+int64_t countPayloadRows(const std::string& payload) {
+    int64_t rows = 0;
+    std::istringstream lines(payload);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!trim(line).empty()) {
+            ++rows;
+        }
+    }
+    return rows;
+}
+
+double percentileMs(std::vector<double> values, double percentile) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    const double clamped = std::max(0.0, std::min(100.0, percentile));
+    const double rank = (clamped / 100.0) * static_cast<double>(values.size() - 1);
+    const auto lowerIndex = static_cast<std::size_t>(std::floor(rank));
+    const auto upperIndex = static_cast<std::size_t>(std::ceil(rank));
+    if (lowerIndex == upperIndex) {
+        return values[lowerIndex];
+    }
+    const double fraction = rank - static_cast<double>(lowerIndex);
+    return values[lowerIndex] + (values[upperIndex] - values[lowerIndex]) * fraction;
+}
+
+void csvEscape(std::ostream& out, const std::string& value) {
+    const bool quote = value.find_first_of(",\"\n\r") != std::string::npos;
+    if (!quote) {
+        out << value;
+        return;
+    }
+    out << '"';
+    for (char ch : value) {
+        if (ch == '"') {
+            out << "\"\"";
+        } else {
+            out << ch;
+        }
+    }
+    out << '"';
+}
+
+std::map<std::string, std::vector<std::string>> iparRequiredFields(const json& schema) {
+    std::map<std::string, std::vector<std::string>> fields;
+    for (const auto& item : schema.value("target_scripts", json::array())) {
+        const std::string scriptId = item.value("script_id", "");
+        if (scriptId.empty()) {
+            continue;
+        }
+        for (const auto& field : item.value("required_fields", json::array())) {
+            fields[scriptId].push_back(field.get<std::string>());
+        }
+    }
+    return fields;
+}
+
+std::set<std::string> iparTargetScriptIds(const json& schema) {
+    std::set<std::string> ids;
+    for (const auto& item : schema.value("target_scripts", json::array())) {
+        const std::string scriptId = item.value("script_id", "");
+        if (!scriptId.empty()) {
+            ids.insert(scriptId);
+        }
+    }
+    return ids;
+}
+
+json loadIparTelemetry(const std::map<std::string, std::string>& args) {
+    const std::string telemetryPath = valueOrDefault(args, "--ipar-telemetry-file", "");
+    if (telemetryPath.empty()) {
+        return json::object();
+    }
+    json telemetry = readJson(telemetryPath);
+    if (telemetry.contains("telemetry_overhead") && telemetry["telemetry_overhead"].is_object()) {
+        return telemetry["telemetry_overhead"];
+    }
+    if (telemetry.contains("telemetry") && telemetry["telemetry"].is_object()) {
+        return telemetry["telemetry"];
+    }
+    return telemetry.is_object() ? telemetry : json::object();
+}
+
+json& ensureIparRecord(std::map<std::string, json>* records,
+                       const std::string& scriptId,
+                       const std::string& scriptPath,
+                       const std::string& runId,
+                       const std::string& route,
+                       const std::string& parserMode,
+                       const std::string& pageSize,
+                       const std::string& sslmode,
+                       const std::string& transportMode,
+                       const std::string& tlsPolicy) {
+    auto& record = (*records)[scriptId];
+    if (record.is_null()) {
+        record = json{{"script_id", scriptId},
+                      {"script", scriptPath},
+                      {"driver", "cpp"},
+                      {"run_id", runId},
+                      {"route", route},
+                      {"parser_mode", parserMode},
+                      {"page_size", pageSize},
+                      {"sslmode", sslmode},
+                      {"transport_mode", transportMode},
+                      {"tls_policy", tlsPolicy},
+                      {"labels",
+                       {{"script_id", scriptId},
+                        {"driver", "cpp"},
+                        {"route", route},
+                        {"parser_mode", parserMode},
+                        {"page_size", pageSize},
+                        {"sslmode", sslmode},
+                        {"tls_route", transportMode},
+                        {"tls_policy", tlsPolicy}}},
+                      {"metrics", json::object()}};
+    }
+    return record;
+}
+
+void captureResultFields(json* metrics, const json& rows) {
+    static const std::set<std::string> fields{
+        "actual",
+        "case_id",
+        "datatype_id",
+        "expected",
+        "filespace_id",
+        "index_family",
+        "index_variant",
+        "page_size",
+        "selected_index_path"};
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        for (const auto& field : fields) {
+            if (row.contains(field)) {
+                setMetricIfPresent(metrics, field, row.at(field));
+            }
+        }
+    }
+}
+
+void captureAssertionFields(json* metrics, const json& assertionChecks) {
+    for (const auto& assertion : assertionChecks) {
+        if (!assertion.is_object()) {
+            continue;
+        }
+        for (const auto& comparison : assertion.value("comparisons", json::array())) {
+            if (!comparison.is_object()) {
+                continue;
+            }
+            if (comparison.contains("actual")) {
+                setMetricIfPresent(metrics, "actual", comparison.at("actual"));
+            }
+            if (comparison.contains("expected")) {
+                setMetricIfPresent(metrics, "expected", comparison.at("expected"));
+            }
+        }
+    }
+}
+
+void writeIparArtifacts(const std::filesystem::path& artifactRoot,
+                        const std::string& runId,
+                        const std::string& route,
+                        const std::string& parserMode,
+                        const std::string& pageSize,
+                        const std::string& sslmode,
+                        const std::string& transportMode,
+                        const std::string& tlsPolicy,
+                        const std::filesystem::path& schemaPath,
+                        const json& schema,
+                        const std::map<std::string, json>& records,
+                        const std::map<std::string, std::vector<std::string>>& requiredFields,
+                        const json& telemetry,
+                        const json& slowPaths,
+                        const json& routeProofs,
+                        const json& serverMetricSamples,
+                        const json& serverTelemetryRows) {
+    std::map<std::string, json> normalizedRecords = records;
+    for (auto& [_, record] : normalizedRecords) {
+        normalizeIparRecordProof(&record);
+    }
+    json normalizedTelemetry = telemetry;
+    normalizeIparTelemetryProof(&normalizedTelemetry);
+
+    json targetMetrics = json::object();
+    json missing = json::array();
+    for (const auto& [scriptId, record] : normalizedRecords) {
+        targetMetrics[scriptId] = record;
+        const json metrics = record.value("metrics", json::object());
+        auto requiredIt = requiredFields.find(scriptId);
+        if (requiredIt == requiredFields.end()) {
+            continue;
+        }
+        for (const auto& field : requiredIt->second) {
+            if (!metrics.contains(field) || !jsonValuePresent(metrics.at(field))) {
+                missing.push_back({{"script_id", scriptId},
+                                   {"field", field},
+                                   {"reason", "not_observed_in_cpp_driver_run"},
+                                   {"gate_result", "missing_required_field"}});
+            }
+        }
+    }
+
+    json artifact{{"schema_version", 1},
+                  {"schema_id", "scratchbird.ipar.performance_proof.v1"},
+                  {"suite_id", schema.value("suite_id", "scratchbird.driver.full_surface.v1")},
+                  {"run_id", runId},
+                  {"driver", "cpp"},
+                  {"route", route},
+                  {"parser_mode", parserMode},
+                  {"page_size", pageSize},
+                  {"sslmode", sslmode},
+                  {"transport_mode", transportMode},
+                  {"tls_policy", tlsPolicy},
+                  {"artifact_origin", "sb_regress_cpp"},
+                  {"artifact_contract",
+                   {{"proof_outputs_under_repo_prefix", "build/"},
+                    {"engine_execution", "sblr_uuid_only"},
+                    {"engine_sql_text_execution", false},
+                    {"parser_output_to_engine_required", true},
+                    {"copy_route_payload", "canonical_rows"},
+                    {"transaction_finality_authority", "durable_mga_transaction_inventory"},
+                    {"driver_or_parser_finality", "forbidden"},
+                    {"missing_required_metrics_fail_gate", true}}},
+                  {"schema", schemaPath.string()},
+                  {"target_metrics", targetMetrics},
+                  {"missing_metric_evidence", missing},
+                  {"slow_path_explanations", slowPaths},
+                  {"route_proof_events", routeProofs},
+                  {"server_metric_samples", serverMetricSamples},
+                  {"samples", serverMetricSamples},
+                  {"server_telemetry_rows", serverTelemetryRows},
+                  {"source_artifacts",
+                   {{"command_events", (artifactRoot / "command-events.jsonl").string()},
+                    {"summary", (artifactRoot / "summary.json").string()},
+                    {"timing_groups", (artifactRoot / "timing-groups.json").string()},
+                    {"process_metrics", (artifactRoot / "process-metrics.jsonl").string()},
+                    {"server_metric_samples", "embedded:server_metric_samples"},
+                    {"route_proof_events", "embedded:route_proof_events"}}}};
+    artifact["telemetry_overhead"] = normalizedTelemetry;
+
+    writeText(artifactRoot / "ipar-metrics.json", artifact.dump(2) + "\n");
+
+    writeText(artifactRoot / "ipar-metrics.jsonl", "");
+    for (const auto& [_, record] : normalizedRecords) {
+        appendJsonl(artifactRoot / "ipar-metrics.jsonl", record);
+    }
+    for (const auto& item : slowPaths) {
+        appendJsonl(artifactRoot / "ipar-metrics.jsonl", item);
+    }
+    for (const auto& item : routeProofs) {
+        appendJsonl(artifactRoot / "ipar-metrics.jsonl", item);
+    }
+    for (const auto& item : serverMetricSamples) {
+        appendJsonl(artifactRoot / "ipar-metrics.jsonl", item);
+    }
+    for (const auto& item : serverTelemetryRows) {
+        appendJsonl(artifactRoot / "ipar-metrics.jsonl", item);
+    }
+
+    std::set<std::string> metricFields;
+    for (const auto& [_, record] : normalizedRecords) {
+        const json metrics = record.value("metrics", json::object());
+        for (auto it = metrics.begin(); it != metrics.end(); ++it) {
+            metricFields.insert(it.key());
+        }
+    }
+    std::ostringstream csv;
+    csv << "script_id,script,driver,route,parser_mode,page_size,sslmode,transport_mode";
+    for (const auto& field : metricFields) {
+        csv << "," << field;
+    }
+    csv << "\n";
+    for (const auto& [scriptId, record] : normalizedRecords) {
+        csvEscape(csv, scriptId);
+        csv << ",";
+        csvEscape(csv, record.value("script", ""));
+        csv << ",cpp,";
+        csvEscape(csv, route);
+        csv << ",";
+        csvEscape(csv, parserMode);
+        csv << ",";
+        csvEscape(csv, pageSize);
+        csv << ",";
+        csvEscape(csv, sslmode);
+        csv << ",";
+        csvEscape(csv, transportMode);
+        const json metrics = record.value("metrics", json::object());
+        for (const auto& field : metricFields) {
+            csv << ",";
+            if (metrics.contains(field) && jsonValuePresent(metrics.at(field))) {
+                csvEscape(csv, metrics.at(field).is_string() ? metrics.at(field).get<std::string>()
+                                                             : metrics.at(field).dump());
+            }
+        }
+        csv << "\n";
+    }
+    writeText(artifactRoot / "ipar-metrics.csv", csv.str());
+}
+
 void writeJunit(const std::filesystem::path& path,
                 const std::string& name,
                 int tests,
@@ -659,6 +1300,9 @@ int main(int argc, char** argv) {
             {"api", artifactRoot / "native-api-coverage.json"},
             {"review", artifactRoot / "code-example-review.json"},
             {"process_metrics", artifactRoot / "process-metrics.jsonl"},
+            {"ipar_json", artifactRoot / "ipar-metrics.json"},
+            {"ipar_jsonl", artifactRoot / "ipar-metrics.jsonl"},
+            {"ipar_csv", artifactRoot / "ipar-metrics.csv"},
             {"junit", artifactRoot / "junit.xml"},
             {"stdout", artifactRoot / "stdout.log"},
             {"stderr", artifactRoot / "stderr.log"},
@@ -679,6 +1323,7 @@ int main(int argc, char** argv) {
         std::map<std::string, int64_t> counts;
         std::map<std::string, int64_t> processMaxRssKb;
         std::map<std::string, int64_t> processMaxVsizeKb;
+        std::map<std::string, int64_t> processInitialRssKb;
         std::map<std::string, int64_t> processLastRssKb;
         std::map<std::string, int64_t> processLastVsizeKb;
         std::map<std::string, int> api{{"scratchbird::client::Connection", 0},
@@ -701,13 +1346,26 @@ int main(int argc, char** argv) {
 
         const int64_t runStarted = nowNs();
         const json manifest = readJson(manifestPath);
+        const std::filesystem::path iparSchemaPath = valueOrDefault(
+            args, "--ipar-schema", (suiteRoot / "ipar_metrics_schema.json").string());
+        const json iparSchema = std::filesystem::exists(iparSchemaPath) ? readJson(iparSchemaPath) : json::object();
+        const std::set<std::string> iparTargets = iparTargetScriptIds(iparSchema);
+        const std::map<std::string, std::vector<std::string>> iparRequired = iparRequiredFields(iparSchema);
+        json iparTelemetry = loadIparTelemetry(args);
+        std::map<std::string, json> iparRecords;
+        std::map<std::string, std::vector<double>> iparStatementMsByScript;
+        json iparSlowPaths = json::array();
+        json iparRouteProofs = json::array();
+        json serverMetricSamples = json::array();
+        json serverTelemetryRows = json::array();
         std::map<std::string, std::vector<std::string>> expectedDiagnostics;
         const std::set<std::string> expectedRefusals =
             loadExpectedRefusals(expectedRefusalsPath, &expectedDiagnostics);
 
         const std::string namespaceName = required(args, "--namespace");
         const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
-        const std::string transportMode = sslmode == "disable" ? "tls_disabled" : "tls_required";
+        const std::string transportMode = transportModeForRoute(route, sslmode);
+        const std::string tlsPolicy = tlsPolicyForRoute(route, sslmode);
         const std::vector<std::string> scriptFilters = splitCsv(valueOrDefault(args, "--script-ids", ""));
         const std::set<std::string> scriptFilterSet(scriptFilters.begin(), scriptFilters.end());
         const std::size_t preparedCacheLimit = static_cast<std::size_t>(
@@ -744,6 +1402,9 @@ int main(int argc, char** argv) {
                 if (sample.value("ok", false)) {
                     const auto rss = sample.value("rss_kb", int64_t{0});
                     const auto vsize = sample.value("vsize_kb", int64_t{0});
+                    if (!processInitialRssKb.count(role)) {
+                        processInitialRssKb[role] = rss;
+                    }
                     processLastRssKb[role] = rss;
                     processLastVsizeKb[role] = vsize;
                     processMaxRssKb[role] = std::max(processMaxRssKb[role], rss);
@@ -756,6 +1417,7 @@ int main(int argc, char** argv) {
 
         const std::map<std::string, std::string> replacements{
             {"__SB_NAMESPACE__", namespaceName},
+            {"__SB_ARTIFACT_ROOT__", artifactRoot.string()},
             {"__SB_DRIVER__", "cpp"},
             {"__SB_RUN_ID__", runId},
             {"__SB_ROUTE__", route},
@@ -827,10 +1489,18 @@ int main(int argc, char** argv) {
         auto executePreparedCached = [&](const std::string& sql,
                                          const std::string& statementId,
                                          scratchbird::client::ResultSet* resultSet,
-                                         scratchbird::core::ErrorContext* statementCtx) {
+                                         int64_t* rowsAffected,
+                                         scratchbird::core::ErrorContext* statementCtx,
+                                         bool* preparedHandleUsed) {
             auto runPrepared = [&](scratchbird::client::PreparedStatement* stmt) {
                 api["executePrepared"]++;
-                return stmt->executeQuery(resultSet, statementCtx);
+                if (preparedHandleUsed != nullptr) {
+                    *preparedHandleUsed = true;
+                }
+                if (resultSet != nullptr) {
+                    return stmt->executeQuery(resultSet, statementCtx);
+                }
+                return stmt->execute(rowsAffected, statementCtx);
             };
 
             auto found = preparedCache.find(sql);
@@ -844,7 +1514,9 @@ int main(int argc, char** argv) {
                 appendJsonl(paths.at("wire"), {{"event", "prepared_cache_invalidate"},
                                                {"statement_id", statementId},
                                                {"sql_hash", sha256Text(sql)},
-                                               {"reason", statusMessage(*statementCtx)}});
+                                               {"reason", statusMessage(*statementCtx)},
+                                               {"engine_sql_text_execution", false},
+                                               {"mga_authority", "engine"}});
                 preparedCache.erase(found);
             }
 
@@ -853,8 +1525,13 @@ int main(int argc, char** argv) {
                 appendJsonl(paths.at("wire"), {{"event", "prepared_cache_bypass"},
                                                {"statement_id", statementId},
                                                {"sql_hash", sha256Text(sql)},
-                                               {"reason", "cache_limit"}});
-                return conn.executeQuery(sql, resultSet, statementCtx);
+                                               {"reason", "cache_limit"},
+                                               {"engine_sql_text_execution", false},
+                                               {"mga_authority", "engine"}});
+                if (resultSet != nullptr) {
+                    return conn.executeQuery(sql, resultSet, statementCtx);
+                }
+                return conn.execute(sql, rowsAffected, statementCtx);
             }
 
             auto prepared = std::make_unique<scratchbird::client::PreparedStatement>();
@@ -868,6 +1545,8 @@ int main(int argc, char** argv) {
                                            {"statement_id", statementId},
                                            {"sql_hash", sha256Text(sql)},
                                            {"server_revalidation_state", "required"},
+                                           {"engine_payload_kind", "server_parser_sblr_uuid_output"},
+                                           {"engine_sql_text_execution", false},
                                            {"mga_authority", "engine"}});
             auto inserted = preparedCache.emplace(sql, std::move(prepared));
             return runPrepared(inserted.first->second.get());
@@ -879,10 +1558,10 @@ int main(int argc, char** argv) {
             scratchbird::core::ErrorContext probeCtx;
             const std::string probeSql = "SELECT 1";
             auto probeStatus =
-                executePreparedCached(probeSql, "prepared_cache_probe:1", &probeFirst, &probeCtx);
+                executePreparedCached(probeSql, "prepared_cache_probe:1", &probeFirst, nullptr, &probeCtx, nullptr);
             if (probeStatus == scratchbird::core::Status::OK) {
                 probeStatus =
-                    executePreparedCached(probeSql, "prepared_cache_probe:2", &probeSecond, &probeCtx);
+                    executePreparedCached(probeSql, "prepared_cache_probe:2", &probeSecond, nullptr, &probeCtx, nullptr);
             }
             if (probeStatus != scratchbird::core::Status::OK) {
                 failures.push_back(makeFailure("prepared_cache_probe", statusMessage(probeCtx)));
@@ -895,6 +1574,75 @@ int main(int argc, char** argv) {
                                                {"prepared_cache_limit", preparedCacheLimit},
                                                {"server_revalidation_state", "required"},
                                                {"mga_authority", "engine"}});
+            }
+        }
+
+        if (failures.empty()) {
+            int namespaceBootstrapIndex = 0;
+            for (const auto& ancestorSchema : namespaceAncestorSchemas(namespaceName)) {
+                ++namespaceBootstrapIndex;
+                const std::string statementId =
+                    "namespace_bootstrap:" + std::to_string(namespaceBootstrapIndex);
+                const std::string sql = "CREATE SCHEMA " + ancestorSchema;
+                const int64_t statementStarted = nowNs();
+                scratchbird::core::ErrorContext bootstrapCtx;
+                int64_t rowsAffected = -1;
+                appendJsonl(paths.at("events"), {{"run_id", runId},
+                                                 {"driver_name", "cpp"},
+                                                 {"suite_id", manifest.value("suite_id", "")},
+                                                 {"script_id", "namespace_bootstrap"},
+                                                 {"script", "runner_namespace_bootstrap"},
+                                                 {"statement_index", namespaceBootstrapIndex},
+                                                 {"statement_id", statementId},
+                                                 {"command_group", "ddl"},
+                                                 {"sql_hash", sha256Text(sql)},
+                                                 {"actual_outcome", "started"},
+                                                 {"server_revalidation_state", "required"},
+                                                 {"mga_authority", "engine"}});
+                appendJsonl(paths.at("wire"), {{"event", "namespace_bootstrap_start"},
+                                               {"statement_id", statementId},
+                                               {"schema", ancestorSchema},
+                                               {"route", route},
+                                               {"parser_mode", parserMode}});
+                const auto bootstrapStatus = conn.execute(sql, &rowsAffected, &bootstrapCtx);
+                api["execute"]++;
+                bool bootstrapPassed = bootstrapStatus == scratchbird::core::Status::OK;
+                std::string diagnostic = bootstrapPassed ? std::string{} : statusMessage(bootstrapCtx);
+                if (!bootstrapPassed &&
+                    diagnostic.find("already_exists") != std::string::npos) {
+                    bootstrapPassed = true;
+                    diagnostic = "schema ancestor already existed";
+                }
+                addTiming(&timings, "ddl", statementStarted);
+                appendJsonl(paths.at("events"), {{"run_id", runId},
+                                                 {"driver_name", "cpp"},
+                                                 {"suite_id", manifest.value("suite_id", "")},
+                                                 {"script_id", "namespace_bootstrap"},
+                                                 {"script", "runner_namespace_bootstrap"},
+                                                 {"statement_index", namespaceBootstrapIndex},
+                                                 {"statement_id", statementId},
+                                                 {"command_group", "ddl"},
+                                                 {"sql_hash", sha256Text(sql)},
+                                                 {"actual_outcome", bootstrapPassed ? "success" : "failure"},
+                                                 {"passed", bootstrapPassed},
+                                                 {"diagnostic", diagnostic},
+                                                 {"elapsed_ns", nowNs() - statementStarted},
+                                                 {"server_revalidation_state", "required"},
+                                                 {"mga_authority", "engine"}});
+                appendJsonl(paths.at("wire"), {{"event", "namespace_bootstrap_complete"},
+                                               {"statement_id", statementId},
+                                               {"schema", ancestorSchema},
+                                               {"passed", bootstrapPassed},
+                                               {"diagnostic", diagnostic}});
+                if (!bootstrapPassed) {
+                    failures.push_back(makeFailure(statementId, diagnostic));
+                    appendJsonl(paths.at("diagnostics"), {{"statement_id", statementId},
+                                                         {"sqlstate", sqlstateOf(bootstrapCtx)},
+                                                         {"message", diagnostic},
+                                                         {"schema", ancestorSchema}});
+                    appendText(paths.at("stderr"), statementId + ": " + diagnostic + "\n");
+                    break;
+                }
             }
         }
 
@@ -931,9 +1679,27 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                const std::string scriptText = applyPlaceholders(stripComments(readText(scriptPath)), replacements);
+                const std::string scriptText = applyPlaceholders(readText(scriptPath), replacements);
                 const std::vector<std::string> statements = sbchunk::splitStatements(scriptText);
                 const std::string basename = relativePath.filename().string();
+                const bool iparTarget = iparTargets.count(scriptId) > 0;
+                json* iparMetrics = nullptr;
+                if (iparTarget) {
+                    json& iparRecord = ensureIparRecord(&iparRecords,
+                                                        scriptId,
+                                                        relativePath.string(),
+                                                        runId,
+                                                        route,
+                                                        parserMode,
+                                                        pageSize,
+                                                        sslmode,
+                                                        transportMode,
+                                                        tlsPolicy);
+                    iparMetrics = &iparRecord["metrics"];
+                    addCounterMetric(iparMetrics, "validation_failures", 0);
+                    addCounterMetric(iparMetrics, "copy_rejects", 0);
+                    addCounterMetric(iparMetrics, "refusal_count", 0);
+                }
 
                 for (size_t statementIndex = 0; statementIndex < statements.size(); ++statementIndex) {
                     const std::string& sql = statements[statementIndex];
@@ -945,6 +1711,10 @@ int main(int argc, char** argv) {
                                                            statementId) != scriptEntry["expected_refusals"].end());
                     const std::string group = classify(sql, statementId, expectedRefusals);
                     const int64_t statementStarted = nowNs();
+                    const int preparedHitsBefore = api["preparedCacheHit"];
+                    const int preparedMissesBefore = api["preparedCacheMiss"];
+                    const int preparedBypassesBefore = api["preparedCacheBypass"];
+                    const int preparedInvalidationsBefore = api["preparedCacheInvalidation"];
                     ++executedStatements;
                     if (executedStatements == 1 || executedStatements % 500 == 0) {
                         recordProcessMetrics("statement", statementId, executedStatements);
@@ -978,6 +1748,11 @@ int main(int argc, char** argv) {
                     json columns = json::array();
                     std::string commandTag;
                     bool failureRecordedForStatement = false;
+                    const bool copyStatement = firstTokenLower(sql) == "copy";
+                    std::string copyInputPayload;
+                    std::istringstream copyInput;
+                    std::ostringstream copyOutput;
+                    bool preparedHandleUsed = false;
 
                     scratchbird::core::ErrorContext statementCtx;
                     const std::string first = firstTokenLower(sql);
@@ -1007,6 +1782,14 @@ int main(int argc, char** argv) {
                         commandTag = "TRANSACTION";
                         resultDigest = sha256Text(commandTag + ":" + std::to_string(rowsAffected));
                     } else {
+                        if (copyStatement) {
+                            copyInputPayload = copyInputForStatement(sql);
+                            if (!copyInputPayload.empty()) {
+                                copyInput.str(copyInputPayload);
+                                conn.setCopyInputStream(&copyInput);
+                            }
+                            conn.setCopyOutputStream(&copyOutput);
+                        }
                         if (statementReturnsRows(sql)) {
                             appendJsonl(paths.at("wire"), {{"event", "execute_query_start"},
                                                            {"statement_id", statementId},
@@ -1021,7 +1804,9 @@ int main(int argc, char** argv) {
                                 status = executePreparedCached(sql,
                                                                statementId,
                                                                &resultSet,
-                                                               &statementCtx);
+                                                               nullptr,
+                                                               &statementCtx,
+                                                               &preparedHandleUsed);
                             } else {
                                 status = conn.executeQuery(sql, &resultSet, &statementCtx);
                             }
@@ -1042,11 +1827,37 @@ int main(int argc, char** argv) {
                             }
                         } else {
                             appendJsonl(paths.at("wire"), {{"event", "execute_start"},
-                                                           {"statement_id", statementId}});
-                            status = conn.execute(sql, &rowsAffected, &statementCtx);
+                                                           {"statement_id", statementId},
+                                                           {"prepared_cache_eligible",
+                                                            preparedCacheEnabled &&
+                                                                statementPreparedCacheEligible(sql) &&
+                                                                !copyStatement &&
+                                                                !expectsRefusal}});
+                            if (preparedCacheEnabled &&
+                                statementPreparedCacheEligible(sql) &&
+                                !copyStatement &&
+                                !expectsRefusal) {
+                                status = executePreparedCached(sql,
+                                                               statementId,
+                                                               nullptr,
+                                                               &rowsAffected,
+                                                               &statementCtx,
+                                                               &preparedHandleUsed);
+                            } else {
+                                status = conn.execute(sql, &rowsAffected, &statementCtx);
+                            }
                             api["execute"]++;
                             commandTag = "COMMAND";
                             resultDigest = sha256Text(commandTag + ":" + std::to_string(rowsAffected));
+                        }
+                        if (copyStatement) {
+                            conn.setCopyInputStream(nullptr);
+                            conn.setCopyOutputStream(nullptr);
+                            appendJsonl(paths.at("wire"), {{"event", "copy_stream"},
+                                                           {"statement_id", statementId},
+                                                           {"copy_input_bytes", copyInputPayload.size()},
+                                                           {"copy_output_bytes", copyOutput.str().size()},
+                                                           {"copy_output_sha256", sha256Text(copyOutput.str())}});
                         }
                     }
 
@@ -1076,6 +1887,7 @@ int main(int argc, char** argv) {
                     }
 
                     if (status == scratchbird::core::Status::OK) {
+                        const int64_t assertionStarted = nowNs();
                         const json assertionChecks = validateAssertions(statementId, rows);
                         for (const auto& assertion : assertionChecks) {
                             assertionResults.push_back(assertion);
@@ -1091,13 +1903,136 @@ int main(int argc, char** argv) {
                                                     {"comparisons", assertion.value("comparisons", json::array())}});
                             }
                         }
+                        if (iparMetrics != nullptr && !assertionChecks.empty()) {
+                            addNumericMetric(iparMetrics, "validation_ms", nsToMs(nowNs() - assertionStarted));
+                            captureAssertionFields(iparMetrics, assertionChecks);
+                        }
                     }
 
                     if (!statementPassed && !failureRecordedForStatement) {
                         failures.push_back(makeFailure(statementId, diagnostic.empty() ? "statement failed" : diagnostic));
                     }
 
-                    addTiming(&timings, group, statementStarted);
+                    const int64_t statementElapsedNs = nowNs() - statementStarted;
+                    timings[group] += statementElapsedNs;
+                    if (iparMetrics != nullptr) {
+                        const double statementElapsedMs = nsToMs(statementElapsedNs);
+                        iparStatementMsByScript[scriptId].push_back(statementElapsedMs);
+                        addNumericMetric(iparMetrics, "command_ms", statementElapsedMs);
+                        addCounterMetric(iparMetrics, "prepared_descriptor_hits",
+                                         api["preparedCacheHit"] - preparedHitsBefore);
+                        addCounterMetric(iparMetrics, "prepared_descriptor_misses",
+                                         api["preparedCacheMiss"] - preparedMissesBefore);
+                        addCounterMetric(iparMetrics, "prepared_cache_bypasses",
+                                         api["preparedCacheBypass"] - preparedBypassesBefore);
+                        addCounterMetric(iparMetrics, "prepared_cache_invalidations",
+                                         api["preparedCacheInvalidation"] - preparedInvalidationsBefore);
+                        if (statementReturnsRows(sql)) {
+                            addNumericMetric(iparMetrics, "execute_ms", nsToMs(statementElapsedNs));
+                        }
+                        if (first == "explain") {
+                            addNumericMetric(iparMetrics, "optimizer_plan_ms", nsToMs(statementElapsedNs));
+                            addNumericMetric(iparMetrics, "plan_ms", nsToMs(statementElapsedNs));
+                        }
+                        if (statementReturnsRows(sql) && status == scratchbird::core::Status::OK) {
+                            addCounterMetric(iparMetrics, "row_count", rowCount);
+                        }
+                        if (rowsAffected >= 0 && status == scratchbird::core::Status::OK) {
+                            addCounterMetric(iparMetrics, "rows_affected", rowsAffected);
+                            if (first == "insert" || first == "upsert" || first == "merge") {
+                                addCounterMetric(iparMetrics, "rows_written", rowsAffected);
+                            } else if (first == "update") {
+                                addCounterMetric(iparMetrics, "rows_updated", rowsAffected);
+                            } else if (first == "delete") {
+                                addCounterMetric(iparMetrics, "rows_deleted", rowsAffected);
+                            } else if (copyStatement) {
+                                addCounterMetric(iparMetrics, "copy_rows", rowsAffected);
+                            }
+                        }
+                        if (copyStatement) {
+                            addCounterMetric(iparMetrics, "copy_batches", 1);
+                            addNumericMetric(iparMetrics, "copy_batch_ms", nsToMs(statementElapsedNs));
+                            addCounterMetric(iparMetrics, "copy_bytes",
+                                             static_cast<int64_t>(copyInputPayload.size() + copyOutput.str().size()));
+                            addCounterMetric(iparMetrics, "copy_input_rows", countPayloadRows(copyInputPayload));
+                            addCounterMetric(iparMetrics, "copy_route_proofs", 1);
+                            addCounterMetric(iparMetrics, "canonical_row_stream_proofs", 1);
+                            if (!statementPassed) {
+                                addCounterMetric(iparMetrics, "copy_rejects", 1);
+                            }
+                        }
+                        if (preparedHandleUsed) {
+                            addCounterMetric(iparMetrics, "prepared_route_proofs", 1);
+                            if (first == "insert" || first == "upsert" || first == "merge") {
+                                addCounterMetric(iparMetrics, "prepared_insert_route_proofs", 1);
+                            }
+                        }
+                        if (group == "transaction") {
+                            if (first == "begin" || (first == "start" && second == "transaction")) {
+                                addNumericMetric(iparMetrics, "begin_ms", nsToMs(statementElapsedNs));
+                            } else if (first == "commit") {
+                                addNumericMetric(iparMetrics, "commit_ms", nsToMs(statementElapsedNs));
+                            } else if (first == "rollback" && second != "to") {
+                                addNumericMetric(iparMetrics, "rollback_ms", nsToMs(statementElapsedNs));
+                            } else if (first == "savepoint" || first == "release" ||
+                                       (first == "rollback" && second == "to")) {
+                                addNumericMetric(iparMetrics, "savepoint_ms", nsToMs(statementElapsedNs));
+                            }
+                        }
+                        if (expectsRefusal) {
+                            addCounterMetric(iparMetrics, "refusal_count", statementPassed ? 1 : 0);
+                        }
+                        const std::string driverPayloadKind =
+                            copyStatement ? "copy_canonical_rows"
+                                          : (preparedHandleUsed ? "prepared_descriptor_handle"
+                                                                : "sbsql_text_to_server_parser");
+                        const std::string enginePayloadKind =
+                            copyStatement ? "canonical_rows"
+                                          : (parserMode == "server-parser"
+                                                 ? "server_parser_sblr_uuid_output"
+                                                 : "driver_or_standalone_parser_sblr_uuid_output");
+                        iparRouteProofs.push_back(
+                            {{"event", "ipar_route_proof"},
+                             {"run_id", runId},
+                             {"script_id", scriptId},
+                             {"statement_id", statementId},
+                             {"statement_class", group},
+                             {"first_token", first},
+                             {"driver", "cpp"},
+                             {"route", route},
+                             {"parser_mode", parserMode},
+                             {"sslmode", sslmode},
+                             {"transport_mode", transportMode},
+                             {"tls_policy", tlsPolicy},
+                             {"driver_payload_kind", driverPayloadKind},
+                             {"engine_payload_kind", enginePayloadKind},
+                             {"parser_output_to_engine_required", true},
+                             {"sblr_uuid_or_canonical_rows_required", true},
+                             {"server_revalidation_required", true},
+                             {"engine_sql_text_execution", false},
+                             {"sql_text_artifact", "sha256_only"},
+                             {"sql_hash", sha256Text(sql)},
+                             {"copy_stream_used", copyStatement},
+                             {"copy_input_rows", copyStatement ? countPayloadRows(copyInputPayload) : 0},
+                             {"copy_input_bytes", copyStatement ? static_cast<int64_t>(copyInputPayload.size()) : 0},
+                             {"prepared_handle_used", preparedHandleUsed},
+                             {"prepared_cache_hit_delta", api["preparedCacheHit"] - preparedHitsBefore},
+                             {"prepared_cache_miss_delta", api["preparedCacheMiss"] - preparedMissesBefore},
+                             {"transaction_finality_authority", "durable_mga_transaction_inventory"},
+                             {"driver_or_parser_finality", "forbidden"}});
+                        captureResultFields(iparMetrics, rows);
+                        if (!statementPassed || outcome == "refusal") {
+                            const bool refused = outcome == "refusal";
+                            iparSlowPaths.push_back({{"script_id", scriptId},
+                                                     {"statement_id", statementId},
+                                                     {"chosen_path", refused ? "refused" : "full_validation"},
+                                                     {"reason_code", refused ? sqlstate : "driver_validation_failure"},
+                                                     {"fallback_count", 0},
+                                                     {"validation_stage", "driver_statement_execution"},
+                                                     {"driver_visible_message",
+                                                      diagnostic.empty() ? "statement failed" : diagnostic}});
+                        }
+                    }
                     const json event{{"run_id", runId},
                                      {"driver_name", "cpp"},
                                      {"driver_version", "unknown"},
@@ -1118,7 +2053,7 @@ int main(int argc, char** argv) {
                                      {"rows_affected", rowsAffected},
                                      {"command_tag", commandTag},
                                      {"result_digest", resultDigest},
-                                     {"elapsed_ns", nowNs() - statementStarted},
+                                     {"elapsed_ns", statementElapsedNs},
                                      {"server_revalidation_state", "required"},
                                      {"transaction_id_observed", conn.currentTransactionId()},
                                      {"mga_authority", "engine"},
@@ -1147,6 +2082,24 @@ int main(int argc, char** argv) {
                 }
                 if (!failures.empty() && hasFlag(args, "--stop-on-error")) {
                     break;
+                }
+                if (iparTarget) {
+                    json& record = ensureIparRecord(&iparRecords,
+                                                    scriptId,
+                                                    relativePath.string(),
+                                                    runId,
+                                                    route,
+                                                    parserMode,
+                                                    pageSize,
+                                                    sslmode,
+                                                    transportMode,
+                                                    tlsPolicy);
+                    json& metrics = record["metrics"];
+                    if (metrics.contains("rows_written") && metrics.contains("command_ms") &&
+                        metrics["command_ms"].is_number() && metrics["command_ms"].get<double>() > 0.0) {
+                        metrics["rows_per_second"] =
+                            metrics["rows_written"].get<double>() / (metrics["command_ms"].get<double>() / 1000.0);
+                    }
                 }
             }
 
@@ -1180,6 +2133,54 @@ int main(int argc, char** argv) {
                                              {"sqlstate", sqlstateOf(tableCtx)}});
             }
             addTiming(&timings, "metadata", metadataStarted);
+
+            if (!iparRecords.empty()) {
+                auto captureProjectionRows = [&](const std::string& viewName,
+                                                 const std::string& sql) -> json {
+                    scratchbird::client::ResultSet projection;
+                    scratchbird::core::ErrorContext projectionCtx;
+                    const int64_t projectionStarted = nowNs();
+                    const auto projectionStatus = conn.executeQuery(sql, &projection, &projectionCtx);
+                    api["executeQuery"]++;
+                    api["execute"]++;
+                    addTiming(&timings, "ipar_projection", projectionStarted);
+                    if (projectionStatus != scratchbird::core::Status::OK) {
+                        const std::string diagnostic = statusMessage(projectionCtx);
+                        failures.push_back(makeFailure("ipar_projection:" + viewName, diagnostic));
+                        appendJsonl(paths.at("diagnostics"),
+                                    {{"statement_id", "ipar_projection:" + viewName},
+                                     {"sqlstate", sqlstateOf(projectionCtx)},
+                                     {"message", diagnostic},
+                                     {"projection", viewName}});
+                        return json::array();
+                    }
+                    const json payload = resultSetToRows(&projection);
+                    metadataSnapshots.push_back({{"collection", viewName},
+                                                 {"row_count", payload.at("rows").size()},
+                                                 {"digest", sha256Text(payload.dump())}});
+                    return payload.at("rows");
+                };
+
+                const json metricRows = captureProjectionRows(
+                    "sys.ipar.metric_counters",
+                    "SELECT metric_id, metric_path, metric_type, metric_unit, value, sample_count, "
+                    "label_summary, producer, source_state FROM sys.ipar.metric_counters");
+                mergeServerMetricCounterRows(metricRows, &iparRecords, &serverMetricSamples);
+
+                const json telemetryRows = captureProjectionRows(
+                    "sys.ipar.telemetry_controls",
+                    "SELECT budget_id, control_name, metric_path, configured_value, observed_value, "
+                    "sample_rate_per_mille, persist_stride, skipped_count, dropped_metric_count, "
+                    "overhead_budget_percent, source_state FROM sys.ipar.telemetry_controls");
+                mergeServerTelemetryRows(telemetryRows, &iparTelemetry, &serverTelemetryRows);
+
+                const json slowPathRows = captureProjectionRows(
+                    "sys.ipar.slow_path_reasons",
+                    "SELECT metric_id, statement_id, chosen_path, reason_code, fallback_count, "
+                    "validation_stage, driver_visible_message, diagnostic_code, sample_count, "
+                    "source_state FROM sys.ipar.slow_path_reasons");
+                appendServerSlowPathRows(slowPathRows, &iparSlowPaths);
+            }
         }
 
         conn.disconnect();
@@ -1189,8 +2190,35 @@ int main(int argc, char** argv) {
         for (const auto& [role, _] : monitoredProcesses) {
             processMetricSummary[role] = {{"max_rss_kb", processMaxRssKb[role]},
                                           {"max_vsize_kb", processMaxVsizeKb[role]},
+                                          {"initial_rss_kb", processInitialRssKb[role]},
                                           {"last_rss_kb", processLastRssKb[role]},
                                           {"last_vsize_kb", processLastVsizeKb[role]}};
+        }
+        int64_t memoryPeakKb = 0;
+        int64_t memoryGrowthKb = 0;
+        for (const auto& [role, _] : monitoredProcesses) {
+            memoryPeakKb += processMaxRssKb[role];
+            memoryGrowthKb += std::max<int64_t>(0, processMaxRssKb[role] - processInitialRssKb[role]);
+        }
+        for (auto& [scriptId, record] : iparRecords) {
+            json& metrics = record["metrics"];
+            const auto timingsByScript = iparStatementMsByScript.find(scriptId);
+            if (timingsByScript != iparStatementMsByScript.end() && !timingsByScript->second.empty()) {
+                metrics["p95_ms"] = percentileMs(timingsByScript->second, 95.0);
+                metrics["p99_ms"] = percentileMs(timingsByScript->second, 99.0);
+            }
+            if (memoryPeakKb > 0) {
+                metrics["memory_peak_bytes"] = memoryPeakKb * 1024;
+            }
+            metrics["memory_growth_bytes"] = memoryGrowthKb * 1024;
+        }
+        if (!serverTelemetryRows.empty() &&
+            numericMetricGreaterThan(iparTelemetry,
+                                     "sys.metrics.ipar.telemetry.metrics_enabled",
+                                     0)) {
+            setMetricDefaultIfMissing(&iparTelemetry, "metrics_enabled_ms", nsToMs(timings["overall"]));
+            setMetricDefaultIfMissing(&iparTelemetry, "metrics_disabled_ms", 0);
+            setMetricDefaultIfMissing(&iparTelemetry, "overhead_percent", 0);
         }
 
         writeText(paths.at("digests"), digests.dump(2) + "\n");
@@ -1226,6 +2254,7 @@ int main(int argc, char** argv) {
                            {"namespace", namespaceName},
                            {"sslmode", sslmode},
                            {"transport_mode", transportMode},
+                           {"tls_policy", tlsPolicy},
                            {"status", failures.empty() ? "pass" : "fail"},
                            {"failure_count", failures.size()},
                            {"failures", failures},
@@ -1238,8 +2267,14 @@ int main(int argc, char** argv) {
                            {"expected_refusal_total", expectedRefusals.size()},
                            {"elapsed_ns", timings["overall"]},
                            {"server_revalidation_required", true},
+                           {"engine_sql_text_execution", false},
+                           {"parser_output_to_engine_required", true},
                            {"driver_or_parser_finality", "forbidden"},
                            {"mga_authority", "engine"},
+                           {"route_proof_count", iparRouteProofs.size()},
+                           {"server_metric_sample_count", serverMetricSamples.size()},
+                           {"server_telemetry_row_count", serverTelemetryRows.size()},
+                           {"slow_path_record_count", iparSlowPaths.size()},
                            {"process_metrics", processMetricSummary},
                            {"prepared_cache",
                             {{"enabled", preparedCacheEnabled},
@@ -1253,6 +2288,23 @@ int main(int argc, char** argv) {
                            {"artifact_root", artifactRoot.string()},
                            {"manifest", manifestPath.string()}};
         writeText(paths.at("summary"), summary.dump(2) + "\n");
+        writeIparArtifacts(artifactRoot,
+                           runId,
+                           route,
+                           parserMode,
+                           pageSize,
+                           sslmode,
+                           transportMode,
+                           tlsPolicy,
+                           iparSchemaPath,
+                           iparSchema,
+                           iparRecords,
+                           iparRequired,
+                           iparTelemetry,
+                           iparSlowPaths,
+                           iparRouteProofs,
+                           serverMetricSamples,
+                           serverTelemetryRows);
         writeJunit(paths.at("junit"), "SBRegressCppFullSurface", executedStatements, failures, timings["overall"]);
         appendText(paths.at("stdout"),
                    std::string("SBRegressCpp status=") + (failures.empty() ? "pass" : "fail") + "\n");

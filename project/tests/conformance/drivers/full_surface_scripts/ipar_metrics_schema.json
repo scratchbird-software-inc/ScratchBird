@@ -1,0 +1,499 @@
+{
+  "schema_version": 1,
+  "schema_id": "scratchbird.ipar.performance_proof.v1",
+  "suite_id": "scratchbird.driver.full_surface.v1",
+  "artifact_policy": {
+    "proof_outputs_under_repo_prefix": "build/",
+    "public_workplans_or_proof_ledgers_forbidden": true,
+    "private_workplan_paths_forbidden": true
+  },
+  "authority": {
+    "engine_execution": "sblr_uuid_only",
+    "transaction_finality_authority": "durable_mga_transaction_inventory",
+    "driver_or_parser_finality_forbidden": true,
+    "reference_or_text_event_storage_authority_forbidden": true
+  },
+  "metric_record_contract": {
+    "script_metric_path_template": "sys.metrics.ipar.script.{field}",
+    "script_metric_labels_required": [
+      "script_id"
+    ],
+    "field_label": "field",
+    "accepted_artifact_shapes": [
+      "json_object_with_records_array",
+      "json_object_with_script_metrics_map",
+      "jsonl_record_per_metric_or_script",
+      "csv_row_per_script_or_case",
+      "server_metric_sample_with_path_value_labels"
+    ],
+    "required_record_identity": "Each metric row or sample must identify the SBDFS script through script_id, script, sbdfs_script_id, or an equivalent labels.script_id value."
+  },
+  "telemetry_overhead_controls": {
+    "budget_id": "IPAR-M031",
+    "required_summary_fields": [
+      "metrics_enabled_ms",
+      "metrics_disabled_ms",
+      "overhead_percent",
+      "sample_rate",
+      "dropped_metric_count"
+    ],
+    "required_metric_paths": [
+      "sys.metrics.ipar.telemetry.metrics_enabled",
+      "sys.metrics.ipar.telemetry.metric_persist_stride",
+      "sys.metrics.ipar.telemetry.metric_persist_skipped",
+      "sys.metrics.ipar.telemetry.audit_persist_stride",
+      "sys.metrics.ipar.telemetry.audit_persist_skipped",
+      "sys.metrics.ipar.telemetry.persist_sample_rate_per_mille",
+      "sys.metrics.ipar.telemetry.dropped_metric_count"
+    ],
+    "default_overhead_budget_percent": 5.0,
+    "required_behavior": "Hot-path counters stay in memory and persistence may be coalesced or sampled, but required proof counters and error/durability diagnostics must not be suppressed."
+  },
+  "system_view_observability": {
+    "metric_id": "IPAR-M024",
+    "required_views": [
+      "sys.ipar.agent_lifecycle",
+      "sys.ipar.metric_counters",
+      "sys.ipar.telemetry_controls",
+      "sys.ipar.slow_path_reasons"
+    ],
+    "required_fields_by_view": {
+      "sys.ipar.agent_lifecycle": [
+        "runtime_id",
+        "lifecycle_state",
+        "idle_state",
+        "worker_thread_count",
+        "scheduler_ticks",
+        "total_worker_ticks",
+        "source_state"
+      ],
+      "sys.ipar.metric_counters": [
+        "metric_id",
+        "metric_path",
+        "metric_type",
+        "metric_unit",
+        "value",
+        "sample_count",
+        "source_state"
+      ],
+      "sys.ipar.telemetry_controls": [
+        "budget_id",
+        "control_name",
+        "metric_path",
+        "sample_rate_per_mille",
+        "persist_stride",
+        "skipped_count",
+        "dropped_metric_count",
+        "source_state"
+      ],
+      "sys.ipar.slow_path_reasons": [
+        "metric_id",
+        "statement_id",
+        "chosen_path",
+        "reason_code",
+        "fallback_count",
+        "validation_stage",
+        "driver_visible_message",
+        "source_state"
+      ]
+    },
+    "required_behavior": "Driver-visible system views expose only supplied runtime/metric/diagnostic sources; empty sources remain empty and do not fabricate success metrics."
+  },
+  "slow_path_explanation": {
+    "required_when": "chosen_path is not fast_path or fallback_count is greater than zero",
+    "allowed_chosen_paths": [
+      "fast_path",
+      "degraded_path",
+      "synchronous_index_maintenance",
+      "reject_bisection",
+      "full_validation",
+      "refused"
+    ],
+    "required_fields": [
+      "statement_id",
+      "chosen_path",
+      "reason_code",
+      "fallback_count",
+      "validation_stage",
+      "driver_visible_message"
+    ],
+    "required_behavior": "Every degraded insert, COPY, synchronous-index, reject-bisection, full-validation, or refusal route must provide a driver-visible reason without exposing private object details."
+  },
+  "field_types": {
+    "actual": "scalar",
+    "allocation_ms": "duration_ms",
+    "allocation_stall_ms": "duration_ms",
+    "auth_cache_hits": "counter",
+    "auth_cache_misses": "counter",
+    "begin_ms": "duration_ms",
+    "cache_hit_rate": "ratio",
+    "cache_invalidation_ms": "duration_ms",
+    "case_id": "string",
+    "chosen_path": "string",
+    "command_ms": "duration_ms",
+    "commit_ms": "duration_ms",
+    "copy_batch_ms": "duration_ms",
+    "copy_batches": "counter",
+    "copy_bytes": "bytes",
+    "copy_rejects": "counter",
+    "copy_rows": "counter",
+    "datatype_id": "string",
+    "disk_extents_preallocated": "counter",
+    "dirty_page_count": "counter",
+    "dirty_pages_fenced": "counter",
+    "driver_visible_message": "string",
+    "dropped_metric_count": "counter",
+    "encode_ms": "duration_ms",
+    "execute_ms": "duration_ms",
+    "expected": "scalar",
+    "fallback_count": "counter",
+    "filespace_id": "string",
+    "fsync_count": "counter",
+    "full_scan_count": "counter",
+    "group_resolution_depth": "counter",
+    "index_family": "string",
+    "index_insert_ms": "duration_ms",
+    "index_pages_preallocated": "counter",
+    "index_probe_count": "counter",
+    "index_split_count": "counter",
+    "index_variant": "string",
+    "idle_cpu_percent": "percent",
+    "memory_peak_bytes": "bytes",
+    "memory_growth_bytes": "bytes",
+    "metrics_disabled_ms": "duration_ms",
+    "metrics_enabled_ms": "duration_ms",
+    "optimizer_plan_ms": "duration_ms",
+    "page_allocations": "counter",
+    "page_size": "string",
+    "p95_ms": "duration_ms",
+    "p99_ms": "duration_ms",
+    "plan_ms": "duration_ms",
+    "prepared_descriptor_hits": "counter",
+    "prepared_descriptor_hit_rate_percent": "percent",
+    "prepared_descriptor_misses": "counter",
+    "reason_code": "string",
+    "refusal_count": "counter",
+    "rejected_rows": "counter",
+    "relation_state_full_loads": "counter",
+    "rollback_ms": "duration_ms",
+    "row_count": "counter",
+    "row_pages_preallocated": "counter",
+    "rows_affected": "counter",
+    "rows_deleted": "counter",
+    "rows_per_second": "rate",
+    "rows_updated": "counter",
+    "rows_written": "counter",
+    "savepoint_ms": "duration_ms",
+    "security_epoch": "integer",
+    "security_invalidation_count": "counter",
+    "selected_index_path": "string",
+    "stale_delta_reads": "counter",
+    "statement_id": "string",
+    "table_pages_preallocated": "counter",
+    "transaction_inventory_fences": "counter",
+    "unique_probe_count": "counter",
+    "overhead_percent": "percent",
+    "sample_rate": "ratio",
+    "validation_stage": "string",
+    "validation_failures": "counter",
+    "validation_ms": "duration_ms",
+    "visibility_rechecks": "counter"
+  },
+  "beta_performance_targets": {
+    "target_version": "2026.06.ipar.beta1",
+    "profile": "single_node_local_beta",
+    "scope": "Driver full-surface IPAR readiness gates over a local single-node server with metrics compiled on and hot-path tracing off unless a diagnostic run explicitly enables tracing.",
+    "required_target_fields": [
+      "rows_per_second",
+      "p95_ms",
+      "p99_ms",
+      "memory_growth_bytes",
+      "allocation_stall_ms",
+      "idle_cpu_percent",
+      "cache_invalidation_ms"
+    ],
+    "global_thresholds": {
+      "p95_ms": {
+        "max": 5000,
+        "unit": "ms"
+      },
+      "p99_ms": {
+        "max": 15000,
+        "unit": "ms"
+      },
+      "memory_growth_bytes": {
+        "max": 1073741824,
+        "unit": "bytes"
+      },
+      "allocation_stall_ms": {
+        "max": 5000,
+        "unit": "ms"
+      },
+      "idle_cpu_percent": {
+        "max": 5,
+        "unit": "percent"
+      },
+      "cache_invalidation_ms": {
+        "max": 250,
+        "unit": "ms"
+      }
+    },
+    "script_thresholds": {
+      "SBDFS-020": {
+        "rows_per_second": {
+          "min": 1,
+          "unit": "rows_per_second"
+        },
+        "prepared_descriptor_hit_rate_percent": {
+          "min": 95,
+          "unit": "percent"
+        }
+      },
+      "SBDFS-059": {
+        "copy_rows": {
+          "min": 1,
+          "unit": "rows"
+        },
+        "relation_state_full_loads": {
+          "max": 0,
+          "unit": "count"
+        }
+      },
+      "SBDFS-070": {
+        "rows_per_second": {
+          "min": 1,
+          "unit": "rows_per_second"
+        },
+        "relation_state_full_loads": {
+          "max": 0,
+          "unit": "count"
+        }
+      },
+      "SBDFS-085": {
+        "group_resolution_depth": {
+          "min": 3,
+          "unit": "levels"
+        }
+      }
+    }
+  },
+  "target_scripts": [
+    {
+      "metric_id": "IPAR-M001",
+      "script_id": "SBDFS-020",
+      "source": "SBDFS-020 DML mutation script",
+      "route": "prepared insert/update/delete/upsert/merge",
+      "required_fields": [
+        "command_ms",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "rows_written",
+        "rows_updated",
+        "rows_deleted",
+        "prepared_descriptor_hits",
+        "prepared_descriptor_misses",
+        "relation_state_full_loads"
+      ],
+      "acceptance": "Functional assertions pass and repeated insert path reaches descriptor hit rate above 95 percent after warmup."
+    },
+    {
+      "metric_id": "IPAR-M002",
+      "script_id": "SBDFS-059",
+      "source": "SBDFS-059 COPY script",
+      "route": "in-band COPY over SBWP",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "copy_rows",
+        "copy_bytes",
+        "copy_batches",
+        "copy_batch_ms",
+        "copy_rejects",
+        "relation_state_full_loads",
+        "row_pages_preallocated",
+        "index_pages_preallocated"
+      ],
+      "acceptance": "COPY succeeds through protocol path and uses fast canonical-row writer with zero normal hot-path full-state loads."
+    },
+    {
+      "metric_id": "IPAR-M003",
+      "script_id": "SBDFS-060",
+      "source": "SBDFS-060 MGA visibility script",
+      "route": "transaction lifecycle",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "begin_ms",
+        "commit_ms",
+        "rollback_ms",
+        "savepoint_ms",
+        "dirty_pages_fenced",
+        "transaction_inventory_fences",
+        "visibility_rechecks"
+      ],
+      "acceptance": "Commit/rollback/savepoint visibility remains correct after performance changes."
+    },
+    {
+      "metric_id": "IPAR-M004",
+      "script_id": "SBDFS-070",
+      "source": "SBDFS-070 large dataset load",
+      "route": "large insert and indexed follow-up",
+      "required_fields": [
+        "rows_per_second",
+        "command_ms",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "page_allocations",
+        "table_pages_preallocated",
+        "index_pages_preallocated",
+        "disk_extents_preallocated",
+        "fsync_count",
+        "memory_peak_bytes"
+      ],
+      "acceptance": "Large insert proves preallocation activity and improves over baseline without assertion drift."
+    },
+    {
+      "metric_id": "IPAR-M005",
+      "script_id": "SBDFS-085",
+      "source": "SBDFS-085 recursive group authorization",
+      "route": "security fast path",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "auth_cache_hits",
+        "auth_cache_misses",
+        "group_resolution_depth",
+        "security_epoch",
+        "security_invalidation_count",
+        "refusal_count"
+      ],
+      "acceptance": "Prepared security cache works under group nesting and invalidates on epoch changes."
+    },
+    {
+      "metric_id": "IPAR-M006",
+      "script_id": "SBDFS-090",
+      "source": "SBDFS-090 optimizer paths",
+      "route": "post-load optimizer proof",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "optimizer_plan_ms",
+        "selected_index_path",
+        "full_scan_count",
+        "index_probe_count",
+        "row_count"
+      ],
+      "acceptance": "Optimizer still chooses expected paths after data/index fast-load changes."
+    },
+    {
+      "metric_id": "IPAR-M007",
+      "script_id": "SBDFS-120",
+      "source": "generated 120 datatype native load",
+      "route": "datatype coverage",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "datatype_id",
+        "rows_written",
+        "encode_ms",
+        "validation_ms",
+        "rejected_rows"
+      ],
+      "acceptance": "All datatype native forms insert through typed encoders and match expected values."
+    },
+    {
+      "metric_id": "IPAR-M008",
+      "script_id": "SBDFS-130",
+      "source": "generated 130 datatype DML matrix",
+      "route": "DML variation coverage",
+      "required_fields": [
+        "case_id",
+        "command_ms",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "rows_affected",
+        "prepared_descriptor_hits",
+        "validation_failures"
+      ],
+      "acceptance": "Every generated DML case passes and descriptor reuse is visible where shape repeats."
+    },
+    {
+      "metric_id": "IPAR-M009",
+      "script_id": "SBDFS-140",
+      "source": "generated 140 index family matrix",
+      "route": "index family coverage",
+      "required_fields": [
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "index_family",
+        "index_variant",
+        "unique_probe_count",
+        "index_insert_ms",
+        "index_split_count",
+        "index_pages_preallocated"
+      ],
+      "acceptance": "Every supported index family has page reserve proof and physical probe/insert metrics."
+    },
+    {
+      "metric_id": "IPAR-M010",
+      "script_id": "SBDFS-150",
+      "source": "generated 150 query/join/window/CTE matrix",
+      "route": "read-after-write coverage",
+      "required_fields": [
+        "case_id",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "plan_ms",
+        "execute_ms",
+        "row_count",
+        "stale_delta_reads"
+      ],
+      "acceptance": "Queries see inserted committed data through base indexes and committed delta overlay."
+    },
+    {
+      "metric_id": "IPAR-M011",
+      "script_id": "SBDFS-170",
+      "source": "generated 170 cast/operator matrix",
+      "route": "expression encoder coverage",
+      "required_fields": [
+        "case_id",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "encode_ms",
+        "execute_ms",
+        "actual",
+        "expected"
+      ],
+      "acceptance": "Prepared row encoders and expression validators do not alter cast/operator results."
+    },
+    {
+      "metric_id": "IPAR-M012",
+      "script_id": "SBDFS-180",
+      "source": "generated 180 optimizer/storage manifest",
+      "route": "storage optimizer coverage",
+      "required_fields": [
+        "case_id",
+        "page_size",
+        "p95_ms",
+        "p99_ms",
+        "memory_growth_bytes",
+        "filespace_id",
+        "allocation_ms",
+        "dirty_page_count",
+        "cache_hit_rate"
+      ],
+      "acceptance": "Storage and optimizer metrics are emitted for every storage-sensitive generated case."
+    }
+  ]
+}

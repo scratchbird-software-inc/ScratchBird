@@ -260,7 +260,7 @@ add_test(
   COMMAND index_bulk_publish_recovery_gate
 )
 set_tests_properties(index_bulk_publish_recovery_gate PROPERTIES
-  LABELS "index_bulk_publish_recovery_gate;IRC-042;index_runtime_correctness;bulk_publish_recovery;crash_recovery;database_lifecycle;no_execution_plan_runtime;mga_transaction_regression"
+  LABELS "index_bulk_publish_recovery_gate;IRC-042;IPAR-P4-05;index_runtime_correctness;bulk_publish_recovery;crash_recovery;database_lifecycle;no_execution_plan_runtime;mga_transaction_regression"
 )
 
 add_executable(dml_index_write_path_gate
@@ -280,7 +280,7 @@ add_test(
   COMMAND dml_index_write_path_gate
 )
 set_tests_properties(dml_index_write_path_gate PROPERTIES
-  LABELS "dml_index_write_path_gate;IRC-050;index_runtime_correctness;dml_index_write_path;database_lifecycle;no_execution_plan_runtime;mga_transaction_regression"
+  LABELS "dml_index_write_path_gate;IRC-050;IPAR-P4-01;physical_unique_index_probe;index_cursor_probe;index_runtime_correctness;dml_index_write_path;database_lifecycle;no_execution_plan_runtime;mga_transaction_regression"
 )
 
 add_executable(dml_hot_delta_ledger_gate
@@ -451,7 +451,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND cdp_copy_append_batching_gate
   )
   set_tests_properties(cdp_copy_append_batching_gate PROPERTIES
-    LABELS "cdp_copy_append_batching_gate;CDP-011;PID-007;PID-010;CDP_P1_COPY_BATCHED;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
+    LABELS "cdp_copy_append_batching_gate;CDP-011;PID-007;PID-010;IPAR-P5-02;CDP_P1_COPY_BATCHED;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
   )
 
   add_executable(cdp_native_bulk_ingest_api_gate
@@ -486,6 +486,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
+      sb_engine_sblr
       sb_storage_database
   )
 
@@ -495,6 +496,51 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   set_tests_properties(cdp_page_filespace_demand_gate PROPERTIES
     LABELS "cdp_page_filespace_demand_gate;CDP-013;CDP_P1_PAGE_PREALLOC_READY;database_lifecycle_storage;mga_transaction_regression"
+  )
+
+  add_executable(ipar_page_size_preallocation_gate
+    ipar_page_size_preallocation_gate.cpp
+  )
+  target_compile_features(ipar_page_size_preallocation_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_page_size_preallocation_gate
+    PRIVATE
+      sb_core_bulk_load
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+  )
+
+  add_test(
+    NAME ipar_page_size_preallocation_gate
+    COMMAND ipar_page_size_preallocation_gate
+  )
+  set_tests_properties(ipar_page_size_preallocation_gate PROPERTIES
+    LABELS "ipar_page_size_preallocation_gate;IPAR-P3-02;IPAR-P3-03;IPAR-P7-02;page_preallocation;database_lifecycle_storage;mga_transaction_regression"
+  )
+
+  add_executable(ipar_index_family_preallocation_gate
+    ipar_index_family_preallocation_gate.cpp
+  )
+  target_compile_features(ipar_index_family_preallocation_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_index_family_preallocation_gate
+    PRIVATE
+      sb_core_bulk_load
+      sb_core_index
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+  )
+
+  add_test(
+    NAME ipar_index_family_preallocation_gate
+    COMMAND ipar_index_family_preallocation_gate
+  )
+  set_tests_properties(ipar_index_family_preallocation_gate PROPERTIES
+    LABELS "ipar_index_family_preallocation_gate;IPAR-P4-02;index_page_preallocation;database_lifecycle_storage;mga_transaction_regression"
   )
 
   add_executable(cdp_statistics_access_path_gate
@@ -823,6 +869,7 @@ if(TARGET sb_storage_database)
       sb_storage_disk
       sb_storage_page
       sb_transaction_mga
+      sb_engine_sblr
   )
 
   add_test(
@@ -989,7 +1036,25 @@ if(TARGET sb_storage_database)
       COMMAND filespace_growth_runtime_gate
     )
     set_tests_properties(filespace_growth_runtime_gate PROPERTIES
-      LABELS "PFAR-010;filespace_growth_runtime_gate;database_lifecycle_storage;mga_transaction_regression"
+      LABELS "PFAR-010;IPAR-P3-02;filespace_growth_runtime_gate;database_lifecycle_storage;mga_transaction_regression"
+    )
+
+    add_executable(ipar_platform_storage_preallocation_gate
+      ipar_platform_storage_preallocation_gate.cpp
+    )
+    target_compile_features(ipar_platform_storage_preallocation_gate PRIVATE cxx_std_23)
+    target_link_libraries(ipar_platform_storage_preallocation_gate
+      PRIVATE
+        sb_core_platform
+        sb_storage_disk
+    )
+
+    add_test(
+      NAME ipar_platform_storage_preallocation_gate
+      COMMAND ipar_platform_storage_preallocation_gate
+    )
+    set_tests_properties(ipar_platform_storage_preallocation_gate PROPERTIES
+      LABELS "ipar_platform_storage_preallocation_gate;IPAR-P0-06;IPAR-P7-08;platform_storage_preallocation;database_lifecycle_storage;mga_transaction_regression"
     )
 
     add_executable(database_lifecycle_cloud_storage_emulator_conformance
@@ -1593,6 +1658,49 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "dpc_deferred_index_feature_flag_fallback_gate;DPC-020;DPC_TEST_INDEX_DEFER_DISABLED;deferred_index;feature_flag;synchronous_fallback;mga_transaction_regression;database_lifecycle"
   )
 
+  add_executable(ipar_prepared_cache_lifecycle_gate
+    ipar_prepared_cache_lifecycle_gate.cpp
+  )
+  target_compile_features(ipar_prepared_cache_lifecycle_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_prepared_cache_lifecycle_gate
+    PRIVATE
+      sb_core_platform
+      sb_core_index
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME ipar_prepared_cache_lifecycle_gate
+    COMMAND ipar_prepared_cache_lifecycle_gate
+  )
+  set_tests_properties(ipar_prepared_cache_lifecycle_gate PROPERTIES
+    LABELS "ipar_prepared_cache_lifecycle_gate;IPAR-P1-02;IPAR-P1-04;IPAR-P5-04;IPAR-P6-01;prepared_cache;row_encoder_validator_execution;security_fast_path;memory_arena_reuse;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_memory_pressure_trim_gate
+    ipar_memory_pressure_trim_gate.cpp
+  )
+  target_compile_features(ipar_memory_pressure_trim_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_memory_pressure_trim_gate
+    PRIVATE
+      sb_core_index
+      sb_engine_internal_api
+  )
+
+  add_test(
+    NAME ipar_memory_pressure_trim_gate
+    COMMAND ipar_memory_pressure_trim_gate
+  )
+  set_tests_properties(ipar_memory_pressure_trim_gate PROPERTIES
+    LABELS "ipar_memory_pressure_trim_gate;IPAR-P6-02;prepared_cache;memory_pressure;trim_backoff;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(dpc_secondary_index_delta_ledger_persistence_gate
     dpc_secondary_index_delta_ledger_persistence_gate.cpp
   )
@@ -1620,6 +1728,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
+      sb_engine_sblr
       sb_storage_database
   )
 
@@ -1727,7 +1836,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND dpc_shadow_index_build_lifecycle_gate
   )
   set_tests_properties(dpc_shadow_index_build_lifecycle_gate PROPERTIES
-    LABELS "dpc_shadow_index_build_lifecycle_gate;DPC-040;DPC_TEST_SHADOW_INDEX;shadow_index_build_lifecycle;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_shadow_index_build_lifecycle_gate;DPC-040;IPAR-P4-05;DPC_TEST_SHADOW_INDEX;shadow_index_build_lifecycle;mga_transaction_regression;database_lifecycle"
   )
 
   add_executable(dpc_shadow_index_delta_drain_recovery_gate
@@ -1745,7 +1854,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND dpc_shadow_index_delta_drain_recovery_gate
   )
   set_tests_properties(dpc_shadow_index_delta_drain_recovery_gate PROPERTIES
-    LABELS "dpc_shadow_index_delta_drain_recovery_gate;DPC-041;DPC_TEST_SHADOW_INDEX;shadow_index_delta_drain;shadow_index_recovery;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_shadow_index_delta_drain_recovery_gate;DPC-041;IPAR-P4-05;DPC_TEST_SHADOW_INDEX;shadow_index_delta_drain;shadow_index_recovery;mga_transaction_regression;database_lifecycle"
   )
 
   add_executable(dpc_hot_update_version_chain_gate
@@ -1820,6 +1929,24 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   set_tests_properties(sys_agent_storage_views_gate PROPERTIES
     LABELS "PFAR-015;sys_agent_storage_views_gate;database_lifecycle_sys_information_projection;database_lifecycle_catalog;agent_runtime;storage_agents;mga_transaction_regression"
+  )
+
+  add_executable(ipar_observability_projection_gate
+    ipar_observability_projection_gate.cpp
+  )
+  target_compile_features(ipar_observability_projection_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_observability_projection_gate
+    PRIVATE
+      sb_engine_internal_api
+      sb_engine_sblr
+  )
+
+  add_test(
+    NAME ipar_observability_projection_gate
+    COMMAND ipar_observability_projection_gate
+  )
+  set_tests_properties(ipar_observability_projection_gate PROPERTIES
+    LABELS "IPAR-P6-03;IPAR-P6-06;IPAR-P6-07;IPAR-P6-08;ipar_observability_projection_gate;database_lifecycle_sys_information_projection;database_lifecycle_catalog;observability;agent_runtime;mga_transaction_regression"
   )
 
   add_executable(sys_agent_view_contract_documentation_gate
@@ -3004,6 +3131,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
+      sb_engine_sblr
       sb_storage_database
   )
 
@@ -3882,16 +4010,523 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     NAME database_lifecycle_constraint_dml_enforcement_conformance
     COMMAND database_lifecycle_constraint_dml_enforcement_conformance
   )
-  set_tests_properties(database_lifecycle_constraint_dml_enforcement_conformance PROPERTIES
-    LABELS "database_lifecycle_constraint_dml_enforcement_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-019;MDF-020;DEFER-CLI-CATALOGS;DEFER-CLI-ENFORCEMENT;DEFER-CLI-VALIDATION-STATES;DEFER-CLI-DEFERRAL;DEFER-CLI-MAINTENANCE;DEFER-CLI-DURABILITY-RESIDENCY;DEFER-CLI-MEMORY-OPTIMIZATION;DEFER-CLI-METRICS;DEFER-CLI-CONFORMANCE;constraint_dml_enforcement_gate;constraint_transaction_visibility_gate;constraint_diagnostic_gate;constraint_index_dependency_gate;PRF_G06A_CONSTRAINT_INDEX_DEPENDENCY_READY;PRF_G06_CONSTRAINTS_READY;database_lifecycle;mga_transaction_regression"
-  )
-endif()
+	  set_tests_properties(database_lifecycle_constraint_dml_enforcement_conformance PROPERTIES
+	    LABELS "database_lifecycle_constraint_dml_enforcement_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-019;MDF-020;DEFER-CLI-CATALOGS;DEFER-CLI-ENFORCEMENT;DEFER-CLI-VALIDATION-STATES;DEFER-CLI-DEFERRAL;DEFER-CLI-MAINTENANCE;DEFER-CLI-DURABILITY-RESIDENCY;DEFER-CLI-MEMORY-OPTIMIZATION;DEFER-CLI-METRICS;DEFER-CLI-CONFORMANCE;constraint_dml_enforcement_gate;constraint_transaction_visibility_gate;constraint_diagnostic_gate;constraint_index_dependency_gate;PRF_G06A_CONSTRAINT_INDEX_DEPENDENCY_READY;PRF_G06_CONSTRAINTS_READY;database_lifecycle;mga_transaction_regression"
+	  )
+
+	  add_executable(ipar_insert_runtime_security_recheck_gate
+	    ipar_insert_runtime_security_recheck_gate.cpp
+	  )
+	  target_compile_features(ipar_insert_runtime_security_recheck_gate PRIVATE cxx_std_23)
+	  target_link_libraries(ipar_insert_runtime_security_recheck_gate
+	    PRIVATE
+	      sb_core_platform
+	      sb_core_uuid
+	      sb_engine_internal_api
+	      sb_engine_sblr
+	      sb_storage_database
+	      sb_storage_disk
+	      sb_storage_page
+	      sb_transaction_mga
+	  )
+
+	  add_test(
+	    NAME ipar_insert_runtime_security_recheck_gate
+	    COMMAND ipar_insert_runtime_security_recheck_gate
+	  )
+		  set_tests_properties(ipar_insert_runtime_security_recheck_gate PROPERTIES
+		    LABELS "ipar_insert_runtime_security_recheck_gate;IPAR-P1-04;security_fast_path;prepared_cache;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_relation_state_load_route_gate
+		    ipar_relation_state_load_route_gate.cpp
+		  )
+		  target_compile_features(ipar_relation_state_load_route_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_relation_state_load_route_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_relation_state_load_route_gate
+		    COMMAND ipar_relation_state_load_route_gate
+		  )
+		  set_tests_properties(ipar_relation_state_load_route_gate PROPERTIES
+		    LABELS "ipar_relation_state_load_route_gate;IPAR-P2-01;IPAR-P2-02;IPAR-P2-03;relation_state_load;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_long_snapshot_version_chain_gate
+		    ipar_long_snapshot_version_chain_gate.cpp
+		  )
+		  target_compile_features(ipar_long_snapshot_version_chain_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_long_snapshot_version_chain_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_long_snapshot_version_chain_gate
+		    COMMAND ipar_long_snapshot_version_chain_gate
+		  )
+		  set_tests_properties(ipar_long_snapshot_version_chain_gate PROPERTIES
+		    LABELS "ipar_long_snapshot_version_chain_gate;IPAR-P2-04;long_snapshot;version_chain;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_adaptive_batch_sizing_gate
+		    ipar_adaptive_batch_sizing_gate.cpp
+		  )
+		  target_compile_features(ipar_adaptive_batch_sizing_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_adaptive_batch_sizing_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_adaptive_batch_sizing_gate
+		    COMMAND ipar_adaptive_batch_sizing_gate
+		  )
+		  set_tests_properties(ipar_adaptive_batch_sizing_gate PROPERTIES
+		    LABELS "ipar_adaptive_batch_sizing_gate;IPAR-P1-05;adaptive_batch;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_large_value_batch_allocation_gate
+		    ipar_large_value_batch_allocation_gate.cpp
+		  )
+		  target_compile_features(ipar_large_value_batch_allocation_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_large_value_batch_allocation_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_large_value_batch_allocation_gate
+		    COMMAND ipar_large_value_batch_allocation_gate
+		  )
+		  set_tests_properties(ipar_large_value_batch_allocation_gate PROPERTIES
+		    LABELS "ipar_large_value_batch_allocation_gate;IPAR-P3-04;large_value_batch_allocation;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_multi_filespace_placement_gate
+		    ipar_multi_filespace_placement_gate.cpp
+		  )
+		  target_compile_features(ipar_multi_filespace_placement_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_multi_filespace_placement_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_multi_filespace_placement_gate
+		    COMMAND ipar_multi_filespace_placement_gate
+		  )
+		  set_tests_properties(ipar_multi_filespace_placement_gate PROPERTIES
+		    LABELS "ipar_multi_filespace_placement_gate;IPAR-P3-06;multi_filespace_placement;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_resource_quota_backpressure_gate
+		    ipar_resource_quota_backpressure_gate.cpp
+		  )
+		  target_compile_features(ipar_resource_quota_backpressure_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_resource_quota_backpressure_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_resource_quota_backpressure_gate
+		    COMMAND ipar_resource_quota_backpressure_gate
+		  )
+		  set_tests_properties(ipar_resource_quota_backpressure_gate PROPERTIES
+		    LABELS "ipar_resource_quota_backpressure_gate;IPAR-P3-07;resource_quota;backpressure;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_commit_durability_batching_gate
+		    ipar_commit_durability_batching_gate.cpp
+		  )
+		  target_compile_features(ipar_commit_durability_batching_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_commit_durability_batching_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_commit_durability_batching_gate
+		    COMMAND ipar_commit_durability_batching_gate
+		  )
+		  set_tests_properties(ipar_commit_durability_batching_gate PROPERTIES
+		    LABELS "ipar_commit_durability_batching_gate;IPAR-P3-05;IPAR-P3-08;commit_fence;durability_batching;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_physical_row_page_append_gate
+		    ipar_physical_row_page_append_gate.cpp
+		  )
+		  target_compile_features(ipar_physical_row_page_append_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_physical_row_page_append_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_physical_row_page_append_gate
+		    COMMAND ipar_physical_row_page_append_gate
+		  )
+		  set_tests_properties(ipar_physical_row_page_append_gate PROPERTIES
+		    LABELS "ipar_physical_row_page_append_gate;IPAR-P3-01;page_native_row_append;direct_physical_bulk;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_storage_format_migration_safety_gate
+		    ipar_storage_format_migration_safety_gate.cpp
+		  )
+		  target_compile_features(ipar_storage_format_migration_safety_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_storage_format_migration_safety_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		  )
+
+		  add_test(
+		    NAME ipar_storage_format_migration_safety_gate
+		    COMMAND ipar_storage_format_migration_safety_gate
+		  )
+		  set_tests_properties(ipar_storage_format_migration_safety_gate PROPERTIES
+		    LABELS "ipar_storage_format_migration_safety_gate;IPAR-P3-09;IPAR-P7-11;storage_format;migration_refusal;row_page;index_page;allocation_map;database_open_format_refusal;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_concurrency_insert_proof_gate
+		    ipar_concurrency_insert_proof_gate.cpp
+		  )
+		  target_compile_features(ipar_concurrency_insert_proof_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_concurrency_insert_proof_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_concurrency_insert_proof_gate
+		    COMMAND ipar_concurrency_insert_proof_gate
+		  )
+		  set_tests_properties(ipar_concurrency_insert_proof_gate PROPERTIES
+		    LABELS "ipar_concurrency_insert_proof_gate;IPAR-P7-04;concurrency;insert;copy_import;rollback;unique_conflict;restart_persistence;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_insert_cancel_timeout_gate
+		    ipar_insert_cancel_timeout_gate.cpp
+		  )
+		  target_compile_features(ipar_insert_cancel_timeout_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_insert_cancel_timeout_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_insert_cancel_timeout_gate
+		    COMMAND ipar_insert_cancel_timeout_gate
+		  )
+		  set_tests_properties(ipar_insert_cancel_timeout_gate PROPERTIES
+		    LABELS "ipar_insert_cancel_timeout_gate;IPAR-P5-05;cancel_timeout;copy_import;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_restart_persistence_gate
+		    ipar_restart_persistence_gate.cpp
+		  )
+		  target_compile_features(ipar_restart_persistence_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_restart_persistence_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_restart_persistence_gate
+		    COMMAND ipar_restart_persistence_gate
+		  )
+		  set_tests_properties(ipar_restart_persistence_gate PROPERTIES
+		    LABELS "ipar_restart_persistence_gate;IPAR-P7-05;restart_persistence;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_fault_injection_recovery_gate
+		    ipar_fault_injection_recovery_gate.cpp
+		  )
+		  target_compile_features(ipar_fault_injection_recovery_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_fault_injection_recovery_gate
+		    PRIVATE
+		      sb_core_index
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_fault_injection_recovery_gate
+		    COMMAND ipar_fault_injection_recovery_gate
+		  )
+		  set_tests_properties(ipar_fault_injection_recovery_gate PROPERTIES
+		    LABELS "ipar_fault_injection_recovery_gate;IPAR-P7-06;fault_injection;recovery;insert_performance;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_data_shape_stress_matrix_gate
+		    ipar_data_shape_stress_matrix_gate.cpp
+		  )
+		  target_compile_features(ipar_data_shape_stress_matrix_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_data_shape_stress_matrix_gate
+		    PRIVATE
+		      sb_core_bulk_load
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_filespace
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_data_shape_stress_matrix_gate
+		    COMMAND ipar_data_shape_stress_matrix_gate
+		  )
+		  set_tests_properties(ipar_data_shape_stress_matrix_gate PROPERTIES
+		    LABELS "ipar_data_shape_stress_matrix_gate;IPAR-P7-09;data_shape_stress;insert_performance;copy_import;index_probe;multi_filespace_placement;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_mixed_reader_writer_workload_gate
+		    ipar_mixed_reader_writer_workload_gate.cpp
+		  )
+		  target_compile_features(ipar_mixed_reader_writer_workload_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_mixed_reader_writer_workload_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_mixed_reader_writer_workload_gate
+		    COMMAND ipar_mixed_reader_writer_workload_gate
+		  )
+		  set_tests_properties(ipar_mixed_reader_writer_workload_gate PROPERTIES
+		    LABELS "ipar_mixed_reader_writer_workload_gate;IPAR-P7-10;mixed_reader_writer;insert_performance;select;index_lookup;metadata_read;navigator_tree;database_lifecycle;mga_transaction_regression"
+		  )
+
+		  add_executable(ipar_unique_index_probe_gate
+		    ipar_unique_index_probe_gate.cpp
+		  )
+		  target_compile_features(ipar_unique_index_probe_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_unique_index_probe_gate
+		    PRIVATE
+		      sb_core_platform
+		      sb_core_uuid
+		      sb_engine_internal_api
+		      sb_engine_sblr
+		      sb_storage_database
+		      sb_storage_disk
+		      sb_storage_page
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_unique_index_probe_gate
+		    COMMAND ipar_unique_index_probe_gate
+		  )
+		  set_tests_properties(ipar_unique_index_probe_gate PROPERTIES
+		    LABELS "ipar_unique_index_probe_gate;IPAR-P4-01;IPAR-P4-03;synchronous_exact_unique_maintenance;unique_index_probe;physical_unique_index_probe;database_lifecycle;mga_transaction_regression"
+		  )
+		endif()
 
 if(TARGET sb_server_core)
+  add_executable(ipar_prepared_handle_authority_gate
+    ipar_prepared_handle_authority_gate.cpp
+  )
+  target_compile_features(ipar_prepared_handle_authority_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_prepared_handle_authority_gate
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME ipar_prepared_handle_authority_gate
+    COMMAND ipar_prepared_handle_authority_gate
+  )
+  set_tests_properties(ipar_prepared_handle_authority_gate PROPERTIES
+    LABELS "ipar_prepared_handle_authority_gate;IPAR-P1-03;IPAR-P5-04;prepared_sblr;prepared_handle_authority;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_server_observability_projection_gate
+    ipar_server_observability_projection_gate.cpp
+  )
+  target_compile_features(ipar_server_observability_projection_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_server_observability_projection_gate
+    PRIVATE
+      sb_server_core
+      sb_engine_internal_api
+  )
+
+  add_test(
+    NAME ipar_server_observability_projection_gate
+    COMMAND ipar_server_observability_projection_gate
+  )
+  set_tests_properties(ipar_server_observability_projection_gate PROPERTIES
+    LABELS "IPAR-P6-06;IPAR-P6-08;ipar_server_observability_projection_gate;server_observability;slow_path;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_contention_quota_projection_gate
+    ipar_contention_quota_projection_gate.cpp
+  )
+  target_compile_features(ipar_contention_quota_projection_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_contention_quota_projection_gate
+    PRIVATE
+      sb_server_core
+      sb_engine_internal_api
+  )
+
+  add_test(
+    NAME ipar_contention_quota_projection_gate
+    COMMAND ipar_contention_quota_projection_gate
+  )
+  set_tests_properties(ipar_contention_quota_projection_gate PROPERTIES
+    LABELS "IPAR-P4-06;IPAR-P6-06;ipar_contention_quota_projection_gate;server_observability;sys_ipar;contention;quota;prepared_cache;page_allocation;agent_queue;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_agent_runtime_idle_gate
+    ipar_agent_runtime_idle_gate.cpp
+  )
+  target_compile_features(ipar_agent_runtime_idle_gate PRIVATE cxx_std_23)
+  set(IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS
+    sb_core_platform
+    sb_core_uuid
+    sb_engine_internal_api
+    sb_engine_sblr
+    sb_server_core
+    sb_storage_database
+    sb_storage_disk
+    sb_storage_page
+    sb_transaction_mga
+  )
+  if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
+    string(JOIN "," IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS_CSV
+      ${IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS})
+    target_link_libraries(ipar_agent_runtime_idle_gate
+      PRIVATE
+        "$<LINK_GROUP:RESCAN,${IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS_CSV}>"
+    )
+  elseif(UNIX AND NOT APPLE)
+    target_link_libraries(ipar_agent_runtime_idle_gate
+      PRIVATE
+        -Wl,--start-group
+        ${IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS}
+        -Wl,--end-group
+    )
+  else()
+    target_link_libraries(ipar_agent_runtime_idle_gate
+      PRIVATE
+        ${IPAR_AGENT_RUNTIME_IDLE_GATE_LIBS}
+    )
+  endif()
+
+  add_test(
+    NAME ipar_agent_runtime_idle_gate
+    COMMAND ipar_agent_runtime_idle_gate
+  )
+  set_tests_properties(ipar_agent_runtime_idle_gate PROPERTIES
+    LABELS "IPAR-P6-03;IPAR-P6-04;IPAR-P6-05;IPAR-P6-06;agent_runtime;agent_idle;agent_failure_diagnostics;agent_fairness;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(database_lifecycle_memory_policy_config_conformance
     memory_policy_config_conformance.cpp
   )
   target_compile_features(database_lifecycle_memory_policy_config_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(database_lifecycle_memory_policy_config_conformance PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${PROJECT_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  )
   target_link_libraries(database_lifecycle_memory_policy_config_conformance
     PRIVATE
       sb_server_core

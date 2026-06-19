@@ -952,7 +952,7 @@ add_test(
   COMMAND sorted_bulk_unique_proof_gate
 )
 set_tests_properties(sorted_bulk_unique_proof_gate PROPERTIES
-  LABELS "sorted_bulk_unique_proof_gate;IRC-022;index_runtime_correctness;sorted_bulk_unique_proof;no_execution_plan_runtime;mga_transaction_regression"
+  LABELS "sorted_bulk_unique_proof_gate;IRC-022;IPAR-P4-05;index_runtime_correctness;sorted_bulk_unique_proof;no_execution_plan_runtime;mga_transaction_regression"
 )
 
 add_executable(
@@ -972,7 +972,7 @@ add_test(
   COMMAND sorted_bulk_leaf_branch_builder_gate
 )
 set_tests_properties(sorted_bulk_leaf_branch_builder_gate PROPERTIES
-  LABELS "sorted_bulk_leaf_branch_builder_gate;IRC-040;index_runtime_correctness;sorted_bulk_physical_bulk_build;no_execution_plan_runtime;mga_transaction_regression"
+  LABELS "sorted_bulk_leaf_branch_builder_gate;IRC-040;IPAR-P4-05;index_runtime_correctness;sorted_bulk_physical_bulk_build;no_execution_plan_runtime;mga_transaction_regression"
 )
 
 add_executable(
@@ -1584,7 +1584,7 @@ add_test(
   COMMAND optimizer_runtime_hot_path_orh_210_211_212_gate
 )
 set_tests_properties(optimizer_runtime_hot_path_orh_210_211_212_gate PROPERTIES
-  LABELS "optimizer_runtime_hot_path_orh_210_211_212_gate;ORH-210;ORH-211;ORH-212;optimizer_runtime_hot_path;performance;native_bulk_ingest;deferred_index_publish;page_allocator_runtime;mga_transaction_regression"
+  LABELS "optimizer_runtime_hot_path_orh_210_211_212_gate;ORH-210;ORH-211;ORH-212;IPAR-P4-05;optimizer_runtime_hot_path;performance;native_bulk_ingest;deferred_index_publish;page_allocator_runtime;mga_transaction_regression"
 )
 
 add_executable(
@@ -2199,7 +2199,7 @@ if(TARGET sb_core_uuid AND TARGET sb_engine_internal_api AND TARGET sb_engine_sb
     COMMAND optimizer_deficiency_odf_112_gate
   )
   set_tests_properties(optimizer_deficiency_odf_112_gate PROPERTIES
-    LABELS "optimizer_deficiency_odf_112_gate;ODF-112;optimizer_deficiency;performance;benchmark;bulk;copy;native_bulk;sorted_index_build;proof_validation;reject_bisection;page_preallocation;benchmark_clean;mga_transaction_regression"
+    LABELS "optimizer_deficiency_odf_112_gate;ODF-112;IPAR-P4-05;optimizer_deficiency;performance;benchmark;bulk;copy;native_bulk;sorted_index_build;proof_validation;reject_bisection;page_preallocation;benchmark_clean;mga_transaction_regression"
   )
 endif()
 
@@ -2288,6 +2288,6 @@ if(TARGET sb_engine_sblr AND TARGET sb_storage_database AND TARGET sb_transactio
     COMMAND scratchbird_beta_performance_baseline_conformance
   )
   set_tests_properties(scratchbird_beta_performance_baseline_conformance PROPERTIES
-    LABELS "scratchbird_beta_performance_baseline_conformance;CBQ-040;CBQ_GATE_PERFORMANCE_BASELINE_THRESHOLDS;ELER-105;ELER-GATE-105;performance;baseline;throughput;latency;latency_percentiles;runtime_health_counters;resource_high_water;memory;benchmark_clean;mga_transaction_regression"
+    LABELS "scratchbird_beta_performance_baseline_conformance;CBQ-040;CBQ_GATE_PERFORMANCE_BASELINE_THRESHOLDS;ELER-105;ELER-GATE-105;IPAR-P0-05;IPAR-P7-07;performance;baseline;throughput;latency;latency_percentiles;runtime_health_counters;resource_high_water;profiler_evidence;post_fix_profiler_comparison;memory;benchmark_clean;mga_transaction_regression"
   )
 endif()

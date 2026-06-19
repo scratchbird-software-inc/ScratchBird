@@ -10,6 +10,7 @@
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "extensibility/udr_api.hpp"
 #include "filespace_header.hpp"
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
@@ -19,6 +20,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sb_udr_runtime.hpp"
+#include "sbu_sbsql_parser_support.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -29,6 +32,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -39,6 +43,8 @@ namespace db = scratchbird::storage::database;
 namespace filespace = scratchbird::storage::filespace;
 namespace memory = scratchbird::core::memory;
 namespace sblr = scratchbird::engine::sblr;
+namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
+namespace udr_runtime = scratchbird::udr::runtime;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -81,9 +87,9 @@ const CaseRow kCases[] = {
     {"SBSQL-3B633A20C1D6", "statement", "sblr.observability.inspect.v3", "STATEMENT current;", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "statement_inspect", "EngineShowStatements", "observability", "observability.show_statements", false},
     {"SBSQL-4015EEDB32B8", "gpu_stmt", "sblr.acceleration.operation.v3", "GPU CAPABILITY;", "extensibility.inspect_gpu_capability", "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY", "gpu_statement_inspect", "EngineInspectGpuCapability", "gpu_capability", "inspected", false},
     {"SBSQL-407DF23BC3A4", "filespace_name", "sblr.filespace.management.v3", "STORAGE FILESPACE main;", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "filespace_profile", "EngineStorageManagementOperation", "storage_management_operation", "filespace_name", false},
+    {"SBSQL-FADDF1E51001", "attach_filespace_stmt", "sblr.filespace.management.v3", "ATTACH FILESPACE fs_runtime;", "filespace.attach", "SBLR_FILESPACE_ATTACH", "attach_filespace", "EngineFilespaceLifecycleOperation", "filespace_lifecycle_operation", "filespace.attach", true},
     {"SBSQL-FADDF1E52001", "grow_filespace_stmt", "sblr.filespace.management.v3", "GROW FILESPACE fs_runtime BY 16 PAGES;", "filespace.preallocate", "SBLR_FILESPACE_PREALLOCATE", "grow_filespace", "EngineFilespacePreallocate", "storage_executor", "PreallocateFilespace", true},
     {"SBSQL-FADDF1E52002", "resize_filespace_stmt", "sblr.filespace.management.v3", "RESIZE FILESPACE fs_runtime TO 128 PAGES;", "filespace.preallocate", "SBLR_FILESPACE_PREALLOCATE", "resize_filespace", "EngineFilespacePreallocate", "storage_executor", "PreallocateFilespace", true},
-    {"SBSQL-FADDF1E51001", "attach_filespace_stmt", "sblr.filespace.management.v3", "ATTACH FILESPACE fs_runtime;", "filespace.attach", "SBLR_FILESPACE_ATTACH", "attach_filespace", "EngineFilespaceLifecycleOperation", "filespace_lifecycle_operation", "filespace.attach", true},
     {"SBSQL-FADDF1E51004", "move_filespace_stmt", "sblr.filespace.management.v3", "MOVE FILESPACE fs_move TO '/tmp/sbsfc077-move-target.filespace';", "filespace.move", "SBLR_FILESPACE_MOVE", "move_filespace", "EngineFilespaceLifecycleOperation", "filespace_lifecycle_operation", "filespace.move", true},
     {"SBSQL-FADDF1E53010", "merge_filespace_stmt", "sblr.filespace.management.v3", "MERGE FILESPACE fs_merge INTO fs_merge_target;", "filespace.merge", "SBLR_FILESPACE_MERGE", "merge_filespace", "EngineFilespaceLifecycleOperation", "filespace_lifecycle_operation", "filespace.merge", true},
     {"SBSQL-FADDF1E51003", "promote_filespace_stmt", "sblr.filespace.management.v3", "PROMOTE FILESPACE fs_runtime;", "filespace.promote", "SBLR_FILESPACE_PROMOTE", "promote_filespace", "EngineFilespaceLifecycleOperation", "filespace_lifecycle_operation", "filespace.promote", true},
@@ -115,7 +121,7 @@ const CaseRow kCases[] = {
     {"SBSQL-4D4C7A74054C", "cypher_with_clause", "sblr.query.relational.v3", "CYPHER WITH n;", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "cypher_with_descriptor_scan", "EngineGraphQuery", "graph_query", "local_descriptor_scan", false},
     {"SBSQL-5D191798949E", "statistics_kind", "sblr.observability.inspect.v3", "STATISTICS KIND histogram;", "observability.show_metrics", "SBLR_OBSERVABILITY_SHOW_METRICS", "statistics_kind_metrics", "EngineShowMetrics", "metrics_registry", "local_node", false},
     {"SBSQL-61FABBFAE0A2", "psql_select_into", "sblr.query.relational.v3", "PSQL SELECT INTO target;", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "psql_select_into_plan", "EnginePlanOperation", "query_plan", "table_scan", false},
-    {"SBSQL-65DE8F82E1EB", "psql_execute_statement", "sblr.observability.inspect.v3", "PSQL EXECUTE STATEMENT stmt;", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "psql_execute_statement_inspect", "EngineShowStatements", "observability", "observability.show_statements", false},
+    {"SBSQL-65DE8F82E1EB", "psql_execute_statement", "sblr.udr.operation.v3", "PSQL EXECUTE STATEMENT stmt;", "extensibility.invoke_udr_package", "SBLR_UDR_INVOKE", "dynamic_sbsql_parser_support_udr", "EngineInvokeUdrPackage", "parser_support_udr", "sbsql_parse_to_sblr_verified", true},
     {"SBSQL-683EC052F3B8", "prewhere_clause", "sblr.query.relational.v3", "QUERY PREWHERE active;", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "prewhere_descriptor_plan", "EnginePlanOperation", "query_plan", "table_scan", false},
     {"SBSQL-6FCF0A0801AB", "psql_autonomous_block", "sblr.transaction.control.v3", "AUTONOMOUS BLOCK;", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "psql_autonomous_block", "EngineExecuteTransactionBlock", "transaction_internal_procedure_block", "psql_autonomous_block", true},
     {"SBSQL-703A59D593A1", "aof_mode", "sblr.filespace.management.v3", "STORAGE AOF ON;", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "aof_mode", "EngineStorageManagementOperation", "storage_management_operation", "aof_mode", false},
@@ -334,9 +340,6 @@ std::string_view ExpectedAdmissionFamily(const CaseRow& row) {
     if (row.operation_id == "observability.show_metrics") return "sblr.metrics.read.v3";
     if (row.operation_id == "observability.show_transactions") return "sblr.mga.report.v3";
     return "sblr.management.report.v3";
-  }
-  if (row.operation_id == "query.plan_operation") {
-    return "sblr.optimizer.plan.v3";
   }
   if (row.family == "sblr.filespace.management.v3") {
     return "sblr.filespace.management.v3";
@@ -616,7 +619,11 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
                                          std::string(row.opcode),
                                          "trace.sbsfc077.non_general_residual");
   const bool filespace_lifecycle = StartsWith(row.operation_id, "filespace.");
-  const std::string target_uuid = TargetUuidFor(row);
+  const bool dynamic_sbsql_udr =
+      row.operation_id == "extensibility.invoke_udr_package";
+  const std::string target_uuid =
+      dynamic_sbsql_udr ? std::string(sbsql_udr::kSbuSbsqlPackageUuid)
+                        : TargetUuidFor(row);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = false;
@@ -625,9 +632,20 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
   envelope.operands.push_back({"text", "target_object_uuid", target_uuid});
   envelope.operands.push_back({"text",
                                "target_object_kind",
-                               filespace_lifecycle ? "filespace" : "sbsfc077_surface"});
+                               dynamic_sbsql_udr
+                                   ? "udr_package"
+                                   : (filespace_lifecycle ? "filespace"
+                                                          : "sbsfc077_surface")});
   envelope.operands.push_back({"text", "sbsfc077_surface_id", std::string(row.surface_id)});
   envelope.operands.push_back({"text", "surface_variant", std::string(row.route_kind)});
+  if (dynamic_sbsql_udr) {
+    envelope.operands.push_back({"text", "entrypoint", "sbu_sbsql_parse_to_sblr"});
+    envelope.operands.push_back({"text", "sblr_authorized_invocation", "true"});
+    envelope.operands.push_back({"text", "parser_support_udr", "sbu_sbsql"});
+    envelope.operands.push_back({"text", "source_sql_to_udr_parse_only", "true"});
+    envelope.operands.push_back({"text", "original_sql_reference_packet_only", "true"});
+    envelope.operands.push_back({"text", "engine_accepts_revalidated_sblr_uuid_only", "true"});
+  }
   if (filespace_lifecycle) {
     envelope.operands.push_back({"text",
                                  "filespace.role",
@@ -695,11 +713,90 @@ sblr::SblrOperationEnvelope EngineEnvelope(const CaseRow& row) {
   return envelope;
 }
 
+api::EngineLocalizedName LocalizedName(std::string name, std::string path) {
+  api::EngineLocalizedName localized;
+  localized.language_tag = "en";
+  localized.name_class = "primary";
+  localized.path = std::move(path);
+  localized.name = std::move(name);
+  localized.default_name = true;
+  return localized;
+}
+
+void AddParserSupportUdrManageOptions(
+    api::EngineApiRequest* request,
+    const udr_runtime::UdrPackageDescriptor& descriptor) {
+  request->option_envelopes.push_back("permission:manage_udr");
+  request->option_envelopes.push_back("trusted_cpp_udr");
+  request->option_envelopes.push_back("abi:sb_udr_v1");
+  request->option_envelopes.push_back("name:" + descriptor.package_name);
+  request->option_envelopes.push_back("udr_kind:parser_support");
+  request->option_envelopes.push_back("linked_udr_package:true");
+  request->option_envelopes.push_back("source_revision:" + descriptor.source_revision);
+  request->option_envelopes.push_back("binary_hash:" + descriptor.binary_hash);
+  request->option_envelopes.push_back("signature_policy:" + descriptor.signature_policy);
+  request->option_envelopes.push_back("capability_role:" + descriptor.capability_role);
+}
+
+void AddParserSupportUdrInvokeOptions(api::EngineApiRequest* request) {
+  request->option_envelopes.push_back("permission:invoke_udr");
+  request->option_envelopes.push_back("sblr_authorized_invocation:true");
+  request->option_envelopes.push_back("operation_family:sblr.udr.operation.v3");
+  request->option_envelopes.push_back("entrypoint:sbu_sbsql_parse_to_sblr");
+  request->option_envelopes.push_back("payload:select 1");
+  request->option_envelopes.push_back(
+      "context_packet:engine_context=trusted;resolver=public;authenticated=true");
+  request->option_envelopes.push_back("source_sql_to_udr_parse_only:true");
+  request->option_envelopes.push_back("original_sql_reference_packet_only:true");
+  request->option_envelopes.push_back("memory_budget_bytes:4096");
+  request->option_envelopes.push_back("cpu_budget_microseconds:1000");
+}
+
+void EnsureParserSupportUdrLoaded(const api::EngineRequestContext& context) {
+  static bool loaded = false;
+  if (loaded) return;
+  udr_runtime::ResetRuntimeForTest();
+  const auto descriptor = sbsql_udr::sbu_sbsql_package_descriptor();
+  const auto runtime_registered = udr_runtime::RegisterPackage(descriptor);
+  Require(runtime_registered.ok, "SBSFC-077 failed to seed SBsql parser-support UDR runtime");
+
+  api::EngineRegisterUdrPackageRequest register_request;
+  register_request.context = context;
+  register_request.target_object.uuid.canonical = descriptor.package_uuid;
+  register_request.target_object.object_kind = "udr_package";
+  register_request.localized_names.push_back(
+      LocalizedName(descriptor.package_name, "sys.udr"));
+  AddParserSupportUdrManageOptions(&register_request, descriptor);
+  const auto registered = api::EngineRegisterUdrPackage(register_request);
+  Require(registered.ok, "SBSFC-077 parser-support UDR registration failed");
+
+  api::EngineLoadUdrPackageRequest load_request;
+  load_request.context = context;
+  load_request.target_object.uuid.canonical = descriptor.package_uuid;
+  load_request.target_object.object_kind = "udr_package";
+  load_request.localized_names.push_back(
+      LocalizedName(descriptor.package_name, "sys.udr"));
+  AddParserSupportUdrManageOptions(&load_request, descriptor);
+  const auto loaded_result = api::EngineLoadUdrPackage(load_request);
+  Require(loaded_result.ok, "SBSFC-077 parser-support UDR load failed");
+  loaded = true;
+}
+
 api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
   api::EngineApiRequest request;
   const bool filespace_lifecycle = StartsWith(row.operation_id, "filespace.");
-  request.target_object.uuid.canonical = TargetUuidFor(row);
-  request.target_object.object_kind = filespace_lifecycle ? "filespace" : "sbsfc077_surface";
+  const bool dynamic_sbsql_udr =
+      row.operation_id == "extensibility.invoke_udr_package";
+  request.target_object.uuid.canonical =
+      dynamic_sbsql_udr ? std::string(sbsql_udr::kSbuSbsqlPackageUuid)
+                        : TargetUuidFor(row);
+  request.target_object.object_kind =
+      dynamic_sbsql_udr ? "udr_package"
+                        : (filespace_lifecycle ? "filespace" : "sbsfc077_surface");
+  if (dynamic_sbsql_udr) {
+    request.localized_names.push_back(
+        LocalizedName(std::string(sbsql_udr::kSbuSbsqlPackageName), "sys.udr"));
+  }
   request.option_envelopes.push_back(std::string("sbsfc077_surface_id:") + std::string(row.surface_id));
   request.option_envelopes.push_back(std::string("surface_kind:") + std::string(row.canonical_name));
   if (row.operation_id == "query.plan_operation") {
@@ -790,6 +887,8 @@ api::EngineApiRequest ApiRequestFor(const CaseRow& row) {
     request.option_envelopes.push_back("gpu_profile:inspect_only");
   } else if (row.operation_id == "observability.show_metrics") {
     request.option_envelopes.push_back("family:engine");
+  } else if (dynamic_sbsql_udr) {
+    AddParserSupportUdrInvokeOptions(&request);
   }
   return request;
 }
@@ -1153,6 +1252,9 @@ void RequireEngineDispatch(const api::EngineRequestContext& base_context,
       row.operation_id == "filespace.salvage") {
     PreparePhysicalRepairFilespace(context, path, database_uuid, row);
   }
+  if (row.operation_id == "extensibility.invoke_udr_package") {
+    EnsureParserSupportUdrLoaded(context);
+  }
   const auto result = sblr::DispatchSblrOperation({context, EngineEnvelope(row), ApiRequestFor(row)});
   PrintDispatchDiagnostics(result);
   Require(result.envelope_validated, "SBSFC-077 engine envelope rejected");
@@ -1161,8 +1263,31 @@ void RequireEngineDispatch(const api::EngineRequestContext& base_context,
   Require(result.api_result.operation_id == row.operation_id,
           "SBSFC-077 runtime operation id drifted");
   Require(result.api_result.ok, "SBSFC-077 runtime API did not complete");
+  if (!HasEvidence(result.api_result, row.runtime_evidence_kind, row.runtime_evidence_id)) {
+    std::cerr << "SBSFC-077 runtime evidence missing for " << row.surface_id
+              << " " << row.canonical_name << ": expected "
+              << row.runtime_evidence_kind << "=" << row.runtime_evidence_id << '\n';
+    for (const auto& evidence : result.api_result.evidence) {
+      std::cerr << "  evidence " << evidence.evidence_kind << "="
+                << evidence.evidence_id << '\n';
+    }
+  }
   Require(HasEvidence(result.api_result, row.runtime_evidence_kind, row.runtime_evidence_id),
           "SBSFC-077 runtime evidence missing");
+  if (row.operation_id == "extensibility.invoke_udr_package") {
+    Require(HasEvidence(result.api_result, "dynamic_sbsql_to_sblr_uuid", "true"),
+            "SBSFC-077 dynamic SQL UDR did not prove SBLR/UUID generation");
+    Require(HasEvidence(result.api_result, "generated_sblr_uuid_revalidation_required", "true"),
+            "SBSFC-077 dynamic SQL UDR did not require SBLR/UUID revalidation");
+    Require(HasEvidence(result.api_result, "source_sql_to_udr_parse_only", "true"),
+            "SBSFC-077 dynamic SQL source was not constrained to UDR parse-only input");
+    Require(HasEvidence(result.api_result, "original_sql_reference_packet_only", "true"),
+            "SBSFC-077 original SQL text was not constrained to reference packet semantics");
+    Require(HasEvidence(result.api_result, "engine_sql_text_execution", "false"),
+            "SBSFC-077 engine accepted SQL text execution authority");
+    Require(HasEvidence(result.api_result, "engine_accepts_revalidated_sblr_uuid_only", "true"),
+            "SBSFC-077 engine did not prove revalidated SBLR/UUID-only execution");
+  }
   if (row.operation_id == "filespace.delete_physical") {
     Require(HasEvidence(result.api_result, "physical_file_removed", "true"),
             "SBSFC-077 physical delete removal evidence missing");

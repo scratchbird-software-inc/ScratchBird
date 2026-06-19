@@ -1593,6 +1593,11 @@ const char* SysInformationSourceKindName(SysInformationSourceKind source_kind) {
     case SysInformationSourceKind::agent_action: return "agent_action";
     case SysInformationSourceKind::agent_evidence: return "agent_evidence";
     case SysInformationSourceKind::storage_agent_state: return "storage_agent_state";
+    case SysInformationSourceKind::ipar_agent_lifecycle: return "ipar_agent_lifecycle";
+    case SysInformationSourceKind::ipar_metric_counter: return "ipar_metric_counter";
+    case SysInformationSourceKind::ipar_telemetry_control: return "ipar_telemetry_control";
+    case SysInformationSourceKind::ipar_slow_path_reason: return "ipar_slow_path_reason";
+    case SysInformationSourceKind::ipar_contention_quota: return "ipar_contention_quota";
   }
   return "unknown";
 }
@@ -2021,6 +2026,131 @@ const std::vector<SysInformationProjectionDefinition>& BuiltinSysInformationProj
                  "storage_agents",
                  {"filespace_uuid", "readiness_state"},
                  "Filespace shrink readiness projection with blocker payload redacted."),
+      Definition("sys.ipar.agent_lifecycle",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("runtime_id", "text"),
+                  Column("source_kind", "text"),
+                  Column("lifecycle_state", "text"),
+                  Column("idle_state", "text"),
+                  Column("started", "yes_no"),
+                  Column("stopping", "yes_no"),
+                  Column("worker_thread_count", "uint64"),
+                  Column("background_worker_slots", "uint64"),
+                  Column("foreground_reserved_capacity", "uint64"),
+                  Column("worker_wake_policy", "text", true),
+                  Column("scheduler_ticks", "uint64"),
+                  Column("total_worker_ticks", "uint64"),
+                  Column("total_actions_accepted", "uint64"),
+                  Column("total_actions_refused", "uint64"),
+                  Column("total_actions_failed", "uint64"),
+                  Column("scheduled_worker_count", "uint64"),
+                  Column("min_worker_ticks", "uint64"),
+                  Column("max_worker_ticks", "uint64"),
+                  Column("starvation_events", "uint64"),
+                  Column("last_diagnostic_agent_type_id", "text", true),
+                  Column("last_diagnostic_action", "text", true),
+                  Column("last_diagnostic_outcome", "text", true),
+                  Column("last_diagnostic_code", "text", true),
+                  Column("last_diagnostic_detail", "text", true),
+                  Column("durable_lease_count", "uint64"),
+                  Column("durable_action_backlog_count", "uint64"),
+                  Column("durable_replay_pending_action_count", "uint64"),
+                  Column("process_rss_kb", "uint64", true),
+                  Column("process_vsize_kb", "uint64", true),
+                  Column("source_state", "text")},
+                 {SysInformationSourceKind::ipar_agent_lifecycle,
+                  SysInformationSourceKind::agent_runtime,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "ipar_observability",
+                 {"runtime_id", "lifecycle_state", "idle_state"},
+                 "Driver-visible IPAR agent lifecycle and idle-state projection over server runtime snapshots."),
+      Definition("sys.ipar.metric_counters",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("metric_id", "text"),
+                  Column("metric_path", "text"),
+                  Column("metric_type", "text"),
+                  Column("metric_unit", "text"),
+                  Column("value", "uint64"),
+                  Column("sample_count", "uint64"),
+                  Column("label_summary", "text", true),
+                  Column("producer", "text", true),
+                  Column("source_state", "text")},
+                 {SysInformationSourceKind::ipar_metric_counter,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "ipar_observability",
+                 {"metric_id", "metric_path", "producer"},
+                 "Driver-visible IPAR metric counters supplied by real metric snapshots."),
+      Definition("sys.ipar.telemetry_controls",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("budget_id", "text"),
+                  Column("control_name", "text"),
+                  Column("metric_path", "text"),
+                  Column("configured_value", "uint64"),
+                  Column("observed_value", "uint64"),
+                  Column("sample_rate_per_mille", "uint64"),
+                  Column("persist_stride", "uint64"),
+                  Column("skipped_count", "uint64"),
+                  Column("dropped_metric_count", "uint64"),
+                  Column("overhead_budget_percent", "text"),
+                  Column("source_state", "text")},
+                 {SysInformationSourceKind::ipar_telemetry_control,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "ipar_observability",
+                 {"budget_id", "control_name", "metric_path"},
+                 "Driver-visible IPAR telemetry overhead and persistence control projection."),
+      Definition("sys.ipar.slow_path_reasons",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("metric_id", "text"),
+                  Column("statement_id", "text"),
+                  Column("chosen_path", "text"),
+                  Column("reason_code", "text"),
+                  Column("fallback_count", "uint64"),
+                  Column("validation_stage", "text"),
+                  Column("driver_visible_message", "text"),
+                  Column("diagnostic_code", "text", true),
+                  Column("sample_count", "uint64"),
+                  Column("source_state", "text")},
+                 {SysInformationSourceKind::ipar_slow_path_reason,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "ipar_observability",
+                 {"statement_id", "chosen_path", "reason_code"},
+                 "Driver-visible IPAR slow-path explanation rows with private details omitted."),
+      Definition("sys.ipar.contention_quota",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("row_id", "text"),
+                  Column("metric_id", "text"),
+                  Column("category", "text"),
+                  Column("subject", "text"),
+                  Column("metric_path", "text"),
+                  Column("metric_type", "text"),
+                  Column("metric_unit", "text"),
+                  Column("observed_value", "uint64"),
+                  Column("limit_value", "uint64"),
+                  Column("refusal_count", "uint64"),
+                  Column("wait_count", "uint64"),
+                  Column("queue_depth", "uint64"),
+                  Column("sample_count", "uint64"),
+                  Column("producer", "text", true),
+                  Column("source_kind", "text"),
+                  Column("source_ref", "text", true),
+                  Column("provenance", "text"),
+                  Column("diagnostic_code", "text", true),
+                  Column("source_state", "text")},
+                 {SysInformationSourceKind::ipar_contention_quota,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "ipar_observability",
+                 {"category", "subject", "source_kind", "source_ref"},
+                 "Driver-visible IPAR contention, quota, and cache rows backed by server observability sources."),
       Definition("sys.configuration.settings",
                  SysInformationProjectionFamily::catalog_readable,
                  {Column("setting_name", "text"),
@@ -2255,7 +2385,13 @@ SysInformationProjectionResult BuildSysInformationProjection(
     const std::vector<SysInformationAgentAuditSource>& agent_audit,
     const std::vector<SysInformationFilespaceCapacityAgentStateSource>& filespace_capacity_agent_state,
     const std::vector<SysInformationPageAllocationAgentStateSource>& page_allocation_agent_state,
-    const std::vector<SysInformationFilespaceShrinkReadinessSource>& filespace_shrink_readiness) {
+    const std::vector<SysInformationFilespaceShrinkReadinessSource>& filespace_shrink_readiness,
+    const std::vector<SysInformationDomainSource>& domains,
+    const std::vector<SysInformationIparAgentLifecycleSource>& ipar_agent_lifecycle,
+    const std::vector<SysInformationIparMetricCounterSource>& ipar_metric_counters,
+    const std::vector<SysInformationIparTelemetryControlSource>& ipar_telemetry_controls,
+    const std::vector<SysInformationIparSlowPathReasonSource>& ipar_slow_path_reasons,
+    const std::vector<SysInformationIparContentionQuotaSource>& ipar_contention_quota) {
   if (SysInformationPathIsClusterScoped(view_path)) {
     return Failure(kSysInformationDiagnosticClusterScopeForbidden, std::string(view_path));
   }
@@ -2418,12 +2554,40 @@ SysInformationProjectionResult BuildSysInformationProjection(
     return result;
   }
 
-  if (canonical_view_path == "sys.information.parameters") {
-    return result;
-  }
+	  if (canonical_view_path == "sys.information.parameters") {
+	    return result;
+	  }
 
-  if (canonical_view_path == "sys.schemas") {
-    for (const auto& object : catalog_objects) {
+	  if (canonical_view_path == "sys.information.sequences") {
+	    for (const auto& object : catalog_objects) {
+	      if (object.object_class != "sequence" || !ObjectVisible(object, context)) { continue; }
+	      bool found_sequence = false;
+	      bool found_schema = false;
+	      const std::string sequence_name = ObjectDisplayName(
+	          resolver_names, context, object, &found_sequence);
+	      const std::string schema_name = SchemaDisplayName(
+	          resolver_names, context, object, &found_schema);
+	      if (!found_sequence || !found_schema) {
+	        if (context.strict_mode) {
+	          return Failure(kSysInformationDiagnosticNameNotFound,
+	                         found_sequence ? object.schema_uuid : object.object_uuid);
+	        }
+	        continue;
+	      }
+	      SysInformationProjectionRow row;
+	      AddField(&row, "sequence_schema", schema_name);
+	      AddField(&row, "sequence_name", sequence_name);
+	      AddField(&row, "data_type", "int64");
+	      AddField(&row, "start_value", "");
+	      AddField(&row, "increment", "");
+	      AddField(&row, "cycle_option", "");
+	      result.rows.push_back(std::move(row));
+	    }
+	    return result;
+	  }
+
+	  if (canonical_view_path == "sys.schemas") {
+	    for (const auto& object : catalog_objects) {
       if (object.object_class != "schema" || !ObjectVisible(object, context)) { continue; }
       bool found_schema = false;
       const std::string schema_name = SelectResolverDisplayName(
@@ -2497,6 +2661,38 @@ SysInformationProjectionResult BuildSysInformationProjection(
     return result;
   }
 
+  if (canonical_view_path == "sys.catalog.domain_descriptor") {
+    for (const auto& domain : domains) {
+      if (!ProjectionSourceVisible(domain.hidden, domain.catalog_generation_id, context)) {
+        continue;
+      }
+      const auto* object = FindObject(catalog_objects, domain.domain_uuid, context);
+      if (object == nullptr || object->object_class != "domain") {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, domain.domain_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "row_uuid", domain.row_uuid.empty() ? domain.domain_uuid : domain.row_uuid);
+      AddField(&row, "domain_uuid", domain.domain_uuid);
+      AddField(&row, "schema_uuid", domain.schema_uuid);
+      AddField(&row, "source_type_name", domain.source_type_name);
+      AddField(&row, "base_type_name", domain.base_type_name);
+      AddField(&row, "domain_kind", domain.domain_kind.empty() ? "scalar" : domain.domain_kind);
+      AddField(&row, "nullable", domain.nullable);
+      AddField(&row, "default_expression_envelope", domain.default_expression_envelope);
+      AddField(&row, "check_constraint_envelope", domain.check_constraint_envelope);
+      AddField(&row, "catalog_generation_id", std::to_string(domain.catalog_generation_id));
+      AddField(&row,
+               "created_local_transaction_id",
+               std::to_string(domain.created_local_transaction_id));
+      AddField(&row, "lifecycle_state", "active");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
   if (canonical_view_path == "sys.information.enabled_roles") {
     const auto role_uuids = EffectiveRoleUuids(context);
     for (std::size_t index = 0; index < role_uuids.size(); ++index) {
@@ -2527,6 +2723,73 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "grantee", PrincipalDisplayName(context));
       AddField(&row, "role_name", role_name);
       AddField(&row, "is_grantable", "NO");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.information.domains" ||
+      canonical_view_path == "sys.catalog_readable.domains") {
+    for (const auto& domain : domains) {
+      if (!ProjectionSourceVisible(domain.hidden, domain.catalog_generation_id, context)) {
+        continue;
+      }
+      const auto* object = FindObject(catalog_objects, domain.domain_uuid, context);
+      if (object == nullptr || object->object_class != "domain") { continue; }
+      bool found_name = false;
+      bool found_schema = false;
+      const std::string domain_name =
+          ObjectDisplayName(resolver_names, context, *object, &found_name);
+      const std::string schema_name =
+          SchemaDisplayName(resolver_names, context, *object, &found_schema);
+      if (!found_name || !found_schema) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound,
+                         found_name ? object->schema_uuid : object->object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      if (canonical_view_path == "sys.information.domains") {
+        AddField(&row, "domain_catalog", context.catalog_display_name);
+        AddField(&row, "domain_schema", schema_name);
+        AddField(&row, "domain_name", domain_name);
+        AddField(&row, "data_type", domain.base_type_name);
+      } else {
+        AddField(&row, "domain_path", domain.source_type_name);
+        AddField(&row, "domain_name", domain_name);
+        AddField(&row, "base_type_name", domain.base_type_name);
+        AddField(&row, "domain_kind", domain.domain_kind.empty() ? "scalar" : domain.domain_kind);
+        AddField(&row, "status", "active");
+        AddField(&row, "comment_text",
+                 SelectCommentText(comments, context, domain.domain_uuid, "domain"));
+        AddField(&row, "visibility_state", "visible");
+      }
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.information.domain_constraints") {
+    for (const auto& domain : domains) {
+      if (domain.check_constraint_envelope.empty() ||
+          !ProjectionSourceVisible(domain.hidden, domain.catalog_generation_id, context)) {
+        continue;
+      }
+      const auto* object = FindObject(catalog_objects, domain.domain_uuid, context);
+      if (object == nullptr || object->object_class != "domain") { continue; }
+      bool found_name = false;
+      bool found_schema = false;
+      const std::string domain_name =
+          ObjectDisplayName(resolver_names, context, *object, &found_name);
+      const std::string schema_name =
+          SchemaDisplayName(resolver_names, context, *object, &found_schema);
+      if (!found_name || !found_schema) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row, "constraint_schema", schema_name);
+      AddField(&row, "constraint_name", domain_name + "_check");
+      AddField(&row, "domain_schema", schema_name);
+      AddField(&row, "domain_name", domain_name);
       result.rows.push_back(std::move(row));
     }
     return result;
@@ -3029,6 +3292,162 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "scan_generation", readiness.scan_generation);
       AddField(&row, "evidence_uuid",
                VisibleUuid(readiness.evidence_uuid, "<redacted:evidence_uuid>"));
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.ipar.agent_lifecycle") {
+    for (const auto& lifecycle : ipar_agent_lifecycle) {
+      if (!ProjectionSourceVisible(lifecycle.hidden, lifecycle.catalog_generation_id, context)) {
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "runtime_id", StableRef(lifecycle.runtime_id, "server_agent_runtime"));
+      AddField(&row, "source_kind", lifecycle.source_kind);
+      AddField(&row, "lifecycle_state", lifecycle.lifecycle_state);
+      AddField(&row, "idle_state", lifecycle.idle_state);
+      AddField(&row, "started", lifecycle.started ? "YES" : "NO");
+      AddField(&row, "stopping", lifecycle.stopping ? "YES" : "NO");
+      AddField(&row, "worker_thread_count", std::to_string(lifecycle.worker_thread_count));
+      AddField(&row, "background_worker_slots", std::to_string(lifecycle.background_worker_slots));
+      AddField(&row,
+               "foreground_reserved_capacity",
+               std::to_string(lifecycle.foreground_reserved_capacity));
+      AddField(&row, "worker_wake_policy", lifecycle.worker_wake_policy);
+      AddField(&row, "scheduler_ticks", std::to_string(lifecycle.scheduler_ticks));
+      AddField(&row, "total_worker_ticks", std::to_string(lifecycle.total_worker_ticks));
+      AddField(&row,
+               "total_actions_accepted",
+               std::to_string(lifecycle.total_actions_accepted));
+      AddField(&row,
+               "total_actions_refused",
+               std::to_string(lifecycle.total_actions_refused));
+      AddField(&row,
+               "total_actions_failed",
+               std::to_string(lifecycle.total_actions_failed));
+      AddField(&row,
+               "scheduled_worker_count",
+               std::to_string(lifecycle.scheduled_worker_count));
+      AddField(&row, "min_worker_ticks", std::to_string(lifecycle.min_worker_ticks));
+      AddField(&row, "max_worker_ticks", std::to_string(lifecycle.max_worker_ticks));
+      AddField(&row, "starvation_events", std::to_string(lifecycle.starvation_events));
+      AddField(&row,
+               "last_diagnostic_agent_type_id",
+               lifecycle.last_diagnostic_agent_type_id);
+      AddField(&row, "last_diagnostic_action", lifecycle.last_diagnostic_action);
+      AddField(&row,
+               "last_diagnostic_outcome",
+               lifecycle.last_diagnostic_outcome);
+      AddField(&row, "last_diagnostic_code", lifecycle.last_diagnostic_code);
+      AddField(&row, "last_diagnostic_detail", lifecycle.last_diagnostic_detail);
+      AddField(&row, "durable_lease_count", std::to_string(lifecycle.durable_lease_count));
+      AddField(&row,
+               "durable_action_backlog_count",
+               std::to_string(lifecycle.durable_action_backlog_count));
+      AddField(&row,
+               "durable_replay_pending_action_count",
+               std::to_string(lifecycle.durable_replay_pending_action_count));
+      AddField(&row, "process_rss_kb", std::to_string(lifecycle.process_rss_kb));
+      AddField(&row, "process_vsize_kb", std::to_string(lifecycle.process_vsize_kb));
+      AddField(&row, "source_state", lifecycle.source_state);
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.ipar.metric_counters") {
+    for (const auto& counter : ipar_metric_counters) {
+      if (!ProjectionSourceVisible(counter.hidden, counter.catalog_generation_id, context)) {
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "metric_id", counter.metric_id);
+      AddField(&row, "metric_path", counter.metric_path);
+      AddField(&row, "metric_type", counter.metric_type);
+      AddField(&row, "metric_unit", counter.metric_unit);
+      AddField(&row, "value", std::to_string(counter.value));
+      AddField(&row, "sample_count", std::to_string(counter.sample_count));
+      AddField(&row, "label_summary", counter.label_summary);
+      AddField(&row, "producer", counter.producer);
+      AddField(&row, "source_state", counter.source_state);
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.ipar.telemetry_controls") {
+    for (const auto& control : ipar_telemetry_controls) {
+      if (!ProjectionSourceVisible(control.hidden, control.catalog_generation_id, context)) {
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "budget_id", control.budget_id);
+      AddField(&row, "control_name", control.control_name);
+      AddField(&row, "metric_path", control.metric_path);
+      AddField(&row, "configured_value", std::to_string(control.configured_value));
+      AddField(&row, "observed_value", std::to_string(control.observed_value));
+      AddField(&row,
+               "sample_rate_per_mille",
+               std::to_string(control.sample_rate_per_mille));
+      AddField(&row, "persist_stride", std::to_string(control.persist_stride));
+      AddField(&row, "skipped_count", std::to_string(control.skipped_count));
+      AddField(&row,
+               "dropped_metric_count",
+               std::to_string(control.dropped_metric_count));
+      AddField(&row, "overhead_budget_percent", control.overhead_budget_percent);
+      AddField(&row, "source_state", control.source_state);
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.ipar.slow_path_reasons") {
+    for (const auto& reason : ipar_slow_path_reasons) {
+      if (!ProjectionSourceVisible(reason.hidden, reason.catalog_generation_id, context)) {
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "metric_id", reason.metric_id);
+      AddField(&row, "statement_id", reason.statement_id);
+      AddField(&row, "chosen_path", reason.chosen_path);
+      AddField(&row, "reason_code", reason.reason_code);
+      AddField(&row, "fallback_count", std::to_string(reason.fallback_count));
+      AddField(&row, "validation_stage", reason.validation_stage);
+      AddField(&row, "driver_visible_message", reason.driver_visible_message);
+      AddField(&row, "diagnostic_code", reason.diagnostic_code);
+      AddField(&row, "sample_count", std::to_string(reason.sample_count));
+      AddField(&row, "source_state", reason.source_state);
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.ipar.contention_quota") {
+    for (const auto& source : ipar_contention_quota) {
+      if (!ProjectionSourceVisible(source.hidden, source.catalog_generation_id, context)) {
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "row_id", source.row_id);
+      AddField(&row, "metric_id", source.metric_id);
+      AddField(&row, "category", source.category);
+      AddField(&row, "subject", source.subject);
+      AddField(&row, "metric_path", source.metric_path);
+      AddField(&row, "metric_type", source.metric_type);
+      AddField(&row, "metric_unit", source.metric_unit);
+      AddField(&row, "observed_value", std::to_string(source.observed_value));
+      AddField(&row, "limit_value", std::to_string(source.limit_value));
+      AddField(&row, "refusal_count", std::to_string(source.refusal_count));
+      AddField(&row, "wait_count", std::to_string(source.wait_count));
+      AddField(&row, "queue_depth", std::to_string(source.queue_depth));
+      AddField(&row, "sample_count", std::to_string(source.sample_count));
+      AddField(&row, "producer", source.producer);
+      AddField(&row, "source_kind", source.source_kind);
+      AddField(&row, "source_ref", source.source_ref);
+      AddField(&row, "provenance", source.provenance);
+      AddField(&row, "diagnostic_code", source.diagnostic_code);
+      AddField(&row, "source_state", source.source_state);
       result.rows.push_back(std::move(row));
     }
     return result;

@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "sblr_sequence_runtime.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -245,10 +246,50 @@ std::optional<EngineApiDiagnostic> ValidateImmediateTiming(
                               "none");
 }
 
-std::optional<std::string> MaterializeDefault(const std::string& envelope) {
+scratchbird::engine::sblr::SblrExecutionContext ConstraintSblrContext(
+    const EngineRequestContext& context) {
+  scratchbird::engine::sblr::SblrExecutionContext out;
+  out.database_path = context.database_path;
+  out.database_uuid = context.database_uuid.canonical;
+  out.cluster_uuid = context.cluster_uuid.canonical;
+  out.node_uuid = context.node_uuid.canonical;
+  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.local_transaction_id = context.local_transaction_id;
+  out.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  out.transaction_isolation_level = context.transaction_isolation_level;
+  out.statement_uuid = context.statement_uuid.canonical;
+  out.session_uuid = context.session_uuid.canonical;
+  out.user_uuid = context.principal_uuid.canonical;
+  out.current_role_uuid = context.current_role_uuid.canonical;
+  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_timestamp = context.statement_timestamp;
+  out.transaction_timestamp = context.transaction_timestamp;
+  out.current_timestamp = context.current_timestamp;
+  out.current_monotonic_ns = context.current_monotonic_ns;
+  out.security_context_present = context.security_context_present;
+  out.transaction_context_present =
+      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+  out.cluster_authority_available = context.cluster_authority_available;
+  out.read_only_mode = context.read_only_mode;
+  return out;
+}
+
+std::optional<std::string> MaterializeDefault(const EngineRequestContext& context,
+                                              const std::string& envelope) {
   if (envelope.empty()) { return std::nullopt; }
   if (StartsWith(envelope, "literal:")) { return envelope.substr(8); }
   if (StartsWith(envelope, "value:")) { return envelope.substr(6); }
+  if (StartsWith(envelope, "sequence_next:")) {
+    scratchbird::engine::sblr::SblrSequenceRequest request;
+    request.context = ConstraintSblrContext(context);
+    request.sequence_uuid = LowerAscii(envelope.substr(14));
+    request.result_descriptor_id = "int64";
+    const auto result = scratchbird::engine::sblr::NextSblrSequenceValue(
+        &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), request);
+    if (!result.ok() || result.scalar_values.empty()) return std::nullopt;
+    return result.scalar_values.front().encoded_value;
+  }
   const std::string lower = LowerAscii(envelope);
   if (lower == "null" || envelope == "<NULL>") { return std::string("<NULL>"); }
   if (!StartsWith(lower, "sblr:") && !StartsWith(lower, "sblr_expression:") &&
@@ -872,23 +913,20 @@ std::optional<std::string> FindConstraintDmlProofPayload(
   }
   const std::string body = ProofBody(proof_kind, proof_identity);
   const auto current_context = MakeProofContext(context);
+  const std::string full_key = ProofFullKey(body, current_context);
+  if (const auto payload = cache->validation_proof_payloads.find(full_key);
+      payload != cache->validation_proof_payloads.end()) {
+    if (evidence != nullptr) {
+      evidence->push_back({"constraint_proof_hit",
+                           ProofEvidenceId(proof_kind, proof_identity)});
+    }
+    return payload->second;
+  }
   bool saw_body = false;
   std::string mismatch = "context_mismatch";
   for (const auto& [stored_body, stored_context] : cache->validation_proofs) {
     if (stored_body != body) { continue; }
     saw_body = true;
-    if (SameProofContext(stored_context, current_context)) {
-      if (evidence != nullptr) {
-        evidence->push_back({"constraint_proof_hit",
-                             ProofEvidenceId(proof_kind, proof_identity)});
-      }
-      const auto payload = cache->validation_proof_payloads.find(
-          ProofFullKey(body, stored_context));
-      if (payload != cache->validation_proof_payloads.end()) {
-        return payload->second;
-      }
-      return std::string{};
-    }
     mismatch = FirstProofContextMismatch(stored_context, current_context);
   }
   if (saw_body && evidence != nullptr) {
@@ -909,13 +947,13 @@ void StoreConstraintDmlProof(
   }
   const std::string body = ProofBody(proof_kind, proof_identity);
   const auto proof_context = MakeProofContext(context);
-  for (const auto& [stored_body, stored_context] : cache->validation_proofs) {
-    if (stored_body == body && SameProofContext(stored_context, proof_context)) {
-      return;
-    }
+  const std::string full_key = ProofFullKey(body, proof_context);
+  if (cache->validation_proof_payloads.find(full_key) !=
+      cache->validation_proof_payloads.end()) {
+    return;
   }
   cache->validation_proofs.push_back({body, proof_context});
-  cache->validation_proof_payloads[ProofFullKey(body, proof_context)] = payload;
+  cache->validation_proof_payloads[full_key] = payload;
   if (evidence != nullptr) {
     evidence->push_back({"constraint_proof_store",
                          ProofEvidenceId(proof_kind, proof_identity)});
@@ -975,7 +1013,7 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
       result.diagnostic = *timing;
       return result;
     }
-    const auto materialized = MaterializeDefault(default_envelope);
+    const auto materialized = MaterializeDefault(context, default_envelope);
     if (!materialized.has_value()) {
       result.diagnostic = ConstraintDiagnostic("CLI.NO_ENFORCEMENT_PATH",
                                                "constraint.no_enforcement_path",
@@ -1339,16 +1377,22 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
       continue;
     }
     CrudTableRecord commit_table = source_table;
+    bool has_deferred_constraints = false;
     for (auto& [column_name, descriptor] : commit_table.columns) {
       (void)column_name;
       auto fields = DescriptorFields(descriptor);
       if (!TimingRequiresDeferredStore(fields)) { continue; }
+      has_deferred_constraints = true;
       fields.erase("deferrable");
       fields.erase("initially_deferred");
       fields.erase("enforcement_timing");
       fields.erase("timing");
       descriptor = DescriptorText(fields);
     }
+    if (!has_deferred_constraints) {
+      continue;
+    }
+    ConstraintDmlValidationCache commit_cache;
     for (const auto& row : VisibleCrudRowsForContext(state, commit_table.table_uuid, context)) {
       if (row.creator_tx != context.local_transaction_id) { continue; }
       const auto validation = ValidateImmediateRowConstraints(context,
@@ -1356,7 +1400,8 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
                                                               commit_table,
                                                               row.row_uuid,
                                                               row.values,
-                                                              "commit");
+                                                              "commit",
+                                                              &commit_cache);
       if (!validation.ok) { return validation.diagnostic; }
     }
   }

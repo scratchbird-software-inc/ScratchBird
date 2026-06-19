@@ -285,6 +285,54 @@ struct FilespaceClassDecision {
   }
 };
 
+struct FilespacePlacementBinding {
+  FilespaceObjectClass object_class = FilespaceObjectClass::unspecified;
+  std::string page_family;
+  TypedUuid filespace_uuid;
+  bool preallocate_before_use = false;
+  u64 preallocate_page_count = 0;
+};
+
+struct FilespacePlacementPolicy {
+  bool present = false;
+  bool require_explicit_binding = true;
+  bool require_online = true;
+  bool require_writable = true;
+  u64 default_preallocate_page_count = 0;
+  std::vector<FilespacePlacementBinding> bindings;
+};
+
+struct FilespacePlacementRequest {
+  TypedUuid database_uuid;
+  TypedUuid preferred_filespace_uuid;
+  TypedUuid owner_object_uuid;
+  TypedUuid policy_uuid;
+  FilespaceObjectClass object_class = FilespaceObjectClass::unspecified;
+  std::string page_family;
+  u32 page_size = 0;
+  bool require_preallocation = false;
+  u64 requested_preallocation_pages = 0;
+  std::string reason;
+  FilespacePlacementPolicy policy;
+};
+
+struct FilespacePlacementDecision {
+  Status status;
+  bool admitted = false;
+  FilespaceDescriptor descriptor;
+  FilespaceObjectClass object_class = FilespaceObjectClass::unspecified;
+  FilespaceClass filespace_class = FilespaceClass::unknown;
+  FilespaceRole recommended_role = FilespaceRole::unknown;
+  bool preallocation_required = false;
+  u64 preallocation_page_count = 0;
+  std::vector<std::string> evidence;
+  DiagnosticRecord diagnostic;
+
+  bool ok() const {
+    return status.ok() && admitted;
+  }
+};
+
 struct FilespaceSerializeResult {
   Status status;
   std::string payload;
@@ -359,6 +407,8 @@ const char* FilespaceClassName(FilespaceClass filespace_class);
 u64 ActivePinCount(const FilespaceDescriptor& descriptor);
 FilespaceObjectClass DefaultFilespaceObjectClassForPageFamily(const std::string& page_family);
 FilespaceClassDecision ResolveFilespaceClass(const FilespaceClassRequest& request);
+FilespacePlacementDecision ResolveFilespacePlacement(const FilespaceRegistry& registry,
+                                                     const FilespacePlacementRequest& request);
 FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                                                  const FilespaceOperationRequest& request);
 FilespaceSerializeResult SerializeFilespaceRegistry(const FilespaceRegistry& registry);

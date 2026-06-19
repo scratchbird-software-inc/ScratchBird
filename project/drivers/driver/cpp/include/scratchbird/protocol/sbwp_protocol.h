@@ -135,6 +135,18 @@ constexpr uint32_t kQueryFlagReturnSblr = 0x10;
 constexpr uint32_t kQueryFlagNoCache = 0x20;
 constexpr uint32_t kQueryFlagAutocommit = 0x40;
 
+constexpr uint8_t kTxnFinalityPayloadVersion = 1;
+constexpr uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
+constexpr uint16_t kTxnCommitFlagCallerAcknowledgedRetryBoundary = 0x0002;
+constexpr uint16_t kTxnCommitFlagStatementHasSideEffects = 0x0004;
+
+constexpr uint16_t kTxnFinalityFlagEngineKnown = 0x0001;
+constexpr uint16_t kTxnFinalityFlagRetryAllowed = 0x0002;
+constexpr uint16_t kTxnFinalityFlagRetryRefused = 0x0004;
+constexpr uint16_t kTxnFinalityFlagSideEffectRetryRefused = 0x0008;
+constexpr uint16_t kTxnFinalityFlagSameIdempotencyKeyReplayable = 0x0010;
+constexpr uint16_t kTxnFinalityFlagPostInventorySecondaryFailure = 0x0020;
+
 constexpr uint8_t kFormatText = 0;
 constexpr uint8_t kFormatBinary = 1;
 
@@ -303,6 +315,66 @@ struct SblrCompiled {
     std::vector<uint8_t> bytecode;
 };
 
+struct CopyInResponse {
+    uint8_t format{kFormatText};
+    uint32_t window_bytes{0};
+};
+
+struct CopyOutResponse {
+    uint8_t format{kFormatText};
+    uint16_t column_count{0};
+    std::vector<uint32_t> column_formats;
+};
+
+struct CopyBothResponse {
+    uint8_t format{kFormatText};
+    uint32_t window_bytes{0};
+};
+
+struct CopyData {
+    std::vector<uint8_t> data;
+};
+
+struct CopyFailInfo {
+    std::string error_message;
+};
+
+enum class TxnFinalityState : uint8_t {
+    Unknown = 0,
+    Committed = 1,
+    RolledBack = 2,
+    Refused = 3,
+    PostInventorySecondaryFailure = 4,
+    NotFound = 5
+};
+
+struct TxnCommitRequest {
+    uint8_t legacy_flags{0};
+    uint16_t contract_flags{0};
+    std::array<uint8_t, 16> idempotency_key{};
+    uint64_t request_fingerprint{0};
+    uint64_t expected_txn_id{0};
+};
+
+struct TxnFinalityQuery {
+    uint16_t flags{0};
+    std::array<uint8_t, 16> idempotency_key{};
+    std::array<uint8_t, 16> finality_token{};
+    uint64_t expected_txn_id{0};
+};
+
+struct TxnFinalityStatus {
+    TxnFinalityState state{TxnFinalityState::Unknown};
+    uint16_t flags{0};
+    std::array<uint8_t, 16> idempotency_key{};
+    std::array<uint8_t, 16> finality_token{};
+    uint64_t request_fingerprint{0};
+    uint64_t original_txn_id{0};
+    uint64_t replacement_txn_id{0};
+    std::string diagnostic_code;
+    std::string detail;
+};
+
 std::vector<uint8_t> encodeMessage(const MessageHeader& header,
                                    const std::vector<uint8_t>& payload);
 core::Status decodeHeader(const std::vector<uint8_t>& header_bytes,
@@ -344,7 +416,10 @@ std::vector<uint8_t> buildTxnBeginPayload(uint16_t flags,
                                           uint32_t timeout_ms,
                                           uint8_t read_committed_mode = 0);
 std::vector<uint8_t> buildTxnCommitPayload(uint8_t flags);
+std::vector<uint8_t> buildTxnCommitPayload(const TxnCommitRequest& request);
 std::vector<uint8_t> buildTxnRollbackPayload(uint8_t flags);
+std::vector<uint8_t> buildTxnFinalityQueryPayload(const TxnFinalityQuery& query);
+std::vector<uint8_t> buildTxnFinalityStatusPayload(const TxnFinalityStatus& status);
 std::vector<uint8_t> buildTxnSavepointPayload(const std::string& name);
 std::vector<uint8_t> buildTxnReleasePayload(const std::string& name);
 std::vector<uint8_t> buildTxnRollbackToPayload(const std::string& name);
@@ -358,6 +433,13 @@ std::vector<uint8_t> buildAttachDetachPayload();
 std::vector<uint8_t> buildAttachListPayload();
 std::vector<uint8_t> buildClosePayload(uint8_t close_type, const std::string& name);
 std::vector<uint8_t> buildCancelPayload(uint32_t cancel_type, uint32_t target_seq);
+std::vector<uint8_t> buildCopyDataPayload(const std::vector<uint8_t>& data);
+std::vector<uint8_t> buildCopyDonePayload();
+std::vector<uint8_t> buildCopyFailPayload(const std::string& error_message);
+std::vector<uint8_t> buildCopyInResponsePayload(uint8_t format, uint32_t window_bytes);
+std::vector<uint8_t> buildCopyOutResponsePayload(uint8_t format,
+                                                 const std::vector<uint32_t>& column_formats);
+std::vector<uint8_t> buildCopyBothResponsePayload(uint8_t format, uint32_t window_bytes);
 
 core::Status parseAuthRequest(const std::vector<uint8_t>& payload,
                               AuthMethod& method,
@@ -400,6 +482,15 @@ core::Status parseCommandComplete(const std::vector<uint8_t>& payload,
                                   uint64_t& last_id,
                                   std::string& tag,
                                   core::ErrorContext* ctx = nullptr);
+core::Status parseTxnCommitRequest(const std::vector<uint8_t>& payload,
+                                   TxnCommitRequest& request,
+                                   core::ErrorContext* ctx = nullptr);
+core::Status parseTxnFinalityQuery(const std::vector<uint8_t>& payload,
+                                   TxnFinalityQuery& query,
+                                   core::ErrorContext* ctx = nullptr);
+core::Status parseTxnFinalityStatus(const std::vector<uint8_t>& payload,
+                                    TxnFinalityStatus& status,
+                                    core::ErrorContext* ctx = nullptr);
 core::Status parseNotification(const std::vector<uint8_t>& payload,
                                Notification& notice,
                                core::ErrorContext* ctx = nullptr);
@@ -409,6 +500,21 @@ core::Status parseQueryPlan(const std::vector<uint8_t>& payload,
 core::Status parseSblrCompiled(const std::vector<uint8_t>& payload,
                                SblrCompiled& compiled,
                                core::ErrorContext* ctx = nullptr);
+core::Status parseCopyInResponse(const std::vector<uint8_t>& payload,
+                                 CopyInResponse& response,
+                                 core::ErrorContext* ctx = nullptr);
+core::Status parseCopyOutResponse(const std::vector<uint8_t>& payload,
+                                  CopyOutResponse& response,
+                                  core::ErrorContext* ctx = nullptr);
+core::Status parseCopyBothResponse(const std::vector<uint8_t>& payload,
+                                   CopyBothResponse& response,
+                                   core::ErrorContext* ctx = nullptr);
+core::Status parseCopyData(const std::vector<uint8_t>& payload,
+                           CopyData& data,
+                           core::ErrorContext* ctx = nullptr);
+core::Status parseCopyFail(const std::vector<uint8_t>& payload,
+                           CopyFailInfo& fail,
+                           core::ErrorContext* ctx = nullptr);
 core::Status parseErrorMessage(const std::vector<uint8_t>& payload,
                                std::string& severity,
                                std::string& sqlstate,

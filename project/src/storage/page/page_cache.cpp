@@ -51,11 +51,12 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
 std::size_t ContextIndex(PageCacheIoContext context) {
   switch (context) {
     case PageCacheIoContext::normal: return 0;
-    case PageCacheIoContext::bulk_read: return 1;
-    case PageCacheIoContext::bulk_write: return 2;
-    case PageCacheIoContext::vacuum_cleanup: return 3;
-    case PageCacheIoContext::index_build: return 4;
-    case PageCacheIoContext::strict_bulk_load: return 5;
+    case PageCacheIoContext::index_read: return 1;
+    case PageCacheIoContext::bulk_read: return 2;
+    case PageCacheIoContext::bulk_write: return 3;
+    case PageCacheIoContext::vacuum_cleanup: return 4;
+    case PageCacheIoContext::index_build: return 5;
+    case PageCacheIoContext::strict_bulk_load: return 6;
   }
   return 0;
 }
@@ -63,17 +64,37 @@ std::size_t ContextIndex(PageCacheIoContext context) {
 PageCacheIoContext ContextFromIndex(std::size_t index) {
   switch (index) {
     case 0: return PageCacheIoContext::normal;
-    case 1: return PageCacheIoContext::bulk_read;
-    case 2: return PageCacheIoContext::bulk_write;
-    case 3: return PageCacheIoContext::vacuum_cleanup;
-    case 4: return PageCacheIoContext::index_build;
-    case 5: return PageCacheIoContext::strict_bulk_load;
+    case 1: return PageCacheIoContext::index_read;
+    case 2: return PageCacheIoContext::bulk_read;
+    case 3: return PageCacheIoContext::bulk_write;
+    case 4: return PageCacheIoContext::vacuum_cleanup;
+    case 5: return PageCacheIoContext::index_build;
+    case 6: return PageCacheIoContext::strict_bulk_load;
   }
   return PageCacheIoContext::normal;
 }
 
 bool IsBulkContext(PageCacheIoContext context) {
-  return context != PageCacheIoContext::normal;
+  return context != PageCacheIoContext::normal &&
+         context != PageCacheIoContext::index_read;
+}
+
+bool IsReadResidencyContext(PageCacheIoContext context) {
+  return context == PageCacheIoContext::normal ||
+         context == PageCacheIoContext::index_read;
+}
+
+bool IsIndexPageType(PageType page_type) {
+  return page_type == PageType::index_btree ||
+         page_type == PageType::index_btree_root ||
+         page_type == PageType::index_btree_branch ||
+         page_type == PageType::index_btree_leaf ||
+         page_type == PageType::index_btree_posting;
+}
+
+PageCacheIoContext DefaultContextForEntry(const PageCacheEntry& entry) {
+  return IsIndexPageType(entry.page_type) ? PageCacheIoContext::index_read
+                                          : PageCacheIoContext::normal;
 }
 
 PageCacheResult Error(std::string diagnostic_code, std::string message_key, std::string detail = {}) {
@@ -349,9 +370,9 @@ bool Evictable(const PageCacheEntry& entry, const PageCachePolicy& policy) {
          (!entry.dirty || policy.allow_dirty_eviction);
 }
 
-bool ProtectedNormalHotPage(const PageCacheEntry& entry, PageCacheIoContext requesting_context) {
+bool ProtectedHotReadPage(const PageCacheEntry& entry, PageCacheIoContext requesting_context) {
   return IsBulkContext(requesting_context) &&
-         entry.io_context == PageCacheIoContext::normal &&
+         IsReadResidencyContext(entry.io_context) &&
          entry.cache_hot;
 }
 
@@ -382,7 +403,7 @@ PageCacheEntry* SelectEvictionCandidate(PageCacheLedger* ledger,
     if (required_context != nullptr && entry.io_context != *required_context) {
       continue;
     }
-    if (ProtectedNormalHotPage(entry, requesting_context)) {
+    if (ProtectedHotReadPage(entry, requesting_context)) {
       if (protected_normal_hot_skips != nullptr) {
         ++(*protected_normal_hot_skips);
       }
@@ -686,6 +707,7 @@ PageCacheLifecycleResult MakeLifecycleInputError(const PageCacheLifecycleResult&
 const char* PageCacheIoContextName(PageCacheIoContext context) {
   switch (context) {
     case PageCacheIoContext::normal: return "normal";
+    case PageCacheIoContext::index_read: return "index_read";
     case PageCacheIoContext::bulk_read: return "bulk_read";
     case PageCacheIoContext::bulk_write: return "bulk_write";
     case PageCacheIoContext::vacuum_cleanup: return "vacuum_cleanup";
@@ -701,6 +723,10 @@ bool PageCacheIoContextFromName(std::string_view name, PageCacheIoContext* conte
   }
   if (name == "normal") {
     *context = PageCacheIoContext::normal;
+    return true;
+  }
+  if (name == "index_read") {
+    *context = PageCacheIoContext::index_read;
     return true;
   }
   if (name == "bulk_read") {
@@ -734,6 +760,8 @@ u64 PageCacheIoContextRingLimit(const PageCachePolicy& policy, PageCacheIoContex
   switch (context) {
     case PageCacheIoContext::normal:
       return policy.max_resident_pages == 0 ? 1 : policy.max_resident_pages;
+    case PageCacheIoContext::index_read:
+      return policy.index_read_ring_pages == 0 ? 1 : policy.index_read_ring_pages;
     case PageCacheIoContext::bulk_read:
       return policy.bulk_read_ring_pages == 0 ? 1 : policy.bulk_read_ring_pages;
     case PageCacheIoContext::bulk_write:
@@ -746,6 +774,40 @@ u64 PageCacheIoContextRingLimit(const PageCachePolicy& policy, PageCacheIoContex
       return policy.strict_bulk_load_ring_pages == 0 ? 1 : policy.strict_bulk_load_ring_pages;
   }
   return 1;
+}
+
+PageCachePolicy MakeAdaptivePageCachePolicyFromMemoryPolicy(
+    const scratchbird::core::memory::AllocationPolicy& memory_policy,
+    u32 page_size,
+    u64 minimum_resident_pages) {
+  PageCachePolicy policy;
+  const u64 safe_page_size = page_size == 0 ? 8192ull : static_cast<u64>(page_size);
+  const u64 default_pool_bytes = 512ull * 1024ull * 1024ull;
+  u64 pool_bytes = memory_policy.page_buffer_pool_limit_bytes;
+  if (pool_bytes == 0 && memory_policy.hard_limit_bytes != 0) {
+    pool_bytes = std::max<u64>(default_pool_bytes, memory_policy.hard_limit_bytes / 2ull);
+  }
+  if (pool_bytes == 0) {
+    pool_bytes = default_pool_bytes;
+  }
+  const u64 resident_pages_from_bytes =
+      std::max<u64>(1, pool_bytes / safe_page_size);
+  policy.max_resident_pages =
+      std::max(minimum_resident_pages == 0 ? 1 : minimum_resident_pages,
+               resident_pages_from_bytes);
+  policy.max_resident_bytes = policy.max_resident_pages * safe_page_size;
+  const u64 ring_pages = std::max<u64>(4, policy.max_resident_pages / 32ull);
+  const u64 index_read_ring_pages = std::max<u64>(32, policy.max_resident_pages / 2ull);
+  const u64 index_ring_pages = std::max<u64>(8, policy.max_resident_pages / 16ull);
+  policy.index_read_ring_pages = std::min(policy.max_resident_pages, index_read_ring_pages);
+  policy.bulk_read_ring_pages = ring_pages;
+  policy.bulk_write_ring_pages = ring_pages;
+  policy.vacuum_cleanup_ring_pages = ring_pages;
+  policy.index_build_ring_pages = index_ring_pages;
+  policy.strict_bulk_load_ring_pages = index_ring_pages;
+  policy.allow_dirty_eviction = false;
+  policy.require_memory_manager_frames = true;
+  return policy;
 }
 
 const char* PageCacheLifecycleStateName(PageCacheLifecycleState state) {
@@ -825,7 +887,7 @@ PageCacheContextSnapshot SnapshotPageCacheContext(const PageCacheLedger& ledger,
 PageCacheResult AdmitPageCacheEntry(PageCacheLedger* ledger,
                                     const PageCachePolicy& policy,
                                     const PageCacheEntry& entry) {
-  return AdmitPageCacheEntryForContext(ledger, policy, entry, PageCacheIoContext::normal);
+  return AdmitPageCacheEntryForContext(ledger, policy, entry, DefaultContextForEntry(entry));
 }
 
 PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
@@ -871,6 +933,9 @@ PageCacheResult AdmitPageCacheEntryForContext(PageCacheLedger* ledger,
 
   PageCacheEntry admitted = entry;
   admitted.io_context = context;
+  if (context == PageCacheIoContext::index_read) {
+    admitted.cache_hot = true;
+  }
   PageCacheResult result;
   u64 context_admissions = 0;
   u64 context_reuses = 0;
@@ -1021,7 +1086,7 @@ PageCacheResult PinPageCacheEntry(PageCacheLedger* ledger, const TypedUuid& page
     }
     ++entry->pin_count;
     entry->last_access_tick = ledger->next_access_tick++;
-    if (entry->io_context == PageCacheIoContext::normal) {
+    if (IsReadResidencyContext(entry->io_context)) {
       entry->cache_hot = true;
     }
     result.status = CacheOkStatus();
@@ -1049,7 +1114,7 @@ PageCacheResult UnpinPageCacheEntry(PageCacheLedger* ledger, const TypedUuid& pa
     }
     --entry->pin_count;
     entry->last_access_tick = ledger->next_access_tick++;
-    if (entry->io_context == PageCacheIoContext::normal) {
+    if (IsReadResidencyContext(entry->io_context)) {
       entry->cache_hot = true;
     }
     result.status = CacheOkStatus();
@@ -1077,7 +1142,7 @@ PageCacheResult MarkPageCacheEntryDirty(PageCacheLedger* ledger, const TypedUuid
       entry->dirty_epoch = ++ledger->dirty_epoch;
     }
     entry->last_access_tick = ledger->next_access_tick++;
-    if (entry->io_context == PageCacheIoContext::normal) {
+    if (IsReadResidencyContext(entry->io_context)) {
       entry->cache_hot = true;
     }
     result.status = CacheOkStatus();

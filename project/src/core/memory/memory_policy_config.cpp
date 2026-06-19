@@ -599,7 +599,9 @@ MemoryPolicyConfigResolveResult ResolveMemoryPolicyConfig(const MemoryPolicyConf
     return result;
   }
 
-  result.policy.policy_name = config.policy_name.empty() ? "server_production_default" : config.policy_name;
+  result.policy.policy_name = config.policy_name.empty()
+                                  ? "default_local_server_memory_cache_v1"
+                                  : config.policy_name;
   result.policy.byte_limit = result.effective_hard_limit_bytes;
   result.policy.hard_limit_bytes = result.effective_hard_limit_bytes;
   result.policy.soft_limit_bytes = config.soft_limit_bytes;

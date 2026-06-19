@@ -30,11 +30,13 @@ constexpr std::size_t kHeaderSize = 40;
 constexpr std::uint8_t kStartup = 0x01;
 constexpr std::uint8_t kPing = 0x1b;
 constexpr std::uint8_t kResetSession = 0x21;
+constexpr std::uint8_t kAuthRequest = 0x40;
 constexpr std::uint8_t kError = 0x48;
 constexpr std::uint8_t kPong = 0x5d;
 constexpr std::uint8_t kExtension = 0x81;
 constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
 constexpr std::uint16_t kVersionP1Current = 0x0101;
+constexpr std::uint64_t kFeatureSblr = 1ull << 2u;
 
 struct Frame {
   std::uint8_t type{0};
@@ -245,6 +247,19 @@ void CheckStartupNegotiationFailures() {
       "SBWP.EXTENSION.UNKNOWN_REQUIRED");
 }
 
+void CheckSblrFeatureNegotiates() {
+  const auto response =
+      ExchangeOne(EncodeFrame(kStartup,
+                              StartupPayload(kVersionP1Current,
+                                             kVersionP1Current,
+                                             0,
+                                             kFeatureSblr,
+                                             kFeatureSblr,
+                                             0)));
+  Require(response.type == kAuthRequest,
+          "SBWP startup with required SBLR feature did not reach authentication");
+}
+
 void CheckFrameFailClosedPaths() {
   ExpectError(EncodeFrame(kResetSession, {}), "SBWP.FEATURE.NOT_NEGOTIATED");
   ExpectError(EncodeFrame(kExtension, {}), "SBWP.FEATURE.NOT_NEGOTIATED");
@@ -289,6 +304,7 @@ void CheckSbpsUnknownCapabilityBits() {
 
 int main() {
   CheckStartupNegotiationFailures();
+  CheckSblrFeatureNegotiates();
   CheckFrameFailClosedPaths();
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();

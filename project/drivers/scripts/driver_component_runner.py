@@ -192,6 +192,36 @@ def display_path(path: Path, root: Path) -> str:
         return str(path)
 
 
+def git_tracked_paths(ctx: Context, root: Path) -> set[str]:
+    try:
+        rel_root = str(root.relative_to(ctx.repo_root))
+    except ValueError:
+        return set()
+    result = subprocess.run(
+        ["git", "-C", str(ctx.repo_root), "ls-files", "--", rel_root],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def is_tracked_source_path(path: Path, ctx: Context, tracked_paths: set[str]) -> bool:
+    try:
+        rel = str(path.relative_to(ctx.repo_root))
+    except ValueError:
+        return False
+    if rel in tracked_paths:
+        return True
+    if path.is_dir():
+        prefix = rel.rstrip("/") + "/"
+        return any(tracked.startswith(prefix) for tracked in tracked_paths)
+    return False
+
+
 def resolve_argv(argv: list[str], env: dict[str, str]) -> list[str]:
     if not argv:
         return argv
@@ -347,8 +377,11 @@ def mojo_launcher() -> list[str] | None:
 def check_source_artifacts(ctx: Context) -> int:
     offenders: list[str] = []
     drivers_root = ctx.project_root / "drivers"
+    tracked_paths = git_tracked_paths(ctx, drivers_root)
     for path in drivers_root.rglob("*"):
         rel = path.relative_to(ctx.repo_root)
+        if is_tracked_source_path(path, ctx, tracked_paths):
+            continue
         if path.is_dir() and (path.name in GENERATED_DIR_NAMES or path.name.endswith(".egg-info")):
             offenders.append(str(rel))
         elif path.is_file() and path.suffix in GENERATED_SUFFIXES:

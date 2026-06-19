@@ -28,6 +28,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -145,6 +146,7 @@ void ApplyExecutedTransactionState(const ServerExecutionResult& executed,
 
 struct ObjectReference {
   std::string presented_name;
+  std::string object_class{"relation"};
   bool quoted{false};
 };
 
@@ -317,6 +319,34 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
                              config.dialect + "|" + session.common_resource_hash +
                              "|" + session.resource_version_identity));
   return key;
+}
+
+std::string BuildNameResolutionCacheKey(const SessionContext& session,
+                                        std::string_view presented_name,
+                                        bool quoted,
+                                        std::string_view object_class) {
+  std::ostringstream key;
+  key << presented_name << "|quoted=" << (quoted ? "1" : "0")
+      << "|class=" << object_class
+      << "|catalog=" << session.catalog_epoch
+      << "|security=" << session.security_policy_epoch
+      << "|grant=" << session.grant_epoch
+      << "|descriptor=" << session.descriptor_epoch
+      << "|localized_name=" << session.localized_name_epoch
+      << "|language_resource=" << session.language_resource_epoch
+      << "|message_resource=" << session.message_resource_epoch
+      << "|roles=" << JoinStable(session.effective_role_uuids)
+      << "|groups=" << JoinStable(session.effective_group_uuids)
+      << "|search_path=" << JoinStable(session.search_path)
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|input_fallback=" << session.input_language_fallback_tag
+      << "|common_resource=" << session.common_resource_hash
+      << "|policy_profile=" << session.policy_profile_uuid
+      << "|resource_compat=" << session.resource_compatibility_identity
+      << "|resource_version=" << session.resource_version_identity;
+  return key.str();
 }
 
 PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
@@ -595,6 +625,155 @@ std::vector<ObjectReference> ExtractCreateIndexObjectReferences(const CstDocumen
   return refs;
 }
 
+std::size_t NextNonTriviaIndex(const CstDocument& cst, std::size_t index) {
+  while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+  return index;
+}
+
+std::vector<ObjectReference> ExtractMultimodelObjectReferences(const CstDocument& cst,
+                                                               std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size()) return refs;
+  const auto push_ref_at = [&](std::size_t marker) {
+    if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
+      refs.push_back(*ref);
+    }
+  };
+
+  if (IsWord(cst.tokens[first_token], "DOCUMENT") ||
+      IsWord(cst.tokens[first_token], "FULLTEXT") ||
+      IsWord(cst.tokens[first_token], "OPENSEARCH") ||
+      IsWord(cst.tokens[first_token], "TIMESERIES") ||
+      IsWord(cst.tokens[first_token], "GRAPH") ||
+      IsWord(cst.tokens[first_token], "SEARCH")) {
+    push_ref_at(first_token + 1);
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "TIME")) {
+    const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
+    if (second < cst.tokens.size() && IsWord(cst.tokens[second], "SERIES")) {
+      push_ref_at(second + 1);
+    }
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "CHANGE")) {
+    const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
+    if (second < cst.tokens.size() && IsWord(cst.tokens[second], "STREAM")) {
+      push_ref_at(second + 1);
+    }
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "REINDEX")) {
+    const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
+    const std::size_t third = second < cst.tokens.size() ? NextNonTriviaIndex(cst, second + 1)
+                                                        : cst.tokens.size();
+    if (second < cst.tokens.size() && third < cst.tokens.size() &&
+        IsWord(cst.tokens[second], "VECTOR") &&
+        IsWord(cst.tokens[third], "COLLECTION")) {
+      push_ref_at(third + 1);
+    }
+    return refs;
+  }
+
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractFilespaceObjectReferences(const CstDocument& cst,
+                                                              std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size()) return refs;
+  const auto push_ref_at = [&](std::size_t marker) {
+    if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
+      ref->object_class = "filespace";
+      refs.push_back(*ref);
+    }
+  };
+  const auto second = NextNonTriviaIndex(cst, first_token + 1);
+  if (second >= cst.tokens.size()) return refs;
+
+  if (IsWord(cst.tokens[first_token], "ALTER") &&
+      IsWord(cst.tokens[second], "FILESPACE")) {
+    push_ref_at(second + 1);
+    return refs;
+  }
+
+  if ((IsWord(cst.tokens[first_token], "ATTACH") ||
+       IsWord(cst.tokens[first_token], "DETACH") ||
+       IsWord(cst.tokens[first_token], "DISCONNECT") ||
+       IsWord(cst.tokens[first_token], "MOVE") ||
+       IsWord(cst.tokens[first_token], "MERGE") ||
+       IsWord(cst.tokens[first_token], "PROMOTE") ||
+       IsWord(cst.tokens[first_token], "GROW") ||
+       IsWord(cst.tokens[first_token], "RESIZE") ||
+       IsWord(cst.tokens[first_token], "SHRINK") ||
+       IsWord(cst.tokens[first_token], "VERIFY") ||
+       IsWord(cst.tokens[first_token], "COMPACT") ||
+       IsWord(cst.tokens[first_token], "FENCE") ||
+       IsWord(cst.tokens[first_token], "RELEASE") ||
+       IsWord(cst.tokens[first_token], "ARCHIVE") ||
+       IsWord(cst.tokens[first_token], "QUARANTINE") ||
+       IsWord(cst.tokens[first_token], "REPAIR") ||
+       IsWord(cst.tokens[first_token], "REBUILD") ||
+       IsWord(cst.tokens[first_token], "SALVAGE")) &&
+      IsWord(cst.tokens[second], "FILESPACE")) {
+    push_ref_at(second + 1);
+    return refs;
+  }
+
+  if ((IsWord(cst.tokens[first_token], "DROP") ||
+       IsWord(cst.tokens[first_token], "DELETE")) &&
+      IsWord(cst.tokens[second], "STORAGE")) {
+    const auto third = NextNonTriviaIndex(cst, second + 1);
+    if (third < cst.tokens.size() && IsWord(cst.tokens[third], "FILESPACE")) {
+      push_ref_at(third + 1);
+    }
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "STORAGE") &&
+      IsWord(cst.tokens[second], "FILESPACE")) {
+    push_ref_at(second + 1);
+    return refs;
+  }
+
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractDomainDdlObjectReferences(const CstDocument& cst,
+                                                              std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size()) return refs;
+  const auto push_domain_ref_at = [&](std::size_t marker) {
+    if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
+      ref->object_class = "domain";
+      refs.push_back(*ref);
+    }
+  };
+  const auto second = NextNonTriviaIndex(cst, first_token + 1);
+  if (second >= cst.tokens.size()) return refs;
+
+  if ((IsWord(cst.tokens[first_token], "ALTER") ||
+       IsWord(cst.tokens[first_token], "DROP")) &&
+      IsWord(cst.tokens[second], "DOMAIN")) {
+    push_domain_ref_at(second + 1);
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "COMMENT") &&
+      IsWord(cst.tokens[second], "ON")) {
+    const auto third = NextNonTriviaIndex(cst, second + 1);
+    if (third < cst.tokens.size() && IsWord(cst.tokens[third], "DOMAIN")) {
+      push_domain_ref_at(third + 1);
+    }
+    return refs;
+  }
+
+  return refs;
+}
+
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
   std::vector<ObjectReference> refs;
   auto local_cte_names = ExtractLeadingCteNames(cst);
@@ -613,6 +792,18 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
   }
   if (first_token == cst.tokens.size()) return refs;
 
+  if (IsWord(cst.tokens[first_token], "EXECUTE")) {
+    std::size_t second = first_token + 1;
+    while (second < cst.tokens.size() && IsTriviaToken(cst.tokens[second])) ++second;
+    if (second < cst.tokens.size() && IsWord(cst.tokens[second], "PROCEDURE")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, second + 1)) {
+        ref->object_class = "procedure";
+        refs.push_back(*ref);
+      }
+      return refs;
+    }
+  }
+
   if (IsWord(cst.tokens[first_token], "COPY")) {
     if (auto ref = ExtractObjectReferenceAt(cst, first_token + 1)) refs.push_back(*ref);
     return refs;
@@ -629,6 +820,21 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     if (!create_index_refs.empty()) {
       return create_index_refs;
     }
+  }
+
+  auto multimodel_refs = ExtractMultimodelObjectReferences(cst, first_token);
+  if (!multimodel_refs.empty()) {
+    return multimodel_refs;
+  }
+
+  auto filespace_refs = ExtractFilespaceObjectReferences(cst, first_token);
+  if (!filespace_refs.empty()) {
+    return filespace_refs;
+  }
+
+  auto domain_ddl_refs = ExtractDomainDdlObjectReferences(cst, first_token);
+  if (!domain_ddl_refs.empty()) {
+    return domain_ddl_refs;
   }
 
   for (std::size_t i = first_token; i < cst.tokens.size(); ++i) {
@@ -718,18 +924,326 @@ bool ConsumeRouteQualifiedNameLeaf(const CstDocument& cst, std::size_t* index, s
   return true;
 }
 
+bool ConsumeRouteQualifiedNameParts(const CstDocument& cst,
+                                    std::size_t* index,
+                                    std::vector<std::string>* parts) {
+  if (index == nullptr || parts == nullptr) return false;
+  std::vector<std::string> parsed;
+  bool expect_part = true;
+  for (;;) {
+    SkipTriviaTokens(cst, index);
+    if (*index >= cst.tokens.size()) break;
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (expect_part) {
+      if (!IsIdentifierLikeForRouteExecution(token)) break;
+      parsed.push_back(token.text);
+      expect_part = false;
+      ++(*index);
+      continue;
+    }
+    if (token.text != ".") break;
+    expect_part = true;
+    ++(*index);
+  }
+  if (parsed.empty() || expect_part) return false;
+  *parts = std::move(parsed);
+  return true;
+}
+
+std::string JoinRouteNameParts(const std::vector<std::string>& parts,
+                               std::size_t begin,
+                               std::size_t end) {
+  std::string out;
+  for (std::size_t index = begin; index < end && index < parts.size(); ++index) {
+    if (!out.empty()) out.push_back('.');
+    out += parts[index];
+  }
+  return out;
+}
+
 std::string RouteCanonicalTypeName(std::string_view type_text) {
   const std::string upper = ToUpperAscii(type_text);
   if (upper == "INT" || upper == "INTEGER") return "int";
+  if (upper == "SMALLINT") return "smallint";
   if (upper == "BIGINT") return "bigint";
+  if (upper == "DOUBLE PRECISION") return "double";
   if (upper == "FLOAT") return "float";
   if (upper == "DOUBLE") return "double";
   if (upper == "TEXT" || upper == "VARCHAR" || upper == "CHAR") return "text";
+  if (upper == "CHARACTER") return "text";
+  if (upper == "CHARACTER VARYING") return "text";
+  if (upper == "BIT VARYING") return "bit_varying";
+  if (upper == "BOOL") return "boolean";
+  if (upper == "DEC" || upper == "NUMERIC") return "decimal";
   std::string lowered(type_text);
   for (auto& ch : lowered) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (std::isspace(static_cast<unsigned char>(ch))) {
+      ch = '_';
+    } else {
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
   }
   return lowered;
+}
+
+std::string RouteTokenText(const Token& token) {
+  return token.raw_text.empty() ? token.text : token.raw_text;
+}
+
+void AppendRouteTokenText(std::string* out, const Token& token) {
+  if (out == nullptr) return;
+  const std::string text = RouteTokenText(token);
+  if (text.empty()) return;
+  const bool punctuation = text == "(" || text == ")" || text == "," ||
+                           text == "<" || text == ">" || text == "." ||
+                           text == "[" || text == "]";
+  const bool previous_punctuation =
+      !out->empty() && (out->back() == '(' || out->back() == '<' ||
+                        out->back() == '.' || out->back() == '[');
+  if (!out->empty() && !punctuation && !previous_punctuation) {
+    out->push_back(' ');
+  }
+  if ((text == ")" || text == ">" || text == "]" || text == ",") &&
+      !out->empty() && out->back() == ' ') {
+    out->pop_back();
+  }
+  *out += text;
+  if (text == ",") out->push_back(' ');
+}
+
+std::string TrimRouteText(std::string text) {
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+    text.erase(text.begin());
+  }
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+    text.pop_back();
+  }
+  return text;
+}
+
+bool IsColumnConstraintStarter(const Token& token) {
+  return IsWord(token, "PRIMARY") || IsWord(token, "NOT") ||
+         IsWord(token, "NULL") || IsWord(token, "DEFAULT") ||
+         IsWord(token, "CHECK") || IsWord(token, "UNIQUE") ||
+         IsWord(token, "REFERENCES") || IsWord(token, "COLLATE") ||
+         IsWord(token, "GENERATED") || IsWord(token, "CONSTRAINT");
+}
+
+bool IsTableConstraintStarter(const Token& token) {
+  return IsWord(token, "PRIMARY") || IsWord(token, "FOREIGN") ||
+         IsWord(token, "UNIQUE") || IsWord(token, "CHECK") ||
+         IsWord(token, "CONSTRAINT");
+}
+
+bool ConsumeBalancedRouteClause(const CstDocument& cst,
+                                std::size_t* index,
+                                std::string* text) {
+  if (index == nullptr) return false;
+  int paren_depth = 0;
+  int angle_depth = 0;
+  bool consumed = false;
+  if (text != nullptr) text->clear();
+  for (;;) {
+    SkipTriviaTokens(cst, index);
+    if (*index >= cst.tokens.size()) break;
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (paren_depth == 0 && angle_depth == 0 && (token.text == "," || token.text == ")")) break;
+    if (token.text == "(") {
+      ++paren_depth;
+    } else if (token.text == ")" && paren_depth > 0) {
+      --paren_depth;
+    } else if (token.text == "<") {
+      ++angle_depth;
+    } else if (token.text == ">" && angle_depth > 0) {
+      --angle_depth;
+    }
+    if (text != nullptr) AppendRouteTokenText(text, token);
+    consumed = true;
+    ++(*index);
+  }
+  if (text != nullptr) *text = TrimRouteText(*text);
+  return consumed;
+}
+
+std::string ConsumeRouteTypeText(const CstDocument& cst,
+                                 std::size_t* index,
+                                 std::string* raw_type_text) {
+  if (raw_type_text != nullptr) raw_type_text->clear();
+  SkipTriviaTokens(cst, index);
+  if (index == nullptr || *index >= cst.tokens.size() ||
+      !IsIdentifierLikeForRouteExecution(cst.tokens[*index])) {
+    return {};
+  }
+
+  std::vector<std::string> type_words;
+  std::string rendered;
+  int paren_depth = 0;
+  int angle_depth = 0;
+  for (;;) {
+    SkipTriviaTokens(cst, index);
+    if (*index >= cst.tokens.size()) break;
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (paren_depth == 0 && angle_depth == 0) {
+      if (token.text == "," || token.text == ")" || IsColumnConstraintStarter(token)) break;
+    }
+    if (token.text == "(") {
+      ++paren_depth;
+    } else if (token.text == ")" && paren_depth > 0) {
+      --paren_depth;
+    } else if (token.text == "<") {
+      ++angle_depth;
+    } else if (token.text == ">" && angle_depth > 0) {
+      --angle_depth;
+    } else if (paren_depth == 0 && angle_depth == 0 &&
+               IsIdentifierLikeForRouteExecution(token)) {
+      type_words.push_back(token.text);
+    }
+    AppendRouteTokenText(&rendered, token);
+    ++(*index);
+  }
+  rendered = TrimRouteText(rendered);
+  if (raw_type_text != nullptr) *raw_type_text = rendered;
+  if (type_words.empty()) return {};
+  std::string canonical_input = type_words.front();
+  if (type_words.size() > 1) {
+    const std::string first_two = ToUpperAscii(type_words[0] + " " + type_words[1]);
+    if (first_two == "DOUBLE PRECISION" ||
+        first_two == "BIT VARYING" ||
+        first_two == "CHARACTER VARYING") {
+      canonical_input = type_words[0] + " " + type_words[1];
+    }
+  }
+  return RouteCanonicalTypeName(canonical_input);
+}
+
+struct RouteColumnDefinition {
+  std::string name;
+  std::string canonical_type;
+  std::string raw_type;
+  bool nullable = true;
+  bool primary_key = false;
+  bool unique = false;
+  std::string default_expression;
+};
+
+void AppendDescriptorFlag(std::string* descriptor,
+                          std::string_view name,
+                          std::string_view value) {
+  if (descriptor == nullptr || name.empty()) return;
+  if (!descriptor->empty() && descriptor->back() != ';') descriptor->push_back(';');
+  descriptor->append(name);
+  descriptor->push_back('=');
+  descriptor->append(value);
+}
+
+bool ConsumeColumnConstraints(const CstDocument& cst,
+                              std::size_t* index,
+                              RouteColumnDefinition* column) {
+  if (index == nullptr || column == nullptr) return false;
+  for (;;) {
+    SkipTriviaTokens(cst, index);
+    if (*index >= cst.tokens.size()) return false;
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator ||
+        token.text == "," || token.text == ")") {
+      return true;
+    }
+    if (ConsumeRouteKeyword(cst, index, "CONSTRAINT")) {
+      std::string ignored_name;
+      if (!ConsumeRouteIdentifier(cst, index, &ignored_name)) return false;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "PRIMARY")) {
+      if (!ConsumeRouteKeyword(cst, index, "KEY")) return false;
+      column->primary_key = true;
+      column->unique = true;
+      column->nullable = false;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "UNIQUE")) {
+      column->unique = true;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "NOT")) {
+      if (!ConsumeRouteKeyword(cst, index, "NULL")) return false;
+      column->nullable = false;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "NULL")) {
+      column->nullable = true;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "DEFAULT")) {
+      std::string expression;
+      if (!ConsumeBalancedRouteClause(cst, index, &expression)) return false;
+      column->default_expression = std::move(expression);
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "CHECK")) {
+      std::string ignored;
+      if (!ConsumeBalancedRouteClause(cst, index, &ignored)) return false;
+      continue;
+    }
+    if (ConsumeRouteKeyword(cst, index, "REFERENCES") ||
+        ConsumeRouteKeyword(cst, index, "COLLATE") ||
+        ConsumeRouteKeyword(cst, index, "GENERATED")) {
+      std::string ignored;
+      ConsumeBalancedRouteClause(cst, index, &ignored);
+      continue;
+    }
+    return false;
+  }
+}
+
+bool ConsumeTableConstraint(const CstDocument& cst,
+                            std::size_t* index,
+                            std::vector<RouteColumnDefinition>* columns) {
+  if (index == nullptr || columns == nullptr) return false;
+  SkipTriviaTokens(cst, index);
+  if (*index >= cst.tokens.size()) return false;
+  if (ConsumeRouteKeyword(cst, index, "CONSTRAINT")) {
+    std::string ignored_name;
+    if (!ConsumeRouteIdentifier(cst, index, &ignored_name)) return false;
+  }
+  if (ConsumeRouteKeyword(cst, index, "PRIMARY")) {
+    if (!ConsumeRouteKeyword(cst, index, "KEY")) return false;
+    if (!ConsumeRouteSymbol(cst, index, "(")) return false;
+    for (;;) {
+      std::string column_name;
+      if (!ConsumeRouteIdentifier(cst, index, &column_name)) return false;
+      for (auto& column : *columns) {
+        if (ToUpperAscii(column.name) == ToUpperAscii(column_name)) {
+          column.primary_key = true;
+          column.unique = true;
+          column.nullable = false;
+        }
+      }
+      if (ConsumeRouteSymbol(cst, index, ")")) break;
+      if (!ConsumeRouteSymbol(cst, index, ",")) return false;
+    }
+    return true;
+  }
+  if (ConsumeRouteKeyword(cst, index, "UNIQUE")) {
+    if (ConsumeRouteSymbol(cst, index, "(")) {
+      for (;;) {
+        std::string column_name;
+        if (!ConsumeRouteIdentifier(cst, index, &column_name)) return false;
+        for (auto& column : *columns) {
+          if (ToUpperAscii(column.name) == ToUpperAscii(column_name)) {
+            column.unique = true;
+          }
+        }
+        if (ConsumeRouteSymbol(cst, index, ")")) break;
+        if (!ConsumeRouteSymbol(cst, index, ",")) return false;
+      }
+      return true;
+    }
+  }
+  std::string ignored;
+  return ConsumeBalancedRouteClause(cst, index, &ignored);
 }
 
 bool ConsumeOptionalTemporaryTablePrefix(const CstDocument& cst,
@@ -838,15 +1352,35 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
     return std::nullopt;
   }
   if (!ConsumeRouteKeyword(cst, &index, "TABLE")) return std::nullopt;
-  std::string table_name;
-  if (!ConsumeRouteQualifiedNameLeaf(cst, &index, &table_name)) return std::nullopt;
+  std::vector<std::string> table_name_parts;
+  if (!ConsumeRouteQualifiedNameParts(cst, &index, &table_name_parts)) return std::nullopt;
+  const std::string table_name = table_name_parts.back();
+  const std::string schema_parent_path =
+      table_name_parts.size() > 1
+          ? JoinRouteNameParts(table_name_parts, 0, table_name_parts.size() - 1)
+          : std::string{};
   if (!ConsumeRouteSymbol(cst, &index, "(")) return std::nullopt;
-  std::string column_name;
-  if (!ConsumeRouteIdentifier(cst, &index, &column_name)) return std::nullopt;
-  std::string type_name;
-  if (!ConsumeRouteIdentifier(cst, &index, &type_name)) return std::nullopt;
-  const std::string canonical_type = RouteCanonicalTypeName(type_name);
-  if (!ConsumeRouteSymbol(cst, &index, ")")) return std::nullopt;
+  std::vector<RouteColumnDefinition> columns;
+  for (;;) {
+    SkipTriviaTokens(cst, &index);
+    if (index >= cst.tokens.size()) return std::nullopt;
+    if (ConsumeRouteSymbol(cst, &index, ")")) break;
+    if (IsTableConstraintStarter(cst.tokens[index])) {
+      if (!ConsumeTableConstraint(cst, &index, &columns)) return std::nullopt;
+    } else {
+      RouteColumnDefinition column;
+      if (!ConsumeRouteIdentifier(cst, &index, &column.name)) return std::nullopt;
+      column.canonical_type = ConsumeRouteTypeText(cst, &index, &column.raw_type);
+      if (column.canonical_type.empty()) return std::nullopt;
+      if (!ConsumeColumnConstraints(cst, &index, &column)) return std::nullopt;
+      columns.push_back(std::move(column));
+    }
+    SkipTriviaTokens(cst, &index);
+    if (ConsumeRouteSymbol(cst, &index, ",")) continue;
+    if (ConsumeRouteSymbol(cst, &index, ")")) break;
+    return std::nullopt;
+  }
+  if (columns.empty()) return std::nullopt;
   std::string on_commit_action = "delete_rows";
   if (temporary &&
       !ConsumeOptionalOnCommitAction(cst, &index, &on_commit_action)) {
@@ -878,11 +1412,35 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
   out += "requires_cluster_authority=false\n";
   AppendRouteTextOperand(&out, "target_object_kind", "table");
   AppendRouteTextOperand(&out, "table_name", table_name);
-  AppendRouteTextOperand(&out, "column_count", "1");
-  AppendRouteTextOperand(&out, "column_0_name", column_name);
-  AppendRouteTextOperand(&out, "column_0_type", canonical_type);
-  AppendRouteTextOperand(&out, "column_0_descriptor", "type=" + canonical_type);
-  AppendRouteTextOperand(&out, "column_0_nullable", "true");
+  if (!schema_parent_path.empty()) {
+    AppendRouteTextOperand(&out, "schema_parent_path", schema_parent_path);
+  }
+  AppendRouteTextOperand(&out, "column_count", std::to_string(columns.size()));
+  for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
+    const auto& column = columns[column_index];
+    const std::string prefix = "column_" + std::to_string(column_index) + "_";
+    std::string descriptor = "type=" + column.canonical_type;
+    if (!column.raw_type.empty() && column.raw_type != column.canonical_type) {
+      AppendDescriptorFlag(&descriptor, "source_type", column.raw_type);
+    }
+    AppendDescriptorFlag(&descriptor, "nullable", column.nullable ? "true" : "false");
+    if (column.primary_key) {
+      AppendDescriptorFlag(&descriptor, "primary_key", "true");
+      AppendDescriptorFlag(&descriptor, "unique", "true");
+    } else if (column.unique) {
+      AppendDescriptorFlag(&descriptor, "unique", "true");
+    }
+    if (!column.default_expression.empty()) {
+      AppendDescriptorFlag(&descriptor, "default", column.default_expression);
+    }
+    AppendRouteTextOperand(&out, prefix + "name", column.name);
+    AppendRouteTextOperand(&out, prefix + "type", column.canonical_type);
+    AppendRouteTextOperand(&out, prefix + "descriptor", descriptor);
+    AppendRouteTextOperand(&out, prefix + "nullable", column.nullable ? "true" : "false");
+    if (!column.default_expression.empty()) {
+      AppendRouteTextOperand(&out, prefix + "default", column.default_expression);
+    }
+  }
   if (temporary) {
     AppendRouteTextOperand(&out, "temporary", "true");
     AppendRouteTextOperand(&out, "temporary_scope", temporary_scope);
@@ -1377,11 +1935,61 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     std::string_view presented_name,
     bool quoted,
     std::string_view object_class) {
-  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+  constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
+  const std::string cache_key =
+      BuildNameResolutionCacheKey(session_, presented_name, quoted, object_class);
+  if (const auto found = name_resolution_cache_.find(cache_key);
+      found != name_resolution_cache_.end()) {
+    if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.name_resolution_cache.hits_total");
+      metrics_->Increment("sys.metrics.parsers.name_resolution_cache.route_skips_total");
+    }
+    PublicNameResolutionResult result;
+    result.resolved = true;
+    result.object_uuid = found->second.object_uuid;
+    result.canonical_name = found->second.canonical_name;
+    result.object_class = found->second.object_class;
+    result.catalog_epoch = found->second.catalog_epoch;
+    result.security_epoch = found->second.security_epoch;
+    return result;
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+  if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.misses_total");
+  PublicNameResolutionResult resolved;
+  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+    resolved =
+        embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+  } else {
+    SbpsClient client(config_.server_endpoint);
+    resolved = client.ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+  }
+  if (resolved.resolved) {
+    CachedPublicNameResolution cached;
+    cached.object_uuid = resolved.object_uuid;
+    cached.canonical_name = resolved.canonical_name;
+    cached.object_class = resolved.object_class;
+    cached.catalog_epoch = resolved.catalog_epoch;
+    cached.security_epoch = resolved.security_epoch;
+    name_resolution_cache_[cache_key] = std::move(cached);
+    name_resolution_lru_.erase(std::remove(name_resolution_lru_.begin(),
+                                           name_resolution_lru_.end(),
+                                           cache_key),
+                               name_resolution_lru_.end());
+    name_resolution_lru_.push_back(cache_key);
+    while (name_resolution_cache_.size() > kMaxNameResolutionCacheEntries &&
+           !name_resolution_lru_.empty()) {
+      name_resolution_cache_.erase(name_resolution_lru_.front());
+      name_resolution_lru_.pop_front();
+    }
+    if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.stores_total");
+  }
+  return resolved;
+}
+
+PublicNameResolutionResult SbsqlTestWireSession::ResolvePublicNameForWire(
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class) {
+  return ResolveNameOnRoute(presented_name, quoted, object_class);
 }
 
 bool SbsqlTestWireSession::DisconnectExecutionRoute(MessageVectorSet* messages) {
@@ -1515,7 +2123,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       HasExecutionRoute() && session_.authenticated) {
     const auto refs = ExtractObjectReferences(cst);
     for (const auto& ref : refs) {
-      auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, "relation");
+      auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
       if (!resolved.resolved) {
         result.messages = std::move(resolved.messages);
         break;
@@ -1626,6 +2234,71 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sb
     return result;
   }
   const auto executed = ExecuteSblrOnRoute(encoded_sblr_envelope, cursor_requested);
+  if (!executed.accepted) {
+    result.messages = executed.messages;
+    return result;
+  }
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_cursor_uuid = executed.cursor_uuid;
+  result.server_row_count = executed.row_count;
+  result.server_result_payload = executed.row_packet;
+  ApplyExecutedTransactionState(executed, &session_);
+  return result;
+}
+
+ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
+    std::string_view encoded_sblr_envelope) {
+  ServerPrepareSblrResult result;
+  if (!HasExecutionRoute()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.SERVER.UNAVAILABLE", "ERROR", "SBLR prepare requires an execution route",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  if (!session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.AUTH.REQUIRED", "ERROR", "SBLR prepare requires an authenticated server session",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.PREPARE.UNAVAILABLE", "ERROR",
+        "server prepared SBLR handles require the SBPS server route",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  SbpsClient client(config_.server_endpoint);
+  return client.PrepareSblr(session_, encoded_sblr_envelope);
+}
+
+PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
+    std::string_view prepared_statement_uuid,
+    std::string_view encoded_sblr_envelope,
+    bool cursor_requested) {
+  PipelineResult result;
+  result.accepted = false;
+  if (!HasExecutionRoute()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.SERVER.UNAVAILABLE", "ERROR", "prepared SBLR execution requires an execution route",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  if (!session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.AUTH.REQUIRED", "ERROR", "prepared SBLR execution requires an authenticated server session",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+    return RunSblrEnvelope(encoded_sblr_envelope, cursor_requested);
+  }
+  SbpsClient client(config_.server_endpoint);
+  const auto executed = client.ExecutePreparedSblr(session_,
+                                                  prepared_statement_uuid,
+                                                  encoded_sblr_envelope,
+                                                  cursor_requested);
   if (!executed.accepted) {
     result.messages = executed.messages;
     return result;

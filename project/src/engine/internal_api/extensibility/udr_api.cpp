@@ -784,6 +784,21 @@ EngineInvokeUdrPackageResult EngineInvokeUdrPackage(const EngineInvokeUdrPackage
   AddApiBehaviorEvidence(&result, "udr_audit", "invocation_evidence_recorded");
   AddApiBehaviorEvidence(&result, "udr_metrics", "invocation_event_emitted");
   AddApiBehaviorEvidence(&result, "sblr_authority", "SBLR_UDR_INVOKE");
+  const std::string surface_id = OptionValue(request, "sbsfc077_surface_id:");
+  if (!surface_id.empty()) {
+    AddApiBehaviorEvidence(&result, "sbsfc077_surface", surface_id);
+  }
+  if (entrypoint == "sbu_sbsql_parse_to_sblr") {
+    AddApiBehaviorEvidence(&result,
+                           "parser_support_udr",
+                           "sbsql_parse_to_sblr_verified");
+    AddApiBehaviorEvidence(&result, "dynamic_sbsql_to_sblr_uuid", "true");
+    AddApiBehaviorEvidence(&result, "generated_sblr_uuid_revalidation_required", "true");
+    AddApiBehaviorEvidence(&result, "source_sql_to_udr_parse_only", "true");
+    AddApiBehaviorEvidence(&result, "original_sql_reference_packet_only", "true");
+    AddApiBehaviorEvidence(&result, "engine_sql_text_execution", "false");
+    AddApiBehaviorEvidence(&result, "engine_accepts_revalidated_sblr_uuid_only", "true");
+  }
   AddApiBehaviorEvidence(&result, "authority_boundary", "mga_sblr_uuid_security_transaction_preserved");
   EmitUdrMetric("sb_udr_invocation_total", request, "ok", "invoke");
   return result;

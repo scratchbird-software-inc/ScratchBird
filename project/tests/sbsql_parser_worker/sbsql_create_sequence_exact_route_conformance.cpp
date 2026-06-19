@@ -113,10 +113,10 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline() {
+PipelineArtifacts RunPipeline(std::string_view sql = kSql) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
-  artifacts.cst = BuildCst(kSql);
+  artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
@@ -225,6 +225,42 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),
           "CREATE SEQUENCE payload carried WAL/recovery authority");
+}
+
+void RequireSequenceOptionLowering() {
+  const auto artifacts = RunPipeline(
+      "CREATE SEQUENCE customer_id_seq START WITH 1 INCREMENT BY 5 NO CYCLE;");
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(),
+          "CREATE SEQUENCE option CST failed");
+  Require(!artifacts.ast.messages.has_errors(),
+          "CREATE SEQUENCE option AST failed");
+  Require(artifacts.bound.bound,
+          "CREATE SEQUENCE option bind failed");
+  Require(artifacts.verifier.admitted,
+          "CREATE SEQUENCE option verifier rejected route");
+  Require(artifacts.envelope.operation_id == kOperationId,
+          "CREATE SEQUENCE option operation id mismatch");
+  Require(artifacts.envelope.sblr_opcode == kOpcode,
+          "CREATE SEQUENCE option opcode mismatch");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"sequence_options_included\":true"),
+          "CREATE SEQUENCE option payload did not mark options");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"sequence_start_value\":\"1\""),
+          "CREATE SEQUENCE option payload missing START WITH value");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"sequence_increment\":\"5\""),
+          "CREATE SEQUENCE option payload missing INCREMENT BY value");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"sequence_cycle\":\"false\""),
+          "CREATE SEQUENCE option payload missing NO CYCLE value");
+  Require(!Contains(artifacts.envelope.payload, "CREATE SEQUENCE customer_id_seq"),
+          "CREATE SEQUENCE option payload embedded SQL text");
 }
 
 void RequireServerAdmission(const SblrEnvelope& envelope) {
@@ -410,6 +446,7 @@ int main() {
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline();
   RequireExactLowering(artifacts);
+  RequireSequenceOptionLowering();
   RequireServerAdmission(artifacts.envelope);
   RequireEngineDispatch();
   std::cout << "sbsql_create_sequence_exact_route_conformance=passed\n";

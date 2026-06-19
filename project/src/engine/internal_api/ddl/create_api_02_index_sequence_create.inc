@@ -154,7 +154,23 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     }
     append_descriptor_field("nullable", column.nullable ? "true" : "false");
     append_descriptor_field("default", column.default_expression_envelope);
-    const std::string domain_uuid = DomainUuidFromDescriptor(column.descriptor);
+    bool qualified_domain_lookup_required = false;
+    std::string requested_domain_type_name;
+    std::string domain_uuid = DomainUuidFromDescriptor(column.descriptor);
+    if (domain_uuid.empty()) {
+      domain_uuid = ResolveDomainTypeUuidFromColumnDescriptor(request,
+                                                             column_descriptor,
+                                                             &qualified_domain_lookup_required,
+                                                             &requested_domain_type_name);
+    }
+    if (domain_uuid.empty() && qualified_domain_lookup_required) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic("ddl.create_table",
+                                       "domain_column_descriptor_not_visible:" +
+                                           requested_domain_type_name));
+    }
     if (!domain_uuid.empty()) {
       if (!FindVisibleDomain(request.context, domain_uuid, request.context.local_transaction_id)) {
         return MakeCrudDiagnosticResult<EngineCreateTableResult>(

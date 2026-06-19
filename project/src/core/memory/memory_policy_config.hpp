@@ -55,21 +55,22 @@ struct PlatformMemoryCeilingProbePaths {
 };
 
 struct MemoryPolicyConfig {
-  std::string policy_name = "server_production_default";
+  std::string policy_name = "default_local_server_memory_cache_v1";
   // MMCH_MEMORY_METADATA_OPEN_UPGRADE_COMPATIBILITY
   // Versioned policy metadata is open/upgrade evidence only. It is never
   // transaction finality, visibility, authorization, or recovery authority.
   u64 metadata_format_version = 2;
-  u64 hard_limit_bytes = 256ull * 1024ull * 1024ull;
-  u64 soft_limit_bytes = 192ull * 1024ull * 1024ull;
-  u64 per_context_limit_bytes = 64ull * 1024ull * 1024ull;
-  u64 page_buffer_pool_limit_bytes = 64ull * 1024ull * 1024ull;
+  u64 hard_limit_bytes = 1024ull * 1024ull * 1024ull;
+  u64 soft_limit_bytes = 768ull * 1024ull * 1024ull;
+  u64 per_context_limit_bytes = 256ull * 1024ull * 1024ull;
+  u64 page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
   AllocationFailureMode failure_mode = AllocationFailureMode::return_error;
   bool track_allocations = true;
   bool zero_memory_on_allocate = false;
   bool zero_memory_on_release = true;
   bool reject_over_soft_limit = false;
-  std::string provenance = "compiled_defaults";
+  std::string provenance =
+      "default_policy_pack:default-local-password:server_memory_cache_policy";
   u64 source_epoch = 1;
   u64 reload_generation = 1;
   u64 policy_generation = 1;

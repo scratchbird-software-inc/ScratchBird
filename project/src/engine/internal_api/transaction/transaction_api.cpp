@@ -12,6 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction_inventory.hpp"
@@ -20,11 +21,13 @@
 #include "transaction_prepare.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
+#include "write_path_batching.hpp"
 
 #include <chrono>
 #include <cctype>
 #include <algorithm>
 #include <ctime>
+#include <filesystem>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -43,9 +46,14 @@ using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::GenerateDurableEngineIdentityV7;
+using scratchbird::core::uuid::GenerateEngineIdentityV7;
+using scratchbird::core::uuid::ParseTypedUuid;
 using scratchbird::core::uuid::UuidToString;
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
 using scratchbird::storage::database::PersistLocalTransactionInventoryToDatabase;
+using scratchbird::storage::database::WritePathBatchingRequest;
+using scratchbird::storage::database::WritePathBatchingResult;
+using scratchbird::storage::database::ExecuteDurabilityWritePathBatch;
 using scratchbird::transaction::mga::CommitLocalTransaction;
 using scratchbird::transaction::mga::CompletePreparedLocalTransactionCommit;
 using scratchbird::transaction::mga::CompletePreparedLocalTransactionRollback;
@@ -396,6 +404,190 @@ bool RequestOptionBool(const EngineApiRequest& request, const std::string& prefi
     if (value == "0" || value == "false" || value == "no" || value == "off") return false;
   }
   return fallback;
+}
+
+std::uint64_t RequestOptionU64(const EngineApiRequest& request,
+                               const std::string& prefix,
+                               std::uint64_t fallback) {
+  const auto value = RequestOptionValue(request, prefix);
+  return IsDigits(value) ? ParseU64(value) : fallback;
+}
+
+TypedUuid ParseOrGenerateTypedUuid(UuidKind kind,
+                                   const std::string& text,
+                                   std::uint64_t salt) {
+  if (!text.empty()) {
+    const auto parsed = ParseTypedUuid(kind, text);
+    if (parsed.ok()) { return parsed.value; }
+  }
+  const auto generated = GenerateEngineIdentityV7(kind, CurrentUnixMillis() + salt);
+  return generated.ok() ? generated.value : TypedUuid{};
+}
+
+struct CommitDurabilityBatchDecision {
+  bool requested = false;
+  bool required = false;
+  WritePathBatchingResult result;
+};
+
+CommitDurabilityBatchDecision EvaluateCommitDurabilityBatching(
+    const EngineCommitTransactionRequest& request,
+    const TransactionInventoryEntry& committing_entry) {
+  CommitDurabilityBatchDecision decision;
+  std::string mode =
+      NormalizedOptionText(RequestOptionValue(request,
+                                             "commit.durability_write_batching:"));
+  if (mode.empty() && RequestOptionBool(
+                          request,
+                          "commit.durability_write_batching.enabled:",
+                          false)) {
+    mode = "enabled";
+  }
+  if (mode.empty() || mode == "off" || mode == "disabled" || mode == "false") {
+    return decision;
+  }
+
+  decision.requested = true;
+  decision.required =
+      mode == "required" ||
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.required:",
+                        false);
+
+  WritePathBatchingRequest batch;
+  batch.route_label = RequestOptionValue(
+      request,
+      "commit.durability_write_batching.route_label:");
+  if (batch.route_label.empty()) { batch.route_label = "transaction.commit"; }
+  const auto scratch =
+      RequestOptionValue(request,
+                         "commit.durability_write_batching.scratch:");
+  batch.scratch_directory =
+      scratch.empty()
+          ? std::filesystem::temp_directory_path() /
+                ("scratchbird_commit_durability_batch_" +
+                 std::to_string(request.context.local_transaction_id))
+          : std::filesystem::path(scratch);
+  batch.database_uuid = ParseOrGenerateTypedUuid(
+      UuidKind::database,
+      request.context.database_uuid.canonical,
+      request.context.local_transaction_id + 1000);
+  batch.filespace_uuid = ParseOrGenerateTypedUuid(
+      UuidKind::filespace,
+      RequestOptionValue(request,
+                         "commit.durability_write_batching.filespace_uuid:"),
+      request.context.local_transaction_id + 2000);
+  batch.transaction_uuid = ParseOrGenerateTypedUuid(
+      UuidKind::transaction,
+      request.context.transaction_uuid.canonical.empty()
+          ? UuidToString(committing_entry.identity.transaction_uuid.value)
+          : request.context.transaction_uuid.canonical,
+      request.context.local_transaction_id + 3000);
+  batch.local_transaction_id = request.context.local_transaction_id;
+  batch.batching_generation = RequestOptionU64(
+      request,
+      "commit.durability_write_batching.generation:",
+      std::max<std::uint64_t>(1, request.context.local_transaction_id));
+  batch.expected_batching_generation = RequestOptionU64(
+      request,
+      "commit.durability_write_batching.expected_generation:",
+      batch.batching_generation);
+  batch.dirty_page_count = RequestOptionU64(
+      request,
+      "commit.durability_write_batching.dirty_pages:",
+      4);
+  batch.page_generation = RequestOptionU64(
+      request,
+      "commit.durability_write_batching.page_generation:",
+      batch.batching_generation + 1);
+  batch.extent_page_count = RequestOptionU64(
+      request,
+      "commit.durability_write_batching.extent_pages:",
+      batch.dirty_page_count == 0 ? 1 : batch.dirty_page_count);
+  batch.authority.engine_mga_tip_authoritative =
+      !RequestOptionBool(request,
+                         "commit.durability_write_batching.mga_authority_false:",
+                         false);
+  batch.authority.durable_transaction_inventory_proven =
+      !RequestOptionBool(request,
+                         "commit.durability_write_batching.inventory_unproven:",
+                         false);
+  batch.authority.parser_client_or_reference_write_batch_authority =
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.parser_authority:",
+                        false);
+  batch.authority.batch_metadata_finality_or_visibility_authority =
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.metadata_finality_authority:",
+                        false);
+  batch.authority.batch_metadata_recovery_authority =
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.metadata_recovery_authority:",
+                        false);
+  batch.authority.recovery_from_batch_metadata_alone =
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.metadata_only_recovery:",
+                        false);
+  batch.runtime_enabled = !RequestOptionBool(
+      request,
+      "commit.durability_write_batching.runtime_disabled:",
+      false);
+  batch.dirty_page_accounting_available = !RequestOptionBool(
+      request,
+      "commit.durability_write_batching.dirty_accounting_missing:",
+      false);
+  batch.extent_allocation_matches = !RequestOptionBool(
+      request,
+      "commit.durability_write_batching.extent_mismatch:",
+      false);
+  batch.fsync_open_proof_available = !RequestOptionBool(
+      request,
+      "commit.durability_write_batching.fsync_open_missing:",
+      false);
+  batch.crash_reopen_recovery_proof_available = !RequestOptionBool(
+      request,
+      "commit.durability_write_batching.recovery_proof_missing:",
+      false);
+  batch.exact_fallback_available =
+      RequestOptionBool(request,
+                        "commit.durability_write_batching.exact_fallback:",
+                        true);
+  batch.resource_pressure = RequestOptionBool(
+      request,
+      "commit.durability_write_batching.resource_pressure:",
+      false);
+  batch.expected_state_hash = RequestOptionValue(
+      request,
+      "commit.durability_write_batching.expected_state_hash:");
+
+  decision.result = ExecuteDurabilityWritePathBatch(batch);
+  return decision;
+}
+
+void AppendCommitDurabilityBatchingEvidence(
+    EngineCommitTransactionResult* result,
+    const CommitDurabilityBatchDecision& decision) {
+  if (!decision.requested) { return; }
+  const auto& batch = decision.result;
+  result->evidence.push_back({"commit_durability_batching",
+                              batch.ok ? "accepted" :
+                                         (batch.fallback_used ? "fallback" :
+                                                              "refused")});
+  result->evidence.push_back({"commit_durability_batching_required",
+                              decision.required ? "true" : "false"});
+  result->evidence.push_back({"commit_durability_batching_diagnostic",
+                              batch.diagnostic_code});
+  result->evidence.push_back({"commit_durability_batching_fallback_reason",
+                              batch.fallback_reason});
+  result->evidence.push_back({"commit_durability_batching_batched_flushes",
+                              std::to_string(batch.batched_flush_operations)});
+  result->evidence.push_back({"commit_durability_batching_flushed_pages",
+                              std::to_string(batch.flushed_pages)});
+  result->evidence.push_back({"commit_durability_batching_state_hash",
+                              batch.state_hash});
+  for (const auto& item : batch.evidence) {
+    result->evidence.push_back({"commit_durability_batching_evidence", item});
+  }
 }
 
 std::string ProfileValue(const EngineProfileSet& profiles, const std::string& prefix) {
@@ -1024,10 +1216,25 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
+  CommitDurabilityBatchDecision durability_batch;
   if (!read_only_commit) {
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
     if (deferred_constraints.error) {
       return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, deferred_constraints);
+    }
+    durability_batch = EvaluateCommitDurabilityBatching(request, *committing_entry);
+    if (durability_batch.requested && !durability_batch.result.ok &&
+        (durability_batch.required || durability_batch.result.fail_closed)) {
+      return MakeTxnError<EngineCommitTransactionResult>(
+          request.context,
+          operation_id,
+          MakeEngineApiDiagnostic(
+              durability_batch.result.diagnostic_code.empty()
+                  ? "SB-IPAR-COMMIT-DURABILITY-BATCHING-REFUSED"
+                  : durability_batch.result.diagnostic_code,
+              "transaction.commit.durability_batching_refused",
+              durability_batch.result.fallback_reason,
+              true));
     }
     const auto temporary_cleanup = ApplyMgaTemporaryOnCommitActions(request.context,
                                                                    request.context.local_transaction_id,
@@ -1036,6 +1243,27 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     if (temporary_cleanup.error) {
       return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, temporary_cleanup);
     }
+  }
+  if (IparFaultPointRequested(request.option_envelopes, "commit_fence")) {
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
+        request.context,
+        operation_id,
+        IparFaultDiagnostic(operation_id,
+                            "commit_fence",
+                            "phase=before_inventory_commit"));
+    result.local_transaction_id = request.context.local_transaction_id;
+    result.transaction_uuid = request.context.transaction_uuid;
+    static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
+    static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+    result.commit_finality_state = "refused_before_inventory_commit";
+    result.engine_finality_known = true;
+    result.post_inventory_secondary_failure = false;
+    result.evidence.push_back({"mga_finality_state", "not_committed_by_engine_inventory"});
+    result.evidence.push_back({"engine_finality_known", "true"});
+    AppendIparFaultEvidence(&result.evidence,
+                            "commit_fence",
+                            "rollback_required_before_inventory_commit");
+    return result;
   }
   const auto committed = CommitLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
   if (!committed.ok()) {
@@ -1052,17 +1280,39 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       request.context,
       request.context.local_transaction_id);
   if (committed_deltas.error) {
-    return MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
-        committed_deltas);
+        MakeEngineApiDiagnostic(
+            "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE",
+            "transaction.commit.post_inventory_secondary_failure",
+            "mga_finality_state=committed_by_engine_inventory;secondary_diagnostic=" +
+                committed_deltas.code + ";secondary_detail=" + committed_deltas.detail,
+            true));
+    result.local_transaction_id = committed.entry.identity.local_id.value;
+    result.transaction_uuid.canonical = UuidToString(committed.entry.identity.transaction_uuid.value);
+    static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
+    static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+    result.commit_finality_state = "committed_post_inventory_secondary_failure";
+    result.engine_finality_known = true;
+    result.post_inventory_secondary_failure = true;
+    result.evidence.push_back({"mga_finality_state", "committed_by_engine_inventory"});
+    result.evidence.push_back({"post_inventory_secondary_failure", "true"});
+    result.evidence.push_back({"parser_finality", "false"});
+    return result;
   }
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
   result.local_transaction_id = committed.entry.identity.local_id.value;
   result.transaction_uuid.canonical = UuidToString(committed.entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+  result.commit_finality_state = "committed_by_engine_inventory";
+  result.engine_finality_known = true;
+  result.post_inventory_secondary_failure = false;
   result.evidence.push_back({"transaction_state", "committed"});
+  result.evidence.push_back({"mga_finality_state", "committed_by_engine_inventory"});
+  result.evidence.push_back({"engine_finality_known", "true"});
+  result.evidence.push_back({"post_inventory_secondary_failure", "false"});
   result.evidence.push_back({"transaction_read_only", read_only_commit ? "true" : "false"});
   result.evidence.push_back({"temporary_on_commit_deleted_rows", std::to_string(temporary_deleted_rows)});
   result.evidence.push_back({"temporary_on_commit_reclaimed_large_values",
@@ -1074,6 +1324,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   if (read_only_commit) {
     result.evidence.push_back({"read_only_commit_cleanup", "skipped_no_mutation_authority"});
   }
+  AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
   return result;
 }
 

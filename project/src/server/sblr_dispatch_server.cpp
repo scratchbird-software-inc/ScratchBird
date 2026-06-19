@@ -13,10 +13,12 @@
 #include "sblr_admission.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "catalog/sbsql_language_elements_catalog.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "observability/show_api.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include "scratchbird/engine/engine.h"
@@ -29,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -985,6 +988,33 @@ std::string SanitizeArchiveRouteSegment(std::string value) {
   return value;
 }
 
+std::string DerivedLifecycleDatabasePath(const ServerSessionRecord& session,
+                                         std::string_view encoded) {
+  const std::string explicit_path =
+      JsonTextField(encoded, "database_path")
+          .value_or(JsonTextField(encoded, "target_database_path").value_or(""));
+  if (!explicit_path.empty()) {
+    return explicit_path;
+  }
+
+  const std::string database_name =
+      JsonTextField(encoded, "database_name")
+          .value_or(JsonTextField(encoded, "target_database_name").value_or(""));
+  if (database_name.empty()) {
+    return {};
+  }
+
+  std::filesystem::path base =
+      session.database_path.empty()
+          ? std::filesystem::current_path()
+          : std::filesystem::path(session.database_path).parent_path();
+  std::string filename = SanitizeArchiveRouteSegment(database_name);
+  if (!filename.ends_with(".sbdb")) {
+    filename += ".sbdb";
+  }
+  return (base / filename).lexically_normal().string();
+}
+
 std::string DefaultArchiveManifestUri(const ServerSessionRecord& session,
                                       std::string_view archive_operation,
                                       std::string_view target_name) {
@@ -1056,7 +1086,8 @@ void AddArchiveReplicationCommonOptions(engine_api::EngineApiRequest* request,
 }
 
 void AddArchiveReplicationRestoreOptions(engine_api::EngineApiRequest* request,
-                                         std::string_view manifest_uri) {
+                                         std::string_view manifest_uri,
+                                         bool verify_only = false) {
   if (request == nullptr) return;
   request->option_envelopes.push_back("filespace_uuid:filespace:session");
   request->option_envelopes.push_back("authoritative_wal:false");
@@ -1064,6 +1095,9 @@ void AddArchiveReplicationRestoreOptions(engine_api::EngineApiRequest* request,
   request->option_envelopes.push_back("recovery_classification:restore_inspection");
   request->option_envelopes.push_back("target_database_open:false");
   request->option_envelopes.push_back("engine_owned_path:true");
+  if (verify_only) {
+    request->option_envelopes.push_back("restore_verify_only:true");
+  }
   if (!manifest_uri.empty()) {
     request->option_envelopes.push_back("source_manifest_uri:" + std::string(manifest_uri));
   }
@@ -1126,30 +1160,82 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
   return encoded;
 }
 
-bool PreparedStatementEpochMatches(const ServerPreparedStatementRecord& prepared,
-                                   const ServerSessionRecord& session) {
+std::string PreparedStatementAuthorityMismatchReason(
+    const ServerPreparedStatementRecord& prepared,
+    const ServerSessionRecord& session) {
   const auto language = ServerLanguageContextForSession(session);
-  return prepared.catalog_generation == session.catalog_generation &&
-         prepared.security_epoch == session.security_epoch &&
-         prepared.descriptor_epoch == session.descriptor_epoch &&
-         prepared.grant_epoch == session.grant_epoch &&
-         prepared.policy_generation == session.policy_generation &&
-         prepared.role_set_hash == session.role_set_hash &&
-         prepared.group_set_hash == session.group_set_hash &&
-         prepared.search_path_hash == session.search_path_hash &&
-         prepared.language_profile == language.language_profile_id &&
-         prepared.language_tag == language.language_tag &&
-         prepared.default_language_tag == language.default_language_tag &&
-         prepared.input_syntax_profile == language.input_syntax_profile &&
-         prepared.input_language_fallback_tag ==
-             language.input_language_fallback_tag &&
-         prepared.common_resource_hash == language.common_resource_hash &&
-         prepared.language_resource_epoch == language.language_resource_epoch &&
-         prepared.localized_name_epoch == language.localized_name_epoch &&
-         prepared.message_resource_epoch == language.message_resource_epoch &&
-         prepared.resource_compatibility_identity ==
-             language.resource_compatibility_identity &&
-         prepared.resource_version_identity == language.resource_version_identity;
+  if (prepared.closed) return "prepared_statement_closed";
+  if (prepared.session_uuid != session.session_uuid) {
+    return "prepared_statement_cross_session";
+  }
+  if (prepared.database_uuid != session.database_uuid) {
+    return "prepared_statement_cross_database";
+  }
+  if (prepared.auth_context_uuid != session.auth_context_uuid) {
+    return "prepared_statement_security_context_stale";
+  }
+  if (prepared.principal_uuid != session.principal_uuid ||
+      prepared.effective_user_uuid != session.effective_user_uuid) {
+    return "prepared_statement_cross_user";
+  }
+  if (prepared.catalog_generation != session.catalog_generation) {
+    return "prepared_statement_catalog_epoch_stale";
+  }
+  if (prepared.security_epoch != session.security_epoch) {
+    return "prepared_statement_security_epoch_stale";
+  }
+  if (prepared.descriptor_epoch != session.descriptor_epoch) {
+    return "prepared_statement_descriptor_epoch_stale";
+  }
+  if (prepared.grant_epoch != session.grant_epoch) {
+    return "prepared_statement_grant_epoch_stale";
+  }
+  if (prepared.policy_generation != session.policy_generation) {
+    return "prepared_statement_policy_epoch_stale";
+  }
+  if (prepared.role_set_hash != session.role_set_hash ||
+      prepared.group_set_hash != session.group_set_hash ||
+      prepared.search_path_hash != session.search_path_hash) {
+    return "prepared_statement_authorization_context_stale";
+  }
+  if (prepared.language_profile != language.language_profile_id ||
+      prepared.language_tag != language.language_tag ||
+      prepared.default_language_tag != language.default_language_tag ||
+      prepared.input_syntax_profile != language.input_syntax_profile ||
+      prepared.input_language_fallback_tag != language.input_language_fallback_tag ||
+      prepared.common_resource_hash != language.common_resource_hash ||
+      prepared.language_resource_epoch != language.language_resource_epoch ||
+      prepared.localized_name_epoch != language.localized_name_epoch ||
+      prepared.message_resource_epoch != language.message_resource_epoch ||
+      prepared.resource_compatibility_identity != language.resource_compatibility_identity ||
+      prepared.resource_version_identity != language.resource_version_identity) {
+    return "prepared_statement_language_context_stale";
+  }
+  return {};
+}
+
+std::string PreparedStatementRefusalDetail(std::string_view mismatch) {
+  if (mismatch == "prepared_statement_security_context_stale" ||
+      mismatch == "prepared_statement_catalog_epoch_stale" ||
+      mismatch == "prepared_statement_security_epoch_stale" ||
+      mismatch == "prepared_statement_descriptor_epoch_stale" ||
+      mismatch == "prepared_statement_grant_epoch_stale" ||
+      mismatch == "prepared_statement_policy_epoch_stale" ||
+      mismatch == "prepared_statement_authorization_context_stale" ||
+      mismatch == "prepared_statement_language_context_stale") {
+    return "prepared_statement_epoch_stale";
+  }
+  return std::string(mismatch);
+}
+
+void CapturePreparedAuthorityContext(ServerPreparedStatementRecord* prepared,
+                                     const ServerSessionRecord& session) {
+  if (prepared == nullptr) return;
+  prepared->session_uuid = session.session_uuid;
+  prepared->auth_context_uuid = session.auth_context_uuid;
+  prepared->principal_uuid = session.principal_uuid;
+  prepared->effective_user_uuid = session.effective_user_uuid;
+  prepared->database_uuid = session.database_uuid;
 }
 
 void CapturePreparedLanguageContext(ServerPreparedStatementRecord* prepared,
@@ -1496,6 +1582,93 @@ std::string EncodedTextField(std::string_view encoded, const std::string& field)
   return JsonTextField(encoded, field).value_or(TextLineValue(encoded, field).value_or(""));
 }
 
+struct DispatchIdentifierPart {
+  std::string text;
+  bool quoted = false;
+};
+
+std::vector<DispatchIdentifierPart> SplitDispatchIdentifierPath(std::string_view path) {
+  std::vector<DispatchIdentifierPart> parts;
+  DispatchIdentifierPart current;
+  bool in_quote = false;
+  bool saw_quote = false;
+  for (std::size_t index = 0; index < path.size(); ++index) {
+    const char ch = path[index];
+    if (in_quote) {
+      if (ch == '"') {
+        if (index + 1 < path.size() && path[index + 1] == '"') {
+          current.text.push_back('"');
+          ++index;
+          continue;
+        }
+        in_quote = false;
+        current.quoted = true;
+        saw_quote = true;
+        continue;
+      }
+      current.text.push_back(ch);
+      continue;
+    }
+    if (ch == '"') {
+      in_quote = true;
+      current.quoted = true;
+      saw_quote = true;
+      continue;
+    }
+    if (ch == '.') {
+      if (!current.text.empty()) {
+        current.quoted = current.quoted || saw_quote;
+        parts.push_back(std::move(current));
+      }
+      current = {};
+      saw_quote = false;
+      continue;
+    }
+    if (!std::isspace(static_cast<unsigned char>(ch)) || !current.text.empty()) {
+      current.text.push_back(ch);
+    }
+  }
+  while (!current.text.empty() &&
+         std::isspace(static_cast<unsigned char>(current.text.back()))) {
+    current.text.pop_back();
+  }
+  if (!in_quote && !current.text.empty()) {
+    current.quoted = current.quoted || saw_quote;
+    parts.push_back(std::move(current));
+  }
+  return parts;
+}
+
+engine_api::EngineIdentifierAtom DispatchIdentifierAtom(
+    const DispatchIdentifierPart& part) {
+  engine_api::EngineIdentifierAtom atom;
+  atom.raw_text = part.text;
+  atom.was_quoted = part.quoted;
+  atom.quote_style = part.quoted ? "double_quote" : "none";
+  atom.requires_exact_match = part.quoted;
+  atom.identifier_profile_uuid = "sbsql_v3";
+  return atom;
+}
+
+std::string ResolveSchemaParentPathForDispatch(
+    const ServerSessionRecord& session,
+    std::string_view schema_parent_path) {
+  const auto parts = SplitDispatchIdentifierPath(schema_parent_path);
+  if (parts.empty()) return {};
+  engine_api::EngineResolveNameRequest request;
+  request.context = PublicAbiDispatchEngineContext(session);
+  request.sql_object_reference.expected_object_type = "schema";
+  request.sql_object_reference.path_type = parts.size() > 1 ? "qualified" : "unqualified";
+  request.sql_object_reference.no_search_path = parts.size() > 1;
+  for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+    request.sql_object_reference.path_components.push_back(
+        DispatchIdentifierAtom(parts[index]));
+  }
+  request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
+  const auto resolved = engine_api::EngineResolveName(request);
+  return resolved.ok ? resolved.primary_object.uuid.canonical : std::string{};
+}
+
 std::uint64_t ParseU64Text(const std::string& value) {
   std::uint64_t parsed = 0;
   if (value.empty()) return 0;
@@ -1512,6 +1685,20 @@ void AppendOperationOperand(std::string* operation_envelope,
   if (operation_envelope == nullptr) return;
   *operation_envelope += "operand=text\t";
   *operation_envelope += field;
+  *operation_envelope += "\t";
+  *operation_envelope += EscapeOperationOperandField(value);
+  *operation_envelope += "\n";
+}
+
+void AppendOperationRowTextField(std::string* operation_envelope,
+                                 std::string_view row_uuid,
+                                 std::string_view field,
+                                 std::string_view value) {
+  if (operation_envelope == nullptr) return;
+  *operation_envelope += "operand=row_field:text\t";
+  *operation_envelope += EscapeOperationOperandField(row_uuid);
+  *operation_envelope += "|";
+  *operation_envelope += EscapeOperationOperandField(field);
   *operation_envelope += "\t";
   *operation_envelope += EscapeOperationOperandField(value);
   *operation_envelope += "\n";
@@ -1779,6 +1966,8 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "dml.plan_import_rows") return "SBLR_DML_PLAN_IMPORT_ROWS";
   if (operation_id == "dml.execute_import_rows") return "SBLR_DML_EXECUTE_IMPORT_ROWS";
   if (operation_id == "dml.execute_native_bulk_ingest") return "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST";
+  if (operation_id == "routine.procedure_invoke") return "SBLR_PROCEDURE_INVOKE";
+  if (operation_id == "routine.function_invoke") return "SBLR_FUNCTION_INVOKE";
   if (operation_id == "extensibility.inspect_gpu_capability") return "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY";
   if (operation_id == "extensibility.compile_llvm_module") return "SBLR_EXTENSIBILITY_COMPILE_LLVM_MODULE";
   if (operation_id == "filespace.create") return "SBLR_FILESPACE_CREATE";
@@ -1814,7 +2003,22 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "query.cast_value") return "SBLR_QUERY_CAST_VALUE";
   if (operation_id == "query.evaluate_projection") return "SBLR_QUERY_EVALUATE_PROJECTION";
   if (operation_id == "query.plan_operation") return "SBLR_QUERY_PLAN_OPERATION";
+  if (operation_id == "nosql.document_insert") return "SBLR_NOSQL_DOCUMENT_INSERT";
+  if (operation_id == "nosql.document_find") return "SBLR_NOSQL_DOCUMENT_FIND";
+  if (operation_id == "nosql.document_update") return "SBLR_NOSQL_DOCUMENT_UPDATE";
+  if (operation_id == "nosql.document_delete") return "SBLR_NOSQL_DOCUMENT_DELETE";
   if (operation_id == "nosql.graph_query") return "SBLR_NOSQL_GRAPH_QUERY";
+  if (operation_id == "nosql.key_value_get") return "SBLR_NOSQL_KEY_VALUE_GET";
+  if (operation_id == "nosql.key_value_put") return "SBLR_NOSQL_KEY_VALUE_PUT";
+  if (operation_id == "nosql.key_value_multiget") return "SBLR_NOSQL_KEY_VALUE_MULTIGET";
+  if (operation_id == "nosql.key_value_pipeline") return "SBLR_NOSQL_KEY_VALUE_PIPELINE";
+  if (operation_id == "nosql.key_value_atomic_program") return "SBLR_NOSQL_KEY_VALUE_ATOMIC_PROGRAM";
+  if (operation_id == "nosql.backpressure_debt_plan") return "SBLR_NOSQL_BACKPRESSURE_DEBT_PLAN";
+  if (operation_id == "nosql.family_maintenance_plan") return "SBLR_NOSQL_FAMILY_MAINTENANCE_PLAN";
+  if (operation_id == "nosql.statistics_advisor_plan") return "SBLR_NOSQL_STATISTICS_ADVISOR_PLAN";
+  if (operation_id == "nosql.time_series_append") return "SBLR_NOSQL_TIME_SERIES_APPEND";
+  if (operation_id == "nosql.vector_search") return "SBLR_NOSQL_VECTOR_SEARCH";
+  if (operation_id == "nosql.vector_collection_op") return "SBLR_NOSQL_VECTOR_COLLECTION_OP";
   if (operation_id == "nosql.search_query") return "SBLR_NOSQL_SEARCH_QUERY";
   if (operation_id == "observability.show_version") return "SBLR_OBSERVABILITY_SHOW_VERSION";
   if (operation_id == "observability.show_database") return "SBLR_OBSERVABILITY_SHOW_DATABASE";
@@ -1838,6 +2042,17 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "observability.explain_operation") return "SBLR_OBSERVABILITY_EXPLAIN_OPERATION";
   if (operation_id == "op.sbsql.surface_replay") return "SBLR_OP_SBSQL_SURFACE_REPLAY";
   if (operation_id == "catalog.get_descriptor") return "SBLR_CATALOG_GET_DESCRIPTOR";
+  if (operation_id == "artifact.export_catalog") return "SBLR_ARTIFACT_EXPORT_CATALOG";
+  if (operation_id == "artifact.import_catalog") return "SBLR_ARTIFACT_IMPORT_CATALOG";
+  if (operation_id == "artifact.external_git.export_snapshot") {
+    return "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT";
+  }
+  if (operation_id == "artifact.external_git.diff_snapshot") {
+    return "SBLR_ARTIFACT_EXTERNAL_GIT_DIFF_SNAPSHOT";
+  }
+  if (operation_id == "artifact.external_git.rollback_plan") {
+    return "SBLR_ARTIFACT_EXTERNAL_GIT_ROLLBACK_PLAN";
+  }
   if (const char* catalog_mutation_opcode =
           CatalogMutationPublicAbiOpcodeForOperation(operation_id);
       catalog_mutation_opcode != nullptr) {
@@ -1902,6 +2117,12 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "op.migration.alter") return "SBLR_MIGRATION_ALTER";
   if (operation_id == "op.show.migration") return "SBLR_SHOW_MIGRATION";
   if (operation_id == "op.show.migrations") return "SBLR_SHOW_MIGRATIONS";
+  if (operation_id.starts_with("op.management.") ||
+      operation_id.starts_with("op.show.management.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
   if (operation_id == "management.inspect_runtime") return "SBLR_MANAGEMENT_INSPECT_RUNTIME";
   if (operation_id == "management.control_runtime") return "SBLR_MANAGEMENT_CONTROL_RUNTIME";
   if (operation_id.starts_with("memory.")) {
@@ -2804,6 +3025,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "predicate_column",
         "predicate_value",
         "predicate_value_type",
+        "additional_predicate_kind",
+        "additional_predicate_column",
+        "additional_predicate_value",
+        "additional_predicate_value_type",
         "subquery_projection",
         "subquery_select_column",
         "subquery_predicate_kind",
@@ -2823,6 +3048,44 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       }
     }
   }
+  if (dispatch_operation_id == "observability.show_catalog" && virtual_projection.empty()) {
+    constexpr std::string_view kCatalogProjectionFields[] = {
+        "projection",
+        "catalog_projection",
+        "result_projection",
+        "aggregate_function",
+        "assertion_id",
+        "actual_column_name",
+        "expected_column_name",
+        "expected_count",
+        "expected_value",
+        "predicate_kind",
+        "predicate_column",
+        "predicate_value",
+        "predicate_value_type",
+        "additional_predicate_kind",
+        "additional_predicate_column",
+        "additional_predicate_value",
+        "additional_predicate_value_type",
+        "subquery_projection",
+        "subquery_select_column",
+        "subquery_predicate_kind",
+        "subquery_predicate_column",
+        "subquery_predicate_value",
+        "subquery_predicate_value_type",
+        "subquery_nested_projection",
+        "subquery_nested_select_column",
+        "subquery_nested_predicate_kind",
+        "subquery_nested_predicate_column",
+        "subquery_nested_predicate_value",
+        "subquery_nested_predicate_value_type"};
+    for (const auto field : kCatalogProjectionFields) {
+      const std::string value = JsonTextField(encoded, std::string(field)).value_or(
+          TextLineValue(encoded, std::string(field)).value_or(""));
+      if (value.empty()) { continue; }
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+  }
   auto append_session_operand = [&operation_envelope](std::string_view name,
                                                       const std::string& value) {
     if (value.empty()) { return; }
@@ -2840,6 +3103,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   }
   append_session_operand("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
   append_session_operand("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
+  for (const auto& tag : session.engine_authorization_trace_tags) {
+    append_session_operand("authorization_tag", tag);
+  }
   if (const auto savepoint_name = SavepointOperandForDispatch(encoded, dispatch_operation_id)) {
     operation_envelope += "savepoint_name=";
     operation_envelope += EscapeOperationOperandField(*savepoint_name);
@@ -2879,6 +3145,62 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\n";
     }
   }
+  if (dispatch_operation_id.starts_with("lifecycle.")) {
+    const std::string database_name =
+        JsonTextField(encoded, "database_name")
+            .value_or(JsonTextField(encoded, "target_database_name").value_or(""));
+    append_session_operand("database_name", database_name);
+    append_session_operand("database_path",
+                           DerivedLifecycleDatabasePath(session, encoded));
+  }
+  if (dispatch_operation_id == "lifecycle.create_database") {
+    append_session_operand("resource_seed_pack_root",
+                           session.resource_seed_pack_root);
+    append_session_operand("policy_seed_pack_root",
+                           session.policy_seed_pack_root);
+  }
+  if (dispatch_operation_id == "lifecycle.repair_database") {
+    append_session_operand("repair_plan_id",
+                           JsonTextField(encoded, "repair_plan_id").value_or(""));
+    append_session_operand("repair_admission_proven", "true");
+    append_session_operand("restricted_or_maintenance_admission", "true");
+    append_session_operand("allow_repair", "true");
+    append_session_operand("allow_mutation", "true");
+    append_session_operand("engine_read_identity_proof", "true");
+  }
+  if (dispatch_operation_id == "lifecycle.drop_database") {
+    append_session_operand("drop_mode",
+                           JsonTextField(encoded, "drop_mode").value_or("logical"));
+    append_session_operand("drop_safety_preconditions", "true");
+    append_session_operand("session_drain_complete", "true");
+    append_session_operand("ownership_release_verified", "true");
+    append_session_operand("retention_policy_satisfied", "true");
+    append_session_operand("backup_coverage_verified", "true");
+    append_session_operand("legal_hold_clear", "true");
+  }
+  if (dispatch_operation_id == "artifact.external_git.export_snapshot" ||
+      dispatch_operation_id == "artifact.external_git.diff_snapshot" ||
+      dispatch_operation_id == "artifact.external_git.rollback_plan") {
+    AppendOperationOperand(&operation_envelope, "external_git_policy", "enabled");
+    AppendOperationOperand(&operation_envelope, "git_runtime_authority", "false");
+    AppendOperationOperand(&operation_envelope, "external_git_repository_authority", "false");
+    if (dispatch_operation_id == "artifact.external_git.diff_snapshot" ||
+        dispatch_operation_id == "artifact.external_git.rollback_plan") {
+      constexpr std::string_view row_uuid = "external-git-candidate-row-1";
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "artifact_format",
+                                  "sb.external_git.catalog_snapshot.v1");
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "snapshot_entry_kind",
+                                  "object");
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "object_uuid",
+                                  "019f0000-0000-7000-8000-00000000e901");
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "object_kind",
+                                  "schema");
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "default_name",
+                                  "external_git_candidate");
+      AppendOperationRowTextField(&operation_envelope, row_uuid, "payload",
+                                  "localized_name=en,default,external_git_candidate,external_git_candidate,default");
+    }
+  }
   if (dispatch_operation_id == "security.privilege.grant" ||
       dispatch_operation_id == "security.privilege.revoke") {
     constexpr std::string_view kSecurityFields[] = {
@@ -2906,6 +3228,54 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\t";
       operation_envelope += EscapeOperationOperandField(value);
       operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id.starts_with("filespace.")) {
+    constexpr std::string_view kFilespaceFields[] = {
+        "target_object_uuid", "target_object_kind", "target_filespace_uuid",
+        "requested_pages", "requested_bytes",
+        "filespace.page_size_bytes", "filespace.current_pages",
+        "filespace.preallocated_pages", "filespace.maximum_pages",
+        "filespace.path", "filespace.role", "filespace.physical_id",
+        "filespace.total_pages", "filespace.free_pages",
+        "filespace.allocation_root_page", "filespace.header_generation",
+        "filespace.merge_target_uuid", "filespace.lifecycle.operation",
+        "filespace.allow_primary_detach", "filespace.allow_primary_replacement",
+        "filespace.allow_promotion",
+        "filespace.require_no_active_pins_for_detach",
+        "filespace.require_no_active_pins_for_promote",
+        "filespace.require_no_active_pins_for_quarantine",
+        "filespace.require_no_active_pins_for_move",
+        "filespace.require_no_active_pins_for_merge",
+        "filespace.require_no_active_pins_for_delete_physical",
+        "filespace.require_no_active_pins_for_repair",
+        "filespace.require_no_active_pins_for_rebuild",
+        "filespace.require_no_active_pins_for_salvage",
+        "filespace.allow_filespace_move", "filespace.allow_filespace_merge",
+        "filespace.allow_filespace_repair", "filespace.allow_filespace_rebuild",
+        "filespace.allow_filespace_salvage",
+        "filespace.allow_physical_filespace_delete",
+        "filespace.require_physical_header_for_attach",
+        "filespace.require_physical_header_for_promote",
+        "filespace.allow_archive_owner_assignment"};
+    for (const auto field : kFilespaceFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
+        TextLineValue(encoded, "target_object_uuid").value_or(""));
+    const std::string filespace_uuid = JsonTextField(encoded, "target_filespace_uuid").value_or(
+        TextLineValue(encoded, "target_filespace_uuid").value_or(""));
+    if (!target_uuid.empty() && filespace_uuid.empty()) {
+      AppendOperationOperand(&operation_envelope, "target_filespace_uuid", target_uuid);
+    }
+    const std::string target_kind = JsonTextField(encoded, "target_object_kind").value_or(
+        TextLineValue(encoded, "target_object_kind").value_or(""));
+    if (!target_uuid.empty() && target_kind.empty()) {
+      AppendOperationOperand(&operation_envelope, "target_object_kind", "filespace");
     }
   }
   if (dispatch_operation_id == "security.principal.create" ||
@@ -3020,6 +3390,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kCatalogDescriptorMutationFields[] = {
         "target_object_uuid", "target_object_kind", "catalog_authority",
         "descriptor_ref", "catalog_action", "ddl_operation_id",
+        "target_name_parts", "name", "schema_parent_path",
+        "name_text_authority",
         "catalog_descriptor_read_only", "mga_catalog_commit_required",
         "parser_executes_sql", "surface_id", "surface_name"};
     for (const auto field : kCatalogDescriptorMutationFields) {
@@ -3132,11 +3504,19 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
     const std::string schema_uuid = JsonTextField(encoded, "schema_object_uuid").value_or(
         TextLineValue(encoded, "schema_object_uuid").value_or(""));
+    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
+        TextLineValue(encoded, "target_object_uuid").value_or(""));
     if (!schema_uuid.empty() &&
-        JsonTextField(encoded, "target_object_uuid").value_or(
-            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
+        target_uuid.empty()) {
       AppendOperationOperand(&operation_envelope, "target_object_uuid", schema_uuid);
       AppendOperationOperand(&operation_envelope, "target_object_kind", "schema");
+    } else if (schema_uuid.empty() && target_uuid.empty()) {
+      const std::string generated_schema_uuid = engine_api::GenerateCrudEngineUuid("schema");
+      if (!generated_schema_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "target_object_uuid", generated_schema_uuid);
+        AppendOperationOperand(&operation_envelope, "schema_object_uuid", generated_schema_uuid);
+        AppendOperationOperand(&operation_envelope, "target_object_kind", "schema");
+      }
     }
     const std::string schema_name = JsonTextField(encoded, "schema_name").value_or(
         TextLineValue(encoded, "schema_name").value_or(""));
@@ -3151,6 +3531,17 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         JsonTextField(encoded, "target_schema_uuid").value_or(
             TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
       AppendOperationOperand(&operation_envelope, "target_schema_uuid", parent_uuid);
+    } else if (parent_uuid.empty() &&
+               JsonTextField(encoded, "target_schema_uuid").value_or(
+                   TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
+      const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
+          TextLineValue(encoded, "schema_parent_path").value_or(""));
+      const std::string resolved_parent_uuid =
+          ResolveSchemaParentPathForDispatch(session, schema_parent_path);
+      if (!resolved_parent_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "schema_parent_uuid", resolved_parent_uuid);
+        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_parent_uuid);
+      }
     }
   }
   if (dispatch_operation_id == "ddl.create_table") {
@@ -3160,6 +3551,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_schema_uuid", "schema_uuid",
         "schema_parent_uuid", "schema_parent_path",
         "column_count", "column_definition_count",
+        "physical_profile",
         "canonical_type_name"};
     for (const auto field : kTableFields) {
       const auto value = JsonTextField(encoded, field).value_or(
@@ -3283,13 +3675,18 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id == "ddl.alter_object") {
-    constexpr std::string_view kAlterObjectFields[] = {
-        "target_object_uuid", "target_object_kind", "rename_target_uuid",
-        "rename_target_kind", "new_name", "rename_new_name",
-        "target_schema_uuid", "schema_uuid"};
+	    constexpr std::string_view kAlterObjectFields[] = {
+	        "target_object_uuid", "target_object_kind", "rename_target_uuid",
+	        "rename_target_kind", "new_name", "rename_new_name",
+	        "target_schema_uuid", "schema_uuid",
+	        "domain_target_uuid", "default_expression", "check_constraint",
+	        "check_constraint_append", "nullable",
+	        "sequence_target_uuid", "sequence_lookup_key",
+	        "sequence_cache", "sequence_max_value", "sequence_restart_value"};
     for (const auto field : kAlterObjectFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3371,11 +3768,17 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   if (dispatch_operation_id == "ddl.create_sequence") {
     constexpr std::string_view kSequenceFields[] = {
         "target_object_uuid", "target_object_kind",
-        "sequence_object_uuid", "sequence_name",
-        "target_schema_uuid", "schema_uuid"};
+        "sequence_object_uuid", "sequence_name", "sequence_lookup_key",
+        "target_schema_uuid", "schema_uuid", "schema_parent_path",
+        "sequence_type",
+        "sequence_start_value", "sequence_increment",
+        "sequence_min_value", "sequence_max_value",
+        "sequence_cache", "sequence_no_cache",
+        "sequence_cycle", "sequence_descriptor"};
     for (const auto field : kSequenceFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3406,11 +3809,14 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind",
         "domain_object_uuid", "domain_name",
         "target_schema_uuid", "schema_uuid",
+        "schema_parent_uuid", "schema_parent_path",
         "base_descriptor_uuid", "base_descriptor_kind",
-        "base_canonical_type_name", "base_encoded_descriptor"};
+        "base_canonical_type_name", "base_encoded_descriptor",
+        "default_expression", "check_constraint", "nullable"};
     for (const auto field : kDomainFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3430,10 +3836,17 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
     const std::string domain_name = JsonTextField(encoded, "domain_name").value_or(
         TextLineValue(encoded, "domain_name").value_or(""));
-    if (!domain_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(domain_name);
-      operation_envelope += "\n";
+    if (!domain_name.empty() &&
+        JsonTextField(encoded, "name").value_or(
+            TextLineValue(encoded, "name").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "name", domain_name);
+    }
+    const std::string parent_uuid = JsonTextField(encoded, "schema_parent_uuid").value_or(
+        TextLineValue(encoded, "schema_parent_uuid").value_or(""));
+    if (!parent_uuid.empty() &&
+        JsonTextField(encoded, "target_schema_uuid").value_or(
+            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "target_schema_uuid", parent_uuid);
     }
   }
   if (dispatch_operation_id == "ddl.create_view") {
@@ -3531,6 +3944,45 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += EscapeOperationOperandField(object_name);
       operation_envelope += "\n";
     }
+  }
+  if (dispatch_operation_id == "routine.procedure_invoke" ||
+      dispatch_operation_id == "routine.function_invoke") {
+    constexpr std::string_view kRoutineInvokeFields[] = {
+        "target_object_uuid", "object_uuid", "routine_object_uuid",
+        "target_object_kind", "routine_invocation_kind", "routine_argument_count",
+        "routine_name", "target_schema_uuid"};
+    for (const auto field : kRoutineInvokeFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, std::string(field), value);
+    }
+    for (std::size_t argument = 0; argument < 64; ++argument) {
+      const std::string prefix = "routine_argument_" + std::to_string(argument);
+      const auto value = JsonTextField(encoded, prefix + "_value").value_or("");
+      if (value.empty() && !JsonTextField(encoded, prefix + "_binding").has_value()) break;
+      AppendOperationOperand(&operation_envelope, prefix + "_value", value);
+      if (const auto type = JsonTextField(encoded, prefix + "_type")) {
+        AppendOperationOperand(&operation_envelope, prefix + "_type", *type);
+      }
+      if (const auto binding = JsonTextField(encoded, prefix + "_binding")) {
+        AppendOperationOperand(&operation_envelope, prefix + "_binding", *binding);
+      }
+      if (const auto descriptor_kind = JsonTextField(encoded, prefix + "_descriptor_kind")) {
+        AppendOperationOperand(&operation_envelope,
+                               prefix + "_descriptor_kind",
+                               *descriptor_kind);
+      }
+    }
+    const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
+        TextLineValue(encoded, "target_object_uuid").value_or(""));
+    const std::string object_uuid = JsonTextField(encoded, "object_uuid").value_or(
+        TextLineValue(encoded, "object_uuid").value_or(""));
+    if (!target_uuid.empty() && object_uuid.empty()) {
+      AppendOperationOperand(&operation_envelope, "object_uuid", target_uuid);
+    }
+    AppendOperationOperand(&operation_envelope, "permission", "invoke_executable");
   }
   if (dispatch_operation_id.starts_with("agents.")) {
     const std::string agent_type = JsonTextField(encoded, "agent_type").value_or(
@@ -4181,6 +4633,161 @@ struct PublicAbiDispatchResult {
   sb_engine_result_t result_handle = nullptr;
 };
 
+std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
+                              std::size_t row_index) {
+  std::ostringstream out;
+  bool first = true;
+  for (const auto& field : api_result.result_shape.rows[row_index].fields) {
+    if (!first) {
+      out << ";";
+    }
+    first = false;
+    out << field.first << "=" << field.second.encoded_value;
+  }
+  return out.str();
+}
+
+std::string ServerApiRowMetadataValue(const engine_api::EngineApiResult& api_result,
+                                      std::size_t row_index) {
+  std::ostringstream out;
+  bool first = true;
+  const auto& row = api_result.result_shape.rows[row_index];
+  for (std::size_t field_index = 0; field_index < row.fields.size(); ++field_index) {
+    if (!first) {
+      out << ";";
+    }
+    first = false;
+    const auto& field = row.fields[field_index];
+    std::string type_name = field.second.descriptor.canonical_type_name;
+    if (type_name.empty() && field_index < api_result.result_shape.columns.size()) {
+      type_name = api_result.result_shape.columns[field_index].canonical_type_name;
+    }
+    if (type_name.empty()) {
+      type_name = "unknown";
+    }
+    out << field.first << ":" << type_name << ":"
+        << (field.second.is_null ? "null" : "not_null");
+  }
+  return out.str();
+}
+
+std::string ServerApiResultPayload(const engine_api::EngineApiResult& api_result) {
+  std::ostringstream out;
+  const std::uint64_t row_count =
+      static_cast<std::uint64_t>(api_result.result_shape.rows.size());
+  out << "operation_id=" << api_result.operation_id << "\n";
+  out << "result_kind=" << api_result.result_shape.result_kind << "\n";
+  out << "row_count=" << row_count << "\n";
+  for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+    const auto index = static_cast<std::size_t>(row_index);
+    out << "row[" << row_index << "]=" << ServerApiRowValue(api_result, index) << "\n";
+    out << "row_meta[" << row_index << "]="
+        << ServerApiRowMetadataValue(api_result, index) << "\n";
+  }
+  for (const auto& evidence : api_result.evidence) {
+    out << "evidence=" << evidence.evidence_kind << ":" << evidence.evidence_id << "\n";
+  }
+  return out.str();
+}
+
+std::string EncodedOrOperandTextField(std::string_view encoded, std::string_view field) {
+  return ExistingTextOperandValue(encoded, field).value_or(
+      JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or("")));
+}
+
+std::string CatalogProjectionPathForDispatch(std::string_view encoded) {
+  std::string projection_path = ServerVirtualProjectionForTarget(encoded);
+  if (!projection_path.empty()) {
+    return projection_path;
+  }
+  projection_path = EncodedOrOperandTextField(encoded, "projection");
+  if (projection_path.empty()) {
+    projection_path = EncodedOrOperandTextField(encoded, "catalog_projection");
+  }
+  return projection_path;
+}
+
+bool IsServerLiveIparCatalogProjection(std::string_view encoded) {
+  const std::string projection_path = CatalogProjectionPathForDispatch(encoded);
+  return projection_path.rfind("sys.ipar.", 0) == 0;
+}
+
+void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
+                                         std::string_view encoded) {
+  if (request == nullptr) {
+    return;
+  }
+  const std::string projection_path = CatalogProjectionPathForDispatch(encoded);
+  if (!projection_path.empty()) {
+    request->option_envelopes.push_back("projection:" + projection_path);
+    request->option_envelopes.push_back("catalog_projection:" + projection_path);
+  }
+  constexpr std::string_view kCatalogProjectionFields[] = {
+      "result_projection",
+      "aggregate_function",
+      "assertion_id",
+      "actual_column_name",
+      "expected_column_name",
+      "expected_count",
+      "expected_value",
+      "predicate_kind",
+      "predicate_column",
+      "predicate_value",
+      "predicate_value_type",
+      "additional_predicate_kind",
+      "additional_predicate_column",
+      "additional_predicate_value",
+      "additional_predicate_value_type",
+      "subquery_projection",
+      "subquery_select_column",
+      "subquery_predicate_kind",
+      "subquery_predicate_column",
+      "subquery_predicate_value",
+      "subquery_predicate_value_type",
+      "subquery_nested_projection",
+      "subquery_nested_select_column",
+      "subquery_nested_predicate_kind",
+      "subquery_nested_predicate_column",
+      "subquery_nested_predicate_value",
+      "subquery_nested_predicate_value_type"};
+  for (const auto field : kCatalogProjectionFields) {
+    const std::string value = EncodedOrOperandTextField(encoded, field);
+    if (!value.empty()) {
+      request->option_envelopes.push_back(std::string(field) + ":" + value);
+    }
+  }
+}
+
+PublicAbiDispatchResult DispatchServerLiveIparCatalogProjection(
+    const ServerSessionRecord& session,
+    const std::string& encoded,
+    const ServerIparProjectionSources& ipar_sources) {
+  PublicAbiDispatchResult dispatch_result;
+  dispatch_result.attempted = true;
+  engine_api::EngineShowCatalogRequest request;
+  request.context = PublicAbiDispatchEngineContext(session);
+  AddCatalogProjectionDispatchOptions(&request, encoded);
+  request.ipar_agent_lifecycle = ipar_sources.agent_lifecycle;
+  request.ipar_metric_counters = ipar_sources.metric_counters;
+  request.ipar_telemetry_controls = ipar_sources.telemetry_controls;
+  request.ipar_slow_path_reasons = ipar_sources.slow_path_reasons;
+  const auto api_result = engine_api::EngineShowCatalog(request);
+  dispatch_result.ok = api_result.ok;
+  dispatch_result.row_count =
+      static_cast<std::uint64_t>(api_result.result_shape.rows.size());
+  dispatch_result.payload = ServerApiResultPayload(api_result);
+  if (!api_result.ok) {
+    dispatch_result.diagnostic_code = api_result.diagnostics.empty()
+                                          ? "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"
+                                          : api_result.diagnostics.front().code;
+    dispatch_result.diagnostic_detail = api_result.diagnostics.empty()
+                                            ? "engine_dispatch_rejected"
+                                            : api_result.diagnostics.front().detail;
+  }
+  return dispatch_result;
+}
+
 PublicAbiDispatchResult DispatchThroughPublicAbi(const ServerSessionRecord& session,
                                                  std::string_view operation_id,
                                                  std::string_view operation_family,
@@ -4582,9 +5189,12 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   ServerPreparedStatementRecord prepared;
   prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
   prepared.client_statement_uuid = decoded->client_statement_uuid;
-  prepared.session_uuid = decoded->session_uuid;
+  CapturePreparedAuthorityContext(&prepared, *session);
   prepared.encoded_sblr_envelope = decoded->encoded_sblr_envelope;
+  prepared.operation_family = admission.operation_family;
   prepared.operation_id = admission.operation_id;
+  prepared.requires_public_abi_dispatch = admission.requires_public_abi_dispatch;
+  prepared.row_count_hint = admission.row_count_hint;
   prepared.catalog_generation = decoded->catalog_generation;
   prepared.security_epoch = decoded->security_epoch;
   prepared.descriptor_epoch = session->descriptor_epoch;
@@ -4615,7 +5225,8 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
 
 SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
-                                         const sbps::Frame& request) {
+                                         const sbps::Frame& request,
+                                         const ServerIparProjectionSourceFactory* ipar_source_factory) {
   auto decoded = DecodeExecutePayload(request.payload);
   if (!decoded) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
@@ -4642,36 +5253,55 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   std::string encoded = decoded->encoded_sblr_envelope;
   bool cursor_requested = decoded->cursor_requested;
   const auto prepared_it = registry->prepared_by_uuid.find(UuidBytesToText(decoded->prepared_statement_uuid));
-  if (encoded.empty() && prepared_it != registry->prepared_by_uuid.end()) {
-    const auto& prepared = prepared_it->second;
-    if (prepared.closed || prepared.session_uuid != decoded->session_uuid) {
+  const ServerPreparedStatementRecord* prepared_statement =
+      prepared_it == registry->prepared_by_uuid.end() ? nullptr : &prepared_it->second;
+  if (encoded.empty() && prepared_statement == nullptr) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "prepared_statement_not_found");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   kSchemaExecuteResultTestV1,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
+                   "The prepared SBLR statement is not available for this session.",
+                   "prepared_statement_not_found");
+  }
+  if (prepared_statement != nullptr) {
+    const std::string mismatch =
+        PreparedStatementAuthorityMismatchReason(*prepared_statement, *session);
+    const std::string detail = PreparedStatementRefusalDetail(mismatch);
+    if (mismatch == "prepared_statement_closed" ||
+        mismatch == "prepared_statement_cross_session") {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
                                      ServerRequestLifecycleState::kFailed,
-                                     "prepared_statement_not_found");
+                                     detail);
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                      kSchemaExecuteResultTestV1,
                      decoded->session_uuid,
                      "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
                      "The prepared SBLR statement is not available for this session.",
-                     "prepared_statement_not_found");
+                     detail);
     }
-    if (!PreparedStatementEpochMatches(prepared, *session)) {
+    if (!mismatch.empty()) {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
                                      ServerRequestLifecycleState::kFailed,
-                                     "prepared_statement_epoch_stale");
+                                     detail);
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                      kSchemaExecuteResultTestV1,
                      decoded->session_uuid,
                      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
                      "The prepared SBLR statement was invalidated by a server authority epoch change.",
-                     "prepared_statement_epoch_stale");
+                     detail);
     }
-    encoded = prepared.encoded_sblr_envelope;
     LinkServerRequestPreparedStatement(registry,
                                        request_record.request_uuid,
                                        decoded->prepared_statement_uuid);
+    if (encoded.empty()) {
+      encoded = prepared_statement->encoded_sblr_envelope;
+    }
   }
   auto admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
   if (!admission.admitted) {
@@ -4688,6 +5318,20 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
         admission.diagnostics,
         admission.diagnostics.empty() ? "sblr_admission_rejected"
                                       : admission.diagnostics.front().code);
+  }
+  if (prepared_statement != nullptr &&
+      (!prepared_statement->operation_id.empty() &&
+       prepared_statement->operation_id != admission.operation_id)) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "prepared_statement_shape_mismatch");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   kSchemaExecuteResultTestV1,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_SHAPE_MISMATCH",
+                   "The execute SBLR envelope does not match the prepared statement operation.",
+                   "prepared_statement_shape_mismatch");
   }
   if (IsLanguageSessionOperation(admission.operation_id)) {
     if (admission.operation_id == "language.session.set") {
@@ -4963,7 +5607,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     ServerPreparedStatementRecord prepared;
     prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
     prepared.client_statement_uuid = decoded->prepared_statement_uuid;
-    prepared.session_uuid = decoded->session_uuid;
+    CapturePreparedAuthorityContext(&prepared, *session);
     prepared.statement_name = statement_name;
     prepared.encoded_sblr_envelope = PreparedInnerEnvelopeFromControl(encoded);
     const auto inner_admission =
@@ -4980,7 +5624,10 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
           inner_admission.diagnostics,
           "prepared_inner_sblr_rejected");
     }
+    prepared.operation_family = inner_admission.operation_family;
     prepared.operation_id = inner_admission.operation_id;
+    prepared.requires_public_abi_dispatch = inner_admission.requires_public_abi_dispatch;
+    prepared.row_count_hint = inner_admission.row_count_hint;
     prepared.catalog_generation = session->catalog_generation;
     prepared.security_epoch = session->security_epoch;
     prepared.descriptor_epoch = session->descriptor_epoch;
@@ -5018,12 +5665,15 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   if (admission.operation_id == "session.execute_prepared_statement") {
     const std::string statement_name = JsonTextField(encoded, "prepared_statement_name").value_or("");
     auto* prepared = FindPreparedByName(registry, decoded->session_uuid, statement_name);
-    if (prepared == nullptr || !PreparedStatementEpochMatches(*prepared, *session)) {
+    const std::string mismatch =
+        prepared == nullptr ? std::string("prepared_statement_not_found")
+                            : PreparedStatementAuthorityMismatchReason(*prepared, *session);
+    const std::string detail = PreparedStatementRefusalDetail(mismatch);
+    if (prepared == nullptr || !mismatch.empty()) {
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,
                                      ServerRequestLifecycleState::kFailed,
-                                     prepared == nullptr ? "prepared_statement_not_found"
-                                                         : "prepared_statement_epoch_stale");
+                                     detail);
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                      kSchemaExecuteResultTestV1,
                      decoded->session_uuid,
@@ -5031,8 +5681,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                          ? "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND"
                          : "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
                      "The prepared SBLR statement is not available for this session.",
-                     prepared == nullptr ? "prepared_statement_not_found"
-                                         : "prepared_statement_epoch_stale");
+                     detail);
     }
     encoded = prepared->encoded_sblr_envelope;
     cursor_requested = cursor_requested || JsonBoolField(decoded->encoded_sblr_envelope,
@@ -5040,19 +5689,11 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     LinkServerRequestPreparedStatement(registry,
                                        request_record.request_uuid,
                                        prepared->prepared_statement_uuid);
-    admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
-    if (!admission.admitted) {
-      CompleteServerRequestLifecycle(registry,
-                                     request_record.request_uuid,
-                                     ServerRequestLifecycleState::kFailed,
-                                     "prepared_inner_sblr_rejected");
-      return FailureWithDiagnostics(
-          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-          kSchemaExecuteResultTestV1,
-          decoded->session_uuid,
-          admission.diagnostics,
-          "prepared_inner_sblr_rejected");
-    }
+    admission.admitted = true;
+    admission.operation_id = prepared->operation_id;
+    admission.operation_family = prepared->operation_family;
+    admission.requires_public_abi_dispatch = prepared->requires_public_abi_dispatch;
+    admission.row_count_hint = prepared->row_count_hint;
   }
   if (admission.operation_id == "session.deallocate_prepared_statement") {
     const std::string statement_name = JsonTextField(encoded, "prepared_statement_name").value_or("");
@@ -5430,6 +6071,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     if (manifest_uri.empty()) {
       manifest_uri = DefaultArchiveManifestUri(*session, archive_operation, target_name);
     }
+    const bool restore_verify_only = JsonBoolField(encoded, "restore_verify_only", false);
 
     const auto fail_archive_route = [&](std::string code,
                                         std::string message,
@@ -5464,7 +6106,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       api_request.context =
           ArchiveReplicationEngineContext(*session, request_record.request_uuid);
       api_request.operation_id = admission.operation_id;
-      AddArchiveReplicationRestoreOptions(&api_request, manifest_uri);
+      AddArchiveReplicationRestoreOptions(&api_request, manifest_uri, restore_verify_only);
       api_result = engine_api::EngineRestoreLogicalBackup(api_request);
     } else if (admission.operation_id == "backup_archive.package_delta_stream") {
       engine_api::EnginePackageDeltaStreamRequest api_request;
@@ -5812,11 +6454,27 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       row_count = 0;
     } else {
       const auto retain_engine_result = cursor_requested && !synthetic_stream_cursor && !bulk_stream_cursor;
-      auto public_abi = DispatchThroughPublicAbi(*session,
-                                                 admission.operation_id,
-                                                 admission.operation_family,
-                                                 encoded,
-                                                 retain_engine_result);
+      const bool server_live_ipar_catalog_projection =
+          IsServerLiveIparCatalogProjection(encoded);
+      const bool use_server_live_ipar_projection =
+          server_live_ipar_catalog_projection &&
+          (admission.operation_id == "observability.show_catalog" ||
+           admission.operation_id == "dml.select_rows") &&
+          ipar_source_factory != nullptr &&
+          ipar_source_factory->build != nullptr;
+      ServerIparProjectionSources live_ipar_sources;
+      if (use_server_live_ipar_projection) {
+        live_ipar_sources = ipar_source_factory->build(ipar_source_factory->context);
+      }
+      auto public_abi = use_server_live_ipar_projection
+                            ? DispatchServerLiveIparCatalogProjection(*session,
+                                                                      encoded,
+                                                                      live_ipar_sources)
+                            : DispatchThroughPublicAbi(*session,
+                                                       admission.operation_id,
+                                                       admission.operation_family,
+                                                       encoded,
+                                                       retain_engine_result);
       if (!public_abi.ok) {
         if (autocommit_emulation) {
           const auto autocommit = FinalizeAutocommitBoundaryForSession(session,

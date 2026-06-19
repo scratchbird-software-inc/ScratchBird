@@ -17,6 +17,7 @@
 #include "listener_orchestrator.hpp"
 #include "parser_package_registry.hpp"
 #include "session_registry.hpp"
+#include "catalog/sys_information_projection.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -64,6 +65,25 @@ struct ServerCacheInvalidationMarker {
   std::string lifecycle_generation;
 };
 
+struct ServerIparContentionQuotaObservation {
+  std::string metric_id = "IPAR-P4-06/IPAR-P6-06";
+  std::string category;
+  std::string subject;
+  std::string metric_type = "gauge";
+  std::string metric_unit = "count";
+  std::string producer = "server_observability";
+  std::string source_kind = "server_observability_hook";
+  std::string source_ref;
+  std::string provenance = "server_observability.record_ipar_contention_quota";
+  std::string diagnostic_code;
+  std::uint64_t observed_value = 0;
+  std::uint64_t limit_value = 0;
+  std::uint64_t refusal_count = 0;
+  std::uint64_t wait_count = 0;
+  std::uint64_t queue_depth = 0;
+  std::uint64_t sample_count = 1;
+};
+
 struct ServerLifecycleObservabilityEvent {
   std::string operation_key;
   std::string outcome;
@@ -94,6 +114,12 @@ struct ServerLifecycleObservabilityRecord {
 struct ServerObservabilityState {
   bool metrics_enabled = true;
   std::uint64_t metric_generation = 1;
+  std::uint64_t metric_observation_count = 0;
+  std::uint64_t metric_persist_stride = 128;
+  std::uint64_t metric_persist_skipped = 0;
+  std::uint64_t audit_observation_count = 0;
+  std::uint64_t audit_persist_stride = 128;
+  std::uint64_t audit_persist_skipped = 0;
   std::uint64_t audit_sequence = 0;
   std::uint64_t support_bundle_export_sequence = 0;
   std::filesystem::path metrics_path;
@@ -141,6 +167,8 @@ void IncrementServerMetric(ServerObservabilityState* state,
                            std::string path,
                            std::uint64_t amount = 1,
                            std::map<std::string, std::string> labels = {});
+void RecordIparContentionQuotaObservation(ServerObservabilityState* state,
+                                          ServerIparContentionQuotaObservation observation);
 std::string RecordServerAuditEvent(ServerObservabilityState* state,
                                    std::string event_type,
                                    std::string outcome,
@@ -161,6 +189,14 @@ ServerSupportabilityFlushResult RotateServerOperationalLog(ServerObservabilitySt
                                                            std::uint64_t max_active_log_bytes);
 std::string ServerMetricsSnapshotJson(const ServerObservabilityState& state);
 std::string ServerAuditSnapshotJson(const ServerObservabilityState& state);
+std::vector<scratchbird::engine::internal_api::SysInformationIparMetricCounterSource>
+BuildIparMetricCounterProjectionSources(const ServerObservabilityState& state);
+std::vector<scratchbird::engine::internal_api::SysInformationIparTelemetryControlSource>
+BuildIparTelemetryControlProjectionSources(const ServerObservabilityState& state);
+std::vector<scratchbird::engine::internal_api::SysInformationIparSlowPathReasonSource>
+BuildIparSlowPathReasonProjectionSources(const ServerObservabilityState& state);
+std::vector<scratchbird::engine::internal_api::SysInformationIparContentionQuotaSource>
+BuildIparContentionQuotaProjectionSources(const ServerObservabilityState& state);
 ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilityState& state,
                                                           const ServerBootstrapConfig& config,
                                                           const ServerLifecycleArtifacts& artifacts,

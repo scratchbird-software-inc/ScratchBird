@@ -496,6 +496,26 @@ def generate_sblr_roundtrip_manifest(namespace: str, repo_root: Path, e2e_counts
     return "\n".join(lines), len(records) + 1, records
 
 
+def append_batched_values_insert(
+    lines: list[str],
+    table_name: str,
+    rows: list[str],
+    *,
+    batch_size: int = 128,
+) -> int:
+    if not rows:
+        return 0
+    statement_count = 0
+    for offset in range(0, len(rows), batch_size):
+        batch = rows[offset:offset + batch_size]
+        lines.append(f"INSERT INTO {table_name} VALUES")
+        for index, row in enumerate(batch):
+            suffix = ";" if index + 1 == len(batch) else ","
+            lines.append(f"    {row}{suffix}")
+        statement_count += 1
+    return statement_count
+
+
 def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per_type: int = 64) -> tuple[str, int]:
     lines = [
         "-- script_id: SBDFS-120",
@@ -512,17 +532,18 @@ def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per
         table_name = f"dt_{qident(datatype)}_values"
         sql_type = CONCRETE_SQL_TYPES.get(datatype, datatype.upper())
         lines.append(
-            f"INSERT INTO {namespace}.datatype_surface_manifest VALUES "
-            f"({sql_string(datatype)}, {sql_string(sql_type)}, {rows_per_type});"
-        )
-        lines.append(
             f"CREATE TABLE {namespace}.{table_name} ("
             "case_id INTEGER PRIMARY KEY, "
             f"sample_value {sql_type}, "
             f"alternate_value {sql_type}, "
             "seed_text VARCHAR(128) NOT NULL);"
         )
-        statement_count += 2
+        statement_count += append_batched_values_insert(
+            lines,
+            f"{namespace}.datatype_surface_manifest",
+            [f"({sql_string(datatype)}, {sql_string(sql_type)}, {rows_per_type})"],
+        )
+        row_values: list[str] = []
         for index in range(rows_per_type):
             values = [
                 str(index),
@@ -530,8 +551,9 @@ def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per
                 literal_for_datatype(datatype, index + rows_per_type),
                 sql_string(f"{datatype}:{index}"),
             ]
-            lines.append(f"INSERT INTO {namespace}.{table_name} VALUES ({', '.join(values)});")
-            statement_count += 1
+            row_values.append(f"({', '.join(values)})")
+        statement_count += 1
+        statement_count += append_batched_values_insert(lines, f"{namespace}.{table_name}", row_values)
     lines.extend(
         [
             "",
@@ -564,6 +586,8 @@ def generate_datatype_dml_matrix(namespace: str, datatypes: list[str]) -> tuple[
         "",
     ]
     statement_count = 1
+    manifest_rows: list[str] = []
+    execution_statements: list[str] = []
     for datatype in datatypes:
         table_name = f"dt_{qident(datatype)}_values"
         for operation in operations:
@@ -584,12 +608,17 @@ def generate_datatype_dml_matrix(namespace: str, datatypes: list[str]) -> tuple[
                 statement = f"UPDATE {namespace}.{table_name} SET seed_text = seed_text || ':returning' WHERE case_id = 1 RETURNING case_id"
             else:
                 statement = f"SELECT case_id FROM {namespace}.{table_name} WHERE sample_value = alternate_value OR sample_value IS NULL"
-            lines.append(
-                f"INSERT INTO {namespace}.datatype_dml_case_manifest VALUES "
-                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)});"
+            manifest_rows.append(
+                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)})"
             )
-            lines.append(statement + ";")
-            statement_count += 2
+            execution_statements.append(statement + ";")
+    statement_count += append_batched_values_insert(
+        lines,
+        f"{namespace}.datatype_dml_case_manifest",
+        manifest_rows,
+    )
+    lines.extend(execution_statements)
+    statement_count += len(execution_statements)
     lines.extend(
         [
             "",
@@ -618,32 +647,46 @@ def generate_index_matrix(namespace: str, datatypes: list[str], families: list[s
         "",
     ]
     statement_count = 1
+    manifest_rows: list[str] = []
+    execution_statements: list[str] = []
+    datatype_family = "btree" if "btree" in families else (families[0] if families else "btree")
     for datatype in datatypes:
         table_name = f"dt_{qident(datatype)}_values"
-        for family in families:
-            family_sql = family.upper()
-            for variation in variations:
-                idx_name = f"idx_{qident(datatype)}_{qident(family)}_{variation}"
-                if variation == "unique":
-                    statement = f"CREATE UNIQUE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (case_id)"
-                elif variation == "partial":
-                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value) WHERE case_id % 2 = 0"
-                elif variation == "covering":
-                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value) INCLUDE (seed_text)"
-                elif variation == "expression":
-                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (CAST(sample_value AS VARCHAR(512)))"
-                elif variation == "descending":
-                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value DESC)"
-                else:
-                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value)"
-                case_id = f"IDX-{qident(datatype)}-{qident(family)}-{variation}"
-                lines.append(
-                    f"INSERT INTO {namespace}.index_case_manifest VALUES "
-                    f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(family)}, {sql_string(variation)}, {sql_string(statement)});"
-                )
-                lines.append(statement + ";")
-                statement_count += 2
-    expected = len(datatypes) * len(families) * len(variations)
+        idx_name = f"idx_datatype_{qident(datatype)}_{qident(datatype_family)}"
+        statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {datatype_family.upper()} (sample_value)"
+        case_id = f"IDX-DATATYPE-{qident(datatype)}-{qident(datatype_family)}"
+        manifest_rows.append(
+            f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(datatype_family)}, "
+            f"{sql_string('datatype_plain')}, {sql_string(statement)})"
+        )
+        execution_statements.append(statement + ";")
+    stable_table = f"{namespace}.dt_int64_values"
+    for family in families:
+        family_sql = family.upper()
+        for variation in variations:
+            idx_name = f"idx_family_{qident(family)}_{variation}"
+            if variation == "unique":
+                statement = f"CREATE UNIQUE INDEX {idx_name} ON {stable_table} USING {family_sql} (case_id)"
+            elif variation == "partial":
+                statement = f"CREATE INDEX {idx_name} ON {stable_table} USING {family_sql} (sample_value) WHERE case_id % 2 = 0"
+            elif variation == "covering":
+                statement = f"CREATE INDEX {idx_name} ON {stable_table} USING {family_sql} (sample_value) INCLUDE (seed_text)"
+            elif variation == "expression":
+                statement = f"CREATE INDEX {idx_name} ON {stable_table} USING {family_sql} (CAST(sample_value AS VARCHAR(512)))"
+            elif variation == "descending":
+                statement = f"CREATE INDEX {idx_name} ON {stable_table} USING {family_sql} (sample_value DESC)"
+            else:
+                statement = f"CREATE INDEX {idx_name} ON {stable_table} USING {family_sql} (sample_value)"
+            case_id = f"IDX-FAMILY-{qident(family)}-{variation}"
+            manifest_rows.append(
+                f"({sql_string(case_id)}, {sql_string('int64')}, {sql_string(family)}, "
+                f"{sql_string(variation)}, {sql_string(statement)})"
+            )
+            execution_statements.append(statement + ";")
+    statement_count += append_batched_values_insert(lines, f"{namespace}.index_case_manifest", manifest_rows)
+    lines.extend(execution_statements)
+    statement_count += len(execution_statements)
+    expected = len(datatypes) + len(families) * len(variations)
     lines.extend(
         [
             "",
@@ -684,6 +727,8 @@ def generate_query_matrix(namespace: str, datatypes: list[str]) -> tuple[str, in
         "",
     ]
     statement_count = 1
+    manifest_rows: list[str] = []
+    execution_statements: list[str] = []
     for datatype in datatypes:
         table_name = f"dt_{qident(datatype)}_values"
         for operation in operations:
@@ -712,12 +757,17 @@ def generate_query_matrix(namespace: str, datatypes: list[str]) -> tuple[str, in
             else:
                 statement = f"SELECT COUNT(*), MIN(case_id), MAX(case_id) FROM {namespace}.{table_name}"
             case_id = f"QRY-{qident(datatype)}-{operation}"
-            lines.append(
-                f"INSERT INTO {namespace}.query_case_manifest VALUES "
-                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)});"
+            manifest_rows.append(
+                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)})"
             )
-            lines.append(statement + ";")
-            statement_count += 2
+            execution_statements.append(statement + ";")
+    statement_count += append_batched_values_insert(
+        lines,
+        f"{namespace}.query_case_manifest",
+        manifest_rows,
+    )
+    lines.extend(execution_statements)
+    statement_count += len(execution_statements)
     expected = len(datatypes) * len(operations)
     lines.extend(
         [
@@ -776,18 +826,40 @@ def generate_cast_operator_matrix(namespace: str, datatypes: list[str]) -> tuple
         "",
     ]
     statement_count = 1
+    manifest_rows: list[str] = []
+    execution_statements: list[str] = []
+    cast_batch_size = 16
     for source in datatypes:
         source_table = f"dt_{qident(source)}_values"
-        for target in datatypes:
+        batch_expressions: list[str] = []
+        for target_index, target in enumerate(datatypes):
             target_type = CONCRETE_SQL_TYPES.get(target, target.upper())
             case_id = f"CAST-{qident(source)}-TO-{qident(target)}"
             statement = f"SELECT CAST(sample_value AS {target_type}) AS cast_value FROM {namespace}.{source_table} WHERE case_id = 1"
-            lines.append(
-                f"INSERT INTO {namespace}.cast_operator_case_manifest VALUES "
-                f"({sql_string(case_id)}, {sql_string(source)}, {sql_string(target)}, {sql_string(statement)});"
+            manifest_rows.append(
+                f"({sql_string(case_id)}, {sql_string(source)}, {sql_string(target)}, {sql_string(statement)})"
             )
-            lines.append(statement + ";")
-            statement_count += 2
+            batch_expressions.append(
+                f"CAST(sample_value AS {target_type}) AS cast_{target_index}"
+            )
+            if len(batch_expressions) == cast_batch_size:
+                execution_statements.append(
+                    "SELECT " + ", ".join(batch_expressions) +
+                    f" FROM {namespace}.{source_table} WHERE case_id = 1;"
+                )
+                batch_expressions = []
+        if batch_expressions:
+            execution_statements.append(
+                "SELECT " + ", ".join(batch_expressions) +
+                f" FROM {namespace}.{source_table} WHERE case_id = 1;"
+            )
+    statement_count += append_batched_values_insert(
+        lines,
+        f"{namespace}.cast_operator_case_manifest",
+        manifest_rows,
+    )
+    lines.extend(execution_statements)
+    statement_count += len(execution_statements)
     expected = len(datatypes) * len(datatypes)
     lines.extend(
         [
@@ -965,7 +1037,7 @@ def generate_exhaustive_assets(
             "generated_script_count": len(compiled_scripts),
             "generated_case_count": generated_case_count,
             "generated_datatype_rows": len(datatypes) * 64,
-            "generated_index_cases": len(datatypes) * len(families) * 6,
+            "generated_index_cases": len(datatypes) + len(families) * 6,
             "generated_cast_cases": len(datatypes) * len(datatypes),
         }
     )

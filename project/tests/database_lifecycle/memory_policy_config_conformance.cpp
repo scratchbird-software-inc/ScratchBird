@@ -24,6 +24,14 @@ namespace server = scratchbird::server;
 
 constexpr std::uint64_t kMiB = 1024ull * 1024ull;
 
+void SetPolicyRootEnv() {
+#if defined(_WIN32)
+  _putenv_s("SCRATCHBIRD_POLICY_SEED_PACK_ROOT", SB_DEFAULT_POLICY_PACK_ROOT);
+#else
+  setenv("SCRATCHBIRD_POLICY_SEED_PACK_ROOT", SB_DEFAULT_POLICY_PACK_ROOT, 1);
+#endif
+}
+
 std::filesystem::path TempRoot() {
   auto root = std::filesystem::temp_directory_path() / "scratchbird_memory_policy_config_gate";
   std::filesystem::create_directories(root);
@@ -80,12 +88,14 @@ bool Expect(bool condition, const char* message) {
 }
 
 bool ValidConfigBuildsAllocationPolicy() {
+  SetPolicyRootEnv();
   const auto loaded = Load("valid.conf",
                            "policy_name = production_gate\n"
-                           "hard_limit_bytes = 268435456\n"
-                           "soft_limit_bytes = 201326592\n"
-                           "per_context_limit_bytes = 67108864\n"
-                           "page_buffer_pool_limit_bytes = 33554432\n"
+                           "hard_limit_bytes = 1073741824\n"
+                           "soft_limit_bytes = 805306368\n"
+                           "per_context_limit_bytes = 268435456\n"
+                           "page_buffer_pool_limit_bytes = 134217728\n"
+                           "min_startup_available_bytes = 1073741824\n"
                            "failure_mode = fatal_status\n"
                            "track_allocations = true\n"
                            "zero_memory_on_allocate = false\n"
@@ -100,11 +110,11 @@ bool ValidConfigBuildsAllocationPolicy() {
   if (!Expect(resolved.ok(), "valid memory policy should resolve")) return false;
   const auto policy = resolved.policy;
   return Expect(policy.policy_name == "production_gate", "policy name mismatch") &&
-         Expect(policy.hard_limit_bytes == 256ull * kMiB, "hard limit mismatch") &&
+         Expect(policy.hard_limit_bytes == 1024ull * kMiB, "hard limit mismatch") &&
          Expect(policy.byte_limit == policy.hard_limit_bytes, "byte_limit should mirror hard limit") &&
-         Expect(policy.soft_limit_bytes == 192ull * kMiB, "soft limit mismatch") &&
-         Expect(policy.per_context_limit_bytes == 64ull * kMiB, "per-context limit mismatch") &&
-         Expect(policy.page_buffer_pool_limit_bytes == 32ull * kMiB, "page buffer pool limit mismatch") &&
+         Expect(policy.soft_limit_bytes == 768ull * kMiB, "soft limit mismatch") &&
+         Expect(policy.per_context_limit_bytes == 256ull * kMiB, "per-context limit mismatch") &&
+         Expect(policy.page_buffer_pool_limit_bytes == 128ull * kMiB, "page buffer pool limit mismatch") &&
          Expect(policy.failure_mode == memory::AllocationFailureMode::fatal_status, "failure mode mismatch") &&
          Expect(policy.track_allocations, "track_allocations mismatch") &&
          Expect(policy.zero_memory_on_release, "zero_memory_on_release mismatch") &&
@@ -113,6 +123,75 @@ bool ValidConfigBuildsAllocationPolicy() {
                 "enable_platform_memory_probe config mismatch") &&
          Expect(!loaded.config.memory_require_platform_memory_ceiling,
                 "require_platform_memory_ceiling config mismatch");
+}
+
+bool DefaultPolicyPackMemoryPolicyLoads() {
+  SetPolicyRootEnv();
+  server::ServerCliOptions cli;
+  const auto loaded = server::ResolveServerBootstrapConfig(cli);
+  if (!Expect(loaded.ok(), "default server config should load policy-pack memory defaults")) {
+    return false;
+  }
+  const auto resolved = server::ResolveServerMemoryAllocationPolicy(loaded.config);
+  return Expect(resolved.ok(), "default policy-pack memory policy should resolve") &&
+         Expect(loaded.config.memory_policy_name == "default_local_server_memory_cache_v1",
+                "default memory policy name mismatch") &&
+         Expect(loaded.config.memory_hard_limit_bytes == 1024ull * kMiB,
+                "default policy-pack hard limit mismatch") &&
+         Expect(loaded.config.memory_soft_limit_bytes == 768ull * kMiB,
+                "default policy-pack soft limit mismatch") &&
+         Expect(loaded.config.memory_per_context_limit_bytes == 256ull * kMiB,
+                "default policy-pack per-context limit mismatch") &&
+         Expect(loaded.config.memory_page_buffer_pool_limit_bytes == 512ull * kMiB,
+                "default policy-pack page-buffer pool mismatch") &&
+         Expect(loaded.config.memory_min_startup_available_bytes == 1024ull * kMiB,
+                "default policy-pack startup floor mismatch") &&
+         Expect(loaded.config.memory_adaptive_page_cache_enabled,
+                "default policy-pack adaptive page cache should be enabled") &&
+         Expect(loaded.config.memory_index_read_cache_enabled,
+                "default policy-pack index read cache should be enabled") &&
+         Expect(!loaded.config.memory_trim_heap_on_disconnect,
+                "default policy-pack should retain adaptive cache on disconnect") &&
+         Expect(loaded.config.memory_policy_provenance ==
+                    "default_policy_pack:default-local-password:server_memory_cache_policy",
+                "default policy-pack provenance mismatch");
+}
+
+bool ExplicitConfigOverridesPolicyPackMemoryFields() {
+  SetPolicyRootEnv();
+  const auto loaded = Load("explicit_override.conf",
+                           "policy_name = operator_override\n"
+                           "hard_limit_bytes = 2147483648\n"
+                           "soft_limit_bytes = 1073741824\n"
+                           "per_context_limit_bytes = 536870912\n"
+                           "page_buffer_pool_limit_bytes = 268435456\n"
+                           "min_startup_available_bytes = 2147483648\n"
+                           "trim_heap_on_disconnect = true\n"
+                           "enable_platform_memory_probe = false\n"
+                           "policy_provenance = operator_config\n");
+  if (!Expect(loaded.ok(), "explicit memory overrides should parse with policy defaults")) {
+    return false;
+  }
+  const auto resolved = server::ResolveServerMemoryAllocationPolicy(loaded.config);
+  return Expect(resolved.ok(), "explicit override memory policy should resolve") &&
+         Expect(loaded.config.memory_policy_name == "operator_override",
+                "explicit policy name override mismatch") &&
+         Expect(loaded.config.memory_hard_limit_bytes == 2048ull * kMiB,
+                "explicit hard limit override mismatch") &&
+         Expect(loaded.config.memory_soft_limit_bytes == 1024ull * kMiB,
+                "explicit soft limit override mismatch") &&
+         Expect(loaded.config.memory_per_context_limit_bytes == 512ull * kMiB,
+                "explicit per-context override mismatch") &&
+         Expect(loaded.config.memory_page_buffer_pool_limit_bytes == 256ull * kMiB,
+                "explicit page-buffer pool override mismatch") &&
+         Expect(loaded.config.memory_min_startup_available_bytes == 2048ull * kMiB,
+                "explicit startup floor override mismatch") &&
+         Expect(loaded.config.memory_trim_heap_on_disconnect,
+                "explicit disconnect trim override mismatch") &&
+         Expect(!loaded.config.memory_enable_platform_memory_probe,
+                "explicit platform probe override mismatch") &&
+         Expect(loaded.config.memory_policy_provenance == "operator_config",
+                "explicit provenance override mismatch");
 }
 
 bool InvalidConfigFailsClosed(std::string_view name,
@@ -338,6 +417,8 @@ bool DefaultManagerInstallsConfiguredPolicyOnce() {
 int main() {
   bool ok = true;
   ok = ValidConfigBuildsAllocationPolicy() && ok;
+  ok = DefaultPolicyPackMemoryPolicyLoads() && ok;
+  ok = ExplicitConfigOverridesPolicyPackMemoryFields() && ok;
   ok = CoreResolverCarriesProvenanceAndGeneration() && ok;
   ok = PlatformCeilingClampsEffectivePolicy() && ok;
   ok = RequiredCeilingRejectsConfiguredOvercommit() && ok;

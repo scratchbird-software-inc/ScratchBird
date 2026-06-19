@@ -45,6 +45,7 @@
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
 #include "dispatch/function_dispatch.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 #include "extensibility/gpu_api.hpp"
 #include "extensibility/llvm_api.hpp"
 #include "extensibility/parser_package_api.hpp"
@@ -281,6 +282,60 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
                            operand.type.starts_with("row_field:");
     const bool row_null_field = operand.type == "row_null_field" ||
                                 operand.type.starts_with("row_null_field:");
+    if (operand.type == "text" && operand.name == "authorization_tag" &&
+        !operand.value.empty() &&
+        std::find(api_request.context.trace_tags.begin(),
+                  api_request.context.trace_tags.end(),
+                  operand.value) == api_request.context.trace_tags.end()) {
+      api_request.context.trace_tags.push_back(operand.value);
+      if (operand.value.rfind("right:", 0) == 0 ||
+          operand.value.rfind("deny:", 0) == 0) {
+        auto& authorization = api_request.context.authorization_context;
+        authorization.present = true;
+        if (authorization.principal_uuid.canonical.empty()) {
+          authorization.principal_uuid = api_request.context.principal_uuid;
+        }
+        if (authorization.authority_uuid.canonical.empty()) {
+          authorization.authority_uuid = api_request.context.database_uuid;
+        }
+        if (authorization.security_epoch == 0) {
+          authorization.security_epoch = api_request.context.security_epoch;
+        }
+        if (authorization.policy_epoch == 0) {
+          authorization.policy_epoch = 1;
+        }
+        if (authorization.catalog_generation_id == 0) {
+          authorization.catalog_generation_id =
+              api_request.context.catalog_generation_id == 0
+                  ? 1
+                  : api_request.context.catalog_generation_id;
+        }
+        if (authorization.effective_subjects.empty()) {
+          authorization.effective_subjects.push_back(
+              {api_request.context.principal_uuid, "principal"});
+        }
+        const bool deny = operand.value.rfind("deny:", 0) == 0;
+        const std::string right = operand.value.substr(deny ? 5 : 6);
+        const auto duplicate = std::find_if(
+            authorization.grants.begin(),
+            authorization.grants.end(),
+            [&](const auto& grant) {
+              return grant.right == right && grant.deny == deny &&
+                     grant.target_uuid.canonical.empty();
+            });
+        if (!right.empty() && duplicate == authorization.grants.end()) {
+          scratchbird::engine::internal_api::EngineMaterializedAuthorizationGrant grant;
+          grant.grant_uuid.canonical =
+              "public-abi-admitted-auth-tag:" + std::string(deny ? "deny:" : "right:") + right;
+          grant.subject_uuid = api_request.context.principal_uuid;
+          grant.subject_kind = "principal";
+          grant.right = right;
+          grant.deny = deny;
+          grant.security_epoch = authorization.security_epoch;
+          authorization.grants.push_back(std::move(grant));
+        }
+      }
+    }
     if (!operand.name.empty() && !row_field && !row_null_field) {
       api_request.option_envelopes.push_back(operand.name + ":" + operand.value);
     }
@@ -341,6 +396,13 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
   if (api_request.target_object.object_kind.empty()) {
     api_request.target_object.object_kind =
         api::SecurityOptionValue(api_request, "target_object_kind:");
+  }
+  if (api_request.operation_id.rfind("lifecycle.", 0) == 0) {
+    const std::string lifecycle_database_path =
+        api::SecurityOptionValue(api_request, "database_path:");
+    if (!lifecycle_database_path.empty()) {
+      api_request.context.database_path = lifecycle_database_path;
+    }
   }
   if (api_request.predicate.predicate_kind.empty()) {
     const std::string predicate_kind =
@@ -403,6 +465,11 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
     }
   }
   if (operation_id.starts_with("storage_tier.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("routine.")) {
     if (const auto* entry = LookupSblrOperation(operation_id)) {
       return entry->opcode.c_str();
     }
@@ -1792,6 +1859,23 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   typed.table_constraints = base.constraints;
   typed.table_indexes = base.indexes;
   typed.table_physical_profile = base.physical_profile;
+  const std::string physical_profile = [&]() {
+    std::string value = api::SecurityOptionValue(base, "physical_profile:");
+    if (value.empty()) value = api::SecurityOptionValue(base, "table_physical_profile:");
+    return value;
+  }();
+  if (!physical_profile.empty()) {
+    bool present = false;
+    for (const auto& existing : typed.table_physical_profile.encoded_profiles) {
+      if (existing == physical_profile) {
+        present = true;
+        break;
+      }
+    }
+    if (!present) {
+      typed.table_physical_profile.encoded_profiles.push_back(physical_profile);
+    }
+  }
   typed.table_policy_profile = base.policy_profile;
   typed.table_compatibility_profile = base.compatibility_profile;
   return typed;
@@ -1917,14 +2001,34 @@ api::EngineCreateSequenceRequest TypedCreateSequenceRequest(const SblrDispatchRe
   if (typed.target_schema.uuid.canonical.empty()) {
     typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
   }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
   if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
     const auto sequence_name = api::SecurityOptionValue(base, "name:");
     if (!sequence_name.empty()) {
-      typed.localized_names.push_back({"en", "primary", "", sequence_name, true});
+      if (normalized_parent_path.empty() && !schema_parent_path.empty()) {
+        normalized_parent_path = JoinDottedIdentifierPath(SplitDottedIdentifierPath(schema_parent_path));
+      }
+      const std::string full_path =
+          normalized_parent_path.empty() ? std::string{} : normalized_parent_path + "." + sequence_name;
+      typed.localized_names.push_back({"en", "primary", full_path, sequence_name, true});
     }
+  }
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+    typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   return typed;
 }
@@ -1932,6 +2036,8 @@ api::EngineCreateSequenceRequest TypedCreateSequenceRequest(const SblrDispatchRe
 bool IsDomainRuntimeOption(std::string_view option) {
   return option.starts_with("default_expression:") ||
          option.starts_with("check_constraint:") ||
+         option.starts_with("check_constraint_append:") ||
+         option.starts_with("nullable:") ||
          option.starts_with("collation:") ||
          option.starts_with("charset:") ||
          option.starts_with("cast_policy:") ||
@@ -1968,14 +2074,34 @@ api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchReques
   if (typed.target_schema.uuid.canonical.empty()) {
     typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
   }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
   if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
     const auto domain_name = api::SecurityOptionValue(base, "name:");
     if (!domain_name.empty()) {
-      typed.localized_names.push_back({"en", "primary", "", domain_name, true});
+      if (normalized_parent_path.empty() && !schema_parent_path.empty()) {
+        normalized_parent_path = JoinDottedIdentifierPath(SplitDottedIdentifierPath(schema_parent_path));
+      }
+      const std::string full_path =
+          normalized_parent_path.empty() ? std::string{} : normalized_parent_path + "." + domain_name;
+      typed.localized_names.push_back({"en", "primary", full_path, domain_name, true});
     }
+  }
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+    typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   if (typed.descriptors.empty()) {
     api::EngineDescriptor descriptor;
@@ -2056,12 +2182,69 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
   return typed;
 }
 
+api::EngineCatalogDescriptorMutationRequest TypedCatalogDescriptorMutationRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineCatalogDescriptorMutationRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.target_database = base.target_database;
+  typed.target_schema = base.target_schema;
+  if (typed.target_object.object_kind.empty()) {
+    typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
+  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+    typed.target_schema.object_kind = "schema";
+  }
+  if (typed.localized_names.empty()) {
+    const std::string object_name = api::SecurityOptionValue(base, "name:");
+    if (!object_name.empty()) {
+      if (normalized_parent_path.empty() && !schema_parent_path.empty()) {
+        normalized_parent_path = JoinDottedIdentifierPath(SplitDottedIdentifierPath(schema_parent_path));
+      }
+      const std::string full_path =
+          normalized_parent_path.empty() ? std::string{} : normalized_parent_path + "." + object_name;
+      typed.localized_names.push_back({"en", "primary", full_path, object_name, true});
+    }
+  }
+  return typed;
+}
+
 api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest& request) {
   api::EngineAlterObjectRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "target_object_uuid:");
+  }
+  if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "domain_target_uuid:");
+  }
+  if (typed.target_object.uuid.canonical.empty()) {
     typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "rename_target_uuid:");
+  }
+  if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "sequence_target_uuid:");
+  }
+  if (typed.target_object.object_kind.empty()) {
+    typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = api::SecurityOptionValue(base, "rename_target_kind:");
@@ -2073,6 +2256,18 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
   if (typed.target_schema.uuid.canonical.empty()) {
     typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
   }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
   if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
@@ -2083,6 +2278,24 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
     if (!new_name.empty()) {
       typed.localized_names.push_back({"en", "primary", "", new_name, true});
     }
+  }
+  if (typed.target_object.object_kind == "domain") {
+    typed.option_envelopes.clear();
+    for (const auto& option : base.option_envelopes) {
+      if (IsDomainRuntimeOption(option)) {
+        typed.option_envelopes.push_back(option);
+      }
+    }
+  } else if (typed.target_object.object_kind == "schema") {
+    typed.option_envelopes.clear();
+    for (const auto& option : base.option_envelopes) {
+      if (IsCreateSchemaRuntimeOption(option)) {
+        typed.option_envelopes.push_back(option);
+      }
+    }
+  }
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+    typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   return typed;
 }
@@ -3777,7 +3990,7 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "catalog.list_children") result.api_result = api::EngineListCatalogChildren(TypedRequest<api::EngineListCatalogChildrenRequest>(request));
   else if (op == "catalog.get_descriptor") result.api_result = api::EngineGetDescriptor(TypedRequest<api::EngineGetDescriptorRequest>(request));
   else if (op == "catalog.get_dependencies") result.api_result = api::EngineGetDependencies(TypedRequest<api::EngineGetDependenciesRequest>(request));
-  else if (op.starts_with("catalog.mutation.")) result.api_result = api::EngineCatalogDescriptorMutation(TypedRequest<api::EngineCatalogDescriptorMutationRequest>(request));
+  else if (op.starts_with("catalog.mutation.")) result.api_result = api::EngineCatalogDescriptorMutation(TypedCatalogDescriptorMutationRequest(request));
   else if (op == "artifact.export_catalog") result.api_result = api::EngineExportCatalogArtifacts(TypedRequest<api::EngineExportCatalogArtifactsRequest>(request));
   else if (op == "artifact.import_catalog") result.api_result = api::EngineImportCatalogArtifacts(TypedRequest<api::EngineImportCatalogArtifactsRequest>(request));
   else if (op == "artifact.external_git.export_snapshot") result.api_result = api::EngineExportExternalGitSnapshot(TypedRequest<api::EngineExportExternalGitSnapshotRequest>(request));
@@ -3799,6 +4012,7 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "ddl.create_function") result.api_result = api::EngineCreateFunction(TypedCreateExecutableObjectRequest<api::EngineCreateFunctionRequest>(request, "function", "function"));
   else if (op == "ddl.create_procedure") result.api_result = api::EngineCreateProcedure(TypedCreateExecutableObjectRequest<api::EngineCreateProcedureRequest>(request, "procedure", "procedure"));
   else if (op == "ddl.create_trigger") result.api_result = api::EngineCreateTrigger(TypedCreateExecutableObjectRequest<api::EngineCreateTriggerRequest>(request, "trigger", "trigger"));
+  else if (op == "routine.procedure_invoke" || op == "routine.function_invoke") result.api_result = api::EngineInvokeExecutableObject(TypedRequest<api::EngineInvokeExecutableObjectRequest>(request));
   else if (op == "ddl.alter_object") result.api_result = api::EngineAlterObject(TypedAlterObjectRequest(request));
   else if (op == "ddl.drop_object") result.api_result = api::EngineDropObject(TypedRequest<api::EngineDropObjectRequest>(request));
   else if (op == "ddl.comment_on_object") result.api_result = api::EngineCommentOnObject(TypedRequest<api::EngineCommentOnObjectRequest>(request));

@@ -18,18 +18,14 @@ CREATE SEQUENCE __SB_NAMESPACE__.ticket_number
     NO CYCLE;
 
 -- ──────────────────────────────────────────────────────────────────────────
--- 2. Verify the sequence is functional by peeking at CURRENT VALUE FOR
---    immediately after create — before any allocation it should return a
---    diagnostic - use NEXT VALUE FOR as the confirmed existence probe instead.
---    Note: sys.sequences is not confirmed in catalog_reference/*.md, so we
---    use sys.catalog.domain_descriptor as a proxy to confirm the bootstrap
---    schema context is live, then probe the sequence functionally.
+-- 2. Verify the sequence is visible through the standard sequence projection.
 -- ──────────────────────────────────────────────────────────────────────────
 SELECT 'SBDFS-012-001' AS assertion_id,
-       COUNT(*) >= 1   AS actual_schema_context_live,
-       TRUE            AS expected_schema_context_live
-FROM sys.schemas
-WHERE schema_name = '__SB_NAMESPACE__';
+       COUNT(*)        AS actual_sequence_count,
+       1               AS expected_sequence_count
+FROM sys.information.sequences
+WHERE sequence_schema = '__SB_NAMESPACE__'
+  AND sequence_name = 'ticket_number';
 
 -- ──────────────────────────────────────────────────────────────────────────
 -- 3. Allocate the first value using NEXT VALUE FOR.
@@ -142,12 +138,12 @@ DROP SEQUENCE __SB_NAMESPACE__.ticket_number RESTRICT;
 DROP SEQUENCE __SB_NAMESPACE__.countdown_seq RESTRICT;
 
 -- ──────────────────────────────────────────────────────────────────────────
--- 17. Assert schema still intact after sequence drops (cleanup sanity check).
---     sys.sequences is not confirmed in catalog_reference/*.md so we assert
---     schema presence rather than a sequence-specific catalog row count.
+-- 17. Assert dropped sequences are no longer visible through the standard
+--     sequence projection.
 -- ──────────────────────────────────────────────────────────────────────────
 SELECT 'SBDFS-012-009' AS assertion_id,
-       COUNT(*) >= 1   AS actual_schema_intact_after_drop,
-       TRUE            AS expected_schema_intact_after_drop
-FROM sys.schemas
-WHERE schema_name = '__SB_NAMESPACE__';
+       COUNT(*)        AS actual_sequence_count_after_drop,
+       0               AS expected_sequence_count_after_drop
+FROM sys.information.sequences
+WHERE sequence_schema = '__SB_NAMESPACE__'
+  AND sequence_name IN ('ticket_number', 'countdown_seq');

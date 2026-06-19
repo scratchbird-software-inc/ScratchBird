@@ -169,6 +169,87 @@ SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
   return MakeSblrSuccess("sblr.sequence.register");
 }
 
+SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
+                             const SblrSequenceAlteration& alteration,
+                             const SblrExecutionContext& context) {
+  auto registry_status = EnsureRegistry(registry, context, alteration.sequence_uuid, "sblr.sequence.alter");
+  if (!registry_status.ok()) return registry_status;
+  if (alteration.sequence_uuid.empty()) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.alter",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
+                                              context,
+                                              alteration.sequence_uuid,
+                                              "sequence UUID is required for sequence alteration"));
+  }
+  std::lock_guard<std::mutex> guard(registry->mutex);
+  SblrSequenceState* state = FindSequenceState(registry, alteration.sequence_uuid);
+  if (state == nullptr) {
+    SblrSequenceDefinition definition;
+    definition.sequence_uuid = alteration.sequence_uuid;
+    registry->states.push_back(SblrSequenceState{definition});
+    state = &registry->states.back();
+    AppendEvidence(registry, context, alteration.sequence_uuid, "sequence.implicit_bind", "", "alter_default_definition");
+  }
+  SblrSequenceDefinition updated = state->definition;
+  if (alteration.minimum_value.has_value()) {
+    updated.minimum_value = *alteration.minimum_value;
+  }
+  if (alteration.maximum_value.has_value()) {
+    updated.maximum_value = *alteration.maximum_value;
+  }
+  if (alteration.cache_size.has_value()) {
+    updated.cache_size = *alteration.cache_size;
+  }
+  if (alteration.cycle.has_value()) {
+    updated.cycle = *alteration.cycle;
+  }
+  if (updated.increment == 0) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.alter",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_INCREMENT_ZERO",
+                                              context,
+                                              alteration.sequence_uuid,
+                                              "sequence increment cannot be zero"));
+  }
+  if (updated.minimum_value > updated.maximum_value ||
+      updated.start_value < updated.minimum_value ||
+      updated.start_value > updated.maximum_value) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.alter",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
+                                              context,
+                                              alteration.sequence_uuid,
+                                              "sequence alteration produces invalid configured bounds"));
+  }
+  if (state->current_value_present &&
+      (state->current_value < updated.minimum_value || state->current_value > updated.maximum_value)) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.alter",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
+                                              context,
+                                              alteration.sequence_uuid,
+                                              "sequence current value is outside altered bounds"));
+  }
+  if (state->next_value_override_present &&
+      (state->next_value_override < updated.minimum_value || state->next_value_override > updated.maximum_value)) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.alter",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_BOUNDS_INVALID",
+                                              context,
+                                              alteration.sequence_uuid,
+                                              "sequence pending restart value is outside altered bounds"));
+  }
+  state->definition = updated;
+  AppendEvidence(registry,
+                 context,
+                 alteration.sequence_uuid,
+                 "sequence.alter",
+                 "",
+                 "definition_update_preserve_state");
+  return MakeSblrSuccess("sblr.sequence.alter");
+}
+
 SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request) {
   auto registry_status = EnsureRegistry(registry, request.context, request.sequence_uuid, "sblr.sequence.next");
   if (!registry_status.ok()) return registry_status;

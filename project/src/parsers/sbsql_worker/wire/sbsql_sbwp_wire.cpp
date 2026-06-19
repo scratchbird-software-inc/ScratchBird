@@ -54,6 +54,16 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
+constexpr std::uint8_t kTxnFinalityPayloadVersion = 1;
+constexpr std::uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
+constexpr std::uint16_t kTxnCommitFlagCallerAcknowledgedRetryBoundary = 0x0002;
+constexpr std::uint16_t kTxnCommitFlagStatementHasSideEffects = 0x0004;
+constexpr std::uint16_t kTxnFinalityFlagEngineKnown = 0x0001;
+constexpr std::uint16_t kTxnFinalityFlagRetryAllowed = 0x0002;
+constexpr std::uint16_t kTxnFinalityFlagRetryRefused = 0x0004;
+constexpr std::uint16_t kTxnFinalityFlagSideEffectRetryRefused = 0x0008;
+constexpr std::uint16_t kTxnFinalityFlagSameIdempotencyKeyReplayable = 0x0010;
+constexpr std::uint16_t kTxnFinalityFlagPostInventorySecondaryFailure = 0x0020;
 
 
 namespace platform = scratchbird::core::platform;
@@ -75,10 +85,18 @@ constexpr std::uint8_t kFrameFlagKnownMask = kFrameFlagCompressed | kFrameFlagPa
 
 constexpr std::uint32_t kOidBool = 16;
 constexpr std::uint32_t kOidInt8 = 20;
+constexpr std::uint32_t kOidInt2 = 21;
 constexpr std::uint32_t kOidInt4 = 23;
 constexpr std::uint32_t kOidText = 25;
+constexpr std::uint32_t kOidFloat4 = 700;
 constexpr std::uint32_t kOidFloat8 = 701;
+constexpr std::uint32_t kOidVarchar = 1043;
+constexpr std::uint32_t kOidDate = 1082;
+constexpr std::uint32_t kOidTime = 1083;
+constexpr std::uint32_t kOidTimestamp = 1114;
+constexpr std::uint32_t kOidTimestamptz = 1184;
 constexpr std::uint32_t kOidNumeric = 1700;
+constexpr std::uint32_t kOidUuid = 2950;
 
 enum Msg : std::uint8_t {
   kStartup = 0x01,
@@ -125,6 +143,7 @@ enum Msg : std::uint8_t {
   kParameterDescription = 0x50,
   kCopyInResponse = 0x51,
   kNotification = 0x54,
+  kTxnStatus = 0x5c,
   kPong = 0x5d,
   kQueryProgress = 0x60,
   kServerInfo = 0x61,
@@ -194,7 +213,7 @@ constexpr std::uint64_t kP1OnlyFeatureMask =
     kFeatureCopyBackpressure | kFeatureSessionReset | kFeatureReauth |
     kFeatureFailoverHints | kFeatureTraceContext;
 constexpr std::uint64_t kServerSupportedFeatureMask =
-    kFeatureStreaming | kFeatureNotifications | kFeatureBatch | kFeaturePipeline |
+    kFeatureStreaming | kFeatureSblr | kFeatureNotifications | kFeatureBatch | kFeaturePipeline |
     kFeatureSavepoints | kFeatureMultiResult |
     kFeatureGeneratedKeys | kFeatureOutParameters | kFeatureArrayBind |
     kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
@@ -226,11 +245,22 @@ struct Frame {
 struct PreparedStatement {
   std::string sql;
   std::vector<std::uint32_t> param_types;
+  struct InsertRowsetPlan {
+    std::string target_name;
+    std::string target_object_uuid;
+    std::string server_prepared_statement_uuid;
+    std::string server_operation_id;
+    std::vector<std::string> column_names;
+    std::vector<std::size_t> parameter_indexes;
+  };
+  std::optional<InsertRowsetPlan> insert_rowset_plan;
 };
 
 struct BoundPortal {
   std::string sql;
   std::vector<std::uint32_t> param_types;
+  std::vector<std::optional<std::string>> param_values;
+  std::optional<PreparedStatement::InsertRowsetPlan> insert_rowset_plan;
 };
 
 struct SbwpColumn {
@@ -259,6 +289,42 @@ struct CopyImportState {
   std::string target_object_uuid;
   std::string format_family{"canonical_row_fields"};
   std::vector<CopyImportRow> rows;
+};
+
+enum class SbwpTxnFinalityState : std::uint8_t {
+  kUnknown = 0,
+  kCommitted = 1,
+  kRolledBack = 2,
+  kRefused = 3,
+  kPostInventorySecondaryFailure = 4,
+  kNotFound = 5,
+};
+
+struct SbwpTxnCommitRequest {
+  std::uint8_t legacy_flags{0};
+  std::uint16_t contract_flags{0};
+  std::array<std::uint8_t, 16> idempotency_key{};
+  std::uint64_t request_fingerprint{0};
+  std::uint64_t expected_txn_id{0};
+};
+
+struct SbwpTxnFinalityQuery {
+  std::uint16_t flags{0};
+  std::array<std::uint8_t, 16> idempotency_key{};
+  std::array<std::uint8_t, 16> finality_token{};
+  std::uint64_t expected_txn_id{0};
+};
+
+struct SbwpTxnFinalityRecord {
+  SbwpTxnFinalityState state{SbwpTxnFinalityState::kUnknown};
+  std::uint16_t flags{0};
+  std::array<std::uint8_t, 16> idempotency_key{};
+  std::array<std::uint8_t, 16> finality_token{};
+  std::uint64_t request_fingerprint{0};
+  std::uint64_t original_txn_id{0};
+  std::uint64_t replacement_txn_id{0};
+  std::string diagnostic_code;
+  std::string detail;
 };
 
 struct SbwpSessionState {
@@ -295,6 +361,8 @@ struct SbwpSessionState {
   std::deque<std::string> portal_lru;
   std::size_t bound_portal_bytes{0};
   CopyImportState copy_import;
+  std::map<std::string, SbwpTxnFinalityRecord> finality_by_idempotency_key;
+  std::map<std::string, std::string> idempotency_key_by_finality_token;
 };
 
 std::uint16_t ReadU16(const std::vector<std::uint8_t>& data, std::size_t off) {
@@ -381,6 +449,23 @@ bool ReadLpStr(const std::vector<std::uint8_t>& payload,
   return true;
 }
 
+void PutU16Str(std::vector<std::uint8_t>* out, std::string_view value) {
+  PutU16(out, static_cast<std::uint16_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+bool ReadU16Str(const std::vector<std::uint8_t>& payload,
+                std::size_t* off,
+                std::string* value) {
+  if (*off + 2 > payload.size()) return false;
+  const std::uint16_t length = ReadU16(payload, *off);
+  *off += 2;
+  if (*off + length > payload.size()) return false;
+  value->assign(reinterpret_cast<const char*>(payload.data() + *off), length);
+  *off += length;
+  return true;
+}
+
 void PutNullableText(std::vector<std::uint8_t>* out, std::string_view value) {
   out->push_back(3);
   PutU32(out, static_cast<std::uint32_t>(value.size()));
@@ -425,6 +510,259 @@ std::string StripSqlTerminator(std::string sql) {
   return sql;
 }
 
+std::size_t FindKeywordOutsideSql(std::string_view sql,
+                                  std::string_view keyword,
+                                  std::size_t start = 0) {
+  bool in_single = false;
+  bool in_double = false;
+  bool in_line_comment = false;
+  bool in_block_comment = false;
+  std::size_t depth = 0;
+  const std::string upper_keyword = Upper(std::string(keyword));
+  for (std::size_t i = start; i < sql.size();) {
+    const char ch = sql[i];
+    const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+    if (in_line_comment) {
+      in_line_comment = ch != '\n';
+      ++i;
+      continue;
+    }
+    if (in_block_comment) {
+      if (ch == '*' && next == '/') {
+        in_block_comment = false;
+        i += 2;
+      } else {
+        ++i;
+      }
+      continue;
+    }
+    if (!in_single && !in_double && ch == '-' && next == '-') {
+      in_line_comment = true;
+      i += 2;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '/' && next == '*') {
+      in_block_comment = true;
+      i += 2;
+      continue;
+    }
+    if (ch == '\'' && !in_double) {
+      if (in_single && next == '\'') {
+        i += 2;
+      } else {
+        in_single = !in_single;
+        ++i;
+      }
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      if (in_double && next == '"') {
+        i += 2;
+      } else {
+        in_double = !in_double;
+        ++i;
+      }
+      continue;
+    }
+    if (!in_single && !in_double) {
+      if (ch == '(') {
+        ++depth;
+        ++i;
+        continue;
+      }
+      if (ch == ')') {
+        if (depth > 0) --depth;
+        ++i;
+        continue;
+      }
+      if (depth == 0 && i + upper_keyword.size() <= sql.size()) {
+        const std::string candidate = Upper(std::string(sql.substr(i, upper_keyword.size())));
+        const bool left_ok = i == 0 ||
+            (!std::isalnum(static_cast<unsigned char>(sql[i - 1])) && sql[i - 1] != '_');
+        const bool right_ok = i + upper_keyword.size() == sql.size() ||
+            (!std::isalnum(static_cast<unsigned char>(sql[i + upper_keyword.size()])) &&
+             sql[i + upper_keyword.size()] != '_');
+        if (left_ok && right_ok && candidate == upper_keyword) return i;
+      }
+    }
+    ++i;
+  }
+  return std::string_view::npos;
+}
+
+std::size_t FindMatchingSqlParen(std::string_view sql, std::size_t open_pos) {
+  if (open_pos >= sql.size() || sql[open_pos] != '(') return std::string_view::npos;
+  bool in_single = false;
+  bool in_double = false;
+  std::size_t depth = 0;
+  for (std::size_t i = open_pos; i < sql.size(); ++i) {
+    const char ch = sql[i];
+    const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+    if (ch == '\'' && !in_double) {
+      if (in_single && next == '\'') {
+        ++i;
+      } else {
+        in_single = !in_single;
+      }
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      if (in_double && next == '"') {
+        ++i;
+      } else {
+        in_double = !in_double;
+      }
+      continue;
+    }
+    if (in_single || in_double) continue;
+    if (ch == '(') {
+      ++depth;
+    } else if (ch == ')') {
+      if (depth == 0) return std::string_view::npos;
+      --depth;
+      if (depth == 0) return i;
+    }
+  }
+  return std::string_view::npos;
+}
+
+std::vector<std::string> SplitTopLevelComma(std::string_view text) {
+  std::vector<std::string> out;
+  bool in_single = false;
+  bool in_double = false;
+  std::size_t depth = 0;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
+    const char next = i + 1 < text.size() ? text[i + 1] : '\0';
+    if (ch == '\'' && !in_double) {
+      if (in_single && next == '\'') {
+        ++i;
+      } else {
+        in_single = !in_single;
+      }
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      if (in_double && next == '"') {
+        ++i;
+      } else {
+        in_double = !in_double;
+      }
+      continue;
+    }
+    if (in_single || in_double) continue;
+    if (ch == '(') {
+      ++depth;
+    } else if (ch == ')') {
+      if (depth > 0) --depth;
+    } else if (ch == ',' && depth == 0) {
+      out.push_back(Trim(std::string(text.substr(start, i - start))));
+      start = i + 1;
+    }
+  }
+  out.push_back(Trim(std::string(text.substr(start))));
+  return out;
+}
+
+std::string TrimIdentifierToken(std::string token) {
+  token = Trim(std::move(token));
+  if (token.size() >= 2 && token.front() == '"' && token.back() == '"') {
+    std::string out;
+    for (std::size_t i = 1; i + 1 < token.size(); ++i) {
+      if (token[i] == '"' && i + 2 < token.size() && token[i + 1] == '"') {
+        out.push_back('"');
+        ++i;
+      } else {
+        out.push_back(token[i]);
+      }
+    }
+    return out;
+  }
+  return token;
+}
+
+std::optional<std::size_t> PlaceholderIndexForValue(std::string_view token,
+                                                    std::size_t* next_question_index) {
+  const std::string trimmed = Trim(std::string(token));
+  if (trimmed == "?") {
+    if (next_question_index == nullptr) return std::nullopt;
+    return (*next_question_index)++;
+  }
+  if (trimmed.size() > 1 && trimmed.front() == '$') {
+    std::size_t value = 0;
+    for (std::size_t i = 1; i < trimmed.size(); ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(trimmed[i]))) return std::nullopt;
+      value = value * 10u + static_cast<std::size_t>(trimmed[i] - '0');
+    }
+    if (value == 0) return std::nullopt;
+    return value - 1;
+  }
+  return std::nullopt;
+}
+
+std::optional<PreparedStatement::InsertRowsetPlan> AnalyzePreparedInsertRowset(std::string_view raw_sql) {
+  const std::string sql = StripSqlTerminator(std::string(raw_sql));
+  const std::string upper = Upper(sql);
+  if (!StartsWithWord(upper, "INSERT")) return std::nullopt;
+  const std::size_t into_pos = FindKeywordOutsideSql(sql, "INTO");
+  if (into_pos == std::string_view::npos) return std::nullopt;
+  std::size_t pos = into_pos + 4;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos >= sql.size()) return std::nullopt;
+  const std::size_t target_start = pos;
+  bool in_double = false;
+  while (pos < sql.size()) {
+    const char ch = sql[pos];
+    const char next = pos + 1 < sql.size() ? sql[pos + 1] : '\0';
+    if (ch == '"') {
+      if (in_double && next == '"') {
+        pos += 2;
+        continue;
+      }
+      in_double = !in_double;
+      ++pos;
+      continue;
+    }
+    if (!in_double && (std::isspace(static_cast<unsigned char>(ch)) || ch == '(')) break;
+    ++pos;
+  }
+  const std::string target_name = Trim(std::string(sql.substr(target_start, pos - target_start)));
+  if (target_name.empty()) return std::nullopt;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
+  const std::size_t columns_end = FindMatchingSqlParen(sql, pos);
+  if (columns_end == std::string_view::npos) return std::nullopt;
+  auto columns = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, columns_end - pos - 1));
+  if (columns.empty()) return std::nullopt;
+  for (auto& column : columns) {
+    column = TrimIdentifierToken(std::move(column));
+    if (column.empty()) return std::nullopt;
+  }
+  const std::size_t values_pos = FindKeywordOutsideSql(sql, "VALUES", columns_end + 1);
+  if (values_pos == std::string_view::npos) return std::nullopt;
+  pos = values_pos + 6;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
+  const std::size_t values_end = FindMatchingSqlParen(sql, pos);
+  if (values_end == std::string_view::npos) return std::nullopt;
+  auto values = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, values_end - pos - 1));
+  if (values.size() != columns.size()) return std::nullopt;
+  std::vector<std::size_t> parameter_indexes;
+  parameter_indexes.reserve(values.size());
+  std::size_t next_question_index = 0;
+  for (const auto& value : values) {
+    auto index = PlaceholderIndexForValue(value, &next_question_index);
+    if (!index.has_value()) return std::nullopt;
+    parameter_indexes.push_back(*index);
+  }
+  PreparedStatement::InsertRowsetPlan plan;
+  plan.target_name = target_name;
+  plan.column_names = std::move(columns);
+  plan.parameter_indexes = std::move(parameter_indexes);
+  return plan;
+}
+
 std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_t* off) {
   if (*off + 4 > payload.size()) return {};
   const std::uint32_t size = ReadU32(payload, *off);
@@ -439,11 +777,32 @@ std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_
 }
 
 std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
-  return statement.sql.size() + statement.param_types.size() * sizeof(std::uint32_t);
+  std::size_t bytes = statement.sql.size() + statement.param_types.size() * sizeof(std::uint32_t);
+  if (statement.insert_rowset_plan.has_value()) {
+    bytes += statement.insert_rowset_plan->target_name.size();
+    bytes += statement.insert_rowset_plan->target_object_uuid.size();
+    bytes += statement.insert_rowset_plan->server_prepared_statement_uuid.size();
+    bytes += statement.insert_rowset_plan->server_operation_id.size();
+    for (const auto& column : statement.insert_rowset_plan->column_names) bytes += column.size();
+    bytes += statement.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
+  }
+  return bytes;
 }
 
 std::size_t BoundPortalBytes(const BoundPortal& portal) {
-  return portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
+  std::size_t bytes = portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
+  for (const auto& value : portal.param_values) {
+    if (value.has_value()) bytes += value->size();
+  }
+  if (portal.insert_rowset_plan.has_value()) {
+    bytes += portal.insert_rowset_plan->target_name.size();
+    bytes += portal.insert_rowset_plan->target_object_uuid.size();
+    bytes += portal.insert_rowset_plan->server_prepared_statement_uuid.size();
+    bytes += portal.insert_rowset_plan->server_operation_id.size();
+    for (const auto& column : portal.insert_rowset_plan->column_names) bytes += column.size();
+    bytes += portal.insert_rowset_plan->parameter_indexes.size() * sizeof(std::size_t);
+  }
+  return bytes;
 }
 
 void RemovePreparedStatement(SbwpSessionState* state, const std::string& name) {
@@ -541,6 +900,80 @@ std::uint32_t ParseQueryFlags(const std::vector<std::uint8_t>& payload) {
   return ReadU32(payload, 0);
 }
 
+std::size_t InferPlaceholderCount(std::string_view sql) {
+  std::size_t question_count = 0;
+  std::size_t max_dollar_index = 0;
+  bool in_single = false;
+  bool in_double = false;
+  bool in_line_comment = false;
+  bool in_block_comment = false;
+  for (std::size_t index = 0; index < sql.size();) {
+    const char ch = sql[index];
+    const char next = index + 1 < sql.size() ? sql[index + 1] : '\0';
+    if (in_line_comment) {
+      in_line_comment = ch != '\n';
+      ++index;
+      continue;
+    }
+    if (in_block_comment) {
+      if (ch == '*' && next == '/') {
+        in_block_comment = false;
+        index += 2;
+      } else {
+        ++index;
+      }
+      continue;
+    }
+    if (!in_single && !in_double && ch == '-' && next == '-') {
+      in_line_comment = true;
+      index += 2;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '/' && next == '*') {
+      in_block_comment = true;
+      index += 2;
+      continue;
+    }
+    if (ch == '\'' && !in_double) {
+      if (in_single && next == '\'') {
+        index += 2;
+        continue;
+      }
+      in_single = !in_single;
+      ++index;
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      if (in_double && next == '"') {
+        index += 2;
+        continue;
+      }
+      in_double = !in_double;
+      ++index;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '?') {
+      ++question_count;
+      ++index;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '$' && index + 1 < sql.size() &&
+        std::isdigit(static_cast<unsigned char>(sql[index + 1]))) {
+      std::size_t cursor = index + 1;
+      std::size_t value = 0;
+      while (cursor < sql.size() && std::isdigit(static_cast<unsigned char>(sql[cursor]))) {
+        value = value * 10u + static_cast<std::size_t>(sql[cursor] - '0');
+        ++cursor;
+      }
+      max_dollar_index = std::max(max_dollar_index, value);
+      index = cursor;
+      continue;
+    }
+    ++index;
+  }
+  return std::max(question_count, max_dollar_index);
+}
+
 std::optional<PreparedStatement> ParsePreparedStatement(const std::vector<std::uint8_t>& payload,
                                                         std::string* name) {
   std::size_t off = 0;
@@ -556,6 +989,10 @@ std::optional<PreparedStatement> ParsePreparedStatement(const std::vector<std::u
     prepared.param_types.push_back(ReadU32(payload, off));
     off += 4;
   }
+  if (prepared.param_types.empty()) {
+    prepared.param_types.resize(InferPlaceholderCount(prepared.sql), 0);
+  }
+  prepared.insert_rowset_plan = AnalyzePreparedInsertRowset(prepared.sql);
   return prepared;
 }
 
@@ -874,6 +1311,7 @@ bool IsKnownSbwpMessage(std::uint8_t msg_type) {
     case kStreamControl:
     case kTxnBegin:
     case kTxnCommit:
+    case kTxnStatus:
     case kTxnRollback:
     case kTxnSavepoint:
     case kTxnRelease:
@@ -943,6 +1381,151 @@ std::array<std::uint8_t, 16> FallbackAttachmentId(std::string_view seed) {
   out[6] = static_cast<std::uint8_t>((out[6] & 0x0fu) | 0x70u);
   out[8] = static_cast<std::uint8_t>((out[8] & 0x3fu) | 0x80u);
   return out;
+}
+
+std::string UuidKey(const std::array<std::uint8_t, 16>& uuid) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(32);
+  for (const auto byte : uuid) {
+    out.push_back(kHex[(byte >> 4u) & 0x0fu]);
+    out.push_back(kHex[byte & 0x0fu]);
+  }
+  return out;
+}
+
+std::array<std::uint8_t, 16> GeneratedFinalityToken(
+    std::uint64_t original_txn_id,
+    std::uint32_t server_sequence,
+    const std::array<std::uint8_t, 16>& idempotency_key) {
+  return FallbackAttachmentId("sbwp-finality:" + std::to_string(original_txn_id) + ":" +
+                              std::to_string(server_sequence) + ":" + UuidKey(idempotency_key));
+}
+
+bool ParseTxnCommitPayload(const std::vector<std::uint8_t>& payload,
+                           SbwpTxnCommitRequest* request) {
+  if (request == nullptr || payload.size() < 4) return false;
+  *request = SbwpTxnCommitRequest{};
+  request->legacy_flags = payload[0];
+  if (payload.size() == 4 && payload[1] == 0 && payload[2] == 0 && payload[3] == 0) {
+    return true;
+  }
+  if (payload.size() < 36 || payload[1] != kTxnFinalityPayloadVersion) return false;
+  request->contract_flags = ReadU16(payload, 2);
+  std::copy(payload.begin() + 4, payload.begin() + 20, request->idempotency_key.begin());
+  request->request_fingerprint = ReadU64(payload, 20);
+  request->expected_txn_id = ReadU64(payload, 28);
+  return true;
+}
+
+bool ParseTxnFinalityQueryPayload(const std::vector<std::uint8_t>& payload,
+                                  SbwpTxnFinalityQuery* query) {
+  if (query == nullptr || payload.size() < 44 || payload[0] != kTxnFinalityPayloadVersion) {
+    return false;
+  }
+  *query = SbwpTxnFinalityQuery{};
+  query->flags = ReadU16(payload, 2);
+  std::copy(payload.begin() + 4, payload.begin() + 20, query->idempotency_key.begin());
+  std::copy(payload.begin() + 20, payload.begin() + 36, query->finality_token.begin());
+  query->expected_txn_id = ReadU64(payload, 36);
+  return true;
+}
+
+std::vector<std::uint8_t> TxnFinalityStatusPayload(const SbwpTxnFinalityRecord& record) {
+  std::vector<std::uint8_t> out;
+  out.reserve(64 + record.diagnostic_code.size() + record.detail.size());
+  out.push_back(kTxnFinalityPayloadVersion);
+  out.push_back(static_cast<std::uint8_t>(record.state));
+  PutU16(&out, record.flags);
+  PutUuid(&out, record.idempotency_key);
+  PutUuid(&out, record.finality_token);
+  PutU64(&out, record.request_fingerprint);
+  PutU64(&out, record.original_txn_id);
+  PutU64(&out, record.replacement_txn_id);
+  PutU16Str(&out, record.diagnostic_code);
+  PutU16Str(&out, record.detail);
+  return out;
+}
+
+void StoreFinalityRecord(SbwpSessionState* state, SbwpTxnFinalityRecord record) {
+  if (state == nullptr || IsZeroUuid(record.idempotency_key)) return;
+  const std::string idempotency_key = UuidKey(record.idempotency_key);
+  if (!IsZeroUuid(record.finality_token)) {
+    state->idempotency_key_by_finality_token[UuidKey(record.finality_token)] = idempotency_key;
+  }
+  state->finality_by_idempotency_key[idempotency_key] = std::move(record);
+}
+
+const SbwpTxnFinalityRecord* FindFinalityRecord(
+    const SbwpSessionState& state,
+    const std::array<std::uint8_t, 16>& idempotency_key,
+    const std::array<std::uint8_t, 16>& finality_token) {
+  if (!IsZeroUuid(idempotency_key)) {
+    const auto found = state.finality_by_idempotency_key.find(UuidKey(idempotency_key));
+    if (found != state.finality_by_idempotency_key.end()) return &found->second;
+  }
+  if (!IsZeroUuid(finality_token)) {
+    const auto token = state.idempotency_key_by_finality_token.find(UuidKey(finality_token));
+    if (token != state.idempotency_key_by_finality_token.end()) {
+      const auto found = state.finality_by_idempotency_key.find(token->second);
+      if (found != state.finality_by_idempotency_key.end()) return &found->second;
+    }
+  }
+  return nullptr;
+}
+
+SbwpTxnFinalityRecord NotFoundFinalityRecord(const SbwpTxnFinalityQuery& query) {
+  SbwpTxnFinalityRecord record;
+  record.state = SbwpTxnFinalityState::kNotFound;
+  record.flags = kTxnFinalityFlagEngineKnown | kTxnFinalityFlagRetryRefused;
+  record.idempotency_key = query.idempotency_key;
+  record.finality_token = query.finality_token;
+  record.original_txn_id = query.expected_txn_id;
+  record.diagnostic_code = "SBWP.COMMIT.FINALITY_NOT_FOUND";
+  record.detail = "no commit finality record for requested idempotency key or finality token";
+  return record;
+}
+
+SbwpTxnFinalityRecord RefusedFinalityRecord(const SbwpTxnCommitRequest& request,
+                                            const SbwpTxnFinalityRecord& existing,
+                                            std::string diagnostic_code,
+                                            std::string detail,
+                                            bool side_effect_refused) {
+  SbwpTxnFinalityRecord record = existing;
+  record.state = SbwpTxnFinalityState::kRefused;
+  record.flags &= ~kTxnFinalityFlagRetryAllowed;
+  record.flags |= kTxnFinalityFlagEngineKnown | kTxnFinalityFlagRetryRefused;
+  if (side_effect_refused) {
+    record.flags |= kTxnFinalityFlagSideEffectRetryRefused;
+  }
+  record.idempotency_key = request.idempotency_key;
+  record.request_fingerprint = request.request_fingerprint;
+  record.diagnostic_code = std::move(diagnostic_code);
+  record.detail = std::move(detail);
+  return record;
+}
+
+bool SameCommitFingerprint(const SbwpTxnCommitRequest& request,
+                           const SbwpTxnFinalityRecord& record) {
+  if (request.request_fingerprint != 0 && record.request_fingerprint != 0 &&
+      request.request_fingerprint != record.request_fingerprint) {
+    return false;
+  }
+  if (request.expected_txn_id != 0 && record.original_txn_id != 0 &&
+      request.expected_txn_id != record.original_txn_id) {
+    return false;
+  }
+  return true;
+}
+
+bool IsPostInventorySecondaryFailure(const MessageVectorSet& messages) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    if (diagnostic.code == "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE" ||
+        diagnostic.code == "SB-IPAR-COMMIT-POST-INVENTORY-SECONDARY-FAILURE") {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::optional<std::uint64_t> TextLineU64(std::string_view encoded, std::string_view key) {
@@ -1678,6 +2261,95 @@ bool SendUnsupportedFeature(ClientIo* io,
                    std::string(feature_name) + " is fail-closed before side effects in this route");
 }
 
+bool SendTxnFinalityStatus(ClientIo* io,
+                           SbwpSessionState* state,
+                           const SbwpTxnFinalityRecord& record) {
+  return SendFrame(io, state, kTxnStatus, TxnFinalityStatusPayload(record));
+}
+
+bool SendTxnCommitReplayRefusal(ClientIo* io,
+                                SbwpSessionState* state,
+                                const SbwpTxnCommitRequest& request,
+                                const SbwpTxnFinalityRecord& existing,
+                                std::string diagnostic_code,
+                                std::string detail,
+                                bool side_effect_refused) {
+  const auto record = RefusedFinalityRecord(request,
+                                           existing,
+                                           std::move(diagnostic_code),
+                                           std::move(detail),
+                                           side_effect_refused);
+  return SendTxnFinalityStatus(io, state, record) &&
+         SendError(io, state, "40003", record.diagnostic_code, record.detail) &&
+         SendReady(io, state, ReadyReason::kErrorRecovered);
+}
+
+bool HandleTxnStatus(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+  SbwpTxnFinalityQuery query;
+  if (!ParseTxnFinalityQueryPayload(frame.payload, &query)) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "SBWP.COMMIT.FINALITY_QUERY_INVALID",
+                     "TxnStatus query payload is truncated or has an unsupported version") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  const auto* record = FindFinalityRecord(*state, query.idempotency_key, query.finality_token);
+  const SbwpTxnFinalityRecord not_found = NotFoundFinalityRecord(query);
+  return SendTxnFinalityStatus(io, state, record == nullptr ? not_found : *record) &&
+         SendReady(io, state, ReadyReason::kCommandComplete);
+}
+
+bool HandleTxnCommitReplay(ClientIo* io,
+                           SbwpSessionState* state,
+                           const SbwpTxnCommitRequest& request) {
+  if ((request.contract_flags & kTxnCommitFlagHasIdempotencyKey) == 0 ||
+      IsZeroUuid(request.idempotency_key)) {
+    return false;
+  }
+  const auto* existing = FindFinalityRecord(*state, request.idempotency_key, {});
+  if (existing == nullptr) return false;
+  if (!SameCommitFingerprint(request, *existing)) {
+    return SendTxnCommitReplayRefusal(
+        io,
+        state,
+        request,
+        *existing,
+        "SBWP.RETRY.IDEMPOTENCY_KEY_CONFLICT",
+        "idempotency key is already bound to a different commit request fingerprint",
+        false);
+  }
+  if ((existing->flags & kTxnFinalityFlagEngineKnown) == 0) {
+    return SendTxnFinalityStatus(io, state, *existing) &&
+           SendError(io,
+                     state,
+                     "08007",
+                     "SERVER.DRIVER_TX.RETRY_REQUIRES_FINALITY_QUERY",
+                     "commit finality is unknown until engine finality is queried") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  const bool side_effect_retry =
+      (request.contract_flags & kTxnCommitFlagStatementHasSideEffects) != 0;
+  const bool caller_acknowledged =
+      (request.contract_flags & kTxnCommitFlagCallerAcknowledgedRetryBoundary) != 0;
+  if (side_effect_retry && !caller_acknowledged) {
+    return SendTxnCommitReplayRefusal(
+        io,
+        state,
+        request,
+        *existing,
+        "SBWP.RETRY.CALLER_ACK_REQUIRED",
+        "side-effect commit retry refused without caller acknowledgement of the retry boundary",
+        true);
+  }
+  if (existing->replacement_txn_id != 0) {
+    state->txn_id = existing->replacement_txn_id;
+  }
+  return SendTxnFinalityStatus(io, state, *existing) &&
+         SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "COMMIT")) &&
+         SendReady(io, state, ReadyReason::kCommandComplete);
+}
+
 std::array<std::uint8_t, 16> PayloadUuidOrGenerated(const std::vector<std::uint8_t>& payload) {
   std::array<std::uint8_t, 16> uuid{};
   if (payload.size() >= uuid.size()) {
@@ -2251,24 +2923,48 @@ std::string StripLengthPrefixText(const std::vector<std::uint8_t>& data) {
   return std::string(reinterpret_cast<const char*>(data.data()), data.size());
 }
 
+std::string UuidLiteralFromBytes(const std::vector<std::uint8_t>& data) {
+  if (data.size() != 16) return "NULL";
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string text;
+  text.reserve(36);
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
+    text.push_back(kHex[(data[i] >> 4u) & 0x0fu]);
+    text.push_back(kHex[data[i] & 0x0fu]);
+  }
+  return SqlQuote(text);
+}
+
 std::string DecodeParamLiteral(std::uint32_t oid,
                                std::uint16_t format,
                                const std::optional<std::vector<std::uint8_t>>& data) {
   if (!data.has_value()) return "NULL";
   if (format == 0) {
     const std::string text(reinterpret_cast<const char*>(data->data()), data->size());
-    if (oid == kOidInt4 || oid == kOidInt8 || oid == kOidFloat8 || oid == kOidNumeric ||
+    if (oid == kOidInt2 || oid == kOidInt4 || oid == kOidInt8 ||
+        oid == kOidFloat4 || oid == kOidFloat8 || oid == kOidNumeric ||
         oid == kOidBool) {
       return text;
     }
     return SqlQuote(text);
   }
   if (oid == kOidBool && !data->empty()) return (*data)[0] == 0 ? "FALSE" : "TRUE";
+  if (oid == kOidInt2 && data->size() >= 2) {
+    return std::to_string(static_cast<std::int16_t>(ReadU16(*data, 0)));
+  }
   if (oid == kOidInt4 && data->size() >= 4) {
     return std::to_string(static_cast<std::int32_t>(ReadU32(*data, 0)));
   }
   if (oid == kOidInt8 && data->size() >= 8) {
     return std::to_string(static_cast<std::int64_t>(ReadU64(*data, 0)));
+  }
+  if (oid == kOidFloat4 && data->size() >= 4) {
+    float value = 0.0f;
+    std::memcpy(&value, data->data(), sizeof(value));
+    std::ostringstream out;
+    out << value;
+    return out.str();
   }
   if (oid == kOidFloat8 && data->size() >= 8) {
     double value = 0.0;
@@ -2277,10 +2973,57 @@ std::string DecodeParamLiteral(std::uint32_t oid,
     out << value;
     return out.str();
   }
+  if (oid == kOidUuid && data->size() == 16) return UuidLiteralFromBytes(*data);
   const auto text = StripLengthPrefixText(*data);
   if (oid == kOidNumeric) return text;
+  if (oid == kOidText || oid == kOidVarchar ||
+      oid == kOidDate || oid == kOidTime ||
+      oid == kOidTimestamp || oid == kOidTimestamptz) {
+    return SqlQuote(text);
+  }
   if (oid == 0 && (LooksInteger(text) || LooksDecimal(text))) return text;
   return SqlQuote(text);
+}
+
+std::optional<std::string> DecodeParamValue(std::uint32_t oid,
+                                            std::uint16_t format,
+                                            const std::optional<std::vector<std::uint8_t>>& data) {
+  if (!data.has_value()) return std::nullopt;
+  if (format == 0) {
+    return std::string(reinterpret_cast<const char*>(data->data()), data->size());
+  }
+  if (oid == kOidBool && !data->empty()) return (*data)[0] == 0 ? "FALSE" : "TRUE";
+  if (oid == kOidInt2 && data->size() >= 2) {
+    return std::to_string(static_cast<std::int16_t>(ReadU16(*data, 0)));
+  }
+  if (oid == kOidInt4 && data->size() >= 4) {
+    return std::to_string(static_cast<std::int32_t>(ReadU32(*data, 0)));
+  }
+  if (oid == kOidInt8 && data->size() >= 8) {
+    return std::to_string(static_cast<std::int64_t>(ReadU64(*data, 0)));
+  }
+  if (oid == kOidFloat4 && data->size() >= 4) {
+    float value = 0.0f;
+    std::memcpy(&value, data->data(), sizeof(value));
+    std::ostringstream out;
+    out << value;
+    return out.str();
+  }
+  if (oid == kOidFloat8 && data->size() >= 8) {
+    double value = 0.0;
+    std::memcpy(&value, data->data(), sizeof(value));
+    std::ostringstream out;
+    out << value;
+    return out.str();
+  }
+  if (oid == kOidUuid && data->size() == 16) {
+    std::string literal = UuidLiteralFromBytes(*data);
+    if (literal.size() >= 2 && literal.front() == '\'' && literal.back() == '\'') {
+      literal = literal.substr(1, literal.size() - 2);
+    }
+    return literal;
+  }
+  return StripLengthPrefixText(*data);
 }
 
 std::string SubstituteParams(std::string sql, const std::vector<std::string>& literals) {
@@ -2288,15 +3031,62 @@ std::string SubstituteParams(std::string sql, const std::vector<std::string>& li
   out.reserve(sql.size() + literals.size() * 8);
   bool in_single = false;
   bool in_double = false;
+  bool in_line_comment = false;
+  bool in_block_comment = false;
+  std::size_t question_index = 0;
   for (std::size_t i = 0; i < sql.size();) {
     const char ch = sql[i];
+    const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+    if (in_line_comment) {
+      out.push_back(ch);
+      in_line_comment = ch != '\n';
+      ++i;
+      continue;
+    }
+    if (in_block_comment) {
+      out.push_back(ch);
+      if (ch == '*' && next == '/') {
+        out.push_back(next);
+        in_block_comment = false;
+        i += 2;
+      } else {
+        ++i;
+      }
+      continue;
+    }
+    if (!in_single && !in_double && ch == '-' && next == '-') {
+      out.push_back(ch);
+      out.push_back(next);
+      in_line_comment = true;
+      i += 2;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '/' && next == '*') {
+      out.push_back(ch);
+      out.push_back(next);
+      in_block_comment = true;
+      i += 2;
+      continue;
+    }
     if (ch == '\'' && !in_double) {
+      if (in_single && next == '\'') {
+        out.push_back(ch);
+        out.push_back(next);
+        i += 2;
+        continue;
+      }
       in_single = !in_single;
       out.push_back(ch);
       ++i;
       continue;
     }
     if (ch == '"' && !in_single) {
+      if (in_double && next == '"') {
+        out.push_back(ch);
+        out.push_back(next);
+        i += 2;
+        continue;
+      }
       in_double = !in_double;
       out.push_back(ch);
       ++i;
@@ -2315,6 +3105,15 @@ std::string SubstituteParams(std::string sql, const std::vector<std::string>& li
         i = j;
         continue;
       }
+    }
+    if (!in_single && !in_double && ch == '?') {
+      if (question_index < literals.size()) {
+        out += literals[question_index++];
+      } else {
+        out.push_back(ch);
+      }
+      ++i;
+      continue;
     }
     out.push_back(ch);
     ++i;
@@ -2345,6 +3144,8 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   off += 4;
   std::vector<std::string> literals;
   literals.reserve(value_count);
+  std::vector<std::optional<std::string>> values;
+  values.reserve(value_count);
   for (std::uint16_t i = 0; i < value_count && off + 4 <= payload.size(); ++i) {
     const std::int32_t length = ReadI32(payload, off);
     off += 4;
@@ -2361,10 +3162,13 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
                                      : formats[std::min<std::size_t>(i, formats.size() - 1)];
     const std::uint32_t oid = i < statement.param_types.size() ? statement.param_types[i] : 0;
     literals.push_back(DecodeParamLiteral(oid, format, data));
+    values.push_back(DecodeParamValue(oid, format, data));
   }
   BoundPortal bound;
   bound.sql = SubstituteParams(statement.sql, literals);
   bound.param_types = statement.param_types;
+  bound.param_values = std::move(values);
+  bound.insert_rowset_plan = statement.insert_rowset_plan;
   return bound;
 }
 
@@ -2373,18 +3177,154 @@ std::string ParsePortalName(const std::vector<std::uint8_t>& payload) {
   return ReadSizedString(payload, &off);
 }
 
+std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
+                                                ClientIo* io,
+                                                SbwpSessionState* state,
+                                                const BoundPortal& portal,
+                                                bool send_ready) {
+  state->ready_sent_for_current_operation = false;
+  if (!portal.insert_rowset_plan.has_value()) return std::nullopt;
+  auto plan = *portal.insert_rowset_plan;
+  if (plan.target_object_uuid.empty()) {
+    auto resolved = session->ResolvePublicNameForWire(plan.target_name, false, "relation");
+    if (!resolved.resolved || resolved.object_uuid.empty()) {
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE",
+                     "prepared rowset target object could not be resolved")) {
+        return false;
+      }
+      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    plan.target_object_uuid = std::move(resolved.object_uuid);
+  }
+  CopyImportState rowset;
+  rowset.native_bulk_ingest = true;
+  rowset.native_bulk_ingest_enabled = true;
+  rowset.sql = portal.sql;
+  rowset.target_object_uuid = plan.target_object_uuid;
+  CopyImportRow row;
+  row.fields.reserve(plan.column_names.size());
+  for (std::size_t i = 0; i < plan.column_names.size(); ++i) {
+    const std::size_t parameter_index =
+        i < plan.parameter_indexes.size() ? plan.parameter_indexes[i] : portal.param_values.size();
+    if (parameter_index >= portal.param_values.size()) {
+      if (!SendError(io,
+                     state,
+                     "08P01",
+                     "SBWP.BIND.PARAMETER_MISSING",
+                     "prepared rowset bind did not supply every required parameter")) {
+        return false;
+      }
+      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    row.fields.emplace_back(plan.column_names[i], portal.param_values[parameter_index]);
+  }
+  rowset.rows.push_back(std::move(row));
+  const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size());
+  auto result = plan.server_prepared_statement_uuid.empty()
+                    ? session->RunSblrEnvelope(envelope, false)
+                    : session->RunPreparedSblrEnvelopeForWire(
+                          plan.server_prepared_statement_uuid, envelope, false);
+  if (!result.accepted || result.messages.has_errors()) {
+    const std::string diagnostic_code =
+        FirstDiagnosticCode(result.messages, "SBWP.PREPARED_ROWSET.EXECUTION_REJECTED");
+    const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
+    if (!SendError(io,
+                   state,
+                   "42000",
+                   FirstDiagnosticText(result.messages),
+                   diagnostic_detail.empty() ? diagnostic_code
+                                             : diagnostic_code + ";" + diagnostic_detail)) {
+      return false;
+    }
+    return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  RefreshWireTransactionStateFromSession(*session, state);
+  if (result.server_row_count == 0) result.server_row_count = rowset.rows.size();
+  if (!SendPipelineResult(io, session, state, portal.sql, result)) {
+    return false;
+  }
+  return !send_ready || SendReady(io, state);
+}
+
+bool ExecuteNativeSblrFrame(SbsqlTestWireSession* session,
+                            ClientIo* io,
+                            SbwpSessionState* state,
+                            const Frame& frame) {
+  state->ready_sent_for_current_operation = false;
+  if (frame.payload.size() < 16) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "SBWP.SBLR_EXECUTE.PAYLOAD_INVALID",
+                     "native SBLR execute payload is truncated") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  std::size_t off = 0;
+  const std::uint64_t sblr_hash = ReadU64(frame.payload, off);
+  (void)sblr_hash;
+  off += 8;
+  const std::uint32_t bytecode_size = ReadU32(frame.payload, off);
+  off += 4;
+  const std::uint16_t parameter_count = ReadU16(frame.payload, off);
+  off += 4;
+  if (off + bytecode_size > frame.payload.size()) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "SBWP.SBLR_EXECUTE.PAYLOAD_INVALID",
+                     "native SBLR execute bytecode length exceeds payload length") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  if (parameter_count != 0) {
+    return SendError(io,
+                     state,
+                     "0A000",
+                     "SBWP.SBLR_EXECUTE.PARAMETER_BINDING_REQUIRED",
+                     "native SBLR execute parameters must use an admitted rowset binding route") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  const std::string encoded_sblr_envelope(
+      reinterpret_cast<const char*>(frame.payload.data() + off), bytecode_size);
+  if (encoded_sblr_envelope.empty()) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "SBWP.SBLR_EXECUTE.EMPTY_ENVELOPE",
+                     "native SBLR execute requires a non-empty admitted SBLR envelope") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  auto result = session->RunSblrEnvelope(encoded_sblr_envelope, false);
+  if (!result.accepted || result.messages.has_errors()) {
+    return SendError(io,
+                     state,
+                     "42000",
+                     FirstDiagnosticText(result.messages),
+                     FirstDiagnosticCode(result.messages,
+                                         "SBWP.SBLR_EXECUTE.REJECTED")) &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  RefreshWireTransactionStateFromSession(*session, state);
+  if (!SendPipelineResult(io, session, state, "/* native sblr */", result)) return false;
+  return SendReady(io, state);
+}
+
 bool ExecuteSql(SbsqlTestWireSession* session,
                 ClientIo* io,
                 SbwpSessionState* state,
                 std::string_view raw_sql,
                 bool send_ready,
-                bool autocommit_emulation = false) {
+                bool autocommit_emulation = false,
+                const SbwpTxnCommitRequest* commit_request = nullptr) {
   state->ready_sent_for_current_operation = false;
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   if (sql.empty()) {
     if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
     return !send_ready || SendReady(io, state);
   }
+  const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
   const auto result = session->RunPipeline(sql,
                                            true,
@@ -2392,6 +3332,25 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                            0,
                                            autocommit_emulation && !auto_cursor);
   if (!result.accepted || result.messages.has_errors()) {
+    if (commit_request != nullptr && IsPostInventorySecondaryFailure(result.messages)) {
+      SbwpTxnFinalityRecord record;
+      record.state = SbwpTxnFinalityState::kPostInventorySecondaryFailure;
+      record.flags = kTxnFinalityFlagEngineKnown |
+                     kTxnFinalityFlagSameIdempotencyKeyReplayable |
+                     kTxnFinalityFlagPostInventorySecondaryFailure;
+      record.idempotency_key = commit_request->idempotency_key;
+      record.finality_token =
+          GeneratedFinalityToken(original_txn_id, state->server_sequence, record.idempotency_key);
+      record.request_fingerprint = commit_request->request_fingerprint;
+      record.original_txn_id = original_txn_id;
+      record.replacement_txn_id = TransactionIdFromResultPayload(result.server_result_payload)
+                                      .value_or(original_txn_id);
+      record.diagnostic_code = "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE";
+      record.detail =
+          "commit is final in MGA transaction inventory; secondary post-inventory work failed";
+      StoreFinalityRecord(state, record);
+      if (!SendTxnFinalityStatus(io, state, record)) return false;
+    }
     if (!SendError(io,
                    state,
                    "42000",
@@ -2421,6 +3380,26 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     }
     state->txn_id = *replacement;
   }
+  std::optional<SbwpTxnFinalityRecord> commit_finality;
+  if (commit_request != nullptr &&
+      (commit_request->contract_flags & kTxnCommitFlagHasIdempotencyKey) != 0 &&
+      !IsZeroUuid(commit_request->idempotency_key) &&
+      result.server_operation_id == "transaction.commit") {
+    SbwpTxnFinalityRecord record;
+    record.state = SbwpTxnFinalityState::kCommitted;
+    record.flags = kTxnFinalityFlagEngineKnown | kTxnFinalityFlagSameIdempotencyKeyReplayable;
+    record.idempotency_key = commit_request->idempotency_key;
+    record.finality_token =
+        GeneratedFinalityToken(original_txn_id, state->server_sequence, record.idempotency_key);
+    record.request_fingerprint = commit_request->request_fingerprint;
+    record.original_txn_id = original_txn_id;
+    record.replacement_txn_id = state->txn_id;
+    record.diagnostic_code = "SBWP.COMMIT.FINALITY_COMMITTED_BY_MGA_INVENTORY";
+    record.detail =
+        "committed_by_engine_mga_inventory;retry_side_effects_require_caller_acknowledgement";
+    StoreFinalityRecord(state, record);
+    commit_finality = std::move(record);
+  }
   if (result.server_operation_id == "dml.plan_import_rows" &&
       Upper(sql).find("FROM STDIN") != std::string::npos) {
     const auto target_uuid = JsonObjectTextField(result.sblr_payload, "target_object_uuid");
@@ -2444,6 +3423,9 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     return true;
   }
   if (!SendPipelineResult(io, session, state, sql, result)) return false;
+  if (commit_finality.has_value() && !SendTxnFinalityStatus(io, state, *commit_finality)) {
+    return false;
+  }
   return !send_ready || SendReady(io, state);
 }
 
@@ -2826,6 +3808,27 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           if (!SendError(&io, &state, "08P01", "invalid PARSE payload")) rc = 1;
           break;
         }
+        if (state.authenticated && prepared->insert_rowset_plan.has_value()) {
+          auto resolved = ResolvePublicNameForWire(prepared->insert_rowset_plan->target_name,
+                                                   false,
+                                                   "relation");
+          if (resolved.resolved) {
+            prepared->insert_rowset_plan->target_object_uuid = std::move(resolved.object_uuid);
+            CopyImportState prepare_template;
+            prepare_template.native_bulk_ingest = true;
+            prepare_template.native_bulk_ingest_enabled = true;
+            prepare_template.sql = prepared->sql;
+            prepare_template.target_object_uuid = prepared->insert_rowset_plan->target_object_uuid;
+            const auto prepared_handle =
+                PrepareSblrForWire(BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
+            if (prepared_handle.accepted) {
+              prepared->insert_rowset_plan->server_prepared_statement_uuid =
+                  prepared_handle.prepared_statement_uuid;
+              prepared->insert_rowset_plan->server_operation_id =
+                  prepared_handle.operation_id;
+            }
+          }
+        }
         if (!StorePreparedStatement(&state, name, std::move(*prepared))) {
           if (!SendError(&io,
                          &state,
@@ -2893,8 +3896,13 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           if (!SendError(&io, &state, "34000", "bound portal not found")) rc = 1;
         } else if (!AdmitFrameTransaction(&io, &state, frame, "EXECUTE")) {
           break;
-        } else if (!ExecuteSql(this, &io, &state, sql, false)) {
-          rc = 1;
+        } else {
+          auto rowset_executed = ExecutePreparedInsertRowset(this, &io, &state, found->second, false);
+          if (rowset_executed.has_value()) {
+            if (!*rowset_executed) rc = 1;
+          } else if (!ExecuteSql(this, &io, &state, sql, false)) {
+            rc = 1;
+          }
         }
         break;
       }
@@ -2922,7 +3930,37 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         if (!AdmitFrameTransaction(&io, &state, frame, "TXN_COMMIT")) {
           break;
         }
-        if (!ExecuteSql(this, &io, &state, "COMMIT", true)) rc = 1;
+        {
+          SbwpTxnCommitRequest request;
+          if (!ParseTxnCommitPayload(frame.payload, &request)) {
+            if (!SendError(&io,
+                           &state,
+                           "08P01",
+                           "SBWP.COMMIT.IDEMPOTENCY_PAYLOAD_INVALID",
+                           "TxnCommit finality/idempotency payload is truncated or unsupported") ||
+                !SendReady(&io, &state, ReadyReason::kErrorRecovered)) {
+              rc = 1;
+            }
+            break;
+          }
+          const bool replay_candidate =
+              (request.contract_flags & kTxnCommitFlagHasIdempotencyKey) != 0 &&
+              !IsZeroUuid(request.idempotency_key) &&
+              FindFinalityRecord(state, request.idempotency_key, {}) != nullptr;
+          if (replay_candidate) {
+            if (!HandleTxnCommitReplay(&io, &state, request)) rc = 1;
+            break;
+          }
+          if (!ExecuteSql(this, &io, &state, "COMMIT", true, false, &request)) rc = 1;
+        }
+        break;
+      case kTxnStatus:
+        if (!state.authenticated) {
+          if (!SendError(&io, &state, "28000", "authentication required") ||
+              !SendReady(&io, &state, ReadyReason::kErrorRecovered)) rc = 1;
+        } else if (!HandleTxnStatus(&io, &state, frame)) {
+          rc = 1;
+        }
         break;
       case kTxnRollback:
         if (!AdmitFrameTransaction(&io, &state, frame, "TXN_ROLLBACK")) {
@@ -3002,6 +4040,15 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         if (!HandleCopyFail(&io, &state, frame)) rc = 1;
         break;
       case kSblrExecute:
+        if (!state.authenticated) {
+          if (!SendError(&io, &state, "28000", "authentication required") ||
+              !SendReady(&io, &state, ReadyReason::kErrorRecovered)) rc = 1;
+        } else if (!AdmitFrameTransaction(&io, &state, frame, "SBLR_EXECUTE")) {
+          break;
+        } else if (!ExecuteNativeSblrFrame(this, &io, &state, frame)) {
+          rc = 1;
+        }
+        break;
       case kStreamControl:
       case kLobClose:
         if (!SendUnsupportedFeature(&io, &state, "native extension frame") ||

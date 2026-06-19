@@ -60,6 +60,7 @@ struct DeviceCapabilities {
   bool write_at = true;
   bool sync = true;
   bool size_query = true;
+  bool extent_preallocation = false;
   bool sparse = false;
   bool direct_io = false;
   usize natural_alignment = 1;
@@ -130,6 +131,24 @@ struct CapabilityResult {
   }
 };
 
+struct PreallocateExtentResult {
+  Status status;
+  u64 offset = 0;
+  u64 bytes = 0;
+  std::string strategy;
+  std::string fallback_reason;
+  bool platform_preallocation_attempted = false;
+  bool platform_preallocation_succeeded = false;
+  bool fallback_extension_used = false;
+  bool logical_size_extended = false;
+  DiagnosticRecord diagnostic;
+
+  bool ok() const {
+    return status.ok() &&
+           (platform_preallocation_succeeded || fallback_extension_used || bytes == 0);
+  }
+};
+
 struct DiskHealthResult {
   Status status;
   DiskHealthSnapshot snapshot;
@@ -162,6 +181,7 @@ class FileDevice {
   IoResult Close();
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
   IoResult WriteAt(u64 offset, const void* buffer, usize bytes);
+  PreallocateExtentResult PreallocateExtent(u64 offset, u64 bytes);
   IoResult Sync();
   void SetMetricContext(std::string database_uuid,
                         std::string filespace_uuid,

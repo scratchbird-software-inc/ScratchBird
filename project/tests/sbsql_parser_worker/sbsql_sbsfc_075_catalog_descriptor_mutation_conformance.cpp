@@ -212,7 +212,15 @@ void RequireExactLowering(const CaseRow& row,
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
-  if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
+  if (!artifacts.verifier.admitted) {
+    std::cerr << "SBSFC-075 rejected surface=" << row.surface_id
+              << " canonical=" << row.canonical_name
+              << " sql=" << row.sql
+              << " operation_id=" << artifacts.envelope.operation_id
+              << " opcode=" << artifacts.envelope.sblr_opcode
+              << " payload=" << artifacts.envelope.payload << '\n';
+    std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
+  }
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-075 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-075 AST failed");
   Require(artifacts.bound.bound, "SBSFC-075 bind failed");
@@ -254,9 +262,21 @@ void RequireExactLowering(const CaseRow& row,
           "SBSFC-075 payload missing operation id");
   Require(Contains(artifacts.envelope.payload, row.surface_id),
           "SBSFC-075 payload missing row surface id");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"descriptor_ref\":\"sys.catalog."),
+          "SBSFC-075 payload missing descriptor ref");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
+          "SBSFC-075 payload missing metadata-only name authority");
+  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
+          "SBSFC-075 payload exposed SQL text");
   if (row.needs_uuid) {
     Require(Contains(artifacts.envelope.payload, TargetUuidFor(index)),
             "SBSFC-075 payload missing UUID-bound target");
+  }
+  if (!row.needs_uuid && std::string_view(row.sql).rfind("CREATE ", 0) == 0) {
+    Require(Contains(artifacts.envelope.payload, "\"name\":\""),
+            "SBSFC-075 create payload missing requested object name");
   }
   Require(!Contains(artifacts.envelope.payload, "SBSQL_SURFACE_REPLAY") &&
               !Contains(artifacts.envelope.payload, "refusal"),

@@ -11,6 +11,7 @@
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "lowering/lowering.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "rendering/rendering.hpp"
 #include "sblr_admission.hpp"
@@ -354,10 +355,21 @@ api::EngineRequestContext EngineContextForDatabase(const std::filesystem::path& 
   auto context = EngineContext();
   context.database_path = path.string();
   context.database_uuid.canonical = database_uuid;
-  context.current_schema_uuid.canonical = "019f0000-0000-7000-8000-000000062301";
+  context.current_schema_uuid.canonical.clear();
   context.local_transaction_id = 0;
   context.transaction_uuid.canonical.clear();
   return context;
+}
+
+std::string SchemaUuidForPath(const api::EngineRequestContext& context,
+                              const std::string& path) {
+  for (const auto& schema : api::VisibleSchemaTreeRecords(context,
+                                                          context.local_transaction_id)) {
+    for (const auto& name : schema.localized_names) {
+      if (name.path == path) return schema.schema_uuid;
+    }
+  }
+  return {};
 }
 
 api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& path,
@@ -386,9 +398,9 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   return context;
 }
 
-api::EngineApiRequest EngineCreateVectorCollectionApiRequest() {
+api::EngineApiRequest EngineCreateVectorCollectionApiRequest(std::string_view schema_uuid) {
   api::EngineApiRequest request;
-  request.target_schema.uuid.canonical = "019f0000-0000-7000-8000-000000062301";
+  request.target_schema.uuid.canonical = std::string(schema_uuid);
   request.target_schema.object_kind = "schema";
   request.target_object.uuid.canonical = std::string(kCreatedCollectionUuid);
   request.target_object.object_kind = "table";
@@ -422,14 +434,23 @@ void RequireCreateVectorCollectionDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginEngineTransaction(path, database_uuid);
+  auto context = BeginEngineTransaction(path, database_uuid);
+  context.current_schema_uuid.canonical = SchemaUuidForPath(context, "users.public");
+  Require(!context.current_schema_uuid.canonical.empty(),
+          "SBSFC-062 bootstrapped users.public schema missing");
   const sblr::SblrDispatchRequest request{
       context,
       EngineEnvelope("ddl.create_table",
                      "SBLR_DDL_CREATE_TABLE",
                      "trace.sbsfc062.vector.create_collection"),
-      EngineCreateVectorCollectionApiRequest()};
+      EngineCreateVectorCollectionApiRequest(context.current_schema_uuid.canonical)};
   const auto result = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(result.envelope_validated, "SBSFC-062 create vector collection envelope invalid");
   Require(result.accepted, "SBSFC-062 create vector collection dispatch rejected");
   Require(result.dispatched_to_api, "SBSFC-062 create vector collection did not dispatch");

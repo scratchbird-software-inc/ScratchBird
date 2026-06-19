@@ -66,6 +66,12 @@ struct InsertPhysicalIntegrationRequest {
       scratchbird::storage::filespace::FilespaceRole::secondary_data;
   scratchbird::storage::filespace::InsertFilespaceGrowthUrgency growth_urgency =
       scratchbird::storage::filespace::InsertFilespaceGrowthUrgency::normal;
+  scratchbird::storage::filespace::FilespaceObjectClass placement_object_class =
+      scratchbird::storage::filespace::FilespaceObjectClass::unspecified;
+  scratchbird::storage::filespace::FilespacePlacementPolicy placement_policy;
+  bool require_placement_policy = false;
+  bool require_placement_preallocation = false;
+  u64 placement_preallocation_pages = 0;
 
   bool enable_deferred_secondary_index = false;
   bool deferred_index_overlay_gate = false;
@@ -94,12 +100,18 @@ struct InsertPhysicalIntegrationResult {
   bool page_reserved = false;
   bool page_selected = false;
   bool filespace_growth_admitted = false;
+  bool filespace_placement_resolved = false;
+  bool filespace_preallocation_admitted = false;
   bool deferred_secondary_index_verified = false;
   bool overflow_persisted = false;
   bool strict_bulk_load_finalized = false;
   TypedUuid reservation_id;
   std::string selection_fence;
+  TypedUuid resolved_filespace_uuid;
+  std::string resolved_filespace_class;
+  std::string resolved_filespace_role;
   TypedUuid growth_operation_id;
+  TypedUuid preallocation_operation_id;
   TypedUuid overflow_value_uuid;
   TypedUuid strict_bulk_load_id;
   std::vector<std::string> evidence_refs;

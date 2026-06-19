@@ -344,6 +344,57 @@ entries:
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT
+    opcode_status: opcode_registered
+    api_operation_id: artifact.external_git.export_snapshot
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    api_function_name: EngineExportExternalGitSnapshot
+    request_type: EngineExportExternalGitSnapshotRequest
+    result_type: EngineExportExternalGitSnapshotResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_artifact
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_ARTIFACT_EXTERNAL_GIT_DIFF_SNAPSHOT
+    opcode_status: opcode_registered
+    api_operation_id: artifact.external_git.diff_snapshot
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    api_function_name: EngineDiffExternalGitSnapshot
+    request_type: EngineDiffExternalGitSnapshotRequest
+    result_type: EngineDiffExternalGitSnapshotResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_artifact
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_ARTIFACT_EXTERNAL_GIT_ROLLBACK_PLAN
+    opcode_status: opcode_registered
+    api_operation_id: artifact.external_git.rollback_plan
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    api_function_name: EnginePlanExternalGitRollback
+    request_type: EnginePlanExternalGitRollbackRequest
+    result_type: EnginePlanExternalGitRollbackResult
+    required_transaction_context: true
+    required_descriptor_inputs: descriptor_envelope_or_none
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: catalog_artifact
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_EXECUTE_IMPORT_ROWS
     opcode_status: opcode_registered
     api_operation_id: dml.execute_import_rows
@@ -2383,7 +2434,7 @@ entries:
     current_implementation_status: compile_gated_provider_boundary_fail_closed
     executor_readiness_status: cluster_provider_boundary_mapped
     notes:
-      - Route-fence validation is mandatory before any future remote participant insert request.
+      - Route-fence validation is mandatory before any subsequent remote participant insert request.
       - The current public implementation fails valid cluster routes at the compile-time provider boundary before route activation; no route publication occurs.
 
   - sblr_operation: SBLR_CLUSTER_PLACE_OBJECT

@@ -1,0 +1,36 @@
+-- script_id: SBDFS-059
+-- Purpose: in-band COPY FROM STDIN through SBWP CopyData/CopyDone.
+
+CREATE TABLE __SB_NAMESPACE__.copy_target (
+    id INTEGER PRIMARY KEY,
+    note VARCHAR(64) NOT NULL,
+    payload_text VARCHAR(128),
+    marker INTEGER NOT NULL
+);
+
+-- SB_COPY_INPUT id=591;note=copy-alpha;payload_text=payload-a;marker=10
+-- SB_COPY_INPUT id=592;note=copy-beta;payload_text=payload-b;marker=20
+-- SB_COPY_INPUT id=593;note=copy-null;payload_text=NULL;marker=30
+COPY __SB_NAMESPACE__.copy_target FROM STDIN;
+
+SELECT 'SBDFS-059-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       3 AS expected_count
+FROM __SB_NAMESPACE__.copy_target;
+
+SELECT 'SBDFS-059-002' AS assertion_id,
+       CAST(SUM(marker) AS INTEGER) AS actual_marker_sum,
+       60 AS expected_marker_sum
+FROM __SB_NAMESPACE__.copy_target;
+
+SELECT 'SBDFS-059-003' AS assertion_id,
+       COUNT(*) AS actual_null_payloads,
+       1 AS expected_null_payloads
+FROM __SB_NAMESPACE__.copy_target
+WHERE payload_text IS NULL;
+
+SELECT 'SBDFS-059-004' AS assertion_id,
+       note AS actual_note,
+       'copy-beta' AS expected_note
+FROM __SB_NAMESPACE__.copy_target
+WHERE id = 592;

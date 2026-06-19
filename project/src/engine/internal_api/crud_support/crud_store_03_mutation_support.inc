@@ -92,20 +92,47 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairs(const std::stri
 }
 
 std::string NormalizeCrudIndexProfile(const std::string& profile) {
-  if (profile.empty() || profile == kCrudIndexProfileRowStoreScalarBtreeV1 || profile == "rowstore_btree_v1") {
+  if (profile.empty() || profile == kCrudIndexProfileRowStoreScalarBtreeV1 ||
+      profile == "rowstore_btree_v1" || profile == "native_btree") {
     return kCrudIndexProfileRowStoreScalarBtreeV1;
   }
-  if (profile == "btree" || profile == "btree_unique") { return profile; }
-  if (profile == "rtree" || profile == "geohash") { return "spatial"; }
-  if (profile == "inverted" || profile == "fulltext") { return "full_text"; }
-  if (profile == "hnsw") { return "vector_hnsw"; }
-  if (profile == "ivfflat" || profile == "ivf_flat" || profile == "ivf") { return "vector_ivf"; }
-  if (profile == "adjacency" || profile == "graph_adjacency") { return "graph_adjacency"; }
-  if (profile == "time_partition" || profile == "time-partition") { return "columnar_zone"; }
-  if (profile == "hash" || profile == "bitmap" || profile == "full_text" || profile == "spatial" ||
-      profile == "vector_exact" || profile == "vector_hnsw" || profile == "vector_ivf" || profile == "columnar_zone" ||
-      profile == "graph_adjacency" || profile == "expression" || profile == "partial" || profile == "covering" ||
-      profile == "in_memory" || profile == "reference_emulated") {
+  if (profile == "btree" || profile == "btree_unique" ||
+      profile == "native_unique_btree") {
+    return profile == "native_unique_btree" ? "btree_unique" : profile;
+  }
+  if (profile == "rtree" || profile == "native_rtree") { return "rtree"; }
+  if (profile == "geohash" || profile == "native_spatial") { return "spatial"; }
+  if (profile == "postgresql_gist_profile") { return "gist"; }
+  if (profile == "postgresql_spgist_profile") { return "spgist"; }
+  if (profile == "inverted" || profile == "native_inverted") { return "inverted"; }
+  if (profile == "fulltext" || profile == "native_full_text") { return "full_text"; }
+  if (profile == "postgresql_gin_profile") { return "gin"; }
+  if (profile == "native_ngram") { return "ngram"; }
+  if (profile == "native_sparse_wand") { return "sparse_wand"; }
+  if (profile == "native_document_path") { return "document_path"; }
+  if (profile == "hnsw" || profile == "native_hnsw") { return "vector_hnsw"; }
+  if (profile == "ivfflat" || profile == "ivf_flat" || profile == "ivf" || profile == "native_ivf") { return "vector_ivf"; }
+  if (profile == "native_vector_exact") { return "vector_exact"; }
+  if (profile == "adjacency" || profile == "graph_adjacency" || profile == "native_graph_lookup") { return "graph_adjacency"; }
+  if (profile == "time_partition" || profile == "time-partition" || profile == "native_columnar_zone") { return "columnar_zone"; }
+  if (profile == "native_zone_summary") { return "brin_zone"; }
+  if (profile == "native_bloom_summary") { return "bloom"; }
+  if (profile == "native_expression_index") { return "expression"; }
+  if (profile == "native_partial_index") { return "partial"; }
+  if (profile == "native_covering_index") { return "covering"; }
+  if (profile == "native_hash") { return "hash"; }
+  if (profile == "native_bitmap") { return "bitmap"; }
+  if (profile == "native_temporary_work") { return "temporary_work"; }
+  if (profile == "native_in_memory") { return "in_memory"; }
+  if (profile == "native_reference_emulated") { return "reference_emulated"; }
+  if (profile == "hash" || profile == "bitmap" || profile == "brin_zone" || profile == "bloom" ||
+      profile == "full_text" || profile == "gin" || profile == "inverted" || profile == "ngram" ||
+      profile == "sparse_wand" || profile == "spatial" || profile == "rtree" || profile == "gist" ||
+      profile == "spgist" || profile == "vector_exact" || profile == "vector_hnsw" ||
+      profile == "vector_ivf" || profile == "columnar_zone" || profile == "document_path" ||
+      profile == "graph_adjacency" || profile == "expression" || profile == "partial" ||
+      profile == "covering" || profile == "temporary_work" || profile == "in_memory" ||
+      profile == "reference_emulated") {
     return profile;
   }
   if (StartsWith(profile, "reference:") || StartsWith(profile, "postgres_") || StartsWith(profile, "mysql_") ||
@@ -122,16 +149,27 @@ std::string CrudIndexFamilyForProfile(const std::string& profile) {
   }
   if (normalized == "hash") { return kCrudIndexFamilyHash; }
   if (normalized == "bitmap") { return kCrudIndexFamilyBitmap; }
+  if (normalized == "brin_zone") { return kCrudIndexFamilyBrinZone; }
+  if (normalized == "bloom") { return kCrudIndexFamilyBloom; }
   if (normalized == "full_text") { return kCrudIndexFamilyFullText; }
+  if (normalized == "gin") { return kCrudIndexFamilyGin; }
+  if (normalized == "inverted") { return kCrudIndexFamilyInverted; }
+  if (normalized == "ngram") { return kCrudIndexFamilyNgram; }
+  if (normalized == "sparse_wand") { return kCrudIndexFamilySparseWand; }
   if (normalized == "spatial") { return kCrudIndexFamilySpatial; }
+  if (normalized == "rtree") { return kCrudIndexFamilyRtree; }
+  if (normalized == "gist") { return kCrudIndexFamilyGist; }
+  if (normalized == "spgist") { return kCrudIndexFamilySpgist; }
   if (normalized == "vector_exact") { return kCrudIndexFamilyVectorExact; }
   if (normalized == "vector_hnsw") { return kCrudIndexFamilyVectorHnsw; }
   if (normalized == "vector_ivf") { return kCrudIndexFamilyVectorIvf; }
   if (normalized == "columnar_zone") { return kCrudIndexFamilyColumnarZone; }
+  if (normalized == "document_path") { return kCrudIndexFamilyDocumentPath; }
   if (normalized == "graph_adjacency") { return kCrudIndexFamilyGraphAdjacency; }
   if (normalized == "expression") { return kCrudIndexFamilyExpression; }
   if (normalized == "partial") { return kCrudIndexFamilyPartial; }
   if (normalized == "covering") { return kCrudIndexFamilyCovering; }
+  if (normalized == "temporary_work") { return kCrudIndexFamilyTemporaryWork; }
   if (normalized == "in_memory") { return kCrudIndexFamilyInMemory; }
   if (normalized == "reference_emulated") { return kCrudIndexFamilyReferenceEmulated; }
   return {};

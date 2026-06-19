@@ -1,0 +1,58 @@
+-- script_id: SBDFS-092
+-- Purpose: multimodel descriptor DDL and route execution through drivers.
+-- namespace placeholder: __SB_NAMESPACE__
+
+CREATE DOCUMENT COLLECTION __SB_NAMESPACE__.docs;
+CREATE KEY VALUE STORE __SB_NAMESPACE__.kvs;
+CREATE GRAPH __SB_NAMESPACE__.social;
+CREATE GRAPH NODE __SB_NAMESPACE__.person;
+CREATE GRAPH EDGE __SB_NAMESPACE__.knows;
+CREATE GRAPH INDEX __SB_NAMESPACE__.gidx;
+CREATE TIME SERIES __SB_NAMESPACE__.cpu;
+
+CREATE VECTOR COLLECTION __SB_NAMESPACE__.vec_docs
+DIMENSION 3
+METRIC COSINE
+INDEX METHOD HNSW
+PAYLOAD (
+    doc_id BIGINT,
+    embedding VECTOR INDEX METHOD HNSW METRIC COSINE
+)
+WITH (profile = 'local');
+
+DOCUMENT __SB_NAMESPACE__.docs FIELD status PATH $.status IN COLLECTION __SB_NAMESPACE__.docs;
+CHANGE STREAM __SB_NAMESPACE__.docs WITH RESUME AFTER 'token';
+FULLTEXT __SB_NAMESPACE__.docs MATCH 'native search' WITH HIGHLIGHT;
+OPENSEARCH __SB_NAMESPACE__.docs MAPPING WITH FIELD title TEXT;
+TIMESERIES __SB_NAMESPACE__.cpu APPEND VALUE 42 WITH BUCKET 60 RETENTION 3600;
+
+KV STRING SET user:1 VALUE 'ada' WITH NX;
+KV LIST LPUSH queue VALUE 'a';
+KV SET SADD tags VALUE 'blue';
+KV HASH HSET profile VALUE 'name=ada';
+KV ZSET ZADD ranks VALUE 'ada:1';
+KV BITMAP SETBIT flags VALUE 1;
+KV HLL PFADD seen VALUE 'u1';
+KV TTL EXPIRE user:1 WITH EX 60;
+KV ATOMIC INCR counter VALUE 1;
+KV VERSIONSTAMP GET version;
+KV GEO ADD places VALUE '1,2';
+KV STREAM APPEND audit VALUE 'blob';
+KV LEGACY GET oldkey;
+KV ADMIN COMPACT namespace;
+KV RANGE users FROM a TO z;
+KV ITER users PREFIX user;
+KV REFERENCE GET refkey;
+KV VERIFIABLE PROOF user:1;
+
+SEARCH __SB_NAMESPACE__.vec_docs embedding <-> VECTOR '[1,0,0]' TOP 3;
+REINDEX VECTOR COLLECTION __SB_NAMESPACE__.vec_docs WITH (METHOD = HNSW);
+
+SELECT 'SBDFS-092-001' AS assertion_id,
+       1 AS actual_marker,
+       1 AS expected_marker;
+
+SELECT 'SBDFS-092-002' AS assertion_id,
+       COUNT(*) AS actual_context_rows,
+       5 AS expected_context_rows
+FROM __SB_NAMESPACE__.run_context;

@@ -96,6 +96,42 @@ struct BoundInsertRowTemplate {
   std::uint64_t max_inline_encoded_bytes = kCrudVerticalSliceMaxEncodedValueBytes;
 };
 
+struct InsertRowEncoderColumnPlan {
+  std::string column_name;
+  std::string descriptor_digest;
+  std::size_t ordinal = 0;
+  bool default_bound = false;
+  bool domain_bound = false;
+  bool check_bound = false;
+  bool not_null_bound = false;
+  bool unique_bound = false;
+  bool foreign_key_bound = false;
+};
+
+struct InsertRowEncoderPlan {
+  std::string plan_id;
+  std::string table_uuid;
+  std::string row_shape_signature;
+  std::string validator_signature;
+  std::string default_signature;
+  std::string domain_signature;
+  std::string check_signature;
+  std::string index_validator_signature;
+  std::string security_policy_signature;
+  std::vector<InsertRowEncoderColumnPlan> columns;
+  std::uint64_t column_count = 0;
+  std::uint64_t default_validator_count = 0;
+  std::uint64_t domain_validator_count = 0;
+  std::uint64_t check_validator_count = 0;
+  std::uint64_t not_null_validator_count = 0;
+  std::uint64_t unique_validator_count = 0;
+  std::uint64_t foreign_key_validator_count = 0;
+  std::uint64_t runtime_policy_recheck_count = 0;
+  bool has_sblr_backed_default = false;
+  bool has_sblr_backed_check = false;
+  bool unsupported_sblr_validators_fail_closed = true;
+};
+
 struct IndexMaintenancePlanEntry {
   CrudIndexRecord index;
   InsertIndexMaintenanceAction action = InsertIndexMaintenanceAction::synchronous_exact_insert;
@@ -127,6 +163,22 @@ struct PageReservationPlan {
   std::uint64_t notify_below_pages = 4;
   bool reservation_available = true;
   std::string refusal_reason;
+};
+
+struct InsertAdaptiveBatchPlan {
+  std::uint64_t requested_rows = 0;
+  std::uint64_t admitted_rows = 0;
+  std::uint64_t requested_bytes = 0;
+  std::uint64_t admitted_bytes = 0;
+  std::uint64_t estimated_row_bytes = 0;
+  std::uint64_t index_count = 0;
+  std::uint64_t page_size_bytes = 0;
+  std::uint64_t page_window_rows = 0;
+  std::uint64_t commit_window_rows = 0;
+  std::uint64_t contention_window_rows = 0;
+  bool large_value_pressure = false;
+  bool reduced = false;
+  std::string reason = "within_policy";
 };
 
 struct SecondaryIndexDeltaLedgerPolicy {
@@ -164,13 +216,51 @@ struct InsertBatchContext {
   InsertFeatureGates feature_gates;
   InsertBatchMemoryPolicy memory_policy;
   BoundInsertRowTemplate row_template;
+  InsertRowEncoderPlan row_encoder_plan;
   IndexMaintenancePlan index_plan;
   IdentityReservationPlan identity_reservation;
   PageReservationPlan page_reservation;
   SecondaryIndexDeltaLedgerPolicy delta_ledger_policy;
   StrictBulkLoadPolicy bulk_load_policy;
+  InsertAdaptiveBatchPlan adaptive_batch_plan;
+  std::string prepared_descriptor_cache_key;
+  std::string prepared_descriptor_id;
+  std::string prepared_descriptor_authorization_digest;
+  std::string prepared_descriptor_principal_uuid;
+  std::string prepared_descriptor_role_uuid;
+  std::string prepared_descriptor_session_uuid;
+  std::uint64_t prepared_descriptor_generation = 0;
+  std::uint64_t prepared_descriptor_catalog_epoch = 0;
+  std::uint64_t prepared_descriptor_security_epoch = 0;
+  std::uint64_t prepared_descriptor_policy_epoch = 0;
+  std::uint64_t prepared_descriptor_cache_size = 0;
+  std::uint64_t prepared_descriptor_eviction_count = 0;
+  std::uint64_t prepared_descriptor_cache_limit = 0;
+  std::uint64_t prepared_descriptor_effective_cache_limit = 0;
+  std::uint64_t prepared_descriptor_trim_target_entries = 0;
+  std::uint64_t prepared_descriptor_trim_entries_before = 0;
+  std::uint64_t prepared_descriptor_trim_entries_after = 0;
+  std::uint64_t prepared_descriptor_trim_evictions = 0;
+  bool prepared_descriptor_cache_hit = false;
+  bool prepared_descriptor_memory_pressure_detected = false;
+  bool prepared_descriptor_trim_requested = false;
+  bool prepared_descriptor_backoff_active = false;
+  std::string prepared_descriptor_pressure_reason;
+  std::string prepared_descriptor_authority_after_trim;
+  bool prepared_descriptor_authority_refused = false;
+  std::string prepared_descriptor_refusal_reason;
+  bool memory_arena_granted = false;
+  bool memory_arena_released = false;
+  bool memory_arena_reset = false;
+  bool memory_arena_fail_closed = false;
+  std::uint64_t memory_arena_requested_bytes = 0;
+  std::uint64_t memory_arena_granted_bytes = 0;
+  std::uint64_t memory_arena_peak_bytes = 0;
+  std::uint64_t memory_arena_leak_count = 0;
   std::set<std::string> unique_request_keys;
   std::vector<InsertBatchTraceEvent> trace_events;
+  std::uint64_t trace_event_count = 0;
+  std::uint64_t trace_event_compacted_count = 0;
   std::vector<EngineEvidenceReference> evidence;
   std::vector<EngineApiDiagnostic> diagnostics;
   std::string fallback_reason;
@@ -230,6 +320,10 @@ EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* conte
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template);
+PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
+                                           const EngineRowValue& input_row,
+                                           const BoundInsertRowTemplate& row_template,
+                                           const InsertRowEncoderPlan& row_encoder_plan);
 EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestContext& request_context,
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,

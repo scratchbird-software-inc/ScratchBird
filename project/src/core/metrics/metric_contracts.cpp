@@ -436,6 +436,153 @@ MetricValidationResult RecordInsertCancel(std::string object_uuid,
                           "engine_insert");
 }
 
+MetricValidationResult RecordInsertPreparedDescriptorCache(std::string object_uuid,
+                                                           std::string insert_mode,
+                                                           bool cache_hit) {
+  return IncrementCounter("sb_dml_insert_prepared_descriptor_cache_total",
+                          Labels({{"component", "engine.insert"},
+                                  {"object_uuid", std::move(object_uuid)},
+                                  {"operation", std::move(insert_mode)},
+                                  {"result", cache_hit ? "hit" : "miss"},
+                                  {"reason", "epoch_key_match"}}),
+                          1.0,
+                          "engine_insert");
+}
+
+MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
+                                                     std::string insert_mode,
+                                                     bool full_state_load,
+                                                     bool scoped_state_load,
+                                                     std::string reason) {
+  auto status = MetricOk();
+  if (full_state_load) {
+    status = IncrementCounter("sb_dml_insert_relation_state_full_load_total",
+                              Labels({{"component", "engine.insert"},
+                                      {"object_uuid", object_uuid},
+                                      {"operation", insert_mode},
+                                      {"result", "full"},
+                                      {"reason", reason.empty() ? "unspecified" : reason}}),
+                              1.0,
+                              "engine_insert");
+    if (!status.ok) {
+      return status;
+    }
+  }
+  if (scoped_state_load) {
+    return IncrementCounter("sb_dml_insert_relation_state_scoped_load_total",
+                            Labels({{"component", "engine.insert"},
+                                    {"object_uuid", std::move(object_uuid)},
+                                    {"operation", std::move(insert_mode)},
+                                    {"result", "scoped"},
+                                    {"reason", reason.empty() ? "unspecified" : std::move(reason)}}),
+                            1.0,
+                            "engine_insert");
+  }
+  return status;
+}
+
+MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
+                                                      std::string insert_mode,
+                                                      double requested_rows,
+                                                      double admitted_rows,
+                                                      double admitted_bytes,
+                                                      std::string reason) {
+  const MetricLabelSet labels =
+      Labels({{"component", "engine.insert"},
+              {"object_uuid", object_uuid},
+              {"operation", insert_mode},
+              {"result", admitted_rows < requested_rows ? "reduced" : "admitted"},
+              {"reason", reason.empty() ? "within_policy" : reason}});
+  auto status = SetGauge("sb_dml_insert_adaptive_batch_requested_rows",
+                         labels,
+                         requested_rows,
+                         "engine_insert");
+  if (!status.ok) {
+    return status;
+  }
+  status = SetGauge("sb_dml_insert_adaptive_batch_admitted_rows",
+                    labels,
+                    admitted_rows,
+                    "engine_insert");
+  if (!status.ok) {
+    return status;
+  }
+  status = SetGauge("sb_dml_insert_adaptive_batch_admitted_bytes",
+                    labels,
+                    admitted_bytes,
+                    "engine_insert");
+  if (!status.ok) {
+    return status;
+  }
+  if (admitted_rows < requested_rows) {
+    return IncrementCounter("sb_dml_insert_adaptive_batch_resize_total",
+                            labels,
+                            1.0,
+                            "engine_insert");
+  }
+  return status;
+}
+
+MetricValidationResult RecordInsertPreallocatedPages(double pages,
+                                                     std::string object_uuid,
+                                                     std::string insert_mode,
+                                                     std::string page_family,
+                                                     std::string result,
+                                                     std::string reason) {
+  return IncrementCounter("sb_page_insert_preallocated_pages_total",
+                          Labels({{"component", "engine.insert"},
+                                  {"object_uuid", std::move(object_uuid)},
+                                  {"operation", std::move(insert_mode)},
+                                  {"page_family", std::move(page_family)},
+                                  {"result", std::move(result)},
+                                  {"reason", reason.empty() ? "none" : std::move(reason)}}),
+                          pages,
+                          "engine_insert");
+}
+
+MetricValidationResult ObserveInsertAllocationStall(double latency_microseconds,
+                                                    std::string object_uuid,
+                                                    std::string insert_mode,
+                                                    std::string wait_class,
+                                                    std::string result) {
+  return ObserveHistogram("sb_dml_insert_allocation_stall_microseconds",
+                          Labels({{"component", "engine.insert"},
+                                  {"object_uuid", std::move(object_uuid)},
+                                  {"operation", std::move(insert_mode)},
+                                  {"wait_class", std::move(wait_class)},
+                                  {"result", std::move(result)}}),
+                          latency_microseconds,
+                          "engine_insert");
+}
+
+MetricValidationResult RecordInsertUniquePhysicalProbe(std::string object_uuid,
+                                                       std::string insert_mode,
+                                                       std::string result,
+                                                       std::string reason) {
+  return IncrementCounter("sb_index_insert_unique_physical_probe_total",
+                          Labels({{"component", "engine.insert"},
+                                  {"object_uuid", std::move(object_uuid)},
+                                  {"operation", std::move(insert_mode)},
+                                  {"result", std::move(result)},
+                                  {"reason", reason.empty() ? "none" : std::move(reason)}}),
+                          1.0,
+                          "engine_insert");
+}
+
+MetricValidationResult RecordInsertSlowPath(std::string object_uuid,
+                                            std::string insert_mode,
+                                            std::string chosen_path,
+                                            std::string reason) {
+  return IncrementCounter("sb_dml_insert_slow_path_total",
+                          Labels({{"component", "engine.insert"},
+                                  {"object_uuid", std::move(object_uuid)},
+                                  {"operation", std::move(insert_mode)},
+                                  {"result", std::move(chosen_path)},
+                                  {"reason", reason.empty() ? "unspecified" : std::move(reason)}}),
+                          1.0,
+                          "engine_insert");
+}
+
 namespace {
 
 MetricLabelSet FilespaceLabels(std::string database_uuid,

@@ -242,6 +242,12 @@ PhysicalMgaCowMutationResult ValidateMutationRequest(
         "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-INVALID",
         "storage.physical_mga_cow.transaction_uuid_invalid");
   }
+  if (request.use_existing_transaction &&
+      !request.existing_local_transaction_id.valid()) {
+    return ErrorResult<PhysicalMgaCowMutationResult>(
+        "SB-PHYSICAL-MGA-COW-LOCAL-ID-INVALID",
+        "storage.physical_mga_cow.local_id_invalid");
+  }
   if ((request.kind == PhysicalMgaCowMutationKind::insert ||
        request.kind == PhysicalMgaCowMutationKind::update) &&
       request.cells.empty()) {
@@ -630,19 +636,47 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
                                                    loaded_inventory.diagnostic);
   }
 
-  const auto begin = BeginLocalTransaction(loaded_inventory.inventory,
-                                           request.transaction_uuid,
-                                           request.begin_unix_epoch_millis);
-  if (!begin.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(begin.status, begin.diagnostic);
-  }
-  const auto persisted_active =
-      PersistLocalTransactionInventoryToOpenDevice(&device,
-                                                   context.page_size,
-                                                   begin.inventory);
-  if (!persisted_active.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(persisted_active.status,
-                                                   persisted_active.diagnostic);
+  LocalTransactionInventory active_inventory = loaded_inventory.inventory;
+  TransactionInventoryEntry active_entry;
+  if (request.use_existing_transaction) {
+    const auto existing =
+        LookupLocalTransaction(active_inventory,
+                               request.existing_local_transaction_id);
+    if (!existing.ok()) {
+      return Propagate<PhysicalMgaCowMutationResult>(existing.status,
+                                                     existing.diagnostic);
+    }
+    if (!(existing.entry.identity.transaction_uuid.value ==
+          request.transaction_uuid.value)) {
+      return ErrorResult<PhysicalMgaCowMutationResult>(
+          "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-MISMATCH",
+          "storage.physical_mga_cow.transaction_uuid_mismatch");
+    }
+    if (existing.entry.state != TransactionState::active &&
+        existing.entry.state != TransactionState::preparing &&
+        existing.entry.state != TransactionState::committing) {
+      return ErrorResult<PhysicalMgaCowMutationResult>(
+          "SB-PHYSICAL-MGA-COW-TRANSACTION-NOT-ACTIVE",
+          "storage.physical_mga_cow.transaction_not_active");
+    }
+    active_entry = existing.entry;
+  } else {
+    const auto begin = BeginLocalTransaction(loaded_inventory.inventory,
+                                             request.transaction_uuid,
+                                             request.begin_unix_epoch_millis);
+    if (!begin.ok()) {
+      return Propagate<PhysicalMgaCowMutationResult>(begin.status, begin.diagnostic);
+    }
+    const auto persisted_active =
+        PersistLocalTransactionInventoryToOpenDevice(&device,
+                                                     context.page_size,
+                                                     begin.inventory);
+    if (!persisted_active.ok()) {
+      return Propagate<PhysicalMgaCowMutationResult>(persisted_active.status,
+                                                     persisted_active.diagnostic);
+    }
+    active_inventory = begin.inventory;
+    active_entry = begin.entry;
   }
 
   RowDataPageBody row_page;
@@ -655,7 +689,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   bool blocked = false;
   DiagnosticRecord blocked_diagnostic;
   const BaseRowSelection base = SelectBaseRow(row_page,
-                                              begin.inventory,
+                                              active_inventory,
                                               request.row_uuid,
                                               &blocked,
                                               &blocked_diagnostic);
@@ -688,7 +722,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   RowIdentity row_identity;
   row_identity.row_uuid = request.row_uuid;
   const auto planned = PlanLocalCopyOnWriteMutationForTransaction(
-      begin.entry,
+      active_entry,
       row_identity,
       ToTransactionCowKind(request.kind),
       base.found ? base.row.row_version : 0,
@@ -712,7 +746,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   RowDataRecord new_row;
   new_row.row_uuid = request.row_uuid;
   new_row.transaction_uuid = request.transaction_uuid;
-  new_row.local_transaction_id = begin.entry.identity.local_id.value;
+  new_row.local_transaction_id = active_entry.identity.local_id.value;
   new_row.stable_slot_id = base.found ? base.row.stable_slot_id
                                       : (request.stable_slot_id == 0
                                              ? NextStableSlotId(row_page)
@@ -738,13 +772,16 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
 
   PhysicalMgaCowMutationResult result;
   result.status = CowStoreOkStatus();
-  result.inventory = begin.inventory;
-  result.transaction_entry = begin.entry;
+  result.inventory = active_inventory;
+  result.transaction_entry = active_entry;
   result.mutation = mutation;
   result.row_page = written.row_page;
   result.row_version = new_row;
   result.evidence.push_back("physical_mga_cow.row_page_written=true");
-  result.evidence.push_back("physical_mga_cow.inventory_active_persisted_before_row_page=true");
+  result.evidence.push_back(
+      request.use_existing_transaction
+          ? "physical_mga_cow.existing_active_transaction_verified=true"
+          : "physical_mga_cow.inventory_active_persisted_before_row_page=true");
   result.evidence.push_back("physical_mga_cow.visibility_published_by_inventory=false");
   result.evidence.push_back(std::string("physical_mga_cow.kind=") +
                             PhysicalMgaCowMutationKindName(request.kind));

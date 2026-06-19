@@ -2364,6 +2364,8 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
         request.context, kOperation, lifecycle.diagnostic);
   }
   const auto path = BackupPath(request);
+  const bool verify_only = OptionBool(request, "restore_verify_only:", false) ||
+                           OptionBool(request, "verify_only:", false);
   std::string body;
   const auto read_status = ReadAndVerifyManifest(path, &body);
   if (read_status.error) {
@@ -2415,6 +2417,32 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
       row.values = DecodeCrudPairs(fields.at("values"));
       rows.push_back(std::move(row));
     }
+  }
+
+  if (verify_only) {
+    auto result = MakeApiBehaviorSuccess<EngineRestoreLogicalBackupResult>(request.context, kOperation);
+    AddBackupLifecycleEvidence(&result, lifecycle);
+    result.restore_uuid.canonical = GenerateCrudEngineUuid("restore-verify");
+    result.source_backup_uuid = backup_uuid;
+    result.restored_table_count = tables.size();
+    result.restored_row_count = rows.size();
+    result.restored_index_count = indexes.size();
+    result.source_manifest_uri = path;
+    AddApiBehaviorEvidence(&result, "restore_manifest_validated", path);
+    AddApiBehaviorEvidence(&result, "restore_verify_only", "true");
+    AddApiBehaviorEvidence(&result, "mutation_performed", "false");
+    AddApiBehaviorEvidence(&result, "evidence_before_success", "logical_restore_verified");
+    AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
+    AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid.canonical},
+                                {"source_backup_uuid", result.source_backup_uuid.canonical},
+                                {"source_manifest_uri", path},
+                                {"tables", std::to_string(result.restored_table_count)},
+                                {"rows", std::to_string(result.restored_row_count)},
+                                {"indexes", std::to_string(result.restored_index_count)},
+                                {"restore_verify_only", "true"},
+                                {"mutation_performed", "false"},
+                                {"authoritative_wal", "false"}});
+    return result;
   }
 
   for (const auto& table : tables) {

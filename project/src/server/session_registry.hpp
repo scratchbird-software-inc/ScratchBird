@@ -102,6 +102,8 @@ struct ServerSessionRecord {
   std::string requested_role_name;
   std::string database_path;
   std::string database_uuid;
+  std::string resource_seed_pack_root;
+  std::string policy_seed_pack_root;
   std::string attach_mode = "read_write";
   std::uint64_t catalog_generation = 1;
   std::uint64_t security_epoch = 1;
@@ -174,9 +176,16 @@ struct ServerPreparedStatementRecord {
   std::array<std::uint8_t, 16> prepared_statement_uuid{};
   std::array<std::uint8_t, 16> client_statement_uuid{};
   std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> auth_context_uuid{};
+  std::array<std::uint8_t, 16> principal_uuid{};
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  std::string database_uuid;
   std::string statement_name;
   std::string encoded_sblr_envelope;
+  std::string operation_family;
   std::string operation_id;
+  bool requires_public_abi_dispatch = false;
+  std::uint64_t row_count_hint = 0;
   std::uint64_t catalog_generation = 1;
   std::uint64_t security_epoch = 1;
   std::uint64_t descriptor_epoch = 1;
