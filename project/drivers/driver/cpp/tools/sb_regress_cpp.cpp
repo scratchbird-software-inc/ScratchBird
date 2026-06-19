@@ -575,27 +575,34 @@ std::string mainStatementTokenLower(const std::string& sql) {
     return "with";
 }
 
-std::string copyInputForStatement(const std::string& sql) {
+struct CopyHarnessInput {
+    std::string payload;
+    std::string executable_sql;
+    std::size_t marker_count = 0;
+};
+
+CopyHarnessInput copyHarnessInputForStatement(const std::string& sql) {
     static const std::string kMarker = "-- SB_COPY_INPUT ";
     std::istringstream lines(sql);
     std::string line;
-    std::string payload;
+    CopyHarnessInput out;
     while (std::getline(lines, line)) {
         const size_t start = line.find_first_not_of(" \t");
-        if (start == std::string::npos) {
+        if (start != std::string::npos &&
+            line.compare(start, kMarker.size(), kMarker) == 0) {
+            std::string row = line.substr(start + kMarker.size());
+            if (!row.empty() && row.back() == '\r') {
+                row.pop_back();
+            }
+            out.payload += row;
+            out.payload += '\n';
+            ++out.marker_count;
             continue;
         }
-        if (line.compare(start, kMarker.size(), kMarker) != 0) {
-            continue;
-        }
-        std::string row = line.substr(start + kMarker.size());
-        if (!row.empty() && row.back() == '\r') {
-            row.pop_back();
-        }
-        payload += row;
-        payload += '\n';
+        out.executable_sql += line;
+        out.executable_sql += '\n';
     }
-    return payload;
+    return out;
 }
 
 std::string savepointName(const std::string& sql) {
@@ -2663,6 +2670,8 @@ int main(int argc, char** argv) {
                     const std::string first = mainStatementTokenLower(sql);
                     const std::string second = secondTokenLower(sql);
                     const bool copyStatement = first == "copy";
+                    int64_t copyHarnessNormalizeElapsedNs = -1;
+                    int64_t copyDriverExecuteElapsedNs = -1;
                     std::string copyInputPayload;
                     std::istringstream copyInput;
                     std::ostringstream copyOutput;
@@ -2721,33 +2730,48 @@ int main(int argc, char** argv) {
                         commandTag = "TRANSACTION";
                         resultDigest = sha256Text(commandTag + ":" + std::to_string(rowsAffected));
                     } else {
+                        const std::string* sqlForExecution = &sql;
+                        CopyHarnessInput copyHarnessInput;
                         if (copyStatement) {
-                            copyInputPayload = copyInputForStatement(sql);
+                            const int64_t normalizeStarted = nowNs();
+                            copyHarnessInput = copyHarnessInputForStatement(sql);
+                            copyInputPayload = std::move(copyHarnessInput.payload);
+                            sqlForExecution = &copyHarnessInput.executable_sql;
+                            copyHarnessNormalizeElapsedNs = nowNs() - normalizeStarted;
                             if (!copyInputPayload.empty()) {
                                 copyInput.str(copyInputPayload);
                                 conn.setCopyInputStream(&copyInput);
                             }
                             conn.setCopyOutputStream(&copyOutput);
+                            appendJsonl(paths.at("wire"), {{"event", "copy_harness_sql_normalized"},
+                                                           {"statement_id", statementId},
+                                                           {"original_sql_bytes", sql.size()},
+                                                           {"execution_sql_bytes", sqlForExecution->size()},
+                                                           {"copy_input_bytes", copyInputPayload.size()},
+                                                           {"copy_input_rows", copyHarnessInput.marker_count},
+                                                           {"normalize_elapsed_ns", copyHarnessNormalizeElapsedNs},
+                                                           {"engine_sql_text_execution", false},
+                                                           {"mga_authority", "engine"}});
                         }
-                        if (statementReturnsRows(sql)) {
+                        if (statementReturnsRows(*sqlForExecution)) {
                             appendJsonl(paths.at("wire"), {{"event", "execute_query_start"},
                                                            {"statement_id", statementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(sql) &&
+                                                                statementPreparedCacheEligible(*sqlForExecution) &&
                                                                 !expectsRefusal}});
                             scratchbird::client::ResultSet resultSet;
                             if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(sql) &&
+                                statementPreparedCacheEligible(*sqlForExecution) &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(sql,
+                                status = executePreparedCached(*sqlForExecution,
                                                                statementId,
                                                                &resultSet,
                                                                nullptr,
                                                                &statementCtx,
                                                                &preparedHandleUsed);
                             } else {
-                                status = conn.executeQuery(sql, &resultSet, &statementCtx);
+                                status = conn.executeQuery(*sqlForExecution, &resultSet, &statementCtx);
                             }
                             api["executeQuery"]++;
                             api["execute"]++;
@@ -2770,7 +2794,7 @@ int main(int argc, char** argv) {
                                                            {"statement_id", statementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(sql) &&
+                                                                statementPreparedCacheEligible(*sqlForExecution) &&
                                                                 !copyStatement &&
                                                                 !expectsRefusal}});
                             if (preparedCacheEnabled &&
@@ -2785,17 +2809,21 @@ int main(int argc, char** argv) {
                                                                &preparedHandleUsed,
                                                                &preparedInsert.params);
                             } else if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(sql) &&
+                                statementPreparedCacheEligible(*sqlForExecution) &&
                                 !copyStatement &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(sql,
+                                status = executePreparedCached(*sqlForExecution,
                                                                statementId,
                                                                nullptr,
                                                                &rowsAffected,
                                                                &statementCtx,
                                                                &preparedHandleUsed);
                             } else {
-                                status = conn.execute(sql, &rowsAffected, &statementCtx);
+                                const int64_t executeStarted = nowNs();
+                                status = conn.execute(*sqlForExecution, &rowsAffected, &statementCtx);
+                                if (copyStatement) {
+                                    copyDriverExecuteElapsedNs = nowNs() - executeStarted;
+                                }
                             }
                             api["execute"]++;
                             commandTag = "COMMAND";
@@ -2808,6 +2836,8 @@ int main(int argc, char** argv) {
                                                            {"statement_id", statementId},
                                                            {"copy_input_bytes", copyInputPayload.size()},
                                                            {"copy_output_bytes", copyOutput.str().size()},
+                                                           {"driver_execute_elapsed_ns", copyDriverExecuteElapsedNs},
+                                                           {"harness_normalize_elapsed_ns", copyHarnessNormalizeElapsedNs},
                                                            {"copy_output_sha256", sha256Text(copyOutput.str())}});
                         }
                     }

@@ -159,6 +159,12 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
   result.evidence.push_back({"mga_relation_metadata", "index_create"});
   result.evidence.push_back({"index_family", created_index.family});
+  AddApiBehaviorRow(&result, {{"object_uuid", index_uuid},
+                              {"object_kind", "index"},
+                              {"schema_uuid", request.target_object.uuid.canonical},
+                              {"name", index_name},
+                              {"state", "active"},
+                              {"payload", "mga_relation_metadata=index_create"}});
   if (partial_family_without_filter) {
     result.evidence.push_back({"partial_index_filter", "none"});
   } else if (!created_index.predicate_kind.empty()) {

@@ -664,6 +664,13 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     if (result->result_kind.empty()) {
       result->result_kind = "native_bulk_ingest_summary";
     }
+    result->row_values = {
+        "accepted_rows=" + std::to_string(result->rows_produced) +
+        ";inserted_rows=" + std::to_string(result->rows_produced) +
+        ";rejected_rows=0"};
+    result->row_metadata_values = {
+        "accepted_rows:uint64:not_null;inserted_rows:uint64:not_null;"
+        "rejected_rows:uint64:not_null"};
   } else if (summary_only_dml_write) {
     result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
     result->rows_produced = 0;
@@ -683,13 +690,17 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     result->evidence_values = api_evidence_values(dispatch_result.api_result);
   }
   if (summary_only_import || summary_only_native_bulk || summary_only_dml_write) {
+    const std::uint64_t summary_payload_rows =
+        summary_only_native_bulk
+            ? static_cast<std::uint64_t>(result->row_values.size())
+            : 0;
     result->payload = api_result_payload(dispatch_result.api_result.operation_id,
                                          result->result_kind,
                                          result->row_values,
                                          result->row_metadata_values,
                                          result->evidence_values,
                                          0,
-                                         0);
+                                         summary_payload_rows);
     append_transaction_context(&result->payload, dispatch_result.api_result);
   } else {
     result->payload = api_result_payload(dispatch_result.api_result);

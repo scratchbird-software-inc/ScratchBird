@@ -365,6 +365,8 @@ bool DirectNullValue(const std::string& value) {
   return value == "<NULL>";
 }
 
+inline constexpr char kDirectNullMarker[] = "<NULL>";
+
 std::string DirectConstraintUuid(
     const std::map<std::string, std::string>& fields,
     const CrudTableRecord& table,
@@ -1602,26 +1604,24 @@ bool DirectBulkInputMatchesEncoderOrder(
 }
 
 PreparedInsertRow PrepareDirectBulkOrderedRowFast(
-    const EngineInsertRowsRequest& request,
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
-    const std::string& row_uuid) {
+    const std::string& row_uuid,
+    bool force_large_values) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
   row.values.reserve(input_row.fields.size());
-  static constexpr char kNullMarker[] = "<NULL>";
   for (const auto& [field, typed] : input_row.fields) {
     if (typed.is_null) {
-      row.values.push_back({field, kNullMarker});
-      row.encoded_bytes += field.size() + sizeof(kNullMarker) - 1;
+      row.values.push_back({field, kDirectNullMarker});
+      row.encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
     } else {
       row.values.push_back({field, typed.encoded_value});
       row.encoded_bytes += field.size() + typed.encoded_value.size();
     }
   }
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
-                       InsertBatchOptionEnabled(request,
-                                                "large_value.force_toast=true");
+                       force_large_values;
   return row;
 }
 
@@ -3441,6 +3441,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   direct_bulk_phase_start = DirectSteadyClock::now();
   const EngineInsertRowsRequest synthetic_insert =
       SyntheticInsertRequestForDirectBulk(request);
+  const bool force_large_values_for_insert =
+      InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
   InsertBatchContext batch_context =
       BeginInsertBatchContext(synthetic_insert, state, *table, visible_indexes);
   record_phase("batch_context_begin",
@@ -3535,6 +3537,21 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       can_use_direct_not_null_validation && can_use_shared_ordered_row_fast_path
           ? DirectNotNullValidationOrdinals(batch_context.row_encoder_plan)
           : std::vector<std::size_t>{};
+  std::vector<unsigned char> not_null_ordinal_mask;
+  const bool can_use_shared_row_stage_fast_path =
+      can_use_shared_ordered_row_fast_path &&
+      !has_default_validators &&
+      !has_domain_validators &&
+      !has_check_validators;
+  if (can_use_shared_row_stage_fast_path && can_use_direct_not_null_validation &&
+      !request.borrowed_input_rows.empty()) {
+    not_null_ordinal_mask.assign(request.borrowed_input_rows.front().fields.size(), 0);
+    for (const std::size_t ordinal : not_null_ordinals) {
+      if (ordinal < not_null_ordinal_mask.size()) {
+        not_null_ordinal_mask[ordinal] = 1;
+      }
+    }
+  }
   staged_rows.reserve(request.borrowed_input_rows.size());
   returning_rows.reserve(request.borrowed_input_rows.size());
   constexpr std::size_t kDirectBulkMaxStoredInsertTraceEvents = 128;
@@ -3552,19 +3569,92 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                      "row",
                      std::to_string(batch_context.actual_row_count));
     }
+
+    if (can_use_shared_row_stage_fast_path) {
+      CrudRowVersionRecord row_record;
+      row_record.creator_tx = request.context.local_transaction_id;
+      row_record.table_uuid = request.target_table.uuid.canonical;
+      row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
+      row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
+      row_record.temporary_session_uuid =
+          table->temporary ? request.context.session_uuid.canonical : "";
+      row_record.deleted = false;
+      row_record.values.reserve(input_row.fields.size());
+
+      std::uint64_t encoded_bytes = 0;
+      bool saw_default_marker = false;
+      std::string not_null_failure;
+      for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
+        const auto& [field, typed] = input_row.fields[field_index];
+        if (!typed.is_null && typed.encoded_value == "<DEFAULT>") {
+          saw_default_marker = true;
+          break;
+        }
+        if (field_index < not_null_ordinal_mask.size() &&
+            not_null_ordinal_mask[field_index] &&
+            (typed.is_null || DirectNullValue(typed.encoded_value))) {
+          not_null_failure =
+              field_index < batch_context.row_encoder_plan.columns.size()
+                  ? batch_context.row_encoder_plan.columns[field_index].column_name
+                  : field;
+          break;
+        }
+        if (typed.is_null) {
+          row_record.values.push_back({field, kDirectNullMarker});
+          encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+        } else {
+          row_record.values.push_back({field, typed.encoded_value});
+          encoded_bytes += field.size() + typed.encoded_value.size();
+        }
+      }
+      if (!saw_default_marker) {
+        if (!not_null_failure.empty()) {
+          return DirectBulkFailure(
+              request,
+              MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                           "not_null_validation_refused"),
+              "not_null_validation_refused:" + not_null_failure);
+        }
+        const bool toast_required =
+            encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
+            force_large_values_for_insert;
+        const std::uint64_t projected_memory_bytes =
+            toast_required ? batch_context.row_template.max_inline_encoded_bytes
+                           : encoded_bytes;
+        if (!batch_context.memory_policy.spill_allowed &&
+            projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
+          const auto memory_validation = ValidateInsertBatchMemoryBudget(
+              batch_context,
+              projected_memory_bytes);
+          return DirectBulkFailure(request,
+                                   memory_validation,
+                                   "insert_batch_memory_budget_refused");
+        }
+        if (store_row_trace) {
+          AddInsertTrace(&batch_context,
+                         "direct_physical_bulk.row.stage",
+                         "stage",
+                         row_record.row_uuid);
+        }
+        staged_rows.push_back(std::move(row_record));
+        ++row_ordinal;
+        continue;
+      }
+    }
+
     PreparedInsertRow prepared =
         can_use_shared_ordered_row_fast_path
-            ? PrepareDirectBulkOrderedRowFast(synthetic_insert,
-                                              input_row,
+            ? PrepareDirectBulkOrderedRowFast(input_row,
                                               batch_context.row_template,
-                                              uuid_batch.row_uuids[row_ordinal])
+                                              uuid_batch.row_uuids[row_ordinal],
+                                              force_large_values_for_insert)
             : can_use_ordered_row_fast_path &&
                 DirectBulkInputMatchesEncoderOrder(input_row,
                                                    batch_context.row_encoder_plan)
-                  ? PrepareDirectBulkOrderedRowFast(synthetic_insert,
-                                                    input_row,
+                  ? PrepareDirectBulkOrderedRowFast(input_row,
                                                     batch_context.row_template,
-                                                    uuid_batch.row_uuids[row_ordinal])
+                                                    uuid_batch.row_uuids[row_ordinal],
+                                                    force_large_values_for_insert)
                   : PrepareInsertRowForBatch(synthetic_insert,
                                              input_row,
                                              batch_context.row_template,
@@ -3656,7 +3746,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           static_cast<EngineApiU64>(EncodedValueBytes(prepared.values));
       prepared.toast_required =
           prepared.encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
-          InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
+          force_large_values_for_insert;
     }
     const std::uint64_t projected_memory_bytes =
         prepared.toast_required ? batch_context.row_template.max_inline_encoded_bytes
@@ -3910,11 +4000,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
 
   direct_bulk_phase_start = DirectSteadyClock::now();
-  const bool force_large_values =
-      InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
   bool large_value_persistence_required = false;
   for (const auto& row : staged_rows) {
-    if (force_large_values ||
+    if (force_large_values_for_insert ||
         EncodedValueBytes(row.values) > kCrudVerticalSliceMaxEncodedValueBytes) {
       large_value_persistence_required = true;
       break;
@@ -3930,7 +4018,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           {request.target_table.uuid.canonical,
            staged_rows[index].row_uuid,
            staged_rows[index].version_uuid,
-           force_large_values ||
+           force_large_values_for_insert ||
                EncodedValueBytes(storage_value_batch[index]) >
                    kCrudVerticalSliceMaxEncodedValueBytes,
            &storage_value_batch[index]});

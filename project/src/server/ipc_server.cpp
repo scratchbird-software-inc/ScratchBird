@@ -1625,12 +1625,38 @@ void HandleClient(IpcSocketHandle client_fd,
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest)) {
-    WriteAll(client_fd, ResolveNamePublicFrame(frame, engine_state, session_registry));
+    const auto execute_start_us = SteadyNowMicros();
+    const auto response_frame = ResolveNamePublicFrame(frame, engine_state, session_registry);
+    const auto execute_us = SteadyNowMicros() - execute_start_us;
+    const auto write_start_us = SteadyNowMicros();
+    const bool write_ok = WriteAll(client_fd, response_frame);
+    const auto write_us = SteadyNowMicros() - write_start_us;
+    AppendSbpsServerPhaseTrace(frame,
+                               response_frame.size(),
+                               write_ok,
+                               read_us,
+                               execute_us,
+                               0,
+                               write_us,
+                               SteadyNowMicros() - trace_total_start_us);
     return;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest)) {
-    WriteAll(client_fd, RenderUuidPublicFrame(frame, session_registry));
+    const auto execute_start_us = SteadyNowMicros();
+    const auto response_frame = RenderUuidPublicFrame(frame, session_registry);
+    const auto execute_us = SteadyNowMicros() - execute_start_us;
+    const auto write_start_us = SteadyNowMicros();
+    const bool write_ok = WriteAll(client_fd, response_frame);
+    const auto write_us = SteadyNowMicros() - write_start_us;
+    AppendSbpsServerPhaseTrace(frame,
+                               response_frame.size(),
+                               write_ok,
+                               read_us,
+                               execute_us,
+                               0,
+                               write_us,
+                               SteadyNowMicros() - trace_total_start_us);
     return;
   }
   if (frame.header.message_type ==

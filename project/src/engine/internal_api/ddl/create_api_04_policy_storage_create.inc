@@ -153,6 +153,12 @@
   result.catalog_row_uuid.canonical = record.catalog_row_uuid;
   result.evidence.push_back({"domain_event", "domain_create"});
   result.evidence.push_back({"validation_hook", record.validation_hook_status});
+  AddApiBehaviorRow(&result, {{"object_uuid", record.domain_uuid},
+                              {"object_kind", "domain"},
+                              {"schema_uuid", record.schema_uuid},
+                              {"name", record.default_name},
+                              {"state", "active"},
+                              {"payload", "domain_event=domain_create"}});
   return result;
 }
 

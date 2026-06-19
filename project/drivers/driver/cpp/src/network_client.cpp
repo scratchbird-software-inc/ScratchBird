@@ -21,9 +21,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <string_view>
@@ -138,6 +140,68 @@ bool wireDebugEnabled() {
                normalized != "OFF";
     }();
     return enabled;
+}
+
+bool driverPhaseTraceEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE");
+        return value != nullptr && value[0] != '\0';
+    }();
+    return enabled;
+}
+
+int64_t driverPhaseNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+const char* messageTypeName(protocol::MessageType type);
+
+std::string driverTraceJsonEscape(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char ch : value) {
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+void writeDriverPhaseTrace(std::string_view event,
+                           std::string_view phase,
+                           int64_t elapsed_ns,
+                           size_t bytes,
+                           size_t count,
+                           protocol::MessageType type,
+                           uint32_t sequence,
+                           bool tls_active) {
+    const char* trace_path = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE");
+    if (trace_path == nullptr || trace_path[0] == '\0') {
+        return;
+    }
+    static std::mutex trace_mutex;
+    std::lock_guard<std::mutex> guard(trace_mutex);
+    std::ofstream out(trace_path, std::ios::app);
+    if (!out) {
+        return;
+    }
+    out << "{\"event\":\"" << driverTraceJsonEscape(event) << "\""
+        << ",\"phase\":\"" << driverTraceJsonEscape(phase) << "\""
+        << ",\"elapsed_us\":" << (elapsed_ns / 1000)
+        << ",\"bytes\":" << bytes
+        << ",\"count\":" << count
+        << ",\"message_type\":\"" << messageTypeName(type) << "\""
+        << ",\"message_type_id\":" << static_cast<unsigned>(type)
+        << ",\"sequence\":" << sequence
+        << ",\"tls_active\":" << (tls_active ? "true" : "false")
+        << "}\n";
 }
 
 const char* messageTypeName(protocol::MessageType type) {
@@ -1933,6 +1997,8 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                                          NetworkResultSet& results,
                                          core::ErrorContext* ctx) {
     results = NetworkResultSet{};
+    const bool phase_trace = driverPhaseTraceEnabled();
+    const int64_t execute_started = phase_trace ? driverPhaseNowNs() : 0;
     uint32_t seq = 0;
     if (wireDebugEnabled()) {
         std::fprintf(stderr,
@@ -1946,8 +2012,30 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
         querySupportsServerAutocommit(sql)) {
         query_flags |= protocol::kQueryFlagAutocommit;
     }
+    const int64_t build_started = phase_trace ? driverPhaseNowNs() : 0;
     auto payload = protocol::buildQueryPayload(sql, query_flags, 0, 0);
+    if (phase_trace) {
+        writeDriverPhaseTrace("execute_query",
+                              "build_query_payload",
+                              driverPhaseNowNs() - build_started,
+                              payload.size(),
+                              sql.size(),
+                              protocol::MessageType::Query,
+                              0,
+                              tls_active_);
+    }
+    const int64_t send_started = phase_trace ? driverPhaseNowNs() : 0;
     auto status = sendMessage(protocol::MessageType::Query, payload, 0, false, &seq, ctx);
+    if (phase_trace) {
+        writeDriverPhaseTrace("execute_query",
+                              "send_query",
+                              driverPhaseNowNs() - send_started,
+                              payload.size(),
+                              1,
+                              protocol::MessageType::Query,
+                              seq,
+                              tls_active_);
+    }
     if (status != core::Status::OK) {
         server_autocommit_requested_ = false;
         return status;
@@ -1958,9 +2046,20 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
     std::vector<protocol::ColumnInfo> cols;
     while (true) {
         protocol::ProtocolMessage msg;
+        const int64_t receive_started = phase_trace ? driverPhaseNowNs() : 0;
         status = receiveMessage(msg, ctx);
         if (status != core::Status::OK) {
             return status;
+        }
+        if (phase_trace) {
+            writeDriverPhaseTrace("execute_query",
+                                  "receive_message",
+                                  driverPhaseNowNs() - receive_started,
+                                  msg.body.size(),
+                                  1,
+                                  msg.header.type,
+                                  msg.header.sequence,
+                                  tls_active_);
         }
         traceWireEvent("execute_query_recv",
                        msg.header.type,
@@ -2001,11 +2100,33 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
             }
             case protocol::MessageType::CopyInResponse: {
                 protocol::CopyInResponse response;
+                const int64_t parse_started = phase_trace ? driverPhaseNowNs() : 0;
                 status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                if (phase_trace) {
+                    writeDriverPhaseTrace("execute_query",
+                                          "parse_copy_in_response",
+                                          driverPhaseNowNs() - parse_started,
+                                          msg.body.size(),
+                                          0,
+                                          msg.header.type,
+                                          msg.header.sequence,
+                                          tls_active_);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
+                const int64_t copy_started = phase_trace ? driverPhaseNowNs() : 0;
                 status = sendCopyInputStream(ctx);
+                if (phase_trace) {
+                    writeDriverPhaseTrace("execute_query",
+                                          "send_copy_input_stream",
+                                          driverPhaseNowNs() - copy_started,
+                                          0,
+                                          1,
+                                          protocol::MessageType::CopyData,
+                                          0,
+                                          tls_active_);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2042,7 +2163,18 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 uint64_t rows = 0;
                 uint64_t last_id = 0;
                 std::string tag;
+                const int64_t parse_started = phase_trace ? driverPhaseNowNs() : 0;
                 status = protocol::parseCommandComplete(msg.body, command_type, rows, last_id, tag, ctx);
+                if (phase_trace) {
+                    writeDriverPhaseTrace("execute_query",
+                                          "parse_command_complete",
+                                          driverPhaseNowNs() - parse_started,
+                                          msg.body.size(),
+                                          rows,
+                                          msg.header.type,
+                                          msg.header.sequence,
+                                          tls_active_);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2054,7 +2186,18 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 return errorAfterStatement(msg, ctx);
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
-                return readyAfterStatement(msg.body, ctx);
+                status = readyAfterStatement(msg.body, ctx);
+                if (phase_trace) {
+                    writeDriverPhaseTrace("execute_query",
+                                          "total",
+                                          driverPhaseNowNs() - execute_started,
+                                          0,
+                                          1,
+                                          protocol::MessageType::Ready,
+                                          msg.header.sequence,
+                                          tls_active_);
+                }
+                return status;
             default:
                 break;
         }
@@ -3440,11 +3583,19 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
         return setError(ctx, core::Status::INVALID_ARGUMENT, message);
     }
 
+    const bool phase_trace = driverPhaseTraceEnabled();
+    const int64_t total_started = phase_trace ? driverPhaseNowNs() : 0;
+    int64_t read_elapsed_ns = 0;
+    int64_t send_data_elapsed_ns = 0;
+    size_t total_read = 0;
+    size_t total_sent = 0;
+    size_t chunk_count = 0;
     const size_t chunk_size = std::max<uint32_t>(1, config_.copy_chunk_bytes);
     std::vector<uint8_t> buffer(chunk_size);
     std::string pending;
     auto send_payload = [&](const uint8_t* data, size_t size) -> core::Status {
         core::Status status = core::Status::OK;
+        const int64_t send_started = phase_trace ? driverPhaseNowNs() : 0;
         if (tls_active_) {
             std::vector<uint8_t> chunk(data, data + size);
             status = sendMessage(protocol::MessageType::CopyData,
@@ -3461,9 +3612,14 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
                                            false,
                                            ctx);
         }
+        if (phase_trace) {
+            send_data_elapsed_ns += driverPhaseNowNs() - send_started;
+        }
         if (status != core::Status::OK) {
             return status;
         }
+        total_sent += size;
+        ++chunk_count;
         return core::Status::OK;
     };
     auto flush_ready_rows = [&]() -> core::Status {
@@ -3486,10 +3642,15 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     };
 
     while (*copy_input_stream_) {
+        const int64_t read_started = phase_trace ? driverPhaseNowNs() : 0;
         copy_input_stream_->read(reinterpret_cast<char*>(buffer.data()),
                                  static_cast<std::streamsize>(buffer.size()));
+        if (phase_trace) {
+            read_elapsed_ns += driverPhaseNowNs() - read_started;
+        }
         const auto bytes_read = copy_input_stream_->gcount();
         if (bytes_read > 0) {
+            total_read += static_cast<size_t>(bytes_read);
             pending.append(reinterpret_cast<const char*>(buffer.data()),
                            static_cast<size_t>(bytes_read));
             auto status = flush_ready_rows();
@@ -3518,7 +3679,45 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
         }
     }
     const auto done_payload = protocol::buildCopyDonePayload();
-    return sendMessage(protocol::MessageType::CopyDone, done_payload, 0, false, nullptr, ctx);
+    const int64_t done_started = phase_trace ? driverPhaseNowNs() : 0;
+    auto done_status =
+        sendMessage(protocol::MessageType::CopyDone, done_payload, 0, false, nullptr, ctx);
+    if (phase_trace) {
+        const int64_t done_elapsed_ns = driverPhaseNowNs() - done_started;
+        writeDriverPhaseTrace("copy_input_stream",
+                              "read_input_total",
+                              read_elapsed_ns,
+                              total_read,
+                              1,
+                              protocol::MessageType::CopyData,
+                              0,
+                              tls_active_);
+        writeDriverPhaseTrace("copy_input_stream",
+                              "send_copy_data_total",
+                              send_data_elapsed_ns,
+                              total_sent,
+                              chunk_count,
+                              protocol::MessageType::CopyData,
+                              0,
+                              tls_active_);
+        writeDriverPhaseTrace("copy_input_stream",
+                              "send_copy_done",
+                              done_elapsed_ns,
+                              done_payload.size(),
+                              1,
+                              protocol::MessageType::CopyDone,
+                              0,
+                              tls_active_);
+        writeDriverPhaseTrace("copy_input_stream",
+                              "total",
+                              driverPhaseNowNs() - total_started,
+                              total_sent,
+                              chunk_count,
+                              protocol::MessageType::CopyData,
+                              0,
+                              tls_active_);
+    }
+    return done_status;
 }
 
 core::Status NetworkClient::handleCopyOutResponseMessage(const protocol::ProtocolMessage& msg,

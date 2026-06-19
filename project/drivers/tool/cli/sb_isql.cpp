@@ -503,6 +503,18 @@ bool statementControlsTransaction(const std::string& sql) {
     return false;
 }
 
+bool metaCommandLikelyNeedsCommit(const std::string& command_line) {
+    std::string text = trimWhitespace(command_line);
+    if (!text.empty() && text.front() == '\\') {
+        text.erase(text.begin());
+    }
+    const std::string normalized = normalizeStatementForMatch(text);
+    if (normalized.rfind("COPY ", 0) == 0) {
+        return normalized.find(" FROM ") != std::string::npos;
+    }
+    return normalized.rfind("NATIVE_BULK_INGEST ", 0) == 0;
+}
+
 // =============================================================================
 // Signal handling
 // =============================================================================
@@ -2190,12 +2202,15 @@ bool handleMetaCommand(const std::string& cmd) {
             }
             if (sql.empty() && trimmed_line[0] == '\\') {
                 traceScriptStatement("meta", trimmed_line);
+                const bool meta_needs_commit = metaCommandLikelyNeedsCommit(trimmed_line);
                 if (!handleMetaCommand(trimmed_line)) {
                     had_error = true;
                     if (g_config.bail) {
                         std::cerr << "Stopping due to error (SET BAIL is ON)\n";
                         break;
                     }
+                } else if (meta_needs_commit) {
+                    needs_commit = true;
                 }
                 continue;
             }
@@ -3673,6 +3688,19 @@ bool hasCopyStreamingConnOption(const std::vector<std::pair<std::string, std::st
     return false;
 }
 
+bool hasAutocommitConnOption(const std::vector<std::pair<std::string, std::string>>& options) {
+    for (const auto& [key, value] : options) {
+        (void)value;
+        const std::string lowered = lowerAscii(key);
+        if (lowered == "autocommit" ||
+            lowered == "auto_commit" ||
+            lowered == "auto-commit") {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string buildConnectionTarget(const std::string& database_override) {
     scratchbird::cli::ConnectionBootstrapOptions options;
     options.database_path = g_config.database_path;
@@ -3706,6 +3734,9 @@ std::string buildConnectionTarget(const std::string& database_override) {
     options.conn_options = g_config.conn_options;
     if (!hasCopyStreamingConnOption(options.conn_options)) {
         options.conn_options.emplace_back("enable_copy_streaming", "true");
+    }
+    if (!hasAutocommitConnOption(options.conn_options)) {
+        options.conn_options.emplace_back("autocommit", "false");
     }
     return scratchbird::cli::buildConnectionTarget(options, database_override);
 }
