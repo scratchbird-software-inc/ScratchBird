@@ -52,6 +52,8 @@ namespace {
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
+constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
+
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<std::uint64_t>(
@@ -133,15 +135,19 @@ class ScopedParserState {
   ParserState fallback_;
 };
 
-void ApplyExecutedTransactionState(const ServerExecutionResult& executed,
+bool ApplyExecutedTransactionState(const ServerExecutionResult& executed,
                                    SessionContext* session) {
-  if (session == nullptr || !executed.transaction_state_present) return;
+  if (session == nullptr || !executed.transaction_state_present) return false;
+  const bool changed =
+      session->local_transaction_id != executed.local_transaction_id ||
+      session->transaction_uuid != executed.transaction_uuid;
   session->local_transaction_id = executed.local_transaction_id;
   session->snapshot_visible_through_local_transaction_id =
       executed.snapshot_visible_through_local_transaction_id;
   session->transaction_uuid = executed.transaction_uuid;
   session->transaction_timestamp = executed.transaction_timestamp;
   session->transaction_context = "always_active";
+  return changed;
 }
 
 struct ObjectReference {
@@ -329,6 +335,7 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
   key << presented_name << "|quoted=" << (quoted ? "1" : "0")
       << "|class=" << object_class
       << "|catalog=" << session.catalog_epoch
+      << "|local_txn=" << session.local_transaction_id
       << "|security=" << session.security_policy_epoch
       << "|grant=" << session.grant_epoch
       << "|descriptor=" << session.descriptor_epoch
@@ -347,6 +354,32 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
       << "|resource_compat=" << session.resource_compatibility_identity
       << "|resource_version=" << session.resource_version_identity;
   return key.str();
+}
+
+std::optional<std::string> DdlResultRowField(std::string_view payload,
+                                             std::string_view field_name) {
+  std::istringstream in{std::string(payload)};
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.starts_with("row[")) continue;
+    const auto eq = line.find("]=");
+    if (eq == std::string::npos) continue;
+    std::string_view body(line);
+    body.remove_prefix(eq + 2);
+    std::size_t start = 0;
+    while (start <= body.size()) {
+      const std::size_t end = body.find(';', start);
+      const std::string_view item =
+          body.substr(start, end == std::string_view::npos ? body.size() - start : end - start);
+      const std::size_t item_eq = item.find('=');
+      if (item_eq != std::string_view::npos && item.substr(0, item_eq) == field_name) {
+        return std::string(item.substr(item_eq + 1));
+      }
+      if (end == std::string_view::npos) break;
+      start = end + 1;
+    }
+  }
+  return std::nullopt;
 }
 
 PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
@@ -926,9 +959,11 @@ bool ConsumeRouteQualifiedNameLeaf(const CstDocument& cst, std::size_t* index, s
 
 bool ConsumeRouteQualifiedNameParts(const CstDocument& cst,
                                     std::size_t* index,
-                                    std::vector<std::string>* parts) {
+                                    std::vector<std::string>* parts,
+                                    bool* quoted = nullptr) {
   if (index == nullptr || parts == nullptr) return false;
   std::vector<std::string> parsed;
+  bool saw_quoted = false;
   bool expect_part = true;
   for (;;) {
     SkipTriviaTokens(cst, index);
@@ -938,6 +973,7 @@ bool ConsumeRouteQualifiedNameParts(const CstDocument& cst,
     if (expect_part) {
       if (!IsIdentifierLikeForRouteExecution(token)) break;
       parsed.push_back(token.text);
+      saw_quoted = saw_quoted || token.quoted;
       expect_part = false;
       ++(*index);
       continue;
@@ -948,6 +984,7 @@ bool ConsumeRouteQualifiedNameParts(const CstDocument& cst,
   }
   if (parsed.empty() || expect_part) return false;
   *parts = std::move(parsed);
+  if (quoted != nullptr) *quoted = saw_quoted;
   return true;
 }
 
@@ -960,6 +997,20 @@ std::string JoinRouteNameParts(const std::vector<std::string>& parts,
     out += parts[index];
   }
   return out;
+}
+
+bool ConsumeOptionalIfNotExists(const CstDocument& cst, std::size_t* index) {
+  if (index == nullptr) return false;
+  const std::size_t saved = *index;
+  if (!ConsumeRouteKeyword(cst, index, "IF")) {
+    *index = saved;
+    return true;
+  }
+  if (!ConsumeRouteKeyword(cst, index, "NOT") ||
+      !ConsumeRouteKeyword(cst, index, "EXISTS")) {
+    *index = saved;
+  }
+  return true;
 }
 
 std::string RouteCanonicalTypeName(std::string_view type_text) {
@@ -1449,6 +1500,71 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
   return out;
 }
 
+struct CreatedDdlName {
+  std::string presented_name;
+  std::vector<std::string> object_classes;
+  bool quoted{false};
+};
+
+void PushCreatedDdlClassAliases(std::string_view object_kind,
+                                std::vector<std::string>* classes) {
+  if (classes == nullptr) return;
+  const auto kind = ToUpperAscii(object_kind);
+  if (kind == "TABLE") {
+    classes->push_back("table");
+    classes->push_back("relation");
+  } else if (kind == "VIEW") {
+    classes->push_back("view");
+    classes->push_back("relation");
+  } else if (kind == "SCHEMA") {
+    classes->push_back("schema");
+  } else if (kind == "DOMAIN") {
+    classes->push_back("domain");
+  } else if (kind == "INDEX") {
+    classes->push_back("index");
+  } else if (!object_kind.empty()) {
+    classes->push_back(std::string(object_kind));
+  }
+  std::sort(classes->begin(), classes->end());
+  classes->erase(std::unique(classes->begin(), classes->end()), classes->end());
+}
+
+std::optional<CreatedDdlName> ExtractCreatedDdlNameFromCst(
+    const CstDocument& cst,
+    std::string_view object_kind) {
+  std::size_t index = 0;
+  if (!ConsumeRouteKeyword(cst, &index, "CREATE")) return std::nullopt;
+  bool temporary = false;
+  std::string temporary_scope;
+  (void)ConsumeOptionalTemporaryTablePrefix(cst, &index, &temporary, &temporary_scope);
+  (void)temporary;
+  (void)temporary_scope;
+  const auto kind = ToUpperAscii(object_kind);
+  if (kind == "TABLE" || kind == "RELATION") {
+    if (!ConsumeRouteKeyword(cst, &index, "TABLE")) return std::nullopt;
+  } else if (kind == "SCHEMA") {
+    if (!ConsumeRouteKeyword(cst, &index, "SCHEMA")) return std::nullopt;
+  } else if (kind == "VIEW") {
+    if (!ConsumeRouteKeyword(cst, &index, "VIEW")) return std::nullopt;
+  } else if (kind == "DOMAIN") {
+    if (!ConsumeRouteKeyword(cst, &index, "DOMAIN")) return std::nullopt;
+  } else if (kind == "INDEX") {
+    if (!ConsumeRouteKeyword(cst, &index, "INDEX")) return std::nullopt;
+  } else {
+    return std::nullopt;
+  }
+  (void)ConsumeOptionalIfNotExists(cst, &index);
+  std::vector<std::string> name_parts;
+  CreatedDdlName created;
+  if (!ConsumeRouteQualifiedNameParts(cst, &index, &name_parts, &created.quoted)) {
+    return std::nullopt;
+  }
+  created.presented_name = JoinRouteNameParts(name_parts, 0, name_parts.size());
+  PushCreatedDdlClassAliases(object_kind, &created.object_classes);
+  if (created.presented_name.empty() || created.object_classes.empty()) return std::nullopt;
+  return created;
+}
+
 bool EnforceCstResourceBudget(const CstDocument& cst,
                               const ParserResourceBudget& budget,
                               ParserMetrics* metrics,
@@ -1931,11 +2047,72 @@ ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_vi
   return client.CancelCursor(session_, cursor_uuid);
 }
 
+void SbsqlTestWireSession::ClearNameResolutionCache() {
+  if (name_resolution_cache_.empty() && name_resolution_lru_.empty()) return;
+  name_resolution_cache_.clear();
+  name_resolution_lru_.clear();
+  if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.clears_total");
+}
+
+void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class,
+    std::string_view object_uuid,
+    std::string_view canonical_name,
+    std::uint64_t catalog_epoch,
+    std::uint64_t security_epoch) {
+  if (presented_name.empty() || object_class.empty() || object_uuid.empty()) return;
+  const std::string cache_key =
+      BuildNameResolutionCacheKey(session_, presented_name, quoted, object_class);
+  CachedPublicNameResolution cached;
+  cached.object_uuid = std::string(object_uuid);
+  cached.canonical_name = canonical_name.empty() ? std::string(presented_name)
+                                                 : std::string(canonical_name);
+  cached.object_class = std::string(object_class);
+  cached.catalog_epoch = catalog_epoch;
+  cached.security_epoch = security_epoch;
+  name_resolution_cache_[cache_key] = std::move(cached);
+  name_resolution_lru_.erase(std::remove(name_resolution_lru_.begin(),
+                                         name_resolution_lru_.end(),
+                                         cache_key),
+                             name_resolution_lru_.end());
+  name_resolution_lru_.push_back(cache_key);
+  while (name_resolution_cache_.size() > kMaxNameResolutionCacheEntries &&
+         !name_resolution_lru_.empty()) {
+    name_resolution_cache_.erase(name_resolution_lru_.front());
+    name_resolution_lru_.pop_front();
+  }
+  if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.stores_total");
+}
+
+void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
+    const CstDocument& cst,
+    const PipelineResult& result) {
+  if (!result.accepted || result.server_result_payload.empty()) return;
+  const auto object_uuid = DdlResultRowField(result.server_result_payload, "object_uuid");
+  const auto object_kind = DdlResultRowField(result.server_result_payload, "object_kind");
+  if (!object_uuid || object_uuid->empty() || !object_kind || object_kind->empty()) return;
+  const auto created = ExtractCreatedDdlNameFromCst(cst, *object_kind);
+  if (!created) return;
+  const auto payload_name = DdlResultRowField(result.server_result_payload, "name");
+  const std::string canonical_name =
+      payload_name && !payload_name->empty() ? *payload_name : created->presented_name;
+  for (const auto& object_class : created->object_classes) {
+    StoreNameResolutionCacheEntry(created->presented_name,
+                                  created->quoted,
+                                  object_class,
+                                  *object_uuid,
+                                  canonical_name,
+                                  session_.catalog_epoch,
+                                  session_.security_policy_epoch);
+  }
+}
+
 PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     std::string_view presented_name,
     bool quoted,
     std::string_view object_class) {
-  constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
   const std::string cache_key =
       BuildNameResolutionCacheKey(session_, presented_name, quoted, object_class);
   if (const auto found = name_resolution_cache_.find(cache_key);
@@ -1963,24 +2140,14 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     resolved = client.ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
   }
   if (resolved.resolved) {
-    CachedPublicNameResolution cached;
-    cached.object_uuid = resolved.object_uuid;
-    cached.canonical_name = resolved.canonical_name;
-    cached.object_class = resolved.object_class;
-    cached.catalog_epoch = resolved.catalog_epoch;
-    cached.security_epoch = resolved.security_epoch;
-    name_resolution_cache_[cache_key] = std::move(cached);
-    name_resolution_lru_.erase(std::remove(name_resolution_lru_.begin(),
-                                           name_resolution_lru_.end(),
-                                           cache_key),
-                               name_resolution_lru_.end());
-    name_resolution_lru_.push_back(cache_key);
-    while (name_resolution_cache_.size() > kMaxNameResolutionCacheEntries &&
-           !name_resolution_lru_.empty()) {
-      name_resolution_cache_.erase(name_resolution_lru_.front());
-      name_resolution_lru_.pop_front();
-    }
-    if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.stores_total");
+    StoreNameResolutionCacheEntry(presented_name,
+                                  quoted,
+                                  resolved.object_class.empty() ? object_class
+                                                                : resolved.object_class,
+                                  resolved.object_uuid,
+                                  resolved.canonical_name,
+                                  resolved.catalog_epoch,
+                                  resolved.security_epoch);
   }
   return resolved;
 }
@@ -2210,7 +2377,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.server_cursor_uuid = executed.cursor_uuid;
         result.server_row_count = executed.row_count;
         result.server_result_payload = executed.row_packet;
-        ApplyExecutedTransactionState(executed, &session_);
+        if (ApplyExecutedTransactionState(executed, &session_)) {
+          ClearNameResolutionCache();
+        }
+        SeedCreatedDdlNameResolutionCache(cst, result);
       }
     }
   }
@@ -2243,7 +2413,9 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sb
   result.server_cursor_uuid = executed.cursor_uuid;
   result.server_row_count = executed.row_count;
   result.server_result_payload = executed.row_packet;
-  ApplyExecutedTransactionState(executed, &session_);
+  if (ApplyExecutedTransactionState(executed, &session_)) {
+    ClearNameResolutionCache();
+  }
   return result;
 }
 
@@ -2308,7 +2480,9 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
   result.server_cursor_uuid = executed.cursor_uuid;
   result.server_row_count = executed.row_count;
   result.server_result_payload = executed.row_packet;
-  ApplyExecutedTransactionState(executed, &session_);
+  if (ApplyExecutedTransactionState(executed, &session_)) {
+    ClearNameResolutionCache();
+  }
   return result;
 }
 

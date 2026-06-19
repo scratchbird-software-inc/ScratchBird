@@ -446,7 +446,7 @@ def execute_query(
 
 
 def commit_txn(sock: ssl.SSLSocket, sequence: int, attachment: bytes, txn_id: int, label: str) -> tuple[int, int]:
-    send_frame(sock, MSG_TXN_COMMIT, sequence, attachment=attachment, txn_id=txn_id)
+    send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
     sequence += 1
     ready_payload, frame_txn = expect_ready_after_command(sock, label)
     status, ready_txn = decode_ready(ready_payload)

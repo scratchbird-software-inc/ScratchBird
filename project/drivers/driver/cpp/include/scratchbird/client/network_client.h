@@ -389,6 +389,12 @@ private:
                              bool force_zero,
                              uint32_t* sequence_out,
                              core::ErrorContext* ctx);
+    core::Status sendRawPayloadMessage(protocol::MessageType type,
+                                       const uint8_t* payload,
+                                       size_t payload_size,
+                                       uint8_t flags,
+                                       bool force_zero,
+                                       core::ErrorContext* ctx);
     core::Status receiveMessage(protocol::ProtocolMessage& msg,
                                 core::ErrorContext* ctx = nullptr);
     core::Status readExactWithTimeout(void* buffer, size_t size,

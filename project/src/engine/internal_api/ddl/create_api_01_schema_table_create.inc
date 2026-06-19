@@ -146,6 +146,12 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
     return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id, name_appended);
   }
   AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid.canonical);
+  AddApiBehaviorRow(&result, {{"object_uuid", result.primary_object.uuid.canonical},
+                              {"object_kind", object_kind},
+                              {"schema_uuid", scope_uuid},
+                              {"name", fallback_name},
+                              {"state", state},
+                              {"payload", "ddl_operation=" + operation_id}});
   return result;
 }
 

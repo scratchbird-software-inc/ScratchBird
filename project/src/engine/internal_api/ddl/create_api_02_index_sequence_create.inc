@@ -318,6 +318,12 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   result.catalog_row_uuid = result.table_catalog_row_uuid;
   result.created_catalog_records.push_back(result.primary_object);
   result.evidence.push_back({"mga_relation_metadata", "table_create"});
+  AddApiBehaviorRow(&result, {{"object_uuid", table_uuid},
+                              {"object_kind", "table"},
+                              {"schema_uuid", target_schema_uuid},
+                              {"name", table_name},
+                              {"state", "active"},
+                              {"payload", "mga_relation_metadata=table_create"}});
   for (const auto& support_index : implicit_support_indexes) {
     result.evidence.push_back({"constraint_support_index", support_index.index_uuid});
     result.evidence.push_back({"constraint_support_column", support_index.column_name});

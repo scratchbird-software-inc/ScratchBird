@@ -145,6 +145,10 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
   const std::string type_name =
       DescriptorFieldLocal(descriptor_fields, {"domain_uuid", "domain", "type", "canonical"});
   if (type_name.empty() || type_name.find('.') == std::string::npos) { return {}; }
+  if (type_name.find('(') != std::string::npos ||
+      type_name.find(')') != std::string::npos) {
+    return {};
+  }
   if (requested_type_name != nullptr) { *requested_type_name = type_name; }
   if (lookup_required != nullptr) { *lookup_required = true; }
   if (StartsWithLocal(type_name, "019")) { return type_name; }

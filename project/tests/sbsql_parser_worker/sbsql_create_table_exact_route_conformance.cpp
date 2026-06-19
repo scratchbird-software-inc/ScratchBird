@@ -858,6 +858,14 @@ std::string SchemaUuidForPath(const api::EngineRequestContext& context,
   return {};
 }
 
+std::string ResultFieldValue(const api::EngineRowValue& row,
+                             std::string_view field_name) {
+  for (const auto& field : row.fields) {
+    if (field.first == field_name) return field.second.encoded_value;
+  }
+  return {};
+}
+
 api::EngineRequestContext BeginEngineTransaction(const std::string& database_uuid) {
   auto context = EngineContext(database_uuid);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
@@ -957,6 +965,20 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
   Require(result.api_result.primary_object.uuid.canonical ==
               "019f0000-0000-7000-8000-000000020206",
           "EngineCreateTable returned wrong table UUID");
+  bool saw_ddl_result_uuid = false;
+  for (const auto& row : result.api_result.result_shape.rows) {
+    if (ResultFieldValue(row, "object_uuid") ==
+            "019f0000-0000-7000-8000-000000020206" &&
+        ResultFieldValue(row, "object_kind") == "table" &&
+        ResultFieldValue(row, "schema_uuid") ==
+            context.current_schema_uuid.canonical &&
+        ResultFieldValue(row, "name") == "customer") {
+      saw_ddl_result_uuid = true;
+      break;
+    }
+  }
+  Require(saw_ddl_result_uuid,
+          "EngineCreateTable did not return created table UUID result row");
   bool saw_table_create = false;
   bool saw_temporary_scope = false;
   bool saw_temporary_on_commit = false;
