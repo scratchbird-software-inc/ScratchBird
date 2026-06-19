@@ -119,6 +119,7 @@ DenseRowOrdinalLocator MakeDenseRowOrdinalLocator(const DenseRowOrdinalScope& sc
 DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(const RowDataPageBody& body,
                                                          const DenseRowOrdinalLocator& locator);
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size);
+RowDataPageResult BuildRowDataPageBodyFromOwned(RowDataPageBody body, u32 page_size);
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number);
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
                                            std::string diagnostic_code,

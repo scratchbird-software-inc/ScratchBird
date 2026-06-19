@@ -22,6 +22,7 @@
 #include <cstring>
 #include <exception>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -481,6 +482,19 @@ void appendU32(std::vector<uint8_t>& out, uint32_t value) {
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
     out.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
     out.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+}
+
+void storeU32(uint8_t* out, uint32_t value) {
+    out[0] = static_cast<uint8_t>(value & 0xFF);
+    out[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    out[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+    out[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
+void storeU64(uint8_t* out, uint64_t value) {
+    for (int index = 0; index < 8; ++index) {
+        out[index] = static_cast<uint8_t>((value >> (8 * index)) & 0xFF);
+    }
 }
 
 uint16_t readU16(const uint8_t* data) {
@@ -3296,6 +3310,63 @@ core::Status NetworkClient::sendMessage(const protocol::ProtocolMessage& msg,
     return core::Status::OK;
 }
 
+core::Status NetworkClient::sendRawPayloadMessage(protocol::MessageType type,
+                                                  const uint8_t* payload,
+                                                  size_t payload_size,
+                                                  uint8_t flags,
+                                                  bool force_zero,
+                                                  core::ErrorContext* ctx) {
+    if (payload_size > protocol::kMaxMessageSize) {
+        return setError(ctx, core::Status::PROTOCOL_VIOLATION, "Message too large");
+    }
+
+    std::array<uint8_t, protocol::kHeaderSize> header{};
+    storeU32(header.data(), protocol::kProtocolMagic);
+    header[4] = protocol::kProtocolMajor;
+    header[5] = protocol::kProtocolMinor;
+    header[6] = static_cast<uint8_t>(type);
+    header[7] = flags;
+    storeU32(header.data() + 8, static_cast<uint32_t>(payload_size));
+    const uint32_t sequence = force_zero ? 0 : next_sequence_++;
+    storeU32(header.data() + 12, sequence);
+    if (!force_zero) {
+        std::memcpy(header.data() + 16, session_id_.data(), session_id_.size());
+        storeU64(header.data() + 32, current_txn_id_);
+    }
+
+    auto write_bytes = [&](const uint8_t* data, size_t size) -> core::Status {
+        size_t total = 0;
+        while (total < size) {
+            if (tls_active_) {
+                if (socket_ && !socket_->waitWritable(static_cast<int>(config_.write_timeout_ms))) {
+                    return setError(ctx, core::Status::IO_ERROR, "TLS write timeout");
+                }
+                const size_t remaining = size - total;
+                const int write_size = static_cast<int>(
+                    std::min<size_t>(remaining, static_cast<size_t>(std::numeric_limits<int>::max())));
+                int rc = tls_conn_->write(data + total, write_size);
+                if (rc <= 0) {
+                    return setError(ctx, core::Status::CONNECTION_FAILURE, "TLS write failed");
+                }
+                total += static_cast<size_t>(rc);
+            } else {
+                auto status = socket_->writeExact(data + total, size - total, ctx);
+                if (status != core::Status::OK) {
+                    return setError(ctx, core::Status::CONNECTION_FAILURE, "Socket write failed");
+                }
+                total = size;
+            }
+        }
+        return core::Status::OK;
+    };
+
+    auto status = write_bytes(header.data(), header.size());
+    if (status != core::Status::OK || payload_size == 0) {
+        return status;
+    }
+    return write_bytes(payload, payload_size);
+}
+
 core::Status NetworkClient::receiveMessage(protocol::ProtocolMessage& msg,
                                            core::ErrorContext* ctx) {
     std::vector<uint8_t> header_bytes(protocol::kHeaderSize);
@@ -3373,9 +3444,23 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     std::vector<uint8_t> buffer(chunk_size);
     std::string pending;
     auto send_payload = [&](const uint8_t* data, size_t size) -> core::Status {
-        std::vector<uint8_t> chunk(data, data + size);
-        const auto payload = protocol::buildCopyDataPayload(chunk);
-        auto status = sendMessage(protocol::MessageType::CopyData, payload, 0, false, nullptr, ctx);
+        core::Status status = core::Status::OK;
+        if (tls_active_) {
+            std::vector<uint8_t> chunk(data, data + size);
+            status = sendMessage(protocol::MessageType::CopyData,
+                                 chunk,
+                                 0,
+                                 false,
+                                 nullptr,
+                                 ctx);
+        } else {
+            status = sendRawPayloadMessage(protocol::MessageType::CopyData,
+                                           data,
+                                           size,
+                                           0,
+                                           false,
+                                           ctx);
+        }
         if (status != core::Status::OK) {
             return status;
         }

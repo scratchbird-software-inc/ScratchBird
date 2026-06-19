@@ -46,7 +46,7 @@ using scratchbird::storage::disk::ReadDevicePageHeader;
 using scratchbird::storage::disk::SerializedDatabaseHeader;
 using scratchbird::storage::disk::UnknownPagePolicy;
 using scratchbird::storage::page::BuildManagedPageHeader;
-using scratchbird::storage::page::BuildRowDataPageBody;
+using scratchbird::storage::page::BuildRowDataPageBodyFromOwned;
 using scratchbird::storage::page::CheckedPageBodyOffset;
 using scratchbird::storage::page::CheckedPageOffset;
 using scratchbird::storage::page::ManagedPageHeaderRequest;
@@ -440,7 +440,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   body.page_generation = std::max<u64>(1, body.page_generation);
   body.compaction_generation = std::max<u64>(body.compaction_generation,
                                              body.page_generation);
-  const auto built = BuildRowDataPageBody(body, context.page_size);
+  const auto built = BuildRowDataPageBodyFromOwned(std::move(body), context.page_size);
   if (!built.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(built.status,
                                                    built.diagnostic);
@@ -784,7 +784,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   }
   row_page.rows.push_back(new_row);
 
-  const auto written = WriteRowDataPage(&device, context, row_page);
+  const auto written = WriteRowDataPage(&device, context, std::move(row_page));
   if (!written.ok()) {
     return written;
   }
@@ -943,7 +943,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
       }
 
       const auto written =
-          WriteRowDataPage(&device, context, row_page, !request.sync_once_after_pages);
+          WriteRowDataPage(&device, context, std::move(row_page), !request.sync_once_after_pages);
       if (!written.ok()) {
         return Propagate<PhysicalMgaCowMutationBatchResult>(written.status,
                                                             written.diagnostic);
@@ -1033,7 +1033,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     }
 
     const auto written =
-        WriteRowDataPage(&device, context, row_page, !request.sync_once_after_pages);
+        WriteRowDataPage(&device, context, std::move(row_page), !request.sync_once_after_pages);
     if (!written.ok()) {
       return Propagate<PhysicalMgaCowMutationBatchResult>(written.status,
                                                           written.diagnostic);

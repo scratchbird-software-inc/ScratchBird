@@ -1609,10 +1609,16 @@ PreparedInsertRow PrepareDirectBulkOrderedRowFast(
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
   row.values.reserve(input_row.fields.size());
+  static constexpr char kNullMarker[] = "<NULL>";
   for (const auto& [field, typed] : input_row.fields) {
-    row.values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value});
+    if (typed.is_null) {
+      row.values.push_back({field, kNullMarker});
+      row.encoded_bytes += field.size() + sizeof(kNullMarker) - 1;
+    } else {
+      row.values.push_back({field, typed.encoded_value});
+      row.encoded_bytes += field.size() + typed.encoded_value.size();
+    }
   }
-  row.encoded_bytes = static_cast<std::uint64_t>(EncodedValueBytes(row.values));
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
                        InsertBatchOptionEnabled(request,
                                                 "large_value.force_toast=true");
@@ -1680,12 +1686,12 @@ bool DirectPhysicalMgaCowRequired(const DirectPhysicalBulkAppendRequest& request
 
 scratchbird::storage::page::RowDataCell DirectPhysicalCell(
     std::uint16_t ordinal,
-    const EngineTypedValue& value) {
+    const std::string& encoded_value) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
   cell.value.type_id = scratchbird::core::datatypes::CanonicalTypeId::character;
-  cell.value.is_null = value.state == EngineValueState::sql_null || value.is_null;
-  cell.value.payload.assign(value.encoded_value.begin(), value.encoded_value.end());
+  cell.value.is_null = false;
+  cell.value.payload.assign(encoded_value.begin(), encoded_value.end());
   return cell;
 }
 
@@ -1695,10 +1701,7 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
   cells.reserve(values.size());
   std::uint16_t ordinal = 1;
   for (const auto& value : values) {
-    EngineTypedValue typed;
-    typed.encoded_value = value.second;
-    typed.state = EngineValueState::value;
-    cells.push_back(DirectPhysicalCell(ordinal++, typed));
+    cells.push_back(DirectPhysicalCell(ordinal++, value.second));
   }
   return cells;
 }
@@ -3535,22 +3538,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   staged_rows.reserve(request.borrowed_input_rows.size());
   returning_rows.reserve(request.borrowed_input_rows.size());
   constexpr std::size_t kDirectBulkMaxStoredInsertTraceEvents = 128;
-  auto compact_direct_insert_trace = [&batch_context]() {
-    ++batch_context.trace_event_count;
-    ++batch_context.trace_event_compacted_count;
-  };
+  constexpr std::size_t kDirectBulkTraceRowsToStore =
+      kDirectBulkMaxStoredInsertTraceEvents / 2;
 
   direct_bulk_phase_start = DirectSteadyClock::now();
   std::size_t row_ordinal = 0;
   for (const auto& input_row : request.borrowed_input_rows) {
-    if (batch_context.trace_events.size() <
-        kDirectBulkMaxStoredInsertTraceEvents) {
+    const bool store_row_trace =
+        row_ordinal < kDirectBulkTraceRowsToStore;
+    if (store_row_trace) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.convert",
                      "row",
                      std::to_string(batch_context.actual_row_count));
-    } else {
-      compact_direct_insert_trace();
     }
     PreparedInsertRow prepared =
         can_use_shared_ordered_row_fast_path
@@ -3670,14 +3670,6 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                memory_validation,
                                "insert_batch_memory_budget_refused");
     }
-    const auto batch_constraint =
-        ValidateInsertBatchConstraints(batch_context, state, prepared);
-    if (batch_constraint.error) {
-      return DirectBulkFailure(request,
-                               batch_constraint,
-                               "insert_batch_constraint_refused");
-    }
-
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
     row_record.table_uuid = request.target_table.uuid.canonical;
@@ -3687,17 +3679,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         table->temporary ? request.context.session_uuid.canonical : "";
     row_record.deleted = false;
     row_record.values = std::move(prepared.values);
-    if (batch_context.trace_events.size() <
-        kDirectBulkMaxStoredInsertTraceEvents) {
+    if (store_row_trace) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.stage",
                      "stage",
                      prepared.row_uuid);
-    } else {
-      compact_direct_insert_trace();
     }
     staged_rows.push_back(std::move(row_record));
     ++row_ordinal;
+  }
+  if (request.borrowed_input_rows.size() > kDirectBulkTraceRowsToStore) {
+    const std::uint64_t omitted =
+        static_cast<std::uint64_t>(
+            request.borrowed_input_rows.size() - kDirectBulkTraceRowsToStore) *
+        2u;
+    batch_context.trace_event_count += omitted;
+    batch_context.trace_event_compacted_count += omitted;
   }
   record_phase("row_stage_validate",
                direct_bulk_phase_start);
@@ -4080,25 +4077,29 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   std::vector<MgaIndexEntryRowInput> index_rows;
   index_rows.reserve(staged_rows.size());
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
+  const bool compact_index_trace =
+      batch_context.trace_events.size() >= kDirectBulkMaxStoredInsertTraceEvents;
+  if (compact_index_trace) {
+    const std::uint64_t omitted =
+        static_cast<std::uint64_t>(staged_rows.size()) * 2u;
+    batch_context.trace_event_count += omitted;
+    batch_context.trace_event_compacted_count += omitted;
+  }
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];
-    if (batch_context.trace_events.size() <
-        kDirectBulkMaxStoredInsertTraceEvents) {
+    if (!compact_index_trace &&
+        batch_context.trace_events.size() < kDirectBulkMaxStoredInsertTraceEvents) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.write",
                      "write",
                      row.row_uuid);
-    } else {
-      compact_direct_insert_trace();
     }
-    if (batch_context.trace_events.size() <
-        kDirectBulkMaxStoredInsertTraceEvents) {
+    if (!compact_index_trace &&
+        batch_context.trace_events.size() < kDirectBulkMaxStoredInsertTraceEvents) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.index.maintain",
                      "index",
                      row.row_uuid);
-    } else {
-      compact_direct_insert_trace();
     }
     index_rows.push_back({row.row_uuid,
                           row.version_uuid,

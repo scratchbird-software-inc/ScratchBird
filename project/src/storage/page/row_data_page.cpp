@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -39,6 +40,7 @@ using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '2'};
 inline constexpr byte kRowDataV1Magic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '1'};
 inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
+inline constexpr byte kRowDataDatatypeBinaryMagic[8] = {'S', 'B', 'D', 'V', 'A', 'L', '0', '1'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
 inline constexpr u32 kOffsetRowCount = 12;
@@ -68,6 +70,12 @@ inline constexpr u32 kSlotOffsetRowOffset = 4;
 inline constexpr u32 kSlotOffsetRowBytes = 8;
 inline constexpr u32 kSlotOffsetFlags = 12;
 inline constexpr u32 kSlotOffsetRowChecksum = 16;
+inline constexpr u32 kDatatypeBinaryOffsetMagic = 0;
+inline constexpr u32 kDatatypeBinaryOffsetTypeId = 8;
+inline constexpr u32 kDatatypeBinaryOffsetFlags = 12;
+inline constexpr u32 kDatatypeBinaryOffsetHeaderBytes = 14;
+inline constexpr u32 kDatatypeBinaryOffsetPayloadBytes = 16;
+inline constexpr u32 kDatatypeBinaryOffsetPayloadChecksum = 24;
 
 namespace RowFlag {
 inline constexpr u16 deleted = 1u << 0;
@@ -104,6 +112,41 @@ u64 Fnv1a64(const byte* data, std::size_t size) {
 
 bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
+}
+
+bool TryEncodeRowDataCharacterCellFast(const DatatypeBinaryValue& value,
+                                       std::vector<byte>* encoded) {
+  if (encoded == nullptr ||
+      value.type_id != scratchbird::core::datatypes::CanonicalTypeId::character ||
+      value.is_null ||
+      value.payload_is_toast_reference ||
+      value.payload.size() >
+          static_cast<std::size_t>(std::numeric_limits<u32>::max())) {
+    return false;
+  }
+
+  encoded->assign(scratchbird::core::datatypes::kDatatypeBinaryEnvelopeHeaderBytes +
+                      value.payload.size(),
+                  0);
+  std::memcpy(encoded->data() + kDatatypeBinaryOffsetMagic,
+              kRowDataDatatypeBinaryMagic,
+              sizeof(kRowDataDatatypeBinaryMagic));
+  StoreLittle32(encoded->data() + kDatatypeBinaryOffsetTypeId,
+                static_cast<u32>(value.type_id));
+  StoreLittle16(encoded->data() + kDatatypeBinaryOffsetFlags, 0);
+  StoreLittle16(encoded->data() + kDatatypeBinaryOffsetHeaderBytes,
+                scratchbird::core::datatypes::kDatatypeBinaryEnvelopeHeaderBytes);
+  StoreLittle32(encoded->data() + kDatatypeBinaryOffsetPayloadBytes,
+                static_cast<u32>(value.payload.size()));
+  StoreLittle64(encoded->data() + kDatatypeBinaryOffsetPayloadChecksum,
+                scratchbird::core::datatypes::ComputeDatatypeBinaryChecksum(value.payload));
+  if (!value.payload.empty()) {
+    std::copy(value.payload.begin(),
+              value.payload.end(),
+              encoded->begin() +
+                  scratchbird::core::datatypes::kDatatypeBinaryEnvelopeHeaderBytes);
+  }
+  return true;
 }
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
@@ -253,14 +296,14 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   return result;
 }
 
-RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size) {
+RowDataPageResult BuildRowDataPageBodyFromOwned(RowDataPageBody body, u32 page_size) {
   if (page_size <= kPageHeaderSerializedBytes + kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-SIZE-TOO-SMALL",
                         "storage.row_data_page.page_size_too_small",
                         std::to_string(page_size));
   }
 
-  RowDataPageBody body_with_ordinals = body;
+  RowDataPageBody body_with_ordinals = std::move(body);
   AssignDenseInternalRowOrdinals(&body_with_ordinals);
   if (!IsTypedEngineIdentity(body_with_ordinals.relation_uuid, UuidKind::object)) {
     return RowPageError("SB-ROW-DATA-PAGE-RELATION-UUID-REQUIRED",
@@ -296,15 +339,19 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
     }
     body_bytes += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
-      const auto encoded = EncodeDatatypeBinaryValue(cell.value);
-      if (!encoded.ok()) {
-        RowDataPageResult result;
-        result.status = encoded.status;
-        result.diagnostic = encoded.diagnostic;
-        return result;
+      std::vector<byte> encoded_bytes;
+      if (!TryEncodeRowDataCharacterCellFast(cell.value, &encoded_bytes)) {
+        auto encoded = EncodeDatatypeBinaryValue(cell.value);
+        if (!encoded.ok()) {
+          RowDataPageResult result;
+          result.status = encoded.status;
+          result.diagnostic = encoded.diagnostic;
+          return result;
+        }
+        encoded_bytes = std::move(encoded.encoded);
       }
-      body_bytes += kCellHeaderBytes + static_cast<u32>(encoded.encoded.size());
-      encoded_cells.push_back(encoded.encoded);
+      body_bytes += kCellHeaderBytes + static_cast<u32>(encoded_bytes.size());
+      encoded_cells.push_back(std::move(encoded_bytes));
     }
   }
   const u32 slot_directory_offset = body_bytes;
@@ -317,7 +364,6 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
 
   RowDataPageResult result;
   result.status = RowPageOkStatus();
-  result.body = body_with_ordinals;
   result.serialized.assign(page_size - kPageHeaderSerializedBytes, 0);
   std::memcpy(result.serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic));
   StoreLittle32(result.serialized.data() + kOffsetHeaderBytes, kRowDataPageBodyHeaderBytes);
@@ -402,10 +448,14 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
   body_with_ordinals.free_space_offset = offset;
   body_with_ordinals.free_space_bytes =
       static_cast<u32>(result.serialized.size() - offset);
-  result.body = body_with_ordinals;
+  result.body = std::move(body_with_ordinals);
   StoreLittle32(result.serialized.data() + kOffsetBodyBytes, offset);
   StoreLittle64(result.serialized.data() + kOffsetBodyChecksum, ComputeRowDataPageChecksum(result.serialized));
   return result;
+}
+
+RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size) {
+  return BuildRowDataPageBodyFromOwned(body, page_size);
 }
 
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number) {
