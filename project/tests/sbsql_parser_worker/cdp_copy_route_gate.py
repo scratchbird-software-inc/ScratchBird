@@ -28,6 +28,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from live_auth_fixture import (
+    DEFAULT_PRINCIPAL_UUID,
+    local_password_evidence,
+    write_local_password_auth_fixture,
+)
+
 
 VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 COPY_TARGET = "cdp_copy_target"
@@ -113,8 +119,12 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
 
 
 def auth_file(database: Path) -> None:
-    Path(str(database) + ".sb.local_password_auth").write_text(
-        f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8"
+    write_local_password_auth_fixture(
+        database,
+        "alice",
+        VERIFIER,
+        DEFAULT_PRINCIPAL_UUID,
+        "right:CONNECT",
     )
 
 
@@ -221,7 +231,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> tuple[Route, subpro
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    evidence = local_password_evidence("alice", VERIFIER)
     return (
         Route(
             name="local-ipc",
@@ -294,7 +304,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> tuple[Route, subprocess.
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    evidence = local_password_evidence("alice", VERIFIER)
     return (
         Route(
             name="inet",
