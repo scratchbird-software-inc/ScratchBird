@@ -280,6 +280,17 @@ void AddEvidence(std::vector<EngineEvidenceReference>* evidence,
   }
 }
 
+bool HasEvidence(const std::vector<EngineEvidenceReference>& evidence,
+                 const std::string& kind,
+                 const std::string& id) {
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind && item.evidence_id == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 ResourceQuotaDecision EvaluateResourceQuota(
     const RuntimeLedger& runtime,
     const std::vector<std::string>& option_envelopes,
@@ -452,8 +463,19 @@ void AddWorkerCapacityPlanningEvidence(
                 "page_allocator_worker_capacity_planned_slot",
                 std::to_string(page->worker_slot_index));
     AddEvidence(evidence,
+                "page_allocator_worker_capacity_evidence_uuid",
+                page->evidence_uuid);
+    AddEvidence(evidence,
                 "page_allocator_worker_capacity_planned_can_precede_foreground",
                 page->can_run_before_foreground_demand ? "true" : "false");
+    if (page->assigned) {
+      AddEvidence(evidence,
+                  "page_allocator_prework_worker_slot_id",
+                  "agent-worker-slot-" + std::to_string(page->worker_slot_index));
+      AddEvidence(evidence,
+                  "page_allocator_worker_capacity_assignment",
+                  "page_allocation_manager:slot=" + std::to_string(page->worker_slot_index));
+    }
   }
   if (filespace != nullptr) {
     AddEvidence(evidence,
@@ -463,8 +485,20 @@ void AddWorkerCapacityPlanningEvidence(
                 "filespace_capacity_worker_capacity_planned_slot",
                 std::to_string(filespace->worker_slot_index));
     AddEvidence(evidence,
+                "filespace_capacity_worker_capacity_evidence_uuid",
+                filespace->evidence_uuid);
+    AddEvidence(evidence,
                 "filespace_capacity_worker_capacity_planned_can_precede_foreground",
                 filespace->can_run_before_foreground_demand ? "true" : "false");
+    if (filespace->assigned) {
+      AddEvidence(evidence,
+                  "filespace_capacity_prework_worker_slot_id",
+                  "agent-worker-slot-" + std::to_string(filespace->worker_slot_index));
+      AddEvidence(evidence,
+                  "filespace_capacity_worker_capacity_assignment",
+                  "filespace_capacity_manager:slot=" +
+                      std::to_string(filespace->worker_slot_index));
+    }
   }
   const bool separate_workers =
       page != nullptr && filespace != nullptr && page->assigned &&
@@ -494,6 +528,13 @@ void AddWorkerCapacityPlanningEvidence(
   AddEvidence(evidence,
               "page_allocator_ahead_of_need_runtime",
               "blocked");
+  AddEvidence(evidence,
+              "page_allocator_prework_inventory_runtime",
+              ahead_of_need ? "bounded_agent_prework_bridge"
+                            : "worker_capacity_unavailable");
+  AddEvidence(evidence,
+              "page_allocator_prework_finality_authority",
+              "durable_mga_transaction_inventory");
   if (!separate_workers || !ahead_of_need) {
     AddEvidence(evidence,
                 "page_allocator_worker_capacity_planned_blocker",
@@ -846,6 +887,12 @@ void AddPageAgentTickEvidence(const agents::PageAllocationManagerTickResult& tic
   AddEvidence(evidence,
               "page_agent_demand_requested_pages",
               std::to_string(tick.requested_pages));
+  AddEvidence(evidence,
+              "page_agent_demand_accepted_evidence",
+              tick.accepted_evidence ? "true" : "false");
+  AddEvidence(evidence,
+              "page_agent_demand_ledger_state_changed",
+              tick.ledger_state_changed ? "true" : "false");
   if (!tick.diagnostic.diagnostic_code.empty()) {
     AddEvidence(evidence, "page_agent_demand_diagnostic", tick.diagnostic.diagnostic_code);
   }
@@ -885,6 +932,9 @@ void AddFilespaceAgentTickEvidence(
   AddEvidence(evidence,
               "filespace_agent_granted_pages",
               std::to_string(tick.granted_pages));
+  AddEvidence(evidence,
+              "filespace_agent_queue_backed",
+              tick.queue_record.request.request_uuid.valid() ? "true" : "false");
   if (tick.evidence.evidence_uuid.valid()) {
     AddEvidence(evidence,
                 "filespace_agent_capacity_evidence",
@@ -899,6 +949,32 @@ void AddFilespaceAgentTickEvidence(
   AddEvidence(evidence,
               "filespace_agent_queue_state",
               page::PageFilespaceAgentRequestStateName(tick.queue_record.request.state));
+}
+
+void AddPreworkQueueDepthEvidence(const RuntimeLedger& runtime,
+                                  const std::string& stage,
+                                  std::vector<EngineEvidenceReference>* evidence) {
+  AddEvidence(evidence,
+              "page_filespace_agent_queue_depth_" + stage,
+              std::to_string(runtime.agent_queue.records.size()));
+}
+
+void AddPreworkTickAccountingEvidence(platform::u64 page_ticks,
+                                      platform::u64 filespace_ticks,
+                                      bool degraded,
+                                      std::vector<EngineEvidenceReference>* evidence) {
+  AddEvidence(evidence,
+              "page_allocator_inline_tick_count",
+              std::to_string(page_ticks));
+  AddEvidence(evidence,
+              "filespace_capacity_inline_tick_count",
+              std::to_string(filespace_ticks));
+  AddEvidence(evidence,
+              "page_allocator_inline_degraded_path_count",
+              degraded ? "1" : "0");
+  AddEvidence(evidence,
+              "filespace_capacity_inline_degraded_path_count",
+              degraded ? "1" : "0");
 }
 
 std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
@@ -917,6 +993,7 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
     return evidence;
   }
   AddWorkerCapacityPlanningEvidence(context, option_envelopes, &evidence);
+  AddPreworkQueueDepthEvidence(*runtime, "before_demand", &evidence);
 
   const auto hint = bulk::MakeDmlPageFilespaceDemandHint(
       DemandHintRequest(runtime,
@@ -942,6 +1019,9 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
   const bool capacity_needed = free_pages < granted_pages;
   platform::TypedUuid capacity_evidence_uuid;
   platform::u64 capacity_evidence_pages = 0;
+  platform::u64 page_prework_ticks = 0;
+  platform::u64 filespace_prework_ticks = 0;
+  bool prework_degraded = false;
 
   if (capacity_needed) {
     const platform::u64 available_capacity_pages =
@@ -963,14 +1043,24 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
         &runtime->agent_queue,
         capacity_snapshot,
         capacity_policy);
+    ++page_prework_ticks;
     AddEvidence(&evidence,
                 "page_allocator_demand_evaluation_mode",
                 "inline_tick");
+    AddEvidence(&evidence,
+                "page_allocator_demand_evaluation_mode",
+                "bounded_agent_prework_tick");
     AddPageAgentTickEvidence(queued, &evidence);
+    AddPreworkQueueDepthEvidence(*runtime, "after_capacity_enqueue", &evidence);
     if (!queued.capacity_request_enqueued) {
       if (outcome != nullptr) {
         outcome->refused = true;
       }
+      prework_degraded = true;
+      AddPreworkTickAccountingEvidence(page_prework_ticks,
+                                       filespace_prework_ticks,
+                                       prework_degraded,
+                                       &evidence);
       AddEvidence(&evidence, "dml_demand_runtime_outcome", "capacity_request_refused");
       return evidence;
     }
@@ -980,14 +1070,24 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
         DemandFilespaceSnapshot(*runtime, database_uuid, available_capacity_pages),
         DemandFilespacePolicy(*runtime, database_uuid, granted_pages, available_capacity_pages),
         agents::FilespaceCapacityManagerSafetyState{});
+    ++filespace_prework_ticks;
     AddEvidence(&evidence,
                 "filespace_capacity_demand_evaluation_mode",
                 "inline_tick");
+    AddEvidence(&evidence,
+                "filespace_capacity_demand_evaluation_mode",
+                "bounded_agent_prework_tick");
     AddFilespaceAgentTickEvidence(filespace, &evidence);
+    AddPreworkQueueDepthEvidence(*runtime, "after_filespace_capacity_tick", &evidence);
     if (!filespace.approved || filespace.granted_pages == 0) {
       if (outcome != nullptr) {
         outcome->refused = true;
       }
+      prework_degraded = true;
+      AddPreworkTickAccountingEvidence(page_prework_ticks,
+                                       filespace_prework_ticks,
+                                       prework_degraded,
+                                       &evidence);
       AddEvidence(&evidence, "dml_demand_runtime_outcome", "capacity_refused");
       return evidence;
     }
@@ -1024,10 +1124,15 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
                               capacity_evidence_uuid,
                               capacity_evidence_pages,
                               capacity_needed));
+  ++page_prework_ticks;
   AddEvidence(&evidence,
               "page_allocator_preallocation_evaluation_mode",
               "inline_tick");
+  AddEvidence(&evidence,
+              "page_allocator_preallocation_evaluation_mode",
+              "bounded_agent_prework_tick");
   AddPageAgentTickEvidence(preallocated, &evidence);
+  AddPreworkQueueDepthEvidence(*runtime, "after_preallocation_tick", &evidence);
   if (outcome != nullptr) {
     outcome->granted = preallocated.preallocated_pages != 0;
     outcome->granted_pages = std::max(outcome->granted_pages,
@@ -1036,6 +1141,12 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
                        !(preallocated.preallocation_recommended &&
                          preallocated.accepted_evidence);
   }
+  prework_degraded =
+      !(preallocated.preallocation_recommended && preallocated.accepted_evidence);
+  AddPreworkTickAccountingEvidence(page_prework_ticks,
+                                   filespace_prework_ticks,
+                                   prework_degraded,
+                                   &evidence);
   AddEvidence(&evidence,
               "dml_demand_runtime_outcome",
               preallocated.preallocation_recommended && preallocated.accepted_evidence
@@ -1051,6 +1162,30 @@ std::vector<EngineEvidenceReference> PublishDmlDemandHintLocked(
                                 : "capacity_window_not_needed");
     AddEvidence(&evidence,
                 "page_allocator_inline_preallocation_before_append",
+                "true");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_produced",
+                "true");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_state",
+                "preallocated");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_source",
+                "page_allocation_manager");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_authority",
+                "storage_page_allocation_lifecycle");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_pages",
+                std::to_string(preallocated.preallocated_pages));
+    AddEvidence(&evidence,
+                "page_allocation_mga_finality_authority",
+                "durable_transaction_inventory");
+    AddEvidence(&evidence,
+                "page_allocation_agent_finality_authority",
+                "false");
+    AddEvidence(&evidence,
+                "page_allocator_prework_inventory_before_foreground_reserve",
                 "true");
   }
   return evidence;
@@ -1096,6 +1231,27 @@ DmlPageAllocationRuntimeResult ReserveRuntimeLocked(
                                  : "row_page_allocation_source",
                              reserved.evidence.diagnostic_code});
   result.evidence.push_back({"page_allocation_runtime_phase", mutation_phase});
+  const bool consumed_preallocated_inventory =
+      reserved.evidence.action == "allocate_from_preallocated_pool";
+  result.evidence.push_back({"page_allocation_inventory_consumed",
+                             consumed_preallocated_inventory
+                                 ? "preallocated_pool"
+                                 : "free_extent_fallback"});
+  result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
+                                 ? "index_page_preallocated_inventory_consumed"
+                                 : "row_page_preallocated_inventory_consumed",
+                             consumed_preallocated_inventory ? "true" : "false"});
+  result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
+                                 ? "index_page_preallocation_inventory_consumer"
+                                 : "row_page_preallocation_inventory_consumer",
+                             "ReserveDmlPageAllocationRuntime"});
+  result.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
+                                 ? "index_page_preallocation_inventory_authority"
+                                 : "row_page_preallocation_inventory_authority",
+                             "storage_page_allocation_lifecycle"});
+  result.evidence.push_back({"page_allocation_mga_finality_authority",
+                             "durable_transaction_inventory"});
+  result.evidence.push_back({"page_allocation_agent_finality_authority", "false"});
   return result;
 }
 
@@ -1225,6 +1381,17 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
     reserved.evidence.insert(reserved.evidence.begin(),
                              quota.evidence.begin(),
                              quota.evidence.end());
+  }
+  const std::string consumed_kind =
+      family == DmlPageAllocationRuntimeFamily::index
+          ? "index_page_preallocated_inventory_consumed"
+          : "row_page_preallocated_inventory_consumed";
+  if (HasEvidence(reserved.evidence, consumed_kind, "true") &&
+      HasEvidence(reserved.evidence, "page_allocator_prework_inventory_produced", "true")) {
+    reserved.evidence.push_back({family == DmlPageAllocationRuntimeFamily::index
+                                     ? "index_page_preallocation_inventory_source"
+                                     : "row_page_preallocation_inventory_source",
+                                 "page_allocation_manager"});
   }
   reserved.preallocation_requested = outcome.requested;
   reserved.preallocation_granted = outcome.granted;

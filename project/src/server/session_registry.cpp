@@ -2240,7 +2240,8 @@ ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
     std::uint64_t handle_id,
     std::uint64_t generation,
     const std::string& object_uuid,
-    const std::string& operation_id) {
+    const std::string& operation_id,
+    const std::string& column_set_hash) {
   ServerSessionObjectHandleValidation result;
   if (handle_id == 0 || generation == 0) {
     result.detail = "session_object_handle_missing";
@@ -2280,6 +2281,10 @@ ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
   if (handle.object_uuid != object_uuid ||
       (!operation_id.empty() && handle.operation_id != operation_id)) {
     result.detail = "session_object_handle_shape_mismatch";
+    return result;
+  }
+  if (!column_set_hash.empty() && handle.column_set_hash != column_set_hash) {
+    result.detail = "session_object_handle_column_hash_stale";
     return result;
   }
   if (handle.catalog_generation != session.catalog_generation ||

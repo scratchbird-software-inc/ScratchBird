@@ -19,6 +19,7 @@
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/show_api.hpp"
+#include "security/security_crypto_policy.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include "scratchbird/engine/engine.h"
@@ -1160,6 +1161,154 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
   return encoded;
 }
 
+std::string PreparedAuthorityExpectedDependencyUuid(
+    const ServerPreparedStatementRecord& prepared) {
+  if (!prepared.target_object_uuid.empty()) return prepared.target_object_uuid;
+  return prepared.database_uuid.empty() ? UuidBytesToText(prepared.session_uuid)
+                                        : prepared.database_uuid;
+}
+
+std::string PreparedAuthorityExpectedDependencyKind(
+    const ServerPreparedStatementRecord& prepared) {
+  if (!prepared.target_object_uuid.empty()) {
+    return prepared.target_object_kind.empty() ? std::string("object")
+                                               : prepared.target_object_kind;
+  }
+  return prepared.database_uuid.empty() ? "session" : "database";
+}
+
+std::string PreparedAuthorityExpectedDependencyOperation(
+    const ServerPreparedStatementRecord& prepared) {
+  return prepared.target_operation_id.empty() ? prepared.operation_id
+                                             : prepared.target_operation_id;
+}
+
+std::string PreparedAuthorityExpectedDependencyColumnHash(
+    const ServerPreparedStatementRecord& prepared) {
+  return prepared.target_column_set_hash.empty() ? std::string("columns/all")
+                                                 : prepared.target_column_set_hash;
+}
+
+void AppendPreparedAuthorityProofField(std::ostringstream* out,
+                                       std::string_view key,
+                                       std::string_view value) {
+  if (out == nullptr) return;
+  *out << key << '=' << value << '\n';
+}
+
+void AppendPreparedAuthorityProofField(std::ostringstream* out,
+                                       std::string_view key,
+                                       std::uint64_t value) {
+  if (out == nullptr) return;
+  *out << key << '=' << value << '\n';
+}
+
+std::string PreparedAuthorityProofPayload(const ServerPreparedStatementRecord& prepared,
+                                          const ServerSessionRecord& session) {
+  std::ostringstream out;
+  const auto language = ServerLanguageContextForSession(session);
+  AppendPreparedAuthorityProofField(&out, "version", "server.prepared.authority.v1");
+  AppendPreparedAuthorityProofField(&out,
+                                    "prepared_statement_uuid",
+                                    UuidBytesToText(prepared.prepared_statement_uuid));
+  AppendPreparedAuthorityProofField(&out,
+                                    "client_statement_uuid",
+                                    UuidBytesToText(prepared.client_statement_uuid));
+  AppendPreparedAuthorityProofField(&out,
+                                    "session_uuid",
+                                    UuidBytesToText(session.session_uuid));
+  AppendPreparedAuthorityProofField(&out,
+                                    "auth_context_uuid",
+                                    UuidBytesToText(session.auth_context_uuid));
+  AppendPreparedAuthorityProofField(&out,
+                                    "principal_uuid",
+                                    UuidBytesToText(session.principal_uuid));
+  AppendPreparedAuthorityProofField(&out,
+                                    "effective_user_uuid",
+                                    UuidBytesToText(session.effective_user_uuid));
+  AppendPreparedAuthorityProofField(&out, "database_uuid", session.database_uuid);
+  AppendPreparedAuthorityProofField(&out, "operation_family", prepared.operation_family);
+  AppendPreparedAuthorityProofField(&out, "operation_id", prepared.operation_id);
+  AppendPreparedAuthorityProofField(&out,
+                                    "dependency_uuid",
+                                    prepared.authority_dependency_uuid);
+  AppendPreparedAuthorityProofField(&out,
+                                    "dependency_kind",
+                                    prepared.authority_dependency_kind);
+  AppendPreparedAuthorityProofField(&out,
+                                    "dependency_operation_id",
+                                    prepared.authority_dependency_operation_id);
+  AppendPreparedAuthorityProofField(&out,
+                                    "dependency_column_set_hash",
+                                    prepared.authority_dependency_column_set_hash);
+  AppendPreparedAuthorityProofField(&out,
+                                    "session_object_handle_id",
+                                    prepared.session_object_handle_id);
+  AppendPreparedAuthorityProofField(&out,
+                                    "session_object_handle_generation",
+                                    prepared.session_object_handle_generation);
+  AppendPreparedAuthorityProofField(&out, "catalog_generation", session.catalog_generation);
+  AppendPreparedAuthorityProofField(&out, "security_epoch", session.security_epoch);
+  AppendPreparedAuthorityProofField(&out, "descriptor_epoch", session.descriptor_epoch);
+  AppendPreparedAuthorityProofField(&out, "grant_epoch", session.grant_epoch);
+  AppendPreparedAuthorityProofField(&out, "policy_generation", session.policy_generation);
+  AppendPreparedAuthorityProofField(&out, "role_set_hash", session.role_set_hash);
+  AppendPreparedAuthorityProofField(&out, "group_set_hash", session.group_set_hash);
+  AppendPreparedAuthorityProofField(&out, "search_path_hash", session.search_path_hash);
+  AppendPreparedAuthorityProofField(&out, "language_profile", language.language_profile_id);
+  AppendPreparedAuthorityProofField(&out, "language_tag", language.language_tag);
+  AppendPreparedAuthorityProofField(&out,
+                                    "default_language_tag",
+                                    language.default_language_tag);
+  AppendPreparedAuthorityProofField(&out,
+                                    "input_syntax_profile",
+                                    language.input_syntax_profile);
+  AppendPreparedAuthorityProofField(&out,
+                                    "input_language_fallback_tag",
+                                    language.input_language_fallback_tag);
+  AppendPreparedAuthorityProofField(&out,
+                                    "common_resource_hash",
+                                    language.common_resource_hash);
+  AppendPreparedAuthorityProofField(&out,
+                                    "language_resource_epoch",
+                                    language.language_resource_epoch);
+  AppendPreparedAuthorityProofField(&out,
+                                    "localized_name_epoch",
+                                    language.localized_name_epoch);
+  AppendPreparedAuthorityProofField(&out,
+                                    "message_resource_epoch",
+                                    language.message_resource_epoch);
+  AppendPreparedAuthorityProofField(&out,
+                                    "resource_compatibility_identity",
+                                    language.resource_compatibility_identity);
+  AppendPreparedAuthorityProofField(&out,
+                                    "resource_version_identity",
+                                    language.resource_version_identity);
+  return out.str();
+}
+
+std::string PreparedAuthorityProofHash(const ServerPreparedStatementRecord& prepared,
+                                       const ServerSessionRecord& session) {
+  const std::string digest =
+      engine_api::SecuritySha256Hex(PreparedAuthorityProofPayload(prepared, session));
+  return digest.empty() ? std::string{} : "sha256:" + digest;
+}
+
+void SealPreparedAuthorityProof(ServerPreparedStatementRecord* prepared,
+                                const ServerSessionRecord& session) {
+  if (prepared == nullptr) return;
+  prepared->authority_dependency_uuid =
+      PreparedAuthorityExpectedDependencyUuid(*prepared);
+  prepared->authority_dependency_kind =
+      PreparedAuthorityExpectedDependencyKind(*prepared);
+  prepared->authority_dependency_operation_id =
+      PreparedAuthorityExpectedDependencyOperation(*prepared);
+  prepared->authority_dependency_column_set_hash =
+      PreparedAuthorityExpectedDependencyColumnHash(*prepared);
+  prepared->authority_proof_hash_algorithm = "sha256";
+  prepared->authority_proof_hash = PreparedAuthorityProofHash(*prepared, session);
+}
+
 std::string PreparedStatementAuthorityMismatchReason(
     const ServerSessionRegistry& registry,
     const ServerPreparedStatementRecord& prepared,
@@ -1199,6 +1348,32 @@ std::string PreparedStatementAuthorityMismatchReason(
       prepared.search_path_hash != session.search_path_hash) {
     return "prepared_statement_authorization_context_stale";
   }
+  if (prepared.authority_dependency_uuid.empty() ||
+      prepared.authority_dependency_kind.empty() ||
+      prepared.authority_dependency_operation_id.empty() ||
+      prepared.authority_dependency_column_set_hash.empty() ||
+      prepared.authority_proof_hash.empty()) {
+    return "prepared_statement_authority_proof_missing";
+  }
+  if (prepared.authority_dependency_uuid !=
+          PreparedAuthorityExpectedDependencyUuid(prepared) ||
+      prepared.authority_dependency_kind !=
+          PreparedAuthorityExpectedDependencyKind(prepared) ||
+      prepared.authority_dependency_operation_id !=
+          PreparedAuthorityExpectedDependencyOperation(prepared) ||
+      prepared.authority_dependency_column_set_hash !=
+          PreparedAuthorityExpectedDependencyColumnHash(prepared)) {
+    return "prepared_statement_dependency_stale";
+  }
+  if (prepared.authority_proof_hash_algorithm != "sha256") {
+    return "prepared_statement_authority_proof_stale";
+  }
+  const std::string expected_proof = PreparedAuthorityProofHash(prepared, session);
+  if (expected_proof.empty() ||
+      !engine_api::SecurityConstantTimeEqual(prepared.authority_proof_hash,
+                                             expected_proof)) {
+    return "prepared_statement_authority_hash_stale";
+  }
   if (prepared.session_object_handle_id != 0) {
     const auto validation =
         ValidateSessionObjectHandle(registry,
@@ -1206,7 +1381,8 @@ std::string PreparedStatementAuthorityMismatchReason(
                                     prepared.session_object_handle_id,
                                     prepared.session_object_handle_generation,
                                     prepared.target_object_uuid,
-                                    prepared.target_operation_id);
+                                    prepared.target_operation_id,
+                                    prepared.target_column_set_hash);
     if (!validation.accepted) {
       return validation.detail.empty()
                  ? "prepared_statement_object_handle_stale"
@@ -1237,6 +1413,10 @@ std::string PreparedStatementRefusalDetail(std::string_view mismatch) {
       mismatch == "prepared_statement_grant_epoch_stale" ||
       mismatch == "prepared_statement_policy_epoch_stale" ||
       mismatch == "prepared_statement_authorization_context_stale" ||
+      mismatch == "prepared_statement_authority_proof_missing" ||
+      mismatch == "prepared_statement_authority_proof_stale" ||
+      mismatch == "prepared_statement_authority_hash_stale" ||
+      mismatch == "prepared_statement_dependency_stale" ||
       mismatch == "prepared_statement_language_context_stale" ||
       mismatch.starts_with("prepared_statement_object_handle_")) {
     return "prepared_statement_epoch_stale";
@@ -5401,6 +5581,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                   *session,
                                   prepared.encoded_sblr_envelope,
                                   prepared.operation_id);
+  SealPreparedAuthorityProof(&prepared, *session);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
@@ -5841,6 +6022,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                     *session,
                                     prepared.encoded_sblr_envelope,
                                     prepared.operation_id);
+    SealPreparedAuthorityProof(&prepared, *session);
     registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,

@@ -213,6 +213,16 @@ bool HasNonEmptyEvidenceKind(const std::vector<api::EngineEvidenceReference>& ev
   return false;
 }
 
+platform::u64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& evidence,
+                          std::string_view kind) {
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind) {
+      return static_cast<platform::u64>(std::stoull(item.evidence_id));
+    }
+  }
+  return 0;
+}
+
 std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evidence,
                           std::string_view kind) {
   std::size_t count = 0;
@@ -321,12 +331,37 @@ void TestInsertAndUpdateRuntimeAllocationSuccess() {
                       "row_page_allocation_source",
                       "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
           "PFAR-012 insert row allocation did not hit preallocated pool");
+  Require(HasEvidence(inserted.evidence, "row_page_preallocated_inventory_consumed", "true"),
+          "PFAR-012 insert row preallocated inventory was not consumed");
+  Require(HasEvidence(inserted.evidence, "row_page_preallocation_inventory_authority",
+                      "storage_page_allocation_lifecycle"),
+          "PFAR-012 insert row inventory authority proof missing");
   Require(HasNonEmptyEvidenceKind(inserted.evidence, "index_page_allocation"),
           "PFAR-012 insert index allocation UUID was missing");
   Require(HasEvidence(inserted.evidence,
                       "index_page_allocation_source",
                       "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
           "PFAR-012 insert index allocation did not hit preallocated pool");
+  Require(HasEvidence(inserted.evidence, "index_page_preallocated_inventory_consumed", "true"),
+          "PFAR-012 insert index preallocated inventory was not consumed");
+  Require(HasEvidence(inserted.evidence, "page_allocation_agent_finality_authority", "false"),
+          "PFAR-012 insert incorrectly made page agent finality-authoritative");
+  Require(EvidenceU64(inserted.evidence, "insert_hot_append_scoped_row_write_batches") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_row_write_tickets_issued") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_row_write_tickets_completed") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_row_write_worker_count") >= 1,
+          "PFAR-012 insert row scoped write tickets did not complete");
+  Require(EvidenceU64(inserted.evidence, "insert_hot_append_scoped_index_write_batches") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_index_write_tickets_issued") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_index_write_tickets_completed") == 1 &&
+              EvidenceU64(inserted.evidence,
+                          "insert_hot_append_scoped_index_write_worker_count") >= 1,
+          "PFAR-012 insert index scoped write tickets did not complete");
   Require(EvidenceIndex(inserted.evidence, "index_page_allocation_source",
                         "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT") <
               EvidenceIndex(inserted.evidence, "mga_index_store", "row_insert"),
@@ -346,11 +381,14 @@ void TestInsertAndUpdateRuntimeAllocationSuccess() {
                       "row_page_allocation_source",
                       "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
           "PFAR-012 update row allocation missing");
+  Require(HasEvidence(updated.evidence, "row_page_preallocated_inventory_consumed", "true"),
+          "PFAR-012 update row preallocated inventory was not consumed");
   Require(HasEvidence(updated.evidence,
                       "index_page_allocation_source",
                       "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
           "PFAR-012 update index allocation missing");
-
+  Require(HasEvidence(updated.evidence, "index_page_preallocated_inventory_consumed", "true"),
+          "PFAR-012 update index preallocated inventory was not consumed");
   state = LoadedState(fixture.context);
   Require(state.row_versions.size() == 2, "PFAR-012 updated row version missing");
   Require(state.index_entries.size() == 2, "PFAR-012 updated index entry missing");

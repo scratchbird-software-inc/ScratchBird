@@ -292,14 +292,37 @@ void RequireIndexPreallocationEvidence(
   Require(HasEvidence(evidence, "page_agent_demand_decision",
                       "preallocation_completed"),
           "IPAR-P4-02 page agent did not preallocate");
+  Require(HasEvidence(evidence, "page_allocator_worker_capacity_assignment",
+                      "page_allocation_manager:slot=1"),
+          "IPAR-P4-02 page worker slot proof missing");
+  Require(HasEvidence(evidence, "filespace_capacity_worker_capacity_assignment",
+                      "filespace_capacity_manager:slot=2"),
+          "IPAR-P4-02 filespace worker slot proof missing");
+  Require(HasEvidence(evidence, "page_allocator_preallocation_evaluation_mode",
+                      "bounded_agent_prework_tick"),
+          "IPAR-P4-02 page preallocation did not use bounded agent prework tick");
+  Require(HasEvidence(evidence, "page_allocator_prework_inventory_produced", "true"),
+          "IPAR-P4-02 page agent did not produce preallocation inventory");
+  Require(HasEvidence(evidence, "page_allocator_inline_degraded_path_count", "0"),
+          "IPAR-P4-02 unexpectedly used degraded page-agent path");
   Require(HasEvidence(evidence, "index_page_allocation_source",
                       "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
           "IPAR-P4-02 index allocation did not hit preallocated pool");
+  Require(HasEvidence(evidence, "index_page_preallocated_inventory_consumed", "true"),
+          "IPAR-P4-02 index preallocated inventory was not consumed");
+  Require(HasEvidence(evidence, "index_page_preallocation_inventory_source",
+                      "page_allocation_manager"),
+          "IPAR-P4-02 index inventory did not come from page agent prework");
   Require(HasEvidence(evidence, "index_page_preallocation_claim",
                       "physical_preallocated_pages"),
           "IPAR-P4-02 index pages were not physically preallocated");
   Require(EvidenceU64(evidence, "index_page_preallocation_granted_pages") > 0,
           "IPAR-P4-02 index granted page count missing");
+  Require(EvidenceU64(evidence, "page_filespace_agent_queue_depth_after_capacity_enqueue") > 0,
+          "IPAR-P4-02 bounded queue enqueue accounting missing");
+  Require(HasEvidence(evidence, "page_allocation_mga_finality_authority",
+                      "durable_transaction_inventory"),
+          "IPAR-P4-02 lost MGA finality authority proof");
   Require(!family.label.empty(), "IPAR-P4-02 family label missing");
 }
 

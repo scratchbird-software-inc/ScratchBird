@@ -39,6 +39,7 @@ struct ServerAgentRuntimeWorkerSnapshot {
   std::string role;
   std::string agent_type_id;
   std::string instance_uuid;
+  std::string native_thread_id;
   std::uint64_t ticks = 0;
   std::uint64_t actions_accepted = 0;
   std::uint64_t actions_refused = 0;

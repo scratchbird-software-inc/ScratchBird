@@ -211,6 +211,12 @@ struct ServerPreparedStatementRecord {
   std::string target_object_kind;
   std::string target_operation_id;
   std::string target_column_set_hash;
+  std::string authority_dependency_uuid;
+  std::string authority_dependency_kind;
+  std::string authority_dependency_operation_id;
+  std::string authority_dependency_column_set_hash;
+  std::string authority_proof_hash_algorithm = "sha256";
+  std::string authority_proof_hash;
   bool closed = false;
 };
 
@@ -593,7 +599,8 @@ ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
     std::uint64_t handle_id,
     std::uint64_t generation,
     const std::string& object_uuid,
-    const std::string& operation_id);
+    const std::string& operation_id,
+    const std::string& column_set_hash = {});
 void CloseSessionObjectHandlesForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,

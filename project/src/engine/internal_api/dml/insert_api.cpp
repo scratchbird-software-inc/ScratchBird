@@ -1981,6 +1981,14 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   EngineApiU64 adaptive_write_window_stream_flushes = 0;
   EngineApiU64 adaptive_write_window_scoped_stream_opens = 0;
   EngineApiU64 adaptive_write_window_scoped_stream_flushes = 0;
+  EngineApiU64 adaptive_write_window_scoped_row_write_batches = 0;
+  EngineApiU64 adaptive_write_window_scoped_row_write_tickets_issued = 0;
+  EngineApiU64 adaptive_write_window_scoped_row_write_tickets_completed = 0;
+  EngineApiU64 adaptive_write_window_scoped_row_write_worker_count = 0;
+  EngineApiU64 adaptive_write_window_scoped_index_write_batches = 0;
+  EngineApiU64 adaptive_write_window_scoped_index_write_tickets_issued = 0;
+  EngineApiU64 adaptive_write_window_scoped_index_write_tickets_completed = 0;
+  EngineApiU64 adaptive_write_window_scoped_index_write_worker_count = 0;
   EngineApiU64 adaptive_write_window_allocator_stream_opens = 0;
   EngineApiU64 adaptive_write_window_allocator_stream_flushes = 0;
   EngineApiU64 adaptive_write_window_allocator_records = 0;
@@ -2707,6 +2715,24 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       adaptive_write_window_scoped_stream_flushes +=
           hot_counters.scoped_row_stream_flushes +
           hot_counters.scoped_index_stream_flushes;
+      adaptive_write_window_scoped_row_write_batches +=
+          hot_counters.scoped_row_write_batches;
+      adaptive_write_window_scoped_row_write_tickets_issued +=
+          hot_counters.scoped_row_write_tickets_issued;
+      adaptive_write_window_scoped_row_write_tickets_completed +=
+          hot_counters.scoped_row_write_tickets_completed;
+      adaptive_write_window_scoped_row_write_worker_count =
+          std::max(adaptive_write_window_scoped_row_write_worker_count,
+                   hot_counters.scoped_row_write_worker_count);
+      adaptive_write_window_scoped_index_write_batches +=
+          hot_counters.scoped_index_write_batches;
+      adaptive_write_window_scoped_index_write_tickets_issued +=
+          hot_counters.scoped_index_write_tickets_issued;
+      adaptive_write_window_scoped_index_write_tickets_completed +=
+          hot_counters.scoped_index_write_tickets_completed;
+      adaptive_write_window_scoped_index_write_worker_count =
+          std::max(adaptive_write_window_scoped_index_write_worker_count,
+                   hot_counters.scoped_index_write_worker_count);
       adaptive_write_window_allocator_stream_opens +=
           hot_counters.allocator_stream_opens;
       adaptive_write_window_allocator_stream_flushes +=
@@ -2767,6 +2793,22 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                std::to_string(adaptive_write_window_scoped_stream_opens)});
     result.evidence.push_back({"insert_hot_append_scoped_stream_flushes",
                                std::to_string(adaptive_write_window_scoped_stream_flushes)});
+    result.evidence.push_back({"insert_hot_append_scoped_row_write_batches",
+                               std::to_string(adaptive_write_window_scoped_row_write_batches)});
+    result.evidence.push_back({"insert_hot_append_scoped_row_write_tickets_issued",
+                               std::to_string(adaptive_write_window_scoped_row_write_tickets_issued)});
+    result.evidence.push_back({"insert_hot_append_scoped_row_write_tickets_completed",
+                               std::to_string(adaptive_write_window_scoped_row_write_tickets_completed)});
+    result.evidence.push_back({"insert_hot_append_scoped_row_write_worker_count",
+                               std::to_string(adaptive_write_window_scoped_row_write_worker_count)});
+    result.evidence.push_back({"insert_hot_append_scoped_index_write_batches",
+                               std::to_string(adaptive_write_window_scoped_index_write_batches)});
+    result.evidence.push_back({"insert_hot_append_scoped_index_write_tickets_issued",
+                               std::to_string(adaptive_write_window_scoped_index_write_tickets_issued)});
+    result.evidence.push_back({"insert_hot_append_scoped_index_write_tickets_completed",
+                               std::to_string(adaptive_write_window_scoped_index_write_tickets_completed)});
+    result.evidence.push_back({"insert_hot_append_scoped_index_write_worker_count",
+                               std::to_string(adaptive_write_window_scoped_index_write_worker_count)});
     result.evidence.push_back({"insert_hot_append_allocator_stream_opens",
                                std::to_string(adaptive_write_window_allocator_stream_opens)});
     result.evidence.push_back({"insert_hot_append_allocator_stream_flushes",
