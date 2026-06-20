@@ -707,6 +707,27 @@ set_tests_properties(public_backup_update_coverage_gate PROPERTIES
   LABELS "public_release_correctness;public_backup_update_coverage_gate;PCR-GATE-075;PCR-087;backup;archive;restore;write_after;coverage_reuse;idempotency;pitr;mga;cluster_boundary;non_authority"
 )
 
+add_executable(public_ipar_p5_10_backup_restore_archive_snapshot_gate
+  public_ipar_p5_10_backup_restore_archive_snapshot_gate.cpp
+)
+target_compile_features(public_ipar_p5_10_backup_restore_archive_snapshot_gate PRIVATE cxx_std_23)
+target_link_libraries(public_ipar_p5_10_backup_restore_archive_snapshot_gate PRIVATE
+  sb_engine_internal_api
+  sb_storage_database
+  sb_storage_filespace
+  sb_transaction_mga
+  sb_core_memory
+  sb_core_uuid
+)
+add_test(
+  NAME public_ipar_p5_10_backup_restore_archive_snapshot_gate
+  COMMAND public_ipar_p5_10_backup_restore_archive_snapshot_gate
+          ${CMAKE_CURRENT_BINARY_DIR}/public_ipar_p5_10_backup_restore_archive_snapshot_gate_tmp
+)
+set_tests_properties(public_ipar_p5_10_backup_restore_archive_snapshot_gate PROPERTIES
+  LABELS "public_release_correctness;public_ipar_p5_10_backup_restore_archive_snapshot_gate;IPAR-P5-10;backup;archive;restore;snapshot_coordination;mga_transaction_regression"
+)
+
 add_executable(public_authorization_durable_flow_gate
   public_authorization_durable_flow_gate.cpp
 )

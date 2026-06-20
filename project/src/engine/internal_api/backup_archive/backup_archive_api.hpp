@@ -234,6 +234,61 @@ EngineEvaluateHistoryDisposalMultiHorizonResult
 EngineEvaluateHistoryDisposalMultiHorizon(
     const EngineEvaluateHistoryDisposalMultiHorizonRequest& request);
 
+// SEARCH_KEY: SB_ENGINE_INTERNAL_API_IPAR_P5_10_SNAPSHOT_COORDINATION
+enum class BackupSnapshotMutationKind {
+  none,
+  dml_write,
+  ddl_metadata_change
+};
+
+struct EngineCoordinateBackupRestoreArchiveSnapshotRequest : EngineApiRequest {
+  EngineUuid backup_uuid;
+  EngineUuid snapshot_uuid;
+  EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
+  EngineApiU64 mutation_local_transaction_id = 0;
+  BackupSnapshotMutationKind mutation_kind = BackupSnapshotMutationKind::none;
+  bool online_backup_active = false;
+  bool snapshot_hold_acquired = false;
+  bool filespace_hold_acquired = false;
+  bool shutdown_blocker_registered = false;
+  bool drop_blocker_registered = false;
+  bool backup_manifest_reachable = false;
+  bool archive_reclaim_requested = false;
+  bool archive_before_reclaim_verified = false;
+  bool restore_coordination_requested = false;
+  bool restore_inspection_open = false;
+  bool recovery_classification_verified = false;
+  bool engine_mga_authoritative = false;
+};
+
+struct EngineCoordinateBackupRestoreArchiveSnapshotResult : EngineApiResult {
+  EngineUuid coordination_uuid;
+  EngineUuid backup_uuid;
+  EngineUuid snapshot_uuid;
+  EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
+  EngineApiU64 mutation_local_transaction_id = 0;
+  BackupSnapshotMutationKind mutation_kind = BackupSnapshotMutationKind::none;
+  bool admitted = false;
+  bool fail_closed = true;
+  bool mutation_performed = false;
+  bool online_backup_blockers_verified = false;
+  bool archive_before_reclaim_required = false;
+  bool archive_before_reclaim_verified = false;
+  bool restore_recovery_classification_verified = false;
+  bool mutation_visible_in_snapshot = false;
+  bool backup_forward_coverage_required = false;
+  bool ddl_blocked_until_snapshot_close = false;
+  bool transaction_finality_authority = false;
+  bool write_after_recovery_authority = false;
+  bool cluster_recovery_authority = false;
+};
+
+const char* BackupSnapshotMutationKindName(
+    BackupSnapshotMutationKind mutation_kind);
+EngineCoordinateBackupRestoreArchiveSnapshotResult
+EngineCoordinateBackupRestoreArchiveSnapshot(
+    const EngineCoordinateBackupRestoreArchiveSnapshotRequest& request);
+
 // SEARCH_KEY: CLUSTER_CATALOG_BACKUP_RESTORE
 enum class ClusterCatalogTransferOperation {
   backup,

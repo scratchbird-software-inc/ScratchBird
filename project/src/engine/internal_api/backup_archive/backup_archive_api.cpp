@@ -1941,6 +1941,256 @@ const char* ClusterCatalogTransferOperationName(
   return "unknown";
 }
 
+const char* BackupSnapshotMutationKindName(
+    BackupSnapshotMutationKind mutation_kind) {
+  switch (mutation_kind) {
+    case BackupSnapshotMutationKind::none:
+      return "none";
+    case BackupSnapshotMutationKind::dml_write:
+      return "dml_write";
+    case BackupSnapshotMutationKind::ddl_metadata_change:
+      return "ddl_metadata_change";
+  }
+  return "unknown";
+}
+
+EngineCoordinateBackupRestoreArchiveSnapshotResult
+EngineCoordinateBackupRestoreArchiveSnapshot(
+    const EngineCoordinateBackupRestoreArchiveSnapshotRequest& request) {
+  constexpr const char* kOperation =
+      "backup_archive.coordinate_backup_restore_archive_snapshot";
+
+  auto populate_common =
+      [&](EngineCoordinateBackupRestoreArchiveSnapshotResult* result) {
+        result->backup_uuid = request.backup_uuid;
+        result->snapshot_uuid = request.snapshot_uuid;
+        result->snapshot_visible_through_local_transaction_id =
+            request.snapshot_visible_through_local_transaction_id;
+        result->mutation_local_transaction_id =
+            request.mutation_local_transaction_id;
+        result->mutation_kind = request.mutation_kind;
+        result->fail_closed = true;
+        result->mutation_performed = false;
+        result->online_backup_blockers_verified =
+            request.online_backup_active &&
+            request.snapshot_hold_acquired &&
+            request.filespace_hold_acquired &&
+            request.shutdown_blocker_registered &&
+            request.drop_blocker_registered &&
+            request.backup_manifest_reachable;
+        result->archive_before_reclaim_required =
+            request.archive_reclaim_requested;
+        result->archive_before_reclaim_verified =
+            request.archive_before_reclaim_verified;
+        result->restore_recovery_classification_verified =
+            request.restore_coordination_requested &&
+            request.restore_inspection_open &&
+            request.recovery_classification_verified;
+        result->transaction_finality_authority = false;
+        result->write_after_recovery_authority = false;
+        result->cluster_recovery_authority = false;
+      };
+
+  auto add_common_evidence =
+      [&](EngineCoordinateBackupRestoreArchiveSnapshotResult* result) {
+        AddApiBehaviorEvidence(result,
+                               "ipar_p5_10_snapshot_coordination",
+                               result->coordination_uuid.canonical);
+        AddApiBehaviorEvidence(result,
+                               "online_backup_blockers_verified",
+                               result->online_backup_blockers_verified
+                                   ? "true"
+                                   : "false");
+        AddApiBehaviorEvidence(result,
+                               "archive_before_reclaim_required",
+                               result->archive_before_reclaim_required
+                                   ? "true"
+                                   : "false");
+        AddApiBehaviorEvidence(result,
+                               "archive_before_reclaim_verified",
+                               result->archive_before_reclaim_verified
+                                   ? "true"
+                                   : "false");
+        AddApiBehaviorEvidence(
+            result,
+            "restore_recovery_classification_verified",
+            result->restore_recovery_classification_verified ? "true" : "false");
+        AddApiBehaviorEvidence(result,
+                               "mutation_kind",
+                               BackupSnapshotMutationKindName(
+                                   request.mutation_kind));
+        AddApiBehaviorEvidence(
+            result,
+            "mutation_visible_in_snapshot",
+            result->mutation_visible_in_snapshot ? "true" : "false");
+        AddApiBehaviorEvidence(
+            result,
+            "backup_forward_coverage_required",
+            result->backup_forward_coverage_required ? "true" : "false");
+        AddApiBehaviorEvidence(
+            result,
+            "ddl_blocked_until_snapshot_close",
+            result->ddl_blocked_until_snapshot_close ? "true" : "false");
+        AddApiBehaviorEvidence(result, "mutation_performed", "false");
+        AddApiBehaviorEvidence(result,
+                               "finality_source",
+                               "local_mga_transaction_inventory");
+        AddApiBehaviorEvidence(result,
+                               "transaction_finality_authority",
+                               "false");
+        AddApiBehaviorEvidence(result,
+                               "write_after_recovery_authority",
+                               "false");
+        AddApiBehaviorEvidence(result, "cluster_recovery_authority", "false");
+        AddApiBehaviorEvidence(result, "authoritative_wal", "false");
+        AddApiBehaviorRow(
+            result,
+            {{"coordination_uuid", result->coordination_uuid.canonical},
+             {"backup_uuid", request.backup_uuid.canonical},
+             {"snapshot_uuid", request.snapshot_uuid.canonical},
+             {"snapshot_visible_through_local_transaction_id",
+              std::to_string(
+                  request.snapshot_visible_through_local_transaction_id)},
+             {"mutation_local_transaction_id",
+              std::to_string(request.mutation_local_transaction_id)},
+             {"mutation_kind",
+              BackupSnapshotMutationKindName(request.mutation_kind)},
+             {"online_backup_blockers_verified",
+              result->online_backup_blockers_verified ? "true" : "false"},
+             {"archive_before_reclaim_verified",
+              result->archive_before_reclaim_verified ? "true" : "false"},
+             {"restore_recovery_classification_verified",
+              result->restore_recovery_classification_verified ? "true"
+                                                               : "false"},
+             {"mutation_visible_in_snapshot",
+              result->mutation_visible_in_snapshot ? "true" : "false"},
+             {"backup_forward_coverage_required",
+              result->backup_forward_coverage_required ? "true" : "false"},
+             {"ddl_blocked_until_snapshot_close",
+              result->ddl_blocked_until_snapshot_close ? "true" : "false"},
+             {"admitted", result->admitted ? "true" : "false"},
+             {"fail_closed", result->fail_closed ? "true" : "false"},
+             {"mutation_performed", "false"},
+             {"finality_source", "local_mga_transaction_inventory"},
+             {"transaction_finality_authority", "false"},
+             {"write_after_recovery_authority", "false"},
+             {"cluster_recovery_authority", "false"},
+             {"authoritative_wal", "false"}});
+      };
+
+  auto fail =
+      [&](EngineApiDiagnostic diagnostic)
+          -> EngineCoordinateBackupRestoreArchiveSnapshotResult {
+    auto result =
+        MakeApiBehaviorDiagnostic<
+            EngineCoordinateBackupRestoreArchiveSnapshotResult>(
+            request.context, kOperation, std::move(diagnostic));
+    populate_common(&result);
+    result.coordination_uuid.canonical =
+        GenerateCrudEngineUuid("backup_snapshot_coordination_refusal");
+    add_common_evidence(&result);
+    return result;
+  };
+
+  if (!request.context.security_context_present) {
+    return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
+  }
+  if (request.context.database_uuid.canonical.empty() ||
+      request.context.database_path.empty()) {
+    return fail(BackupInvalid(kOperation,
+                              "BACKUP_SNAPSHOT_DATABASE_CONTEXT_REQUIRED"));
+  }
+  if (OptionValue(request, "scope:") == "cluster" ||
+      OptionBool(request, "cluster_recovery_authority:", false)) {
+    auto result = fail(BackupInvalid(
+        kOperation,
+        "BACKUP_SNAPSHOT_CLUSTER_PROVIDER_REQUIRED"));
+    result.cluster_authority_required = true;
+    return result;
+  }
+  if (OptionBool(request, "authoritative_wal:", false)) {
+    return fail(BackupInvalid(
+        kOperation,
+        "BACKUP_SNAPSHOT_AUTHORITATIVE_WAL_FORBIDDEN"));
+  }
+  if (!request.engine_mga_authoritative) {
+    return fail(BackupInvalid(kOperation,
+                              "BACKUP_SNAPSHOT_MGA_AUTHORITY_REQUIRED"));
+  }
+  if (request.online_backup_active) {
+    if (request.backup_uuid.canonical.empty() ||
+        request.snapshot_uuid.canonical.empty() ||
+        request.snapshot_visible_through_local_transaction_id == 0) {
+      return fail(BackupInvalid(kOperation,
+                                "BACKUP_SNAPSHOT_IDENTITY_REQUIRED"));
+    }
+    if (!request.snapshot_hold_acquired ||
+        !request.filespace_hold_acquired ||
+        !request.shutdown_blocker_registered ||
+        !request.drop_blocker_registered ||
+        !request.backup_manifest_reachable) {
+      return fail(BackupInvalid(
+          kOperation,
+          "BACKUP_SNAPSHOT_BLOCKER_PROOF_REQUIRED"));
+    }
+  }
+  if (request.archive_reclaim_requested &&
+      !request.archive_before_reclaim_verified) {
+    return fail(BackupInvalid(
+        kOperation,
+        "BACKUP_SNAPSHOT_ARCHIVE_BEFORE_RECLAIM_REQUIRED"));
+  }
+  if (request.restore_coordination_requested) {
+    if (!request.restore_inspection_open) {
+      return fail(BackupInvalid(kOperation,
+                                "RESTORE_INSPECTION_OPEN_REQUIRED"));
+    }
+    if (!request.recovery_classification_verified) {
+      return fail(BackupInvalid(
+          kOperation,
+          "RESTORE_RECOVERY_CLASSIFICATION_REQUIRED"));
+    }
+  }
+  if (request.mutation_kind != BackupSnapshotMutationKind::none &&
+      request.mutation_local_transaction_id == 0) {
+    return fail(BackupInvalid(kOperation,
+                              "BACKUP_SNAPSHOT_MUTATION_TX_REQUIRED"));
+  }
+
+  auto result =
+      MakeApiBehaviorSuccess<
+          EngineCoordinateBackupRestoreArchiveSnapshotResult>(
+          request.context, kOperation);
+  populate_common(&result);
+  result.coordination_uuid.canonical =
+      GenerateCrudEngineUuid("backup_snapshot_coordination");
+  result.admitted = true;
+  result.fail_closed = false;
+
+  if (request.online_backup_active &&
+      request.mutation_kind != BackupSnapshotMutationKind::none) {
+    result.mutation_visible_in_snapshot =
+        request.mutation_local_transaction_id <=
+        request.snapshot_visible_through_local_transaction_id;
+    result.backup_forward_coverage_required =
+        !result.mutation_visible_in_snapshot;
+    if (request.mutation_kind ==
+            BackupSnapshotMutationKind::ddl_metadata_change &&
+        !result.mutation_visible_in_snapshot) {
+      result.admitted = false;
+      result.fail_closed = true;
+      result.ddl_blocked_until_snapshot_close = true;
+      result.ok = false;
+      result.diagnostics.push_back(BackupInvalid(
+          kOperation,
+          "BACKUP_SNAPSHOT_DDL_AFTER_SNAPSHOT_BLOCKED"));
+    }
+  }
+
+  add_common_evidence(&result);
+  return result;
+}
+
 const char* ClusterCatalogIdentityDispositionName(
     ClusterCatalogIdentityDisposition disposition) {
   switch (disposition) {

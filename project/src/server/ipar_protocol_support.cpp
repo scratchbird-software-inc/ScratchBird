@@ -136,6 +136,215 @@ std::string DependencyPayload(std::vector<IparUuidDependency> dependencies) {
   return out.str();
 }
 
+std::string ParameterNullabilityClassText(IparParameterNullabilityClass value) {
+  switch (value) {
+    case IparParameterNullabilityClass::kAllNonNull:
+      return "all_non_null";
+    case IparParameterNullabilityClass::kNullableSparse:
+      return "nullable_sparse";
+    case IparParameterNullabilityClass::kNullableDense:
+      return "nullable_dense";
+    case IparParameterNullabilityClass::kAllNull:
+      return "all_null";
+    case IparParameterNullabilityClass::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+std::string ParameterWidthClassText(IparParameterWidthClass value) {
+  switch (value) {
+    case IparParameterWidthClass::kNarrow:
+      return "narrow";
+    case IparParameterWidthClass::kMedium:
+      return "medium";
+    case IparParameterWidthClass::kWide:
+      return "wide";
+    case IparParameterWidthClass::kMixed:
+      return "mixed";
+    case IparParameterWidthClass::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+std::string ParameterLargeValueClassText(IparParameterLargeValueClass value) {
+  switch (value) {
+    case IparParameterLargeValueClass::kInlineOnly:
+      return "inline_only";
+    case IparParameterLargeValueClass::kLargeValueRefs:
+      return "large_value_refs";
+    case IparParameterLargeValueClass::kMixedInlineAndLarge:
+      return "mixed_inline_and_large";
+    case IparParameterLargeValueClass::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+std::string ParameterKeyDistributionClassText(
+    IparParameterKeyDistributionClass value) {
+  switch (value) {
+    case IparParameterKeyDistributionClass::kPointStable:
+      return "point_stable";
+    case IparParameterKeyDistributionClass::kHotKeySkew:
+      return "hot_key_skew";
+    case IparParameterKeyDistributionClass::kRangeClustered:
+      return "range_clustered";
+    case IparParameterKeyDistributionClass::kHashDistributed:
+      return "hash_distributed";
+    case IparParameterKeyDistributionClass::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+std::string ParameterBatchSizeClassText(IparParameterBatchSizeClass value) {
+  switch (value) {
+    case IparParameterBatchSizeClass::kSingleRow:
+      return "single_row";
+    case IparParameterBatchSizeClass::kSmallBatch:
+      return "small_batch";
+    case IparParameterBatchSizeClass::kMediumBatch:
+      return "medium_batch";
+    case IparParameterBatchSizeClass::kLargeBatch:
+      return "large_batch";
+    case IparParameterBatchSizeClass::kBulkBatch:
+      return "bulk_batch";
+    case IparParameterBatchSizeClass::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+bool ProfileComplete(const IparPreparedParameterSpecializationProfile& profile) {
+  return profile.nullability_class != IparParameterNullabilityClass::kUnknown &&
+         profile.width_class != IparParameterWidthClass::kUnknown &&
+         profile.large_value_class != IparParameterLargeValueClass::kUnknown &&
+         profile.key_distribution_class !=
+             IparParameterKeyDistributionClass::kUnknown &&
+         profile.batch_size_class != IparParameterBatchSizeClass::kUnknown;
+}
+
+bool ProfileMatches(const IparPreparedParameterSpecializationProfile& lhs,
+                    const IparPreparedParameterSpecializationProfile& rhs) {
+  return lhs.nullability_class == rhs.nullability_class &&
+         lhs.width_class == rhs.width_class &&
+         lhs.large_value_class == rhs.large_value_class &&
+         lhs.key_distribution_class == rhs.key_distribution_class &&
+         lhs.batch_size_class == rhs.batch_size_class;
+}
+
+std::string ProfilePayload(
+    const IparPreparedParameterSpecializationProfile& profile) {
+  std::ostringstream out;
+  AppendField(&out, "nullability_class",
+              ParameterNullabilityClassText(profile.nullability_class));
+  AppendField(&out, "width_class",
+              ParameterWidthClassText(profile.width_class));
+  AppendField(&out, "large_value_class",
+              ParameterLargeValueClassText(profile.large_value_class));
+  AppendField(&out, "key_distribution_class",
+              ParameterKeyDistributionClassText(
+                  profile.key_distribution_class));
+  AppendField(&out, "batch_size_class",
+              ParameterBatchSizeClassText(profile.batch_size_class));
+  AppendField(&out, "observed_batch_rows", profile.observed_batch_rows);
+  return out.str();
+}
+
+std::string StatementSemanticsHash(std::string_view operation_id,
+                                   std::string_view operation_family,
+                                   std::string_view envelope_digest,
+                                   std::string_view dependency_digest,
+                                   std::string_view result_descriptor_hash) {
+  std::ostringstream out;
+  AppendField(&out, "operation_id", operation_id);
+  AppendField(&out, "operation_family", operation_family);
+  AppendField(&out, "canonical_sblr_digest", envelope_digest);
+  AppendField(&out, "dependency_digest", dependency_digest);
+  AppendField(&out, "result_descriptor_hash", result_descriptor_hash);
+  return "ipar.statement_semantics:" + Digest(out.str());
+}
+
+std::string AuthorizationContextHash(const IparSupportSessionScope& scope) {
+  return "ipar.authorization_context:" + Digest(ScopeDigestPayload(scope));
+}
+
+std::string AuthorityFlagForbiddenDetail(const IparCacheAuthorityFlags& flags) {
+  if (flags.client_or_parser_authorization_authority) {
+    return "ipar_cache_authorization_authority_forbidden";
+  }
+  if (flags.transaction_finality_authority) {
+    return "ipar_cache_finality_authority_forbidden";
+  }
+  if (flags.visibility_authority) {
+    return "ipar_cache_visibility_authority_forbidden";
+  }
+  if (flags.grants_authority) {
+    return "ipar_cache_grant_forbidden";
+  }
+  return {};
+}
+
+IparCacheStatus ValidateSpecializedVariants(
+    const std::vector<IparPreparedSpecializedVariant>& variants,
+    std::string_view statement_semantics_hash,
+    std::string_view authorization_context_hash) {
+  IparCacheStatus status;
+  for (const auto& variant : variants) {
+    if (variant.variant_id.empty() || variant.fast_path_label.empty() ||
+        !ProfileComplete(variant.profile)) {
+      status.stale = true;
+      status.detail = "ipar_template_variant_shape_required";
+      return status;
+    }
+    if (variant.changes_statement_semantics ||
+        variant.statement_semantics_hash != statement_semantics_hash) {
+      status.authority_forbidden = true;
+      status.detail = "ipar_template_variant_semantics_change_forbidden";
+      return status;
+    }
+    if (variant.skips_authorization_recheck ||
+        variant.authorization_context_hash != authorization_context_hash) {
+      status.authority_forbidden = true;
+      status.detail = "ipar_template_variant_authorization_change_forbidden";
+      return status;
+    }
+    if (variant.parser_or_driver_executes_sql) {
+      status.authority_forbidden = true;
+      status.detail = "ipar_template_variant_sql_execution_forbidden";
+      return status;
+    }
+    const std::string flag_detail =
+        AuthorityFlagForbiddenDetail(variant.authority_flags);
+    if (!flag_detail.empty()) {
+      status.authority_forbidden = true;
+      status.detail = flag_detail;
+      return status;
+    }
+  }
+  status.accepted = true;
+  status.detail = "ipar_template_variants_advisory";
+  return status;
+}
+
+const IparPreparedSpecializedVariant* SelectSpecializedVariant(
+    const std::vector<IparPreparedSpecializedVariant>& variants,
+    const IparPreparedParameterSpecializationProfile& observed_profile,
+    std::string_view statement_semantics_hash,
+    std::string_view authorization_context_hash) {
+  if (!ProfileComplete(observed_profile)) return nullptr;
+  for (const auto& variant : variants) {
+    if (ProfileMatches(variant.profile, observed_profile) &&
+        variant.statement_semantics_hash == statement_semantics_hash &&
+        variant.authorization_context_hash == authorization_context_hash) {
+      return &variant;
+    }
+  }
+  return nullptr;
+}
+
 bool DependenciesValid(const std::vector<IparUuidDependency>& dependencies,
                        const IparSupportSessionScope& scope,
                        std::string* detail) {
@@ -436,6 +645,43 @@ IparCacheStatus IparServerProtocolSupport::StorePreparedTemplate(
 
   const std::string envelope_digest = Digest(request.canonical_sblr_envelope);
   const std::string dependency_digest = Digest(DependencyPayload(request.dependencies));
+  const std::string derived_statement_semantics_hash =
+      StatementSemanticsHash(request.operation_id,
+                             request.operation_family,
+                             envelope_digest,
+                             dependency_digest,
+                             request.result_descriptor_hash);
+  if (!request.statement_semantics_hash.empty() &&
+      request.statement_semantics_hash != derived_statement_semantics_hash) {
+    status = {};
+    status.authority_forbidden = true;
+    status.detail = "ipar_template_semantics_hash_mismatch";
+    ++metrics_.authority_rejections;
+    return status;
+  }
+  const std::string derived_authorization_context_hash =
+      AuthorizationContextHash(request.scope);
+  if (!request.authorization_context_hash.empty() &&
+      request.authorization_context_hash != derived_authorization_context_hash) {
+    status = {};
+    status.authority_forbidden = true;
+    status.detail = "ipar_template_authorization_hash_mismatch";
+    ++metrics_.authority_rejections;
+    return status;
+  }
+  const std::string statement_semantics_hash = derived_statement_semantics_hash;
+  const std::string authorization_context_hash = derived_authorization_context_hash;
+  status = ValidateSpecializedVariants(request.specialized_variants,
+                                       statement_semantics_hash,
+                                       authorization_context_hash);
+  if (!status.accepted) {
+    if (status.authority_forbidden) {
+      ++metrics_.authority_rejections;
+    } else {
+      ++metrics_.stale_rejections;
+    }
+    return status;
+  }
   const std::string cache_key =
       PreparedTemplateKey(request, envelope_digest, dependency_digest);
 
@@ -448,7 +694,10 @@ IparCacheStatus IparServerProtocolSupport::StorePreparedTemplate(
   record.canonical_sblr_digest = envelope_digest;
   record.dependency_digest = dependency_digest;
   record.result_descriptor_hash = request.result_descriptor_hash;
+  record.statement_semantics_hash = statement_semantics_hash;
+  record.authorization_context_hash = authorization_context_hash;
   record.dependencies = std::move(request.dependencies);
+  record.specialized_variants = std::move(request.specialized_variants);
   record.authority_flags = {};
 
   status.accepted = true;
@@ -461,6 +710,34 @@ IparCacheStatus IparServerProtocolSupport::LookupPreparedTemplate(
     const IparPreparedTemplateLookup& request) {
   const std::string envelope_digest = Digest(request.canonical_sblr_envelope);
   const std::string dependency_digest = Digest(DependencyPayload(request.dependencies));
+  const std::string derived_statement_semantics_hash =
+      StatementSemanticsHash(request.operation_id,
+                             request.operation_family,
+                             envelope_digest,
+                             dependency_digest,
+                             request.result_descriptor_hash);
+  if (!request.statement_semantics_hash.empty() &&
+      request.statement_semantics_hash != derived_statement_semantics_hash) {
+    ++metrics_.authority_rejections;
+    IparCacheStatus mismatch;
+    mismatch.authority_forbidden = true;
+    mismatch.detail = "ipar_template_semantics_hash_mismatch";
+    mismatch.cache_key = request.cache_key;
+    return mismatch;
+  }
+  const std::string derived_authorization_context_hash =
+      AuthorizationContextHash(request.scope);
+  if (!request.authorization_context_hash.empty() &&
+      request.authorization_context_hash != derived_authorization_context_hash) {
+    ++metrics_.authority_rejections;
+    IparCacheStatus mismatch;
+    mismatch.authority_forbidden = true;
+    mismatch.detail = "ipar_template_authorization_hash_mismatch";
+    mismatch.cache_key = request.cache_key;
+    return mismatch;
+  }
+  const std::string statement_semantics_hash = derived_statement_semantics_hash;
+  const std::string authorization_context_hash = derived_authorization_context_hash;
   const std::string cache_key =
       request.cache_key.empty()
           ? PreparedTemplateLookupKey(request, envelope_digest, dependency_digest)
@@ -504,7 +781,9 @@ IparCacheStatus IparServerProtocolSupport::LookupPreparedTemplate(
   if (record.operation_id != request.operation_id ||
       record.operation_family != request.operation_family ||
       record.canonical_sblr_digest != envelope_digest ||
-      record.result_descriptor_hash != request.result_descriptor_hash) {
+      record.result_descriptor_hash != request.result_descriptor_hash ||
+      record.statement_semantics_hash != statement_semantics_hash ||
+      record.authorization_context_hash != authorization_context_hash) {
     status = {};
     status.stale = true;
     status.detail = "ipar_template_shape_stale";
@@ -513,12 +792,31 @@ IparCacheStatus IparServerProtocolSupport::LookupPreparedTemplate(
     return status;
   }
 
+  const IparPreparedSpecializedVariant* selected_variant =
+      SelectSpecializedVariant(record.specialized_variants,
+                               request.observed_parameter_profile,
+                               statement_semantics_hash,
+                               authorization_context_hash);
   ++record.hit_count;
   ++metrics_.prepared_template_hits;
   status.accepted = true;
   status.cache_hit = true;
   status.cache_key = cache_key;
-  status.detail = "ipar_template_cache_hit";
+  if (selected_variant != nullptr) {
+    ++record.specialized_variant_hit_count;
+    ++metrics_.prepared_specialized_variant_hits;
+    status.selected_specialized_variant = true;
+    status.selected_variant_id = selected_variant->variant_id;
+    status.selected_variant_path = selected_variant->fast_path_label;
+    status.detail =
+        "ipar_template_specialized_variant_hit;" +
+        ProfilePayload(request.observed_parameter_profile);
+  } else {
+    if (!record.specialized_variants.empty()) {
+      ++metrics_.prepared_specialized_variant_misses;
+    }
+    status.detail = "ipar_template_cache_hit";
+  }
   return status;
 }
 
