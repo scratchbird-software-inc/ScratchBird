@@ -22,7 +22,13 @@ from typing import Any
 from compile_full_surface_script_suite import compile_suite
 from exhaustive_generators import GENERATED_SCRIPT_SPECS, source_summary
 from ipar_performance_proof_gate import SCHEMA_NAME as IPAR_SCHEMA_NAME
+from ipar_performance_proof_gate import collect_artifact_records
+from ipar_performance_proof_gate import load_artifact_payloads
 from ipar_performance_proof_gate import validate_ipar_schema
+from ipar_performance_proof_gate import validate_metrics_records
+from ipar_performance_proof_gate import validate_performance_targets
+from ipar_performance_proof_gate import validate_slow_paths
+from ipar_performance_proof_gate import validate_telemetry
 
 
 SUITE_ROOT = Path(__file__).resolve().parent
@@ -30,6 +36,7 @@ MANIFEST_NAME = "manifest.json"
 EXPECTED_ASSERTIONS_REL = Path("expected/expected_assertions.json")
 EXPECTED_REFUSALS_REL = Path("expected/expected_refusals.json")
 IPAR_SCHEMA_REL = Path(IPAR_SCHEMA_NAME)
+IPAR_JSONL_FIXTURE_REL = Path("fixtures/ipar_valid_metrics_summary.jsonl")
 LANGUAGE_MANIFEST_REL = Path(
     "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/"
     "SBSQL_LANGUAGE_ELEMENT_MANIFEST.json"
@@ -445,6 +452,22 @@ def validate_compiled_sample(
     return errors
 
 
+def validate_ipar_jsonl_fixture(suite_root: Path, ipar_schema: dict[str, Any]) -> list[str]:
+    fixture_path = suite_root / IPAR_JSONL_FIXTURE_REL
+    selected = {"SBDFS-060"}
+    try:
+        payloads = load_artifact_payloads([fixture_path])
+        records, telemetry, slow_paths = collect_artifact_records(payloads, ipar_schema)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [f"ipar_jsonl_fixture:load_failed:{exc}"]
+    errors, _proof_rows = validate_metrics_records(records, ipar_schema, selected)
+    target_errors, _target_rows = validate_performance_targets(records, ipar_schema, selected)
+    errors.extend(target_errors)
+    errors.extend(validate_telemetry(telemetry, ipar_schema, allow_missing=False))
+    errors.extend(validate_slow_paths(slow_paths, ipar_schema))
+    return [f"ipar_jsonl_fixture:{error}" for error in errors]
+
+
 def write_report(path: Path, errors: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     report = {
@@ -504,6 +527,7 @@ def main() -> int:
         errors.extend(validate_compiled_sample(repo_root, suite_root, output_root, manifest))
         if ipar_schema:
             errors.extend(validate_ipar_schema(ipar_schema, manifest))
+            errors.extend(validate_ipar_jsonl_fixture(suite_root, ipar_schema))
     if manifest and expected_assertions and expected_refusals:
         errors.extend(validate_expected_files(manifest, expected_assertions, expected_refusals))
 
