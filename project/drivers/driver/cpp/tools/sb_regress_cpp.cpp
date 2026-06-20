@@ -2788,23 +2788,23 @@ int main(int argc, char** argv) {
                             preparedTemplate.active ? preparedTemplate.templateSql : *sqlForExecution;
                         const std::vector<PreparedParamValue>* preparedParams =
                             preparedTemplate.active ? &preparedTemplate.params : nullptr;
+                        const bool usePreparedCache =
+                            preparedCacheEnabled &&
+                            preparedTemplate.active &&
+                            statementPreparedCacheEligible(preparedSql) &&
+                            !expectsRefusal;
                         if (statementReturnsRows(*sqlForExecution)) {
                             appendJsonl(paths.at("wire"), {{"event", "execute_query_start"},
                                                            {"statement_id", statementId},
                                                            {"element_id", elementId},
-                                                           {"prepared_cache_eligible",
-                                                            preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(preparedSql) &&
-                                                                !expectsRefusal},
+                                                           {"prepared_cache_eligible", usePreparedCache},
                                                            {"prepared_template_applied", preparedTemplate.active},
                                                            {"prepared_parameter_count",
                                                             preparedTemplate.active
                                                                 ? static_cast<int64_t>(preparedTemplate.params.size())
                                                                 : int64_t{0}}});
                             scratchbird::client::ResultSet resultSet;
-                            if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(preparedSql) &&
-                                !expectsRefusal) {
+                            if (usePreparedCache) {
                                 status = executePreparedCached(preparedSql,
                                                                statementId,
                                                                elementId,
@@ -2836,19 +2836,13 @@ int main(int argc, char** argv) {
                                                            {"statement_id", statementId},
                                                            {"element_id", elementId},
                                                            {"prepared_cache_eligible",
-                                                            preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(preparedSql) &&
-                                                                !copyStatement &&
-                                                                !expectsRefusal},
+                                                            usePreparedCache && !copyStatement},
                                                            {"prepared_template_applied", preparedTemplate.active},
                                                            {"prepared_parameter_count",
                                                             preparedTemplate.active
                                                                 ? static_cast<int64_t>(preparedTemplate.params.size())
                                                                 : int64_t{0}}});
-                            if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(preparedSql) &&
-                                !copyStatement &&
-                                !expectsRefusal) {
+                            if (usePreparedCache && !copyStatement) {
                                 status = executePreparedCached(preparedSql,
                                                                statementId,
                                                                elementId,

@@ -2189,7 +2189,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND database_lifecycle_sequence_generator_conformance
   )
   set_tests_properties(database_lifecycle_sequence_generator_conformance PROPERTIES
-    LABELS "database_lifecycle_sequence_generator_conformance;database_lifecycle_sequence_generator;database_lifecycle;mga_transaction_regression"
+    LABELS "database_lifecycle_sequence_generator_conformance;IPAR-P4-17;database_lifecycle_sequence_generator;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(database_lifecycle_index_statistics_plan_conformance
@@ -4249,6 +4249,24 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    LABELS "ipar_commit_durability_batching_gate;IPAR-P3-05;IPAR-P3-08;commit_fence;durability_batching;insert_performance;database_lifecycle;mga_transaction_regression"
 		  )
 
+		  add_executable(ipar_transaction_mga_support_services_gate
+		    ipar_transaction_mga_support_services_gate.cpp
+		  )
+		  target_compile_features(ipar_transaction_mga_support_services_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_transaction_mga_support_services_gate
+		    PRIVATE
+		      sb_core_uuid
+		      sb_transaction_mga
+		  )
+
+		  add_test(
+		    NAME ipar_transaction_mga_support_services_gate
+		    COMMAND ipar_transaction_mga_support_services_gate
+		  )
+		  set_tests_properties(ipar_transaction_mga_support_services_gate PROPERTIES
+		    LABELS "ipar_transaction_mga_support_services_gate;IPAR-P3-12;IPAR-P5-09;IPAR-P5-11;IPAR-P5-12;IPAR-P5-13;IPAR-P5-14;IPAR-P6-27;commit_fence_coalescing;cleanup_horizon;savepoint_delta;visibility_acceleration;read_after_write_overlay;statement_id_reservation;database_lifecycle;mga_transaction_regression"
+		  )
+
 		  add_executable(ipar_physical_row_page_append_gate
 		    ipar_physical_row_page_append_gate.cpp
 		  )
@@ -4485,6 +4503,25 @@ set_tests_properties(ipar_p6_support_services_gate PROPERTIES
   LABELS "ipar_p6_support_services_gate;IPAR-P6-11;IPAR-P6-14;IPAR-P6-17;IPAR-P6-18;IPAR-P6-19;IPAR-P6-22;IPAR-P6-23;IPAR-P6-24;IPAR-P6-25;IPAR-P6-26;IPAR-P6-31;memory_residency;resource_governance;row_encoder_cache;resource_residency;prewarm;capability_bitset;epoch_vector;noop_branch;statement_pool;diagnostic_template_cache;database_open_warm_profile;database_lifecycle;mga_transaction_regression"
 )
 
+add_executable(ipar_storage_support_services_gate
+  ipar_storage_support_services_gate.cpp
+)
+target_compile_features(ipar_storage_support_services_gate PRIVATE cxx_std_23)
+target_link_libraries(ipar_storage_support_services_gate
+  PRIVATE
+    sb_storage_page
+    sb_core_platform
+    sb_core_resource_governance
+)
+
+add_test(
+  NAME ipar_storage_support_services_gate
+  COMMAND ipar_storage_support_services_gate
+)
+set_tests_properties(ipar_storage_support_services_gate PROPERTIES
+  LABELS "ipar_storage_support_services_gate;IPAR-P3-14;IPAR-P3-15;IPAR-P3-16;IPAR-P3-17;IPAR-P3-18;IPAR-P3-19;IPAR-P3-20;IPAR-P3-21;IPAR-P3-22;IPAR-P3-23;IPAR-P6-12;IPAR-P6-20;IPAR-P6-21;IPAR-P6-28;IPAR-P6-29;IPAR-P6-32;IPAR-P6-33;IPAR-P6-34;storage_support_services;page_locality;async_io_ticketing;dirty_page_priority;filespace_handle_cache;codec_cache;large_value_stream_cache;shard_ownership;conflict_prediction;post_commit_queue_separation;maintenance_debt;worker_warmup;database_lifecycle_storage;mga_transaction_regression"
+)
+
 if(TARGET sb_server_core)
   add_executable(ipar_prepared_execution_cache_authority_gate
     ipar_prepared_execution_cache_authority_gate.cpp
@@ -4501,6 +4538,23 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(ipar_prepared_execution_cache_authority_gate PROPERTIES
     LABELS "ipar_prepared_execution_cache_authority_gate;IPAR-P1-12;IPAR-P1-13;IPAR-P1-15;IPAR-P1-18;prepared_execution_context;negative_authorization_cache;capability_cache;statement_preflight_cache;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_server_protocol_cache_support_gate
+    ipar_server_protocol_cache_support_gate.cpp
+  )
+  target_compile_features(ipar_server_protocol_cache_support_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_server_protocol_cache_support_gate
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME ipar_server_protocol_cache_support_gate
+    COMMAND ipar_server_protocol_cache_support_gate
+  )
+  set_tests_properties(ipar_server_protocol_cache_support_gate PROPERTIES
+    LABELS "ipar_server_protocol_cache_support_gate;IPAR-P1-07;IPAR-P1-08;IPAR-P1-09;IPAR-P1-11;IPAR-P1-17;IPAR-P1-20;IPAR-P1-21;protocol_batching;prepared_sblr_uuid_template_cache;resolved_uuid_descriptor_cache;dml_ddl_protocol_metadata;frame_crypto_reuse;result_buffer_cache;hot_failure_classification_cache;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(ipar_prepared_handle_authority_gate

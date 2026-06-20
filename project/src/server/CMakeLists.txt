@@ -90,6 +90,7 @@ if(SB_BUILD_SERVER)
     database_ownership.cpp
     diagnostics.cpp
     engine_host.cpp
+    ipar_protocol_support.cpp
     ipc_server.cpp
     lifecycle.cpp
     listener_orchestrator.cpp
