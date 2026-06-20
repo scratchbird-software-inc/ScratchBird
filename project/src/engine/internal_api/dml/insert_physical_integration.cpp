@@ -2044,10 +2044,20 @@ DirectPhysicalBulkAppendResult DirectBulkFailureWithEvidence(
 
 void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                                  DirectPhysicalBulkAppendResult* result) {
+  result->evidence.push_back({"mga_hot_append_allocator_stream_opens",
+                              std::to_string(counters.allocator_stream_opens)});
+  result->evidence.push_back({"mga_hot_append_allocator_stream_flushes",
+                              std::to_string(counters.allocator_stream_flushes)});
+  result->evidence.push_back({"mga_hot_append_allocator_records",
+                              std::to_string(counters.allocator_range_records_appended)});
   result->evidence.push_back({"mga_hot_append_row_stream_opens",
                               std::to_string(counters.row_stream_opens)});
   result->evidence.push_back({"mga_hot_append_row_stream_flushes",
                               std::to_string(counters.row_stream_flushes)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_stream_opens",
+                              std::to_string(counters.scoped_row_stream_opens)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_stream_flushes",
+                              std::to_string(counters.scoped_row_stream_flushes)});
   result->evidence.push_back({"mga_hot_append_row_range_reservations",
                               std::to_string(counters.row_range_reservations)});
   result->evidence.push_back({"mga_hot_append_row_versions",
@@ -2056,6 +2066,10 @@ void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                               std::to_string(counters.index_stream_opens)});
   result->evidence.push_back({"mga_hot_append_index_stream_flushes",
                               std::to_string(counters.index_stream_flushes)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_stream_opens",
+                              std::to_string(counters.scoped_index_stream_opens)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_stream_flushes",
+                              std::to_string(counters.scoped_index_stream_flushes)});
   result->evidence.push_back({"mga_hot_append_index_range_reservations",
                               std::to_string(counters.index_range_reservations)});
   result->evidence.push_back({"mga_hot_append_index_entries",
@@ -4122,9 +4136,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     ++result.dml_summary.append_calls;
   }
   result.dml_summary.file_opens +=
-      hot_counters.row_stream_opens + hot_counters.index_stream_opens;
+      hot_counters.row_stream_opens + hot_counters.index_stream_opens +
+      hot_counters.scoped_row_stream_opens +
+      hot_counters.scoped_index_stream_opens +
+      hot_counters.allocator_stream_opens;
   result.dml_summary.flushes +=
-      hot_counters.row_stream_flushes + hot_counters.index_stream_flushes;
+      hot_counters.row_stream_flushes + hot_counters.index_stream_flushes +
+      hot_counters.scoped_row_stream_flushes +
+      hot_counters.scoped_index_stream_flushes +
+      hot_counters.allocator_stream_flushes;
 
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];

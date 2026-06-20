@@ -8,6 +8,8 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 
+#include "local_transaction_store.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <map>
@@ -65,6 +67,25 @@ std::string JoinOptions(const std::vector<std::string>& options) {
   return out;
 }
 
+bool MgaCreatorVisible(const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
+                       std::uint64_t creator_tx,
+                       std::uint64_t observer_tx) {
+  if (creator_tx == 0) { return true; }
+  for (const auto& entry : inventory.entries) {
+    if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
+    using scratchbird::transaction::mga::TransactionState;
+    if (entry.state == TransactionState::committed || entry.state == TransactionState::archived) {
+      return true;
+    }
+    return creator_tx == observer_tx &&
+           (entry.state == TransactionState::active ||
+            entry.state == TransactionState::read_only_active ||
+            entry.state == TransactionState::preparing ||
+            entry.state == TransactionState::prepared);
+  }
+  return false;
+}
+
 }  // namespace
 
 EngineApiDiagnostic ValidateApiBehaviorContext(const EngineRequestContext& context,
@@ -88,6 +109,8 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   if (!in) { in.open(context.database_path, std::ios::binary); }
   if (!in) { result.ok = true; return result; }
   const auto crud = LoadCrudState(context);
+  const auto transaction_inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
   std::map<std::string, ApiBehaviorRecord> latest;
   std::string line;
   std::uint64_t sequence = 0;
@@ -109,7 +132,17 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
     record.payload = HexDecode(parts[7]);
     record.state = parts[8];
     record.deleted = ParseBool(parts[9]);
-    if (crud.ok && !CrudCreatorVisible(crud.state, record.creator_tx, record.event_sequence, context.local_transaction_id)) { continue; }
+    const bool crud_visible =
+        crud.ok && CrudCreatorVisible(crud.state,
+                                      record.creator_tx,
+                                      record.event_sequence,
+                                      context.local_transaction_id);
+    const bool mga_visible =
+        transaction_inventory.ok() &&
+        MgaCreatorVisible(transaction_inventory.inventory,
+                          record.creator_tx,
+                          context.local_transaction_id);
+    if (!crud_visible && !mga_visible) { continue; }
     latest[record.object_uuid] = std::move(record);
   }
   for (const auto& [uuid, record] : latest) {

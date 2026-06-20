@@ -1968,6 +1968,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   EngineApiU64 adaptive_write_window_index_entries = 0;
   EngineApiU64 adaptive_write_window_stream_opens = 0;
   EngineApiU64 adaptive_write_window_stream_flushes = 0;
+  EngineApiU64 adaptive_write_window_scoped_stream_opens = 0;
+  EngineApiU64 adaptive_write_window_scoped_stream_flushes = 0;
+  EngineApiU64 adaptive_write_window_allocator_stream_opens = 0;
+  EngineApiU64 adaptive_write_window_allocator_stream_flushes = 0;
+  EngineApiU64 adaptive_write_window_allocator_records = 0;
   EngineApiU64 large_value_batch_windows = 0;
   EngineApiU64 large_value_batch_rows = 0;
   EngineApiU64 large_value_batch_overflows = 0;
@@ -2685,6 +2690,18 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           hot_counters.row_stream_opens + hot_counters.index_stream_opens;
       adaptive_write_window_stream_flushes +=
           hot_counters.row_stream_flushes + hot_counters.index_stream_flushes;
+      adaptive_write_window_scoped_stream_opens +=
+          hot_counters.scoped_row_stream_opens +
+          hot_counters.scoped_index_stream_opens;
+      adaptive_write_window_scoped_stream_flushes +=
+          hot_counters.scoped_row_stream_flushes +
+          hot_counters.scoped_index_stream_flushes;
+      adaptive_write_window_allocator_stream_opens +=
+          hot_counters.allocator_stream_opens;
+      adaptive_write_window_allocator_stream_flushes +=
+          hot_counters.allocator_stream_flushes;
+      adaptive_write_window_allocator_records +=
+          hot_counters.allocator_range_records_appended;
       if (hot_counters.row_versions_appended != 0) {
         ++result.dml_summary.append_calls;
       }
@@ -2692,9 +2709,15 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         ++result.dml_summary.append_calls;
       }
       result.dml_summary.file_opens +=
-          hot_counters.row_stream_opens + hot_counters.index_stream_opens;
+          hot_counters.row_stream_opens + hot_counters.index_stream_opens +
+          hot_counters.scoped_row_stream_opens +
+          hot_counters.scoped_index_stream_opens +
+          hot_counters.allocator_stream_opens;
       result.dml_summary.flushes +=
-          hot_counters.row_stream_flushes + hot_counters.index_stream_flushes;
+          hot_counters.row_stream_flushes + hot_counters.index_stream_flushes +
+          hot_counters.scoped_row_stream_flushes +
+          hot_counters.scoped_index_stream_flushes +
+          hot_counters.allocator_stream_flushes;
 
       for (std::size_t index = window_begin; index < window_end; ++index) {
         const auto& row_record = row_records[index - window_begin];
@@ -2729,6 +2752,16 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                std::to_string(adaptive_write_window_stream_opens)});
     result.evidence.push_back({"insert_hot_append_stream_flushes",
                                std::to_string(adaptive_write_window_stream_flushes)});
+    result.evidence.push_back({"insert_hot_append_scoped_stream_opens",
+                               std::to_string(adaptive_write_window_scoped_stream_opens)});
+    result.evidence.push_back({"insert_hot_append_scoped_stream_flushes",
+                               std::to_string(adaptive_write_window_scoped_stream_flushes)});
+    result.evidence.push_back({"insert_hot_append_allocator_stream_opens",
+                               std::to_string(adaptive_write_window_allocator_stream_opens)});
+    result.evidence.push_back({"insert_hot_append_allocator_stream_flushes",
+                               std::to_string(adaptive_write_window_allocator_stream_flushes)});
+    result.evidence.push_back({"insert_hot_append_allocator_records",
+                               std::to_string(adaptive_write_window_allocator_records)});
     result.evidence.push_back({"insert_large_value_batch_windows",
                                std::to_string(large_value_batch_windows)});
     result.evidence.push_back({"insert_large_value_batch_rows",

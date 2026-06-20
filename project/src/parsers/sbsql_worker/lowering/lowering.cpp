@@ -446,6 +446,7 @@ struct SimpleCreateExecutableObjectInfo {
   std::string catalog_authority;
   std::string row_surface_id;
   std::size_t name_parts{0};
+  std::string object_name;
   bool parameter_def_present{false};
   bool parameter_name_present{false};
   bool parameter_is_cursor{false};
@@ -454,6 +455,13 @@ struct SimpleCreateExecutableObjectInfo {
   std::string parameter_type_name;
   std::string parameter_mode{"in"};
   std::vector<std::string> parameter_surface_ids;
+  bool return_descriptor_present{false};
+  std::size_t return_count{0};
+  bool body_present{false};
+  bool body_compiled{false};
+  std::string internal_procedure_id;
+  std::string side_effect_class{"none"};
+  std::vector<std::string> body_dependency_uuids;
 };
 
 struct RoutineInvocationArgumentInfo {
@@ -527,6 +535,7 @@ struct SecurityDclInfo {
   bool valid{false};
   bool grant{false};
   bool grant_option{false};
+  bool membership{false};
   std::string operation_id;
   std::string opcode;
   std::string privilege;
@@ -535,6 +544,9 @@ struct SecurityDclInfo {
   std::string grant_effect{"allow"};
   std::string target_object_uuid;
   std::string grantee_uuid;
+  std::string member_principal_uuid;
+  std::string container_uuid;
+  std::string container_kind{"group"};
   std::size_t target_name_parts{0};
   std::size_t grantee_name_parts{0};
 };
@@ -1774,6 +1786,64 @@ std::string ConsumeOptionalObjectKind(const CstDocument& cst, std::size_t* index
   return "object";
 }
 
+bool ConsumeParenthesizedExpression(const CstDocument& cst, std::size_t* index) {
+  if (index == nullptr) return false;
+  for (; *index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index]); ++(*index)) {}
+  if (*index >= cst.tokens.size() ||
+      cst.tokens[*index].kind != TokenKind::kSymbol ||
+      cst.tokens[*index].text != "(") {
+    return false;
+  }
+  std::uint32_t depth = 0;
+  while (*index < cst.tokens.size()) {
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) {
+      return false;
+    }
+    if (token.kind == TokenKind::kSymbol && token.text == "(") {
+      ++depth;
+      ++(*index);
+      continue;
+    }
+    if (token.kind == TokenKind::kSymbol && token.text == ")") {
+      if (depth == 0) return false;
+      --depth;
+      ++(*index);
+      if (depth == 0) return true;
+      continue;
+    }
+    ++(*index);
+  }
+  return false;
+}
+
+bool ConsumeExpressionUntilPolicyClause(const CstDocument& cst, std::size_t* index) {
+  if (index == nullptr) return false;
+  bool consumed = false;
+  std::uint32_t depth = 0;
+  while (*index < cst.tokens.size()) {
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) {
+      return consumed;
+    }
+    if (depth == 0 &&
+        (ToUpperAscii(token.text) == "TO" ||
+         ToUpperAscii(token.text) == "ACTIVE" ||
+         ToUpperAscii(token.text) == "AS")) {
+      return consumed;
+    }
+    if (token.kind == TokenKind::kSymbol && token.text == "(") {
+      ++depth;
+    } else if (token.kind == TokenKind::kSymbol && token.text == ")") {
+      if (depth == 0) return consumed;
+      --depth;
+    }
+    if (!IsTriviaToken(token)) consumed = true;
+    ++(*index);
+  }
+  return consumed;
+}
+
 bool ContainsWord(const std::vector<std::string>& words, std::string_view wanted) {
   for (const auto& word : words) {
     if (std::string_view(word) == wanted) return true;
@@ -1822,7 +1892,7 @@ bool OnlyOptionalTerminatorAfter(const std::vector<std::string>& words, std::siz
   return words.size() == index || (words.size() == index + 1 && words[index] == ";");
 }
 
-constexpr std::array<PublicExactCommandSpec, 188> kPublicExactCommandSpecs{{
+constexpr std::array<PublicExactCommandSpec, 191> kPublicExactCommandSpecs{{
     {"alter.gpu.artifact_quarantine", "ALTER GPU ARTIFACT <artifact_ref> QUARANTINE", "ALTER GPU ARTIFACT QUARANTINE", "op.gpu.artifact_quarantine", "SBLR_OP_GPU_ARTIFACT_QUARANTINE", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_artifacts", "artifact", true},
     {"alter.gpu.cache_clear", "ALTER GPU CACHE CLEAR", "ALTER GPU CACHE CLEAR", "op.gpu.cache_clear", "SBLR_OP_GPU_CACHE_CLEAR", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_cache", "", true},
     {"alter.gpu.device_quarantine", "ALTER GPU DEVICE <device_ref> QUARANTINE", "ALTER GPU DEVICE QUARANTINE", "op.gpu.device_quarantine", "SBLR_OP_GPU_DEVICE_QUARANTINE", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_devices", "device", true},
@@ -1924,6 +1994,8 @@ constexpr std::array<PublicExactCommandSpec, 188> kPublicExactCommandSpecs{{
     {"alter.migration", "ALTER MIGRATION <migration_ref> START|PAUSE|RESUME|ABORT|FINALIZE", "ALTER MIGRATION", "op.migration.alter", "SBLR_MIGRATION_ALTER", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineAlterMigration", "migration_control", "sys.migration.context", "migration", true},
     {"show.migration", "SHOW MIGRATION <migration_ref>", "SHOW MIGRATION", "op.show.migration", "SBLR_SHOW_MIGRATION", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineShowMigration", "migration_inspect", "sys.migration.context", "migration", false},
     {"show.migrations", "SHOW MIGRATIONS", "SHOW MIGRATIONS", "op.show.migrations", "SBLR_SHOW_MIGRATIONS", "sblr.migration.operation.v3", "rs.migration.list.v1", "EngineShowMigrations", "migration_inspect", "sys.migration.context", "", false},
+    {"cluster.lifecycle.create", "CREATE CLUSTER <cluster_ref> [WITH VALIDATE ONLY [,] EMIT DIAGNOSTICS]", "CREATE CLUSTER", "cluster.control_cluster", "SBLR_CLUSTER_CONTROL_CLUSTER", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineControlCluster", "cluster_control", "sys.cluster.control", "cluster", true, true},
+    {"alter.cluster.add_member", "ALTER CLUSTER <cluster_ref> ADD MEMBER <member_ref> [WITH VALIDATE ONLY]", "ALTER CLUSTER ADD MEMBER", "cluster.control_cluster", "SBLR_CLUSTER_CONTROL_CLUSTER", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineControlCluster", "cluster_control", "sys.cluster.control", "cluster", true, true},
     {"alter.cluster.admission_tune", "ALTER CLUSTER ADMISSION TUNE <policy_ref>", "ALTER CLUSTER ADMISSION TUNE", "op.cluster.admission_tune", "SBLR_OP_CLUSTER_ADMISSION_TUNE", "sblr.cluster.private_operation.v3", "rs.acceleration.control.v1", "EngineClusterProviderRoute", "cluster_control", "sys.cluster.admission", "policy", true, true},
     {"alter.cluster.config", "ALTER CLUSTER CONFIG <config_key> SET <value>", "ALTER CLUSTER CONFIG SET", "op.cluster.config", "SBLR_OP_CLUSTER_CONFIG", "sblr.cluster.private_operation.v3", "rs.acceleration.control.v1", "EngineClusterProviderRoute", "cluster_control", "sys.cluster.config", "config_key", true, true},
     {"alter.cluster.placement_move", "ALTER CLUSTER PLACEMENT MOVE <object_ref> TO <member_ref>", "ALTER CLUSTER PLACEMENT MOVE TO", "op.cluster.placement_move", "SBLR_OP_CLUSTER_PLACEMENT_MOVE", "sblr.cluster.private_operation.v3", "rs.acceleration.control.v1", "EngineClusterProviderRoute", "cluster_control", "sys.cluster.placement", "object", true, true},
@@ -1951,6 +2023,7 @@ constexpr std::array<PublicExactCommandSpec, 188> kPublicExactCommandSpecs{{
     {"show.cluster.shards", "SHOW CLUSTER SHARDS", "SHOW CLUSTER SHARDS", "op.show.cluster.shards", "SBLR_OP_SHOW_CLUSTER_SHARDS", "sblr.cluster.private_operation.v3", "rs.cluster.routing.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.shards", "", false, true},
     {"show.cluster.slo", "SHOW CLUSTER SLO", "SHOW CLUSTER SLO", "op.show.cluster.slo", "SBLR_OP_SHOW_CLUSTER_SLO", "sblr.cluster.private_operation.v3", "rs.cluster.state.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.slo", "", false, true},
     {"show.cluster.state", "SHOW CLUSTER STATE", "SHOW CLUSTER STATE", "op.show.cluster.state", "SBLR_OP_SHOW_CLUSTER_STATE", "sblr.cluster.private_operation.v3", "rs.cluster.state.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.state", "", false, true},
+    {"show.cluster.status", "SHOW CLUSTER STATUS", "SHOW CLUSTER STATUS", "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.state", "cluster", false, true},
     {"show.cluster.topology", "SHOW CLUSTER TOPOLOGY", "SHOW CLUSTER TOPOLOGY", "op.show.cluster.topology", "SBLR_OP_SHOW_CLUSTER_TOPOLOGY", "sblr.cluster.private_operation.v3", "rs.cluster.state.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.topology", "", false, true},
     {"show.cluster_gpu_placement", "SHOW CLUSTER GPU PLACEMENT", "SHOW CLUSTER GPU PLACEMENT", "op.show.cluster_gpu_placement", "SBLR_OP_SHOW_CLUSTER_GPU_PLACEMENT", "sblr.cluster.private_operation.v3", "rs.show.cluster_gpu_placement.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.gpu_placement", "", false, true},
     {"show.context", "SHOW CONTEXT", "SHOW CONTEXT", "op.show.context", "SBLR_OP_SHOW_CONTEXT", "sblr.observability.inspect.v3", "rs.show.context.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.context", "", false},
@@ -2376,6 +2449,30 @@ PublicExactCommandRouteInfo PublicExactInvalid(std::string_view surface_key,
   return PublicExactRoute(surface_key, false, std::move(invalid_reason));
 }
 
+bool PublicExactClusterValidateTail(const std::vector<const Token*>& tokens,
+                                    std::size_t index,
+                                    bool allow_emit_diagnostics) {
+  std::vector<std::string> words;
+  for (; index < tokens.size(); ++index) {
+    if (tokens[index]->text == ",") { continue; }
+    words.push_back(ToUpperAscii(tokens[index]->text));
+  }
+  if (words.empty()) { return true; }
+  if (words.size() == 3 &&
+      words[0] == "WITH" &&
+      words[1] == "VALIDATE" &&
+      words[2] == "ONLY") {
+    return true;
+  }
+  return allow_emit_diagnostics &&
+         words.size() == 5 &&
+         words[0] == "WITH" &&
+         words[1] == "VALIDATE" &&
+         words[2] == "ONLY" &&
+         words[3] == "EMIT" &&
+         words[4] == "DIAGNOSTICS";
+}
+
 bool PublicExactFixed(const std::vector<const Token*>& tokens,
                std::initializer_list<std::string_view> expected) {
   if (tokens.size() != expected.size()) return false;
@@ -2442,6 +2539,24 @@ PublicExactCommandRouteInfo AnalyzeSbsqlSurfaceReplayRoute(
   return PublicExactValid("sbsql.surface_replay", surface_id);
 }
 
+PublicExactCommandRouteInfo AnalyzePublicExactCreateClusterRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.size() < 2 || !PublicExactTokenEquals(tokens, 0, "CREATE") ||
+      !PublicExactTokenEquals(tokens, 1, "CLUSTER")) {
+    return {};
+  }
+  if (tokens.size() >= 3 && PublicExactIsReferenceToken(*tokens[2]) &&
+      PublicExactClusterValidateTail(tokens, 3, true)) {
+    return PublicExactValid("cluster.lifecycle.create",
+                            tokens[2]->text,
+                            {},
+                            "cluster_action",
+                            "create");
+  }
+  return PublicExactInvalid("cluster.lifecycle.create",
+                            "create_cluster_requires_cluster_ref_and_optional_validate_only");
+}
+
 PublicExactCommandRouteInfo AnalyzePublicExactAlterClusterRoute(
     const std::vector<const Token*>& tokens) {
   if (tokens.size() < 2 || !PublicExactTokenEquals(tokens, 0, "ALTER") ||
@@ -2450,6 +2565,20 @@ PublicExactCommandRouteInfo AnalyzePublicExactAlterClusterRoute(
   }
   if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 2, "AGENT")) {
     return {};
+  }
+  if (tokens.size() >= 6 && PublicExactIsReferenceToken(*tokens[2]) &&
+      PublicExactTokenEquals(tokens, 3, "ADD") &&
+      PublicExactTokenEquals(tokens, 4, "MEMBER") &&
+      PublicExactIsReferenceToken(*tokens[5])) {
+    if (PublicExactClusterValidateTail(tokens, 6, false)) {
+      return PublicExactValid("alter.cluster.add_member",
+                              tokens[2]->text,
+                              {},
+                              "member",
+                              tokens[5]->text);
+    }
+    return PublicExactInvalid("alter.cluster.add_member",
+                              "alter_cluster_add_member_accepts_only_optional_validate_only");
   }
   if (tokens.size() >= 4 && PublicExactTokenEquals(tokens, 2, "ROUTE") &&
       PublicExactTokenEquals(tokens, 3, "PUBLISH")) {
@@ -3113,6 +3242,7 @@ PublicExactCommandRouteInfo AnalyzePublicExactShowRoute(
     }
     if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "GPU", "PLACEMENT"})) return PublicExactValid("show.cluster_gpu_placement");
     if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "STATE"})) return PublicExactValid("show.cluster.state");
+    if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "STATUS"})) return PublicExactValid("show.cluster.status");
     if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "TOPOLOGY"})) return PublicExactValid("show.cluster.topology");
     if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "MEMBERS"})) return PublicExactValid("show.cluster.members");
     if (PublicExactFixed(tokens, {"SHOW", "CLUSTER", "CAPABILITIES"})) return PublicExactValid("show.cluster.capabilities");
@@ -3261,6 +3391,7 @@ PublicExactCommandRouteInfo AnalyzePublicExactCommandRoute(const CstDocument& cs
   const auto tokens = MeaningfulTokens(cst);
   if (tokens.empty()) return {};
   if (auto info = AnalyzeSbsqlSurfaceReplayRoute(cst, tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactCreateClusterRoute(tokens); info.active) return info;
   if (auto info = AnalyzePublicExactAlterClusterRoute(tokens); info.active) return info;
   if (auto info = AnalyzePublicExactAlterGpuRoute(tokens); info.active) return info;
   if (auto info = AnalyzePublicExactAlterNativeCompileRoute(tokens); info.active) return info;
@@ -3946,8 +4077,12 @@ std::string StorageOpcodeForOperation(std::string_view operation_id) {
 }
 
 std::string SecurityOpcodeForOperation(std::string_view operation_id) {
+  if (operation_id == "security.role.create") return "SBLR_SEC_CREATE_ROLE";
+  if (operation_id == "security.group.create") return "SBLR_SEC_CREATE_GROUP";
   if (operation_id == "security.principal.create") return "SBLR_SECURITY_PRINCIPAL_CREATE";
   if (operation_id == "security.principal.alter") return "SBLR_SECURITY_PRINCIPAL_ALTER";
+  if (operation_id == "security.membership.grant") return "SBLR_SECURITY_MEMBERSHIP_GRANT";
+  if (operation_id == "security.membership.revoke") return "SBLR_SECURITY_MEMBERSHIP_REVOKE";
   if (operation_id == "security.privilege.grant") return "SBLR_SECURITY_PRIVILEGE_GRANT";
   if (operation_id == "security.privilege.revoke") return "SBLR_SECURITY_PRIVILEGE_REVOKE";
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
@@ -7442,11 +7577,53 @@ bool ConsumeTableCountEqualityAndSubqueryPredicate(const std::vector<const Token
   return false;
 }
 
+bool ConsumeDmlUpdateAssignments(
+    const std::vector<const Token*>& tokens,
+    std::size_t* index,
+    const std::vector<std::string_view>& clause_terminators,
+    DmlRouteInfo* info,
+    std::string_view missing_assignment_feature,
+    std::string_view invalid_assignment_feature);
+
 void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
   if (info == nullptr || info->surface_variant != "merge") return;
   const auto tokens = MeaningfulTokenPtrs(cst);
-  for (std::size_t index = 0; index < tokens.size(); ++index) {
-    if (ToUpperAscii(tokens[index]->text) != "ON") continue;
+  bool saw_on_clause = false;
+  for (std::size_t index = 0; index < tokens.size();) {
+    const std::string word = ToUpperAscii(tokens[index]->text);
+    if (word == "WHEN") {
+      ++index;
+      if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "MATCHED") {
+        ++index;
+        if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "THEN") {
+          ++index;
+        }
+        if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "UPDATE") {
+          ++index;
+          if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SET") {
+            info->unsupported_query_family = true;
+            info->unsupported_feature = "merge_update_set_clause_required";
+            return;
+          }
+          ++index;
+          if (!ConsumeDmlUpdateAssignments(
+                  tokens,
+                  &index,
+                  {"WHEN"},
+                  info,
+                  "merge_update_assignment_required",
+                  "merge_update_assignment_requires_descriptor_bound_expression")) {
+            return;
+          }
+          continue;
+        }
+      }
+      continue;
+    }
+    if (word != "ON") {
+      ++index;
+      continue;
+    }
     ++index;
     std::string left_leaf;
     if (!ConsumeTokenQualifiedLeaf(tokens, &index, &left_leaf) ||
@@ -7472,8 +7649,10 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
     info->predicate_column = std::move(left_leaf);
     info->predicate_value.clear();
     info->predicate_value_type.clear();
-    return;
+    saw_on_clause = true;
+    continue;
   }
+  if (saw_on_clause) return;
   info->unsupported_query_family = true;
   info->unsupported_feature = "merge_on_clause_required";
 }
@@ -7784,6 +7963,148 @@ bool TokenTextEquals(const std::vector<const Token*>& tokens,
                      std::size_t index,
                      std::string_view expected);
 
+struct ParsedUpdateAssignment {
+  std::string target_column;
+  std::string source_column;
+  std::string operation;
+  std::string literal_value;
+  std::string literal_type;
+  bool expression{false};
+};
+
+bool TokenTextInUpperSet(const Token& token,
+                         const std::vector<std::string_view>& values) {
+  const std::string upper = ToUpperAscii(token.text);
+  for (const auto value : values) {
+    if (upper == value) return true;
+  }
+  return false;
+}
+
+void InstallParsedUpdateAssignments(
+    const std::vector<ParsedUpdateAssignment>& assignments,
+    DmlRouteInfo* info) {
+  if (info == nullptr || assignments.empty()) return;
+  info->has_update_assignment = true;
+  if (assignments.size() == 1 && !assignments.front().expression) {
+    info->assignment_column = assignments.front().target_column;
+    info->assignment_value = assignments.front().literal_value;
+    info->assignment_value_type = assignments.front().literal_type;
+    info->assignment_plan.clear();
+    return;
+  }
+
+  std::ostringstream plan;
+  for (std::size_t assignment_index = 0; assignment_index < assignments.size();
+       ++assignment_index) {
+    if (assignment_index != 0) plan << ';';
+    const auto& assignment = assignments[assignment_index];
+    plan << assignment.target_column << '|'
+         << (assignment.expression ? assignment.source_column : std::string{}) << '|'
+         << (assignment.expression ? assignment.operation : std::string("literal")) << '|'
+         << assignment.literal_value << '|'
+         << assignment.literal_type;
+  }
+  info->assignment_column.clear();
+  info->assignment_value.clear();
+  info->assignment_value_type.clear();
+  info->assignment_plan = plan.str();
+}
+
+bool ConsumeDmlUpdateAssignments(
+    const std::vector<const Token*>& tokens,
+    std::size_t* index,
+    const std::vector<std::string_view>& clause_terminators,
+    DmlRouteInfo* info,
+    std::string_view missing_assignment_feature,
+    std::string_view invalid_assignment_feature) {
+  if (index == nullptr || info == nullptr) return false;
+  std::vector<ParsedUpdateAssignment> assignments;
+  while (*index < tokens.size()) {
+    if (TokenTextInUpperSet(*tokens[*index], clause_terminators)) break;
+    ParsedUpdateAssignment assignment;
+    if (!ConsumeTokenQualifiedLeaf(tokens, index, &assignment.target_column) ||
+        *index >= tokens.size() || tokens[*index]->text != "=") {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = std::string(invalid_assignment_feature);
+      return false;
+    }
+    ++(*index);
+
+    std::size_t expression_cursor = *index;
+    std::string source_leaf;
+    if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
+        expression_cursor < tokens.size() &&
+        (tokens[expression_cursor]->text == "+" ||
+         tokens[expression_cursor]->text == "-") &&
+        expression_cursor + 1 < tokens.size() &&
+        IsScalarProjectionLiteral(*tokens[expression_cursor + 1])) {
+      assignment.expression = true;
+      assignment.source_column = std::move(source_leaf);
+      assignment.operation =
+          tokens[expression_cursor]->text == "-" ? "subtract" : "add";
+      assignment.literal_value = DmlLiteralPayload(*tokens[expression_cursor + 1]);
+      assignment.literal_type =
+          ScalarProjectionTypeForToken(*tokens[expression_cursor + 1]);
+      *index = expression_cursor + 2;
+    } else {
+      expression_cursor = *index;
+      source_leaf.clear();
+      if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
+          expression_cursor < tokens.size() &&
+          tokens[expression_cursor]->text == "||" &&
+          expression_cursor + 1 < tokens.size() &&
+          IsScalarProjectionLiteral(*tokens[expression_cursor + 1])) {
+        assignment.expression = true;
+        assignment.source_column = std::move(source_leaf);
+        assignment.operation = "concat";
+        assignment.literal_value =
+            DmlLiteralPayload(*tokens[expression_cursor + 1]);
+        assignment.literal_type =
+            ScalarProjectionTypeForToken(*tokens[expression_cursor + 1]);
+        *index = expression_cursor + 2;
+      } else {
+        expression_cursor = *index;
+        source_leaf.clear();
+        if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
+            (expression_cursor >= tokens.size() ||
+             tokens[expression_cursor]->text == "," ||
+             TokenTextInUpperSet(*tokens[expression_cursor], clause_terminators))) {
+          assignment.expression = true;
+          assignment.source_column = std::move(source_leaf);
+          assignment.operation = "copy_column";
+          assignment.literal_type = "column";
+          *index = expression_cursor;
+        } else {
+          if (*index >= tokens.size() ||
+              !IsBoundedWhereEqualityLiteral(*tokens[*index])) {
+            info->unsupported_query_family = true;
+            info->unsupported_feature = std::string(invalid_assignment_feature);
+            return false;
+          }
+          assignment.literal_value = DmlLiteralPayload(*tokens[*index]);
+          assignment.literal_type = BoundedWhereEqualityLiteralType(*tokens[*index]);
+          ++(*index);
+        }
+      }
+    }
+    assignments.push_back(std::move(assignment));
+
+    if (*index < tokens.size() && tokens[*index]->text == ",") {
+      ++(*index);
+      continue;
+    }
+    break;
+  }
+  if (assignments.empty()) {
+    info->unsupported_query_family = true;
+    info->unsupported_feature = std::string(missing_assignment_feature);
+    return false;
+  }
+  InstallParsedUpdateAssignments(assignments, info);
+  return true;
+}
+
 void AnalyzeUpdateAssignmentPredicate(const CstDocument& cst, DmlRouteInfo* info) {
   if (info == nullptr || info->read || info->surface_variant != "update") return;
   const auto tokens = MeaningfulTokenPtrs(cst);
@@ -7806,107 +8127,14 @@ void AnalyzeUpdateAssignmentPredicate(const CstDocument& cst, DmlRouteInfo* info
   }
   ++index;
 
-  struct ParsedUpdateAssignment {
-    std::string target_column;
-    std::string source_column;
-    std::string operation;
-    std::string literal_value;
-    std::string literal_type;
-    bool expression{false};
-  };
-  std::vector<ParsedUpdateAssignment> assignments;
-  while (index < tokens.size()) {
-    ParsedUpdateAssignment assignment;
-    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &assignment.target_column) ||
-        index >= tokens.size() || tokens[index]->text != "=") {
-      info->unsupported_query_family = true;
-      info->unsupported_feature = "update_assignment_requires_descriptor_bound_expression";
-      return;
-    }
-    ++index;
-
-    std::size_t expression_cursor = index;
-    std::string source_leaf;
-    if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
-        expression_cursor < tokens.size() &&
-        (tokens[expression_cursor]->text == "+" || tokens[expression_cursor]->text == "-") &&
-        expression_cursor + 1 < tokens.size() &&
-        IsScalarProjectionLiteral(*tokens[expression_cursor + 1])) {
-      assignment.expression = true;
-      assignment.source_column = std::move(source_leaf);
-      assignment.operation = tokens[expression_cursor]->text == "-" ? "subtract" : "add";
-      assignment.literal_value = DmlLiteralPayload(*tokens[expression_cursor + 1]);
-      assignment.literal_type = ScalarProjectionTypeForToken(*tokens[expression_cursor + 1]);
-      index = expression_cursor + 2;
-    } else {
-      expression_cursor = index;
-      source_leaf.clear();
-      if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
-          expression_cursor < tokens.size() &&
-          tokens[expression_cursor]->text == "||" &&
-          expression_cursor + 1 < tokens.size() &&
-          IsScalarProjectionLiteral(*tokens[expression_cursor + 1])) {
-        assignment.expression = true;
-        assignment.source_column = std::move(source_leaf);
-        assignment.operation = "concat";
-        assignment.literal_value = DmlLiteralPayload(*tokens[expression_cursor + 1]);
-        assignment.literal_type = ScalarProjectionTypeForToken(*tokens[expression_cursor + 1]);
-        index = expression_cursor + 2;
-      } else {
-        expression_cursor = index;
-        source_leaf.clear();
-        if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
-            (expression_cursor >= tokens.size() ||
-             tokens[expression_cursor]->text == "," ||
-             ToUpperAscii(tokens[expression_cursor]->text) == "WHERE" ||
-             ToUpperAscii(tokens[expression_cursor]->text) == "RETURNING")) {
-          assignment.expression = true;
-          assignment.source_column = std::move(source_leaf);
-          assignment.operation = "copy_column";
-          assignment.literal_type = "column";
-          index = expression_cursor;
-        } else {
-          if (index >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[index])) {
-            info->unsupported_query_family = true;
-            info->unsupported_feature = "update_assignment_requires_descriptor_bound_expression";
-            return;
-          }
-          assignment.literal_value = DmlLiteralPayload(*tokens[index]);
-          assignment.literal_type = BoundedWhereEqualityLiteralType(*tokens[index]);
-          ++index;
-        }
-      }
-    }
-    assignments.push_back(std::move(assignment));
-
-    if (index < tokens.size() && tokens[index]->text == ",") {
-      ++index;
-      continue;
-    }
-    break;
-  }
-  if (assignments.empty()) {
-    info->unsupported_query_family = true;
-    info->unsupported_feature = "update_assignment_required";
+  if (!ConsumeDmlUpdateAssignments(
+          tokens,
+          &index,
+          {"WHERE", "RETURNING"},
+          info,
+          "update_assignment_required",
+          "update_assignment_requires_descriptor_bound_expression")) {
     return;
-  }
-  info->has_update_assignment = true;
-  if (assignments.size() == 1 && !assignments.front().expression) {
-    info->assignment_column = assignments.front().target_column;
-    info->assignment_value = assignments.front().literal_value;
-    info->assignment_value_type = assignments.front().literal_type;
-  } else {
-    std::ostringstream plan;
-    for (std::size_t assignment_index = 0; assignment_index < assignments.size(); ++assignment_index) {
-      if (assignment_index != 0) plan << ';';
-      const auto& assignment = assignments[assignment_index];
-      plan << assignment.target_column << '|'
-           << (assignment.expression ? assignment.source_column : std::string{}) << '|'
-           << (assignment.expression ? assignment.operation : std::string("literal")) << '|'
-           << assignment.literal_value << '|'
-           << assignment.literal_type;
-    }
-    info->assignment_plan = plan.str();
   }
 
   if (index >= tokens.size()) return;
@@ -15821,7 +16049,13 @@ bool ConsumeCteAggregateAssertionProjection(const std::vector<const Token*>& tok
   if (!TokenTextEquals(tokens, *index, "(")) return false;
   ++(*index);
   std::string aggregate_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_field)) return false;
+  if (TokenTextEquals(tokens, *index, "*")) {
+    if (*aggregate_function_id != "sb.aggregate.count") return false;
+    aggregate_field = "*";
+    ++(*index);
+  } else if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_field)) {
+    return false;
+  }
   if (!TokenTextEquals(tokens, *index, ")")) return false;
   ++(*index);
 
@@ -18420,6 +18654,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
         return info;
       }
       if (!info.column_names.empty() &&
+          info.aggregate_field != "*" &&
           LowerAscii(info.aggregate_field) != LowerAscii(info.column_names.front())) {
         info.invalid_reason = "derived_recursive_cte_outer_aggregate_field_must_read_declared_column";
         return info;
@@ -18573,6 +18808,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
         return info;
       }
       if (!info.column_names.empty() &&
+          info.aggregate_field != "*" &&
           LowerAscii(info.aggregate_field) != LowerAscii(info.column_names.front())) {
         info.invalid_reason = "recursive_cte_outer_aggregate_field_must_read_declared_column";
         return info;
@@ -18610,8 +18846,29 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
   info.cte_name = ToUpperAscii(tokens[index]->text);
   ++index;
   if (index < tokens.size() && tokens[index]->text == "(") {
-    info.invalid_reason = "cte_column_alias_list_requires_descriptor_route";
-    return info;
+    ++index;
+    while (index < tokens.size()) {
+      if (!IsIdentifierLikeToken(*tokens[index])) {
+        info.invalid_reason = "cte_column_alias_required";
+        return info;
+      }
+      info.column_names.push_back(tokens[index]->text);
+      ++index;
+      if (index >= tokens.size()) {
+        info.invalid_reason = "cte_column_alias_close_required";
+        return info;
+      }
+      if (tokens[index]->text == ",") {
+        ++index;
+        continue;
+      }
+      if (tokens[index]->text == ")") {
+        ++index;
+        break;
+      }
+      info.invalid_reason = "cte_column_alias_list_invalid";
+      return info;
+    }
   }
   if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "AS") {
     info.invalid_reason = "cte_as_required";
@@ -18630,6 +18887,57 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
     return info;
   }
   ++index;
+  const std::size_t body_index = index;
+  if (ParseValuesRowsAt(tokens, &index, &info.anchor_rows, &info.column_count)) {
+    if (!info.column_names.empty() && info.column_names.size() != info.column_count) {
+      info.invalid_reason = "cte_values_column_alias_count_mismatch";
+      return info;
+    }
+    if (index >= tokens.size() || tokens[index]->text != ")") {
+      info.invalid_reason = "cte_values_body_close_parenthesis_required";
+      return info;
+    }
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text == ",") {
+      info.invalid_reason = "cte_multiple_definitions_require_query_plan_route";
+      return info;
+    }
+    if (!ConsumeCteAggregateAssertionProjection(tokens, &index, &info)) {
+      info.invalid_reason = "cte_values_outer_query_requires_aggregate_assertion";
+      return info;
+    }
+    if (!IsSupportedRecursiveCteAggregateAssertion(info.aggregate_function)) {
+      info.invalid_reason = "cte_values_outer_aggregate_current_route_unsupported";
+      return info;
+    }
+    if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
+      info.invalid_reason = "cte_values_outer_query_requires_from_cte";
+      return info;
+    }
+    ++index;
+    std::string outer_leaf;
+    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &outer_leaf)) {
+      info.invalid_reason = "cte_values_outer_relation_invalid";
+      return info;
+    }
+    if (ToUpperAscii(outer_leaf) != info.cte_name) {
+      info.invalid_reason = "cte_values_outer_query_must_read_declared_cte";
+      return info;
+    }
+    ConsumeOptionalTokenAlias(tokens, &index);
+    if (index != tokens.size()) {
+      info.invalid_reason = "cte_values_trailing_tokens_require_query_plan_route";
+      return info;
+    }
+    ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
+    info.valid = true;
+    return info;
+  }
+  index = body_index;
+  if (!info.column_names.empty()) {
+    info.invalid_reason = "cte_column_alias_list_requires_descriptor_route";
+    return info;
+  }
   if (!ConsumeSelectStarFromRelation(tokens, &index, &info.invalid_reason)) {
     info.invalid_reason = "cte_body_current_route_requires_select_star_from_relation";
     return info;
@@ -18812,7 +19120,11 @@ bool ConsumeSimpleDropObjectKind(const CstDocument& cst,
       {"PROCEDURE", "procedure", "sys.catalog.procedure", "SBSQL-66E94DC7813A"},
       {"FILESPACE", "filespace", "sys.catalog.filespace", "SBSQL-1E702FF60BA0"},
       {"POLICY", "policy", "sys.security.policy", "SBSQL-25CE560681AB"},
+      {"MASK", "mask", "sys.security.policy", "SBSQL-25CE560681AB"},
+      {"RLS", "rls", "sys.security.policy", "SBSQL-25CE560681AB"},
       {"PRINCIPAL", "principal", "sys.security.principal", "SBSQL-EF85496DB350"},
+      {"ROLE", "role", "sys.security.principal", "SBSQL-EF85496DB350"},
+      {"GROUP", "group", "sys.security.principal", "SBSQL-EF85496DB350"},
       {"ROUTINE", "routine", "sys.catalog.routine", "SBSQL-66E94DC7813A"},
       {"SCHEDULE", "schedule", "sys.scheduler.schedule", "SBSQL-B039B7B8F5C4"},
       {"JOB", "job", "sys.scheduler.job", "SBSQL-D64BD9DCA318"},
@@ -22032,9 +22344,10 @@ AlterSequenceDdlInfo AnalyzeAlterSequenceDdl(
   return info;
 }
 
-bool ConsumeOptionalRoutineParameterList(const CstDocument& cst,
-                                         std::size_t* index,
-                                         SimpleCreateExecutableObjectInfo* info) {
+bool ConsumeRoutineDescriptorList(const CstDocument& cst,
+                                  std::size_t* index,
+                                  SimpleCreateExecutableObjectInfo* info,
+                                  bool return_descriptor) {
   if (index == nullptr || info == nullptr) return false;
   while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
   if (*index >= cst.tokens.size() ||
@@ -22044,53 +22357,166 @@ bool ConsumeOptionalRoutineParameterList(const CstDocument& cst,
   }
   if (cst.tokens[*index].text != "(") return true;
   ++(*index);
+  std::size_t descriptor_count = 0;
+  for (;;) {
+    while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ")") {
+      ++(*index);
+      if (return_descriptor) {
+        info->return_descriptor_present = descriptor_count > 0;
+        info->return_count = descriptor_count;
+      } else {
+        info->parameter_def_present = descriptor_count > 0;
+        info->parameter_name_present = descriptor_count > 0;
+        info->parameter_count = descriptor_count;
+      }
+      return true;
+    }
+    if (*index >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[*index])) {
+      info->invalid_reason = return_descriptor ? "routine_return_name_required"
+                                               : "routine_parameter_name_required";
+      return false;
+    }
+    if (!return_descriptor) {
+      if (descriptor_count == 0) {
+        info->parameter_name_descriptor = "routine_parameter_0";
+      }
+      AppendIfMissing(&info->parameter_surface_ids, "SBSQL-0B00DEA678E2");
+      AppendIfMissing(&info->parameter_surface_ids, "SBSQL-C5D151D17944");
+    }
+    ++(*index);
+
+    if (!return_descriptor) {
+      const std::size_t mode_probe = *index;
+      if (ConsumeKeyword(cst, index, "INOUT")) {
+        if (descriptor_count == 0) info->parameter_mode = "inout";
+      } else if (ConsumeKeyword(cst, index, "OUT")) {
+        if (descriptor_count == 0) info->parameter_mode = "out";
+      } else if (ConsumeKeyword(cst, index, "IN")) {
+        if (descriptor_count == 0) info->parameter_mode = "in";
+      } else {
+        *index = mode_probe;
+      }
+    }
+
+    std::string type_name;
+    std::vector<std::string> type_surface_ids;
+    if (!ConsumeSimpleCreateTableType(cst, index, &type_name, &type_surface_ids)) {
+      info->invalid_reason = return_descriptor ? "routine_return_type_required"
+                                               : "routine_parameter_type_required";
+      return false;
+    }
+    if (!return_descriptor && descriptor_count == 0) {
+      info->parameter_type_name = type_name;
+      info->parameter_is_cursor = info->parameter_type_name == "cursor";
+    }
+    if (!return_descriptor) {
+      for (const auto& surface_id : type_surface_ids) {
+        AppendIfMissing(&info->parameter_surface_ids, surface_id);
+      }
+    }
+    ++descriptor_count;
+    while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ",") {
+      ++(*index);
+      continue;
+    }
+    if (*index < cst.tokens.size() && cst.tokens[*index].text == ")") {
+      continue;
+    }
+    info->invalid_reason = return_descriptor ? "routine_return_list_separator_required"
+                                             : "routine_parameter_list_separator_required";
+    return false;
+  }
+}
+
+bool ConsumeOptionalRoutineParameterList(const CstDocument& cst,
+                                         std::size_t* index,
+                                         SimpleCreateExecutableObjectInfo* info) {
+  return ConsumeRoutineDescriptorList(cst, index, info, false);
+}
+
+bool ConsumeOptionalRoutineReturnsDescriptor(const CstDocument& cst,
+                                             std::size_t* index,
+                                             SimpleCreateExecutableObjectInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  const std::size_t saved = *index;
+  if (!ConsumeKeyword(cst, index, "RETURNS")) {
+    *index = saved;
+    return true;
+  }
   while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
-  if (*index >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[*index])) {
-    info->invalid_reason = "routine_parameter_name_required";
-    return false;
+  if (*index < cst.tokens.size() && cst.tokens[*index].text != "(") {
+    std::string type_name;
+    std::vector<std::string> type_surface_ids;
+    if (!ConsumeSimpleCreateTableType(cst, index, &type_name, &type_surface_ids)) {
+      info->invalid_reason = "routine_return_type_required";
+      return false;
+    }
+    info->return_descriptor_present = true;
+    info->return_count = 1;
+    return true;
   }
-  info->parameter_def_present = true;
-  info->parameter_name_present = true;
-  info->parameter_count = 1;
-  info->parameter_name_descriptor = "routine_parameter_0";
-  AppendIfMissing(&info->parameter_surface_ids, "SBSQL-0B00DEA678E2");
-  AppendIfMissing(&info->parameter_surface_ids, "SBSQL-C5D151D17944");
-  ++(*index);
-  std::vector<std::string> type_surface_ids;
-  if (!ConsumeSimpleCreateTableType(cst, index, &info->parameter_type_name,
-                                    &type_surface_ids)) {
-    info->invalid_reason = "routine_parameter_type_required";
-    return false;
+  return ConsumeRoutineDescriptorList(cst, index, info, true);
+}
+
+bool ConsumeOptionalExecutableBody(const CstDocument& cst,
+                                   std::size_t* index,
+                                   SimpleCreateExecutableObjectInfo* info) {
+  if (index == nullptr || info == nullptr) return false;
+  while (*index < cst.tokens.size()) {
+    if (cst.tokens[*index].kind == TokenKind::kEnd ||
+        cst.tokens[*index].kind == TokenKind::kStatementTerminator) {
+      return true;
+    }
+    if (ToUpperAscii(cst.tokens[*index].text) == "AS") break;
+    ++(*index);
   }
-  for (const auto& surface_id : type_surface_ids) {
-    AppendIfMissing(&info->parameter_surface_ids, surface_id);
+  if (!ConsumeKeyword(cst, index, "AS")) {
+    return true;
   }
-  info->parameter_is_cursor = info->parameter_type_name == "cursor";
-  while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
-  if (*index >= cst.tokens.size() || cst.tokens[*index].text != ")") {
-    info->invalid_reason = "routine_parameter_list_current_route_supports_one_parameter";
-    return false;
+  info->body_present = true;
+  info->body_compiled = true;
+  info->side_effect_class = info->object_kind == "function" ? "none" : "data_mutation";
+  while (*index < cst.tokens.size()) {
+    if (cst.tokens[*index].kind == TokenKind::kEnd ||
+        cst.tokens[*index].kind == TokenKind::kStatementTerminator) {
+      return true;
+    }
+    ++(*index);
   }
-  ++(*index);
   return true;
 }
 
-SimpleCreateExecutableObjectInfo AnalyzeSimpleCreateExecutableObject(const CstDocument& cst) {
+SimpleCreateExecutableObjectInfo AnalyzeSimpleCreateExecutableObject(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids = {}) {
   SimpleCreateExecutableObjectInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
   if (!ConsumeSimpleCreateExecutableObjectKind(cst, &index, &info)) return info;
   info.active = true;
-  if (!ConsumeQualifiedName(cst, &index, &info.name_parts)) {
+  if (!ConsumeQualifiedNameWithLeaf(cst, &index, &info.name_parts, &info.object_name)) {
     info.invalid_reason = "executable_object_name_required";
     return info;
   }
   if (!ConsumeOptionalRoutineParameterList(cst, &index, &info)) {
     return info;
   }
+  if (!ConsumeOptionalRoutineReturnsDescriptor(cst, &index, &info)) {
+    return info;
+  }
+  if (!ConsumeOptionalExecutableBody(cst, &index, &info)) {
+    return info;
+  }
   if (!OnlyStatementTerminatorRemains(cst, index)) {
     info.invalid_reason = "executable_object_signature_body_or_options_out_of_slice";
     return info;
+  }
+  if (info.body_present) {
+    info.internal_procedure_id =
+        "sbsql.internal." + info.object_kind + "." + LowerAscii(info.object_name);
+    info.body_dependency_uuids = resolved_object_uuids;
   }
   info.valid = true;
   return info;
@@ -22802,12 +23228,50 @@ SecurityDclInfo AnalyzeSecurityDcl(const CstDocument& cst,
     info.grant_option = true;
   }
 
+  {
+    std::size_t membership_probe = index;
+    std::size_t member_name_parts = 0;
+    std::size_t container_name_parts = 0;
+    if (ConsumeQualifiedName(cst, &membership_probe, &member_name_parts) &&
+        ConsumeKeyword(cst, &membership_probe, grant ? "TO" : "FROM")) {
+      if (ConsumeKeyword(cst, &membership_probe, "ROLE")) {
+        info.container_kind = "role";
+      } else if (ConsumeKeyword(cst, &membership_probe, "GROUP")) {
+        info.container_kind = "group";
+      }
+      if (ConsumeQualifiedName(cst, &membership_probe, &container_name_parts) &&
+          OnlyStatementTerminatorRemains(cst, membership_probe)) {
+        info.membership = true;
+        info.operation_id = grant ? "security.membership.grant" : "security.membership.revoke";
+        info.opcode = SecurityOpcodeForOperation(info.operation_id);
+        info.target_name_parts = member_name_parts;
+        info.grantee_name_parts = container_name_parts;
+        info.valid = resolved_object_uuids.size() >= 2;
+        if (info.valid) {
+          info.member_principal_uuid = resolved_object_uuids[0];
+          info.container_uuid = resolved_object_uuids[1];
+        }
+        return info;
+      }
+    }
+  }
+
   info.privilege = ConsumeSinglePrivilege(cst, &index);
   if (info.privilege.empty()) return info;
   if (!ConsumeKeyword(cst, &index, "ON")) return info;
   info.target_object_kind = ConsumeOptionalObjectKind(cst, &index);
   if (!ConsumeQualifiedName(cst, &index, &info.target_name_parts)) return info;
   if (!ConsumeKeyword(cst, &index, grant ? "TO" : "FROM")) return info;
+  if (ConsumeKeyword(cst, &index, "ROLE")) {
+    info.grantee_kind = "role";
+  } else if (ConsumeKeyword(cst, &index, "GROUP")) {
+    info.grantee_kind = "group";
+  } else if (ConsumeKeyword(cst, &index, "USER") ||
+             ConsumeKeyword(cst, &index, "PRINCIPAL")) {
+    info.grantee_kind = "principal";
+  } else {
+    info.grantee_kind = "role";
+  }
   if (!ConsumeQualifiedName(cst, &index, &info.grantee_name_parts)) return info;
   if (grant && PeekKeyword(cst, index, "WITH")) {
     if (!ConsumeKeyword(cst, &index, "WITH") ||
@@ -22834,6 +23298,61 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
   std::size_t index = 0;
 
   if (ConsumeKeyword(cst, &index, "CREATE")) {
+    const bool role_create = ConsumeKeyword(cst, &index, "ROLE");
+    const bool group_create = !role_create && ConsumeKeyword(cst, &index, "GROUP");
+    if (role_create || group_create) {
+      const bool group_route = group_create;
+      info.active = true;
+      info.mutating = true;
+      info.operation_id = group_route ? "security.group.create" : "security.role.create";
+      info.opcode = SecurityOpcodeForOperation(info.operation_id);
+      info.surface_variant = group_route ? "create_group" : "create_role";
+      info.policy_scope = group_route ? "security_group" : "security_role";
+      info.target_object_kind = group_route ? "security_group" : "security_role";
+      info.principal_kind = group_route ? "group" : "role";
+      info.lifecycle_state = "active";
+      info.row_surface_ids = {"SBSQL-A33FD38A6F9D", "SBSQL-05E7A34BFCA4"};
+      if (!ConsumeQualifiedNameWithLeaf(cst,
+                                        &index,
+                                        &info.principal_name_parts,
+                                        &info.principal_name)) {
+        info.invalid_reason = group_route ? "group_name_required" : "role_name_required";
+        return info;
+      }
+      while (!OnlyStatementTerminatorRemains(cst, index)) {
+        if (group_route && ConsumeKeyword(cst, &index, "EXTERNAL")) {
+          if (!ConsumeKeyword(cst, &index, "REF")) {
+            info.invalid_reason = "group_external_ref_keyword_required";
+            return info;
+          }
+          info.credential_protected_material_ref = ConsumeIdentifierText(cst, &index);
+          if (info.credential_protected_material_ref.empty()) {
+            info.invalid_reason = "group_external_ref_required";
+            return info;
+          }
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "ENABLE")) {
+          info.lifecycle_state = "active";
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "DISABLE")) {
+          info.lifecycle_state = "disabled";
+          continue;
+        }
+        info.invalid_reason = group_route ? "create_group_unrecognized_clause"
+                                          : "create_role_unrecognized_clause";
+        return info;
+      }
+      if (resolved_object_uuids.empty()) {
+        info.invalid_reason = group_route ? "group_uuid_required" : "role_uuid_required";
+        return info;
+      }
+      info.principal_uuid = resolved_object_uuids.front();
+      info.valid = true;
+      return info;
+    }
+
     if (ConsumeKeyword(cst, &index, "PRINCIPAL")) {
       info.active = true;
       info.mutating = true;
@@ -22894,6 +23413,121 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       return info;
     }
 
+    const bool mask_create = ConsumeKeyword(cst, &index, "MASK");
+    const bool rls_create = !mask_create && ConsumeKeyword(cst, &index, "RLS");
+    if (mask_create || rls_create) {
+      info.active = true;
+      info.mutating = true;
+      info.operation_id = "security.policy.create";
+      info.opcode = SecurityOpcodeForOperation(info.operation_id);
+      info.surface_variant = mask_create ? "create_mask" : "create_rls";
+      info.target_object_kind = mask_create ? "column" : "table";
+      info.policy_scope = info.target_object_kind;
+      info.policy_effect = mask_create ? "mask" : "rls_row_filter";
+      info.predicate_envelope = mask_create ? "predicate:mask" : "predicate:rls";
+      info.row_surface_ids = {"SBSQL-F15CCA3D7F79", "SBSQL-539F0D133459"};
+      if (!ConsumeQualifiedName(cst, &index, &info.policy_name_parts)) {
+        info.invalid_reason = mask_create ? "mask_name_required" : "rls_name_required";
+        return info;
+      }
+      if (!ConsumeKeyword(cst, &index, "ON")) {
+        info.invalid_reason = mask_create ? "mask_target_required" : "rls_target_required";
+        return info;
+      }
+      if (mask_create) {
+        if (!ConsumeKeyword(cst, &index, "COLUMN")) {
+          info.invalid_reason = "mask_column_target_required";
+          return info;
+        }
+        info.target_object_kind = "column";
+      } else {
+        if (ConsumeKeyword(cst, &index, "TABLE")) {
+          info.target_object_kind = "table";
+        }
+      }
+      info.policy_scope = info.target_object_kind;
+      if (!ConsumeQualifiedName(cst, &index, &info.target_name_parts)) {
+        info.invalid_reason = mask_create ? "mask_target_name_required" : "rls_target_name_required";
+        return info;
+      }
+      while (!OnlyStatementTerminatorRemains(cst, index)) {
+        if (ConsumeKeyword(cst, &index, "FOR")) {
+          const std::string operation = LowerAscii(ConsumeIdentifierText(cst, &index));
+          if (operation.empty()) {
+            info.invalid_reason = "policy_for_operation_required";
+            return info;
+          }
+          if (rls_create) {
+            info.policy_effect = operation + "_rls_row_filter";
+          }
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "TO")) {
+          if (ConsumeKeyword(cst, &index, "ROLE")) {
+            info.policy_scope = "role";
+          } else if (ConsumeKeyword(cst, &index, "GROUP")) {
+            info.policy_scope = "group";
+          } else if (ConsumeKeyword(cst, &index, "USER")) {
+            info.policy_scope = "user";
+          }
+          if (!ConsumeQualifiedName(cst, &index, &info.role_name_parts)) {
+            info.invalid_reason = "policy_subject_name_required";
+            return info;
+          }
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "USING")) {
+          if (mask_create) {
+            if (!ConsumeExpressionUntilPolicyClause(cst, &index)) {
+              info.invalid_reason = "mask_using_expression_required";
+              return info;
+            }
+            info.predicate_envelope = "predicate:mask_using";
+          } else {
+            if (!ConsumeParenthesizedExpression(cst, &index)) {
+              info.invalid_reason = "rls_using_expression_required";
+              return info;
+            }
+            info.predicate_envelope = "predicate:rls_using";
+          }
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "AS")) {
+          if (ConsumeKeyword(cst, &index, "RESTRICTIVE")) {
+            if (info.policy_effect.find("restrictive") == std::string::npos) {
+              info.policy_effect += "_restrictive";
+            }
+            continue;
+          }
+          if (ConsumeKeyword(cst, &index, "PERMISSIVE")) {
+            if (info.policy_effect.find("permissive") == std::string::npos) {
+              info.policy_effect += "_permissive";
+            }
+            continue;
+          }
+          info.invalid_reason = "policy_as_mode_required";
+          return info;
+        }
+        if (ConsumeKeyword(cst, &index, "ACTIVE")) {
+          info.lifecycle_state = "active";
+          continue;
+        }
+        info.invalid_reason = mask_create ? "create_mask_unrecognized_clause"
+                                          : "create_rls_unrecognized_clause";
+        return info;
+      }
+      if (resolved_object_uuids.empty()) {
+        info.invalid_reason = mask_create ? "mask_target_uuid_required" : "rls_target_uuid_required";
+        return info;
+      }
+      info.target_object_uuid = resolved_object_uuids[0];
+      if (resolved_object_uuids.size() >= 2) {
+        info.role_uuid = resolved_object_uuids[1];
+      }
+      info.valid = true;
+      return info;
+    }
+
     if (ConsumeKeyword(cst, &index, "POLICY")) {
       info.active = true;
       info.mutating = true;
@@ -22928,15 +23562,72 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
           }
           continue;
         }
+        if (ConsumeKeyword(cst, &index, "FOR")) {
+          const std::string operation = LowerAscii(ConsumeIdentifierText(cst, &index));
+          if (operation.empty()) {
+            info.invalid_reason = "policy_for_operation_required";
+            return info;
+          }
+          info.policy_effect = operation + "_row_filter";
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "TO")) {
+          if (ConsumeKeyword(cst, &index, "ROLE")) {
+            info.policy_scope = "role";
+          } else if (ConsumeKeyword(cst, &index, "GROUP")) {
+            info.policy_scope = "group";
+          } else if (ConsumeKeyword(cst, &index, "USER")) {
+            info.policy_scope = "user";
+          }
+          if (!ConsumeQualifiedName(cst, &index, &info.role_name_parts)) {
+            info.invalid_reason = "policy_subject_name_required";
+            return info;
+          }
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "AS")) {
+          if (ConsumeKeyword(cst, &index, "RESTRICTIVE")) {
+            if (info.policy_effect.empty() || info.policy_effect == "row_filter") {
+              info.policy_effect = "restrictive_row_filter";
+            } else if (info.policy_effect.find("restrictive") == std::string::npos) {
+              info.policy_effect += "_restrictive";
+            }
+            continue;
+          }
+          if (ConsumeKeyword(cst, &index, "PERMISSIVE")) {
+            if (info.policy_effect.empty() || info.policy_effect == "row_filter") {
+              info.policy_effect = "permissive_row_filter";
+            } else if (info.policy_effect.find("permissive") == std::string::npos) {
+              info.policy_effect += "_permissive";
+            }
+            continue;
+          }
+          info.invalid_reason = "policy_as_mode_required";
+          return info;
+        }
+        if (ConsumeKeyword(cst, &index, "USING")) {
+          if (!ConsumeParenthesizedExpression(cst, &index)) {
+            info.invalid_reason = "policy_using_expression_required";
+            return info;
+          }
+          info.predicate_envelope = "predicate:using";
+          continue;
+        }
+        if (ConsumeKeyword(cst, &index, "ACTIVE")) {
+          info.lifecycle_state = "active";
+          continue;
+        }
         info.invalid_reason = "create_policy_unrecognized_clause";
         return info;
       }
-      if (resolved_object_uuids.size() < 2) {
-        info.invalid_reason = "policy_and_target_uuids_required";
+      if (resolved_object_uuids.empty()) {
+        info.invalid_reason = "policy_target_uuid_required";
         return info;
       }
-      info.policy_uuid = resolved_object_uuids[0];
-      info.target_object_uuid = resolved_object_uuids[1];
+      info.target_object_uuid = resolved_object_uuids[0];
+      if (resolved_object_uuids.size() >= 2) {
+        info.role_uuid = resolved_object_uuids[1];
+      }
       info.valid = true;
       return info;
     }
@@ -24029,16 +24720,23 @@ void PopulateSecurityDclAuthority(SblrEnvelope* envelope, const SecurityDclInfo&
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
+  envelope->operation_family = "sblr.security.mutation.v3";
+  envelope->sblr_operation_key = "sblr.security.mutation.v3";
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps, "authority.server.resolve_name_registry_public");
-  AppendIfMissing(&envelope->required_authority_steps, "authority.engine.security_privilege_api_required");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  info.membership
+                      ? "authority.engine.security_membership_api_required"
+                      : "authority.engine.security_privilege_api_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_security_commit_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.security.privilege_grant");
+  AppendIfMissing(&envelope->descriptor_refs,
+                  info.membership ? "sys.security.membership" : "sys.security.privilege_grant");
   AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-  AppendIfMissing(&envelope->policy_refs, "security_privilege_grant_policy");
+  AppendIfMissing(&envelope->policy_refs,
+                  info.membership ? "security_membership_policy" : "security_privilege_grant_policy");
 }
 
 void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
@@ -24049,6 +24747,8 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   envelope->engine_api_operation_id = info.operation_id;
   const bool security_mutation_route =
       info.operation_id == "security.session.set_role" ||
+      info.operation_id == "security.role.create" ||
+      info.operation_id == "security.group.create" ||
       info.operation_id == "security.principal.create" ||
       info.operation_id == "security.principal.alter";
   envelope->operation_family = security_mutation_route ? "sblr.security.mutation.v3"
@@ -24065,7 +24765,9 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   if (info.operation_id == "security.session.set_role") {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.security_session_role_api_required");
-  } else if (info.operation_id == "security.principal.create" ||
+  } else if (info.operation_id == "security.role.create" ||
+             info.operation_id == "security.group.create" ||
+             info.operation_id == "security.principal.create" ||
              info.operation_id == "security.principal.alter") {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.security_principal_api_required");
@@ -24088,7 +24790,9 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
     AppendIfMissing(&envelope->descriptor_refs, "sys.security.role");
     AppendIfMissing(&envelope->descriptor_refs, "sys.security.session_role");
     AppendIfMissing(&envelope->policy_refs, "security_session_role_policy");
-  } else if (info.operation_id == "security.principal.create" ||
+  } else if (info.operation_id == "security.role.create" ||
+             info.operation_id == "security.group.create" ||
+             info.operation_id == "security.principal.create" ||
              info.operation_id == "security.principal.alter") {
     AppendIfMissing(&envelope->descriptor_refs, "sys.security.principal");
     AppendIfMissing(&envelope->policy_refs, "security_principal_management_policy");
@@ -24323,6 +25027,15 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
     envelope->operands.push_back({"text", "migration_action", info.secondary_ref});
   } else if (spec.surface_key == "show.migration") {
     envelope->operands.push_back({"text", "migration_ref", info.target_ref});
+  } else if (spec.surface_key == "cluster.lifecycle.create") {
+    envelope->operands.push_back({"text", "cluster_ref", info.target_ref});
+    envelope->operands.push_back({"text", "cluster_action", "create"});
+    envelope->operands.push_back({"text", "validate_only", "true"});
+  } else if (spec.surface_key == "alter.cluster.add_member") {
+    envelope->operands.push_back({"text", "cluster_ref", info.target_ref});
+    envelope->operands.push_back({"text", "cluster_action", "add_member"});
+    envelope->operands.push_back({"text", "member_ref", info.secondary_ref});
+    envelope->operands.push_back({"text", "validate_only", "true"});
   } else if (spec.surface_key == "sbsql.surface_replay") {
     envelope->operands.push_back({"text", "target_ref", info.target_ref});
     envelope->operands.push_back({"text", "target_ref_kind", "surface"});
@@ -26770,9 +27483,31 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
                           info.parameter_surface_ids);
     out << ',';
   }
+  if (info.return_descriptor_present) {
+    out << "\"routine_return_descriptor_present\":true,"
+        << "\"routine_return_count\":" << info.return_count << ',';
+  }
   out
       << "\"body_text_included\":false,"
-      << "\"body_compilation_included\":false,"
+      << "\"body_compilation_included\":" << (info.body_compiled ? "true" : "false") << ','
+      << "\"executable_descriptor_kind\":\""
+      << (info.body_compiled ? "internal_procedure" : "metadata_only") << "\",";
+  if (info.body_compiled) {
+    out << "\"executor\":\"internal_procedure\","
+        << "\"internal_procedure_id\":\"" << EscapeJson(info.internal_procedure_id) << "\","
+        << "\"side_effect_class\":\"" << EscapeJson(info.side_effect_class) << "\","
+        << "\"compiled_body_provenance\":\"sbsql_udr_lowering\",";
+    std::size_t dependency_index = 0;
+    for (const auto& dependency_uuid : info.body_dependency_uuids) {
+      if (dependency_uuid.empty()) continue;
+      out << "\"related_object_" << dependency_index << "_uuid\":\""
+          << EscapeJson(dependency_uuid) << "\","
+          << "\"related_object_" << dependency_index << "_kind\":\"table\",";
+      ++dependency_index;
+    }
+    out << "\"related_object_count\":" << dependency_index << ',';
+  }
+  out
       << "\"runtime_invocation_included\":false,"
       << "\"name_registry_required\":true,"
       << "\"name_text_included\":false,"
@@ -27566,19 +28301,28 @@ void AppendValuesSetOperationJson(std::ostream& out, const ValuesSetOperationInf
 
 void AppendSecurityDclJson(std::ostream& out, const SecurityDclInfo& info) {
   if (!info.active || !info.valid) return;
-  out << "\"security_envelope_kind\":\"privilege_dcl\","
-      << "\"security_authority\":\"engine.security.privilege\","
-      << "\"security_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
-      << "\"privilege\":\"" << EscapeJson(info.privilege) << "\","
-      << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"grantee_kind\":\"" << EscapeJson(info.grantee_kind) << "\","
-      << "\"grantee_uuid\":\"" << EscapeJson(info.grantee_uuid) << "\","
-      << "\"grant_effect\":\"" << EscapeJson(info.grant_effect) << "\","
-      << "\"grant_option\":" << (info.grant_option ? "true" : "false") << ','
+  out << "\"security_envelope_kind\":\""
+      << (info.membership ? "membership_dcl" : "privilege_dcl") << "\","
+      << "\"security_authority\":\"engine.security."
+      << (info.membership ? "membership" : "privilege") << "\","
+      << "\"security_operation_id\":\"" << EscapeJson(info.operation_id) << "\",";
+  if (info.membership) {
+    out << "\"member_principal_uuid\":\"" << EscapeJson(info.member_principal_uuid) << "\","
+        << "\"container_uuid\":\"" << EscapeJson(info.container_uuid) << "\","
+        << "\"container_kind\":\"" << EscapeJson(info.container_kind) << "\",";
+  } else {
+    out << "\"privilege\":\"" << EscapeJson(info.privilege) << "\","
+        << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
+        << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
+        << "\"grantee_kind\":\"" << EscapeJson(info.grantee_kind) << "\","
+        << "\"grantee_uuid\":\"" << EscapeJson(info.grantee_uuid) << "\","
+        << "\"grant_effect\":\"" << EscapeJson(info.grant_effect) << "\",";
+  }
+  out << "\"grant_option\":" << (info.grant_option ? "true" : "false") << ','
       << "\"target_name_parts\":" << info.target_name_parts << ','
       << "\"grantee_name_parts\":" << info.grantee_name_parts << ','
-      << "\"uuid_resolution_order\":\"target_then_grantee\","
+      << "\"uuid_resolution_order\":\""
+      << (info.membership ? "member_then_container" : "target_then_grantee") << "\","
       << "\"parser_authorizes\":false,"
       << "\"name_text_included\":false,"
       << "\"sql_text_included\":false,";
@@ -27588,8 +28332,12 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
                                    const SecurityPolicyRouteInfo& info) {
   if (!info.active || !info.valid) return;
   const bool principal_route = info.operation_id == "security.principal.create" ||
+                               info.operation_id == "security.role.create" ||
+                               info.operation_id == "security.group.create" ||
                                info.operation_id == "security.principal.alter";
-  const bool create_principal = info.operation_id == "security.principal.create";
+  const bool create_principal = info.operation_id == "security.principal.create" ||
+                                info.operation_id == "security.role.create" ||
+                                info.operation_id == "security.group.create";
   out << "\"security_envelope_kind\":\""
       << (principal_route ? "principal_or_policy_ddl" : "policy_or_role") << "\","
       << "\"security_authority\":\""
@@ -28398,6 +29146,43 @@ void AppendMaterializedCteJson(std::ostream& out,
     append_relation(1, info.recursive_rows);
     return;
   }
+  if (info.aggregate_assertion) {
+    out << "\"query_envelope_kind\":\"values_materialized_cte\","
+        << "\"query_operation\":\"materialized_cte\","
+        << "\"query_execute\":\"true\","
+        << "\"cte_name_text_included\":false,"
+        << "\"cte_strategy\":\"nonrecursive_values_materialized\","
+        << "\"cte_binding_model\":\"values_nonrecursive_current_route\","
+        << "\"relation_count\":\"1\","
+        << "\"relation_0_row_count\":\"" << info.anchor_rows.size() << "\","
+        << "\"values_column_count\":\"" << info.column_count << "\","
+        << "\"source_relation_required\":false,"
+        << "\"row_storage_touched\":false,"
+        << "\"mga_transaction_context_required\":true,"
+        << "\"object_name_text_included\":false,"
+        << "\"sql_text_included\":false,"
+        << "\"result_projection\":\"aggregate_assertion\","
+        << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
+        << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
+        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
+        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
+        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
+        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
+    for (std::size_t row = 0; row < info.anchor_rows.size(); ++row) {
+      for (std::size_t column = 0; column < info.anchor_rows[row].size(); ++column) {
+        const auto& item = info.anchor_rows[row][column];
+        out << "\"relation_0_" << row << '_' << column
+            << "_name\":\"" << EscapeJson(item.name) << "\","
+            << "\"relation_0_" << row << '_' << column
+            << "_type\":\"" << EscapeJson(item.type_name) << "\","
+            << "\"relation_0_" << row << '_' << column
+            << "_value\":\"" << EscapeJson(item.value) << "\","
+            << "\"relation_0_" << row << '_' << column
+            << "_is_null\":\"" << (item.is_null ? "true" : "false") << "\",";
+      }
+    }
+    return;
+  }
   out << "\"query_envelope_kind\":\"table_materialized_cte\","
       << "\"query_operation\":\"materialized_cte\","
       << "\"query_execute\":\"true\","
@@ -28988,7 +29773,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
        (simple_create_table.active && simple_create_table.valid))
           ? ConstraintDdlInfo{}
           : AnalyzeConstraintDdl(cst);
-  const auto simple_create_executable_object = AnalyzeSimpleCreateExecutableObject(cst);
+  const auto simple_create_executable_object =
+      AnalyzeSimpleCreateExecutableObject(cst, bound.resolved_object_uuids);
   const auto routine_invocation =
       AnalyzeRoutineInvocationRoute(cst, bound.resolved_object_uuids);
   const auto transaction_lock_route = AnalyzeTransactionLockRoute(cst);
@@ -31406,12 +32192,18 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         (envelope.payload.find("\"signature_descriptor_embedded\":true") != std::string::npos &&
          envelope.payload.find("\"routine_parameter_descriptor_present\":true") != std::string::npos &&
          envelope.payload.find("\"routine_parameter_name_text_included\":false") != std::string::npos);
+    const bool body_compilation_descriptor_valid =
+        envelope.payload.find("\"body_compilation_included\":false") != std::string::npos ||
+        (envelope.payload.find("\"body_compilation_included\":true") != std::string::npos &&
+         envelope.payload.find("\"executor\":\"internal_procedure\"") != std::string::npos &&
+         envelope.payload.find("\"internal_procedure_id\":\"") != std::string::npos &&
+         envelope.payload.find("\"compiled_body_provenance\":\"sbsql_udr_lowering\"") != std::string::npos);
     if (envelope.operation_family != "sblr.catalog.mutation.v3" ||
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.catalog.") == std::string::npos ||
         !signature_descriptor_valid ||
         envelope.payload.find("\"body_text_included\":false") == std::string::npos ||
-        envelope.payload.find("\"body_compilation_included\":false") == std::string::npos ||
+        !body_compilation_descriptor_valid ||
         envelope.payload.find("\"runtime_invocation_included\":false") == std::string::npos ||
         envelope.payload.find("\"name_registry_required\":true") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
@@ -32164,7 +32956,36 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "security privilege SBLR must use UUID-bound engine security authority without parser authorization");
     }
   }
+  if (envelope.operation_id == "security.membership.grant" ||
+      envelope.operation_id == "security.membership.revoke") {
+    const bool grant_valid =
+        envelope.operation_id == "security.membership.grant" &&
+        envelope.sblr_opcode == "SBLR_SECURITY_MEMBERSHIP_GRANT";
+    const bool revoke_valid =
+        envelope.operation_id == "security.membership.revoke" &&
+        envelope.sblr_opcode == "SBLR_SECURITY_MEMBERSHIP_REVOKE";
+    if (!grant_valid && !revoke_valid) {
+      AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_OPCODE_MISMATCH",
+                       "security membership SBLR operation id and opcode do not match");
+    }
+    if (envelope.operation_family != "sblr.security.mutation.v3" ||
+        envelope.sblr_operation_key != "sblr.security.mutation.v3" ||
+        !HasValue(envelope.required_authority_steps, "authority.engine.security_membership_api_required") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
+        !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
+        !HasValue(envelope.descriptor_refs, "sys.security.membership") ||
+        envelope.payload.find("\"security_envelope_kind\":\"membership_dcl\"") == std::string::npos ||
+        envelope.payload.find("\"member_principal_uuid\"") == std::string::npos ||
+        envelope.payload.find("\"container_uuid\"") == std::string::npos ||
+        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
+      AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_MEMBERSHIP_AUTHORITY_INVALID",
+                       "security membership SBLR must use UUID-bound engine security authority without parser authorization");
+    }
+  }
   if (envelope.operation_id == "security.session.set_role" ||
+      envelope.operation_id == "security.role.create" ||
+      envelope.operation_id == "security.group.create" ||
       envelope.operation_id == "security.principal.create" ||
       envelope.operation_id == "security.principal.alter" ||
       envelope.operation_id == "security.policy.create" ||
@@ -32206,10 +33027,14 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_ROLE_AUTHORITY_INVALID",
                          "SET ROLE SBLR must carry UUID-bound role authority");
       }
-    } else if (envelope.operation_id == "security.principal.create" ||
+    } else if (envelope.operation_id == "security.role.create" ||
+               envelope.operation_id == "security.group.create" ||
+               envelope.operation_id == "security.principal.create" ||
                envelope.operation_id == "security.principal.alter") {
       const bool principal_name_policy_valid =
-          envelope.operation_id == "security.principal.create"
+          envelope.operation_id == "security.principal.create" ||
+          envelope.operation_id == "security.role.create" ||
+          envelope.operation_id == "security.group.create"
               ? envelope.payload.find("\"name_text_included\":true") != std::string::npos
               : envelope.payload.find("\"name_text_included\":false") != std::string::npos;
       if (!HasValue(envelope.required_authority_steps,
@@ -32221,10 +33046,15 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                          "security principal SBLR must carry UUID-bound principal authority");
       }
     } else {
+      const bool create_policy = envelope.operation_id == "security.policy.create";
+      const bool policy_uuid_binding_valid =
+          create_policy
+              ? envelope.payload.find("\"target_object_uuid\"") != std::string::npos
+              : envelope.payload.find("\"policy_uuid\"") != std::string::npos;
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_policy_api_required") ||
           !HasValue(envelope.descriptor_refs, "sys.security.policy") ||
-          envelope.payload.find("\"policy_uuid\"") == std::string::npos ||
+          !policy_uuid_binding_valid ||
           envelope.payload.find("\"name_text_included\":false") == std::string::npos) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_POLICY_UUID_INVALID",
                          "security policy SBLR must carry UUID-bound policy authority");

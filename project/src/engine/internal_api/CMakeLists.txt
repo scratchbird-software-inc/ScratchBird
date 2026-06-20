@@ -233,6 +233,8 @@ add_library(sb_engine_internal_api
   transaction/savepoint_api.cpp
   transaction/transaction_inspect_api.cpp
   transaction/transaction_api.cpp
+  ../sblr/sblr_runtime.cpp
+  ../sblr/sblr_sequence_runtime.cpp
 )
 
 if(NOT TARGET sb_cluster_provider)

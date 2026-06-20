@@ -205,7 +205,42 @@ struct ServerPreparedStatementRecord {
   std::uint64_t message_resource_epoch = 1;
   std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
   std::string resource_version_identity = "sbsql.resource-pack.v1";
+  std::uint64_t session_object_handle_id = 0;
+  std::uint64_t session_object_handle_generation = 0;
+  std::string target_object_uuid;
+  std::string target_object_kind;
+  std::string target_operation_id;
+  std::string target_column_set_hash;
   bool closed = false;
+};
+
+struct ServerSessionObjectHandleRecord {
+  std::uint64_t handle_id = 0;
+  std::uint64_t generation = 0;
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> auth_context_uuid{};
+  std::array<std::uint8_t, 16> principal_uuid{};
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  std::string database_uuid;
+  std::string object_uuid;
+  std::string object_kind;
+  std::string operation_id;
+  std::string column_set_hash;
+  std::uint64_t catalog_generation = 1;
+  std::uint64_t security_epoch = 1;
+  std::uint64_t descriptor_epoch = 1;
+  std::uint64_t grant_epoch = 1;
+  std::uint64_t policy_generation = 1;
+  std::string role_set_hash = "roles/default";
+  std::string group_set_hash = "groups/default";
+  std::string search_path_hash = "search_path/default";
+  bool closed = false;
+};
+
+struct ServerSessionObjectHandleValidation {
+  bool accepted = false;
+  std::string detail;
+  const ServerSessionObjectHandleRecord* handle = nullptr;
 };
 
 struct ServerLanguageContextIdentity {
@@ -311,6 +346,7 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerFinalityRecord> finality_by_request_uuid;
   std::map<std::string, ServerRequestRecord> requests_by_uuid;
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
+  std::map<std::string, ServerSessionObjectHandleRecord> object_handles_by_key;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, ServerLanguageResourceDirectoryRecord>
@@ -319,6 +355,7 @@ struct ServerSessionRegistry {
       job_schedulers_by_database_uuid;
   std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>
       job_quotas_by_database_uuid;
+  std::uint64_t next_session_object_handle_id = 1;
 };
 
 struct AuthHandoffPayload {
@@ -543,6 +580,24 @@ void LinkServerRequestPreparedStatement(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& request_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid);
+ServerSessionObjectHandleRecord AllocateSessionObjectHandle(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string object_uuid,
+    std::string object_kind,
+    std::string operation_id,
+    std::string column_set_hash = {});
+ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
+    const ServerSessionRegistry& registry,
+    const ServerSessionRecord& session,
+    std::uint64_t handle_id,
+    std::uint64_t generation,
+    const std::string& object_uuid,
+    const std::string& operation_id);
+void CloseSessionObjectHandlesForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string detail = "session_closed");
 void LinkServerRequestCursor(ServerSessionRegistry* registry,
                              const std::array<std::uint8_t, 16>& request_uuid,
                              const std::array<std::uint8_t, 16>& cursor_uuid,

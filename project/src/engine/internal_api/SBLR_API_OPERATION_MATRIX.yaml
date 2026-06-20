@@ -1321,6 +1321,74 @@ entries:
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_SEC_CREATE_ROLE
+    opcode_status: opcode_registered
+    api_operation_id: security.role.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    api_function_name: EngineSecurityCreateRole
+    request_type: EngineSecurityCreateRoleRequest
+    result_type: EngineSecurityCreateRoleResult
+    required_transaction_context: true
+    required_descriptor_inputs: uuid_bound_role
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: engine_security
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_SEC_CREATE_GROUP
+    opcode_status: opcode_registered
+    api_operation_id: security.group.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    api_function_name: EngineSecurityCreateGroup
+    request_type: EngineSecurityCreateGroupRequest
+    result_type: EngineSecurityCreateGroupResult
+    required_transaction_context: true
+    required_descriptor_inputs: uuid_bound_group
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: engine_security
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_SECURITY_MEMBERSHIP_GRANT
+    opcode_status: opcode_registered
+    api_operation_id: security.membership.grant
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    api_function_name: EngineSecurityGrantMembership
+    request_type: EngineSecurityGrantMembershipRequest
+    result_type: EngineSecurityGrantMembershipResult
+    required_transaction_context: true
+    required_descriptor_inputs: uuid_bound_member_and_container
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: engine_security
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
+  - sblr_operation: SBLR_SECURITY_MEMBERSHIP_REVOKE
+    opcode_status: opcode_registered
+    api_operation_id: security.membership.revoke
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    api_function_name: EngineSecurityRevokeMembership
+    request_type: EngineSecurityRevokeMembershipRequest
+    result_type: EngineSecurityRevokeMembershipResult
+    required_transaction_context: true
+    required_descriptor_inputs: uuid_bound_member_and_container
+    bound_object_uuid_inputs: uuid_resolved_before_engine_call
+    result_shape: canonical_engine_result
+    diagnostic_mapping: engine_api_diagnostic_vector
+    evidence_mapping: engine_api_evidence_vector
+    security_authority_family: engine_security
+    current_implementation_status: behavior_implemented
+    executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_PRIVILEGE_REVOKE
     opcode_status: opcode_registered
     api_operation_id: security.privilege.revoke

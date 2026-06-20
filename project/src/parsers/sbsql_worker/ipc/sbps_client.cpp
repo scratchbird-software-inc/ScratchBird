@@ -15,6 +15,8 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <random>
 #include <string_view>
 #include <utility>
@@ -657,7 +659,11 @@ void CloseSbpsSocket(SbpsSocketHandle fd) {
 int WriteSocketBytes(SbpsSocketHandle fd, const std::uint8_t* data, std::size_t size) {
   const auto chunk =
       std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max()));
-  return static_cast<int>(::write(fd, data, chunk));
+#ifdef MSG_NOSIGNAL
+  return static_cast<int>(::send(fd, data, chunk, MSG_NOSIGNAL));
+#else
+  return static_cast<int>(::send(fd, data, chunk, 0));
+#endif
 }
 
 int ReadSocketBytes(SbpsSocketHandle fd, std::uint8_t* data, std::size_t size) {
@@ -767,6 +773,90 @@ bool AssembleChunkedFrame(SbpsSocketHandle fd, Frame* frame, MessageVectorSet* m
   return true;
 }
 
+std::mutex& CachedSbpsSocketMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, SbpsSocketHandle>& CachedSbpsSockets() {
+  static std::map<std::string, SbpsSocketHandle> sockets;
+  return sockets;
+}
+
+void AppendDiagnostics(MessageVectorSet* target, const MessageVectorSet& source) {
+  if (target == nullptr || source.diagnostics.empty()) return;
+  target->diagnostics.insert(target->diagnostics.end(),
+                             source.diagnostics.begin(),
+                             source.diagnostics.end());
+}
+
+void CloseCachedSbpsSocket(std::string_view path) {
+  auto& sockets = CachedSbpsSockets();
+  const auto found = sockets.find(std::string(path));
+  if (found == sockets.end()) return;
+  CloseSbpsSocket(found->second);
+  sockets.erase(found);
+}
+
+SbpsSocketHandle ConnectCachedSbpsSocket(std::string_view path,
+                                         MessageVectorSet* messages,
+                                         std::uint32_t timeout_ms) {
+  auto& sockets = CachedSbpsSockets();
+  const auto key = std::string(path);
+  if (const auto found = sockets.find(key);
+      found != sockets.end() && found->second != kInvalidSbpsSocket) {
+    return found->second;
+  }
+#ifdef _WIN32
+  if (!EnsureWinsockInitialized()) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "Winsock initialization failed for the SBPS client.");
+    return kInvalidSbpsSocket;
+  }
+#endif
+  const SbpsSocketHandle fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd == kInvalidSbpsSocket) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "The parser could not create an SBPS socket.");
+    return kInvalidSbpsSocket;
+  }
+  (void)SetSocketTimeouts(fd, timeout_ms);
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  if (path.size() >= sizeof(addr.sun_path)) {
+    CloseSbpsSocket(fd);
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.ENDPOINT_PATH_TOO_LONG", "The parser-server IPC endpoint path is too long.");
+    return kInvalidSbpsSocket;
+  }
+  std::memcpy(addr.sun_path, path.data(), path.size());
+  addr.sun_path[path.size()] = '\0';
+  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    CloseSbpsSocket(fd);
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.CONNECT_FAILED", "The parser could not connect to sb_server.");
+    return kInvalidSbpsSocket;
+  }
+  sockets[key] = fd;
+  return fd;
+}
+
+bool ReadExpectedResponse(SbpsSocketHandle fd,
+                          const std::array<std::uint8_t, 16>& request_uuid,
+                          Frame* response,
+                          MessageVectorSet* messages) {
+  constexpr int kMaxStaleFrames = 64;
+  for (int index = 0; index < kMaxStaleFrames; ++index) {
+    Frame candidate;
+    if (!ReadPhysicalFrame(fd, &candidate, messages)) return false;
+    if (!AssembleChunkedFrame(fd, &candidate, messages)) return false;
+    if (candidate.header.request_uuid == request_uuid) {
+      *response = std::move(candidate);
+      return true;
+    }
+  }
+  AddDiagnostic(messages,
+                "PARSER_SERVER_IPC.STALE_RESPONSE_LIMIT",
+                "The parser-server IPC response stream did not produce the requested response before the stale-frame limit.");
+  return false;
+}
+
 bool SendRequest(const std::string& endpoint,
                  const FrameHeader& header,
                  const std::vector<std::uint8_t>& payload,
@@ -775,37 +865,40 @@ bool SendRequest(const std::string& endpoint,
                  std::uint32_t timeout_ms = kDefaultSbpsRequestTimeoutMs) {
   const auto path = EndpointPath(endpoint);
   if (!ValidateEndpointPath(path, messages)) return false;
-#ifdef _WIN32
-  if (!EnsureWinsockInitialized()) {
-    AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "Winsock initialization failed for the SBPS client.");
-    return false;
-  }
-#endif
-  Fd fd(::socket(AF_UNIX, SOCK_STREAM, 0));
-  if (!fd.valid()) {
-    AddDiagnostic(messages, "PARSER_SERVER_IPC.SOCKET_CREATE_FAILED", "The parser could not create an SBPS socket.");
-    return false;
-  }
-  (void)SetSocketTimeouts(fd.get(), timeout_ms);
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  if (path.size() >= sizeof(addr.sun_path)) {
-    AddDiagnostic(messages, "PARSER_SERVER_IPC.ENDPOINT_PATH_TOO_LONG", "The parser-server IPC endpoint path is too long.");
-    return false;
-  }
-  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-  if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    AddDiagnostic(messages, "PARSER_SERVER_IPC.CONNECT_FAILED", "The parser could not connect to sb_server.");
-    return false;
-  }
-  for (const auto& encoded : EncodeFrameSequence(header, payload)) {
-    if (!WriteAll(fd.get(), encoded)) {
+  std::lock_guard<std::mutex> lock(CachedSbpsSocketMutex());
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    MessageVectorSet attempt_messages;
+    const SbpsSocketHandle fd = ConnectCachedSbpsSocket(path, &attempt_messages, timeout_ms);
+    if (fd == kInvalidSbpsSocket) {
+      AppendDiagnostics(messages, attempt_messages);
+      return false;
+    }
+    bool wrote_all = true;
+    for (const auto& encoded : EncodeFrameSequence(header, payload)) {
+      if (!WriteAll(fd, encoded)) {
+        wrote_all = false;
+        break;
+      }
+    }
+    if (!wrote_all) {
+      CloseCachedSbpsSocket(path);
+      if (attempt == 0) continue;
       AddDiagnostic(messages, "PARSER_SERVER_IPC.WRITE_FAILED", "The parser could not write to sb_server.");
       return false;
     }
+    if (ReadExpectedResponse(fd, header.request_uuid, response, &attempt_messages)) {
+      if (header.message_type == kMessageDisconnectNotice) {
+        CloseCachedSbpsSocket(path);
+      }
+      return true;
+    }
+    CloseCachedSbpsSocket(path);
+    if (attempt == 0) continue;
+    AppendDiagnostics(messages, attempt_messages);
+    return false;
   }
-  if (!ReadPhysicalFrame(fd.get(), response, messages)) return false;
-  return AssembleChunkedFrame(fd.get(), response, messages);
+  AddDiagnostic(messages, "PARSER_SERVER_IPC.REQUEST_FAILED", "The parser-server IPC request failed.");
+  return false;
 }
 
 FrameHeader BaseHeader(std::uint16_t message_type,

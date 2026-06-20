@@ -602,9 +602,13 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "observability.show_metrics" ||
          operation_id == "observability.explain_operation" ||
          StartsWith(operation_id, "general.") ||
+         operation_id == "security.membership.grant" ||
+         operation_id == "security.membership.revoke" ||
          operation_id == "security.privilege.grant" ||
          operation_id == "security.privilege.revoke" ||
          operation_id == "security.session.set_role" ||
+         operation_id == "security.role.create" ||
+         operation_id == "security.group.create" ||
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||

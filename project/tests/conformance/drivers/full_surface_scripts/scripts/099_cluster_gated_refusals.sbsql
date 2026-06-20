@@ -1,20 +1,18 @@
 -- ScratchBird driver full-surface script suite
 -- script_id: SBDFS-099
--- Purpose: cluster-gated statement refusals on a single-node public build.
+-- Purpose: cluster-gated inspection and statement refusals on a single-node public build.
 -- namespace placeholder: __SB_NAMESPACE__
 --
 -- DESIGN RATIONALE (grounded in cluster_gated_statements.md):
 --   On a single-node public build, cluster statements are RECOGNIZED by the
 --   parser (they lower to SBLR) but REFUSED by the cluster gate before any
 --   execution authority is granted.  The public compile/link provider —
---   scratchbird.cluster.compile_link_stub_provider — returns fail-closed
+--   public compile-link provider — returns fail-closed
 --   diagnostics such as SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY.
 --
---   Each statement below is EXPECTED TO BE REFUSED.  The harness runner should
---   record these as expected refusals, not as assertion failures.
---
---   At least one positive SELECT assertion is included so the script has ≥1
---   assertion row, as required by the harness contract.
+--   Provider inspection is expected to succeed and report the fail-closed
+--   compile-link provider.  Cluster control statements are expected to be refused
+--   by the provider boundary, not by parser shape rejection.
 --
 -- STATEMENT FAMILIES CHOSEN (from cluster_gated_statements.md Statement Surface):
 --   (A) SHOW CLUSTER PROVIDER  — Inspection family; public provider reports
@@ -33,23 +31,13 @@
 --   - The cluster EBNF is reproduced exactly from cluster_gated_statements.md.
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- POSITIVE MARKER ASSERTION — script-level sentinel.
--- This SELECT runs regardless of refusal outcomes below and must pass cleanly.
--- It confirms the script was dispatched and that at least one assertion exists.
--- ──────────────────────────────────────────────────────────────────────────────
-
-SELECT 'SBDFS-099-001' AS assertion_id,
-       1 AS actual_marker,
-       1 AS expected_marker;
-
--- ──────────────────────────────────────────────────────────────────────────────
--- STATEMENT INDEX 2 — EXPECTED REFUSAL
+-- STATEMENT INDEX 1 — EXPECTED SUCCESS
 -- SHOW CLUSTER PROVIDER
 -- Grounded in cluster_gated_statements.md show_cluster production and
 -- "Inspection Examples" section:
 --   show_cluster ::= SHOW CLUSTER cluster_target cluster_option_list?
 --   cluster_target ::= ... | PROVIDER | ...
--- Public-build expected behavior: returns compile_link_stub provider row with
+-- Public-build expected behavior: returns compile-link provider row with
 -- supports_execution = false, route_admission = false,
 -- diagnostic = SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY
 -- ──────────────────────────────────────────────────────────────────────────────
@@ -57,7 +45,7 @@ SELECT 'SBDFS-099-001' AS assertion_id,
 SHOW CLUSTER PROVIDER;
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- STATEMENT INDEX 3 — EXPECTED REFUSAL
+-- STATEMENT INDEX 2 — EXPECTED REFUSAL
 -- SHOW CLUSTER STATUS
 -- Grounded in cluster_gated_statements.md cluster_target ::= STATUS | ...
 -- and "Inspection Examples": "must return an unsupported, unlicensed, or
@@ -68,13 +56,14 @@ SHOW CLUSTER PROVIDER;
 SHOW CLUSTER STATUS;
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- STATEMENT INDEX 4 — EXPECTED REFUSAL
+-- STATEMENT INDEX 3 — EXPECTED REFUSAL
 -- CREATE CLUSTER
 -- Grounded in cluster_gated_statements.md create_cluster_stmt:
 --   create_cluster_stmt ::= CREATE CLUSTER cluster_ref cluster_create_payload?
 -- and cluster_option_list with VALIDATE ONLY and EMIT DIAGNOSTICS options.
 -- Documented lifecycle example reproduced verbatim from "Lifecycle Examples".
--- Expected: parse accepted, lowers to SBLR, cluster gate refuses execution.
+-- Expected: parse accepted, lowers to SBLR, cluster provider boundary refuses
+-- execution.
 -- ──────────────────────────────────────────────────────────────────────────────
 
 CREATE CLUSTER sbdfs099_probe_cluster
@@ -82,7 +71,7 @@ WITH VALIDATE ONLY,
      EMIT DIAGNOSTICS;
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- STATEMENT INDEX 5 — EXPECTED REFUSAL
+-- STATEMENT INDEX 4 — EXPECTED REFUSAL
 -- ALTER CLUSTER ... ADD MEMBER
 -- Grounded in cluster_gated_statements.md alter_cluster_stmt:
 --   alter_cluster_stmt ::=

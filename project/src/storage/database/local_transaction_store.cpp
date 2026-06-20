@@ -22,6 +22,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -72,6 +75,101 @@ using scratchbird::transaction::mga::LocalTransactionInventory;
 using scratchbird::transaction::mga::TransactionInventoryEntry;
 using scratchbird::transaction::mga::TransactionScope;
 using scratchbird::transaction::mga::TransactionState;
+
+Status StoreOkStatus();
+
+struct TransactionInventoryCacheSignature {
+  std::uintmax_t file_size = 0;
+  std::int64_t write_time_count = 0;
+};
+
+struct CachedTransactionInventory {
+  TransactionInventoryCacheSignature signature;
+  LocalTransactionInventory inventory;
+  scratchbird::transaction::mga::LocalTransactionHorizons horizons;
+};
+
+std::mutex& TransactionInventoryCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, CachedTransactionInventory>& TransactionInventoryCache() {
+  static std::map<std::string, CachedTransactionInventory> cache;
+  return cache;
+}
+
+std::optional<TransactionInventoryCacheSignature> ReadTransactionInventoryCacheSignature(
+    const std::string& path) {
+  if (path.empty()) {
+    return std::nullopt;
+  }
+  std::error_code ignored;
+  const auto file_size = std::filesystem::file_size(path, ignored);
+  if (ignored) {
+    return std::nullopt;
+  }
+  const auto write_time = std::filesystem::last_write_time(path, ignored);
+  if (ignored) {
+    return std::nullopt;
+  }
+  TransactionInventoryCacheSignature signature;
+  signature.file_size = file_size;
+  signature.write_time_count =
+      static_cast<std::int64_t>(write_time.time_since_epoch().count());
+  return signature;
+}
+
+bool SameTransactionInventoryCacheSignature(
+    const TransactionInventoryCacheSignature& lhs,
+    const TransactionInventoryCacheSignature& rhs) {
+  return lhs.file_size == rhs.file_size &&
+         lhs.write_time_count == rhs.write_time_count;
+}
+
+std::optional<LocalTransactionStoreResult> TryLoadCachedTransactionInventory(
+    const std::string& path) {
+  const auto signature = ReadTransactionInventoryCacheSignature(path);
+  if (!signature.has_value()) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+  const auto found = TransactionInventoryCache().find(path);
+  if (found == TransactionInventoryCache().end() ||
+      !SameTransactionInventoryCacheSignature(found->second.signature, *signature)) {
+    return std::nullopt;
+  }
+  LocalTransactionStoreResult result;
+  result.status = StoreOkStatus();
+  result.inventory = found->second.inventory;
+  result.horizons = found->second.horizons;
+  return result;
+}
+
+void InvalidateTransactionInventoryCache(const std::string& path) {
+  if (path.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+  TransactionInventoryCache().erase(path);
+}
+
+void RefreshTransactionInventoryCache(
+    const std::string& path,
+    const LocalTransactionInventory& inventory,
+    const scratchbird::transaction::mga::LocalTransactionHorizons& horizons) {
+  const auto signature = ReadTransactionInventoryCacheSignature(path);
+  if (!signature.has_value()) {
+    InvalidateTransactionInventoryCache(path);
+    return;
+  }
+  CachedTransactionInventory cached;
+  cached.signature = *signature;
+  cached.inventory = inventory;
+  cached.horizons = horizons;
+  std::lock_guard<std::mutex> guard(TransactionInventoryCacheMutex());
+  TransactionInventoryCache()[path] = std::move(cached);
+}
 
 Status StoreOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -705,6 +803,9 @@ u64 NextAppendPageNumber(FileDevice* device, u32 page_size) {
 }  // namespace
 
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::string path) {
+  if (auto cached = TryLoadCachedTransactionInventory(path)) {
+    return *cached;
+  }
   FileDevice device;
   const auto open = device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) { return StoreError(open.status, open.diagnostic); }
@@ -713,7 +814,13 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::strin
   if (!read_header.ok()) { return StoreError(read_header.status, read_header.diagnostic); }
   const auto parsed_header = ParseDatabaseHeader(header_bytes);
   if (!parsed_header.ok()) { return StoreError(parsed_header.status, parsed_header.diagnostic); }
-  return LoadLocalTransactionInventoryFromOpenDevice(&device, parsed_header.header.page_size);
+  auto result = LoadLocalTransactionInventoryFromOpenDevice(&device, parsed_header.header.page_size);
+  if (result.ok()) {
+    RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
+  } else {
+    InvalidateTransactionInventoryCache(path);
+  }
+  return result;
 }
 
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevice* device, u32 page_size) {
@@ -735,6 +842,8 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
     scratchbird::transaction::mga::LocalTransactionInventory inventory) {
+  InvalidateTransactionInventoryCache(path);
+  const LocalTransactionInventory cache_inventory = inventory;
   FileDevice device;
   const auto open = device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) { return StoreError(open.status, open.diagnostic); }
@@ -743,9 +852,15 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
   if (!read_header.ok()) { return StoreError(read_header.status, read_header.diagnostic); }
   const auto parsed_header = ParseDatabaseHeader(header_bytes);
   if (!parsed_header.ok()) { return StoreError(parsed_header.status, parsed_header.diagnostic); }
-  return PersistLocalTransactionInventoryToOpenDevice(&device,
-                                                      parsed_header.header.page_size,
-                                                      std::move(inventory));
+  auto result = PersistLocalTransactionInventoryToOpenDevice(&device,
+                                                            parsed_header.header.page_size,
+                                                            std::move(inventory));
+  if (result.ok()) {
+    RefreshTransactionInventoryCache(path, cache_inventory, result.horizons);
+  } else {
+    InvalidateTransactionInventoryCache(path);
+  }
+  return result;
 }
 
 LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(

@@ -39,10 +39,12 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #if defined(__linux__)
 #include <malloc.h>
@@ -209,7 +211,11 @@ void CloseIpcSocket(IpcSocketHandle fd) {
 int SendIpcSocket(IpcSocketHandle fd, const std::uint8_t* data, std::size_t size) {
   const auto chunk =
       std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+#ifdef MSG_NOSIGNAL
+  return static_cast<int>(::send(fd, data, chunk, MSG_NOSIGNAL));
+#else
   return static_cast<int>(::send(fd, data, chunk, 0));
+#endif
 }
 
 int RecvIpcSocket(IpcSocketHandle fd, std::uint8_t* data, std::size_t size) {
@@ -406,6 +412,27 @@ bool AssembleChunkedFrame(IpcSocketHandle client_fd,
   }
   *frame = std::move(*assembled.frame);
   return true;
+}
+
+bool ClientSocketReady(IpcSocketHandle client_fd) {
+#ifdef _WIN32
+  fd_set read_set;
+  FD_ZERO(&read_set);
+  FD_SET(client_fd, &read_set);
+  timeval timeout{};
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 100000;
+  const int rc = ::select(0, &read_set, nullptr, nullptr, &timeout);
+  return rc > 0 && FD_ISSET(client_fd, &read_set);
+#else
+  pollfd client{};
+  client.fd = client_fd;
+  client.events = POLLIN;
+  const int rc = ::poll(&client, 1, 100);
+  if (rc <= 0) return false;
+  if ((client.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) return true;
+  return (client.revents & POLLIN) != 0;
+#endif
 }
 
 std::vector<std::uint8_t> ErrorFrame(const std::vector<ServerDiagnostic>& diagnostics,
@@ -1322,18 +1349,18 @@ ServerIparProjectionSources BuildIparProjectionSourcesForServer(void* opaque_con
   return sources;
 }
 
-void HandleClient(IpcSocketHandle client_fd,
-                  const ServerBootstrapConfig& config,
-                  const ServerLifecycleArtifacts& artifacts,
-                  const HostedEngineState& engine_state,
-                  ServerSessionRegistry* session_registry,
-                  const ParserPackageRegistry& parser_registry,
-                  ParserEventNotificationRouter* event_router,
-                  ServerListenerOrchestrator* listener_orchestrator,
-                  ServerMaintenanceCoordinator* maintenance_coordinator,
-                  ServerAgentRuntime* agent_runtime,
-                  ServerObservabilityState* observability,
-                  bool* release_heap_after_close) {
+bool HandleClientFrame(IpcSocketHandle client_fd,
+                       const ServerBootstrapConfig& config,
+                       const ServerLifecycleArtifacts& artifacts,
+                       const HostedEngineState& engine_state,
+                       ServerSessionRegistry* session_registry,
+                       const ParserPackageRegistry& parser_registry,
+                       ParserEventNotificationRouter* event_router,
+                       ServerListenerOrchestrator* listener_orchestrator,
+                       ServerMaintenanceCoordinator* maintenance_coordinator,
+                       ServerAgentRuntime* agent_runtime,
+                       ServerObservabilityState* observability,
+                       bool* release_heap_after_close) {
   sbps::Frame frame;
   std::vector<ServerDiagnostic> frame_diagnostics;
   if (!ReadPhysicalFrame(client_fd, config, &frame, &frame_diagnostics) ||
@@ -1348,7 +1375,7 @@ void HandleClient(IpcSocketHandle client_fd,
                            "invalid parser-server IPC frame",
                            frame_diagnostics.empty() ? "" : frame_diagnostics.front().code);
     WriteAll(client_fd, ErrorFrame(frame_diagnostics, frame.header.request_uuid, frame.header.sequence_number));
-    return;
+    return false;
   }
   const bool session_bound_message =
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest) ||
@@ -1372,7 +1399,7 @@ void HandleClient(IpcSocketHandle client_fd,
                                                 "parser_server_ipc.session_bound_too_early",
                                                 "A pre-authentication SBPS frame carried a session UUID.")},
                            frame.header.request_uuid, frame.header.sequence_number));
-    return;
+    return false;
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kHello)) {
     auto hello = sbps::DecodeHelloRequest(frame.payload);
@@ -1392,7 +1419,7 @@ void HandleClient(IpcSocketHandle client_fd,
                              "rejected",
                              "parser hello rejected",
                              "PARSER_SERVER_IPC.FEATURE_UNKNOWN_REQUIRED");
-      return;
+      return false;
     }
     if (!hello || !sbps::IsBuiltInTestHello(*hello)) {
       WriteAll(client_fd, ErrorFrame(
@@ -1410,7 +1437,7 @@ void HandleClient(IpcSocketHandle client_fd,
                              "rejected",
                              "parser hello rejected",
                              "PARSER_SERVER_IPC.PARSER_PROFILE_MISMATCH");
-      return;
+      return false;
     }
     const auto admission = AdmitParserPackage(
         parser_registry, *hello, frame.header.protocol_major, frame.header.protocol_minor);
@@ -1433,7 +1460,7 @@ void HandleClient(IpcSocketHandle client_fd,
                              "rejected",
                              "parser package admission rejected",
                              admission.diagnostics.empty() ? "SERVER.PARSER.PACKAGE_REJECTED" : admission.diagnostics.front().code);
-      return;
+      return false;
     }
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.channel.open_total",
@@ -1444,7 +1471,7 @@ void HandleClient(IpcSocketHandle client_fd,
                            "accepted",
                            "parser package admitted");
     WriteAll(client_fd, AcceptFrame(frame, config));
-    return;
+    return true;
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPing)) {
     const std::string request_text(frame.payload.begin(), frame.payload.end());
@@ -1509,7 +1536,7 @@ void HandleClient(IpcSocketHandle client_fd,
     } else {
       WriteAll(client_fd, PongFrame(frame, engine_state));
     }
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kAuthHandoff)) {
@@ -1524,7 +1551,7 @@ void HandleClient(IpcSocketHandle client_fd,
                            "authentication handoff processed",
                            result.diagnostics.empty() ? "" : result.diagnostics.front().code);
     WriteAll(client_fd, SessionOperationFrame(frame, result));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kAttachDatabase)) {
@@ -1540,7 +1567,7 @@ void HandleClient(IpcSocketHandle client_fd,
                              "refused",
                              "database attach refused by maintenance coordinator",
                              "SERVER.MAINTENANCE.ADMISSION_DENIED");
-      return;
+      return true;
     }
     const auto result = HandleAttachDatabase(session_registry, engine_state, frame);
     SetServerMetric(observability,
@@ -1552,7 +1579,7 @@ void HandleClient(IpcSocketHandle client_fd,
                            "database attach processed",
                            result.diagnostics.empty() ? "" : result.diagnostics.front().code);
     WriteAll(client_fd, SessionOperationFrame(frame, result));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice)) {
@@ -1575,17 +1602,17 @@ void HandleClient(IpcSocketHandle client_fd,
                            result.accepted ? "completed" : "not_found",
                            "parser disconnect notice processed");
     WriteAll(client_fd, SessionOperationFrame(frame, result));
-    return;
+    return false;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest)) {
     WriteAll(client_fd, ResolveNamePublicFrame(frame, engine_state, session_registry));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest)) {
     WriteAll(client_fd, RenderUuidPublicFrame(frame, session_registry));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kManagementRequest)) {
@@ -1600,7 +1627,7 @@ void HandleClient(IpcSocketHandle client_fd,
     context.observability = observability;
     WriteAll(client_fd, ManagementOperationFrame(
                            frame, HandleServerManagementRequest(context, frame)));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr)) {
@@ -1611,11 +1638,11 @@ void HandleClient(IpcSocketHandle client_fd,
                                                              "sblr_admission_fenced")},
                              frame.header.request_uuid, frame.header.sequence_number,
                              static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult)));
-      return;
+      return true;
     }
     WriteAll(client_fd, SessionOperationFrame(
                            frame, HandlePrepareSblr(session_registry, engine_state, frame)));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr)) {
@@ -1626,7 +1653,7 @@ void HandleClient(IpcSocketHandle client_fd,
                                                              "sblr_admission_fenced")},
                              frame.header.request_uuid, frame.header.sequence_number,
                              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult)));
-      return;
+      return true;
     }
     IparProjectionSourceContext ipar_context{agent_runtime, observability};
     ServerIparProjectionSourceFactory ipar_factory;
@@ -1649,7 +1676,7 @@ void HandleClient(IpcSocketHandle client_fd,
     if (operation.accepted) {
       PumpEventNotifications(client_fd, frame, engine_state, session_registry, event_router);
     }
-    return;
+    return true;
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventSubscribeRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventUnsubscribeRequest) ||
@@ -1664,26 +1691,27 @@ void HandleClient(IpcSocketHandle client_fd,
                                                              "event_ipc",
                                                              "event_admission_fenced")},
                              frame.header.request_uuid, frame.header.sequence_number));
-      return;
+      return true;
     }
     HandleEventFrame(client_fd, frame, engine_state, session_registry, event_router);
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kFetch)) {
     WriteAll(client_fd, SessionOperationFrame(frame, HandleFetch(session_registry, frame)));
-    return;
+    return true;
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kCloseCursor)) {
     WriteAll(client_fd, SessionOperationFrame(frame, HandleCloseCursor(session_registry, frame)));
-    return;
+    return true;
   }
   WriteAll(client_fd, ErrorFrame(
                          {sbps::IpcDiagnostic("PARSER_SERVER_IPC.MESSAGE_TYPE_UNSUPPORTED",
                                               "parser_server_ipc.message_type_unsupported",
                                               "The SBPS message type is not supported in this server stage.")},
                          frame.header.request_uuid, frame.header.sequence_number));
+  return false;
 }
 
 }  // namespace
@@ -1834,6 +1862,8 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
   ServerObservabilityState observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
+  std::mutex client_dispatch_mutex;
+  std::vector<std::thread> client_threads;
 
   while (!g_stop_requested.load()) {
 #ifdef _WIN32
@@ -1896,28 +1926,60 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
           {{"error", LastIpcSocketErrorString()}}));
       break;
     }
-    bool release_heap_after_close = false;
-    HandleClient(client_fd,
-                 config,
-                 artifacts,
-                 engine_state,
-                 &session_registry,
-                 parser_registry,
-                 &event_router,
-                 &listener_orchestrator,
-                 &maintenance_coordinator,
-                 &agent_runtime,
-                 &observability,
-                 &release_heap_after_close);
-    CloseIpcSocket(client_fd);
-    if (release_heap_after_close) {
-      ReleaseIdleConnectionHeap(config, &observability);
-    }
-    if (maintenance_coordinator.shutdown_requested) {
-      g_stop_requested.store(true);
-    }
+    client_threads.emplace_back([client_fd,
+                                 &config,
+                                 &artifacts,
+                                 &engine_state,
+                                 &session_registry,
+                                 &parser_registry,
+                                 &event_router,
+                                 &listener_orchestrator,
+                                 &maintenance_coordinator,
+                                 &agent_runtime,
+                                 &observability,
+                                 &client_dispatch_mutex]() {
+      bool release_heap_after_close = false;
+      while (!g_stop_requested.load()) {
+        if (!ClientSocketReady(client_fd)) {
+          continue;
+        }
+        bool keep_open = false;
+        {
+          std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+          keep_open = HandleClientFrame(client_fd,
+                                        config,
+                                        artifacts,
+                                        engine_state,
+                                        &session_registry,
+                                        parser_registry,
+                                        &event_router,
+                                        &listener_orchestrator,
+                                        &maintenance_coordinator,
+                                        &agent_runtime,
+                                        &observability,
+                                        &release_heap_after_close);
+          if (maintenance_coordinator.shutdown_requested) {
+            g_stop_requested.store(true);
+          }
+        }
+        if (!keep_open) {
+          break;
+        }
+      }
+      CloseIpcSocket(client_fd);
+      if (release_heap_after_close) {
+        std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+        ReleaseIdleConnectionHeap(config, &observability);
+      }
+    });
   }
 
+  g_stop_requested.store(true);
+  for (auto& client_thread : client_threads) {
+    if (client_thread.joinable()) {
+      client_thread.join();
+    }
+  }
   CloseIpcSocket(server_fd);
   RemoveEndpointPath(endpoint);
   agent_runtime.Stop();

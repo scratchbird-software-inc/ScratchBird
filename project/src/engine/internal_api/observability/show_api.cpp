@@ -24,6 +24,7 @@
 #include "security/security_principal_lifecycle.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 #include <string_view>
@@ -77,6 +78,20 @@ std::string RowFieldTextValue(const SysInformationProjectionRow& row, std::strin
   return {};
 }
 
+std::string LowerAscii(std::string value) {
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return value;
+}
+
+std::string UpperAscii(std::string value) {
+  for (char& c : value) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+  return value;
+}
+
 bool SqlLikePatternMatches(std::string_view value, std::string_view pattern) {
   std::vector<unsigned char> previous(pattern.size() + 1, 0);
   std::vector<unsigned char> current(pattern.size() + 1, 0);
@@ -115,6 +130,42 @@ bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
     }
     return true;
   }
+  if (predicate_kind == "columns_all_not_null") {
+    for (const auto& column : SplitCommaList(predicate_columns)) {
+      if (RowFieldTextValue(row, column).empty()) { return false; }
+    }
+    return true;
+  }
+  if (predicate_kind == "column_equals_column_or_left_null") {
+    const auto columns = SplitCommaList(predicate_columns);
+    if (columns.size() != 2) { return false; }
+    const std::string left = RowFieldTextValue(row, columns[0]);
+    if (left.empty()) { return true; }
+    return left == RowFieldTextValue(row, columns[1]);
+  }
+  if (predicate_kind == "column_mod_equals") {
+    const auto values = SplitCommaList(predicate_values);
+    if (values.size() < 2) { return false; }
+    try {
+      const auto value = std::stoll(RowFieldTextValue(row, predicate_columns));
+      const auto divisor = std::stoll(values[0]);
+      const auto expected = std::stoll(values[1]);
+      return divisor != 0 && value % divisor == expected;
+    } catch (...) {
+      return false;
+    }
+  }
+  if (predicate_kind == "column_in_list" || predicate_kind == "column_not_in_list") {
+    const std::string candidate = RowFieldTextValue(row, predicate_columns);
+    bool matched = false;
+    for (const auto& value : SplitCommaList(predicate_values)) {
+      if (candidate == value) {
+        matched = true;
+        break;
+      }
+    }
+    return predicate_kind == "column_in_list" ? matched : !matched;
+  }
   if (predicate_kind == "column_like" || predicate_kind == "column_not_like") {
     const std::string candidate = RowFieldTextValue(row, predicate_columns);
     const bool matched = SqlLikePatternMatches(candidate, predicate_values);
@@ -126,6 +177,20 @@ bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
       if (SqlLikePatternMatches(candidate, pattern)) { return true; }
     }
     return false;
+  }
+  if (predicate_kind == "expression_equals") {
+    const auto separator = predicate_columns.find(':');
+    if (separator == std::string::npos) { return false; }
+    const std::string function_name = LowerAscii(predicate_columns.substr(0, separator));
+    std::string candidate = RowFieldTextValue(row, predicate_columns.substr(separator + 1));
+    if (function_name == "lower") {
+      candidate = LowerAscii(std::move(candidate));
+    } else if (function_name == "upper") {
+      candidate = UpperAscii(std::move(candidate));
+    } else {
+      return false;
+    }
+    return candidate == predicate_values;
   }
   if (predicate_kind != "column_equals" && predicate_kind != "columns_all_equal") {
     return false;
@@ -450,6 +515,14 @@ std::string LeafName(std::string_view path) {
 std::string NameClassForProjection(const std::string& name_class) {
   if (name_class.empty() || name_class == "default") { return "primary"; }
   return name_class;
+}
+
+std::string PayloadField(const std::string& payload, const std::string& field_name) {
+  const std::string prefix = field_name + "=";
+  for (const auto& part : SplitOptionList(payload)) {
+    if (part.rfind(prefix, 0) == 0) { return part.substr(prefix.size()); }
+  }
+  return {};
 }
 
 std::string SchemaDisplayPath(const std::vector<EngineSchemaTreeRecord>& schemas,
@@ -880,8 +953,9 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   PopulateSessionSecurityProjectionContext(request, &projection_context);
   const EngineRequestContext catalog_read_context = CatalogReadContext(request.context);
   const std::uint64_t observer_tx = CatalogObserverTx(request.context);
-  projection_context.visible_catalog_generation_id =
-      std::max(request.context.catalog_generation_id, observer_tx);
+  // The source builders below already filter via MGA/CRUD/API visibility. Reapplying
+  // a session catalog generation can hide newly committed descriptor routes.
+  projection_context.visible_catalog_generation_id = 0;
 
   std::vector<SysInformationCatalogObjectSource> objects;
   std::vector<SysInformationResolverNameSource> resolver_names;
@@ -1128,6 +1202,46 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                       "primary",
                       index.default_name,
                       index.creator_tx);
+    }
+  }
+
+  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, observer_tx)) {
+    if (record.object_uuid.empty() ||
+        record.object_kind == "schema" ||
+        record.object_kind == "table" ||
+        record.object_kind == "domain" ||
+        record.object_kind == "index" ||
+        !object_uuids_in_projection.insert(record.object_uuid).second) {
+      continue;
+    }
+    const auto* name = ScopedNameEntryForObject(
+        names_by_object,
+        record.object_uuid,
+        record.object_kind,
+        schema_path_by_uuid);
+    std::string scope_uuid =
+        name == nullptr ? PayloadField(record.payload, "schema") : name->scope_uuid;
+    if (record.object_kind == "filespace" || record.object_kind == "database") {
+      scope_uuid.clear();
+    }
+    SysInformationCatalogObjectSource object;
+    object.object_uuid = record.object_uuid;
+    object.object_class = record.object_kind;
+    object.schema_uuid = scope_uuid;
+    object.parent_object_uuid = scope_uuid;
+    object.table_type = record.state;
+    object.catalog_generation_id = record.creator_tx == 0 ? 1 : record.creator_tx;
+    object.created_local_transaction_id = record.creator_tx;
+    objects.push_back(std::move(object));
+    if (name == nullptr && !record.default_name.empty()) {
+      AddResolverName(&resolver_names,
+                      record.object_uuid,
+                      record.object_kind,
+                      scope_uuid,
+                      "en",
+                      "primary",
+                      record.default_name,
+                      record.creator_tx);
     }
   }
 

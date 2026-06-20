@@ -5,8 +5,7 @@
     "080_metadata_security_authorization.sbsql:6",
     "099_cluster_gated_refusals.sbsql:2",
     "099_cluster_gated_refusals.sbsql:3",
-    "099_cluster_gated_refusals.sbsql:4",
-    "099_cluster_gated_refusals.sbsql:5"
+    "099_cluster_gated_refusals.sbsql:4"
   ],
   "expected_diagnostics": {
     "080_metadata_security_authorization.sbsql:6": [
@@ -20,21 +19,19 @@
       "denied"
     ],
     "099_cluster_gated_refusals.sbsql:2": [
+      "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
       "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
       "cluster_routing_not_admitted",
       "unsupported"
     ],
     "099_cluster_gated_refusals.sbsql:3": [
+      "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
       "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
       "cluster_routing_not_admitted",
       "unsupported"
     ],
     "099_cluster_gated_refusals.sbsql:4": [
-      "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
-      "cluster_routing_not_admitted",
-      "unsupported"
-    ],
-    "099_cluster_gated_refusals.sbsql:5": [
+      "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
       "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
       "cluster_routing_not_admitted",
       "unsupported"

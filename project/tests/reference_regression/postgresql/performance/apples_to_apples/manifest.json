@@ -1,0 +1,103 @@
+{
+  "schema_version": "scratchbird.reference_regression.postgresql.apples_to_apples.v1",
+  "engine": "postgresql",
+  "purpose": "Reference PostgreSQL timings for ScratchBird performance parity comparison.",
+  "output_root": "build/reference-regression/postgresql/performance/apples-to-apples",
+  "scales": {
+    "tiny": {
+      "customers": 1000,
+      "products": 500,
+      "orders": 5000,
+      "order_items": 20000,
+      "bulk_insert_rows": 10000
+    },
+    "small": {
+      "customers": 10000,
+      "products": 5000,
+      "orders": 50000,
+      "order_items": 200000,
+      "bulk_insert_rows": 100000
+    }
+  },
+  "load_lane": {
+    "name": "postgresql_copy_from_csv",
+    "claim_scope": "reference ingest timing for PostgreSQL COPY; not a ScratchBird transaction authority model"
+  },
+  "actions": [
+    {
+      "id": "inner_join_simple",
+      "kind": "query",
+      "path": "sql/timed/101_inner_join_simple.sql"
+    },
+    {
+      "id": "inner_join_large_result",
+      "kind": "query",
+      "path": "sql/timed/102_inner_join_large_result.sql"
+    },
+    {
+      "id": "inner_join_multiple_conditions",
+      "kind": "query",
+      "path": "sql/timed/103_inner_join_multiple_conditions.sql"
+    },
+    {
+      "id": "left_join_all_customers",
+      "kind": "query",
+      "path": "sql/timed/104_left_join_all_customers.sql"
+    },
+    {
+      "id": "four_table_join",
+      "kind": "query",
+      "path": "sql/timed/105_four_table_join.sql"
+    },
+    {
+      "id": "self_join_same_country",
+      "kind": "query",
+      "path": "sql/timed/106_self_join_same_country.sql"
+    },
+    {
+      "id": "aggregation_daily_sales",
+      "kind": "query",
+      "path": "sql/timed/107_aggregation_daily_sales.sql"
+    },
+    {
+      "id": "window_function_ranking",
+      "kind": "query",
+      "path": "sql/timed/108_window_function_ranking.sql"
+    },
+    {
+      "id": "multi_dimensional_agg",
+      "kind": "query",
+      "path": "sql/timed/109_multi_dimensional_agg.sql"
+    },
+    {
+      "id": "bulk_insert_select",
+      "kind": "dml",
+      "path": "sql/timed/110_bulk_insert_select.sql"
+    },
+    {
+      "id": "bulk_update_with_case",
+      "kind": "dml",
+      "path": "sql/timed/111_bulk_update_with_case.sql"
+    },
+    {
+      "id": "bulk_update_with_join",
+      "kind": "dml",
+      "path": "sql/timed/112_bulk_update_with_join.sql"
+    },
+    {
+      "id": "agg_full_table_scan",
+      "kind": "query",
+      "path": "sql/timed/113_agg_full_table_scan.sql"
+    },
+    {
+      "id": "agg_distinct_counts",
+      "kind": "query",
+      "path": "sql/timed/114_agg_distinct_counts.sql"
+    },
+    {
+      "id": "nested_subquery_agg",
+      "kind": "query",
+      "path": "sql/timed/115_nested_subquery_agg.sql"
+    }
+  ]
+}

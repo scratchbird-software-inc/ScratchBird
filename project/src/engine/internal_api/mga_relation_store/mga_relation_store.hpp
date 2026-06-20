@@ -143,14 +143,21 @@ struct MgaExactIndexEntryAppendBatch {
 };
 
 struct MgaRelationHotAppendCounters {
+  std::uint64_t allocator_stream_opens = 0;
+  std::uint64_t allocator_stream_flushes = 0;
+  std::uint64_t allocator_range_records_appended = 0;
   std::uint64_t row_stream_opens = 0;
   std::uint64_t row_stream_flushes = 0;
   std::uint64_t row_range_reservations = 0;
   std::uint64_t row_versions_appended = 0;
+  std::uint64_t scoped_row_stream_opens = 0;
+  std::uint64_t scoped_row_stream_flushes = 0;
   std::uint64_t index_stream_opens = 0;
   std::uint64_t index_stream_flushes = 0;
   std::uint64_t index_range_reservations = 0;
   std::uint64_t index_entries_appended = 0;
+  std::uint64_t scoped_index_stream_opens = 0;
+  std::uint64_t scoped_index_stream_flushes = 0;
 };
 
 struct MgaLargeValuePersistBatchRowInput {
@@ -345,6 +352,12 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
 MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
     const EngineRequestContext& context,
     const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids);
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state);
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,

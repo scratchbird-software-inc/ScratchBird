@@ -920,14 +920,11 @@
         "cluster_node_membership_refusal",
         "cluster_compile_link_stub"
       ],
-      "assertions": [
-        "SBDFS-099-001"
-      ],
+      "assertions": [],
       "expected_refusals": [
         "099_cluster_gated_refusals.sbsql:2",
         "099_cluster_gated_refusals.sbsql:3",
-        "099_cluster_gated_refusals.sbsql:4",
-        "099_cluster_gated_refusals.sbsql:5"
+        "099_cluster_gated_refusals.sbsql:4"
       ]
     },
     {

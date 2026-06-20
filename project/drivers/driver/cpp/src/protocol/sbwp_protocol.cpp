@@ -379,14 +379,17 @@ std::vector<uint8_t> buildDescribePayload(uint8_t describe_type, const std::stri
     return payload;
 }
 
-std::vector<uint8_t> buildExecutePayload(const std::string& portal_name, uint32_t max_rows) {
+std::vector<uint8_t> buildExecutePayload(const std::string& portal_name,
+                                         uint32_t max_rows,
+                                         uint32_t execute_flags) {
     std::vector<uint8_t> portal_bytes(portal_name.begin(), portal_name.end());
-    std::vector<uint8_t> payload(4 + portal_bytes.size() + 4);
+    std::vector<uint8_t> payload(4 + portal_bytes.size() + 4 + 4);
     writeU32(payload, 0, static_cast<uint32_t>(portal_bytes.size()));
     if (!portal_bytes.empty()) {
         std::memcpy(payload.data() + 4, portal_bytes.data(), portal_bytes.size());
     }
     writeU32(payload, 4 + portal_bytes.size(), max_rows);
+    writeU32(payload, 8 + portal_bytes.size(), execute_flags);
     return payload;
 }
 

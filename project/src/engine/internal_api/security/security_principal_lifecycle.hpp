@@ -257,6 +257,19 @@ struct EngineSecurityGrantMembershipResult : EngineApiResult {
 EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
     const EngineSecurityGrantMembershipRequest& request);
 
+struct EngineSecurityRevokeMembershipRequest : EngineApiRequest {
+  std::string member_principal_uuid;
+  std::string container_uuid;
+  std::string container_kind;
+};
+struct EngineSecurityRevokeMembershipResult : EngineApiResult {
+  bool membership_revoked = false;
+  std::uint64_t security_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
+    const EngineSecurityRevokeMembershipRequest& request);
+
 struct EngineSecurityGrantPrivilegeRequest : EngineApiRequest {
   std::string grant_uuid;
   std::string grantee_uuid;

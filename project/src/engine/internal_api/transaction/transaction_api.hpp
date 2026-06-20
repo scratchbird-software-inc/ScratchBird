@@ -40,6 +40,23 @@ struct EngineCommitTransactionResult : EngineApiResult {
 };
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request);
 
+struct EngineAutocommitBoundaryRequest : EngineApiRequest {
+  bool statement_succeeded = true;
+  std::string replacement_isolation_level;
+  EngineProfileSet transaction_policy_profile;
+};
+struct EngineAutocommitBoundaryResult : EngineCommitTransactionResult {
+  EngineUuid replacement_transaction_uuid;
+  EngineApiU64 replacement_local_transaction_id = 0;
+  EngineApiU64 replacement_snapshot_visible_through_local_transaction_id = 0;
+  std::string replacement_transaction_timestamp;
+  bool replacement_read_only = false;
+  std::string replacement_read_mode = "read_write";
+  std::string replacement_isolation_level;
+};
+EngineAutocommitBoundaryResult EngineAutocommitBoundary(
+    const EngineAutocommitBoundaryRequest& request);
+
 struct EngineRollbackTransactionRequest : EngineApiRequest {};
 struct EngineRollbackTransactionResult : EngineApiResult {};
 EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTransactionRequest& request);

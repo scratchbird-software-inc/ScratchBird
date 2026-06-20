@@ -49,8 +49,10 @@ DIFF EXTERNAL GIT CATALOG SNAPSHOT;
 PLAN EXTERNAL GIT CATALOG ROLLBACK;
 
 SELECT 'SBDFS-093-001' AS assertion_id,
-       1 AS actual_marker,
-       1 AS expected_marker;
+       COUNT(*) AS actual_filespace_rows,
+       1 AS expected_filespace_rows
+FROM sys.catalog_readable.filespaces
+WHERE filespace_name = 'sbdfs093_fs';
 
 SELECT 'SBDFS-093-002' AS assertion_id,
        COUNT(*) AS actual_context_rows,

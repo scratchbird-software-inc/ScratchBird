@@ -468,6 +468,13 @@ std::optional<ObjectReference> ExtractObjectReferenceAt(const CstDocument& cst,
   return ref;
 }
 
+void DropObjectReferenceLeaf(ObjectReference* ref) {
+  if (ref == nullptr) return;
+  const auto dot = ref->presented_name.rfind('.');
+  if (dot == std::string::npos) return;
+  ref->presented_name.erase(dot);
+}
+
 std::string LowerObjectReferenceName(std::string_view text) {
   std::string out;
   out.reserve(text.size());
@@ -807,6 +814,178 @@ std::vector<ObjectReference> ExtractDomainDdlObjectReferences(const CstDocument&
   return refs;
 }
 
+std::vector<ObjectReference> ExtractSecurityDclObjectReferences(const CstDocument& cst,
+                                                                std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size() ||
+      (!IsWord(cst.tokens[first_token], "GRANT") && !IsWord(cst.tokens[first_token], "REVOKE"))) {
+    return refs;
+  }
+  const bool grant = IsWord(cst.tokens[first_token], "GRANT");
+  bool has_on = false;
+  std::size_t on_index = cst.tokens.size();
+  std::size_t to_from_index = cst.tokens.size();
+  for (std::size_t index = first_token + 1; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kStatementTerminator || token.kind == TokenKind::kEnd) break;
+    if (IsWord(token, "ON")) {
+      has_on = true;
+      on_index = index;
+      continue;
+    }
+    if (IsWord(token, grant ? "TO" : "FROM")) {
+      to_from_index = index;
+      break;
+    }
+  }
+
+  if (!has_on) {
+    if (auto member = ExtractObjectReferenceAt(cst, first_token + 1)) {
+      member->object_class = "role";
+      refs.push_back(*member);
+    }
+    if (to_from_index < cst.tokens.size()) {
+      std::size_t marker = NextNonTriviaIndex(cst, to_from_index + 1);
+      std::string container_class = "group";
+      if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "ROLE")) {
+        container_class = "role";
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      } else if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "GROUP")) {
+        container_class = "group";
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      }
+      if (auto container = ExtractObjectReferenceAt(cst, marker)) {
+        container->object_class = container_class;
+        refs.push_back(*container);
+      }
+    }
+    return refs;
+  }
+
+  if (on_index < cst.tokens.size()) {
+    std::size_t marker = NextNonTriviaIndex(cst, on_index + 1);
+    std::string target_class = "object";
+    if (marker < cst.tokens.size()) {
+      const std::string word = ToUpperAscii(cst.tokens[marker].text);
+      if (word == "TABLE" || word == "VIEW" || word == "DOMAIN" ||
+          word == "SEQUENCE" || word == "PROCEDURE" || word == "FUNCTION" ||
+          word == "PACKAGE" || word == "INDEX") {
+        target_class = LowerObjectReferenceName(cst.tokens[marker].text);
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      }
+    }
+    if (auto target = ExtractObjectReferenceAt(cst, marker)) {
+      target->object_class = target_class == "object" ? "relation" : target_class;
+      refs.push_back(*target);
+    }
+  }
+  if (to_from_index < cst.tokens.size()) {
+    std::size_t marker = NextNonTriviaIndex(cst, to_from_index + 1);
+    std::string grantee_class = "role";
+    if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "ROLE")) {
+      grantee_class = "role";
+      marker = NextNonTriviaIndex(cst, marker + 1);
+    } else if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "GROUP")) {
+      grantee_class = "group";
+      marker = NextNonTriviaIndex(cst, marker + 1);
+    } else if (marker < cst.tokens.size() &&
+               (IsWord(cst.tokens[marker], "USER") || IsWord(cst.tokens[marker], "PRINCIPAL"))) {
+      grantee_class = "principal";
+      marker = NextNonTriviaIndex(cst, marker + 1);
+    }
+    if (auto grantee = ExtractObjectReferenceAt(cst, marker)) {
+      grantee->object_class = grantee_class;
+      refs.push_back(*grantee);
+    }
+  }
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocument& cst,
+                                                                   std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size()) return refs;
+  const auto push_ref_at = [&](std::size_t marker, std::string object_class) {
+    if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
+      ref->object_class = std::move(object_class);
+      refs.push_back(*ref);
+    }
+  };
+
+  if (IsWord(cst.tokens[first_token], "DROP")) {
+    const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
+    if (second >= cst.tokens.size()) return refs;
+    if (IsWord(cst.tokens[second], "ROLE")) {
+      push_ref_at(second + 1, "role");
+    } else if (IsWord(cst.tokens[second], "GROUP")) {
+      push_ref_at(second + 1, "group");
+    } else if (IsWord(cst.tokens[second], "POLICY")) {
+      push_ref_at(second + 1, "policy");
+    } else if (IsWord(cst.tokens[second], "MASK")) {
+      push_ref_at(second + 1, "mask");
+    } else if (IsWord(cst.tokens[second], "RLS")) {
+      push_ref_at(second + 1, "rls");
+    }
+    return refs;
+  }
+
+  if (!IsWord(cst.tokens[first_token], "CREATE")) return refs;
+  const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
+  if (second >= cst.tokens.size()) return refs;
+  if (!IsWord(cst.tokens[second], "POLICY") &&
+      !IsWord(cst.tokens[second], "MASK") &&
+      !IsWord(cst.tokens[second], "RLS")) {
+    return refs;
+  }
+  for (std::size_t index = second + 1; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kStatementTerminator || token.kind == TokenKind::kEnd) break;
+    if (IsWord(token, "ON")) {
+      std::size_t marker = NextNonTriviaIndex(cst, index + 1);
+      std::string target_class = "relation";
+      bool drop_leaf = false;
+      if (marker < cst.tokens.size()) {
+        if (IsWord(cst.tokens[marker], "COLUMN")) {
+          target_class = "relation";
+          drop_leaf = true;
+          marker = NextNonTriviaIndex(cst, marker + 1);
+        } else if (IsWord(cst.tokens[marker], "TABLE")) {
+          target_class = "table";
+          marker = NextNonTriviaIndex(cst, marker + 1);
+        } else if (IsWord(cst.tokens[marker], "VIEW")) {
+          target_class = "view";
+          marker = NextNonTriviaIndex(cst, marker + 1);
+        }
+      }
+      if (auto ref = ExtractObjectReferenceAt(cst, marker)) {
+        if (drop_leaf) DropObjectReferenceLeaf(&*ref);
+        ref->object_class = std::move(target_class);
+        refs.push_back(*ref);
+      }
+      continue;
+    }
+    if (IsWord(token, "TO")) {
+      std::size_t marker = NextNonTriviaIndex(cst, index + 1);
+      std::string subject_class = "role";
+      if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "ROLE")) {
+        subject_class = "role";
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      } else if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "GROUP")) {
+        subject_class = "group";
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      } else if (marker < cst.tokens.size() &&
+                 (IsWord(cst.tokens[marker], "USER") || IsWord(cst.tokens[marker], "PRINCIPAL"))) {
+        subject_class = "principal";
+        marker = NextNonTriviaIndex(cst, marker + 1);
+      }
+      push_ref_at(marker, subject_class);
+    }
+  }
+  return refs;
+}
+
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
   std::vector<ObjectReference> refs;
   auto local_cte_names = ExtractLeadingCteNames(cst);
@@ -868,6 +1047,16 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
   auto domain_ddl_refs = ExtractDomainDdlObjectReferences(cst, first_token);
   if (!domain_ddl_refs.empty()) {
     return domain_ddl_refs;
+  }
+
+  auto security_dcl_refs = ExtractSecurityDclObjectReferences(cst, first_token);
+  if (!security_dcl_refs.empty()) {
+    return security_dcl_refs;
+  }
+
+  auto security_policy_refs = ExtractSecurityPolicyObjectReferences(cst, first_token);
+  if (!security_policy_refs.empty()) {
+    return security_policy_refs;
   }
 
   for (std::size_t i = first_token; i < cst.tokens.size(); ++i) {
@@ -1522,6 +1711,36 @@ void PushCreatedDdlClassAliases(std::string_view object_kind,
     classes->push_back("domain");
   } else if (kind == "INDEX") {
     classes->push_back("index");
+  } else if (kind == "ROLE") {
+    classes->push_back("role");
+    classes->push_back("security_role");
+    classes->push_back("principal");
+  } else if (kind == "GROUP") {
+    classes->push_back("group");
+    classes->push_back("security_group");
+    classes->push_back("principal");
+  } else if (kind == "USER" || kind == "PRINCIPAL") {
+    classes->push_back("principal");
+    classes->push_back("user");
+  } else if (kind == "POLICY") {
+    classes->push_back("policy");
+    classes->push_back("security_policy");
+  } else if (kind == "MASK") {
+    classes->push_back("mask");
+    classes->push_back("security_policy");
+  } else if (kind == "RLS") {
+    classes->push_back("rls");
+    classes->push_back("security_policy");
+  } else if (kind == "PROCEDURE") {
+    classes->push_back("procedure");
+    classes->push_back("routine");
+  } else if (kind == "FUNCTION") {
+    classes->push_back("function");
+    classes->push_back("routine");
+  } else if (kind == "TRIGGER") {
+    classes->push_back("trigger");
+  } else if (kind == "FILESPACE") {
+    classes->push_back("filespace");
   } else if (!object_kind.empty()) {
     classes->push_back(std::string(object_kind));
   }
@@ -1550,6 +1769,29 @@ std::optional<CreatedDdlName> ExtractCreatedDdlNameFromCst(
     if (!ConsumeRouteKeyword(cst, &index, "DOMAIN")) return std::nullopt;
   } else if (kind == "INDEX") {
     if (!ConsumeRouteKeyword(cst, &index, "INDEX")) return std::nullopt;
+  } else if (kind == "ROLE") {
+    if (!ConsumeRouteKeyword(cst, &index, "ROLE")) return std::nullopt;
+  } else if (kind == "GROUP") {
+    if (!ConsumeRouteKeyword(cst, &index, "GROUP")) return std::nullopt;
+  } else if (kind == "USER" || kind == "PRINCIPAL") {
+    if (ConsumeRouteKeyword(cst, &index, "USER")) {
+    } else if (!ConsumeRouteKeyword(cst, &index, "PRINCIPAL")) {
+      return std::nullopt;
+    }
+  } else if (kind == "POLICY") {
+    if (!ConsumeRouteKeyword(cst, &index, "POLICY")) return std::nullopt;
+  } else if (kind == "MASK") {
+    if (!ConsumeRouteKeyword(cst, &index, "MASK")) return std::nullopt;
+  } else if (kind == "RLS") {
+    if (!ConsumeRouteKeyword(cst, &index, "RLS")) return std::nullopt;
+  } else if (kind == "PROCEDURE") {
+    if (!ConsumeRouteKeyword(cst, &index, "PROCEDURE")) return std::nullopt;
+  } else if (kind == "FUNCTION") {
+    if (!ConsumeRouteKeyword(cst, &index, "FUNCTION")) return std::nullopt;
+  } else if (kind == "TRIGGER") {
+    if (!ConsumeRouteKeyword(cst, &index, "TRIGGER")) return std::nullopt;
+  } else if (kind == "FILESPACE") {
+    if (!ConsumeRouteKeyword(cst, &index, "FILESPACE")) return std::nullopt;
   } else {
     return std::nullopt;
   }

@@ -445,10 +445,20 @@ def generate_surface_replay_commands(namespace: str, replay_rows: list[dict[str,
     lines.extend(
         [
             "",
+            "WITH generated_replay_command(surface_id) AS (",
+            "VALUES",
+        ]
+    )
+    for index, row in enumerate(replay_rows):
+        suffix = "," if index + 1 < len(replay_rows) else ""
+        lines.append(f"    ({sql_string(row.get('surface_id'))}){suffix}")
+    lines.extend(
+        [
+            ")",
             "SELECT 'SBDFS-101-001' AS assertion_id,",
-            "       "
-            f"{len(replay_rows)} AS actual_replay_command_count,",
-            f"       {len(replay_rows)} AS expected_replay_command_count;",
+            "       COUNT(*) AS actual_replay_command_count,",
+            f"       {len(replay_rows)} AS expected_replay_command_count",
+            "FROM generated_replay_command;",
             "",
         ]
     )
@@ -803,10 +813,20 @@ def generate_builtin_invocations(namespace: str, rows: list[dict[str, str]]) -> 
     lines.extend(
         [
             "",
+            "WITH generated_builtin_invocation(fixture_id) AS (",
+            "VALUES",
+        ]
+    )
+    for index, row in enumerate(rows):
+        suffix = "," if index + 1 < len(rows) else ""
+        lines.append(f"    ({sql_string(row.get('fixture_id'))}){suffix}")
+    lines.extend(
+        [
+            ")",
             "SELECT 'SBDFS-160-001' AS assertion_id,",
-            "       "
-            f"{len(rows)} AS actual_builtin_invocation_count,",
-            f"       {len(rows)} AS expected_builtin_invocation_count;",
+            "       COUNT(*) AS actual_builtin_invocation_count,",
+            f"       {len(rows)} AS expected_builtin_invocation_count",
+            "FROM generated_builtin_invocation;",
             "",
         ]
     )

@@ -26,8 +26,8 @@ bool Expect(bool condition, const char* message) {
 }
 
 bool SupportedSetIsExact() {
-  constexpr std::array<scratchbird::core::platform::u32, 5> expected = {
-      8192, 16384, 32768, 65536, 131072};
+  constexpr std::array<scratchbird::core::platform::u32, 6> expected = {
+      4096, 8192, 16384, 32768, 65536, 131072};
   return Expect(disk::kSupportedDatabasePageSizes == expected,
                 "public first-release page-size profile changed unexpectedly");
 }
@@ -44,8 +44,8 @@ bool SupportedSizesAreAccepted() {
 }
 
 bool UnsupportedSizesAreRejected() {
-  constexpr std::array<scratchbird::core::platform::u32, 14> rejected = {
-      0, 512, 1000, 1024, 1536, 2048, 4096, 12345,
+  constexpr std::array<scratchbird::core::platform::u32, 13> rejected = {
+      0, 512, 1000, 1024, 1536, 2048, 12345,
       262144, 524288, 1048576, 1048577, 2097152, 4194304};
   bool ok = true;
   for (const auto page_size : rejected) {

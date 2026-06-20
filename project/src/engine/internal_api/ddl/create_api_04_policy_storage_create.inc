@@ -409,16 +409,48 @@ EngineCreateConstraintResult EngineCreateConstraint(const EngineCreateConstraint
   return result;
 }
 
+template <typename TResult, typename TRequest>
+TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
+                                               const std::string& operation_id,
+                                               const std::string& object_kind) {
+  auto result = PersistedCreateWithNameRegistry<TResult>(
+      request, operation_id, object_kind, true, "created");
+  if (!result.ok) { return result; }
+
+  EngineCreateExecutableObjectRequest executable_request;
+  static_cast<EngineApiRequest&>(executable_request) = request;
+  executable_request.target_object.uuid.canonical = result.primary_object.uuid.canonical;
+  executable_request.target_object.object_kind = object_kind;
+  executable_request.target_schema = request.target_schema;
+  executable_request.localized_names = request.localized_names;
+  const auto lifecycle = EngineCreateExecutableObject(executable_request);
+  if (!lifecycle.ok) {
+    return MakeApiBehaviorDiagnostic<TResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     lifecycle.diagnostics.empty()
+                                         ? "executable_lifecycle_create_failed"
+                                         : lifecycle.diagnostics.front().code));
+  }
+  AddApiBehaviorEvidence(&result, "executable_lifecycle", lifecycle.bound_object_identity.object_uuid.canonical);
+  AddApiBehaviorEvidence(&result, "executable_generation", std::to_string(lifecycle.executable_generation));
+  return result;
+}
+
 EngineCreateFunctionResult EngineCreateFunction(const EngineCreateFunctionRequest& request) {
-  return PersistedCreateWithNameRegistry<EngineCreateFunctionResult>(request, "ddl.create_function", "function", true, "created");
+  return PersistedExecutableCreateWithLifecycle<EngineCreateFunctionResult>(
+      request, "ddl.create_function", "function");
 }
 
 EngineCreateProcedureResult EngineCreateProcedure(const EngineCreateProcedureRequest& request) {
-  return PersistedCreateWithNameRegistry<EngineCreateProcedureResult>(request, "ddl.create_procedure", "procedure", true, "created");
+  return PersistedExecutableCreateWithLifecycle<EngineCreateProcedureResult>(
+      request, "ddl.create_procedure", "procedure");
 }
 
 EngineCreateTriggerResult EngineCreateTrigger(const EngineCreateTriggerRequest& request) {
-  return PersistedCreateWithNameRegistry<EngineCreateTriggerResult>(request, "ddl.create_trigger", "trigger", true, "created");
+  return PersistedExecutableCreateWithLifecycle<EngineCreateTriggerResult>(
+      request, "ddl.create_trigger", "trigger");
 }
 
 }  // namespace scratchbird::engine::internal_api

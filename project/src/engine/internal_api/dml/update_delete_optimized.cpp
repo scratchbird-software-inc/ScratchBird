@@ -1802,7 +1802,9 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  const auto loaded = LoadMgaRelationStoreStateForMutationTarget(
+      request.context,
+      request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
@@ -1873,6 +1875,9 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
 
   auto result = MakeCrudSuccessResult<EngineUpdateRowsResult>(request.context, "dml.update_rows");
+  result.evidence.insert(result.evidence.end(),
+                         loaded.evidence.begin(),
+                         loaded.evidence.end());
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
   }
@@ -2205,9 +2210,15 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     result.dml_summary.append_calls += append_counters.row_range_reservations +
                                        append_counters.index_range_reservations;
     result.dml_summary.file_opens += append_counters.row_stream_opens +
-                                     append_counters.index_stream_opens;
+                                     append_counters.index_stream_opens +
+                                     append_counters.scoped_row_stream_opens +
+                                     append_counters.scoped_index_stream_opens +
+                                     append_counters.allocator_stream_opens;
     result.dml_summary.flushes += append_counters.row_stream_flushes +
-                                  append_counters.index_stream_flushes;
+                                  append_counters.index_stream_flushes +
+                                  append_counters.scoped_row_stream_flushes +
+                                  append_counters.scoped_index_stream_flushes +
+                                  append_counters.allocator_stream_flushes;
     if (!delta_entries.empty()) {
       ++result.dml_summary.append_calls;
     }
@@ -2285,7 +2296,9 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_uuid_required"));
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  const auto loaded = LoadMgaRelationStoreStateForMutationTarget(
+      request.context,
+      request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
@@ -2342,6 +2355,15 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
 
   auto result = MakeCrudSuccessResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows");
+  result.evidence.insert(result.evidence.end(),
+                         loaded.evidence.begin(),
+                         loaded.evidence.end());
+  result.evidence.push_back({"relation_state_full_loads",
+                             loaded.full_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_scoped_loads",
+                             loaded.scoped_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_load_reason",
+                             "target_table_delete_scope"});
   result.evidence.insert(result.evidence.end(),
                          serializable_admission.evidence.begin(),
                          serializable_admission.evidence.end());
@@ -2439,13 +2461,23 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
-    const auto appended = AppendMgaRowVersions(request.context, &row_records, &written_event_sequences);
+    MgaRelationHotAppendContext hot_append_context(request.context);
+    const auto appended = hot_append_context.AppendRowVersions(&row_records, &written_event_sequences);
     if (appended.error) {
       return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", appended);
     }
-    ++result.dml_summary.append_calls;
-    ++result.dml_summary.file_opens;
-    ++result.dml_summary.flushes;
+    const auto rows_flushed = hot_append_context.FlushRowVersions();
+    if (rows_flushed.error) {
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", rows_flushed);
+    }
+    const auto& append_counters = hot_append_context.counters();
+    result.dml_summary.append_calls += append_counters.row_range_reservations;
+    result.dml_summary.file_opens += append_counters.row_stream_opens +
+                                     append_counters.scoped_row_stream_opens +
+                                     append_counters.allocator_stream_opens;
+    result.dml_summary.flushes += append_counters.row_stream_flushes +
+                                  append_counters.scoped_row_stream_flushes +
+                                  append_counters.allocator_stream_flushes;
     std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
     for (std::size_t index = 0; index < staged_delete_rows.size(); ++index) {
       auto row_delta_entries = DeleteDeltaEntries(batch_context,

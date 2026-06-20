@@ -32,9 +32,7 @@ add_library(sb_engine_sblr
   sblr_refusal.cpp
   sblr_resource_governance.cpp
   sblr_routine_runtime.cpp
-  sblr_runtime.cpp
   sblr_runtime_logging.cpp
-  sblr_sequence_runtime.cpp
   sblr_special_forms.cpp
   sblr_test_vectors.cpp
   sblr_to_sbsql.cpp

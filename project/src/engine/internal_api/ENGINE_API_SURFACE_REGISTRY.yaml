@@ -1460,6 +1460,82 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: UUID-bound privilege grant; names must be resolved before engine ingress and MGA evidence is required before success
+  - operation_id: security.membership.grant
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityGrantMembership
+    request_type: EngineSecurityGrantMembershipRequest
+    result_type: EngineSecurityGrantMembershipResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound membership grant; member and container names must be resolved before engine ingress
+  - operation_id: security.membership.revoke
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityRevokeMembership
+    request_type: EngineSecurityRevokeMembershipRequest
+    result_type: EngineSecurityRevokeMembershipResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound membership revoke; revocation is append-only and MGA-visible
+  - operation_id: security.role.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityCreateRole
+    request_type: EngineSecurityCreateRoleRequest
+    result_type: EngineSecurityCreateRoleResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound role creation; role name is metadata only and does not authorize parser execution
+  - operation_id: security.group.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityCreateGroup
+    request_type: EngineSecurityCreateGroupRequest
+    result_type: EngineSecurityCreateGroupResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound group creation; membership authority remains engine-owned
   - operation_id: security.privilege.revoke
     scope_status: noncluster_required
     closure_slice: SBSFC-023

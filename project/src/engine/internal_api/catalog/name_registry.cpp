@@ -13,6 +13,7 @@
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
+#include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
@@ -208,6 +209,55 @@ bool ProfileFoldsMysqlInsensitive(const std::string& profile) {
 bool EntryVisible(const CrudState& crud_state, const NameRegistryEntry& entry, std::uint64_t observer_tx) {
   if (entry.deleted || entry.lifecycle_state == "dropped") { return false; }
   return CrudCreatorVisible(crud_state, entry.creator_tx, entry.event_sequence, observer_tx);
+}
+
+bool MgaCreatorVisible(const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
+                       std::uint64_t creator_tx,
+                       std::uint64_t observer_tx) {
+  if (creator_tx == 0) { return true; }
+  for (const auto& entry : inventory.entries) {
+    if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
+    using scratchbird::transaction::mga::TransactionState;
+    if (entry.state == TransactionState::committed || entry.state == TransactionState::archived) {
+      return true;
+    }
+    return creator_tx == observer_tx &&
+           (entry.state == TransactionState::active ||
+            entry.state == TransactionState::read_only_active ||
+            entry.state == TransactionState::preparing ||
+            entry.state == TransactionState::prepared);
+  }
+  return false;
+}
+
+bool CreatorVisible(const CrudState& crud_state,
+                    const scratchbird::storage::database::LocalTransactionStoreResult& transaction_inventory,
+                    std::uint64_t creator_tx,
+                    std::uint64_t event_sequence,
+                    std::uint64_t observer_tx) {
+  if (CrudCreatorVisible(crud_state, creator_tx, event_sequence, observer_tx)) { return true; }
+  return transaction_inventory.ok() &&
+         MgaCreatorVisible(transaction_inventory.inventory, creator_tx, observer_tx);
+}
+
+bool EntryVisible(const CrudState& crud_state,
+                  const scratchbird::storage::database::LocalTransactionStoreResult& transaction_inventory,
+                  const NameRegistryEntry& entry,
+                  std::uint64_t observer_tx) {
+  if (entry.deleted || entry.lifecycle_state == "dropped") { return false; }
+  return CreatorVisible(crud_state,
+                        transaction_inventory,
+                        entry.creator_tx,
+                        entry.event_sequence,
+                        observer_tx);
+}
+
+std::string ApiBehaviorPayloadField(const std::string& payload, const std::string& field_name) {
+  const std::string prefix = field_name + "=";
+  for (const auto& part : SplitNameRegistryLine(payload, ';')) {
+    if (part.rfind(prefix, 0) == 0) { return part.substr(prefix.size()); }
+  }
+  return {};
 }
 
 std::string EntryKey(const NameRegistryEntry& entry) {
@@ -524,6 +574,8 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
         &catalog_state,
         BuildCrudCompatibilityStateFromMga(mga_relations.state));
   }
+  const auto transaction_inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
   std::ifstream in(context.database_path + ".sb.api_events", std::ios::binary);
   if (!in) { in.open(context.database_path, std::ios::binary); }
   if (!in) {
@@ -541,7 +593,11 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     if (parts.size() >= 4 && parts[1] == "RETIRE_OBJECT") {
       const std::uint64_t creator_tx = ParseNameRegistryU64(parts[2]);
       const std::string object_uuid = parts[3];
-      if (CrudCreatorVisible(catalog_state, creator_tx, event_sequence, observer_tx)) {
+      if (CreatorVisible(catalog_state,
+                         transaction_inventory,
+                         creator_tx,
+                         event_sequence,
+                         observer_tx)) {
         suppress_legacy_objects.insert(object_uuid);
         RemoveObjectEntries(&result.state, &added_entries, object_uuid);
       }
@@ -577,7 +633,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     entry.name_resolution_epoch = ParseNameRegistryU64(parts[26]);
     entry.lifecycle_state = parts[27].empty() ? "active" : parts[27];
     entry.deleted = ParseNameRegistryBool(parts[28]);
-    if (EntryVisible(catalog_state, entry, observer_tx)) {
+    if (EntryVisible(catalog_state, transaction_inventory, entry, observer_tx)) {
       suppress_legacy_objects.insert(entry.object_uuid);
       ReplaceEntry(&result.state, &added_entries, std::move(entry));
     }
@@ -605,7 +661,17 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   for (const auto& record : VisibleApiBehaviorRecords(context, {}, observer_tx)) {
     if (suppress_legacy_objects.count(record.object_uuid) != 0) { continue; }
     if (!record.default_name.empty()) {
-      AddIfNoExplicit(&result.state, &added_entries, EntryFromSimpleName(context, record.object_uuid, record.object_kind, {}, record.default_name));
+      std::string scope_uuid = ApiBehaviorPayloadField(record.payload, "schema");
+      if (record.object_kind == "database" || record.object_kind == "filespace") {
+        scope_uuid.clear();
+      }
+      AddIfNoExplicit(&result.state,
+                      &added_entries,
+                      EntryFromSimpleName(context,
+                                          record.object_uuid,
+                                          record.object_kind,
+                                          scope_uuid,
+                                          record.default_name));
     }
   }
   const auto domains = LoadDomainState(context);
