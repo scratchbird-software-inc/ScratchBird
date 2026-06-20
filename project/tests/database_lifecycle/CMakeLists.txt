@@ -244,6 +244,35 @@ if(NOT TARGET sb_engine_executor)
   add_subdirectory("${PROJECT_SOURCE_DIR}/src/engine/executor" "${CMAKE_CURRENT_BINARY_DIR}/engine_executor")
 endif()
 
+if(NOT TARGET sb_engine_optimizer)
+  add_subdirectory("${PROJECT_SOURCE_DIR}/src/engine/optimizer" "${CMAKE_CURRENT_BINARY_DIR}/engine_optimizer")
+endif()
+
+if(NOT TARGET sb_engine_sblr)
+  add_subdirectory("${PROJECT_SOURCE_DIR}/src/engine/sblr" "${CMAKE_CURRENT_BINARY_DIR}/engine_sblr_ipar_worker_b")
+endif()
+
+add_executable(ipar_worker_b_support_services_gate
+  ipar_worker_b_support_services_gate.cpp
+)
+target_compile_features(ipar_worker_b_support_services_gate PRIVATE cxx_std_20)
+target_link_libraries(ipar_worker_b_support_services_gate
+  PRIVATE
+    sb_core_catalog
+    sb_core_index
+    sb_engine_optimizer
+    sb_engine_sblr
+    sb_storage_page
+)
+
+add_test(
+  NAME ipar_worker_b_support_services_gate
+  COMMAND ipar_worker_b_support_services_gate
+)
+set_tests_properties(ipar_worker_b_support_services_gate PROPERTIES
+  LABELS "ipar_worker_b_support_services_gate;IPAR-P2-06;IPAR-P2-07;IPAR-P2-11;IPAR-P4-07;IPAR-P4-08;IPAR-P4-09;IPAR-P4-10;IPAR-P4-11;IPAR-P4-12;IPAR-P4-13;IPAR-P4-14;IPAR-P4-15;IPAR-P4-16;IPAR-P4-18;IPAR-P4-19;IPAR-P6-30;IPAR-P7-16;IPAR-P7-17;IPAR-P7-18;IPAR-P7-19;database_lifecycle;catalog;index;optimizer;sblr;storage;mga_transaction_regression"
+)
+
 add_executable(index_bulk_publish_recovery_gate
   index_bulk_publish_recovery_gate.cpp
 )
@@ -4177,6 +4206,23 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    LABELS "ipar_large_value_batch_allocation_gate;IPAR-P3-04;large_value_batch_allocation;insert_performance;database_lifecycle;mga_transaction_regression"
 		  )
 
+		  add_executable(ipar_dml_operation_path_proof_gate
+		    ipar_dml_operation_path_proof_gate.cpp
+		  )
+		  target_compile_features(ipar_dml_operation_path_proof_gate PRIVATE cxx_std_23)
+		  target_link_libraries(ipar_dml_operation_path_proof_gate
+		    PRIVATE
+		      sb_engine_internal_api
+		  )
+
+		  add_test(
+		    NAME ipar_dml_operation_path_proof_gate
+		    COMMAND ipar_dml_operation_path_proof_gate
+		  )
+		  set_tests_properties(ipar_dml_operation_path_proof_gate PROPERTIES
+		    LABELS "ipar_dml_operation_path_proof_gate;IPAR-P0-07;IPAR-P3-24;IPAR-P3-25;IPAR-P3-26;IPAR-P3-27;IPAR-P3-28;IPAR-P3-29;IPAR-P7-14;IPAR-P7-20;IPAR-P7-21;IPAR-P7-22;dml_operation_path;dml_pipeline_cpu_distribution;around_dml_pipeline;end_to_end_operation_path;mixed_workload_matrix;execution_control;database_lifecycle;mga_transaction_regression"
+		  )
+
 		  add_executable(ipar_multi_filespace_placement_gate
 		    ipar_multi_filespace_placement_gate.cpp
 		  )
@@ -4537,7 +4583,24 @@ if(TARGET sb_server_core)
     COMMAND ipar_prepared_execution_cache_authority_gate
   )
   set_tests_properties(ipar_prepared_execution_cache_authority_gate PROPERTIES
-    LABELS "ipar_prepared_execution_cache_authority_gate;IPAR-P1-12;IPAR-P1-13;IPAR-P1-15;IPAR-P1-18;prepared_execution_context;negative_authorization_cache;capability_cache;statement_preflight_cache;database_lifecycle;mga_transaction_regression"
+    LABELS "ipar_prepared_execution_cache_authority_gate;IPAR-P1-12;IPAR-P1-13;IPAR-P1-15;IPAR-P1-18;IPAR-G111;prepared_execution_context;negative_authorization_cache;capability_cache;statement_preflight_cache;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(ipar_security_policy_support_gate
+    ipar_security_policy_support_gate.cpp
+  )
+  target_compile_features(ipar_security_policy_support_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_security_policy_support_gate
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME ipar_security_policy_support_gate
+    COMMAND ipar_security_policy_support_gate
+  )
+  set_tests_properties(ipar_security_policy_support_gate PROPERTIES
+    LABELS "ipar_security_policy_support_gate;IPAR-P1-10;IPAR-P1-16;IPAR-P6-08;IPAR-P6-15;IPAR-P6-16;IPAR-P7-15;IPAR-G036;IPAR-G053;IPAR-G060;IPAR-G061;IPAR-G062;IPAR-G099;IPAR-G111;security_policy_cache;compiled_security_predicate;slow_path_diagnostics;dml_ddl_observability;policy_resource_pack_loading;statement_preflight_cache;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(ipar_server_protocol_cache_support_gate

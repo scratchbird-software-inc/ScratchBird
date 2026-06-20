@@ -63,6 +63,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_feedback_stability.cpp
     optimizer_graph_document_costing_enterprise.cpp
     optimizer_hint_policy.cpp
+    ipar_optimizer_support_services.cpp
     bulk_placement_order.cpp
     optimizer_hot_point_lookup.cpp
     optimizer_index_costing.cpp

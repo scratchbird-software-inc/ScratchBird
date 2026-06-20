@@ -91,6 +91,7 @@ if(SB_BUILD_SERVER)
     diagnostics.cpp
     engine_host.cpp
     ipar_protocol_support.cpp
+    ipar_security_policy_support.cpp
     ipc_server.cpp
     lifecycle.cpp
     listener_orchestrator.cpp

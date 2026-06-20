@@ -19,6 +19,7 @@ add_library(sb_engine_sblr
   sblr_domain_runtime.cpp
   sblr_engine_envelope.cpp
   sblr_execution_metrics.cpp
+  ipar_sblr_support_services.cpp
   sblr_dispatch.cpp
   sblr_hot_path_execution.cpp
   sblr_llvm_seam.cpp
