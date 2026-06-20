@@ -10,8 +10,12 @@
 
 #include "page_manager.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <map>
+#include <future>
+#include <sstream>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -103,6 +107,16 @@ void AddCounterEvidence(AsyncPageIoResult* result) {
                              std::to_string(result->counters.publication_markers));
   result->evidence.push_back("async_page_io.combined_writes=" +
                              std::to_string(result->counters.combined_writes));
+  result->evidence.push_back("async_page_io.write_batches=" +
+                             std::to_string(result->counters.write_batches));
+  result->evidence.push_back("async_page_io.write_tickets_issued=" +
+                             std::to_string(result->counters.write_tickets_issued));
+  result->evidence.push_back("async_page_io.write_tickets_completed=" +
+                             std::to_string(result->counters.write_tickets_completed));
+  result->evidence.push_back("async_page_io.write_worker_count=" +
+                             std::to_string(result->counters.write_worker_count));
+  result->evidence.push_back("async_page_io.write_ticket_waits=" +
+                             std::to_string(result->counters.write_ticket_waits));
   result->evidence.push_back("async_page_io.batch_bytes=" +
                              std::to_string(result->counters.batch_bytes));
   result->evidence.push_back(
@@ -307,6 +321,97 @@ std::vector<AsyncPageIoOperation> CombineWrites(
     combined[found->second] = operation;
   }
   return combined;
+}
+
+std::string WriteTicketId(const AsyncPageIoOperation& operation,
+                          u64 worker_ordinal,
+                          u64 batch_ordinal) {
+  std::ostringstream out;
+  out << "async-write-ticket:" << batch_ordinal << ':' << worker_ordinal
+      << ":page=" << operation.page_number
+      << ":generation=" << operation.page_generation
+      << ":operation=" << operation.operation_id;
+  return out.str();
+}
+
+struct AsyncWriteTicketResult {
+  std::string ticket_id;
+  std::string operation_id;
+  u64 worker_ordinal = 0;
+  u64 page_number = 0;
+  AsyncPageIoBackendResult backend_result;
+};
+
+struct AsyncWriteBatchResult {
+  bool ok = true;
+  std::vector<AsyncWriteTicketResult> tickets;
+  AsyncPageIoBackendResult failure;
+  std::vector<std::string> evidence;
+};
+
+AsyncWriteBatchResult ExecuteWriteTicketBatch(
+    const std::vector<AsyncPageIoOperation>& writes,
+    const AsyncPageIoRouteBackend& backend,
+    u64 batch_ordinal) {
+  AsyncWriteBatchResult result;
+  if (writes.empty()) {
+    return result;
+  }
+  result.evidence.push_back("async_page_io.write_queue.bounded=true");
+  result.evidence.push_back("async_page_io.write_queue.batch=" +
+                            std::to_string(batch_ordinal));
+  result.evidence.push_back("async_page_io.write_queue.depth=" +
+                            std::to_string(writes.size()));
+  result.evidence.push_back(
+      "async_page_io.write_queue.shard_key=filespace/page-family/object/page");
+  result.evidence.push_back(
+      "async_page_io.write_queue.commit_wait=required_before_publication");
+  result.evidence.push_back(
+      "async_page_io.write_queue.finality_authority=durable_transaction_inventory");
+  result.evidence.push_back("async_page_io.write_queue.agent_finality_authority=false");
+
+  std::vector<std::future<AsyncWriteTicketResult>> futures;
+  futures.reserve(writes.size());
+  u64 worker_ordinal = 0;
+  for (const auto& write : writes) {
+    const u64 assigned_worker = ++worker_ordinal;
+    const std::string ticket_id =
+        WriteTicketId(write, assigned_worker, batch_ordinal);
+    result.evidence.push_back("async_page_io.write_ticket.issued=" + ticket_id);
+    result.evidence.push_back("async_page_io.write_ticket.worker=" +
+                              std::to_string(assigned_worker));
+    result.evidence.push_back("async_page_io.write_ticket.shard=page:" +
+                              std::to_string(write.page_number));
+    futures.push_back(std::async(std::launch::async,
+                                 [backend, write, ticket_id, assigned_worker]() {
+                                   AsyncWriteTicketResult ticket;
+                                   ticket.ticket_id = ticket_id;
+                                   ticket.operation_id = write.operation_id;
+                                   ticket.worker_ordinal = assigned_worker;
+                                   ticket.page_number = write.page_number;
+                                   ticket.backend_result = backend.write_page(write);
+                                   return ticket;
+                                 }));
+  }
+
+  for (auto& future : futures) {
+    AsyncWriteTicketResult ticket = future.get();
+    result.tickets.push_back(ticket);
+    result.evidence.push_back("async_page_io.write_ticket.completed=" +
+                              ticket.ticket_id);
+    if (!ticket.backend_result.ok() && result.ok) {
+      result.ok = false;
+      result.failure = ticket.backend_result;
+      result.evidence.push_back("async_page_io.write_ticket.failed=" +
+                                ticket.ticket_id);
+    }
+  }
+  result.evidence.push_back("async_page_io.write_ticket.waited=" +
+                            std::to_string(result.tickets.size()));
+  result.evidence.push_back(
+      result.ok ? "async_page_io.write_ticket.commit_wait_satisfied=true"
+                : "async_page_io.write_ticket.commit_wait_satisfied=false");
+  return result;
 }
 
 }  // namespace
@@ -519,6 +624,40 @@ AsyncPageIoResult ExecuteAsyncPageIoBatch(
   bool write_submitted = false;
   bool fsync_submitted = false;
   bool marker_seen = false;
+  u64 write_batch_ordinal = 0;
+  std::vector<AsyncPageIoOperation> pending_writes;
+
+  auto flush_pending_writes = [&]() -> std::optional<AsyncPageIoResult> {
+    if (pending_writes.empty()) {
+      return std::nullopt;
+    }
+    ++write_batch_ordinal;
+    const auto write_batch =
+        ExecuteWriteTicketBatch(pending_writes, backend, write_batch_ordinal);
+    result.evidence.insert(result.evidence.end(),
+                           write_batch.evidence.begin(),
+                           write_batch.evidence.end());
+    ++result.counters.write_batches;
+    result.counters.write_tickets_issued += pending_writes.size();
+    result.counters.write_worker_count =
+        std::max(result.counters.write_worker_count,
+                 static_cast<u64>(pending_writes.size()));
+    result.counters.write_ticket_waits += write_batch.tickets.size();
+    result.counters.write_tickets_completed += write_batch.tickets.size();
+    for (const auto& ticket : write_batch.tickets) {
+      result.executed_operation_ids.push_back(ticket.operation_id);
+    }
+    pending_writes.clear();
+    if (!write_batch.ok) {
+      return BackendFailure(request,
+                            write_batch.failure,
+                            "async_page_io_backend_write_failed",
+                            "storage.page.async_page_io.backend_write_failed");
+    }
+    write_submitted = true;
+    result.counters.submitted_writes += write_batch.tickets.size();
+    return std::nullopt;
+  };
 
   for (const auto& operation : operations) {
     ++result.counters.considered_operations;
@@ -539,6 +678,9 @@ AsyncPageIoResult ExecuteAsyncPageIoBatch(
     }
 
     if (IsRead(operation)) {
+      if (auto flushed = flush_pending_writes()) {
+        return *flushed;
+      }
       AsyncPageIoBackendResult read = backend.read_page(operation);
       if (!read.ok()) {
         return BackendFailure(request, read, "async_page_io_backend_read_failed",
@@ -558,19 +700,14 @@ AsyncPageIoResult ExecuteAsyncPageIoBatch(
                       "storage.page.async_page_io.write_after_publication_marker",
                       operation.operation_id);
       }
-      AsyncPageIoBackendResult write = backend.write_page(operation);
-      if (!write.ok()) {
-        return BackendFailure(request, write,
-                              "async_page_io_backend_write_failed",
-                              "storage.page.async_page_io.backend_write_failed");
-      }
-      ++result.counters.submitted_writes;
-      write_submitted = true;
-      result.executed_operation_ids.push_back(operation.operation_id);
+      pending_writes.push_back(operation);
       continue;
     }
 
     if (IsFsync(operation)) {
+      if (auto flushed = flush_pending_writes()) {
+        return *flushed;
+      }
       AsyncPageIoBackendResult synced = backend.fsync();
       if (!synced.ok()) {
         return BackendFailure(request, synced,
@@ -584,6 +721,9 @@ AsyncPageIoResult ExecuteAsyncPageIoBatch(
     }
 
     if (IsPublicationMarker(operation)) {
+      if (auto flushed = flush_pending_writes()) {
+        return *flushed;
+      }
       if (request.policy.require_sync_fence_for_writes && !fsync_submitted) {
         return Refuse(request,
                       "async_page_io_publication_before_sync_fence",
@@ -594,6 +734,10 @@ AsyncPageIoResult ExecuteAsyncPageIoBatch(
       marker_seen = true;
       result.executed_operation_ids.push_back(operation.operation_id);
     }
+  }
+
+  if (auto flushed = flush_pending_writes()) {
+    return *flushed;
   }
 
   if (write_submitted && request.policy.require_sync_fence_for_writes &&

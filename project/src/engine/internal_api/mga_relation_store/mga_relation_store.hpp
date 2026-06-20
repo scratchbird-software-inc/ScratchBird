@@ -152,12 +152,20 @@ struct MgaRelationHotAppendCounters {
   std::uint64_t row_versions_appended = 0;
   std::uint64_t scoped_row_stream_opens = 0;
   std::uint64_t scoped_row_stream_flushes = 0;
+  std::uint64_t scoped_row_write_batches = 0;
+  std::uint64_t scoped_row_write_tickets_issued = 0;
+  std::uint64_t scoped_row_write_tickets_completed = 0;
+  std::uint64_t scoped_row_write_worker_count = 0;
   std::uint64_t index_stream_opens = 0;
   std::uint64_t index_stream_flushes = 0;
   std::uint64_t index_range_reservations = 0;
   std::uint64_t index_entries_appended = 0;
   std::uint64_t scoped_index_stream_opens = 0;
   std::uint64_t scoped_index_stream_flushes = 0;
+  std::uint64_t scoped_index_write_batches = 0;
+  std::uint64_t scoped_index_write_tickets_issued = 0;
+  std::uint64_t scoped_index_write_tickets_completed = 0;
+  std::uint64_t scoped_index_write_worker_count = 0;
 };
 
 struct MgaLargeValuePersistBatchRowInput {

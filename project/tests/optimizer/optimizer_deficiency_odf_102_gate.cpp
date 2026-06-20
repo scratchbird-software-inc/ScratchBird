@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -76,12 +77,16 @@ struct BackendFixture {
   int writes = 0;
   int syncs = 0;
   std::vector<std::string> write_ids;
+  std::mutex mutex;
 };
 
 page::AsyncPageIoRouteBackend Backend(BackendFixture* fixture) {
   page::AsyncPageIoRouteBackend backend;
   backend.read_page = [fixture](const page::AsyncPageIoOperation& operation) {
-    ++fixture->reads;
+    {
+      std::lock_guard<std::mutex> lock(fixture->mutex);
+      ++fixture->reads;
+    }
     page::AsyncPageIoBackendResult result;
     result.status = OkStatus();
     result.read_payload.assign(static_cast<std::size_t>(operation.byte_count),
@@ -89,14 +94,20 @@ page::AsyncPageIoRouteBackend Backend(BackendFixture* fixture) {
     return result;
   };
   backend.write_page = [fixture](const page::AsyncPageIoOperation& operation) {
-    ++fixture->writes;
-    fixture->write_ids.push_back(operation.operation_id);
+    {
+      std::lock_guard<std::mutex> lock(fixture->mutex);
+      ++fixture->writes;
+      fixture->write_ids.push_back(operation.operation_id);
+    }
     page::AsyncPageIoBackendResult result;
     result.status = OkStatus();
     return result;
   };
   backend.fsync = [fixture]() {
-    ++fixture->syncs;
+    {
+      std::lock_guard<std::mutex> lock(fixture->mutex);
+      ++fixture->syncs;
+    }
     page::AsyncPageIoBackendResult result;
     result.status = fixture->sync_fails ? ErrorStatus() : OkStatus();
     if (fixture->sync_fails) {
@@ -182,6 +193,18 @@ page::AsyncPageIoRequest Request() {
   return request;
 }
 
+page::AsyncPageIoRequest MultiWriteRequest() {
+  page::AsyncPageIoRequest request = Request();
+  request.operations = {
+      Operation(page::AsyncPageIoOperationKind::kWritePage, "write.page.11", 11),
+      Operation(page::AsyncPageIoOperationKind::kWritePage, "write.page.12", 12),
+      Operation(page::AsyncPageIoOperationKind::kWritePage, "write.page.13", 13),
+      Operation(page::AsyncPageIoOperationKind::kFsync, "fsync.multi", 0),
+      Operation(page::AsyncPageIoOperationKind::kPublicationMarker,
+                "publish.multi", 0)};
+  return request;
+}
+
 void SuccessSelectsAsyncBatchAndCombinesWrites() {
   BackendFixture fixture;
   const auto result = page::ExecuteAsyncPageIoBatch(Request(),
@@ -217,6 +240,47 @@ void SuccessSelectsAsyncBatchAndCombinesWrites() {
           "ODF-102 MGA authority evidence missing");
   Require(EvidenceHas(result.evidence, "resource_governance.route=odf106"),
           "ODF-102 ODF-106 governance admission evidence missing");
+  RequireEvidenceHygiene(result.evidence);
+}
+
+void MultiWriteRouteUsesTicketedWorkersBeforePublication() {
+  BackendFixture fixture;
+  const auto result = page::ExecuteAsyncPageIoBatch(MultiWriteRequest(),
+                                                   Backend(&fixture));
+  Require(result.ok(), "ODF-102 multi-write async route did not execute");
+  Require(result.selected && !result.fallback_used,
+          "ODF-102 multi-write route was not selected");
+  Require(!result.write_combining_applied,
+          "ODF-102 multi-write route unexpectedly used write combining");
+  Require(result.publication_marker_published,
+          "ODF-102 multi-write route did not publish after sync fence");
+  Require(fixture.reads == 0 && fixture.writes == 3 && fixture.syncs == 1,
+          "ODF-102 multi-write backend counts changed");
+  Require(result.counters.submitted_writes == 3 &&
+              result.counters.write_batches == 1 &&
+              result.counters.write_tickets_issued == 3 &&
+              result.counters.write_tickets_completed == 3 &&
+              result.counters.write_worker_count >= 3 &&
+              result.counters.write_ticket_waits == 3,
+          "ODF-102 multi-write ticket counters changed");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_queue.bounded=true"),
+          "ODF-102 multi-write bounded queue evidence missing");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_queue.depth=3"),
+          "ODF-102 multi-write queue depth evidence missing");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_ticket.issued="),
+          "ODF-102 multi-write ticket issue evidence missing");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_ticket.completed="),
+          "ODF-102 multi-write ticket completion evidence missing");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_ticket.commit_wait_satisfied=true"),
+          "ODF-102 multi-write commit wait evidence missing");
+  Require(EvidenceHas(result.evidence,
+                      "async_page_io.write_queue.finality_authority=durable_transaction_inventory"),
+          "ODF-102 multi-write MGA authority evidence missing");
   RequireEvidenceHygiene(result.evidence);
 }
 
@@ -372,6 +436,7 @@ void NoExternalFinalityInvariant() {
 
 int main() {
   SuccessSelectsAsyncBatchAndCombinesWrites();
+  MultiWriteRouteUsesTicketedWorkersBeforePublication();
   FallbacksHaveExactDiagnostics();
   UnsafeFinalityAndSyncFenceFailClosed();
   NoExternalFinalityInvariant();

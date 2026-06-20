@@ -517,7 +517,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND ipar_page_size_preallocation_gate
   )
   set_tests_properties(ipar_page_size_preallocation_gate PROPERTIES
-    LABELS "ipar_page_size_preallocation_gate;IPAR-P3-02;IPAR-P3-03;IPAR-P7-02;page_preallocation;database_lifecycle_storage;mga_transaction_regression"
+    LABELS "ipar_page_size_preallocation_gate;IPAR-P3-02;IPAR-P3-03;IPAR-P3-10;IPAR-P7-02;IPAR-P7-12;page_preallocation;database_lifecycle_storage;mga_transaction_regression"
   )
 
   add_executable(ipar_index_family_preallocation_gate
@@ -540,7 +540,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND ipar_index_family_preallocation_gate
   )
   set_tests_properties(ipar_index_family_preallocation_gate PROPERTIES
-    LABELS "ipar_index_family_preallocation_gate;IPAR-P4-02;index_page_preallocation;database_lifecycle_storage;mga_transaction_regression"
+    LABELS "ipar_index_family_preallocation_gate;IPAR-P3-10;IPAR-P4-02;IPAR-P7-12;index_page_preallocation;database_lifecycle_storage;mga_transaction_regression"
   )
 
   add_executable(cdp_statistics_access_path_gate
@@ -3140,7 +3140,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
     COMMAND dml_page_allocation_runtime_gate
   )
   set_tests_properties(dml_page_allocation_runtime_gate PROPERTIES
-    LABELS "PFAR-012;dml_page_allocation_runtime_gate;database_lifecycle;mga_transaction_regression"
+    LABELS "PFAR-012;IPAR-P3-10;IPAR-P7-12;dml_page_allocation_runtime_gate;database_lifecycle;mga_transaction_regression"
   )
 
   if(NOT TARGET sb_engine_sblr)
@@ -4517,7 +4517,7 @@ if(TARGET sb_server_core)
     COMMAND ipar_agent_runtime_idle_gate
   )
   set_tests_properties(ipar_agent_runtime_idle_gate PROPERTIES
-    LABELS "IPAR-P6-03;IPAR-P6-04;IPAR-P6-05;IPAR-P6-06;agent_runtime;agent_idle;agent_failure_diagnostics;agent_fairness;database_lifecycle;mga_transaction_regression"
+    LABELS "IPAR-P6-03;IPAR-P6-04;IPAR-P6-05;IPAR-P6-06;IPAR-P7-12;agent_runtime;agent_idle;agent_failure_diagnostics;agent_fairness;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(database_lifecycle_memory_policy_config_conformance

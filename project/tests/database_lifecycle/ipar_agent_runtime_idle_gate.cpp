@@ -179,6 +179,8 @@ void RequireFairWorkerProgress(
   for (const auto& worker : snapshot.workers) {
     Require(worker.ticks > 0,
             "IPAR agent runtime left a selected worker unscheduled");
+    Require(!worker.native_thread_id.empty(),
+            "IPAR agent runtime did not expose worker native thread id");
   }
   Require(snapshot.starvation_events == 0,
           "IPAR agent runtime recorded starvation events");

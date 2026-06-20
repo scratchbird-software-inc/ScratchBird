@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -187,6 +188,63 @@ bool AppendScopedRelationLines(const std::string& path,
   std::filesystem::create_directories(std::filesystem::path(path).parent_path(),
                                       ignored);
   return AppendLines(path, lines, stream_opens, stream_flushes);
+}
+
+struct ScopedRelationWriteTicket {
+  std::string path;
+  bool ok = false;
+  std::uint64_t stream_opens = 0;
+  std::uint64_t stream_flushes = 0;
+};
+
+ScopedRelationWriteTicket AppendScopedRelationLinesTicket(
+    std::string path,
+    std::vector<std::string> lines) {
+  ScopedRelationWriteTicket ticket;
+  ticket.path = path;
+  ticket.ok = AppendScopedRelationLines(ticket.path,
+                                        lines,
+                                        &ticket.stream_opens,
+                                        &ticket.stream_flushes);
+  return ticket;
+}
+
+bool AppendScopedRelationLinesParallel(
+    const std::map<std::string, std::vector<std::string>>& pending,
+    std::uint64_t* stream_opens,
+    std::uint64_t* stream_flushes,
+    std::uint64_t* write_batches,
+    std::uint64_t* write_tickets_issued,
+    std::uint64_t* write_tickets_completed,
+    std::uint64_t* write_worker_count) {
+  if (pending.empty()) {
+    return true;
+  }
+  if (write_batches != nullptr) { ++(*write_batches); }
+  if (write_tickets_issued != nullptr) {
+    *write_tickets_issued += static_cast<std::uint64_t>(pending.size());
+  }
+  if (write_worker_count != nullptr) {
+    *write_worker_count = std::max(*write_worker_count,
+                                   static_cast<std::uint64_t>(pending.size()));
+  }
+  std::vector<std::future<ScopedRelationWriteTicket>> futures;
+  futures.reserve(pending.size());
+  for (const auto& [path, lines] : pending) {
+    futures.push_back(std::async(std::launch::async,
+                                 AppendScopedRelationLinesTicket,
+                                 path,
+                                 lines));
+  }
+  bool ok = true;
+  for (auto& future : futures) {
+    const auto ticket = future.get();
+    if (stream_opens != nullptr) { *stream_opens += ticket.stream_opens; }
+    if (stream_flushes != nullptr) { *stream_flushes += ticket.stream_flushes; }
+    if (write_tickets_completed != nullptr) { ++(*write_tickets_completed); }
+    ok = ok && ticket.ok;
+  }
+  return ok;
 }
 
 std::vector<std::string> ReadLines(const std::string& path) {
@@ -2786,14 +2844,15 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     impl_->row_dirty = false;
     ++impl_->counters.row_stream_flushes;
   }
-  for (const auto& [path, lines] : impl_->scoped_row_lines) {
-    if (!AppendScopedRelationLines(path,
-                                   lines,
-                                   &impl_->counters.scoped_row_stream_opens,
-                                   &impl_->counters.scoped_row_stream_flushes)) {
-      return MakeInvalidRequestDiagnostic("mga.row_store",
-                                          "scoped_row_version_append_failed");
-    }
+  if (!AppendScopedRelationLinesParallel(impl_->scoped_row_lines,
+                                         &impl_->counters.scoped_row_stream_opens,
+                                         &impl_->counters.scoped_row_stream_flushes,
+                                         &impl_->counters.scoped_row_write_batches,
+                                         &impl_->counters.scoped_row_write_tickets_issued,
+                                         &impl_->counters.scoped_row_write_tickets_completed,
+                                         &impl_->counters.scoped_row_write_worker_count)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "scoped_row_version_append_failed");
   }
   impl_->scoped_row_lines.clear();
   return OkDiagnostic();
@@ -2944,14 +3003,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
     impl_->index_dirty = false;
     ++impl_->counters.index_stream_flushes;
   }
-  for (const auto& [path, lines] : impl_->scoped_index_lines) {
-    if (!AppendScopedRelationLines(path,
-                                   lines,
-                                   &impl_->counters.scoped_index_stream_opens,
-                                   &impl_->counters.scoped_index_stream_flushes)) {
-      return MakeInvalidRequestDiagnostic("mga.index_store",
-                                          "scoped_index_entry_append_failed");
-    }
+  if (!AppendScopedRelationLinesParallel(
+          impl_->scoped_index_lines,
+          &impl_->counters.scoped_index_stream_opens,
+          &impl_->counters.scoped_index_stream_flushes,
+          &impl_->counters.scoped_index_write_batches,
+          &impl_->counters.scoped_index_write_tickets_issued,
+          &impl_->counters.scoped_index_write_tickets_completed,
+          &impl_->counters.scoped_index_write_worker_count)) {
+    return MakeInvalidRequestDiagnostic("mga.index_store",
+                                        "scoped_index_entry_append_failed");
   }
   impl_->scoped_index_lines.clear();
   return OkDiagnostic();

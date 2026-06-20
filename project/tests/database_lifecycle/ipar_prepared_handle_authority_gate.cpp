@@ -218,6 +218,15 @@ void ValidateServerPreparedHandlesBindAuthority() {
               prepared_it->second.security_epoch == primary.security_epoch &&
               prepared_it->second.policy_generation == primary.policy_generation,
           "IPAR prepared handle did not bind authority epochs");
+  Require(prepared_it->second.authority_proof_hash_algorithm == "sha256" &&
+              !prepared_it->second.authority_proof_hash.empty(),
+          "IPAR prepared handle did not seal a server authority proof hash");
+  Require(prepared_it->second.authority_dependency_uuid == primary.database_uuid &&
+              prepared_it->second.authority_dependency_kind == "database" &&
+              prepared_it->second.authority_dependency_operation_id ==
+                  prepared_it->second.operation_id &&
+              prepared_it->second.authority_dependency_column_set_hash == "columns/all",
+          "IPAR prepared handle did not seal operation scoped authority dependency");
 
   const auto accepted_frame = ExecutePreparedFrame(primary.session_uuid, *prepared_uuid);
   const auto accepted = server::HandleExecuteSblr(&registry, engine_state, accepted_frame);
@@ -225,6 +234,17 @@ void ValidateServerPreparedHandlesBindAuthority() {
   const auto accepted_request = RequireRequest(registry, accepted_frame.header.request_uuid);
   Require(accepted_request.state == server::ServerRequestLifecycleState::kCompleted,
           "IPAR prepared handle accepted request did not complete");
+
+  auto& prepared_record = prepared_it->second;
+  const auto original_authority_hash = prepared_record.authority_proof_hash;
+  prepared_record.authority_proof_hash = "sha256:tampered";
+  RequirePreparedRefusalBeforeDispatch(
+      &registry,
+      engine_state,
+      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
+      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
+      "prepared_statement_epoch_stale");
+  prepared_record.authority_proof_hash = original_authority_hash;
 
   RequirePreparedRefusalBeforeDispatch(
       &registry,
@@ -326,6 +346,16 @@ void ValidateNativeBulkIngestTemplateCanBePrepared() {
   Require(prepared_it->second.target_operation_id ==
               "dml.execute_native_bulk_ingest",
           "native bulk ingest template object handle operation mismatch");
+  Require(prepared_it->second.authority_dependency_uuid ==
+              prepared_it->second.target_object_uuid &&
+              prepared_it->second.authority_dependency_kind == "table" &&
+              prepared_it->second.authority_dependency_operation_id ==
+                  prepared_it->second.target_operation_id &&
+              prepared_it->second.authority_dependency_column_set_hash ==
+                  prepared_it->second.target_column_set_hash &&
+              prepared_it->second.authority_proof_hash_algorithm == "sha256" &&
+              !prepared_it->second.authority_proof_hash.empty(),
+          "native bulk ingest template did not seal dependency authority proof");
   const auto first_handle_id = prepared_it->second.session_object_handle_id;
   const auto first_generation = prepared_it->second.session_object_handle_generation;
   auto validation = server::ValidateSessionObjectHandle(
@@ -334,9 +364,32 @@ void ValidateNativeBulkIngestTemplateCanBePrepared() {
       first_handle_id,
       first_generation,
       prepared_it->second.target_object_uuid,
-      prepared_it->second.target_operation_id);
+      prepared_it->second.target_operation_id,
+      prepared_it->second.target_column_set_hash);
   Require(validation.accepted,
           "native bulk ingest template object handle did not validate");
+  auto& bulk_prepared = prepared_it->second;
+  const auto original_dependency_uuid = bulk_prepared.authority_dependency_uuid;
+  bulk_prepared.authority_dependency_uuid =
+      "018f0000-0000-7000-8000-000000000102";
+  RequirePreparedRefusalBeforeDispatch(
+      &registry,
+      engine_state,
+      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
+      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
+      "prepared_statement_epoch_stale");
+  bulk_prepared.authority_dependency_uuid = original_dependency_uuid;
+
+  const auto original_column_hash = bulk_prepared.target_column_set_hash;
+  bulk_prepared.target_column_set_hash = "columns/tampered";
+  RequirePreparedRefusalBeforeDispatch(
+      &registry,
+      engine_state,
+      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
+      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
+      "prepared_statement_epoch_stale");
+  bulk_prepared.target_column_set_hash = original_column_hash;
+
   const std::string handle_key =
       server::UuidBytesToText(primary.session_uuid) + "#" +
       std::to_string(first_handle_id);
@@ -375,7 +428,8 @@ void ValidateNativeBulkIngestTemplateCanBePrepared() {
       reprepared_it->second.session_object_handle_id,
       reprepared_it->second.session_object_handle_generation,
       reprepared_it->second.target_object_uuid,
-      reprepared_it->second.target_operation_id);
+      reprepared_it->second.target_operation_id,
+      reprepared_it->second.target_column_set_hash);
   Require(validation.accepted,
           "native bulk ingest template recycled object handle did not validate");
 }

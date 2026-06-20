@@ -2015,7 +2015,7 @@ add_test(
   COMMAND optimizer_deficiency_odf_102_gate
 )
 set_tests_properties(optimizer_deficiency_odf_102_gate PROPERTIES
-  LABELS "optimizer_deficiency_odf_102_gate;ODF-102;optimizer_deficiency;storage;performance;mga;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_odf_102_gate;ODF-102;IPAR-P3-11;IPAR-P7-13;optimizer_deficiency;storage;performance;mga;benchmark_clean;mga_transaction_regression"
 )
 
 add_executable(

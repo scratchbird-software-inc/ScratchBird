@@ -241,6 +241,42 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
   return 0;
 }
 
+void RequireWorkerPreworkEvidence(const std::vector<api::EngineEvidenceReference>& evidence) {
+  Require(HasEvidence(evidence, "page_allocator_worker_capacity_assignment",
+                      "page_allocation_manager:slot=1"),
+          "IPAR preallocation page worker slot proof missing");
+  Require(HasEvidence(evidence, "filespace_capacity_worker_capacity_assignment",
+                      "filespace_capacity_manager:slot=2"),
+          "IPAR preallocation filespace worker slot proof missing");
+  Require(HasEvidence(evidence, "page_allocator_demand_evaluation_mode",
+                      "bounded_agent_prework_tick"),
+          "IPAR preallocation demand did not use bounded agent prework tick");
+  Require(HasEvidence(evidence, "filespace_capacity_demand_evaluation_mode",
+                      "bounded_agent_prework_tick"),
+          "IPAR preallocation filespace demand did not use bounded agent prework tick");
+  Require(HasEvidence(evidence, "page_allocator_preallocation_evaluation_mode",
+                      "bounded_agent_prework_tick"),
+          "IPAR preallocation did not use bounded agent prework tick");
+  Require(HasEvidence(evidence, "page_allocator_prework_inventory_produced", "true"),
+          "IPAR preallocation inventory was not produced by page agent prework");
+  Require(HasEvidence(evidence, "page_allocator_prework_inventory_state", "preallocated"),
+          "IPAR preallocation inventory state proof missing");
+  Require(HasEvidence(evidence, "page_allocator_prework_inventory_before_foreground_reserve",
+                      "true"),
+          "IPAR preallocation inventory was not available before foreground reserve");
+  Require(HasEvidence(evidence, "page_allocation_mga_finality_authority",
+                      "durable_transaction_inventory"),
+          "IPAR preallocation lost MGA finality authority proof");
+  Require(HasEvidence(evidence, "page_allocation_agent_finality_authority", "false"),
+          "IPAR preallocation incorrectly made agent finality-authoritative");
+  Require(HasEvidence(evidence, "page_allocator_inline_degraded_path_count", "0"),
+          "IPAR preallocation unexpectedly used degraded page-agent path");
+  Require(EvidenceU64(evidence, "page_filespace_agent_queue_depth_after_capacity_enqueue") > 0,
+          "IPAR preallocation bounded queue enqueue accounting missing");
+  Require(EvidenceU64(evidence, "page_allocator_prework_inventory_pages") > 0,
+          "IPAR preallocation inventory page count missing");
+}
+
 void RequirePreallocationEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                                   std::string_view prefix,
                                   bool require_index) {
@@ -258,8 +294,14 @@ void RequirePreallocationEvidence(const std::vector<api::EngineEvidenceReference
   Require(HasEvidence(evidence, "row_page_preallocation_claim",
                       "physical_preallocated_pages"),
           "IPAR preallocation row pages were not physically preallocated");
+  Require(HasEvidence(evidence, "row_page_preallocated_inventory_consumed", "true"),
+          "IPAR preallocation row inventory was not consumed");
+  Require(HasEvidence(evidence, "row_page_preallocation_inventory_source",
+                      "page_allocation_manager"),
+          "IPAR preallocation row inventory did not come from page agent prework");
   Require(EvidenceU64(evidence, "row_page_preallocation_granted_pages") > 0,
           "IPAR preallocation row granted page count missing");
+  RequireWorkerPreworkEvidence(evidence);
   if (require_index) {
     Require(HasEvidence(evidence, "index_page_allocation_source",
                         "SB-STORAGE-PAGE-ALLOCATION-PREALLOCATED-POOL-HIT"),
@@ -267,6 +309,11 @@ void RequirePreallocationEvidence(const std::vector<api::EngineEvidenceReference
     Require(HasEvidence(evidence, "index_page_preallocation_claim",
                         "physical_preallocated_pages"),
             "IPAR preallocation index pages were not physically preallocated");
+    Require(HasEvidence(evidence, "index_page_preallocated_inventory_consumed", "true"),
+            "IPAR preallocation index inventory was not consumed");
+    Require(HasEvidence(evidence, "index_page_preallocation_inventory_source",
+                        "page_allocation_manager"),
+            "IPAR preallocation index inventory did not come from page agent prework");
     Require(EvidenceU64(evidence, "index_page_preallocation_granted_pages") > 0,
             "IPAR preallocation index granted page count missing");
   }

@@ -120,6 +120,11 @@ struct AsyncPageIoCounters {
   u64 submitted_fsyncs = 0;
   u64 publication_markers = 0;
   u64 combined_writes = 0;
+  u64 write_batches = 0;
+  u64 write_tickets_issued = 0;
+  u64 write_tickets_completed = 0;
+  u64 write_worker_count = 0;
+  u64 write_ticket_waits = 0;
   u64 skipped_operations = 0;
   u64 refused_operations = 0;
   u64 batch_bytes = 0;

@@ -2058,6 +2058,14 @@ void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                               std::to_string(counters.scoped_row_stream_opens)});
   result->evidence.push_back({"mga_hot_append_scoped_row_stream_flushes",
                               std::to_string(counters.scoped_row_stream_flushes)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_write_batches",
+                              std::to_string(counters.scoped_row_write_batches)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_write_tickets_issued",
+                              std::to_string(counters.scoped_row_write_tickets_issued)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_write_tickets_completed",
+                              std::to_string(counters.scoped_row_write_tickets_completed)});
+  result->evidence.push_back({"mga_hot_append_scoped_row_write_worker_count",
+                              std::to_string(counters.scoped_row_write_worker_count)});
   result->evidence.push_back({"mga_hot_append_row_range_reservations",
                               std::to_string(counters.row_range_reservations)});
   result->evidence.push_back({"mga_hot_append_row_versions",
@@ -2070,6 +2078,14 @@ void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                               std::to_string(counters.scoped_index_stream_opens)});
   result->evidence.push_back({"mga_hot_append_scoped_index_stream_flushes",
                               std::to_string(counters.scoped_index_stream_flushes)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_write_batches",
+                              std::to_string(counters.scoped_index_write_batches)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_write_tickets_issued",
+                              std::to_string(counters.scoped_index_write_tickets_issued)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_write_tickets_completed",
+                              std::to_string(counters.scoped_index_write_tickets_completed)});
+  result->evidence.push_back({"mga_hot_append_scoped_index_write_worker_count",
+                              std::to_string(counters.scoped_index_write_worker_count)});
   result->evidence.push_back({"mga_hot_append_index_range_reservations",
                               std::to_string(counters.index_range_reservations)});
   result->evidence.push_back({"mga_hot_append_index_entries",

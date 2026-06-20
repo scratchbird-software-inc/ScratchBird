@@ -1114,6 +1114,7 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
     worker_snapshot.role = worker.role;
     worker_snapshot.agent_type_id = worker.agent_type_id;
     worker_snapshot.instance_uuid = worker.instance_uuid;
+    worker_snapshot.native_thread_id = worker.native_thread_id;
     worker_snapshot.ticks = worker.ticks;
     worker_snapshot.actions_accepted = worker.actions_accepted;
     worker_snapshot.actions_refused = worker.actions_refused;
