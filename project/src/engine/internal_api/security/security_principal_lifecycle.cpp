@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -835,13 +836,28 @@ const EngineSecurityGroupRecord* FindGroup(const EngineSecurityPrincipalLifecycl
   return nullptr;
 }
 
+bool FindAnySecuritySubject(const EngineSecurityPrincipalLifecycleState& state,
+                            const std::string& subject_uuid) {
+  return FindPrincipal(state, subject_uuid) != nullptr ||
+         FindRole(state, subject_uuid) != nullptr ||
+         FindGroup(state, subject_uuid) != nullptr;
+}
+
 std::set<std::string> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycleState& state,
                                           const std::string& principal_uuid) {
   std::set<std::string> grantees;
-  grantees.insert(principal_uuid);
-  for (const auto& membership : state.memberships) {
-    if (membership.member_principal_uuid == principal_uuid && !membership.revoked) {
-      grantees.insert(membership.container_uuid);
+  std::vector<std::string> pending;
+  pending.push_back(principal_uuid);
+  while (!pending.empty()) {
+    const std::string current = pending.back();
+    pending.pop_back();
+    if (!grantees.insert(current).second) { continue; }
+    for (const auto& membership : state.memberships) {
+      if (membership.revoked || membership.member_principal_uuid != current ||
+          membership.container_uuid.empty()) {
+        continue;
+      }
+      pending.push_back(membership.container_uuid);
     }
   }
   return grantees;
@@ -1293,7 +1309,7 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
                                                                 kOperation,
                                                                 loaded.diagnostic);
   }
-  if (FindPrincipal(loaded.state, request.member_principal_uuid) == nullptr) {
+  if (!FindAnySecuritySubject(loaded.state, request.member_principal_uuid)) {
     return DiagnosticResult<EngineSecurityGrantMembershipResult>(
         request.context,
         kOperation,
@@ -1343,6 +1359,94 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
 
   auto result = SuccessResult<EngineSecurityGrantMembershipResult>(request.context, kOperation);
   result.membership_granted = true;
+  result.security_generation = generation;
+  result.cache_invalidation_epoch = generation;
+  result.primary_object.uuid.canonical = record.membership_uuid;
+  result.primary_object.object_kind = "security_membership";
+  FillMutationEvidence(&result, kOperation, record.membership_uuid, generation);
+  AddRow(&result,
+         {{"membership_uuid", record.membership_uuid},
+          {"member_principal_uuid", record.member_principal_uuid},
+          {"container_uuid", record.container_uuid},
+          {"container_kind", record.container_kind},
+          {"security_generation", std::to_string(generation)}});
+  return result;
+}
+
+EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
+    const EngineSecurityRevokeMembershipRequest& request) {
+  constexpr const char* kOperation = "security.membership.revoke";
+  auto preflight =
+      MutatingSetupFailure<EngineSecurityRevokeMembershipResult>(request,
+                                                                 kOperation,
+                                                                 "SEC_MEMBERSHIP_ADMIN");
+  if (!preflight.ok) { return preflight; }
+  const std::string container_kind =
+      request.container_kind.empty() ? "role" : LowerAscii(request.container_kind);
+  if (request.member_principal_uuid.empty() || request.container_uuid.empty() ||
+      (container_kind != "role" && container_kind != "group")) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantInvalid,
+                            "member_principal_container_required"));
+  }
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(request.context,
+                                                                 kOperation,
+                                                                 loaded.diagnostic);
+  }
+  if (!FindAnySecuritySubject(loaded.state, request.member_principal_uuid)) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid,
+                            request.member_principal_uuid));
+  }
+  if (container_kind == "role" && FindRole(loaded.state, request.container_uuid) == nullptr) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, request.container_uuid));
+  }
+  if (container_kind == "group" && FindGroup(loaded.state, request.container_uuid) == nullptr) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticGroupInvalid, request.container_uuid));
+  }
+  const std::uint64_t generation = NextGeneration(loaded.state);
+  EngineSecurityMembershipRecord record;
+  record.creator_tx = request.context.local_transaction_id;
+  record.membership_uuid = StableToken("security-membership",
+                                       request.member_principal_uuid + "|" +
+                                           request.container_uuid + "|" + container_kind);
+  record.member_principal_uuid = request.member_principal_uuid;
+  record.container_uuid = request.container_uuid;
+  record.container_kind = container_kind;
+  record.grantor_principal_uuid = request.context.principal_uuid.canonical;
+  record.security_generation = generation;
+  record.revoked = true;
+  const auto audit = MakeAudit(request.context,
+                              kOperation,
+                              record.container_uuid,
+                              generation,
+                              "member=" + record.member_principal_uuid +
+                                  ";container_kind=" + record.container_kind);
+  const auto appended = AppendEvents(
+      request.context,
+      {MembershipEvent(record),
+       AuditEvent(audit),
+       CacheInvalidationEvent(request.context, kOperation, record.container_uuid, generation)});
+  if (appended.error) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(request.context,
+                                                                 kOperation,
+                                                                 appended);
+  }
+
+  auto result = SuccessResult<EngineSecurityRevokeMembershipResult>(request.context, kOperation);
+  result.membership_revoked = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
   result.primary_object.uuid.canonical = record.membership_uuid;

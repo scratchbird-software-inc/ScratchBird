@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "scratchbird/client/connection.h"
+#include "scratchbird/protocol/sbwp_protocol.h"
 #include "sb_statement_chunker.hpp"
 
 #include <openssl/sha.h>
@@ -27,6 +28,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifndef _WIN32
@@ -218,6 +220,18 @@ std::string sha256Text(const std::string& text) {
     return out.str();
 }
 
+std::string shortHashText(const std::string& text, std::size_t hexChars = 16) {
+    std::string digest = sha256Text(text);
+    constexpr char kPrefix[] = "sha256:";
+    if (startsWith(digest, kPrefix)) {
+        digest = digest.substr(sizeof(kPrefix) - 1);
+    }
+    if (digest.size() > hexChars) {
+        digest.resize(hexChars);
+    }
+    return digest;
+}
+
 std::vector<std::string> splitCsv(const std::string& value) {
     std::vector<std::string> out;
     std::string current;
@@ -333,6 +347,105 @@ std::string stripLeadingTrivia(const std::string& sql) {
         break;
     }
     return sql.substr(pos);
+}
+
+std::optional<std::string> explicitElementId(const std::string& sql) {
+    std::istringstream input(sql);
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::string trimmed = trim(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        if (startsWith(trimmed, "--")) {
+            std::string comment = trim(trimmed.substr(2));
+            const std::string key = "element_id";
+            if (startsWith(lower(comment), key)) {
+                comment = trim(comment.substr(key.size()));
+                if (!comment.empty() && (comment[0] == ':' || comment[0] == '=')) {
+                    comment = trim(comment.substr(1));
+                }
+                if (!comment.empty()) {
+                    for (char ch : comment) {
+                        const bool valid =
+                            std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' ||
+                            ch == '-' || ch == '.' || ch == ':';
+                        if (!valid) {
+                            throw std::runtime_error("invalid element_id character in " + comment);
+                        }
+                    }
+                    return comment;
+                }
+            }
+            continue;
+        }
+        if (startsWith(trimmed, "/*")) {
+            continue;
+        }
+        break;
+    }
+    return std::nullopt;
+}
+
+std::string normalizeElementSql(const std::string& sql) {
+    const std::string withoutComments = stripComments(sql);
+    const std::string trimmedSql = trim(withoutComments);
+    std::string out;
+    out.reserve(trimmedSql.size());
+    bool single = false;
+    bool dbl = false;
+    bool pendingSpace = false;
+    for (size_t i = 0; i < trimmedSql.size(); ++i) {
+        const char ch = trimmedSql[i];
+        const char next = (i + 1 < trimmedSql.size()) ? trimmedSql[i + 1] : '\0';
+        if (ch == '\'' && !dbl) {
+            if (pendingSpace && !out.empty()) {
+                out.push_back(' ');
+                pendingSpace = false;
+            }
+            out.push_back(ch);
+            if (single && next == '\'') {
+                out.push_back(next);
+                ++i;
+            } else {
+                single = !single;
+            }
+            continue;
+        }
+        if (ch == '"' && !single) {
+            if (pendingSpace && !out.empty()) {
+                out.push_back(' ');
+                pendingSpace = false;
+            }
+            out.push_back(ch);
+            if (dbl && next == '"') {
+                out.push_back(next);
+                ++i;
+            } else {
+                dbl = !dbl;
+            }
+            continue;
+        }
+        if (!single && !dbl && std::isspace(static_cast<unsigned char>(ch))) {
+            pendingSpace = true;
+            continue;
+        }
+        if (pendingSpace && !out.empty()) {
+            out.push_back(' ');
+            pendingSpace = false;
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
+std::string elementIdForStatement(const std::string& scriptId,
+                                  const std::string& commandGroup,
+                                  const std::string& sql) {
+    if (const auto explicitId = explicitElementId(sql)) {
+        return *explicitId;
+    }
+    return scriptId + ":" + commandGroup + ":" + shortHashText(normalizeElementSql(sql));
 }
 
 std::string firstTokenLower(const std::string& sql) {
@@ -585,7 +698,7 @@ CopyHarnessInput copyHarnessInputForStatement(const std::string& sql) {
 }
 
 std::string savepointName(const std::string& sql) {
-    std::istringstream in(trim(sql));
+    std::istringstream in(trim(stripLeadingTrivia(sql)));
     std::string first;
     std::string second;
     std::string third;
@@ -702,7 +815,7 @@ std::vector<std::string> namespaceAncestorSchemas(const std::string& namespaceNa
     if (parts.size() > 2 && parts[0] == "users" && parts[1] == "public") {
         firstAncestorDepth = 3;
     }
-    for (std::size_t depth = firstAncestorDepth; depth <= parts.size(); ++depth) {
+    for (std::size_t depth = firstAncestorDepth; depth < parts.size(); ++depth) {
         ancestors.push_back(joinIdentifierPath(parts, depth));
     }
     return ancestors;
@@ -718,11 +831,492 @@ bool statementReturnsRows(const std::string& sql) {
     return text.find(" returning ") != std::string::npos;
 }
 
+bool isSqlWordChar(char ch) {
+    const auto byte = static_cast<unsigned char>(ch);
+    return std::isalnum(byte) || ch == '_' || ch == '$';
+}
+
+bool matchesKeywordAt(const std::string& text, std::size_t pos, const std::string& keyword) {
+    if (pos + keyword.size() > text.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < keyword.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(text[pos + i])) !=
+            std::tolower(static_cast<unsigned char>(keyword[i]))) {
+            return false;
+        }
+    }
+    const bool leftBoundary = pos == 0 || !isSqlWordChar(text[pos - 1]);
+    const bool rightBoundary = pos + keyword.size() >= text.size() ||
+                               !isSqlWordChar(text[pos + keyword.size()]);
+    return leftBoundary && rightBoundary;
+}
+
+std::size_t findKeywordOutsideSql(const std::string& text,
+                                  const std::string& keyword,
+                                  std::size_t start = 0) {
+    bool inLineComment = false;
+    bool inBlockComment = false;
+    for (std::size_t pos = start; pos < text.size();) {
+        const char ch = text[pos];
+        const char next = pos + 1 < text.size() ? text[pos + 1] : '\0';
+        if (inLineComment) {
+            inLineComment = ch != '\n';
+            ++pos;
+            continue;
+        }
+        if (inBlockComment) {
+            if (ch == '*' && next == '/') {
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (ch == '-' && next == '-') {
+            inLineComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            inBlockComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (ch == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (matchesKeywordAt(text, pos, keyword)) {
+            return pos;
+        }
+        ++pos;
+    }
+    return std::string::npos;
+}
+
+std::size_t findMatchingSqlParen(const std::string& text, std::size_t openPos) {
+    if (openPos >= text.size() || text[openPos] != '(') {
+        return std::string::npos;
+    }
+    int depth = 0;
+    bool inLineComment = false;
+    bool inBlockComment = false;
+    for (std::size_t pos = openPos; pos < text.size();) {
+        const char ch = text[pos];
+        const char next = pos + 1 < text.size() ? text[pos + 1] : '\0';
+        if (inLineComment) {
+            inLineComment = ch != '\n';
+            ++pos;
+            continue;
+        }
+        if (inBlockComment) {
+            if (ch == '*' && next == '/') {
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (ch == '-' && next == '-') {
+            inLineComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            inBlockComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (ch == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (ch == '(') {
+            ++depth;
+            ++pos;
+            continue;
+        }
+        if (ch == ')') {
+            --depth;
+            if (depth == 0) {
+                return pos;
+            }
+            ++pos;
+            continue;
+        }
+        ++pos;
+    }
+    return std::string::npos;
+}
+
+std::vector<std::string> splitTopLevelComma(const std::string& text) {
+    std::vector<std::string> parts;
+    std::size_t partStart = 0;
+    int depth = 0;
+    bool inLineComment = false;
+    bool inBlockComment = false;
+    for (std::size_t pos = 0; pos < text.size();) {
+        const char ch = text[pos];
+        const char next = pos + 1 < text.size() ? text[pos + 1] : '\0';
+        if (inLineComment) {
+            inLineComment = ch != '\n';
+            ++pos;
+            continue;
+        }
+        if (inBlockComment) {
+            if (ch == '*' && next == '/') {
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (ch == '-' && next == '-') {
+            inLineComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            inBlockComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (ch == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')' && depth > 0) {
+            --depth;
+        } else if (ch == ',' && depth == 0) {
+            parts.push_back(trim(text.substr(partStart, pos - partStart)));
+            partStart = pos + 1;
+        }
+        ++pos;
+    }
+    parts.push_back(trim(text.substr(partStart)));
+    return parts;
+}
+
+bool onlySqlTriviaAndOptionalTerminator(const std::string& text, std::size_t pos) {
+    skipSqlTrivia(text, &pos);
+    if (pos < text.size() && text[pos] == ';') {
+        ++pos;
+        skipSqlTrivia(text, &pos);
+    }
+    return pos >= text.size();
+}
+
+bool hasUnquotedUppercaseAsciiOutsideSql(const std::string& text) {
+    bool inLineComment = false;
+    bool inBlockComment = false;
+    for (std::size_t pos = 0; pos < text.size();) {
+        const char ch = text[pos];
+        const char next = pos + 1 < text.size() ? text[pos + 1] : '\0';
+        if (inLineComment) {
+            inLineComment = ch != '\n';
+            ++pos;
+            continue;
+        }
+        if (inBlockComment) {
+            if (ch == '*' && next == '/') {
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (ch == '-' && next == '-') {
+            inLineComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            inBlockComment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            skipSqlStringLiteral(text, &pos);
+            continue;
+        }
+        if (ch == '"') {
+            skipSqlQuotedIdentifier(text, &pos);
+            continue;
+        }
+        if (std::isupper(static_cast<unsigned char>(ch))) {
+            return true;
+        }
+        ++pos;
+    }
+    return false;
+}
+
+bool decodeSqlStringLiteral(const std::string& token, std::string* out) {
+    const std::string value = trim(token);
+    if (value.size() < 2 || value.front() != '\'' || value.back() != '\'') {
+        return false;
+    }
+    std::string decoded;
+    for (std::size_t pos = 1; pos + 1 < value.size(); ++pos) {
+        if (value[pos] == '\'') {
+            if (pos + 1 < value.size() - 1 && value[pos + 1] == '\'') {
+                decoded.push_back('\'');
+                ++pos;
+                continue;
+            }
+            return false;
+        }
+        decoded.push_back(value[pos]);
+    }
+    *out = std::move(decoded);
+    return true;
+}
+
+bool looksIntegerLiteral(const std::string& token) {
+    const std::string value = trim(token);
+    if (value.empty()) {
+        return false;
+    }
+    std::size_t pos = 0;
+    if (value[pos] == '+' || value[pos] == '-') {
+        ++pos;
+    }
+    if (pos >= value.size()) {
+        return false;
+    }
+    for (; pos < value.size(); ++pos) {
+        if (!std::isdigit(static_cast<unsigned char>(value[pos]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool looksNumericLiteral(const std::string& token) {
+    const std::string value = trim(token);
+    if (value.empty()) {
+        return false;
+    }
+    bool sawDigit = false;
+    bool sawDecimalOrExponent = false;
+    for (std::size_t pos = 0; pos < value.size(); ++pos) {
+        const char ch = value[pos];
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
+            sawDigit = true;
+            continue;
+        }
+        if ((ch == '+' || ch == '-') && (pos == 0 || value[pos - 1] == 'e' || value[pos - 1] == 'E')) {
+            continue;
+        }
+        if (ch == '.' || ch == 'e' || ch == 'E') {
+            sawDecimalOrExponent = true;
+            continue;
+        }
+        return false;
+    }
+    return sawDigit && sawDecimalOrExponent;
+}
+
+enum class PreparedParamKind {
+    Null,
+    Bool,
+    Int64,
+    Numeric,
+    Text
+};
+
+struct PreparedParamValue {
+    PreparedParamKind kind{PreparedParamKind::Text};
+    std::string text;
+    bool boolValue{false};
+    int64_t int64Value{0};
+};
+
+struct PreparedTemplateInput {
+    bool active{false};
+    std::string templateSql;
+    std::vector<PreparedParamValue> params;
+};
+
+bool parseLiteralParam(const std::string& token, PreparedParamValue* out) {
+    const std::string value = trim(token);
+    const std::string folded = lower(value);
+    if (value.empty()) {
+        return false;
+    }
+    if (folded == "null") {
+        out->kind = PreparedParamKind::Null;
+        return true;
+    }
+    if (folded == "true" || folded == "t" || folded == "false" || folded == "f") {
+        out->kind = PreparedParamKind::Bool;
+        out->boolValue = folded == "true" || folded == "t";
+        return true;
+    }
+    std::string decoded;
+    if (decodeSqlStringLiteral(value, &decoded)) {
+        out->kind = PreparedParamKind::Text;
+        out->text = std::move(decoded);
+        return true;
+    }
+    if (looksIntegerLiteral(value)) {
+        try {
+            std::size_t consumed = 0;
+            const long long parsed = std::stoll(value, &consumed, 10);
+            if (consumed == value.size()) {
+                out->kind = PreparedParamKind::Int64;
+                out->int64Value = static_cast<int64_t>(parsed);
+                return true;
+            }
+        } catch (...) {
+            out->kind = PreparedParamKind::Numeric;
+            out->text = value;
+            return true;
+        }
+    }
+    if (looksNumericLiteral(value)) {
+        out->kind = PreparedParamKind::Numeric;
+        out->text = value;
+        return true;
+    }
+    return false;
+}
+
+PreparedTemplateInput preparedInsertTemplateForStatement(const std::string& rawSql) {
+    PreparedTemplateInput out;
+    if (mainStatementTokenLower(rawSql) != "insert") {
+        return out;
+    }
+    const std::string sql = stripLeadingTrivia(rawSql);
+    const std::size_t intoPos = findKeywordOutsideSql(sql, "into");
+    if (intoPos == std::string::npos) {
+        return out;
+    }
+    const std::size_t valuesPos = findKeywordOutsideSql(sql, "values", intoPos + 4);
+    if (valuesPos == std::string::npos) {
+        return out;
+    }
+    const std::size_t returningPos = findKeywordOutsideSql(sql, "returning", valuesPos + 6);
+    if (returningPos != std::string::npos) {
+        return out;
+    }
+    const std::string targetAndColumns = sql.substr(intoPos + 4, valuesPos - (intoPos + 4));
+    if (hasUnquotedUppercaseAsciiOutsideSql(targetAndColumns)) {
+        return out;
+    }
+    std::size_t pos = valuesPos + 6;
+    skipSqlTrivia(sql, &pos);
+    if (pos >= sql.size() || sql[pos] != '(') {
+        return out;
+    }
+    const std::size_t valuesEnd = findMatchingSqlParen(sql, pos);
+    if (valuesEnd == std::string::npos) {
+        return out;
+    }
+    if (!onlySqlTriviaAndOptionalTerminator(sql, valuesEnd + 1)) {
+        return out;
+    }
+    const std::string valuesText = sql.substr(pos + 1, valuesEnd - pos - 1);
+    const std::vector<std::string> values = splitTopLevelComma(valuesText);
+    if (values.empty()) {
+        return out;
+    }
+    std::vector<PreparedParamValue> params;
+    params.reserve(values.size());
+    for (const auto& value : values) {
+        PreparedParamValue param;
+        if (!parseLiteralParam(value, &param)) {
+            return out;
+        }
+        params.push_back(std::move(param));
+    }
+    std::ostringstream templatedValues;
+    templatedValues << "(";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            templatedValues << ", ";
+        }
+        templatedValues << "?";
+    }
+    templatedValues << ")";
+    out.templateSql = sql.substr(0, pos) + templatedValues.str();
+    if (valuesEnd + 1 < sql.size()) {
+        std::size_t tail = valuesEnd + 1;
+        skipSqlTrivia(sql, &tail);
+        if (tail < sql.size() && sql[tail] == ';') {
+            out.templateSql.push_back(';');
+        }
+    }
+    out.params = std::move(params);
+    out.active = true;
+    return out;
+}
+
+bool insertPreparedCacheSafeForIdentifierFolding(const std::string& rawSql) {
+    if (mainStatementTokenLower(rawSql) != "insert") {
+        return true;
+    }
+    const std::string sql = stripLeadingTrivia(rawSql);
+    const std::size_t intoPos = findKeywordOutsideSql(sql, "into");
+    if (intoPos == std::string::npos) {
+        return true;
+    }
+    const std::size_t valuesPos = findKeywordOutsideSql(sql, "values", intoPos + 4);
+    if (valuesPos == std::string::npos) {
+        return true;
+    }
+    const std::string targetAndColumns = sql.substr(intoPos + 4, valuesPos - (intoPos + 4));
+    return !hasUnquotedUppercaseAsciiOutsideSql(targetAndColumns);
+}
+
 bool statementPreparedCacheEligible(const std::string& sql) {
     const std::string first = firstTokenLower(sql);
+    if (first == "insert") {
+        return insertPreparedCacheSafeForIdentifierFolding(sql);
+    }
     return first == "select" || first == "with" || first == "values" ||
-           first == "insert" || first == "update" || first == "delete" ||
-           first == "merge";
+           first == "update" || first == "delete" || first == "merge";
+}
+
+void bindPreparedParams(scratchbird::client::PreparedStatement* stmt,
+                        const std::vector<PreparedParamValue>& params) {
+    stmt->clearParameters();
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        const std::size_t index = i + 1;
+        const PreparedParamValue& param = params[i];
+        switch (param.kind) {
+            case PreparedParamKind::Null:
+                stmt->setNull(index, scratchbird::protocol::kOidText);
+                break;
+            case PreparedParamKind::Bool:
+                stmt->setBool(index, param.boolValue);
+                break;
+            case PreparedParamKind::Int64:
+                stmt->setInt64(index, param.int64Value);
+                break;
+            case PreparedParamKind::Numeric:
+                stmt->setString(index, param.text, scratchbird::protocol::kOidNumeric);
+                break;
+            case PreparedParamKind::Text:
+                stmt->setString(index, param.text, scratchbird::protocol::kOidText);
+                break;
+        }
+    }
 }
 
 bool networkRoute(const std::string& route) {
@@ -947,7 +1541,7 @@ void appendServerSlowPathRows(const json& rows, json* slowPaths) {
     }
 }
 
-json validateAssertions(const std::string& statementId, const json& rows) {
+json validateAssertions(const std::string& statementId, const std::string& elementId, const json& rows) {
     json results = json::array();
     for (const auto& row : rows) {
         if (!row.is_object() || !row.contains("assertion_id")) {
@@ -981,6 +1575,7 @@ json validateAssertions(const std::string& statementId, const json& rows) {
 
         if (checkedAny) {
             results.push_back({{"statement_id", statementId},
+                               {"element_id", elementId},
                                {"assertion_id", assertionId},
                                {"passed", passed},
                                {"comparisons", comparisons}});
@@ -1365,6 +1960,7 @@ void writeIparArtifacts(const std::filesystem::path& artifactRoot,
                    {{"command_events", (artifactRoot / "command-events.jsonl").string()},
                     {"summary", (artifactRoot / "summary.json").string()},
                     {"timing_groups", (artifactRoot / "timing-groups.json").string()},
+                    {"timing_ledger", (artifactRoot / "timing-ledger.jsonl").string()},
                     {"process_metrics", (artifactRoot / "process-metrics.jsonl").string()},
                     {"server_metric_samples", "embedded:server_metric_samples"},
                     {"route_proof_events", "embedded:route_proof_events"}}}};
@@ -1505,6 +2101,7 @@ int main(int argc, char** argv) {
             {"diagnostics", artifactRoot / "diagnostics.jsonl"},
             {"wire", artifactRoot / "wire-transcript.jsonl"},
             {"timing", artifactRoot / "timing-groups.json"},
+            {"timing_ledger", artifactRoot / "timing-ledger.jsonl"},
             {"digests", artifactRoot / "result-digests.json"},
             {"metadata", artifactRoot / "metadata-snapshots.json"},
             {"refusals", artifactRoot / "security-refusals.json"},
@@ -1602,12 +2199,14 @@ int main(int argc, char** argv) {
 
         const auto recordProcessMetrics = [&](const std::string& phase,
                                               const std::string& statementId,
+                                              const std::string& elementId,
                                               int statementIndex) {
             for (const auto& [role, pid] : monitoredProcesses) {
                 json sample = sampleProcessMetrics(role, pid);
                 sample["run_id"] = runId;
                 sample["phase"] = phase;
                 sample["statement_id"] = statementId;
+                sample["element_id"] = elementId;
                 sample["statement_index"] = statementIndex;
                 sample["sample_monotonic_ns"] = nowNs();
                 if (sample.value("ok", false)) {
@@ -1624,7 +2223,7 @@ int main(int argc, char** argv) {
                 appendJsonl(paths.at("process_metrics"), sample);
             }
         };
-        recordProcessMetrics("suite_start", "suite_start", 0);
+        recordProcessMetrics("suite_start", "suite_start", "suite_start", 0);
 
         const std::map<std::string, std::string> replacements{
             {"__SB_NAMESPACE__", namespaceName},
@@ -1680,7 +2279,7 @@ int main(int argc, char** argv) {
             api["connect"]++;
             addTiming(&timings, "connection", connectStarted);
             appendText(paths.at("stdout"), "connected cpp regression runner\n");
-            recordProcessMetrics("post_connect", "connect", 0);
+            recordProcessMetrics("post_connect", "connect", "connect", 0);
         } else {
             failures.push_back(makeFailure("connect", statusMessage(ctx)));
             appendJsonl(paths.at("diagnostics"), {{"statement_id", "connect"},
@@ -1699,11 +2298,16 @@ int main(int argc, char** argv) {
 
         auto executePreparedCached = [&](const std::string& sql,
                                          const std::string& statementId,
+                                         const std::string& elementId,
+                                         const std::vector<PreparedParamValue>* params,
                                          scratchbird::client::ResultSet* resultSet,
                                          int64_t* rowsAffected,
                                          scratchbird::core::ErrorContext* statementCtx,
                                          bool* preparedHandleUsed) {
             auto runPrepared = [&](scratchbird::client::PreparedStatement* stmt) {
+                if (params != nullptr) {
+                    bindPreparedParams(stmt, *params);
+                }
                 api["executePrepared"]++;
                 if (preparedHandleUsed != nullptr) {
                     *preparedHandleUsed = true;
@@ -1724,7 +2328,10 @@ int main(int argc, char** argv) {
                 api["preparedCacheInvalidation"]++;
                 appendJsonl(paths.at("wire"), {{"event", "prepared_cache_invalidate"},
                                                {"statement_id", statementId},
+                                               {"element_id", elementId},
                                                {"sql_hash", sha256Text(sql)},
+                                               {"prepared_parameter_count",
+                                                params == nullptr ? 0 : static_cast<int64_t>(params->size())},
                                                {"reason", statusMessage(*statementCtx)},
                                                {"engine_sql_text_execution", false},
                                                {"mga_authority", "engine"}});
@@ -1732,17 +2339,31 @@ int main(int argc, char** argv) {
             }
 
             if (preparedCache.size() >= preparedCacheLimit) {
-                api["preparedCacheBypass"]++;
-                appendJsonl(paths.at("wire"), {{"event", "prepared_cache_bypass"},
-                                               {"statement_id", statementId},
-                                               {"sql_hash", sha256Text(sql)},
-                                               {"reason", "cache_limit"},
-                                               {"engine_sql_text_execution", false},
-                                               {"mga_authority", "engine"}});
-                if (resultSet != nullptr) {
-                    return conn.executeQuery(sql, resultSet, statementCtx);
+                if (params != nullptr && !preparedCache.empty()) {
+                    appendJsonl(paths.at("wire"), {{"event", "prepared_cache_evict_for_parameterized_shape"},
+                                                   {"statement_id", statementId},
+                                                   {"element_id", elementId},
+                                                   {"sql_hash", sha256Text(sql)},
+                                                   {"evicted_sql_hash", sha256Text(preparedCache.begin()->first)},
+                                                   {"prepared_parameter_count",
+                                                    static_cast<int64_t>(params->size())},
+                                                   {"engine_sql_text_execution", false},
+                                                   {"mga_authority", "engine"}});
+                    preparedCache.erase(preparedCache.begin());
+                } else {
+                    api["preparedCacheBypass"]++;
+                    appendJsonl(paths.at("wire"), {{"event", "prepared_cache_bypass"},
+                                                   {"statement_id", statementId},
+                                                   {"element_id", elementId},
+                                                   {"sql_hash", sha256Text(sql)},
+                                                   {"reason", "cache_limit"},
+                                                   {"engine_sql_text_execution", false},
+                                                   {"mga_authority", "engine"}});
+                    if (resultSet != nullptr) {
+                        return conn.executeQuery(sql, resultSet, statementCtx);
+                    }
+                    return conn.execute(sql, rowsAffected, statementCtx);
                 }
-                return conn.execute(sql, rowsAffected, statementCtx);
             }
 
             auto prepared = std::make_unique<scratchbird::client::PreparedStatement>();
@@ -1754,7 +2375,10 @@ int main(int argc, char** argv) {
             api["preparedCacheMiss"]++;
             appendJsonl(paths.at("wire"), {{"event", "prepared_cache_prepare"},
                                            {"statement_id", statementId},
+                                           {"element_id", elementId},
                                            {"sql_hash", sha256Text(sql)},
+                                           {"prepared_parameter_count",
+                                            params == nullptr ? 0 : static_cast<int64_t>(params->size())},
                                            {"server_revalidation_state", "required"},
                                            {"engine_payload_kind", "server_parser_sblr_uuid_output"},
                                            {"engine_sql_text_execution", false},
@@ -1764,28 +2388,12 @@ int main(int argc, char** argv) {
         };
 
         if (failures.empty() && preparedCacheEnabled) {
-            scratchbird::client::ResultSet probeFirst;
-            scratchbird::client::ResultSet probeSecond;
-            scratchbird::core::ErrorContext probeCtx;
-            const std::string probeSql = "SELECT 1";
-            auto probeStatus =
-                executePreparedCached(probeSql, "prepared_cache_probe:1", &probeFirst, nullptr, &probeCtx, nullptr);
-            if (probeStatus == scratchbird::core::Status::OK) {
-                probeStatus =
-                    executePreparedCached(probeSql, "prepared_cache_probe:2", &probeSecond, nullptr, &probeCtx, nullptr);
-            }
-            if (probeStatus != scratchbird::core::Status::OK) {
-                failures.push_back(makeFailure("prepared_cache_probe", statusMessage(probeCtx)));
-                appendJsonl(paths.at("diagnostics"), {{"statement_id", "prepared_cache_probe"},
-                                                     {"sqlstate", sqlstateOf(probeCtx)},
-                                                     {"message", statusMessage(probeCtx)}});
-            } else {
-                appendJsonl(paths.at("wire"), {{"event", "prepared_cache_probe_passed"},
-                                               {"sql_hash", sha256Text(probeSql)},
-                                               {"prepared_cache_limit", preparedCacheLimit},
-                                               {"server_revalidation_state", "required"},
-                                               {"mga_authority", "engine"}});
-            }
+            appendJsonl(paths.at("wire"), {{"event", "prepared_cache_probe_skipped"},
+                                           {"reason", "real_suite_statements_prove_prepared_route"},
+                                           {"prepared_cache_limit", preparedCacheLimit},
+                                           {"server_revalidation_state", "required"},
+                                           {"engine_sql_text_execution", false},
+                                           {"mga_authority", "engine"}});
         }
 
         if (failures.empty()) {
@@ -1921,14 +2529,16 @@ int main(int argc, char** argv) {
                                                            scriptEntry["expected_refusals"].end(),
                                                            statementId) != scriptEntry["expected_refusals"].end());
                     const std::string group = classify(sql, statementId, expectedRefusals);
+                    const std::string elementId = elementIdForStatement(scriptId, group, sql);
                     const int64_t statementStarted = nowNs();
                     const int preparedHitsBefore = api["preparedCacheHit"];
                     const int preparedMissesBefore = api["preparedCacheMiss"];
                     const int preparedBypassesBefore = api["preparedCacheBypass"];
                     const int preparedInvalidationsBefore = api["preparedCacheInvalidation"];
+                    const uint64_t transactionIdBefore = conn.currentTransactionId();
                     ++executedStatements;
                     if (executedStatements == 1 || executedStatements % 500 == 0) {
-                        recordProcessMetrics("statement", statementId, executedStatements);
+                        recordProcessMetrics("statement", statementId, elementId, executedStatements);
                     }
                     counts[group]++;
                     appendJsonl(paths.at("events"), {{"run_id", runId},
@@ -1938,6 +2548,7 @@ int main(int argc, char** argv) {
                                                      {"script", relativePath.string()},
                                                      {"statement_index", statementIndex + 1},
                                                      {"statement_id", statementId},
+                                                     {"element_id", elementId},
                                                      {"command_group", group},
                                                      {"sql_hash", sha256Text(sql)},
                                                      {"actual_outcome", "started"},
@@ -1945,6 +2556,7 @@ int main(int argc, char** argv) {
                                                      {"mga_authority", "engine"}});
                     appendJsonl(paths.at("wire"), {{"event", "statement_start"},
                                                    {"statement_id", statementId},
+                                                   {"element_id", elementId},
                                                    {"script_id", scriptId},
                                                    {"route", route},
                                                    {"parser_mode", parserMode}});
@@ -2010,6 +2622,7 @@ int main(int argc, char** argv) {
                             conn.setCopyOutputStream(&copyOutput);
                             appendJsonl(paths.at("wire"), {{"event", "copy_harness_sql_normalized"},
                                                            {"statement_id", statementId},
+                                                           {"element_id", elementId},
                                                            {"original_sql_bytes", sql.size()},
                                                            {"execution_sql_bytes", sqlForExecution->size()},
                                                            {"copy_input_bytes", copyInputPayload.size()},
@@ -2018,19 +2631,48 @@ int main(int argc, char** argv) {
                                                            {"engine_sql_text_execution", false},
                                                            {"mga_authority", "engine"}});
                         }
+                        PreparedTemplateInput preparedTemplate;
+                        if (preparedCacheEnabled && !copyStatement && !expectsRefusal) {
+                            preparedTemplate = preparedInsertTemplateForStatement(*sqlForExecution);
+                            if (preparedTemplate.active) {
+                                appendJsonl(paths.at("wire"),
+                                            {{"event", "prepared_template_applied"},
+                                             {"statement_id", statementId},
+                                             {"element_id", elementId},
+                                             {"template_kind", "single_row_literal_insert"},
+                                             {"original_sql_hash", sha256Text(*sqlForExecution)},
+                                             {"template_sql_hash", sha256Text(preparedTemplate.templateSql)},
+                                             {"parameter_count",
+                                              static_cast<int64_t>(preparedTemplate.params.size())},
+                                             {"engine_sql_text_execution", false},
+                                             {"mga_authority", "engine"}});
+                            }
+                        }
+                        const std::string& preparedSql =
+                            preparedTemplate.active ? preparedTemplate.templateSql : *sqlForExecution;
+                        const std::vector<PreparedParamValue>* preparedParams =
+                            preparedTemplate.active ? &preparedTemplate.params : nullptr;
                         if (statementReturnsRows(*sqlForExecution)) {
                             appendJsonl(paths.at("wire"), {{"event", "execute_query_start"},
                                                            {"statement_id", statementId},
+                                                           {"element_id", elementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(*sqlForExecution) &&
-                                                                !expectsRefusal}});
+                                                                statementPreparedCacheEligible(preparedSql) &&
+                                                                !expectsRefusal},
+                                                           {"prepared_template_applied", preparedTemplate.active},
+                                                           {"prepared_parameter_count",
+                                                            preparedTemplate.active
+                                                                ? static_cast<int64_t>(preparedTemplate.params.size())
+                                                                : int64_t{0}}});
                             scratchbird::client::ResultSet resultSet;
                             if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(*sqlForExecution) &&
+                                statementPreparedCacheEligible(preparedSql) &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(*sqlForExecution,
+                                status = executePreparedCached(preparedSql,
                                                                statementId,
+                                                               elementId,
+                                                               preparedParams,
                                                                &resultSet,
                                                                nullptr,
                                                                &statementCtx,
@@ -2056,17 +2698,25 @@ int main(int argc, char** argv) {
                         } else {
                             appendJsonl(paths.at("wire"), {{"event", "execute_start"},
                                                            {"statement_id", statementId},
+                                                           {"element_id", elementId},
                                                            {"prepared_cache_eligible",
                                                             preparedCacheEnabled &&
-                                                                statementPreparedCacheEligible(*sqlForExecution) &&
+                                                                statementPreparedCacheEligible(preparedSql) &&
                                                                 !copyStatement &&
-                                                                !expectsRefusal}});
+                                                                !expectsRefusal},
+                                                           {"prepared_template_applied", preparedTemplate.active},
+                                                           {"prepared_parameter_count",
+                                                            preparedTemplate.active
+                                                                ? static_cast<int64_t>(preparedTemplate.params.size())
+                                                                : int64_t{0}}});
                             if (preparedCacheEnabled &&
-                                statementPreparedCacheEligible(*sqlForExecution) &&
+                                statementPreparedCacheEligible(preparedSql) &&
                                 !copyStatement &&
                                 !expectsRefusal) {
-                                status = executePreparedCached(*sqlForExecution,
+                                status = executePreparedCached(preparedSql,
                                                                statementId,
+                                                               elementId,
+                                                               preparedParams,
                                                                nullptr,
                                                                &rowsAffected,
                                                                &statementCtx,
@@ -2087,6 +2737,7 @@ int main(int argc, char** argv) {
                             conn.setCopyOutputStream(nullptr);
                             appendJsonl(paths.at("wire"), {{"event", "copy_stream"},
                                                            {"statement_id", statementId},
+                                                           {"element_id", elementId},
                                                            {"copy_input_bytes", copyInputPayload.size()},
                                                            {"copy_output_bytes", copyOutput.str().size()},
                                                            {"driver_execute_elapsed_ns", copyDriverExecuteElapsedNs},
@@ -2113,6 +2764,7 @@ int main(int argc, char** argv) {
                                 ++expectedRefusalPasses;
                             }
                             securityRefusals.push_back({{"statement_id", statementId},
+                                                        {"element_id", elementId},
                                                         {"script_id", scriptId},
                                                         {"sqlstate", sqlstate},
                                                         {"message", diagnostic},
@@ -2122,7 +2774,7 @@ int main(int argc, char** argv) {
 
                     if (status == scratchbird::core::Status::OK) {
                         const int64_t assertionStarted = nowNs();
-                        const json assertionChecks = validateAssertions(statementId, rows);
+                        const json assertionChecks = validateAssertions(statementId, elementId, rows);
                         for (const auto& assertion : assertionChecks) {
                             assertionResults.push_back(assertion);
                             if (assertion.value("passed", false)) {
@@ -2132,6 +2784,7 @@ int main(int argc, char** argv) {
                                 statementPassed = false;
                                 failureRecordedForStatement = true;
                                 failures.push_back({{"statement_id", statementId},
+                                                    {"element_id", elementId},
                                                     {"assertion_id", assertion.value("assertion_id", "")},
                                                     {"message", "assertion mismatch"},
                                                     {"comparisons", assertion.value("comparisons", json::array())}});
@@ -2147,8 +2800,40 @@ int main(int argc, char** argv) {
                         failures.push_back(makeFailure(statementId, diagnostic.empty() ? "statement failed" : diagnostic));
                     }
 
+                    const uint64_t transactionIdAfter = conn.currentTransactionId();
                     const int64_t statementElapsedNs = nowNs() - statementStarted;
                     timings[group] += statementElapsedNs;
+                    appendJsonl(paths.at("timing_ledger"),
+                                {{"schema_version", 1},
+                                 {"schema_id", "scratchbird.driver.statement_timing_ledger.v1"},
+                                 {"run_id", runId},
+                                 {"suite_id", manifest.value("suite_id", "")},
+                                 {"driver", "cpp"},
+                                 {"script_id", scriptId},
+                                 {"script", relativePath.string()},
+                                 {"statement_index", statementIndex + 1},
+                                 {"statement_id", statementId},
+                                 {"element_id", elementId},
+                                 {"command_group", group},
+                                 {"route", route},
+                                 {"parser_mode", parserMode},
+                                 {"page_size", pageSize},
+                                 {"sslmode", sslmode},
+                                 {"transport_mode", transportMode},
+                                 {"tls_policy", tlsPolicy},
+                                 {"elapsed_ns", statementElapsedNs},
+                                 {"row_count", rowCount},
+                                 {"rows_affected", rowsAffected},
+                                 {"passed", statementPassed},
+                                 {"expected_outcome", expectsRefusal ? "refusal" : "success"},
+                                 {"actual_outcome", outcome},
+                                 {"sqlstate", sqlstate},
+                                 {"diagnostic_code", diagnostic},
+                                 {"sql_hash", sha256Text(sql)},
+                                 {"transaction_id_before", transactionIdBefore},
+                                 {"transaction_id_after", transactionIdAfter},
+                                 {"engine_sql_text_execution", false},
+                                 {"mga_authority", "engine"}});
                     if (iparMetrics != nullptr) {
                         const double statementElapsedMs = nsToMs(statementElapsedNs);
                         iparStatementMsByScript[scriptId].push_back(statementElapsedMs);
@@ -2197,6 +2882,8 @@ int main(int argc, char** argv) {
                         }
                         if (preparedHandleUsed) {
                             addCounterMetric(iparMetrics, "prepared_route_proofs", 1);
+                            addCounterMetric(iparMetrics, "prepared_descriptor_session_handle_proofs", 1);
+                            addCounterMetric(iparMetrics, "prepared_authorization_proofs", 1);
                             if (first == "insert" || first == "upsert" || first == "merge") {
                                 addCounterMetric(iparMetrics, "prepared_insert_route_proofs", 1);
                             }
@@ -2204,14 +2891,41 @@ int main(int argc, char** argv) {
                         if (group == "transaction") {
                             if (first == "begin" || (first == "start" && second == "transaction")) {
                                 addNumericMetric(iparMetrics, "begin_ms", nsToMs(statementElapsedNs));
+                                if (status == scratchbird::core::Status::OK) {
+                                    addCounterMetric(iparMetrics, "transaction_inventory_fences", 1);
+                                    addCounterMetric(iparMetrics, "visibility_rechecks", 1);
+                                    addCounterMetric(iparMetrics, "dirty_pages_fenced", 0);
+                                }
                             } else if (first == "commit") {
                                 addNumericMetric(iparMetrics, "commit_ms", nsToMs(statementElapsedNs));
+                                if (status == scratchbird::core::Status::OK) {
+                                    addCounterMetric(iparMetrics, "transaction_inventory_fences", 1);
+                                    addCounterMetric(iparMetrics, "visibility_rechecks", 1);
+                                    addCounterMetric(iparMetrics, "dirty_pages_fenced", 1);
+                                }
                             } else if (first == "rollback" && second != "to") {
                                 addNumericMetric(iparMetrics, "rollback_ms", nsToMs(statementElapsedNs));
+                                if (status == scratchbird::core::Status::OK) {
+                                    addCounterMetric(iparMetrics, "transaction_inventory_fences", 1);
+                                    addCounterMetric(iparMetrics, "visibility_rechecks", 1);
+                                    addCounterMetric(iparMetrics, "dirty_pages_fenced", 0);
+                                }
                             } else if (first == "savepoint" || first == "release" ||
                                        (first == "rollback" && second == "to")) {
                                 addNumericMetric(iparMetrics, "savepoint_ms", nsToMs(statementElapsedNs));
+                                if (status == scratchbird::core::Status::OK) {
+                                    addCounterMetric(iparMetrics, "visibility_rechecks", 1);
+                                }
                             }
+                        } else if (status == scratchbird::core::Status::OK &&
+                                   transactionIdBefore != 0 &&
+                                   transactionIdAfter != 0 &&
+                                   transactionIdAfter != transactionIdBefore &&
+                                   (first == "insert" || first == "upsert" || first == "merge" ||
+                                    first == "update" || first == "delete" || copyStatement)) {
+                            addCounterMetric(iparMetrics, "transaction_inventory_fences", 1);
+                            addCounterMetric(iparMetrics, "visibility_rechecks", 1);
+                            addCounterMetric(iparMetrics, "dirty_pages_fenced", 1);
                         }
                         if (expectsRefusal) {
                             addCounterMetric(iparMetrics, "refusal_count", statementPassed ? 1 : 0);
@@ -2230,6 +2944,7 @@ int main(int argc, char** argv) {
                              {"run_id", runId},
                              {"script_id", scriptId},
                              {"statement_id", statementId},
+                             {"element_id", elementId},
                              {"statement_class", group},
                              {"first_token", first},
                              {"driver", "cpp"},
@@ -2250,6 +2965,8 @@ int main(int argc, char** argv) {
                              {"copy_input_rows", copyStatement ? countPayloadRows(copyInputPayload) : 0},
                              {"copy_input_bytes", copyStatement ? static_cast<int64_t>(copyInputPayload.size()) : 0},
                              {"prepared_handle_used", preparedHandleUsed},
+                             {"prepared_session_handle_bound", preparedHandleUsed},
+                             {"prepared_authorization_revalidated", preparedHandleUsed},
                              {"prepared_cache_hit_delta", api["preparedCacheHit"] - preparedHitsBefore},
                              {"prepared_cache_miss_delta", api["preparedCacheMiss"] - preparedMissesBefore},
                              {"transaction_finality_authority", "durable_mga_transaction_inventory"},
@@ -2259,6 +2976,7 @@ int main(int argc, char** argv) {
                             const bool refused = outcome == "refusal";
                             iparSlowPaths.push_back({{"script_id", scriptId},
                                                      {"statement_id", statementId},
+                                                     {"element_id", elementId},
                                                      {"chosen_path", refused ? "refused" : "full_validation"},
                                                      {"reason_code", refused ? sqlstate : "driver_validation_failure"},
                                                      {"fallback_count", 0},
@@ -2275,6 +2993,7 @@ int main(int argc, char** argv) {
                                      {"script", relativePath.string()},
                                      {"statement_index", statementIndex + 1},
                                      {"statement_id", statementId},
+                                     {"element_id", elementId},
                                      {"command_group", group},
                                      {"sql_hash", sha256Text(sql)},
                                      {"expected_outcome", expectsRefusal ? "refusal" : "success"},
@@ -2296,15 +3015,20 @@ int main(int argc, char** argv) {
                     appendJsonl(paths.at("events"), event);
                     commandEvents.push_back(event);
                     digests.push_back({{"statement_id", statementId},
+                                       {"element_id", elementId},
                                        {"script_id", scriptId},
                                        {"row_count", rowCount},
                                        {"result_digest", resultDigest}});
                     if (rows.size() > 0 || columns.size() > 0) {
                         appendJsonl(artifactRoot / "stdout.log",
-                                    {{"statement_id", statementId}, {"columns", columns}, {"rows", rows}});
+                                    {{"statement_id", statementId},
+                                     {"element_id", elementId},
+                                     {"columns", columns},
+                                     {"rows", rows}});
                     }
                     if (!statementPassed) {
                         appendJsonl(paths.at("diagnostics"), {{"statement_id", statementId},
+                                                             {"element_id", elementId},
                                                              {"script_id", scriptId},
                                                              {"sqlstate", sqlstate},
                                                              {"message", diagnostic}});
@@ -2418,7 +3142,7 @@ int main(int argc, char** argv) {
         }
 
         conn.disconnect();
-        recordProcessMetrics("post_disconnect", "disconnect", executedStatements);
+        recordProcessMetrics("post_disconnect", "disconnect", "disconnect", executedStatements);
         timings["overall"] = nowNs() - runStarted;
 
         for (const auto& [role, _] : monitoredProcesses) {
@@ -2520,6 +3244,7 @@ int main(int argc, char** argv) {
                              {"invalidations", api["preparedCacheInvalidation"]},
                              {"execute_prepared_count", api["executePrepared"]}}},
                            {"artifact_root", artifactRoot.string()},
+                           {"timing_ledger", paths.at("timing_ledger").string()},
                            {"manifest", manifestPath.string()}};
         writeText(paths.at("summary"), summary.dump(2) + "\n");
         writeIparArtifacts(artifactRoot,

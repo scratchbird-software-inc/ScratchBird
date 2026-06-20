@@ -4437,7 +4437,7 @@ if(TARGET sb_server_core)
     COMMAND ipar_prepared_handle_authority_gate
   )
   set_tests_properties(ipar_prepared_handle_authority_gate PROPERTIES
-    LABELS "ipar_prepared_handle_authority_gate;IPAR-P1-03;IPAR-P5-04;prepared_sblr;prepared_handle_authority;database_lifecycle;mga_transaction_regression"
+    LABELS "ipar_prepared_handle_authority_gate;IPAR-P1-03;IPAR-P1-14;IPAR-P5-04;IPAR-G037;IPAR-G079;prepared_sblr;prepared_handle_authority;session_object_handle;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(ipar_server_observability_projection_gate

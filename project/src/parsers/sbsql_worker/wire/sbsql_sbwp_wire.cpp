@@ -54,6 +54,7 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
+constexpr std::uint32_t kExecuteFlagAutocommit = 0x01;
 constexpr std::uint8_t kTxnFinalityPayloadVersion = 1;
 constexpr std::uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
 constexpr std::uint16_t kTxnCommitFlagCallerAcknowledgedRetryBoundary = 0x0002;
@@ -3176,6 +3177,15 @@ std::string ParsePortalName(const std::vector<std::uint8_t>& payload) {
   return ReadSizedString(payload, &off);
 }
 
+std::uint32_t ParseExecuteFlags(const std::vector<std::uint8_t>& payload) {
+  std::size_t off = 0;
+  (void)ReadSizedString(payload, &off);
+  if (off + 4 > payload.size()) return 0;
+  off += 4;  // max_rows
+  if (off + 4 > payload.size()) return 0;
+  return ReadU32(payload, off);
+}
+
 std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
                                                 ClientIo* io,
                                                 SbwpSessionState* state,
@@ -3890,6 +3900,8 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
       case kExecute: {
         state.ready_sent_for_current_operation = false;
         const std::string portal_name = ParsePortalName(frame.payload);
+        const bool autocommit_emulation =
+            (ParseExecuteFlags(frame.payload) & kExecuteFlagAutocommit) != 0;
         const auto found = state.portals.find(portal_name);
         const std::string sql = found == state.portals.end() ? std::string{} : found->second.sql;
         if (!state.authenticated) {
@@ -3902,7 +3914,7 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           auto rowset_executed = ExecutePreparedInsertRowset(this, &io, &state, found->second, false);
           if (rowset_executed.has_value()) {
             if (!*rowset_executed) rc = 1;
-          } else if (!ExecuteSql(this, &io, &state, sql, false)) {
+          } else if (!ExecuteSql(this, &io, &state, sql, false, autocommit_emulation)) {
             rc = 1;
           }
         }

@@ -309,6 +309,11 @@ sys.catalog_readable.udrs,catalog_readable,udr_packages,udr_path;udr_name;langua
 sys.catalog_readable.security_subjects,catalog_readable,security,subject_path;subject_name;subject_kind;status;visibility_state,Users; roles; groups; service identities.
 sys.catalog_readable.privileges,catalog_readable,privileges,subject_path;object_path;privilege_name;grant_state;grantable;visibility_state,Effective visible privileges.
 sys.catalog_readable.policies,catalog_readable,policies,policy_path;policy_name;policy_kind;status;comment_text;visibility_state,Policy browser.
+sys.security.roles,frontend_projection,security,role_name;status;visibility_state,Frontend-safe role projection.
+sys.security.principals,frontend_projection,security,principal_name;principal_kind;status;visibility_state,Frontend-safe users groups roles and service identities projection.
+sys.security.policies,frontend_projection,security,policy_name;policy_kind;status;visibility_state,Frontend-safe security policy projection.
+sys.security.masks,frontend_projection,security,mask_name;target_path;status;visibility_state,Frontend-safe column mask projection.
+sys.security.rls,frontend_projection,security,rls_name;target_path;status;visibility_state,Frontend-safe row-level-security projection.
 sys.catalog_readable.filespaces,catalog_readable,storage,filespace_path;filespace_name;role;status;size_metrics;comment_text;visibility_state,Device paths redacted by policy.
 sys.catalog_readable.page_families,catalog_readable,storage,page_family_name;page_role;layout_version;status;visibility_state,Page family metadata.
 sys.catalog_readable.resources,catalog_readable,resources,resource_path;resource_name;resource_kind;version;status;visibility_state,Timezone; charset; collation; locale; parser; reference resources.
@@ -2868,6 +2873,112 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "status", "active");
       AddField(&row, "comment_text", comment);
       AddField(&row, "visibility_state", "visible");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.security.roles" ||
+      canonical_view_path == "sys.security.principals" ||
+      canonical_view_path == "sys.security.policies" ||
+      canonical_view_path == "sys.security.masks" ||
+      canonical_view_path == "sys.security.rls") {
+    for (const auto& object : catalog_objects) {
+      if (!ObjectVisible(object, context)) { continue; }
+      const bool role_object =
+          object.object_class == "role" || object.object_class == "security_role";
+      const bool principal_object =
+          role_object ||
+          object.object_class == "group" ||
+          object.object_class == "security_group" ||
+          object.object_class == "principal" ||
+          object.object_class == "security_principal" ||
+          object.object_class == "user";
+      const bool policy_object =
+          object.object_class == "policy" || object.object_class == "security_policy";
+      const bool mask_object =
+          object.object_class == "mask" || object.object_class == "security_mask";
+      const bool rls_object =
+          object.object_class == "rls" || object.object_class == "security_rls";
+      if ((canonical_view_path == "sys.security.roles" && !role_object) ||
+          (canonical_view_path == "sys.security.principals" && !principal_object) ||
+          (canonical_view_path == "sys.security.policies" && !policy_object) ||
+          (canonical_view_path == "sys.security.masks" && !mask_object) ||
+          (canonical_view_path == "sys.security.rls" && !rls_object)) {
+        continue;
+      }
+      bool found_name = false;
+      bool found_path = false;
+      const std::string object_name =
+          ObjectDisplayName(resolver_names, context, object, &found_name);
+      const std::string object_path =
+          ObjectDisplayPath(resolver_names, context, object, &found_path);
+      if (!found_name) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      if (canonical_view_path == "sys.security.roles") {
+        AddField(&row, "role_name", object_name);
+        AddField(&row, "status", "active");
+        AddField(&row, "visibility_state", "visible");
+      } else if (canonical_view_path == "sys.security.principals") {
+        AddField(&row, "principal_name", object_name);
+        AddField(&row, "principal_kind", role_object ? "role" : object.object_class);
+        AddField(&row, "status", "active");
+        AddField(&row, "visibility_state", "visible");
+      } else if (canonical_view_path == "sys.security.policies") {
+        AddField(&row, "policy_name", object_name);
+        AddField(&row, "policy_kind", object.object_class);
+        AddField(&row, "status", "active");
+        AddField(&row, "visibility_state", "visible");
+      } else if (canonical_view_path == "sys.security.masks") {
+        AddField(&row, "mask_name", object_name);
+        AddField(&row, "target_path", found_path ? object_path : "");
+        AddField(&row, "status", "active");
+        AddField(&row, "visibility_state", "visible");
+      } else {
+        AddField(&row, "rls_name", object_name);
+        AddField(&row, "target_path", found_path ? object_path : "");
+        AddField(&row, "status", "active");
+        AddField(&row, "visibility_state", "visible");
+      }
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.catalog_readable.filespaces" ||
+      canonical_view_path == "sys.information.scratchbird_filespaces") {
+    for (const auto& object : catalog_objects) {
+      if (object.object_class != "filespace" || !ObjectVisible(object, context)) { continue; }
+      bool found_name = false;
+      const std::string filespace_name =
+          ObjectDisplayName(resolver_names, context, object, &found_name);
+      if (!found_name) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      if (canonical_view_path == "sys.catalog_readable.filespaces") {
+        AddField(&row, "filespace_path", filespace_name);
+        AddField(&row, "filespace_name", filespace_name);
+        AddField(&row, "role", "database_filespace");
+        AddField(&row, "status", "active");
+        AddField(&row, "size_metrics", "redacted");
+        AddField(&row,
+                 "comment_text",
+                 SelectCommentText(comments, context, object.object_uuid, object.object_class));
+        AddField(&row, "visibility_state", "visible");
+      } else {
+        AddField(&row, "filespace_name", filespace_name);
+        AddField(&row, "role", "database_filespace");
+        AddField(&row, "status", "active");
+      }
       result.rows.push_back(std::move(row));
     }
     return result;

@@ -590,6 +590,37 @@ void AppendCommitDurabilityBatchingEvidence(
   }
 }
 
+std::uint64_t DirtyPagesFencedForCommit(bool read_only_commit,
+                                        const CommitDurabilityBatchDecision& decision) {
+  if (read_only_commit) return 0;
+  if (decision.requested && decision.result.flushed_pages != 0) {
+    return decision.result.flushed_pages;
+  }
+  return 1;
+}
+
+void AppendIparTransactionBoundaryTelemetry(
+    std::vector<EngineEvidenceReference>* evidence,
+    std::string boundary_kind,
+    std::uint64_t transaction_inventory_fences,
+    std::uint64_t visibility_rechecks,
+    std::uint64_t dirty_pages_fenced) {
+  if (evidence == nullptr) return;
+  evidence->push_back({"ipar_transaction_boundary", std::move(boundary_kind)});
+  evidence->push_back({"transaction_inventory_fences",
+                       std::to_string(transaction_inventory_fences)});
+  evidence->push_back({"visibility_rechecks",
+                       std::to_string(visibility_rechecks)});
+  evidence->push_back({"dirty_pages_fenced",
+                       std::to_string(dirty_pages_fenced)});
+  evidence->push_back({"ipar_transaction_boundary_authority",
+                       "durable_mga_transaction_inventory"});
+  evidence->push_back({"ipar_visibility_authority",
+                       "mga_transaction_inventory_snapshot"});
+  evidence->push_back({"ipar_dirty_page_fence_authority",
+                       "engine_commit_inventory_fence"});
+}
+
 std::string ProfileValue(const EngineProfileSet& profiles, const std::string& prefix) {
   for (const auto& candidate : profiles.encoded_profiles) {
     if (StartsWith(candidate, prefix)) return candidate.substr(prefix.size());
@@ -1174,6 +1205,11 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   result.evidence.push_back({"runtime_policy", "fail_closed"});
   result.evidence.push_back({"transaction_admission", "engine_mga_admitted"});
   result.evidence.push_back({"parser_finality", "false"});
+  AppendIparTransactionBoundaryTelemetry(&result.evidence,
+                                         "begin",
+                                         1,
+                                         1,
+                                         0);
   if (read_settings.read_only) {
     result.evidence.push_back({"read_only_write_guard", "mga_transaction_state"});
   }
@@ -1299,6 +1335,12 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     result.evidence.push_back({"mga_finality_state", "committed_by_engine_inventory"});
     result.evidence.push_back({"post_inventory_secondary_failure", "true"});
     result.evidence.push_back({"parser_finality", "false"});
+    AppendIparTransactionBoundaryTelemetry(
+        &result.evidence,
+        "commit_post_inventory_secondary_failure",
+        1,
+        1,
+        DirtyPagesFencedForCommit(read_only_commit, durability_batch));
     return result;
   }
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
@@ -1324,7 +1366,359 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   if (read_only_commit) {
     result.evidence.push_back({"read_only_commit_cleanup", "skipped_no_mutation_authority"});
   }
+  AppendIparTransactionBoundaryTelemetry(
+      &result.evidence,
+      "commit",
+      1,
+      1,
+      DirtyPagesFencedForCommit(read_only_commit, durability_batch));
   AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
+  return result;
+}
+
+EngineAutocommitBoundaryResult EngineAutocommitBoundary(
+    const EngineAutocommitBoundaryRequest& request) {
+  const std::string operation_id = request.statement_succeeded
+                                       ? "transaction.autocommit_commit_and_begin"
+                                       : "transaction.autocommit_rollback_and_begin";
+  const auto path_status = ValidateDatabasePath(request.context, operation_id);
+  if (path_status.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(request.context, operation_id, path_status);
+  }
+  if (request.context.local_transaction_id == 0) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required"));
+  }
+
+  EngineBeginTransactionRequest replacement_begin;
+  replacement_begin.context = request.context;
+  replacement_begin.context.local_transaction_id = 0;
+  replacement_begin.context.transaction_uuid.canonical.clear();
+  replacement_begin.isolation_level = request.replacement_isolation_level;
+  replacement_begin.transaction_policy_profile = request.transaction_policy_profile;
+  const auto admission_status = ValidateBeginTransactionAdmission(replacement_begin);
+  if (admission_status.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context, operation_id, admission_status);
+  }
+  std::string isolation = NormalizedIsolation(request.replacement_isolation_level);
+  if (!IsSupportedIsolation(isolation)) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "unsupported_isolation_level"));
+  }
+  const auto read_settings = ResolveTransactionReadModeSettings(
+      replacement_begin, &replacement_begin.transaction_policy_profile, operation_id);
+  if (read_settings.diagnostic.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context, operation_id, read_settings.diagnostic);
+  }
+  const auto policy_status = ValidateTransactionPolicy(replacement_begin);
+  if (policy_status.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context, operation_id, policy_status);
+  }
+  TransactionRuntimePolicy begin_policy;
+  const auto begin_policy_status =
+      BuildRuntimePolicy(replacement_begin.transaction_policy_profile,
+                         operation_id,
+                         &begin_policy);
+  if (begin_policy_status.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context, operation_id, begin_policy_status);
+  }
+
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  if (!loaded.ok()) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed"));
+  }
+  if (auto policy_error =
+          EnforceRuntimePolicyForExistingTransaction<EngineAutocommitBoundaryResult>(
+              request, operation_id, loaded.inventory, !request.statement_succeeded)) {
+    return *policy_error;
+  }
+  const auto current_entry =
+      FindTransaction(loaded.inventory,
+                      MakeLocalTransactionId(request.context.local_transaction_id));
+  if (!current_entry.has_value()) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found"));
+  }
+  const bool read_only_finalize =
+      current_entry->state == TransactionState::read_only_active;
+  std::uint64_t temporary_deleted_rows = 0;
+  std::uint64_t temporary_reclaimed_large_values = 0;
+  CommitDurabilityBatchDecision durability_batch;
+  if (request.statement_succeeded && !read_only_finalize) {
+    const auto deferred_constraints =
+        ValidateDeferredTransactionConstraints(request.context);
+    if (deferred_constraints.error) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context, operation_id, deferred_constraints);
+    }
+    EngineCommitTransactionRequest commit_shape;
+    commit_shape.context = request.context;
+    commit_shape.option_envelopes = request.option_envelopes;
+    durability_batch = EvaluateCommitDurabilityBatching(commit_shape, *current_entry);
+    if (durability_batch.requested && !durability_batch.result.ok &&
+        (durability_batch.required || durability_batch.result.fail_closed)) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context,
+          operation_id,
+          MakeEngineApiDiagnostic(
+              durability_batch.result.diagnostic_code.empty()
+                  ? "SB-IPAR-COMMIT-DURABILITY-BATCHING-REFUSED"
+                  : durability_batch.result.diagnostic_code,
+              "transaction.commit.durability_batching_refused",
+              durability_batch.result.fallback_reason,
+              true));
+    }
+    const auto temporary_cleanup =
+        ApplyMgaTemporaryOnCommitActions(request.context,
+                                        request.context.local_transaction_id,
+                                        &temporary_deleted_rows,
+                                        &temporary_reclaimed_large_values);
+    if (temporary_cleanup.error) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context, operation_id, temporary_cleanup);
+    }
+  }
+  if (request.statement_succeeded &&
+      IparFaultPointRequested(request.option_envelopes, "commit_fence")) {
+    auto result = MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        IparFaultDiagnostic(operation_id,
+                            "commit_fence",
+                            "phase=before_inventory_commit"));
+    result.local_transaction_id = request.context.local_transaction_id;
+    result.transaction_uuid = request.context.transaction_uuid;
+    static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
+    static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+    result.commit_finality_state = "refused_before_inventory_commit";
+    result.engine_finality_known = true;
+    result.post_inventory_secondary_failure = false;
+    result.evidence.push_back({"mga_finality_state", "not_committed_by_engine_inventory"});
+    result.evidence.push_back({"engine_finality_known", "true"});
+    AppendIparFaultEvidence(&result.evidence,
+                            "commit_fence",
+                            "rollback_required_before_inventory_commit");
+    return result;
+  }
+
+  LocalTransactionInventory finalized_inventory = loaded.inventory;
+  TransactionInventoryEntry finalized_entry;
+  if (request.statement_succeeded) {
+    const auto committed =
+        CommitLocalTransaction(finalized_inventory,
+                               MakeLocalTransactionId(request.context.local_transaction_id),
+                               CurrentUnixMillis());
+    if (!committed.ok()) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context,
+          operation_id,
+          DiagnosticFromMGA(committed.diagnostic,
+                            "SB-MGA-TXN-LIFE-COMMIT-FAILED",
+                            "mga.transaction_lifecycle.commit_failed"));
+    }
+    finalized_inventory = std::move(committed.inventory);
+    finalized_entry = committed.entry;
+  } else {
+    const auto rolled_back =
+        RollbackLocalTransaction(finalized_inventory,
+                                 MakeLocalTransactionId(request.context.local_transaction_id),
+                                 CurrentUnixMillis());
+    if (!rolled_back.ok()) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context,
+          operation_id,
+          DiagnosticFromMGA(rolled_back.diagnostic,
+                            "SB-MGA-TXN-LIFE-ROLLBACK-FAILED",
+                            "mga.transaction_lifecycle.rollback_failed"));
+    }
+    finalized_inventory = std::move(rolled_back.inventory);
+    finalized_entry = rolled_back.entry;
+  }
+
+  const std::uint64_t begin_unix_epoch_millis = CurrentUnixMillis();
+  std::optional<TypedUuid> generated_transaction_uuid;
+  DiagnosticRecord generation_diagnostic;
+  const std::uint64_t generation_attempts =
+      static_cast<std::uint64_t>(finalized_inventory.entries.size()) + 8U;
+  for (std::uint64_t attempt = 0; attempt < generation_attempts; ++attempt) {
+    const auto generated = GenerateDurableEngineIdentityV7(
+        UuidKind::transaction,
+        begin_unix_epoch_millis + finalized_inventory.next_local_transaction_id + attempt);
+    if (!generated.ok()) {
+      generation_diagnostic = generated.diagnostic;
+      break;
+    }
+    if (!ContainsTransactionUuid(finalized_inventory, generated.value)) {
+      generated_transaction_uuid = generated.value;
+      break;
+    }
+  }
+  if (!generated_transaction_uuid.has_value()) {
+    if (generation_diagnostic.diagnostic_code.empty()) {
+      return MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context,
+          operation_id,
+          MakeInvalidRequestDiagnostic(operation_id, "transaction_uuid_generation_collision"));
+    }
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(generation_diagnostic,
+                          "SB-MGA-TXN-LIFE-UUID-FAILED",
+                          "mga.transaction_lifecycle.uuid_generation_failed"));
+  }
+
+  const auto replacement_timestamp = CurrentUtcTimestampText();
+  const auto begun = read_settings.read_only
+                         ? BeginLocalReadOnlyTransaction(finalized_inventory,
+                                                         *generated_transaction_uuid,
+                                                         begin_unix_epoch_millis)
+                         : BeginLocalTransaction(finalized_inventory,
+                                                 *generated_transaction_uuid,
+                                                 begin_unix_epoch_millis);
+  if (!begun.ok()) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(begun.diagnostic,
+                          "SB-MGA-TXN-LIFE-BEGIN-FAILED",
+                          "mga.transaction_lifecycle.begin_failed"));
+  }
+
+  const auto persisted =
+      PersistLocalTransactionInventoryToDatabase(request.context.database_path,
+                                                begun.inventory);
+  if (!persisted.ok()) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(persisted.diagnostic,
+                          "SB-MGA-TXN-INV-PERSIST-FAILED",
+                          "mga.transaction_inventory.persist_failed"));
+  }
+
+  auto result = MakeTxnOk<EngineAutocommitBoundaryResult>(request.context, operation_id);
+  result.local_transaction_id = finalized_entry.identity.local_id.value;
+  result.transaction_uuid.canonical =
+      UuidToString(finalized_entry.identity.transaction_uuid.value);
+  static_cast<EngineApiResult&>(result).local_transaction_id =
+      result.local_transaction_id;
+  static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+  result.commit_finality_state = request.statement_succeeded
+                                     ? "committed_by_engine_inventory"
+                                     : "rolled_back_by_engine_inventory";
+  result.engine_finality_known = true;
+  result.post_inventory_secondary_failure = false;
+  result.replacement_local_transaction_id = begun.entry.identity.local_id.value;
+  result.replacement_transaction_uuid.canonical =
+      UuidToString(begun.entry.identity.transaction_uuid.value);
+  result.replacement_snapshot_visible_through_local_transaction_id =
+      MaxCommittedLocalTransactionId(finalized_inventory);
+  result.replacement_transaction_timestamp = replacement_timestamp;
+  result.replacement_read_only = read_settings.read_only;
+  result.replacement_read_mode = read_settings.read_mode;
+  result.replacement_isolation_level = isolation;
+  result.evidence.push_back({"transaction_state",
+                             request.statement_succeeded ? "committed" : "rolled_back"});
+  result.evidence.push_back({"mga_finality_state", result.commit_finality_state});
+  result.evidence.push_back({"engine_finality_known", "true"});
+  result.evidence.push_back({"transaction_read_only",
+                             read_only_finalize ? "true" : "false"});
+  result.evidence.push_back({"temporary_on_commit_deleted_rows",
+                             std::to_string(temporary_deleted_rows)});
+  result.evidence.push_back({"temporary_on_commit_reclaimed_large_values",
+                             std::to_string(temporary_reclaimed_large_values)});
+  result.evidence.push_back({"replacement_transaction_state",
+                             read_settings.read_only ? "read_only_active" : "active"});
+  result.evidence.push_back({"replacement_local_transaction_id",
+                             std::to_string(result.replacement_local_transaction_id)});
+  result.evidence.push_back({"replacement_snapshot_visible_through_local_transaction_id",
+                             std::to_string(result.replacement_snapshot_visible_through_local_transaction_id)});
+  result.evidence.push_back({"replacement_transaction_uuid",
+                             result.replacement_transaction_uuid.canonical});
+  result.evidence.push_back({"replacement_transaction_timestamp",
+                             replacement_timestamp});
+  result.evidence.push_back({"replacement_transaction_isolation_level", isolation});
+  result.evidence.push_back({"replacement_transaction_read_mode",
+                             read_settings.read_mode});
+  result.evidence.push_back({"replacement_transaction_read_only",
+                             read_settings.read_only ? "true" : "false"});
+  result.evidence.push_back({"autocommit_boundary_inventory_io",
+                             "single_load_single_persist"});
+  result.evidence.push_back({"parser_finality", "false"});
+  AppendIparTransactionBoundaryTelemetry(
+      &result.evidence,
+      request.statement_succeeded ? "autocommit_commit_and_begin"
+                                  : "autocommit_rollback_and_begin",
+      1,
+      1,
+      request.statement_succeeded
+          ? DirtyPagesFencedForCommit(read_only_finalize, durability_batch)
+          : 0);
+  result.evidence.push_back({"max_active_millis",
+                             std::to_string(begin_policy.max_active_millis)});
+  result.evidence.push_back({"max_idle_millis",
+                             std::to_string(begin_policy.max_idle_millis)});
+
+  const auto released_locks =
+      NamedAdvisoryLockTable().ReleaseAll(MakeLocalTransactionId(request.context.local_transaction_id));
+  result.evidence.push_back({"transaction_advisory_locks_released",
+                             std::to_string(released_locks)});
+  if (request.statement_succeeded && read_only_finalize) {
+    result.evidence.push_back({"read_only_commit_cleanup",
+                               "skipped_no_mutation_authority"});
+  } else if (!request.statement_succeeded && read_only_finalize) {
+    result.evidence.push_back({"read_only_rollback_delta_cleanup",
+                               "skipped_no_mutation_authority"});
+  }
+  if (request.statement_succeeded) {
+    AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
+  }
+
+  if (request.statement_succeeded) {
+    const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
+        request.context,
+        request.context.local_transaction_id);
+    if (committed_deltas.error) {
+      result.ok = false;
+      result.diagnostics.push_back(MakeEngineApiDiagnostic(
+          "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE",
+          "transaction.commit.post_inventory_secondary_failure",
+          "mga_finality_state=committed_by_engine_inventory;secondary_diagnostic=" +
+              committed_deltas.code + ";secondary_detail=" + committed_deltas.detail,
+          true));
+      result.commit_finality_state = "committed_post_inventory_secondary_failure";
+      result.post_inventory_secondary_failure = true;
+      result.evidence.push_back({"post_inventory_secondary_failure", "true"});
+    } else {
+      result.evidence.push_back({"post_inventory_secondary_failure", "false"});
+    }
+  } else if (!read_only_finalize) {
+    const auto rolled_back_deltas = RollbackMgaSecondaryIndexDeltaLedgerTransaction(
+        request.context,
+        request.context.local_transaction_id);
+    if (rolled_back_deltas.error) {
+      result.ok = false;
+      result.diagnostics.push_back(rolled_back_deltas);
+    }
+  }
   return result;
 }
 
@@ -1389,6 +1783,11 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.evidence.push_back({"transaction_state", "rolled_back"});
   result.evidence.push_back({"transaction_read_only", read_only_rollback ? "true" : "false"});
+  AppendIparTransactionBoundaryTelemetry(&result.evidence,
+                                         "rollback",
+                                         1,
+                                         1,
+                                         0);
   const auto released_locks =
       NamedAdvisoryLockTable().ReleaseAll(MakeLocalTransactionId(request.context.local_transaction_id));
   result.evidence.push_back({"transaction_advisory_locks_released",

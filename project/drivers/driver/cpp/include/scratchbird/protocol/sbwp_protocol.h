@@ -134,6 +134,7 @@ constexpr uint32_t kQueryFlagIncludePlan = 0x08;
 constexpr uint32_t kQueryFlagReturnSblr = 0x10;
 constexpr uint32_t kQueryFlagNoCache = 0x20;
 constexpr uint32_t kQueryFlagAutocommit = 0x40;
+constexpr uint32_t kExecuteFlagAutocommit = 0x01;
 
 constexpr uint8_t kTxnFinalityPayloadVersion = 1;
 constexpr uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
@@ -398,7 +399,9 @@ std::vector<uint8_t> buildBindPayload(const std::string& portal_name,
                                       const std::vector<ParamValue>& params,
                                       const std::vector<uint16_t>& result_formats);
 std::vector<uint8_t> buildDescribePayload(uint8_t describe_type, const std::string& name);
-std::vector<uint8_t> buildExecutePayload(const std::string& portal_name, uint32_t max_rows);
+std::vector<uint8_t> buildExecutePayload(const std::string& portal_name,
+                                         uint32_t max_rows,
+                                         uint32_t execute_flags = 0);
 std::vector<uint8_t> buildSblrExecutePayload(uint64_t sblr_hash,
                                              const std::vector<uint8_t>& bytecode,
                                              const std::vector<ParamValue>& params);

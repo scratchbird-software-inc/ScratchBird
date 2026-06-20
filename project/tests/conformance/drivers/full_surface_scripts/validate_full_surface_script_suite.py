@@ -47,6 +47,36 @@ FORBIDDEN_SCRIPT_PATTERNS = (
     re.compile(r"\bjournal_mode\b", re.IGNORECASE),
     re.compile(r"\bWAL\b", re.IGNORECASE),
 )
+ASSERTION_SELECT_RE = re.compile(
+    r"SELECT\s+'(?P<assertion_id>[^']+)'\s+AS\s+assertion_id\s*,(?P<body>.*?);",
+    re.IGNORECASE | re.DOTALL,
+)
+WEAK_LITERAL_PAIR_RE = re.compile(
+    r"(?P<literal>[-+]?\d+(?:\.\d+)?)\s+AS\s+actual_(?P<name>[A-Za-z0-9_]+)\s*,\s*"
+    r"(?P=literal)\s+AS\s+expected_(?P=name)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def validate_script_assertion_strength(rel_path: Path, text: str) -> list[str]:
+    errors: list[str] = []
+    for assertion in ASSERTION_SELECT_RE.finditer(text):
+        assertion_id = assertion.group("assertion_id")
+        body = assertion.group("body")
+        if re.search(r"\bactual_marker\b", body, re.IGNORECASE) and re.search(
+            r"\bexpected_marker\b", body, re.IGNORECASE
+        ):
+            errors.append(
+                f"script:{rel_path}:weak_marker_assertion:{assertion_id}:"
+                "literal_marker_pairs_do_not_prove_behavior"
+            )
+            continue
+        if WEAK_LITERAL_PAIR_RE.search(body) and " FROM " not in body.upper():
+            errors.append(
+                f"script:{rel_path}:weak_literal_assertion:{assertion_id}:"
+                "literal_actual_expected_pairs_need_a_behavioral_source"
+            )
+    return errors
 
 
 def repo_root_from_script() -> Path:
@@ -139,6 +169,7 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
         for pattern in FORBIDDEN_SCRIPT_PATTERNS:
             if pattern.search(text):
                 errors.append(f"script:{rel_path}:forbidden_token:{pattern.pattern}")
+        errors.extend(validate_script_assertion_strength(rel_path, text))
         for assertion_id in [str(value) for value in as_list(item.get("assertions"))]:
             if assertion_id in assertion_ids:
                 errors.append(f"manifest:duplicate_assertion_id:{assertion_id}")

@@ -334,6 +334,12 @@ void HotAppendContextUsesOneStreamLifecyclePerStore(
           "ODF-035 row stream was not opened/flushed exactly once");
   Require(counters.index_stream_opens == 1 && counters.index_stream_flushes == 1,
           "ODF-035 index stream was not opened/flushed exactly once");
+  Require(counters.scoped_row_stream_opens == 1 &&
+              counters.scoped_row_stream_flushes == 1,
+          "ODF-035 scoped row stream was not opened/flushed exactly once");
+  Require(counters.scoped_index_stream_opens == 1 &&
+              counters.scoped_index_stream_flushes == 1,
+          "ODF-035 scoped index stream was not opened/flushed exactly once");
   Require(counters.row_range_reservations == 1 &&
               counters.index_range_reservations == 1,
           "ODF-035 hot append did not reserve exactly one range per stream");

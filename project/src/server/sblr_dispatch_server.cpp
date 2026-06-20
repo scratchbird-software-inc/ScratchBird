@@ -1161,6 +1161,7 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
 }
 
 std::string PreparedStatementAuthorityMismatchReason(
+    const ServerSessionRegistry& registry,
     const ServerPreparedStatementRecord& prepared,
     const ServerSessionRecord& session) {
   const auto language = ServerLanguageContextForSession(session);
@@ -1198,6 +1199,20 @@ std::string PreparedStatementAuthorityMismatchReason(
       prepared.search_path_hash != session.search_path_hash) {
     return "prepared_statement_authorization_context_stale";
   }
+  if (prepared.session_object_handle_id != 0) {
+    const auto validation =
+        ValidateSessionObjectHandle(registry,
+                                    session,
+                                    prepared.session_object_handle_id,
+                                    prepared.session_object_handle_generation,
+                                    prepared.target_object_uuid,
+                                    prepared.target_operation_id);
+    if (!validation.accepted) {
+      return validation.detail.empty()
+                 ? "prepared_statement_object_handle_stale"
+                 : "prepared_statement_object_handle_" + validation.detail;
+    }
+  }
   if (prepared.language_profile != language.language_profile_id ||
       prepared.language_tag != language.language_tag ||
       prepared.default_language_tag != language.default_language_tag ||
@@ -1222,7 +1237,8 @@ std::string PreparedStatementRefusalDetail(std::string_view mismatch) {
       mismatch == "prepared_statement_grant_epoch_stale" ||
       mismatch == "prepared_statement_policy_epoch_stale" ||
       mismatch == "prepared_statement_authorization_context_stale" ||
-      mismatch == "prepared_statement_language_context_stale") {
+      mismatch == "prepared_statement_language_context_stale" ||
+      mismatch.starts_with("prepared_statement_object_handle_")) {
     return "prepared_statement_epoch_stale";
   }
   return std::string(mismatch);
@@ -1254,6 +1270,43 @@ void CapturePreparedLanguageContext(ServerPreparedStatementRecord* prepared,
   prepared->resource_compatibility_identity =
       language.resource_compatibility_identity;
   prepared->resource_version_identity = language.resource_version_identity;
+}
+
+std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key);
+
+void BindPreparedSessionObjectHandle(ServerSessionRegistry* registry,
+                                     ServerPreparedStatementRecord* prepared,
+                                     const ServerSessionRecord& session,
+                                     std::string_view encoded,
+                                     std::string_view operation_id) {
+  if (registry == nullptr || prepared == nullptr || operation_id.empty()) return;
+  std::string object_uuid =
+      TextLineValue(encoded, "target_object_uuid")
+          .value_or(JsonTextField(encoded, "target_object_uuid").value_or(""));
+  if (object_uuid.empty()) {
+    object_uuid =
+        TextLineValue(encoded, "object_uuid")
+            .value_or(JsonTextField(encoded, "object_uuid").value_or(""));
+  }
+  if (object_uuid.empty()) return;
+  std::string object_kind =
+      TextLineValue(encoded, "target_object_kind")
+          .value_or(JsonTextField(encoded, "target_object_kind").value_or("object"));
+  std::string column_set_hash =
+      TextLineValue(encoded, "column_set_hash")
+          .value_or(JsonTextField(encoded, "column_set_hash").value_or("columns/all"));
+  auto handle = AllocateSessionObjectHandle(registry,
+                                            session,
+                                            object_uuid,
+                                            object_kind,
+                                            std::string(operation_id),
+                                            column_set_hash);
+  prepared->session_object_handle_id = handle.handle_id;
+  prepared->session_object_handle_generation = handle.generation;
+  prepared->target_object_uuid = std::move(handle.object_uuid);
+  prepared->target_object_kind = std::move(handle.object_kind);
+  prepared->target_operation_id = std::move(handle.operation_id);
+  prepared->target_column_set_hash = std::move(handle.column_set_hash);
 }
 
 void BumpSessionLanguageResourceEpochs(ServerSessionRecord* session) {
@@ -2214,8 +2267,12 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "transaction.unlock_table") return "SBLR_TXN_UNLOCK_TABLE";
   if (operation_id == "transaction.lock_named") return "SBLR_TXN_LOCK_NAMED";
   if (operation_id == "transaction.unlock_named") return "SBLR_TXN_UNLOCK_NAMED";
+  if (operation_id == "security.role.create") return "SBLR_SEC_CREATE_ROLE";
+  if (operation_id == "security.group.create") return "SBLR_SEC_CREATE_GROUP";
   if (operation_id == "security.principal.create") return "SBLR_SECURITY_PRINCIPAL_CREATE";
   if (operation_id == "security.principal.alter") return "SBLR_SECURITY_PRINCIPAL_ALTER";
+  if (operation_id == "security.membership.grant") return "SBLR_SECURITY_MEMBERSHIP_GRANT";
+  if (operation_id == "security.membership.revoke") return "SBLR_SECURITY_MEMBERSHIP_REVOKE";
   if (operation_id == "security.privilege.grant") return "SBLR_SECURITY_PRIVILEGE_GRANT";
   if (operation_id == "security.privilege.revoke") return "SBLR_SECURITY_PRIVILEGE_REVOKE";
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
@@ -2469,8 +2526,12 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id.starts_with("extensibility.unload_udr_package") ||
          operation_id.starts_with("extensibility.inspect_udr_packages") ||
          operation_id.starts_with("extensibility.invoke_udr_package") ||
+         operation_id == "security.membership.grant" ||
+         operation_id == "security.membership.revoke" ||
          operation_id == "security.privilege.grant" ||
          operation_id == "security.privilege.revoke" ||
+         operation_id == "security.role.create" ||
+         operation_id == "security.group.create" ||
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||
@@ -2563,6 +2624,17 @@ void ApplyBeginTransactionResultToSession(
       result.snapshot_visible_through_local_transaction_id;
   session->transaction_uuid = result.transaction_uuid.canonical;
   session->transaction_timestamp = EngineEvidenceValue(result, "transaction_timestamp");
+}
+
+void ApplyAutocommitBoundaryResultToSession(
+    const engine_api::EngineAutocommitBoundaryResult& result,
+    ServerSessionRecord* session) {
+  if (session == nullptr || result.replacement_local_transaction_id == 0) return;
+  session->local_transaction_id = result.replacement_local_transaction_id;
+  session->snapshot_visible_through_local_transaction_id =
+      result.replacement_snapshot_visible_through_local_transaction_id;
+  session->transaction_uuid = result.replacement_transaction_uuid.canonical;
+  session->transaction_timestamp = result.replacement_transaction_timestamp;
 }
 
 engine_api::EngineRequestContext ReplacementTransactionContext(
@@ -2690,53 +2762,43 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
   }
 
   const std::uint64_t finalized_local_transaction_id = session->local_transaction_id;
-  if (statement_succeeded) {
-    engine_api::EngineCommitTransactionRequest commit;
-    commit.context = ActiveTransactionContext(*session, *database, request_uuid);
-    const auto committed = engine_api::EngineCommitTransaction(commit);
-    if (!committed.ok) {
-      result.diagnostic_code = committed.diagnostics.empty() || committed.diagnostics.front().code.empty()
-                                   ? "PARSER_SERVER_IPC.AUTOCOMMIT_FINALITY_FAILED"
-                                   : committed.diagnostics.front().code;
-      result.diagnostic_detail = committed.diagnostics.empty() || committed.diagnostics.front().detail.empty()
-                                     ? "autocommit_commit_failed"
-                                     : committed.diagnostics.front().detail;
-      return result;
-    }
-    result.evidence += "evidence=autocommit_statement_succeeded:committed\n";
-  } else {
-    engine_api::EngineRollbackTransactionRequest rollback;
-    rollback.context = ActiveTransactionContext(*session, *database, request_uuid);
-    const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
-    if (!rolled_back.ok) {
-      result.diagnostic_code = rolled_back.diagnostics.empty() || rolled_back.diagnostics.front().code.empty()
-                                   ? "PARSER_SERVER_IPC.AUTOCOMMIT_FINALITY_FAILED"
-                                   : rolled_back.diagnostics.front().code;
-      result.diagnostic_detail = rolled_back.diagnostics.empty() || rolled_back.diagnostics.front().detail.empty()
-                                     ? "autocommit_rollback_failed"
-                                     : rolled_back.diagnostics.front().detail;
-      return result;
-    }
-    result.evidence += "evidence=autocommit_statement_failed:rolled_back\n";
-  }
-
-  std::string replacement_code;
-  std::string replacement_detail;
-  if (!BeginReplacementTransactionForSession(session,
-                                             engine_state,
-                                             request_uuid,
-                                             &replacement_code,
-                                             &replacement_detail)) {
-    result.diagnostic_code = replacement_code.empty()
-                                 ? "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_FAILED"
-                                 : replacement_code;
-    result.diagnostic_detail = replacement_detail.empty()
-                                   ? "replacement_transaction_begin_failed"
-                                   : replacement_detail;
+  engine_api::EngineAutocommitBoundaryRequest boundary;
+  boundary.context = ActiveTransactionContext(*session, *database, request_uuid);
+  boundary.statement_succeeded = statement_succeeded;
+  boundary.replacement_isolation_level = session->default_transaction_isolation_level;
+  boundary.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+  boundary.transaction_policy_profile.encoded_profiles.push_back(
+      std::string("transaction_read_only:") +
+      ((session->attach_mode == "read_only" || session->default_transaction_read_only ||
+        database->read_only || database->state == HostedDatabaseState::kReadOnly)
+           ? "true"
+           : "false"));
+  boundary.transaction_policy_profile.encoded_profiles.push_back(
+      std::string("transaction_read_mode:") +
+      ((session->attach_mode == "read_only" || session->default_transaction_read_only ||
+        database->read_only || database->state == HostedDatabaseState::kReadOnly)
+           ? "read_only"
+           : "read_write"));
+  const auto finalized = engine_api::EngineAutocommitBoundary(boundary);
+  if (!finalized.ok) {
+    ApplyAutocommitBoundaryResultToSession(finalized, session);
+    result.diagnostic_code =
+        finalized.diagnostics.empty() || finalized.diagnostics.front().code.empty()
+            ? "PARSER_SERVER_IPC.AUTOCOMMIT_FINALITY_FAILED"
+            : finalized.diagnostics.front().code;
+    result.diagnostic_detail =
+        finalized.diagnostics.empty() || finalized.diagnostics.front().detail.empty()
+            ? (statement_succeeded ? "autocommit_commit_failed"
+                                   : "autocommit_rollback_failed")
+            : finalized.diagnostics.front().detail;
     return result;
   }
+  ApplyAutocommitBoundaryResultToSession(finalized, session);
 
   result.ok = true;
+  result.evidence += statement_succeeded
+                         ? "evidence=autocommit_statement_succeeded:committed\n"
+                         : "evidence=autocommit_statement_failed:rolled_back\n";
   result.evidence += "autocommit_finalized_local_transaction_id=" +
                      std::to_string(finalized_local_transaction_id) + "\n";
   result.evidence += "replacement_local_transaction_id=" +
@@ -2749,6 +2811,9 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
   result.evidence += "evidence=always_active_transaction_replacement:" +
                      std::to_string(session->local_transaction_id) + "\n";
   result.evidence += "evidence=parser_finality:false\n";
+  for (const auto& item : finalized.evidence) {
+    result.evidence += "evidence=" + item.evidence_kind + ":" + item.evidence_id + "\n";
+  }
   return result;
 }
 
@@ -3225,6 +3290,21 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\n";
     }
   }
+  if (dispatch_operation_id == "security.membership.grant" ||
+      dispatch_operation_id == "security.membership.revoke") {
+    constexpr std::string_view kSecurityMembershipFields[] = {
+        "membership_uuid", "member_principal_uuid", "container_uuid", "container_kind"};
+    for (const auto field : kSecurityMembershipFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+  }
   if (dispatch_operation_id == "security.session.set_role") {
     constexpr std::string_view kSecurityRoleFields[] = {"role_uuid", "role_mode"};
     for (const auto field : kSecurityRoleFields) {
@@ -3286,7 +3366,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       AppendOperationOperand(&operation_envelope, "target_object_kind", "filespace");
     }
   }
-  if (dispatch_operation_id == "security.principal.create" ||
+  if (dispatch_operation_id == "security.role.create" ||
+      dispatch_operation_id == "security.group.create" ||
+      dispatch_operation_id == "security.principal.create" ||
       dispatch_operation_id == "security.principal.alter") {
     constexpr std::string_view kSecurityPrincipalFields[] = {
         "principal_uuid", "principal_name", "principal_kind", "lifecycle_state",
@@ -3322,6 +3404,15 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += field;
       operation_envelope += "\t";
       operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+    if (dispatch_operation_id == "security.policy.create" &&
+        !JsonTextField(encoded, "policy_uuid").has_value() &&
+        !TextLineValue(encoded, "policy_uuid").has_value()) {
+      const std::string policy_seed =
+          std::string("security.policy.create:") + std::string(encoded);
+      operation_envelope += "operand=text\tpolicy_uuid\t";
+      operation_envelope += UuidBytesToText(ServerVirtualSyntheticUuid(policy_seed));
       operation_envelope += "\n";
     }
   }
@@ -3924,6 +4015,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "routine_parameter_descriptor_present", "routine_parameter_count",
         "routine_parameter_0_name_descriptor", "routine_parameter_0_type",
         "routine_parameter_0_mode", "routine_parameter_0_descriptor_kind",
+        "routine_return_descriptor_present", "routine_return_count",
+        "body_compilation_included", "executable_descriptor_kind",
+        "executor", "internal_procedure_id", "side_effect_class",
+        "compiled_body_provenance",
         "routine_cursor_argument", "routine_cursor_argument_binding",
         "routine_cursor_argument_parser_executes_cursor"};
     for (const auto field : kExecutableFields) {
@@ -3936,6 +4031,15 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\t";
       operation_envelope += EscapeOperationOperandField(value);
       operation_envelope += "\n";
+    }
+    for (std::size_t related = 0; related < 64; ++related) {
+      const std::string prefix = "related_object_" + std::to_string(related);
+      const auto uuid = JsonTextField(encoded, prefix + "_uuid").value_or("");
+      if (uuid.empty() && !JsonTextField(encoded, prefix + "_kind").has_value()) break;
+      if (!uuid.empty()) AppendOperationOperand(&operation_envelope, prefix + "_uuid", uuid);
+      if (const auto kind = JsonTextField(encoded, prefix + "_kind")) {
+        AppendOperationOperand(&operation_envelope, prefix + "_kind", *kind);
+      }
     }
     const std::string object_uuid = JsonTextField(encoded, object_uuid_field).value_or(
         TextLineValue(encoded, object_uuid_field).value_or(""));
@@ -3968,6 +4072,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += EscapeOperationOperandField(object_name);
       operation_envelope += "\n";
     }
+    AppendOperationOperand(&operation_envelope, "permission", "manage_executable");
   }
   if (dispatch_operation_id == "routine.procedure_invoke" ||
       dispatch_operation_id == "routine.function_invoke") {
@@ -4178,6 +4283,72 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
             operation_envelope += "\trelation-";
             operation_envelope += std::to_string(relation);
             operation_envelope += "-row-";
+            operation_envelope += std::to_string(row);
+            operation_envelope += "|";
+            operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
+            operation_envelope += "\t";
+            operation_envelope += EscapeOperationOperandField(value);
+            operation_envelope += "\n";
+          }
+        }
+      }
+    }
+  }
+  if (dispatch_operation_id == "query.plan_operation" &&
+      (encoded.find("\"query_envelope_kind\":\"values_materialized_cte\"") != std::string_view::npos ||
+       encoded.find("query_envelope_kind=values_materialized_cte") != std::string_view::npos)) {
+    auto parse_u64 = [](const std::string& value) -> std::optional<std::uint64_t> {
+      if (value.empty()) return std::nullopt;
+      std::uint64_t parsed = 0;
+      for (const unsigned char ch : value) {
+        if (!std::isdigit(ch)) return std::nullopt;
+        parsed = parsed * 10u + static_cast<std::uint64_t>(ch - '0');
+      }
+      return parsed;
+    };
+    const auto column_count = parse_u64(JsonTextField(encoded, "values_column_count").value_or(
+        TextLineValue(encoded, "values_column_count").value_or("")));
+    operation_envelope += "operand=text\texecute\ttrue\n";
+    operation_envelope += "operand=text\tquery_operation\tmaterialized_cte\n";
+    constexpr std::string_view kMaterializedCteFields[] = {
+        "result_projection",
+        "aggregate_function",
+        "aggregate_value_field",
+        "assertion_id",
+        "actual_column_name",
+        "expected_column_name",
+        "expected_value"};
+    for (const auto field : kMaterializedCteFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+    if (column_count) {
+      const auto row_count = parse_u64(JsonTextField(encoded, "relation_0_row_count").value_or(
+          TextLineValue(encoded, "relation_0_row_count").value_or("")));
+      if (row_count) {
+        for (std::uint64_t row = 0; row < *row_count; ++row) {
+          for (std::uint64_t column = 0; column < *column_count; ++column) {
+            const std::string prefix = "relation_0_" +
+                                       std::to_string(row) + "_" +
+                                       std::to_string(column) + "_";
+            const std::string name = JsonTextField(encoded, prefix + "name").value_or(
+                TextLineValue(encoded, prefix + "name").value_or("c" + std::to_string(column)));
+            const std::string type = JsonTextField(encoded, prefix + "type").value_or(
+                TextLineValue(encoded, prefix + "type").value_or("bigint"));
+            const std::string value = JsonTextField(encoded, prefix + "value").value_or(
+                TextLineValue(encoded, prefix + "value").value_or(""));
+            const std::string is_null = JsonTextField(encoded, prefix + "is_null").value_or(
+                TextLineValue(encoded, prefix + "is_null").value_or("false"));
+            operation_envelope += "operand=";
+            operation_envelope += (is_null == "true" || is_null == "1") ? "row_null_field:" : "row_field:";
+            operation_envelope += EscapeOperationOperandField(type.empty() ? "bigint" : type);
+            operation_envelope += "\trelation-0-row-";
             operation_envelope += std::to_string(row);
             operation_envelope += "|";
             operation_envelope += EscapeOperationOperandField(name.empty() ? "c" + std::to_string(column) : name);
@@ -5228,6 +5399,11 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   prepared.group_set_hash = session->group_set_hash;
   prepared.search_path_hash = session->search_path_hash;
   CapturePreparedLanguageContext(&prepared, *session);
+  BindPreparedSessionObjectHandle(registry,
+                                  &prepared,
+                                  *session,
+                                  prepared.encoded_sblr_envelope,
+                                  prepared.operation_id);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
@@ -5293,7 +5469,9 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   }
   if (prepared_statement != nullptr) {
     const std::string mismatch =
-        PreparedStatementAuthorityMismatchReason(*prepared_statement, *session);
+        PreparedStatementAuthorityMismatchReason(*registry,
+                                                 *prepared_statement,
+                                                 *session);
     const std::string detail = PreparedStatementRefusalDetail(mismatch);
     if (mismatch == "prepared_statement_closed" ||
         mismatch == "prepared_statement_cross_session") {
@@ -5661,6 +5839,11 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     prepared.group_set_hash = session->group_set_hash;
     prepared.search_path_hash = session->search_path_hash;
     CapturePreparedLanguageContext(&prepared, *session);
+    BindPreparedSessionObjectHandle(registry,
+                                    &prepared,
+                                    *session,
+                                    prepared.encoded_sblr_envelope,
+                                    prepared.operation_id);
     registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
@@ -5691,7 +5874,9 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     auto* prepared = FindPreparedByName(registry, decoded->session_uuid, statement_name);
     const std::string mismatch =
         prepared == nullptr ? std::string("prepared_statement_not_found")
-                            : PreparedStatementAuthorityMismatchReason(*prepared, *session);
+                            : PreparedStatementAuthorityMismatchReason(*registry,
+                                                                       *prepared,
+                                                                       *session);
     const std::string detail = PreparedStatementRefusalDetail(mismatch);
     if (prepared == nullptr || !mismatch.empty()) {
       CompleteServerRequestLifecycle(registry,

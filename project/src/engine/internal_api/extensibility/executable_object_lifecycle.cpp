@@ -325,6 +325,17 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
   std::vector<std::string> fields;
   const auto payload = OptionValue(request, "payload:");
   if (!payload.empty()) { fields.push_back("payload_hash_or_descriptor=" + payload); }
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, "internal_procedure_id:") ||
+        StartsWith(option, "executor:") ||
+        StartsWith(option, "side_effect_class:") ||
+        StartsWith(option, "compiled_body_provenance:") ||
+        StartsWith(option, "related_object_") ||
+        StartsWith(option, "routine_parameter_count:") ||
+        StartsWith(option, "routine_return_count:")) {
+      fields.push_back(option);
+    }
+  }
   if (!request.descriptors.empty()) {
     fields.push_back("descriptor=" + request.descriptors.front().canonical_type_name);
   }

@@ -11,9 +11,14 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/descriptor_api.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/name_registry.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "catalog_index_profile.hpp"
 #include "crud_support/crud_store.hpp"
+#include "domain_support/domain_store.hpp"
 #include "executor_foundation.hpp"
 #include "logical_plan.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -21,6 +26,7 @@
 #include "optimizer_contract.hpp"
 #include "optimizer_plan_cache.hpp"
 #include "physical_plan.hpp"
+#include "security/security_principal_lifecycle.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -44,6 +50,7 @@ namespace exec = scratchbird::engine::executor;
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
 namespace metrics = scratchbird::core::metrics;
+using scratchbird::core::catalog::BuiltinCatalogTableProfiles;
 
 plan::PhysicalAccessKind AccessKindForQueryOperation(const std::string& operation);
 bool StatisticsForcedStale(const EnginePlanOperationRequest& request);
@@ -3550,9 +3557,638 @@ SysInformationProjectionContext ProjectionContextFromRequest(
   for (const auto& group_uuid : Split(OptionValue(request, "effective_group_uuid_set:"), ',')) {
     if (!group_uuid.empty()) context.effective_group_uuids.push_back(group_uuid);
   }
-  context.visible_catalog_generation_id = request.context.catalog_generation_id;
+  // Query-built sys projections already read through MGA/CRUD/API visibility filters.
+  // Some listener/parser sessions carry a stale catalog_generation_id between
+  // statements, so applying it again here can hide committed descriptor rows.
+  context.visible_catalog_generation_id = 0;
   context.cluster_authority_available = request.context.cluster_authority_available;
   return context;
+}
+
+std::string QueryProjectionParentPath(std::string_view path) {
+  const std::size_t dot = path.rfind('.');
+  if (dot == std::string_view::npos) { return {}; }
+  return std::string(path.substr(0, dot));
+}
+
+std::string QueryProjectionLeafName(std::string_view path) {
+  const std::size_t dot = path.rfind('.');
+  if (dot == std::string_view::npos) { return std::string(path); }
+  return std::string(path.substr(dot + 1));
+}
+
+std::string QueryProjectionNameClass(std::string name_class) {
+  if (name_class.empty() || name_class == "default") { return "primary"; }
+  return name_class;
+}
+
+std::uint64_t QueryProjectionObserverTx(const EngineRequestContext& context) {
+  return std::max(context.local_transaction_id,
+                  context.snapshot_visible_through_local_transaction_id);
+}
+
+EngineRequestContext QueryProjectionCatalogReadContext(EngineRequestContext context) {
+  context.local_transaction_id = 0;
+  return context;
+}
+
+std::string QueryProjectionSchemaDisplayPath(
+    const std::vector<EngineSchemaTreeRecord>& schemas,
+    const std::string& schema_uuid,
+    std::map<std::string, std::string>* cache) {
+  if (schema_uuid.empty() || cache == nullptr) { return {}; }
+  const auto cached = cache->find(schema_uuid);
+  if (cached != cache->end()) { return cached->second; }
+  const auto found = std::find_if(schemas.begin(), schemas.end(), [&schema_uuid](const auto& schema) {
+    return schema.schema_uuid == schema_uuid;
+  });
+  if (found == schemas.end()) { return {}; }
+  for (const auto& name : found->localized_names) {
+    if (name.default_name && !name.path.empty()) {
+      (*cache)[schema_uuid] = name.path;
+      return name.path;
+    }
+  }
+  const std::string leaf = SchemaTreeDefaultName(found->localized_names, found->default_name);
+  const std::string parent =
+      QueryProjectionSchemaDisplayPath(schemas, found->parent_schema_uuid, cache);
+  const std::string path = parent.empty() ? leaf : parent + "." + leaf;
+  (*cache)[schema_uuid] = path;
+  return path;
+}
+
+void AddQueryProjectionResolverName(
+    std::vector<SysInformationResolverNameSource>* resolver_names,
+    std::string object_uuid,
+    std::string object_class,
+    std::string scope_uuid,
+    std::string language_tag,
+    std::string name_class,
+    std::string display_name,
+    std::uint64_t catalog_generation_id) {
+  if (resolver_names == nullptr || object_uuid.empty() || display_name.empty()) { return; }
+  SysInformationResolverNameSource name;
+  name.object_uuid = std::move(object_uuid);
+  name.object_class = std::move(object_class);
+  name.scope_uuid = std::move(scope_uuid);
+  name.language_tag = language_tag.empty() ? "en" : std::move(language_tag);
+  name.name_class = QueryProjectionNameClass(std::move(name_class));
+  name.display_name = std::move(display_name);
+  name.catalog_generation_id = catalog_generation_id == 0 ? 1 : catalog_generation_id;
+  resolver_names->push_back(std::move(name));
+}
+
+std::string QueryProjectionNameText(const NameRegistryEntry& entry) {
+  if (!entry.display_name.empty()) { return entry.display_name; }
+  return entry.raw_name_text;
+}
+
+void AddQueryProjectionNameRegistryResolverNames(
+    std::vector<SysInformationResolverNameSource>* resolver_names,
+    const NameRegistryState& name_state) {
+  for (const auto& entry : name_state.entries) {
+    if (entry.deleted || entry.object_uuid.empty()) { continue; }
+    AddQueryProjectionResolverName(
+        resolver_names,
+        entry.object_uuid,
+        entry.object_class,
+        entry.scope_uuid,
+        entry.language_tag,
+        entry.name_class,
+        QueryProjectionNameText(entry),
+        entry.catalog_generation_id == 0 ? entry.creator_tx : entry.catalog_generation_id);
+  }
+}
+
+const NameRegistryEntry* QueryProjectionScopedNameEntry(
+    const std::map<std::string, std::vector<const NameRegistryEntry*>>& names_by_object,
+    const std::string& object_uuid,
+    const std::string& object_class,
+    const std::map<std::string, std::string>& schema_path_by_uuid) {
+  const auto found = names_by_object.find(object_uuid);
+  if (found == names_by_object.end()) { return nullptr; }
+  const NameRegistryEntry* fallback = nullptr;
+  for (const auto* entry : found->second) {
+    if (entry == nullptr || entry->deleted || entry->object_class != object_class) { continue; }
+    if (fallback == nullptr && !QueryProjectionNameText(*entry).empty()) { fallback = entry; }
+    if (schema_path_by_uuid.find(entry->scope_uuid) == schema_path_by_uuid.end()) { continue; }
+    return entry;
+  }
+  return fallback;
+}
+
+std::uint64_t QueryProjectionCatalogGeneration(const NameRegistryEntry& entry,
+                                               std::uint64_t fallback) {
+  if (entry.catalog_generation_id != 0) { return entry.catalog_generation_id; }
+  return fallback == 0 ? 1 : fallback;
+}
+
+std::string QueryProjectionTableTypeForCrud(const CrudTableRecord& table) {
+  if (!table.temporary) { return "BASE TABLE"; }
+  if (table.temporary_scope == "global") { return "GLOBAL TEMPORARY"; }
+  return "LOCAL TEMPORARY";
+}
+
+void QueryProjectionMergeCrudState(CrudState* base, const CrudState& source) {
+  if (base == nullptr) { return; }
+  for (const auto& [tx, state] : source.transactions) {
+    base->transactions[tx] = state;
+    base->max_transaction_id = std::max(base->max_transaction_id, tx);
+  }
+  for (const auto& table : source.tables) {
+    auto existing = std::find_if(base->tables.begin(), base->tables.end(),
+                                 [&table](const CrudTableRecord& candidate) {
+                                   return candidate.table_uuid == table.table_uuid;
+                                 });
+    if (existing == base->tables.end()) {
+      base->tables.push_back(table);
+    } else {
+      *existing = table;
+    }
+  }
+  for (const auto& index : source.indexes) {
+    auto existing = std::find_if(base->indexes.begin(), base->indexes.end(),
+                                 [&index](const CrudIndexRecord& candidate) {
+                                   return candidate.index_uuid == index.index_uuid;
+                                 });
+    if (existing == base->indexes.end()) {
+      base->indexes.push_back(index);
+    } else {
+      *existing = index;
+    }
+  }
+  base->max_event_sequence = std::max(base->max_event_sequence, source.max_event_sequence);
+  base->max_sequence = std::max(base->max_sequence, source.max_sequence);
+  base->max_index_sequence = std::max(base->max_index_sequence, source.max_index_sequence);
+}
+
+CrudState QueryProjectionReadableCrudState(const EngineRequestContext& context) {
+  CrudState state;
+  const auto crud = LoadCrudState(context);
+  if (crud.ok) { state = crud.state; }
+  const auto mga_relations = LoadMgaRelationStoreState(context);
+  if (mga_relations.ok) {
+    QueryProjectionMergeCrudState(&state, BuildCrudCompatibilityStateFromMga(mga_relations.state));
+  }
+  return state;
+}
+
+void AddQueryProjectionSystemObject(
+    std::vector<SysInformationCatalogObjectSource>* objects,
+    std::vector<SysInformationResolverNameSource>* resolver_names,
+    const std::map<std::string, std::string>& schema_uuid_by_path,
+    const std::string& path,
+    const std::string& object_class,
+    const std::string& table_type,
+    const std::string& uuid_prefix) {
+  const std::string schema_path = QueryProjectionParentPath(path);
+  const auto schema = schema_uuid_by_path.find(schema_path);
+  if (schema == schema_uuid_by_path.end()) { return; }
+  const std::string object_uuid = uuid_prefix + path;
+  SysInformationCatalogObjectSource object;
+  object.object_uuid = object_uuid;
+  object.object_class = object_class;
+  object.schema_uuid = schema->second;
+  object.parent_object_uuid = schema->second;
+  object.table_type = table_type;
+  object.catalog_generation_id = 1;
+  object.created_local_transaction_id = 1;
+  objects->push_back(std::move(object));
+  AddQueryProjectionResolverName(resolver_names,
+                                 object_uuid,
+                                 object_class,
+                                 schema->second,
+                                 "en",
+                                 "primary",
+                                 QueryProjectionLeafName(path),
+                                 1);
+}
+
+std::string QueryProjectionPayloadField(const std::string& payload,
+                                        const std::string& field_name) {
+  const std::string prefix = field_name + "=";
+  for (const auto& part : Split(payload, ';')) {
+    if (part.rfind(prefix, 0) == 0) { return part.substr(prefix.size()); }
+  }
+  return {};
+}
+
+struct QuerySysProjectionSources {
+  std::vector<SysInformationCatalogObjectSource> objects;
+  std::vector<SysInformationResolverNameSource> resolver_names;
+  std::vector<SysInformationColumnSource> columns;
+  std::vector<SysInformationDomainSource> domains;
+};
+
+QuerySysProjectionSources BuildQuerySysProjectionSources(
+    const EnginePlanOperationRequest& request) {
+  QuerySysProjectionSources sources;
+  const EngineRequestContext catalog_read_context =
+      QueryProjectionCatalogReadContext(request.context);
+  const std::uint64_t observer_tx = QueryProjectionObserverTx(request.context);
+
+  std::map<std::string, std::string> schema_path_by_uuid;
+  std::map<std::string, std::string> schema_uuid_by_path;
+  std::set<std::string> object_uuids_in_projection;
+  std::set<std::string> column_keys_in_projection;
+
+  const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx);
+  for (const auto& schema : schemas) {
+    if (schema.schema_uuid.empty()) { continue; }
+    const std::string schema_path =
+        QueryProjectionSchemaDisplayPath(schemas, schema.schema_uuid, &schema_path_by_uuid);
+    if (!schema_path.empty()) { schema_uuid_by_path[schema_path] = schema.schema_uuid; }
+    SysInformationCatalogObjectSource object;
+    object.object_uuid = schema.schema_uuid;
+    object.object_class = "schema";
+    object.parent_object_uuid = schema.parent_schema_uuid;
+    object.catalog_generation_id = schema.creator_tx == 0 ? 1 : schema.creator_tx;
+    object.created_local_transaction_id = schema.creator_tx;
+    sources.objects.push_back(std::move(object));
+    object_uuids_in_projection.insert(schema.schema_uuid);
+    if (schema.localized_names.empty()) {
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     schema.schema_uuid,
+                                     "schema",
+                                     schema.parent_schema_uuid,
+                                     "en",
+                                     "primary",
+                                     schema.default_name,
+                                     schema.creator_tx);
+    } else {
+      for (const auto& name : schema.localized_names) {
+        AddQueryProjectionResolverName(&sources.resolver_names,
+                                       schema.schema_uuid,
+                                       "schema",
+                                       schema.parent_schema_uuid,
+                                       name.language_tag,
+                                       name.name_class,
+                                       name.name.empty() ? schema.default_name : name.name,
+                                       schema.creator_tx);
+      }
+    }
+  }
+
+  const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
+  if (lifecycle.ok) {
+    for (const auto& record : lifecycle.state.objects) {
+      if (record.deleted || record.object_uuid.empty()) { continue; }
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = record.object_uuid;
+      object.object_class = record.object_kind.empty() ? "object" : record.object_kind;
+      object.schema_uuid = record.schema_uuid;
+      object.parent_object_uuid = record.schema_uuid;
+      object.table_type = object.object_class == "view" ? "VIEW" : "";
+      object.catalog_generation_id = record.metadata_epoch == 0 ? record.creator_tx : record.metadata_epoch;
+      object.created_local_transaction_id = record.creator_tx;
+      if (object_uuids_in_projection.insert(record.object_uuid).second) {
+        sources.objects.push_back(std::move(object));
+      }
+    }
+    for (const auto& name : lifecycle.state.names) {
+      if (name.deleted) { continue; }
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     name.object_uuid,
+                                     name.object_kind,
+                                     name.schema_uuid,
+                                     name.language_tag,
+                                     name.name_class,
+                                     name.display_name.empty() ? name.raw_name_text : name.display_name,
+                                     name.metadata_epoch == 0 ? name.creator_tx : name.metadata_epoch);
+    }
+    for (const auto& column : lifecycle.state.columns) {
+      if (column.deleted || column.owner_object_uuid.empty()) { continue; }
+      SysInformationColumnSource source;
+      source.relation_object_uuid = column.owner_object_uuid;
+      source.column_name = column.column_uuid;
+      for (const auto& name : lifecycle.state.names) {
+        if (name.deleted || name.object_uuid != column.column_uuid) { continue; }
+        source.column_name = name.display_name.empty() ? name.raw_name_text : name.display_name;
+        break;
+      }
+      source.ordinal_position = column.ordinal;
+      source.datatype_name = column.canonical_type_name;
+      source.is_nullable = column.nullable ? "YES" : "NO";
+      source.catalog_generation_id = column.metadata_epoch == 0 ? column.creator_tx : column.metadata_epoch;
+      const std::string key =
+          source.relation_object_uuid + ":" + std::to_string(source.ordinal_position);
+      if (column_keys_in_projection.insert(key).second) {
+        sources.columns.push_back(std::move(source));
+      }
+    }
+  }
+
+  const auto name_registry = LoadNameRegistryState(catalog_read_context, observer_tx);
+  std::map<std::string, std::vector<const NameRegistryEntry*>> names_by_object;
+  if (name_registry.ok) {
+    AddQueryProjectionNameRegistryResolverNames(&sources.resolver_names, name_registry.state);
+    for (const auto& entry : name_registry.state.entries) {
+      if (entry.deleted || entry.object_uuid.empty()) { continue; }
+      names_by_object[entry.object_uuid].push_back(&entry);
+    }
+  }
+
+  const CrudState crud = QueryProjectionReadableCrudState(catalog_read_context);
+  std::map<std::string, std::string> table_schema_by_uuid;
+  for (const auto& table : crud.tables) {
+    if (table.table_uuid.empty() ||
+        !CrudCreatorVisible(crud, table.creator_tx, table.event_sequence, observer_tx)) {
+      continue;
+    }
+    const auto* name = QueryProjectionScopedNameEntry(
+        names_by_object, table.table_uuid, "table", schema_path_by_uuid);
+    if (name == nullptr ||
+        schema_path_by_uuid.find(name->scope_uuid) == schema_path_by_uuid.end()) {
+      continue;
+    }
+    table_schema_by_uuid[table.table_uuid] = name->scope_uuid;
+    if (object_uuids_in_projection.insert(table.table_uuid).second) {
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = table.table_uuid;
+      object.object_class = "table";
+      object.schema_uuid = name->scope_uuid;
+      object.parent_object_uuid = name->scope_uuid;
+      object.table_type = QueryProjectionTableTypeForCrud(table);
+      object.temporary = table.temporary;
+      object.temporary_scope = table.temporary_scope;
+      object.temporary_session_uuid = table.temporary_session_uuid;
+      object.on_commit_action = table.on_commit_action;
+      object.catalog_generation_id =
+          QueryProjectionCatalogGeneration(*name, table.creator_tx);
+      object.created_local_transaction_id = table.creator_tx;
+      sources.objects.push_back(std::move(object));
+    }
+    std::uint32_t ordinal = 0;
+    for (const auto& [column_name, datatype_name] : table.columns) {
+      ++ordinal;
+      const std::string key = table.table_uuid + ":" + std::to_string(ordinal);
+      if (column_name.empty() || !column_keys_in_projection.insert(key).second) { continue; }
+      SysInformationColumnSource source;
+      source.relation_object_uuid = table.table_uuid;
+      source.schema_uuid = name->scope_uuid;
+      source.column_name = column_name;
+      source.ordinal_position = ordinal;
+      source.datatype_name = datatype_name;
+      source.is_nullable = "YES";
+      source.catalog_generation_id =
+          QueryProjectionCatalogGeneration(*name, table.creator_tx);
+      sources.columns.push_back(std::move(source));
+    }
+  }
+
+  const auto domains = LoadDomainState(catalog_read_context);
+  if (domains.ok) {
+    for (const auto& domain : domains.domains) {
+      const auto visible = FindVisibleDomain(catalog_read_context, domain.domain_uuid, observer_tx);
+      if (!visible) { continue; }
+      const auto* name = QueryProjectionScopedNameEntry(
+          names_by_object, visible->domain_uuid, "domain", schema_path_by_uuid);
+      std::string schema_uuid = visible->schema_uuid;
+      std::string domain_name = visible->default_name;
+      if (name != nullptr) {
+        if (!name->scope_uuid.empty()) { schema_uuid = name->scope_uuid; }
+        const std::string display = QueryProjectionNameText(*name);
+        if (!display.empty()) { domain_name = display; }
+      } else if (!domain_name.empty()) {
+        AddQueryProjectionResolverName(&sources.resolver_names,
+                                       visible->domain_uuid,
+                                       "domain",
+                                       schema_uuid,
+                                       "en",
+                                       "primary",
+                                       domain_name,
+                                       visible->creator_tx);
+      }
+      if (object_uuids_in_projection.insert(visible->domain_uuid).second) {
+        SysInformationCatalogObjectSource object;
+        object.object_uuid = visible->domain_uuid;
+        object.object_class = "domain";
+        object.schema_uuid = schema_uuid;
+        object.parent_object_uuid = schema_uuid;
+        object.table_type = visible->base_canonical_type_name;
+        object.catalog_generation_id = visible->creator_tx == 0 ? 1 : visible->creator_tx;
+        object.created_local_transaction_id = visible->creator_tx;
+        sources.objects.push_back(std::move(object));
+      }
+      const auto schema_path = schema_path_by_uuid.find(schema_uuid);
+      SysInformationDomainSource source;
+      source.domain_uuid = visible->domain_uuid;
+      source.row_uuid = visible->catalog_row_uuid.empty() ? visible->domain_uuid
+                                                          : visible->catalog_row_uuid;
+      source.schema_uuid = schema_uuid;
+      source.source_type_name =
+          schema_path == schema_path_by_uuid.end() || schema_path->second.empty()
+              ? domain_name
+              : schema_path->second + "." + domain_name;
+      source.base_type_name = visible->base_canonical_type_name;
+      source.domain_kind = "scalar";
+      source.nullable = visible->nullable ? "YES" : "NO";
+      source.default_expression_envelope = visible->default_expression_envelope;
+      source.check_constraint_envelope = visible->check_constraint_envelope;
+      source.catalog_generation_id = visible->creator_tx == 0 ? 1 : visible->creator_tx;
+      source.created_local_transaction_id = visible->creator_tx;
+      sources.domains.push_back(std::move(source));
+    }
+  }
+
+  for (const auto& index : crud.indexes) {
+    if (index.index_uuid.empty() || index.table_uuid.empty() ||
+        !CrudCreatorVisible(crud, index.creator_tx, index.event_sequence, observer_tx)) {
+      continue;
+    }
+    const auto table_schema = table_schema_by_uuid.find(index.table_uuid);
+    if (table_schema == table_schema_by_uuid.end()) { continue; }
+    if (!object_uuids_in_projection.insert(index.index_uuid).second) { continue; }
+    SysInformationCatalogObjectSource object;
+    object.object_uuid = index.index_uuid;
+    object.object_class = "index";
+    object.schema_uuid = table_schema->second;
+    object.parent_object_uuid = index.table_uuid;
+    object.catalog_generation_id = index.creator_tx == 0 ? 1 : index.creator_tx;
+    object.created_local_transaction_id = index.creator_tx;
+    sources.objects.push_back(std::move(object));
+    if (names_by_object.find(index.index_uuid) == names_by_object.end() && !index.default_name.empty()) {
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     index.index_uuid,
+                                     "index",
+                                     index.table_uuid,
+                                     "en",
+                                     "primary",
+                                     index.default_name,
+                                     index.creator_tx);
+    }
+  }
+
+  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, observer_tx)) {
+    if (record.object_uuid.empty() ||
+        record.object_kind == "schema" ||
+        record.object_kind == "table" ||
+        record.object_kind == "domain" ||
+        record.object_kind == "index" ||
+        !object_uuids_in_projection.insert(record.object_uuid).second) {
+      continue;
+    }
+    const auto* name = QueryProjectionScopedNameEntry(
+        names_by_object, record.object_uuid, record.object_kind, schema_path_by_uuid);
+    std::string scope_uuid = name == nullptr ? QueryProjectionPayloadField(record.payload, "schema")
+                                             : name->scope_uuid;
+    if (record.object_kind == "filespace" || record.object_kind == "database") {
+      scope_uuid.clear();
+    }
+    SysInformationCatalogObjectSource object;
+    object.object_uuid = record.object_uuid;
+    object.object_class = record.object_kind;
+    object.schema_uuid = scope_uuid;
+    object.parent_object_uuid = scope_uuid;
+    object.table_type = record.state;
+    object.catalog_generation_id = record.creator_tx == 0 ? 1 : record.creator_tx;
+    object.created_local_transaction_id = record.creator_tx;
+    sources.objects.push_back(std::move(object));
+    if (name == nullptr && !record.default_name.empty()) {
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     record.object_uuid,
+                                     record.object_kind,
+                                     scope_uuid,
+                                     "en",
+                                     "primary",
+                                     record.default_name,
+                                     record.creator_tx);
+    }
+  }
+
+  const auto security_state = LoadSecurityPrincipalLifecycleState(catalog_read_context);
+  if (security_state.ok) {
+    for (const auto& role : security_state.state.roles) {
+      if (role.deleted || role.role_uuid.empty() ||
+          !object_uuids_in_projection.insert(role.role_uuid).second) {
+        continue;
+      }
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = role.role_uuid;
+      object.object_class = "role";
+      object.catalog_generation_id = role.security_generation == 0 ? 1 : role.security_generation;
+      object.created_local_transaction_id = role.creator_tx;
+      sources.objects.push_back(std::move(object));
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     role.role_uuid,
+                                     "role",
+                                     "",
+                                     "en",
+                                     "primary",
+                                     role.role_name,
+                                     role.security_generation);
+    }
+    for (const auto& group : security_state.state.groups) {
+      if (group.deleted || group.group_uuid.empty() ||
+          !object_uuids_in_projection.insert(group.group_uuid).second) {
+        continue;
+      }
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = group.group_uuid;
+      object.object_class = "group";
+      object.catalog_generation_id = group.security_generation == 0 ? 1 : group.security_generation;
+      object.created_local_transaction_id = group.creator_tx;
+      sources.objects.push_back(std::move(object));
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     group.group_uuid,
+                                     "group",
+                                     "",
+                                     "en",
+                                     "primary",
+                                     group.group_name,
+                                     group.security_generation);
+    }
+    for (const auto& principal : security_state.state.principals) {
+      if (principal.deleted || principal.principal_uuid.empty() ||
+          !object_uuids_in_projection.insert(principal.principal_uuid).second) {
+        continue;
+      }
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = principal.principal_uuid;
+      object.object_class = principal.principal_kind.empty()
+                                ? "principal"
+                                : principal.principal_kind;
+      object.catalog_generation_id =
+          principal.security_generation == 0 ? 1 : principal.security_generation;
+      object.created_local_transaction_id = principal.creator_tx;
+      sources.objects.push_back(std::move(object));
+      AddQueryProjectionResolverName(&sources.resolver_names,
+                                     principal.principal_uuid,
+                                     object.object_class,
+                                     "",
+                                     "en",
+                                     "primary",
+                                     principal.principal_name,
+                                     principal.security_generation);
+    }
+    for (const auto& policy : security_state.state.row_policies) {
+      if (policy.deleted || policy.policy_uuid.empty() ||
+          !object_uuids_in_projection.insert(policy.policy_uuid).second) {
+        continue;
+      }
+      const std::string effect = policy.policy_effect;
+      SysInformationCatalogObjectSource object;
+      object.object_uuid = policy.policy_uuid;
+      object.object_class = effect.find("mask") != std::string::npos
+                                ? "mask"
+                                : effect.find("rls") != std::string::npos
+                                      ? "rls"
+                                      : "policy";
+      object.parent_object_uuid = policy.target_object_uuid;
+      object.table_type = policy.lifecycle_state;
+      object.catalog_generation_id =
+          policy.policy_generation == 0 ? 1 : policy.policy_generation;
+      object.created_local_transaction_id = policy.creator_tx;
+      sources.objects.push_back(std::move(object));
+      if (names_by_object.find(policy.policy_uuid) == names_by_object.end()) {
+        AddQueryProjectionResolverName(&sources.resolver_names,
+                                       policy.policy_uuid,
+                                       object.object_class,
+                                       "",
+                                       "en",
+                                       "primary",
+                                       policy.policy_uuid,
+                                       policy.policy_generation);
+      }
+    }
+  }
+
+  std::set<std::string> system_tables;
+  for (const auto& table : BuiltinCatalogTableProfiles()) {
+    if (!table.table_path.empty() &&
+        !scratchbird::core::catalog::CatalogPathIsClusterScoped(table.table_path)) {
+      system_tables.insert(table.table_path);
+    }
+  }
+  std::set<std::string> system_views;
+  for (const auto& definition : BuiltinSysInformationProjectionDefinitions()) {
+    if (system_tables.find(definition.view_path) != system_tables.end()) { continue; }
+    system_views.insert(definition.view_path);
+    if (definition.view_path.rfind("sys.information.", 0) == 0) {
+      system_views.insert("sys.information_schema." +
+                          definition.view_path.substr(std::string("sys.information.").size()));
+    }
+  }
+  for (const auto& view_path : system_views) {
+    AddQueryProjectionSystemObject(&sources.objects,
+                                   &sources.resolver_names,
+                                   schema_uuid_by_path,
+                                   view_path,
+                                   "view",
+                                   "SYSTEM VIEW",
+                                   "sysview:");
+  }
+  for (const auto& table_path : system_tables) {
+    AddQueryProjectionSystemObject(&sources.objects,
+                                   &sources.resolver_names,
+                                   schema_uuid_by_path,
+                                   table_path,
+                                   "table",
+                                   "SYSTEM TABLE",
+                                   "systable:");
+  }
+
+  return sources;
 }
 
 std::optional<EngineQueryRelation> SysInformationProjectionRelation(
@@ -3560,14 +4196,15 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
     std::string* error_detail) {
   const std::string projection = OptionValue(request, "catalog_projection:");
   if (projection.empty()) return std::nullopt;
+  const auto sources = BuildQuerySysProjectionSources(request);
   const auto projection_result = BuildSysInformationProjection(
       projection,
       ProjectionContextFromRequest(request),
-      std::vector<SysInformationCatalogObjectSource>{},
-      std::vector<SysInformationResolverNameSource>{},
+      sources.objects,
+      sources.resolver_names,
       std::vector<SysInformationCommentSource>{},
       std::vector<SysInformationDatatypeDescriptorSource>{},
-      std::vector<SysInformationColumnSource>{},
+      sources.columns,
       std::vector<SysInformationSettingSource>{},
       std::vector<SysInformationFrontendAgentSource>{},
       std::vector<SysInformationProtectedMaterialSource>{},
@@ -3582,7 +4219,7 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
       std::vector<SysInformationFilespaceCapacityAgentStateSource>{},
       std::vector<SysInformationPageAllocationAgentStateSource>{},
       std::vector<SysInformationFilespaceShrinkReadinessSource>{},
-      std::vector<SysInformationDomainSource>{},
+      sources.domains,
       request.ipar_agent_lifecycle,
       request.ipar_metric_counters,
       request.ipar_telemetry_controls,
@@ -5062,7 +5699,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     const auto validation = exec::ValidateBatch(batch);
     if (!validation.ok) { return QueryFailure<EnginePlanOperationResult>(request.context, validation.diagnostic_code); }
     const std::string result_projection = LowerAscii(OptionValue(request, "result_projection:"));
-    if (operation == "recursive_cte" && result_projection == "aggregate_assertion") {
+    if ((operation == "recursive_cte" || operation == "materialized_cte") &&
+        result_projection == "aggregate_assertion") {
       const std::string aggregate_function =
           AggregateFunctionLeaf(OptionValue(request, "aggregate_function:"));
       const auto actual_value =

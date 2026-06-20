@@ -636,6 +636,16 @@ std::string AssignmentsDigest(
   return digest;
 }
 
+void AppendMergeUpdateOptions(const EngineMergeRowsRequest& request,
+                              EngineUpdateRowsRequest* update) {
+  if (update == nullptr) return;
+  for (const auto& option : request.option_envelopes) {
+    if (option.starts_with("assignment_plan:")) {
+      update->option_envelopes.push_back(option);
+    }
+  }
+}
+
 using MergeReturningRowsByOrdinal = std::map<std::size_t, EngineRowValue>;
 
 void AddRowsByUuid(const EngineResultShape& shape,
@@ -745,10 +755,21 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       !delete_branch_requested) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "no_merge_action_enabled"));
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  const std::string source_table_uuid = MergeOptionValue(request, "source_uuid:");
+  std::vector<std::string> relation_scope_targets{target.uuid.canonical};
+  if (!source_table_uuid.empty() &&
+      source_table_uuid != target.uuid.canonical) {
+    relation_scope_targets.push_back(source_table_uuid);
+  }
+  const auto loaded = relation_scope_targets.size() == 1
+                          ? LoadMgaRelationStoreStateForMutationTarget(
+                                request.context,
+                                target.uuid.canonical)
+                          : LoadMgaRelationStoreStateForMutationTargets(
+                                request.context,
+                                relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
-  const std::string source_table_uuid = MergeOptionValue(request, "source_uuid:");
   if (source_rows.empty() && !source_table_uuid.empty()) {
     const auto source_table =
         FindVisibleCrudTable(state,
@@ -786,6 +807,17 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                                      "temporary_table_requires_session_uuid"));
   }
   auto result = MakeCrudSuccessResult<EngineMergeRowsResult>(request.context, "dml.merge_rows");
+  result.evidence.insert(result.evidence.end(),
+                         loaded.evidence.begin(),
+                         loaded.evidence.end());
+  result.evidence.push_back({"relation_state_full_loads",
+                             loaded.full_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_scoped_loads",
+                             loaded.scoped_state_load ? "1" : "0"});
+  result.evidence.push_back({"relation_state_load_reason",
+                             relation_scope_targets.size() == 1
+                                 ? "target_table_merge_scope"
+                                 : "target_and_source_table_merge_scope"});
   if (!source_table_uuid.empty()) {
     result.evidence.push_back({"merge_source_kind", "table"});
     result.evidence.push_back({"merge_source_visibility", "mga_filtered"});
@@ -917,6 +949,12 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   std::vector<std::size_t> insert_ordinals;
   std::map<std::string, MergeUpdateActionBatch> update_batches_by_digest;
   MergeDeleteActionBatch delete_batch;
+  const std::string update_assignment_plan =
+      MergeOptionValue(request, "assignment_plan:");
+  if (!update_assignment_plan.empty()) {
+    result.evidence.push_back({"merge_update_assignment_plan", "descriptor_bound"});
+    result.evidence.push_back({"merge_update_batch_key", "assignment_plan"});
+  }
   for (const MergeActionPartition& partition : partitions) {
     if (partition.matched_row) {
       ++result.matched_count;
@@ -929,8 +967,12 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       if (!request.update_when_matched) { continue; }
       auto assignments =
           !request.update_assignments.empty() ? request.update_assignments
-                                              : partition.source_row.fields;
-      const auto digest = AssignmentsDigest(assignments);
+                                              : (update_assignment_plan.empty()
+                                                     ? partition.source_row.fields
+                                                     : std::vector<std::pair<std::string, EngineTypedValue>>{});
+      const auto digest = update_assignment_plan.empty()
+                              ? AssignmentsDigest(assignments)
+                              : "assignment_plan:" + update_assignment_plan;
       auto& batch = update_batches_by_digest[digest];
       if (batch.assignments.empty()) {
         batch.assignments = std::move(assignments);
@@ -960,6 +1002,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     update.target_table = target;
     update.update_predicate = RowUuidSetPredicate(row_uuids);
     update.assignments = batch.assignments;
+    AppendMergeUpdateOptions(request, &update);
     const auto updated = EngineUpdateRows(update);
     if (!updated.ok) {
       return MergeFailureFromUpdate(request, updated);

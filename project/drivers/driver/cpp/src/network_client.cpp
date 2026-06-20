@@ -2368,17 +2368,25 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
     if (status != core::Status::OK) {
         return status;
     }
-    auto exec_payload = protocol::buildExecutePayload(portal_name, 0);
+    uint32_t execute_flags = 0;
+    if (config_.autocommit && !explicit_transaction_active_ &&
+        querySupportsServerAutocommit(stmt.sql_)) {
+        execute_flags |= protocol::kExecuteFlagAutocommit;
+    }
+    auto exec_payload = protocol::buildExecutePayload(portal_name, 0, execute_flags);
     uint32_t seq = 0;
     traceWireEvent("execute_prepared_execute_send", protocol::MessageType::Execute, next_sequence_, in_transaction_);
     status = sendMessage(protocol::MessageType::Execute, exec_payload, 0, false, &seq, ctx);
     if (status != core::Status::OK) {
+        server_autocommit_requested_ = false;
         return status;
     }
     last_query_sequence_ = seq;
+    server_autocommit_requested_ = (execute_flags & protocol::kExecuteFlagAutocommit) != 0;
     traceWireEvent("execute_prepared_sync_send", protocol::MessageType::Sync, next_sequence_, in_transaction_);
     status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
+        server_autocommit_requested_ = false;
         return status;
     }
 
@@ -2522,15 +2530,23 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
     if (status != core::Status::OK) {
         return status;
     }
-    auto exec_payload = protocol::buildExecutePayload(portal_name, max_rows);
+    uint32_t execute_flags = 0;
+    if (config_.autocommit && !explicit_transaction_active_ && max_rows == 0 &&
+        querySupportsServerAutocommit(it->second.sql_)) {
+        execute_flags |= protocol::kExecuteFlagAutocommit;
+    }
+    auto exec_payload = protocol::buildExecutePayload(portal_name, max_rows, execute_flags);
     uint32_t seq = 0;
     status = sendMessage(protocol::MessageType::Execute, exec_payload, 0, false, &seq, ctx);
     if (status != core::Status::OK) {
+        server_autocommit_requested_ = false;
         return status;
     }
     last_query_sequence_ = seq;
+    server_autocommit_requested_ = (execute_flags & protocol::kExecuteFlagAutocommit) != 0;
     status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
+        server_autocommit_requested_ = false;
         return status;
     }
 

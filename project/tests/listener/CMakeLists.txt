@@ -192,9 +192,25 @@ set_tests_properties(sb_listener_tls_required_fail_closed_smoke PROPERTIES
   LABELS "public_release_foundation;sbwp_tls_negative_policy_gate;tls_regression_gate;sbwp_wire_gate"
 )
 
+find_program(SB_OPENSSL_EXECUTABLE openssl REQUIRED)
+add_executable(sb_listener_ipar_tls_non_tls_policy_route_smoke ipar_tls_non_tls_policy_route_smoke.cpp)
+target_compile_features(sb_listener_ipar_tls_non_tls_policy_route_smoke PRIVATE cxx_std_23)
+add_dependencies(sb_listener_ipar_tls_non_tls_policy_route_smoke sb_listener sb_parser_dummy sbp_sbsql)
+add_test(
+  NAME sb_listener_ipar_tls_non_tls_policy_route_smoke
+  COMMAND sb_listener_ipar_tls_non_tls_policy_route_smoke
+          $<TARGET_FILE:sb_listener>
+          $<TARGET_FILE:sb_parser_dummy>
+          $<TARGET_FILE:sbp_sbsql>
+          ${SB_OPENSSL_EXECUTABLE}
+          ${CMAKE_CURRENT_BINARY_DIR}/ipar-tls-nontls-fixtures
+)
+set_tests_properties(sb_listener_ipar_tls_non_tls_policy_route_smoke PROPERTIES
+  LABELS "IPAR-P7-03;IPAR-G013;sbwp_tls_negative_policy_gate;explicit_test_nontls_route;tls_regression_gate;sbwp_wire_gate"
+)
+
 if(TARGET sbp_native)
   find_package(OpenSSL REQUIRED)
-  find_program(SB_OPENSSL_EXECUTABLE openssl REQUIRED)
   add_executable(sb_listener_native_sbwp_tls_smoke native_sbwp_tls_smoke.cpp)
   target_compile_features(sb_listener_native_sbwp_tls_smoke PRIVATE cxx_std_23)
   target_link_libraries(sb_listener_native_sbwp_tls_smoke PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -358,6 +374,7 @@ set(SB_LISTENER_LIFECYCLE_TESTS
   sb_listener_owner_token_stale_corrupt_smoke
   sb_listener_drain_admission_smoke
   sb_listener_tls_required_fail_closed_smoke
+  sb_listener_ipar_tls_non_tls_policy_route_smoke
   sb_listener_native_sbwp_tls_smoke
   sb_listener_rate_limit_smoke
   sb_listener_per_client_cap_smoke

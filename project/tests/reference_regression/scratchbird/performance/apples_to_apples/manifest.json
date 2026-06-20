@@ -1,0 +1,52 @@
+{
+  "schema_version": "scratchbird.reference_regression.scratchbird.apples_to_apples.v1",
+  "engine": "scratchbird",
+  "purpose": "ScratchBird timings and gap evidence for comparison with the PostgreSQL apples-to-apples reference workload.",
+  "output_root": "build/reference-regression/scratchbird/performance/apples-to-apples",
+  "sql_execution_authority": {
+    "sql_parser": "SBsql/server parser route",
+    "engine_input": "SBLR/UUID",
+    "engine_sql_text_execution": false
+  },
+  "scales": {
+    "tiny": {
+      "customers": 1000,
+      "products": 500,
+      "orders": 5000,
+      "order_items": 20000,
+      "bulk_insert_rows": 10000
+    },
+    "small": {
+      "customers": 10000,
+      "products": 5000,
+      "orders": 50000,
+      "order_items": 200000,
+      "bulk_insert_rows": 100000
+    }
+  },
+  "load_lane": {
+    "name": "scratchbird_sbsql_batched_insert_values",
+    "claim_scope": "ScratchBird SQL parser route ingest timing using deterministic multi-row INSERT batches."
+  },
+  "scratchbird_table_name_policy": {
+    "default_prefix": "bench_",
+    "reason": "Avoid seeded fixture object-name collisions while preserving the logical workload shape."
+  },
+  "actions": [
+    {"id": "inner_join_simple", "kind": "query"},
+    {"id": "inner_join_large_result", "kind": "query"},
+    {"id": "inner_join_multiple_conditions", "kind": "query"},
+    {"id": "left_join_all_customers", "kind": "query"},
+    {"id": "four_table_join", "kind": "query"},
+    {"id": "self_join_same_country", "kind": "query"},
+    {"id": "aggregation_daily_sales", "kind": "query"},
+    {"id": "window_function_ranking", "kind": "query"},
+    {"id": "multi_dimensional_agg", "kind": "query"},
+    {"id": "bulk_insert_select", "kind": "dml"},
+    {"id": "bulk_update_with_case", "kind": "dml"},
+    {"id": "bulk_update_with_join", "kind": "dml"},
+    {"id": "agg_full_table_scan", "kind": "query"},
+    {"id": "agg_distinct_counts", "kind": "query"},
+    {"id": "nested_subquery_agg", "kind": "query"}
+  ]
+}

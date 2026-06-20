@@ -4,7 +4,7 @@ replay_fixture_index,project/tests/sbsql_parser_worker/generated/replay/DIFFEREN
 full_route_executable_surfaces,project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv,2560,every executable surface must cover udr_sql_to_sblr engine_behavior and full_route,ready
 exact_refusal_surfaces,project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv,57,every nonexecutable surface must fail closed without engine mutation or full-route execution,ready
 expression_runtime_catalog,public_input_snapshot,1534,every datatype function operator and variable surface must have replay coverage,ready
-statement_surface_catalog,public_input_snapshot,1083,every non-expression command and statement surface must have replay coverage,ready
+statement_surface_catalog,public_input_snapshot,1049,every non-expression command and statement surface must have replay coverage,ready
 sblr_operation_families,public_input_snapshot,16,every SBLR operation family must be represented and route-classified,ready
 engine_gap_backlog,project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv,932,every engine gap must be closed by engine API/SBLR family gate or cluster fail-closed gate,ready
 reference_alias_backlog,project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/REFERENCE_ALIAS_COVERAGE_BACKLOG.csv,312,every reference alias must map to native behavior or exact reference-profile refusal,ready

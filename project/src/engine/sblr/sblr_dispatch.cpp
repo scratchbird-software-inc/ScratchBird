@@ -569,8 +569,12 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.alter_identity") return "SBLR_SECURITY_ALTER_IDENTITY";
   if (operation_id == "security.grant_right") return "SBLR_SECURITY_GRANT_RIGHT";
   if (operation_id == "security.revoke_right") return "SBLR_SECURITY_REVOKE_RIGHT";
+  if (operation_id == "security.role.create") return "SBLR_SEC_CREATE_ROLE";
+  if (operation_id == "security.group.create") return "SBLR_SEC_CREATE_GROUP";
   if (operation_id == "security.principal.create") return "SBLR_SECURITY_PRINCIPAL_CREATE";
   if (operation_id == "security.principal.alter") return "SBLR_SECURITY_PRINCIPAL_ALTER";
+  if (operation_id == "security.membership.grant") return "SBLR_SECURITY_MEMBERSHIP_GRANT";
+  if (operation_id == "security.membership.revoke") return "SBLR_SECURITY_MEMBERSHIP_REVOKE";
   if (operation_id == "security.privilege.grant") return "SBLR_SECURITY_PRIVILEGE_GRANT";
   if (operation_id == "security.privilege.revoke") return "SBLR_SECURITY_PRIVILEGE_REVOKE";
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
@@ -2179,6 +2183,27 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
       typed.localized_names.push_back({"en", "primary", "", object_name, true});
     }
   }
+  for (std::size_t related_index = 0; related_index < 64; ++related_index) {
+    const std::string prefix = "related_object_" + std::to_string(related_index);
+    const std::string related_uuid =
+        api::SecurityOptionValue(base, prefix + "_uuid:");
+    if (related_uuid.empty() &&
+        api::SecurityOptionValue(base, prefix + "_kind:").empty()) {
+      break;
+    }
+    if (related_uuid.empty()) continue;
+    api::EngineObjectReference related;
+    related.uuid.canonical = related_uuid;
+    related.object_kind = api::SecurityOptionValue(base, prefix + "_kind:");
+    if (related.object_kind.empty()) related.object_kind = "table";
+    if (related.object_kind != "executable_object" &&
+        related.object_kind != "procedure" &&
+        related.object_kind != "function" &&
+        related.object_kind != "trigger") {
+      continue;
+    }
+    typed.related_objects.push_back(std::move(related));
+  }
   return typed;
 }
 
@@ -3582,6 +3607,29 @@ api::EngineSecurityGrantPrivilegeRequest TypedSecurityGrantPrivilegeRequest(
   return typed;
 }
 
+api::EngineSecurityGrantMembershipRequest TypedSecurityGrantMembershipRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityGrantMembershipRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.membership_uuid = api::SecurityOptionValue(base, "membership_uuid:");
+  typed.member_principal_uuid = api::SecurityOptionValue(base, "member_principal_uuid:");
+  typed.container_uuid = api::SecurityOptionValue(base, "container_uuid:");
+  typed.container_kind = api::SecurityOptionValue(base, "container_kind:");
+  return typed;
+}
+
+api::EngineSecurityRevokeMembershipRequest TypedSecurityRevokeMembershipRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityRevokeMembershipRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.member_principal_uuid = api::SecurityOptionValue(base, "member_principal_uuid:");
+  typed.container_uuid = api::SecurityOptionValue(base, "container_uuid:");
+  typed.container_kind = api::SecurityOptionValue(base, "container_kind:");
+  return typed;
+}
+
 api::EngineSecurityRevokePrivilegeRequest TypedSecurityRevokePrivilegeRequest(
     const SblrDispatchRequest& request) {
   api::EngineSecurityRevokePrivilegeRequest typed;
@@ -3592,6 +3640,37 @@ api::EngineSecurityRevokePrivilegeRequest TypedSecurityRevokePrivilegeRequest(
                                  ? base.target_object.uuid.canonical
                                  : api::SecurityOptionValue(base, "target_object_uuid:");
   typed.privilege = api::SecurityOptionValue(base, "privilege:");
+  return typed;
+}
+
+api::EngineSecurityCreateRoleRequest TypedSecurityCreateRoleRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityCreateRoleRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
+  if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
+  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid.canonical; }
+  typed.role_name = api::SecurityOptionValue(base, "role_name:");
+  if (typed.role_name.empty()) { typed.role_name = api::SecurityOptionValue(base, "principal_name:"); }
+  return typed;
+}
+
+api::EngineSecurityCreateGroupRequest TypedSecurityCreateGroupRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityCreateGroupRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
+  if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
+  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid.canonical; }
+  typed.group_name = api::SecurityOptionValue(base, "group_name:");
+  if (typed.group_name.empty()) { typed.group_name = api::SecurityOptionValue(base, "principal_name:"); }
+  typed.external_authority_ref = api::SecurityOptionValue(base, "external_authority_ref:");
+  if (typed.external_authority_ref.empty()) {
+    typed.external_authority_ref =
+        api::SecurityOptionValue(base, "credential_protected_material_ref:");
+  }
   return typed;
 }
 
@@ -4083,8 +4162,12 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "security.evaluate_deep_enforcement") result.api_result = api::EngineEvaluateDeepSecurity(TypedRequest<api::EngineEvaluateDeepSecurityRequest>(request));
   else if (op == "security.grant_right") result.api_result = api::EngineGrantRight(TypedRequest<api::EngineGrantRightRequest>(request));
   else if (op == "security.revoke_right") result.api_result = api::EngineRevokeRight(TypedRequest<api::EngineRevokeRightRequest>(request));
+  else if (op == "security.role.create") result.api_result = api::EngineSecurityCreateRole(TypedSecurityCreateRoleRequest(request));
+  else if (op == "security.group.create") result.api_result = api::EngineSecurityCreateGroup(TypedSecurityCreateGroupRequest(request));
   else if (op == "security.principal.create") result.api_result = api::EngineSecurityCreatePrincipal(TypedSecurityCreatePrincipalRequest(request));
   else if (op == "security.principal.alter") result.api_result = api::EngineSecurityAlterPrincipal(TypedSecurityAlterPrincipalRequest(request));
+  else if (op == "security.membership.grant") result.api_result = api::EngineSecurityGrantMembership(TypedSecurityGrantMembershipRequest(request));
+  else if (op == "security.membership.revoke") result.api_result = api::EngineSecurityRevokeMembership(TypedSecurityRevokeMembershipRequest(request));
   else if (op == "security.privilege.grant") result.api_result = api::EngineSecurityGrantPrivilege(TypedSecurityGrantPrivilegeRequest(request));
   else if (op == "security.privilege.revoke") result.api_result = api::EngineSecurityRevokePrivilege(TypedSecurityRevokePrivilegeRequest(request));
   else if (op == "security.session.set_role") result.api_result = api::EngineSecuritySetRole(TypedSecuritySetRoleRequest(request));

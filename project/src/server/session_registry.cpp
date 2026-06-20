@@ -2152,6 +2152,168 @@ void LinkServerRequestPreparedStatement(
   UpsertRequestFinality(registry, found->second);
 }
 
+std::string SessionObjectHandleKey(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::uint64_t handle_id) {
+  return UuidBytesToText(session_uuid) + "#" + std::to_string(handle_id);
+}
+
+ServerSessionObjectHandleRecord AllocateSessionObjectHandle(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string object_uuid,
+    std::string object_kind,
+    std::string operation_id,
+    std::string column_set_hash) {
+  ServerSessionObjectHandleRecord handle;
+  if (registry == nullptr || object_uuid.empty() || operation_id.empty()) {
+    return handle;
+  }
+  for (auto& [_, existing] : registry->object_handles_by_key) {
+    if (existing.session_uuid == session.session_uuid &&
+        existing.object_uuid == object_uuid &&
+        existing.operation_id == operation_id &&
+        existing.column_set_hash ==
+            (column_set_hash.empty() ? "columns/all" : column_set_hash)) {
+      if (!existing.closed &&
+          existing.auth_context_uuid == session.auth_context_uuid &&
+          existing.principal_uuid == session.principal_uuid &&
+          existing.effective_user_uuid == session.effective_user_uuid &&
+          existing.database_uuid == session.database_uuid &&
+          existing.catalog_generation == session.catalog_generation &&
+          existing.security_epoch == session.security_epoch &&
+          existing.descriptor_epoch == session.descriptor_epoch &&
+          existing.grant_epoch == session.grant_epoch &&
+          existing.policy_generation == session.policy_generation &&
+          existing.role_set_hash == session.role_set_hash &&
+          existing.group_set_hash == session.group_set_hash &&
+          existing.search_path_hash == session.search_path_hash) {
+        return existing;
+      }
+      existing.closed = false;
+      ++existing.generation;
+      existing.auth_context_uuid = session.auth_context_uuid;
+      existing.principal_uuid = session.principal_uuid;
+      existing.effective_user_uuid = session.effective_user_uuid;
+      existing.database_uuid = session.database_uuid;
+      if (!object_kind.empty()) {
+        existing.object_kind = object_kind;
+      }
+      existing.catalog_generation = session.catalog_generation;
+      existing.security_epoch = session.security_epoch;
+      existing.descriptor_epoch = session.descriptor_epoch;
+      existing.grant_epoch = session.grant_epoch;
+      existing.policy_generation = session.policy_generation;
+      existing.role_set_hash = session.role_set_hash;
+      existing.group_set_hash = session.group_set_hash;
+      existing.search_path_hash = session.search_path_hash;
+      return existing;
+    }
+  }
+  handle.handle_id = registry->next_session_object_handle_id++;
+  handle.generation = 1;
+  handle.session_uuid = session.session_uuid;
+  handle.auth_context_uuid = session.auth_context_uuid;
+  handle.principal_uuid = session.principal_uuid;
+  handle.effective_user_uuid = session.effective_user_uuid;
+  handle.database_uuid = session.database_uuid;
+  handle.object_uuid = std::move(object_uuid);
+  handle.object_kind = object_kind.empty() ? "object" : std::move(object_kind);
+  handle.operation_id = std::move(operation_id);
+  handle.column_set_hash = column_set_hash.empty() ? "columns/all" : std::move(column_set_hash);
+  handle.catalog_generation = session.catalog_generation;
+  handle.security_epoch = session.security_epoch;
+  handle.descriptor_epoch = session.descriptor_epoch;
+  handle.grant_epoch = session.grant_epoch;
+  handle.policy_generation = session.policy_generation;
+  handle.role_set_hash = session.role_set_hash;
+  handle.group_set_hash = session.group_set_hash;
+  handle.search_path_hash = session.search_path_hash;
+  registry->object_handles_by_key[SessionObjectHandleKey(session.session_uuid,
+                                                         handle.handle_id)] = handle;
+  return handle;
+}
+
+ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
+    const ServerSessionRegistry& registry,
+    const ServerSessionRecord& session,
+    std::uint64_t handle_id,
+    std::uint64_t generation,
+    const std::string& object_uuid,
+    const std::string& operation_id) {
+  ServerSessionObjectHandleValidation result;
+  if (handle_id == 0 || generation == 0) {
+    result.detail = "session_object_handle_missing";
+    return result;
+  }
+  const auto found =
+      registry.object_handles_by_key.find(SessionObjectHandleKey(session.session_uuid,
+                                                                 handle_id));
+  if (found == registry.object_handles_by_key.end()) {
+    result.detail = "session_object_handle_not_found";
+    return result;
+  }
+  const auto& handle = found->second;
+  result.handle = &handle;
+  if (handle.closed) {
+    result.detail = "session_object_handle_closed";
+    return result;
+  }
+  if (handle.generation != generation) {
+    result.detail = "session_object_handle_generation_stale";
+    return result;
+  }
+  if (handle.session_uuid != session.session_uuid ||
+      handle.auth_context_uuid != session.auth_context_uuid) {
+    result.detail = "session_object_handle_authority_stale";
+    return result;
+  }
+  if (handle.principal_uuid != session.principal_uuid ||
+      handle.effective_user_uuid != session.effective_user_uuid) {
+    result.detail = "session_object_handle_user_stale";
+    return result;
+  }
+  if (handle.database_uuid != session.database_uuid) {
+    result.detail = "session_object_handle_database_stale";
+    return result;
+  }
+  if (handle.object_uuid != object_uuid ||
+      (!operation_id.empty() && handle.operation_id != operation_id)) {
+    result.detail = "session_object_handle_shape_mismatch";
+    return result;
+  }
+  if (handle.catalog_generation != session.catalog_generation ||
+      handle.security_epoch != session.security_epoch ||
+      handle.descriptor_epoch != session.descriptor_epoch ||
+      handle.grant_epoch != session.grant_epoch ||
+      handle.policy_generation != session.policy_generation) {
+    result.detail = "session_object_handle_epoch_stale";
+    return result;
+  }
+  if (handle.role_set_hash != session.role_set_hash ||
+      handle.group_set_hash != session.group_set_hash ||
+      handle.search_path_hash != session.search_path_hash) {
+    result.detail = "session_object_handle_authorization_stale";
+    return result;
+  }
+  result.accepted = true;
+  result.detail = "session_object_handle_valid";
+  return result;
+}
+
+void CloseSessionObjectHandlesForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string) {
+  if (registry == nullptr) return;
+  for (auto& [_, handle] : registry->object_handles_by_key) {
+    if (handle.session_uuid == session_uuid && !handle.closed) {
+      handle.closed = true;
+      ++handle.generation;
+    }
+  }
+}
+
 void LinkServerRequestCursor(ServerSessionRegistry* registry,
                              const std::array<std::uint8_t, 16>& request_uuid,
                              const std::array<std::uint8_t, 16>& cursor_uuid,
@@ -3107,6 +3269,7 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       prepared.closed = true;
     }
   }
+  CloseSessionObjectHandlesForSession(registry, session_uuid, disconnect_reason);
   std::uint64_t cursors_tombstoned = 0;
   std::uint64_t engine_results_released = 0;
   std::uint64_t request_finality_records_updated = 0;

@@ -318,6 +318,66 @@ void ValidateNativeBulkIngestTemplateCanBePrepared() {
           "native bulk ingest template prepared record missing");
   Require(prepared_it->second.operation_id == "dml.execute_native_bulk_ingest",
           "native bulk ingest template operation id mismatch");
+  Require(prepared_it->second.session_object_handle_id != 0,
+          "native bulk ingest template did not bind a session object handle");
+  Require(prepared_it->second.target_object_uuid ==
+              "018f0000-0000-7000-8000-000000000101",
+          "native bulk ingest template object handle target mismatch");
+  Require(prepared_it->second.target_operation_id ==
+              "dml.execute_native_bulk_ingest",
+          "native bulk ingest template object handle operation mismatch");
+  const auto first_handle_id = prepared_it->second.session_object_handle_id;
+  const auto first_generation = prepared_it->second.session_object_handle_generation;
+  auto validation = server::ValidateSessionObjectHandle(
+      registry,
+      primary,
+      first_handle_id,
+      first_generation,
+      prepared_it->second.target_object_uuid,
+      prepared_it->second.target_operation_id);
+  Require(validation.accepted,
+          "native bulk ingest template object handle did not validate");
+  const std::string handle_key =
+      server::UuidBytesToText(primary.session_uuid) + "#" +
+      std::to_string(first_handle_id);
+  auto handle_it = registry.object_handles_by_key.find(handle_key);
+  Require(handle_it != registry.object_handles_by_key.end(),
+          "native bulk ingest template object handle table entry missing");
+  handle_it->second.closed = true;
+  ++handle_it->second.generation;
+  RequirePreparedRefusalBeforeDispatch(
+      &registry,
+      engine_state,
+      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
+      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
+      "prepared_statement_epoch_stale");
+
+  const auto reprepare = server::HandlePrepareSblr(
+      &registry,
+      engine_state,
+      PrepareFrame(primary.session_uuid, NativeBulkIngestTemplateEnvelope()));
+  Require(reprepare.accepted, "native bulk ingest template reprepare failed");
+  const auto reprepared_uuid =
+      server::DecodePreparedStatementUuidForTest(reprepare.payload);
+  Require(reprepared_uuid.has_value(),
+          "native bulk ingest template reprepare UUID decode failed");
+  const auto reprepared_it =
+      registry.prepared_by_uuid.find(server::UuidBytesToText(*reprepared_uuid));
+  Require(reprepared_it != registry.prepared_by_uuid.end(),
+          "native bulk ingest template reprepared record missing");
+  Require(reprepared_it->second.session_object_handle_id == first_handle_id,
+          "native bulk ingest template object handle was not recycled");
+  Require(reprepared_it->second.session_object_handle_generation > first_generation,
+          "native bulk ingest template recycled handle generation did not advance");
+  validation = server::ValidateSessionObjectHandle(
+      registry,
+      primary,
+      reprepared_it->second.session_object_handle_id,
+      reprepared_it->second.session_object_handle_generation,
+      reprepared_it->second.target_object_uuid,
+      reprepared_it->second.target_operation_id);
+  Require(validation.accepted,
+          "native bulk ingest template recycled object handle did not validate");
 }
 
 }  // namespace

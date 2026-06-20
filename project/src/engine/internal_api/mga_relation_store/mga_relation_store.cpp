@@ -154,12 +154,39 @@ bool AppendLines(const std::string& path,
   return static_cast<bool>(out);
 }
 
-bool AppendScopedRelationLine(const std::string& path, const std::string& line) {
+bool AppendDeferredEventSequenceAllocatorLines(
+    const EngineRequestContext& context,
+    std::vector<std::string>* lines,
+    MgaRelationHotAppendCounters* counters) {
+  if (lines == nullptr || lines->empty()) { return true; }
+  const bool ok = AppendLines(EventSequenceAllocatorStorePath(context),
+                              *lines,
+                              counters == nullptr
+                                  ? nullptr
+                                  : &counters->allocator_stream_opens,
+                              counters == nullptr
+                                  ? nullptr
+                                  : &counters->allocator_stream_flushes);
+  if (ok && counters != nullptr) {
+    counters->allocator_range_records_appended +=
+        static_cast<std::uint64_t>(lines->size());
+  }
+  if (ok) {
+    lines->clear();
+  }
+  return ok;
+}
+
+bool AppendScopedRelationLines(const std::string& path,
+                               const std::vector<std::string>& lines,
+                               std::uint64_t* stream_opens,
+                               std::uint64_t* stream_flushes) {
   if (path.empty()) { return false; }
+  if (lines.empty()) { return true; }
   std::error_code ignored;
   std::filesystem::create_directories(std::filesystem::path(path).parent_path(),
                                       ignored);
-  return AppendLine(path, line);
+  return AppendLines(path, lines, stream_opens, stream_flushes);
 }
 
 std::vector<std::string> ReadLines(const std::string& path) {
@@ -271,7 +298,8 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
     const std::string& stream_kind,
     const std::string& stream_path,
     std::uint64_t count,
-    Loader loader) {
+    Loader loader,
+    std::vector<std::string>* deferred_allocator_lines = nullptr) {
   if (context.database_path.empty()) {
     return RefuseEventSequenceReservation(context,
                                           stream_kind,
@@ -325,7 +353,9 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
                                      std::to_string(next),
                                      route,
                                      bootstrapped ? "1" : "0"});
-  if (!AppendLine(allocator_path, line)) {
+  if (deferred_allocator_lines != nullptr) {
+    deferred_allocator_lines->push_back(line);
+  } else if (!AppendLine(allocator_path, line)) {
     return RefuseEventSequenceReservation(context,
                                           stream_kind,
                                           stream_path,
@@ -1891,18 +1921,27 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
   return result;
 }
 
-MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
+MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const std::vector<std::string>& table_uuids,
+    const std::string& evidence_route) {
   MgaRelationStoreResult result;
   result.scoped_state_load = true;
   if (context.database_path.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
     return result;
   }
-  if (table_uuid.empty()) {
+  if (table_uuids.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "target_table_uuid_required");
     return result;
+  }
+  for (const auto& table_uuid : table_uuids) {
+    if (table_uuid.empty()) {
+      result.diagnostic =
+          MakeInvalidRequestDiagnostic("mga.row_store",
+                                       "target_table_uuid_required");
+      return result;
+    }
   }
   const auto metadata = LoadMgaMetadata(&result.state.crud_metadata, context);
   if (metadata.error) {
@@ -1917,8 +1956,12 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
   const auto retired_tables =
       VisibleRetiredTemporaryTableMetadata(context, result.state.crud_metadata);
   FilterVisibleRetiredTemporaryMetadata(context, &result.state.crud_metadata);
-  const std::set<std::string> table_scope =
-      InsertTargetRelationScope(context, result.state.crud_metadata, table_uuid);
+  std::set<std::string> table_scope;
+  for (const auto& table_uuid : table_uuids) {
+    const auto scoped =
+        InsertTargetRelationScope(context, result.state.crud_metadata, table_uuid);
+    table_scope.insert(scoped.begin(), scoped.end());
+  }
   const auto savepoints = ParseSavepoints(context);
 
   auto scoped_lines = [&context, &table_scope](bool row_store,
@@ -2038,8 +2081,34 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
   FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
-  AddRelationLoadEvidence(&result, "insert_target_scoped");
+  AddRelationLoadEvidence(&result, evidence_route);
   return result;
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "insert_target_scoped");
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "mutation_target_scoped");
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids) {
+  return LoadMgaRelationStoreStateForTargetScope(context,
+                                                table_uuids,
+                                                "mutation_targets_scoped");
 }
 
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state) {
@@ -2618,6 +2687,9 @@ struct MgaRelationHotAppendContext::Impl {
   EngineRequestContext context;
   std::ofstream row_out;
   std::ofstream index_out;
+  std::vector<std::string> allocator_lines;
+  std::map<std::string, std::vector<std::string>> scoped_row_lines;
+  std::map<std::string, std::vector<std::string>> scoped_index_lines;
   bool row_dirty = false;
   bool index_dirty = false;
   MgaRelationHotAppendCounters counters;
@@ -2664,7 +2736,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
       "row_versions",
       RowStorePath(impl_->context),
       static_cast<std::uint64_t>(rows->size()),
-      [this]() { return ScanNextRowEventSequence(impl_->context); });
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
@@ -2687,9 +2760,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     if (!impl_->row_out) {
       return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
     }
-    (void)AppendScopedRelationLine(
-        ScopedRowStorePath(impl_->context, writable.table_uuid),
-        line);
+    impl_->scoped_row_lines[ScopedRowStorePath(impl_->context, writable.table_uuid)]
+        .push_back(line);
     impl_->row_dirty = true;
     ++impl_->counters.row_versions_appended;
     if (written_event_sequences != nullptr) {
@@ -2700,15 +2772,30 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
-  if (!impl_->row_out.is_open() || !impl_->row_dirty) {
-    return OkDiagnostic();
+  if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
+                                                 &impl_->allocator_lines,
+                                                 &impl_->counters)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "event_sequence_allocator_batch_append_failed");
   }
-  impl_->row_out.flush();
-  if (!impl_->row_out) {
-    return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
+  if (impl_->row_out.is_open() && impl_->row_dirty) {
+    impl_->row_out.flush();
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
+    }
+    impl_->row_dirty = false;
+    ++impl_->counters.row_stream_flushes;
   }
-  impl_->row_dirty = false;
-  ++impl_->counters.row_stream_flushes;
+  for (const auto& [path, lines] : impl_->scoped_row_lines) {
+    if (!AppendScopedRelationLines(path,
+                                   lines,
+                                   &impl_->counters.scoped_row_stream_opens,
+                                   &impl_->counters.scoped_row_stream_flushes)) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "scoped_row_version_append_failed");
+    }
+  }
+  impl_->scoped_row_lines.clear();
   return OkDiagnostic();
 }
 
@@ -2740,7 +2827,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
       "index_entries",
       IndexStorePath(impl_->context),
       entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); });
+      [this]() { return ScanNextIndexEventSequence(impl_->context); },
+      &impl_->allocator_lines);
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
@@ -2768,9 +2856,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
         if (!impl_->index_out) {
           return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
         }
-        (void)AppendScopedRelationLine(
-            ScopedIndexStorePath(impl_->context, table_uuid),
-            line);
+        impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
+            .push_back(line);
         impl_->index_dirty = true;
         ++impl_->counters.index_entries_appended;
       }
@@ -2803,7 +2890,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       "index_entries",
       IndexStorePath(impl_->context),
       entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); });
+      [this]() { return ScanNextIndexEventSequence(impl_->context); },
+      &impl_->allocator_lines);
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
@@ -2832,9 +2920,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       if (!impl_->index_out) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
       }
-      (void)AppendScopedRelationLine(
-          ScopedIndexStorePath(impl_->context, table_uuid),
-          line);
+      impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
+          .push_back(line);
       impl_->index_dirty = true;
       ++impl_->counters.index_entries_appended;
     }
@@ -2843,15 +2930,30 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
-  if (!impl_->index_out.is_open() || !impl_->index_dirty) {
-    return OkDiagnostic();
+  if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
+                                                 &impl_->allocator_lines,
+                                                 &impl_->counters)) {
+    return MakeInvalidRequestDiagnostic("mga.index_store",
+                                        "event_sequence_allocator_batch_append_failed");
   }
-  impl_->index_out.flush();
-  if (!impl_->index_out) {
-    return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
+  if (impl_->index_out.is_open() && impl_->index_dirty) {
+    impl_->index_out.flush();
+    if (!impl_->index_out) {
+      return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
+    }
+    impl_->index_dirty = false;
+    ++impl_->counters.index_stream_flushes;
   }
-  impl_->index_dirty = false;
-  ++impl_->counters.index_stream_flushes;
+  for (const auto& [path, lines] : impl_->scoped_index_lines) {
+    if (!AppendScopedRelationLines(path,
+                                   lines,
+                                   &impl_->counters.scoped_index_stream_opens,
+                                   &impl_->counters.scoped_index_stream_flushes)) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "scoped_index_entry_append_failed");
+    }
+  }
+  impl_->scoped_index_lines.clear();
   return OkDiagnostic();
 }
 

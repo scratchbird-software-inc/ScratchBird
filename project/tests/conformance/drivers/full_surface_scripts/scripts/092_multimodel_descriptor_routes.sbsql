@@ -49,8 +49,10 @@ SEARCH __SB_NAMESPACE__.vec_docs embedding <-> VECTOR '[1,0,0]' TOP 3;
 REINDEX VECTOR COLLECTION __SB_NAMESPACE__.vec_docs WITH (METHOD = HNSW);
 
 SELECT 'SBDFS-092-001' AS assertion_id,
-       1 AS actual_marker,
-       1 AS expected_marker;
+       COUNT(*) AS actual_multimodel_descriptor_rows,
+       8 AS expected_multimodel_descriptor_rows
+FROM sys.catalog_readable.objects
+WHERE object_name IN ('docs', 'kvs', 'social', 'person', 'knows', 'gidx', 'cpu', 'vec_docs');
 
 SELECT 'SBDFS-092-002' AS assertion_id,
        COUNT(*) AS actual_context_rows,

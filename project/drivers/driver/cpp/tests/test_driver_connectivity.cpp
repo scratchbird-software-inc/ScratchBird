@@ -1507,6 +1507,70 @@ TEST(DriverConnectivitySmokeTest, ConnectsToLocalListener) {
     EXPECT_TRUE(harness.error.empty()) << harness.error;
 }
 
+TEST(DriverConnectivitySmokeTest, SslmodeDisableConnectsOnlyWhenPlaintextPolicyPermitsIt) {
+    scratchbird::network::NetworkInitGuard guard;
+    ASSERT_TRUE(guard.isInitialized());
+
+    ServerHarness harness;
+    setupIpv4Listener(harness);
+    harness.start();
+
+    scratchbird::client::NetworkClient client;
+    auto cfg = makeLoopbackConfig(harness.port);
+    cfg.ssl_mode = scratchbird::network::SSLMode::DISABLED;
+    cfg.username = "alice";
+    cfg.password = "scratchbird";
+
+    scratchbird::core::ErrorContext ctx;
+    auto status = client.connect(cfg, &ctx);
+    EXPECT_EQ(status, scratchbird::core::Status::OK) << ctx.message;
+    client.disconnect();
+
+    harness.stop();
+    EXPECT_TRUE(harness.error.empty()) << harness.error;
+    EXPECT_EQ(harness.startup_params["database"], "main");
+    EXPECT_EQ(harness.startup_params["user"], "alice");
+}
+
+TEST(DriverConnectivitySmokeTest, SslmodeDisableFailsWhenPlaintextPolicyRefusesStartup) {
+    scratchbird::network::NetworkInitGuard guard;
+    ASSERT_TRUE(guard.isInitialized());
+
+    ServerHarness harness;
+    setupIpv4Listener(harness);
+    std::atomic<bool> accepted{false};
+    std::thread policy_server([&harness, &accepted]() {
+        scratchbird::core::ErrorContext ctx;
+        scratchbird::network::NetworkAddress client_addr;
+        auto client = harness.listener->accept(&client_addr, &ctx);
+        if (client) {
+            accepted.store(true, std::memory_order_relaxed);
+            client->close();
+        }
+    });
+
+    scratchbird::client::NetworkClient client;
+    auto cfg = makeLoopbackConfig(harness.port);
+    cfg.ssl_mode = scratchbird::network::SSLMode::DISABLED;
+    cfg.connect_timeout_ms = 1000;
+    cfg.read_timeout_ms = 1000;
+    cfg.write_timeout_ms = 1000;
+
+    scratchbird::core::ErrorContext ctx;
+    const auto status = client.connect(cfg, &ctx);
+    EXPECT_NE(status, scratchbird::core::Status::OK);
+    EXPECT_TRUE(status == scratchbird::core::Status::CONNECTION_FAILURE ||
+                status == scratchbird::core::Status::IO_ERROR ||
+                status == scratchbird::core::Status::PROTOCOL_VIOLATION);
+    client.disconnect();
+
+    harness.listener->close();
+    if (policy_server.joinable()) {
+        policy_server.join();
+    }
+    EXPECT_TRUE(accepted.load(std::memory_order_relaxed));
+}
+
 TEST(DriverConnectivitySmokeTest, ConnectsWithPasswordAuthChallengeAndCarriesAuthParams) {
     scratchbird::network::NetworkInitGuard guard;
     ASSERT_TRUE(guard.isInitialized());
