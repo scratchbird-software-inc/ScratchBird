@@ -53,6 +53,7 @@ inline constexpr const char* kCrudIndexFamilyCovering = "covering";
 inline constexpr const char* kCrudIndexFamilyTemporaryWork = "temporary_work";
 inline constexpr const char* kCrudIndexFamilyInMemory = "in_memory";
 inline constexpr const char* kCrudIndexFamilyReferenceEmulated = "reference_emulated";
+inline constexpr const char* kCrudIndexFamilyPolicyBlocked = "policy_blocked";
 
 struct CrudTableRecord {
   std::uint64_t creator_tx = 0;

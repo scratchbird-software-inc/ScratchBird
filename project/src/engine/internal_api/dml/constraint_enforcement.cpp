@@ -363,11 +363,18 @@ std::vector<std::string> KeyColumnsForIndex(const CrudIndexRecord& index) {
   std::vector<std::string> columns;
   for (const auto& envelope : index.key_envelopes) {
     if (envelope.empty() || envelope == "unique" || envelope == "primary_key" ||
-        StartsWith(envelope, "include:") || StartsWith(envelope, "where_eq:")) {
+        StartsWith(envelope, "include:") || StartsWith(envelope, "where_eq:") ||
+        StartsWith(envelope, "where_mod_eq:") || envelope == "where_true") {
       continue;
     }
     if (StartsWith(envelope, "identity:")) {
       columns.push_back(envelope.substr(9));
+    } else if (StartsWith(envelope, "desc:")) {
+      columns.push_back(envelope.substr(5));
+    } else if (StartsWith(envelope, "cast:")) {
+      const std::string rest = envelope.substr(5);
+      const auto pos = rest.find(':');
+      columns.push_back(pos == std::string::npos ? rest : rest.substr(0, pos));
     } else {
       columns.push_back(envelope);
     }

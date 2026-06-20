@@ -3561,13 +3561,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "index_key_count", "index_unique"};
     for (const auto field : kIndexFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
+      AppendOperationOperand(&operation_envelope, field, value);
     }
     const std::string index_uuid = JsonTextField(encoded, "index_object_uuid").value_or(
         TextLineValue(encoded, "index_object_uuid").value_or(""));

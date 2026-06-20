@@ -193,13 +193,23 @@ std::vector<std::string> DecodeCrudList(const std::string& encoded) {
 }
 
 bool IsDirectiveEnvelope(const std::string& envelope) {
-  return envelope == "unique" || StartsWith(envelope, "include:") || StartsWith(envelope, "where_eq:");
+  return envelope == "unique" || StartsWith(envelope, "include:") || StartsWith(envelope, "where_eq:") ||
+         StartsWith(envelope, "where_mod_eq:") || envelope == "where_true";
 }
 
 std::vector<std::string> CrudIndexKeyColumns(const CrudIndexRecord& index) {
   std::vector<std::string> columns;
   for (const auto& envelope : index.key_envelopes) {
-    if (!IsDirectiveEnvelope(envelope)) { columns.push_back(envelope); }
+    if (IsDirectiveEnvelope(envelope)) { continue; }
+    if (StartsWith(envelope, "desc:")) {
+      columns.push_back(envelope.substr(5));
+    } else if (StartsWith(envelope, "cast:")) {
+      const std::string rest = envelope.substr(5);
+      const auto pos = rest.find(':');
+      columns.push_back(pos == std::string::npos ? rest : rest.substr(0, pos));
+    } else {
+      columns.push_back(envelope);
+    }
   }
   if (columns.empty() && !index.column_name.empty()) { columns.push_back(index.column_name); }
   return columns;

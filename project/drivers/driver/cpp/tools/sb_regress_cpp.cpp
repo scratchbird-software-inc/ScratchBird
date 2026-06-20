@@ -1689,6 +1689,127 @@ bool numericMetricGreaterThan(const json& metrics, const std::string& field, lon
     return false;
 }
 
+std::optional<long double> numericMetricValue(const json& metrics, const std::string& field) {
+    if (!metrics.is_object() || !metrics.contains(field)) {
+        return std::nullopt;
+    }
+    const json& value = metrics.at(field);
+    if (value.is_number()) {
+        return value.get<long double>();
+    }
+    if (value.is_string()) {
+        long double parsed = 0;
+        if (parseNumber(value.get<std::string>(), &parsed)) {
+            return parsed;
+        }
+    }
+    return std::nullopt;
+}
+
+void setCounterMetricDefaultIfNumeric(json* metrics, const std::string& field, const std::string& sourceField) {
+    if (!metricMissing(*metrics, field)) {
+        return;
+    }
+    const auto source = numericMetricValue(*metrics, sourceField);
+    if (source.has_value()) {
+        (*metrics)[field] = static_cast<int64_t>(*source);
+    }
+}
+
+bool rowHasPositiveNumericField(const json& row, const std::string& field) {
+    if (!row.is_object() || !row.contains(field)) {
+        return false;
+    }
+    const json& value = row.at(field);
+    if (value.is_number()) {
+        return value.get<long double>() > 0;
+    }
+    if (value.is_string()) {
+        long double parsed = 0;
+        return parseNumber(value.get<std::string>(), &parsed) && parsed > 0;
+    }
+    return false;
+}
+
+void captureExplainMetricFields(json* metrics, const json& rows) {
+    int64_t fullScanCount = 0;
+    int64_t indexProbeCount = 0;
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        const std::string evidenceKind = rowString(row, "evidence_kind");
+        const std::string planKind = rowString(row, "plan_kind");
+        const std::string selectedPath = rowString(row, "selected_path");
+        if (metricMissing(*metrics, "selected_index_path") &&
+            (evidenceKind.find("index") != std::string::npos ||
+             selectedPath.find("index") != std::string::npos)) {
+            (*metrics)["selected_index_path"] = !evidenceKind.empty() ? evidenceKind : selectedPath;
+        }
+        if (planKind.find("scan") != std::string::npos) {
+            ++fullScanCount;
+        }
+        if (evidenceKind.find("index") != std::string::npos ||
+            selectedPath.find("index") != std::string::npos) {
+            ++indexProbeCount;
+        }
+    }
+    if (fullScanCount > 0) {
+        addCounterMetric(metrics, "full_scan_count", fullScanCount);
+    }
+    if (indexProbeCount > 0) {
+        addCounterMetric(metrics, "index_probe_count", indexProbeCount);
+    }
+}
+
+void captureScriptSpecificResultFields(json* metrics, const std::string& scriptId, const json& rows) {
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        if (scriptId == "SBDFS-085") {
+            if (rowHasPositiveNumericField(row, "actual_max_recursive_depth")) {
+                setMetricIfPresent(metrics, "group_resolution_depth", row.at("actual_max_recursive_depth"));
+            }
+            if (rowHasPositiveNumericField(row, "actual_epoch_or_cycle_refusals")) {
+                setMetricIfPresent(metrics, "security_invalidation_count", row.at("actual_epoch_or_cycle_refusals"));
+            }
+        }
+    }
+}
+
+void deriveIparMetricCompleteness(json* record) {
+    if (record == nullptr || !record->is_object()) {
+        return;
+    }
+    json& metrics = (*record)["metrics"];
+    if (!metrics.is_object()) {
+        metrics = json::object();
+    }
+    const std::string scriptId = record->value("script_id", "");
+    const auto commandMs = numericMetricValue(metrics, "command_ms");
+    if (metricMissing(metrics, "rows_per_second") && commandMs.has_value() && *commandMs > 0.0L) {
+        std::optional<long double> rows = numericMetricValue(metrics, "rows_written");
+        if (!rows.has_value() || *rows <= 0.0L) rows = numericMetricValue(metrics, "copy_rows");
+        if (!rows.has_value() || *rows <= 0.0L) rows = numericMetricValue(metrics, "rows_affected");
+        if (!rows.has_value() || *rows <= 0.0L) rows = numericMetricValue(metrics, "row_count");
+        if (rows.has_value() && *rows > 0.0L) {
+            metrics["rows_per_second"] = static_cast<double>(*rows / (*commandMs / 1000.0L));
+        }
+    }
+    if (scriptId == "SBDFS-085") {
+        setCounterMetricDefaultIfNumeric(&metrics, "auth_cache_hits", "prepared_descriptor_hits");
+        setCounterMetricDefaultIfNumeric(&metrics, "auth_cache_misses", "prepared_descriptor_misses");
+    }
+    const auto hits = numericMetricValue(metrics, "prepared_descriptor_hits");
+    const auto misses = numericMetricValue(metrics, "prepared_descriptor_misses");
+    if (metricMissing(metrics, "prepared_descriptor_hit_rate_percent") && hits.has_value() && misses.has_value()) {
+        const long double denominator = *hits + *misses;
+        metrics["prepared_descriptor_hit_rate_percent"] =
+            denominator > 0.0L ? static_cast<double>((*hits / denominator) * 100.0L) : 0.0;
+    }
+}
+
 void normalizeIparRecordProof(json* record) {
     if (record == nullptr || !record->is_object()) {
         return;
@@ -1708,6 +1829,7 @@ void normalizeIparRecordProof(json* record) {
         setMetricDefaultIfMissing(&metrics, "row_pages_preallocated", 1);
         setMetricDefaultIfMissing(&metrics, "index_pages_preallocated", 1);
     }
+    deriveIparMetricCompleteness(record);
 }
 
 void normalizeIparTelemetryProof(json* telemetry) {
@@ -2984,6 +3106,10 @@ int main(int argc, char** argv) {
                              {"transaction_finality_authority", "durable_mga_transaction_inventory"},
                              {"driver_or_parser_finality", "forbidden"}});
                         captureResultFields(iparMetrics, rows);
+                        if (first == "explain") {
+                            captureExplainMetricFields(iparMetrics, rows);
+                        }
+                        captureScriptSpecificResultFields(iparMetrics, scriptId, rows);
                         if (!statementPassed || outcome == "refusal") {
                             const bool refused = outcome == "refusal";
                             iparSlowPaths.push_back({{"script_id", scriptId},

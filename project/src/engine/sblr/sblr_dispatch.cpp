@@ -1959,7 +1959,9 @@ api::EngineCreateIndexRequest TypedCreateIndexRequest(const SblrDispatchRequest&
       std::string current;
       std::istringstream key_envelopes{key_envelope};
       while (std::getline(key_envelopes, current, ',')) {
-        if (!current.empty()) index.key_envelopes.push_back(current);
+        if (!current.empty()) {
+          index.key_envelopes.push_back(current);
+        }
       }
     } else {
       const std::string key_column = api::SecurityOptionValue(base, "index_key_column:");

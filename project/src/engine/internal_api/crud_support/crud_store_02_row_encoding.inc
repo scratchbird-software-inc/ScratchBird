@@ -197,6 +197,12 @@ std::string ExpressionKeyForValues(const std::string& expression,
   }
   if (StartsWith(expression, "length:")) { return std::to_string(CrudFieldValue(values, expression.substr(7)).size()); }
   if (StartsWith(expression, "identity:")) { return CrudFieldValue(values, expression.substr(9)); }
+  if (StartsWith(expression, "desc:")) { return CrudFieldValue(values, expression.substr(5)); }
+  if (StartsWith(expression, "cast:")) {
+    const std::string rest = expression.substr(5);
+    const auto pos = rest.find(':');
+    return CrudFieldValue(values, pos == std::string::npos ? rest : rest.substr(0, pos));
+  }
   const std::string lower_arg = ExtractFunctionArgument(expression, "lower");
   if (!lower_arg.empty()) { return LowerAscii(CrudFieldValue(values, lower_arg)); }
   const std::string upper_arg = ExtractFunctionArgument(expression, "upper");
@@ -212,14 +218,34 @@ std::string ExpressionKeyForValues(const std::string& expression,
 
 bool ExpressionEnvelopeSupported(const std::string& expression) {
   return StartsWith(expression, "lower:") || StartsWith(expression, "upper:") || StartsWith(expression, "length:") ||
-         StartsWith(expression, "identity:") || !ExtractFunctionArgument(expression, "lower").empty() ||
-         !ExtractFunctionArgument(expression, "upper").empty() || !ExtractFunctionArgument(expression, "length").empty();
+         StartsWith(expression, "identity:") || StartsWith(expression, "cast:") || StartsWith(expression, "desc:") ||
+         !ExtractFunctionArgument(expression, "lower").empty() ||
+         !ExtractFunctionArgument(expression, "upper").empty() || !ExtractFunctionArgument(expression, "length").empty() ||
+         (!expression.empty() && expression.find(':') == std::string::npos &&
+          expression.find('(') == std::string::npos && expression.find(')') == std::string::npos);
 }
 
 std::vector<std::string> CrudIndexEntryKeysForValues(const CrudIndexRecord& index,
                                                      const std::vector<std::pair<std::string, std::string>>& values) {
   if (!index.predicate_kind.empty()) {
     if (index.predicate_kind == "where_eq" && CrudFieldValue(values, index.predicate_column) != index.predicate_value) { return {}; }
+    if (index.predicate_kind == "where_mod_eq") {
+      const auto equals = index.predicate_value.find('=');
+      if (equals == std::string::npos) { return {}; }
+      try {
+        const auto value = std::stoll(CrudFieldValue(values, index.predicate_column));
+        const auto divisor = std::stoll(index.predicate_value.substr(0, equals));
+        const auto expected = std::stoll(index.predicate_value.substr(equals + 1));
+        if (divisor == 0 || value % divisor != expected) { return {}; }
+      } catch (...) {
+        return {};
+      }
+    }
+    if (index.predicate_kind != "where_eq" &&
+        index.predicate_kind != "where_mod_eq" &&
+        index.predicate_kind != "where_true") {
+      return {};
+    }
   }
   const auto columns = CrudIndexKeyColumns(index);
   const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;

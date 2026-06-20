@@ -99,6 +99,7 @@ DeleteIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index, const 
       index.family == kCrudIndexFamilyGraphAdjacency || index.family == kCrudIndexFamilyExpression ||
       index.family == kCrudIndexFamilyPartial || index.family == kCrudIndexFamilyCovering ||
       index.family == kCrudIndexFamilyInMemory || index.family == kCrudIndexFamilyReferenceEmulated ||
+      index.family == kCrudIndexFamilyPolicyBlocked ||
       index.family.empty()) {
     return DeleteIndexMaintenanceAction::visibility_recheck_only;
   }

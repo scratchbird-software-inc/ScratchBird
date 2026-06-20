@@ -261,6 +261,16 @@ void RequireOk(const api::EngineApiResult& result, std::string_view message) {
   Require(result.ok, message);
 }
 
+void CreateSchema(const api::EngineRequestContext& context) {
+  api::EngineCreateSchemaRequest request;
+  request.context = context;
+  request.target_object.uuid.canonical = SchemaUuid();
+  request.target_object.object_kind = "schema";
+  request.localized_names.push_back(Name("cbq005_index_family_schema"));
+  auto result = api::EngineCreateSchema(request);
+  RequireOk(result, "create schema failed for index family runtime closure");
+}
+
 void CreateTable(const api::EngineRequestContext& context) {
   api::EngineCreateTableRequest request;
   request.context = context;
@@ -516,9 +526,6 @@ void RequireCoreIndexManagementAndStatistics() {
             "ordered index family scan/verify/rebuild capabilities missing after promotion");
     Require(caps.requires_mga_recheck && caps.requires_security_recheck,
             "index family authority recheck flags missing");
-    constexpr std::string_view kGenericMaintenanceUnsupported =
-        "SB-INDEX-MAINTENANCE-GENERIC-FAMILY-UNSUPPORTED";
-
     index_api::IndexMaintenanceRequest verify;
     verify.index_uuid =
         GeneratedUuid(UuidKind::object, 1200 + static_cast<int>(family));
@@ -561,13 +568,12 @@ void RequireCoreIndexManagementAndStatistics() {
     const auto caps = index_api::CapabilitiesForFamily(family);
     Require(!caps.supports_insert && !caps.supports_update && !caps.supports_delete,
             "index family mutation capabilities must not be inferred from registry acceptance");
-    Require(!caps.supports_scan && !caps.supports_verify && !caps.supports_rebuild,
-            "index family scan/verify/rebuild capabilities must not be inferred from registry acceptance");
+    Require(!caps.supports_scan && !caps.supports_rebuild,
+            "index family generic scan/rebuild capabilities must not be inferred from registry acceptance");
+    Require(caps.supports_verify == state->validate,
+            "index family verify capability drifted from physical validation state");
     Require(caps.requires_mga_recheck && caps.requires_security_recheck,
             "index family authority recheck flags missing");
-    constexpr std::string_view kGenericMaintenanceUnsupported =
-        "SB-INDEX-MAINTENANCE-GENERIC-FAMILY-UNSUPPORTED";
-
     index_api::IndexMaintenanceRequest verify;
     verify.index_uuid =
         GeneratedUuid(UuidKind::object, 1300 + static_cast<int>(family));
@@ -575,27 +581,23 @@ void RequireCoreIndexManagementAndStatistics() {
     verify.operation = index_api::IndexMaintenanceOperation::verify;
     verify.page_budget = 1;
     const auto verify_plan = index_api::PlanIndexMaintenance(verify);
-    Require(!verify_plan.ok() &&
-                verify_plan.diagnostic.diagnostic_code ==
-                    kGenericMaintenanceUnsupported,
-            "index verify maintenance must refuse specialized family through the generic surface");
+    Require(verify_plan.ok(),
+            "index verify maintenance did not consume specialized validation capability");
 
     index_api::IndexMaintenanceRequest rebuild = verify;
     rebuild.operation = index_api::IndexMaintenanceOperation::rebuild;
     rebuild.policy_allows_mutation = true;
     const auto rebuild_plan = index_api::PlanIndexMaintenance(rebuild);
-    Require(!rebuild_plan.ok() &&
-                rebuild_plan.diagnostic.diagnostic_code ==
-                    kGenericMaintenanceUnsupported,
-            "index rebuild maintenance must refuse specialized family through the generic surface");
+    Require(rebuild_plan.ok(),
+            "index rebuild maintenance did not consume specialized maintenance route");
 
     index_api::IndexMaintenanceRequest read_only_rebuild = rebuild;
     read_only_rebuild.read_only_database = true;
     const auto refused = index_api::PlanIndexMaintenance(read_only_rebuild);
     Require(!refused.ok() &&
                 refused.diagnostic.diagnostic_code ==
-                    kGenericMaintenanceUnsupported,
-            "read-only index maintenance must preserve generic-surface refusal before mutation admission");
+                    "SB-INDEX-MAINTENANCE-MUTATION-REFUSED",
+            "read-only index maintenance must refuse specialized route mutation");
 
     index_api::IndexManagementRequest management;
     management.operation = index_api::IndexManagementOperation::rebalance;
@@ -605,7 +607,7 @@ void RequireCoreIndexManagementAndStatistics() {
     const auto management_plan = index_api::PlanIndexManagementOperation(management);
     Require(!management_plan.ok() &&
                 management_plan.diagnostic.diagnostic_code ==
-                    kGenericMaintenanceUnsupported,
+                    "SB-INDEX-MAINTENANCE-GENERIC-FAMILY-UNSUPPORTED",
             "index management rebalance must refuse specialized family through the generic surface");
   }
 
@@ -808,6 +810,7 @@ int main() {
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginTransaction(EngineContext(path, database_uuid));
+  CreateSchema(context);
   CreateTable(context);
   RequireRuntimeIndexEntriesAndScans(context);
   return EXIT_SUCCESS;
