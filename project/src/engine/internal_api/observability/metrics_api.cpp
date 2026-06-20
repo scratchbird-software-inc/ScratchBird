@@ -383,31 +383,48 @@ EngineShowMetricsResult EngineShowMetrics(const EngineShowMetricsRequest& reques
   auto result = MakeApiBehaviorSuccess<EngineShowMetricsResult>(request.context, "observability.show_metrics");
   const auto descriptors = scratchbird::core::metrics::DefaultMetricRegistry().Descriptors(include_cluster);
   const auto current = scratchbird::core::metrics::DefaultMetricRegistry().SnapshotCurrent(include_cluster);
+  const bool allow_sensitive = HasSensitiveMetricRight(request.context);
   for (const auto& descriptor : descriptors) {
     if (!DescriptorMatches(request, descriptor, descriptor.cluster_only)) {
       continue;
     }
-    std::string value = "";
-    std::string count = "";
-    std::string sum = "";
+    bool emitted_sample = false;
     for (const auto& sample : current) {
       if (sample.family == descriptor.family) {
-        value = std::to_string(sample.value);
-        count = std::to_string(sample.count);
-        sum = std::to_string(sample.sum);
-        break;
+        MetricValue value =
+            scratchbird::core::metrics::RedactSensitiveMetricValue(
+                descriptor,
+                sample,
+                allow_sensitive);
+        AddApiBehaviorRow(&result,
+                          {{"metric", descriptor.family},
+                           {"namespace", descriptor.namespace_path},
+                           {"type", scratchbird::core::metrics::MetricTypeName(value.type)},
+                           {"unit", scratchbird::core::metrics::MetricUnitName(descriptor.unit)},
+                           {"producer_owner", descriptor.producer_owner},
+                           {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
+                           {"value", std::to_string(value.value)},
+                           {"count", std::to_string(value.count)},
+                           {"sum", std::to_string(value.sum)},
+                           {"state_text", value.state_text},
+                           {"labels", LabelsToText(value.labels)}});
+        emitted_sample = true;
       }
     }
-    AddApiBehaviorRow(&result,
-                      {{"metric", descriptor.family},
-                       {"namespace", descriptor.namespace_path},
-                       {"type", scratchbird::core::metrics::MetricTypeName(descriptor.type)},
-                       {"unit", scratchbird::core::metrics::MetricUnitName(descriptor.unit)},
-                       {"producer_owner", descriptor.producer_owner},
-                       {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
-                       {"value", value},
-                       {"count", count},
-                       {"sum", sum}});
+    if (!emitted_sample) {
+      AddApiBehaviorRow(&result,
+                        {{"metric", descriptor.family},
+                         {"namespace", descriptor.namespace_path},
+                         {"type", scratchbird::core::metrics::MetricTypeName(descriptor.type)},
+                         {"unit", scratchbird::core::metrics::MetricUnitName(descriptor.unit)},
+                         {"producer_owner", descriptor.producer_owner},
+                         {"readiness", scratchbird::core::metrics::MetricReadinessName(descriptor.readiness)},
+                         {"value", ""},
+                         {"count", ""},
+                         {"sum", ""},
+                         {"state_text", ""},
+                         {"labels", ""}});
+    }
   }
   AddApiBehaviorEvidence(&result, "metrics_registry", "local_node");
   AddApiBehaviorEvidence(&result, "metrics_source", "core_metrics_registry");

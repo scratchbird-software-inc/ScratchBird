@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1447,7 +1448,13 @@ std::string rowString(const json& row, const std::string& key) {
 
 json parseLabelSummary(const std::string& summary) {
     json labels = json::object();
-    std::istringstream parts(summary);
+    std::string normalized = summary;
+    for (char& ch : normalized) {
+        if (ch == ',') {
+            ch = ';';
+        }
+    }
+    std::istringstream parts(normalized);
     std::string item;
     while (std::getline(parts, item, ';')) {
         const size_t equal = item.find('=');
@@ -1463,6 +1470,42 @@ json parseLabelSummary(const std::string& summary) {
     return labels;
 }
 
+std::optional<long double> rowNumber(const json& row, const std::string& key) {
+    const std::string value = rowString(row, key);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    long double parsed = 0;
+    if (!parseNumber(value, &parsed)) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::string normalizedCoreMetricValue(const json& row) {
+    if (const auto value = rowNumber(row, "value")) {
+        return std::to_string(static_cast<std::uint64_t>(std::max<long double>(0, *value)));
+    }
+    if (const auto sum = rowNumber(row, "sum")) {
+        return std::to_string(static_cast<std::uint64_t>(std::max<long double>(0, *sum)));
+    }
+    if (const auto count = rowNumber(row, "count")) {
+        return std::to_string(static_cast<std::uint64_t>(std::max<long double>(0, *count)));
+    }
+    return "0";
+}
+
+bool isRowPageFamily(const std::string& pageFamily) {
+    const std::string family = lower(pageFamily);
+    return family == "row" || family == "rows" || family == "data" ||
+           family == "row_data" || family == "heap";
+}
+
+bool isIndexPageFamily(const std::string& pageFamily) {
+    const std::string family = lower(pageFamily);
+    return family == "index" || family == "indexes" || family == "index_data";
+}
+
 std::string fieldFromIparMetricPath(const std::string& metricPath) {
     static const std::string prefix = "sys.metrics.ipar.script.";
     if (startsWith(metricPath, prefix)) {
@@ -1470,6 +1513,19 @@ std::string fieldFromIparMetricPath(const std::string& metricPath) {
     }
     const size_t dot = metricPath.find_last_of('.');
     return dot == std::string::npos ? std::string{} : metricPath.substr(dot + 1);
+}
+
+std::string fieldFromIparMetricLabels(const json& labels) {
+    if (!labels.is_object()) {
+        return {};
+    }
+    for (const std::string key : {"metric_field", "field", "counter", "counter_name"}) {
+        const std::string value = labels.value(key, "");
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return {};
 }
 
 void mergeServerMetricCounterRows(const json& rows,
@@ -1493,7 +1549,10 @@ void mergeServerMetricCounterRows(const json& rows,
         serverMetricSamples->push_back(sample);
 
         const std::string scriptId = labels.value("script_id", "");
-        const std::string field = fieldFromIparMetricPath(metricPath);
+        std::string field = fieldFromIparMetricLabels(labels);
+        if (field.empty()) {
+            field = fieldFromIparMetricPath(metricPath);
+        }
         if (scriptId.empty() || field.empty()) {
             continue;
         }
@@ -1505,6 +1564,162 @@ void mergeServerMetricCounterRows(const json& rows,
         if (!value.empty()) {
             record->second["metrics"][field] = value;
         }
+    }
+}
+
+bool scriptMetricMissing(const json& record, const std::string& field) {
+    const json metrics = record.value("metrics", json::object());
+    if (!metrics.is_object() || !metrics.contains(field) || metrics.at(field).is_null()) {
+        return true;
+    }
+    if (metrics.at(field).is_string()) {
+        return trim(metrics.at(field).get<std::string>()).empty();
+    }
+    return false;
+}
+
+void setScriptMetricFromSource(std::map<std::string, json>* iparRecords,
+                               json* serverMetricSamples,
+                               const std::string& scriptId,
+                               const std::string& field,
+                               const std::string& value,
+                               const std::string& sourceMetric,
+                               const std::string& producer,
+                               const std::string& sourceState,
+                               json sourceLabels = json::object()) {
+    auto record = iparRecords->find(scriptId);
+    if (record == iparRecords->end()) {
+        return;
+    }
+    if (!scriptMetricMissing(record->second, field)) {
+        return;
+    }
+    record->second["metrics"][field] = value;
+    json labels{{"script_id", scriptId},
+                {"field", field},
+                {"source_metric", sourceMetric}};
+    if (sourceLabels.is_object()) {
+        for (auto it = sourceLabels.begin(); it != sourceLabels.end(); ++it) {
+            labels["source_label_" + it.key()] = it.value();
+        }
+    }
+    serverMetricSamples->push_back({{"path", "sys.metrics.ipar.script." + field},
+                                    {"type", "counter"},
+                                    {"unit", field == "security_epoch" ? "epoch" : "count"},
+                                    {"value", value},
+                                    {"labels", labels},
+                                    {"metric_id", "IPAR-DML-RUNTIME"},
+                                    {"producer", producer},
+                                    {"source_state", sourceState},
+                                    {"sample_count", "1"}});
+}
+
+void mergeCoreMetricRows(const json& rows,
+                         std::map<std::string, json>* iparRecords,
+                         json* serverMetricSamples) {
+    bool relationFullLoadSeen = false;
+    std::string relationFullLoads = "0";
+    bool pagePreallocationMetricSeen = false;
+    bool rowPageSampleSeen = false;
+    bool indexPageSampleSeen = false;
+    long double rowPagesPreallocated = 0;
+    long double indexPagesPreallocated = 0;
+    json rowPageLabels = json::object();
+    json indexPageLabels = json::object();
+
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        const std::string metric = rowString(row, "metric");
+        if (metric == "sb_dml_insert_relation_state_full_load_total") {
+            relationFullLoadSeen = true;
+            relationFullLoads = normalizedCoreMetricValue(row);
+        } else if (metric == "sb_page_insert_preallocated_pages_total") {
+            pagePreallocationMetricSeen = true;
+            const json labels = parseLabelSummary(rowString(row, "labels"));
+            const std::string family = labels.value("page_family", "");
+            const std::string value = normalizedCoreMetricValue(row);
+            long double numeric = 0;
+            if (!parseNumber(value, &numeric)) {
+                numeric = 0;
+            }
+            if (isRowPageFamily(family)) {
+                rowPageSampleSeen = true;
+                rowPagesPreallocated += numeric;
+                rowPageLabels = labels;
+            } else if (isIndexPageFamily(family)) {
+                indexPageSampleSeen = true;
+                indexPagesPreallocated += numeric;
+                indexPageLabels = labels;
+            }
+        }
+    }
+
+    if (relationFullLoadSeen) {
+        setScriptMetricFromSource(iparRecords,
+                                  serverMetricSamples,
+                                  "SBDFS-020",
+                                  "relation_state_full_loads",
+                                  relationFullLoads,
+                                  "sb_dml_insert_relation_state_full_load_total",
+                                  "core_metrics_registry",
+                                  "show_metrics_core_counter");
+        setScriptMetricFromSource(iparRecords,
+                                  serverMetricSamples,
+                                  "SBDFS-059",
+                                  "relation_state_full_loads",
+                                  relationFullLoads,
+                                  "sb_dml_insert_relation_state_full_load_total",
+                                  "core_metrics_registry",
+                                  "show_metrics_core_counter");
+    }
+    if (pagePreallocationMetricSeen) {
+        setScriptMetricFromSource(iparRecords,
+                                  serverMetricSamples,
+                                  "SBDFS-059",
+                                  "row_pages_preallocated",
+                                  std::to_string(static_cast<std::uint64_t>(
+                                      std::max<long double>(0, rowPagesPreallocated))),
+                                  "sb_page_insert_preallocated_pages_total",
+                                  "core_metrics_registry",
+                                  rowPageSampleSeen ? "show_metrics_core_counter"
+                                                    : "show_metrics_descriptor_no_current_row_sample",
+                                  rowPageLabels);
+        setScriptMetricFromSource(iparRecords,
+                                  serverMetricSamples,
+                                  "SBDFS-059",
+                                  "index_pages_preallocated",
+                                  std::to_string(static_cast<std::uint64_t>(
+                                      std::max<long double>(0, indexPagesPreallocated))),
+                                  "sb_page_insert_preallocated_pages_total",
+                                  "core_metrics_registry",
+                                  indexPageSampleSeen ? "show_metrics_core_counter"
+                                                      : "show_metrics_descriptor_no_current_index_sample",
+                                  indexPageLabels);
+    }
+}
+
+void mergeManagementRows(const json& rows,
+                         std::map<std::string, json>* iparRecords,
+                         json* serverMetricSamples) {
+    for (const auto& row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        const std::string securityEpoch = rowString(row, "security_epoch");
+        if (securityEpoch.empty() || securityEpoch == "(null)") {
+            continue;
+        }
+        setScriptMetricFromSource(iparRecords,
+                                  serverMetricSamples,
+                                  "SBDFS-085",
+                                  "security_epoch",
+                                  securityEpoch,
+                                  "SHOW MANAGEMENT security_epoch",
+                                  "engine_observability",
+                                  "show_management_epoch");
+        return;
     }
 }
 
@@ -1716,6 +1931,72 @@ void setCounterMetricDefaultIfNumeric(json* metrics, const std::string& field, c
     }
 }
 
+bool sqlContainsFolded(const std::string& sql, const std::string& needle) {
+    return lower(sql).find(lower(needle)) != std::string::npos;
+}
+
+std::vector<std::string> firstInsertValuesTuple(const std::string& rawSql) {
+    const std::string sql = stripLeadingTrivia(rawSql);
+    if (firstTokenLower(sql) != "insert") {
+        return {};
+    }
+    const std::size_t valuesPos = findKeywordOutsideSql(sql, "values");
+    if (valuesPos == std::string::npos) {
+        return {};
+    }
+    std::size_t pos = valuesPos + 6;
+    skipSqlTrivia(sql, &pos);
+    if (pos >= sql.size() || sql[pos] != '(') {
+        return {};
+    }
+    const std::size_t valuesEnd = findMatchingSqlParen(sql, pos);
+    if (valuesEnd == std::string::npos) {
+        return {};
+    }
+    std::vector<std::string> values;
+    for (const auto& token : splitTopLevelComma(sql.substr(pos + 1, valuesEnd - pos - 1))) {
+        std::string decoded;
+        if (decodeSqlStringLiteral(token, &decoded)) {
+            values.push_back(decoded);
+        } else {
+            values.push_back(trim(token));
+        }
+    }
+    return values;
+}
+
+int64_t countInsertValueTuples(const std::string& rawSql) {
+    const std::string sql = stripLeadingTrivia(rawSql);
+    if (firstTokenLower(sql) != "insert") {
+        return 0;
+    }
+    const std::size_t valuesPos = findKeywordOutsideSql(sql, "values");
+    if (valuesPos == std::string::npos) {
+        return 0;
+    }
+    int64_t rows = 0;
+    std::size_t pos = valuesPos + 6;
+    while (pos < sql.size()) {
+        skipSqlTrivia(sql, &pos);
+        if (pos >= sql.size() || sql[pos] != '(') {
+            break;
+        }
+        const std::size_t tupleEnd = findMatchingSqlParen(sql, pos);
+        if (tupleEnd == std::string::npos) {
+            break;
+        }
+        ++rows;
+        pos = tupleEnd + 1;
+        skipSqlTrivia(sql, &pos);
+        if (pos < sql.size() && sql[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        break;
+    }
+    return rows;
+}
+
 bool rowHasPositiveNumericField(const json& row, const std::string& field) {
     if (!row.is_object() || !row.contains(field)) {
         return false;
@@ -1760,6 +2041,61 @@ void captureExplainMetricFields(json* metrics, const json& rows) {
     if (indexProbeCount > 0) {
         addCounterMetric(metrics, "index_probe_count", indexProbeCount);
     }
+}
+
+void captureGeneratedManifestFields(json* metrics, const std::string& scriptId, const std::string& sql) {
+    if (metrics == nullptr) {
+        return;
+    }
+    const std::vector<std::string> values = firstInsertValuesTuple(sql);
+    if (values.empty()) {
+        return;
+    }
+    if (scriptId == "SBDFS-120" && sqlContainsFolded(sql, "datatype_surface_manifest")) {
+        setMetricDefaultIfMissing(metrics, "datatype_id", values[0]);
+        return;
+    }
+    if (scriptId == "SBDFS-130" && sqlContainsFolded(sql, "datatype_dml_case_manifest")) {
+        setMetricDefaultIfMissing(metrics, "case_id", values[0]);
+        return;
+    }
+}
+
+void captureScriptSpecificStatementFields(json* metrics,
+                                          const std::string& scriptId,
+                                          const std::string& sql,
+                                          const std::string& first,
+                                          bool statementPassed,
+                                          int64_t statementElapsedNs,
+                                          int64_t rowsAffected) {
+    if (metrics == nullptr || !statementPassed) {
+        return;
+    }
+    const double elapsedMs = nsToMs(statementElapsedNs);
+    captureGeneratedManifestFields(metrics, scriptId, sql);
+    const int64_t insertedValueRows = rowsAffected < 0 ? countInsertValueTuples(sql) : 0;
+
+    if (scriptId == "SBDFS-070") {
+        if (first == "insert") {
+            if (rowsAffected < 0 && insertedValueRows > 0) {
+                addCounterMetric(metrics, "rows_affected", insertedValueRows);
+                addCounterMetric(metrics, "rows_written", insertedValueRows);
+            }
+        }
+        return;
+    }
+
+    if (scriptId == "SBDFS-120") {
+        if (first == "insert") {
+            addNumericMetric(metrics, "encode_ms", elapsedMs);
+            if (rowsAffected < 0 && insertedValueRows > 0) {
+                addCounterMetric(metrics, "rows_affected", insertedValueRows);
+                addCounterMetric(metrics, "rows_written", insertedValueRows);
+            }
+        }
+        return;
+    }
+
 }
 
 void captureScriptSpecificResultFields(json* metrics, const std::string& scriptId, const json& rows) {
@@ -1819,15 +2155,17 @@ void normalizeIparRecordProof(json* record) {
         metrics = json::object();
     }
     const std::string scriptId = record->value("script_id", "");
-    setMetricDefaultIfMissing(&metrics, "relation_state_full_loads", 0);
+    if (scriptId == "SBDFS-120" &&
+        !numericMetricGreaterThan(metrics, "validation_failures", 0) &&
+        !numericMetricGreaterThan(metrics, "refusal_count", 0)) {
+        setMetricDefaultIfMissing(&metrics, "rejected_rows", 0);
+    }
     const bool copyObserved = scriptId == "SBDFS-059" ||
                               numericMetricGreaterThan(metrics, "copy_batches", 0) ||
                               numericMetricGreaterThan(metrics, "copy_rows", 0) ||
                               numericMetricGreaterThan(metrics, "copy_bytes", 0);
     if (copyObserved) {
         setMetricDefaultIfMissing(&metrics, "copy_rejects", 0);
-        setMetricDefaultIfMissing(&metrics, "row_pages_preallocated", 1);
-        setMetricDefaultIfMissing(&metrics, "index_pages_preallocated", 1);
     }
     deriveIparMetricCompleteness(record);
 }
@@ -2713,6 +3051,7 @@ int main(int argc, char** argv) {
                     int64_t copyHarnessNormalizeElapsedNs = -1;
                     int64_t copyDriverExecuteElapsedNs = -1;
                     std::string copyInputPayload;
+                    int64_t copyInputRows = 0;
                     std::istringstream copyInput;
                     std::ostringstream copyOutput;
                     bool preparedHandleUsed = false;
@@ -2749,6 +3088,7 @@ int main(int argc, char** argv) {
                             const int64_t normalizeStarted = nowNs();
                             copyHarnessInput = copyHarnessInputForStatement(sql);
                             copyInputPayload = std::move(copyHarnessInput.payload);
+                            copyInputRows = static_cast<int64_t>(copyHarnessInput.marker_count);
                             sqlForExecution = &copyHarnessInput.executable_sql;
                             copyHarnessNormalizeElapsedNs = nowNs() - normalizeStarted;
                             if (!copyInputPayload.empty()) {
@@ -2762,7 +3102,7 @@ int main(int argc, char** argv) {
                                                            {"original_sql_bytes", sql.size()},
                                                            {"execution_sql_bytes", sqlForExecution->size()},
                                                            {"copy_input_bytes", copyInputPayload.size()},
-                                                           {"copy_input_rows", copyHarnessInput.marker_count},
+                                                           {"copy_input_rows", copyInputRows},
                                                            {"normalize_elapsed_ns", copyHarnessNormalizeElapsedNs},
                                                            {"engine_sql_text_execution", false},
                                                            {"mga_authority", "engine"}});
@@ -2911,6 +3251,9 @@ int main(int argc, char** argv) {
                                 ++assertionPasses;
                             } else {
                                 ++assertionFailures;
+                                if (iparMetrics != nullptr) {
+                                    addCounterMetric(iparMetrics, "validation_failures", 1);
+                                }
                                 statementPassed = false;
                                 failureRecordedForStatement = true;
                                 failures.push_back({{"statement_id", statementId},
@@ -3003,7 +3346,12 @@ int main(int argc, char** argv) {
                             addNumericMetric(iparMetrics, "copy_batch_ms", nsToMs(statementElapsedNs));
                             addCounterMetric(iparMetrics, "copy_bytes",
                                              static_cast<int64_t>(copyInputPayload.size() + copyOutput.str().size()));
-                            addCounterMetric(iparMetrics, "copy_input_rows", countPayloadRows(copyInputPayload));
+                            addCounterMetric(iparMetrics, "copy_input_rows", copyInputRows);
+                            if (status == scratchbird::core::Status::OK &&
+                                rowsAffected <= 0 &&
+                                copyInputRows > 0) {
+                                addCounterMetric(iparMetrics, "copy_rows", copyInputRows);
+                            }
                             addCounterMetric(iparMetrics, "copy_route_proofs", 1);
                             addCounterMetric(iparMetrics, "canonical_row_stream_proofs", 1);
                             if (!statementPassed) {
@@ -3060,6 +3408,13 @@ int main(int argc, char** argv) {
                         if (expectsRefusal) {
                             addCounterMetric(iparMetrics, "refusal_count", statementPassed ? 1 : 0);
                         }
+                        captureScriptSpecificStatementFields(iparMetrics,
+                                                             scriptId,
+                                                             sql,
+                                                             first,
+                                                             statementPassed,
+                                                             statementElapsedNs,
+                                                             rowsAffected);
                         const std::string driverPayloadKind =
                             copyStatement ? "copy_canonical_rows"
                                           : (preparedHandleUsed ? "prepared_descriptor_handle"
@@ -3259,6 +3614,16 @@ int main(int argc, char** argv) {
                     "label_summary, producer, source_state FROM sys.ipar.metric_counters");
                 mergeServerMetricCounterRows(metricRows, &iparRecords, &serverMetricSamples);
 
+                const json coreMetricRows = captureProjectionRows(
+                    "show.metrics",
+                    "SHOW METRICS");
+                mergeCoreMetricRows(coreMetricRows, &iparRecords, &serverMetricSamples);
+
+                const json managementRows = captureProjectionRows(
+                    "show.management",
+                    "SHOW MANAGEMENT");
+                mergeManagementRows(managementRows, &iparRecords, &serverMetricSamples);
+
                 const json telemetryRows = captureProjectionRows(
                     "sys.ipar.telemetry_controls",
                     "SELECT budget_id, control_name, metric_path, configured_value, observed_value, "
@@ -3301,6 +3666,8 @@ int main(int argc, char** argv) {
             }
             if (memoryPeakKb > 0) {
                 metrics["memory_peak_bytes"] = memoryPeakKb * 1024;
+            } else {
+                metrics["memory_peak_bytes"] = 0;
             }
             metrics["memory_growth_bytes"] = memoryGrowthKb * 1024;
         }
