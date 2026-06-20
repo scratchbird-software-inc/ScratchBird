@@ -1294,6 +1294,11 @@ std::string PreparedAuthorityProofHash(const ServerPreparedStatementRecord& prep
   return digest.empty() ? std::string{} : "sha256:" + digest;
 }
 
+std::string PreparedExecutionStatementShapeHash(std::string_view encoded) {
+  const std::string digest = engine_api::SecuritySha256Hex(std::string(encoded));
+  return digest.empty() ? std::string{} : "sha256:" + digest;
+}
+
 void SealPreparedAuthorityProof(ServerPreparedStatementRecord* prepared,
                                 const ServerSessionRecord& session) {
   if (prepared == nullptr) return;
@@ -1374,6 +1379,54 @@ std::string PreparedStatementAuthorityMismatchReason(
                                              expected_proof)) {
     return "prepared_statement_authority_hash_stale";
   }
+  const auto context_it = registry.prepared_execution_contexts_by_uuid.find(
+      UuidBytesToText(prepared.prepared_statement_uuid));
+  if (context_it == registry.prepared_execution_contexts_by_uuid.end()) {
+    return "prepared_statement_execution_context_missing";
+  }
+  const auto& execution_context = context_it->second;
+  if (execution_context.grants_authority) {
+    return "prepared_statement_execution_context_stale";
+  }
+  if (execution_context.session_uuid != session.session_uuid) {
+    return "prepared_statement_cross_session";
+  }
+  if (execution_context.auth_context_uuid != session.auth_context_uuid) {
+    return "prepared_statement_security_context_stale";
+  }
+  if (execution_context.principal_uuid != session.principal_uuid ||
+      execution_context.effective_user_uuid != session.effective_user_uuid) {
+    return "prepared_statement_cross_user";
+  }
+  if (execution_context.database_uuid != session.database_uuid) {
+    return "prepared_statement_cross_database";
+  }
+  if (execution_context.operation_id != prepared.operation_id ||
+      execution_context.target_object_uuid != prepared.target_object_uuid ||
+      execution_context.authority_proof_hash != prepared.authority_proof_hash ||
+      execution_context.statement_shape_hash !=
+          PreparedExecutionStatementShapeHash(prepared.encoded_sblr_envelope)) {
+    return "prepared_statement_execution_context_stale";
+  }
+  if (execution_context.epoch_vector.catalog_generation != session.catalog_generation ||
+      execution_context.epoch_vector.security_epoch != session.security_epoch ||
+      execution_context.epoch_vector.descriptor_epoch != session.descriptor_epoch ||
+      execution_context.epoch_vector.grant_epoch != session.grant_epoch ||
+      execution_context.epoch_vector.policy_generation != session.policy_generation ||
+      execution_context.epoch_vector.capability_policy_generation !=
+          session.capability_policy_generation ||
+      execution_context.epoch_vector.cache_invalidation_epoch !=
+          session.cache_invalidation_epoch ||
+      execution_context.epoch_vector.name_resolution_epoch !=
+          session.name_resolution_epoch ||
+      execution_context.epoch_vector.resource_epoch != session.resource_epoch) {
+    return "prepared_statement_execution_context_stale";
+  }
+  if (execution_context.epoch_vector.role_set_hash != session.role_set_hash ||
+      execution_context.epoch_vector.group_set_hash != session.group_set_hash ||
+      execution_context.epoch_vector.search_path_hash != session.search_path_hash) {
+    return "prepared_statement_authorization_context_stale";
+  }
   if (prepared.session_object_handle_id != 0) {
     const auto validation =
         ValidateSessionObjectHandle(registry,
@@ -1417,6 +1470,8 @@ std::string PreparedStatementRefusalDetail(std::string_view mismatch) {
       mismatch == "prepared_statement_authority_proof_stale" ||
       mismatch == "prepared_statement_authority_hash_stale" ||
       mismatch == "prepared_statement_dependency_stale" ||
+      mismatch == "prepared_statement_execution_context_missing" ||
+      mismatch == "prepared_statement_execution_context_stale" ||
       mismatch == "prepared_statement_language_context_stale" ||
       mismatch.starts_with("prepared_statement_object_handle_")) {
     return "prepared_statement_epoch_stale";
@@ -1487,6 +1542,47 @@ void BindPreparedSessionObjectHandle(ServerSessionRegistry* registry,
   prepared->target_object_kind = std::move(handle.object_kind);
   prepared->target_operation_id = std::move(handle.operation_id);
   prepared->target_column_set_hash = std::move(handle.column_set_hash);
+}
+
+ServerPreparedExecutionContextRecord BuildPreparedExecutionContext(
+    const ServerPreparedStatementRecord& prepared,
+    const ServerSessionRecord& session) {
+  ServerPreparedExecutionContextRecord context;
+  context.prepared_statement_uuid = prepared.prepared_statement_uuid;
+  context.session_uuid = prepared.session_uuid;
+  context.auth_context_uuid = prepared.auth_context_uuid;
+  context.principal_uuid = prepared.principal_uuid;
+  context.effective_user_uuid = prepared.effective_user_uuid;
+  context.database_uuid = prepared.database_uuid;
+  context.operation_id = prepared.operation_id;
+  context.target_object_uuid = prepared.target_object_uuid;
+  context.statement_shape_hash =
+      PreparedExecutionStatementShapeHash(prepared.encoded_sblr_envelope);
+  context.authority_proof_hash = prepared.authority_proof_hash;
+  context.epoch_vector.catalog_generation = prepared.catalog_generation;
+  context.epoch_vector.security_epoch = prepared.security_epoch;
+  context.epoch_vector.descriptor_epoch = prepared.descriptor_epoch;
+  context.epoch_vector.grant_epoch = prepared.grant_epoch;
+  context.epoch_vector.policy_generation = prepared.policy_generation;
+  context.epoch_vector.capability_policy_generation =
+      session.capability_policy_generation;
+  context.epoch_vector.cache_invalidation_epoch = session.cache_invalidation_epoch;
+  context.epoch_vector.name_resolution_epoch = session.name_resolution_epoch;
+  context.epoch_vector.resource_epoch = session.resource_epoch;
+  context.epoch_vector.role_set_hash = prepared.role_set_hash;
+  context.epoch_vector.group_set_hash = prepared.group_set_hash;
+  context.epoch_vector.search_path_hash = prepared.search_path_hash;
+  context.grants_authority = false;
+  return context;
+}
+
+void StorePreparedExecutionContext(ServerSessionRegistry* registry,
+                                   const ServerPreparedStatementRecord& prepared,
+                                   const ServerSessionRecord& session) {
+  if (registry == nullptr) return;
+  registry->prepared_execution_contexts_by_uuid
+      [UuidBytesToText(prepared.prepared_statement_uuid)] =
+          BuildPreparedExecutionContext(prepared, session);
 }
 
 void BumpSessionLanguageResourceEpochs(ServerSessionRecord* session) {
@@ -1813,6 +1909,66 @@ bool TextBoolField(std::string_view encoded, std::string_view key, bool default_
 
 std::string EncodedTextField(std::string_view encoded, const std::string& field) {
   return JsonTextField(encoded, field).value_or(TextLineValue(encoded, field).value_or(""));
+}
+
+std::string DispatchStatementShapeHash(std::string_view encoded) {
+  std::ostringstream canonical;
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start,
+                       end == std::string_view::npos ? encoded.size() - start
+                                                     : end - start);
+    const std::size_t equals = line.find('=');
+    const std::string_view key =
+        equals == std::string_view::npos ? std::string_view{} : line.substr(0, equals);
+    if (key != "negative_authorization_cache_key" &&
+        key != "capability_cache_key" &&
+        key != "statement_preflight_cache_key") {
+      canonical << line << '\n';
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  const std::string digest = engine_api::SecuritySha256Hex(canonical.str());
+  return digest.empty() ? std::string{} : "sha256:" + digest;
+}
+
+std::string StripDispatchAuthorityCacheMetadata(std::string_view encoded) {
+  std::string stripped;
+  bool removed = false;
+  bool wrote_line = false;
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start,
+                       end == std::string_view::npos ? encoded.size() - start
+                                                     : end - start);
+    const std::size_t equals = line.find('=');
+    const std::string_view key =
+        equals == std::string_view::npos ? std::string_view{} : line.substr(0, equals);
+    if (key == "negative_authorization_cache_key" ||
+        key == "capability_cache_key" ||
+        key == "statement_preflight_cache_key") {
+      removed = true;
+    } else {
+      if (wrote_line) stripped.push_back('\n');
+      stripped.append(line);
+      wrote_line = true;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return removed ? stripped : std::string(encoded);
+}
+
+std::string DiagnosticDetailField(const ServerDiagnostic& diagnostic) {
+  for (const auto& field : diagnostic.fields) {
+    if (field.key == "detail") return field.value;
+  }
+  return diagnostic.code;
 }
 
 struct DispatchIdentifierPart {
@@ -5567,11 +5723,11 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   prepared.operation_id = admission.operation_id;
   prepared.requires_public_abi_dispatch = admission.requires_public_abi_dispatch;
   prepared.row_count_hint = admission.row_count_hint;
-  prepared.catalog_generation = decoded->catalog_generation;
-  prepared.security_epoch = decoded->security_epoch;
+  prepared.catalog_generation = session->catalog_generation;
+  prepared.security_epoch = session->security_epoch;
   prepared.descriptor_epoch = session->descriptor_epoch;
   prepared.grant_epoch = session->grant_epoch;
-  prepared.policy_generation = decoded->policy_generation;
+  prepared.policy_generation = session->policy_generation;
   prepared.role_set_hash = session->role_set_hash;
   prepared.group_set_hash = session->group_set_hash;
   prepared.search_path_hash = session->search_path_hash;
@@ -5582,6 +5738,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                   prepared.encoded_sblr_envelope,
                                   prepared.operation_id);
   SealPreparedAuthorityProof(&prepared, *session);
+  StorePreparedExecutionContext(registry, prepared, *session);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
@@ -5683,8 +5840,129 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       encoded = prepared_statement->encoded_sblr_envelope;
     }
   }
+  const std::string statement_shape_hash = DispatchStatementShapeHash(encoded);
+  const std::string operation_hint = EncodedTextField(encoded, "operation_id");
+  const std::string target_object_hint =
+      EncodedTextField(encoded, "target_object_uuid");
+  const auto fail_authority_cache_before_dispatch =
+      [&](std::string detail) -> SessionOperationResult {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   detail);
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   kSchemaExecuteResultTestV1,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.AUTHORITY_CACHE_STALE",
+                   "The server refused a stale or cross-authority cache entry before SBLR dispatch.",
+                   std::move(detail));
+  };
+  const auto validate_cache_reference =
+      [&](std::string_view field,
+          const std::string& cache_kind,
+          bool negative_refusal)
+          -> std::optional<SessionOperationResult> {
+    const std::string cache_key = EncodedTextField(encoded, std::string(field));
+    if (cache_key.empty()) return std::nullopt;
+    const auto validation =
+        ValidateServerAuthorityCacheEntry(*registry,
+                                          *session,
+                                          cache_key,
+                                          cache_kind,
+                                          operation_hint,
+                                          target_object_hint,
+                                          statement_shape_hash);
+    if (!validation.accepted) {
+      return fail_authority_cache_before_dispatch(validation.detail.empty()
+                                                     ? "authority_cache_stale"
+                                                     : validation.detail);
+    }
+    MarkServerAuthorityCacheHit(registry, cache_key);
+    if (!negative_refusal) return std::nullopt;
+    const std::string detail =
+        validation.record == nullptr || validation.record->diagnostic_detail.empty()
+            ? "negative_authorization_cache_hit"
+            : validation.record->diagnostic_detail;
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   detail);
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   kSchemaExecuteResultTestV1,
+                   decoded->session_uuid,
+                   validation.record == nullptr ||
+                           validation.record->diagnostic_code.empty()
+                       ? "PARSER_SERVER_IPC.NEGATIVE_AUTHORIZATION_CACHE_HIT"
+                       : validation.record->diagnostic_code,
+                   "The cached negative authorization decision refused this statement before SBLR dispatch.",
+                   detail);
+  };
+  if (auto cached_refusal = validate_cache_reference(
+          "negative_authorization_cache_key", "negative_authorization", true)) {
+    return *cached_refusal;
+  }
+  if (auto stale_capability = validate_cache_reference(
+          "capability_cache_key", "capability_route", false)) {
+    return *stale_capability;
+  }
+  if (auto stale_preflight = validate_cache_reference(
+          "statement_preflight_cache_key", "statement_preflight", false)) {
+    return *stale_preflight;
+  }
+  const std::string implicit_negative_key =
+      ServerAuthorityCacheKey("negative_authorization",
+                              *session,
+                              operation_hint,
+                              target_object_hint,
+                              statement_shape_hash);
+  const auto implicit_negative =
+      ValidateServerAuthorityCacheEntry(*registry,
+                                        *session,
+                                        implicit_negative_key,
+                                        "negative_authorization",
+                                        operation_hint,
+                                        target_object_hint,
+                                        statement_shape_hash);
+  if (implicit_negative.accepted && implicit_negative.record != nullptr &&
+      implicit_negative.record->refusal) {
+    MarkServerAuthorityCacheHit(registry, implicit_negative_key);
+    const std::string detail =
+        implicit_negative.record->diagnostic_detail.empty()
+            ? "negative_authorization_cache_hit"
+            : implicit_negative.record->diagnostic_detail;
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   detail);
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   kSchemaExecuteResultTestV1,
+                   decoded->session_uuid,
+                   implicit_negative.record->diagnostic_code.empty()
+                       ? "PARSER_SERVER_IPC.NEGATIVE_AUTHORIZATION_CACHE_HIT"
+                       : implicit_negative.record->diagnostic_code,
+                   "The cached negative authorization decision refused this statement before SBLR dispatch.",
+                   detail);
+  }
+  encoded = StripDispatchAuthorityCacheMetadata(encoded);
   auto admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
   if (!admission.admitted) {
+    const std::string diagnostic_code =
+        admission.diagnostics.empty()
+            ? "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"
+            : admission.diagnostics.front().code;
+    const std::string diagnostic_detail =
+        admission.diagnostics.empty()
+            ? "sblr_admission_rejected"
+            : DiagnosticDetailField(admission.diagnostics.front());
+    StoreServerAuthorityCacheDecision(registry,
+                                      *session,
+                                      "negative_authorization",
+                                      operation_hint,
+                                      target_object_hint,
+                                      statement_shape_hash,
+                                      diagnostic_code,
+                                      diagnostic_detail,
+                                      true);
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kFailed,
@@ -5713,6 +5991,15 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                    "The execute SBLR envelope does not match the prepared statement operation.",
                    "prepared_statement_shape_mismatch");
   }
+  StoreServerAuthorityCacheDecision(registry,
+                                    *session,
+                                    "capability_route",
+                                    admission.operation_id,
+                                    target_object_hint,
+                                    statement_shape_hash,
+                                    {},
+                                    "capability_route_admitted",
+                                    false);
   if (IsLanguageSessionOperation(admission.operation_id)) {
     if (admission.operation_id == "language.session.set") {
       const std::string target_language_profile =
@@ -6023,6 +6310,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                     prepared.encoded_sblr_envelope,
                                     prepared.operation_id);
     SealPreparedAuthorityProof(&prepared, *session);
+    StorePreparedExecutionContext(registry, prepared, *session);
     registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
@@ -6557,6 +6845,15 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                        : transaction_refusal->diagnostics.front().code);
     return *transaction_refusal;
   }
+  StoreServerAuthorityCacheDecision(registry,
+                                    *session,
+                                    "statement_preflight",
+                                    admission.operation_id,
+                                    target_object_hint,
+                                    statement_shape_hash,
+                                    {},
+                                    "statement_preflight_admitted",
+                                    false);
   if (admission.operation_id == "routine.execute_cursor_argument") {
     const auto fail_routine_cursor = [&](std::string code,
                                          std::string message,

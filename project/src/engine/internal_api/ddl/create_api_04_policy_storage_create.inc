@@ -159,6 +159,12 @@
                               {"name", record.default_name},
                               {"state", "active"},
                               {"payload", "domain_event=domain_create"}});
+  AddDdlPublicationResult(&result,
+                          "ddl.create_domain",
+                          "domain",
+                          record.domain_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "domain_event");
   return result;
 }
 
@@ -405,6 +411,12 @@ EngineCreateConstraintResult EngineCreateConstraint(const EngineCreateConstraint
   result.metadata_cache_epoch = applied.metadata_cache_epoch;
   if (result.ok) {
     result.evidence.push_back({"ddl_catalog_route", "sys.constraint_descriptor"});
+    AddDdlPublicationResult(&result,
+                            kOperation,
+                            "constraint",
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "constraint_descriptor");
   }
   return result;
 }

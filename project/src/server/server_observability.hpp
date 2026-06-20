@@ -120,6 +120,12 @@ struct ServerObservabilityState {
   std::uint64_t audit_observation_count = 0;
   std::uint64_t audit_persist_stride = 128;
   std::uint64_t audit_persist_skipped = 0;
+  std::uint64_t ipar_hot_path_budget_percent_x100 = 500;
+  bool ipar_detail_trace_enabled = false;
+  std::uint64_t ipar_detail_trace_sample_stride = 1024;
+  std::uint64_t ipar_slow_path_reason_series_limit = 64;
+  std::uint64_t ipar_slow_path_reason_series_count = 0;
+  std::uint64_t ipar_slow_path_reason_series_dropped = 0;
   std::uint64_t audit_sequence = 0;
   std::uint64_t support_bundle_export_sequence = 0;
   std::filesystem::path metrics_path;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/sys_information_projection.hpp"
+#include "memory_observability_overhead.hpp"
 #include "observability/show_api.hpp"
 #include "query/plan_api.hpp"
 
@@ -20,6 +21,8 @@
 namespace {
 
 namespace info = scratchbird::engine::internal_api;
+namespace mem = scratchbird::core::memory;
+namespace platform = scratchbird::core::platform;
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -337,6 +340,12 @@ void TestDefinitions() {
       info::FindSysInformationProjectionDefinition("sys.ipar.slow_path_reasons");
   Require(HasColumn(*slow, "driver_visible_message", "text"),
           "slow-path message column missing");
+  Require(HasColumn(*slow, "required_action", "text"),
+          "slow-path required action column missing");
+  Require(HasColumn(*slow, "authority_scope", "text"),
+          "slow-path authority scope column missing");
+  Require(HasColumn(*slow, "finality_authority", "yes_no"),
+          "slow-path finality authority column missing");
 }
 
 void TestEmptySourcesDoNotFabricateRows() {
@@ -402,7 +411,66 @@ void TestPopulatedRows() {
                       "driver_visible_message",
                       "COPY used full validation because descriptor epochs were stale."),
           "slow-path driver-visible message missing");
+  Require(HasRowValue(slow_paths,
+                      "required_action",
+                      "inspect_pre_execution_validation_reason_relation_state_full_load_required"),
+          "slow-path required action missing");
+  Require(HasRowValue(slow_paths,
+                      "authority_scope",
+                      "diagnostic_evidence_only_not_finality_visibility_security_recovery_or_parser_authority"),
+          "slow-path authority scope did not remain diagnostic-only");
+  Require(HasRowValue(slow_paths, "finality_authority", "NO"),
+          "slow-path diagnostic became finality authority");
   RequireNoPrivateLeak(slow_paths);
+}
+
+void TestMemoryOverheadSamplingBounds() {
+  mem::MemorySupportBundleRequest request;
+  request.snapshot.current_bytes = 16384;
+  request.snapshot.peak_bytes = 32768;
+  request.snapshot.allocation_count = 64;
+  request.snapshot.deallocation_count = 32;
+  request.snapshot.failure_count = 1;
+  request.snapshot.contexts.push_back(
+      {"query", "query-ipar-overhead-a", 8192, 16384, 8, 4, 1, 2});
+  request.snapshot.contexts.push_back(
+      {"query", "query-ipar-overhead-b", 4096, 8192, 4, 2, 1, 2});
+  request.snapshot.categories.push_back(
+      {mem::MemoryCategory::executor_query_reserved, 8192, 16384, 8, 4, 1, 2});
+  request.snapshot.categories.push_back(
+      {mem::MemoryCategory::page_buffer, 4096, 8192, 4, 2, 1, 2});
+  request.diagnostics.push_back(platform::MakeDiagnostic(
+      platform::StatusCode::memory_limit_exceeded,
+      platform::Severity::error,
+      platform::Subsystem::memory,
+      "SB_MEMORY.IPAR_OVERHEAD_PROOF",
+      "memory.ipar.overhead_proof",
+      {{"reason", "sampled_budget_proof"}},
+      {},
+      "ipar_observability_projection_gate",
+      {}));
+
+  mem::MemoryObservabilityOverheadPolicy policy;
+  policy.sample_count = 8;
+  policy.p50_budget_microseconds = 100000;
+  policy.p95_budget_microseconds = 250000;
+  policy.p99_budget_microseconds = 500000;
+  policy.sampled_max_top_contexts = 1;
+  policy.sampled_max_top_categories = 1;
+
+  const auto result = mem::MeasureMemoryObservabilityOverhead(request, policy);
+  Require(result.ok(), "IPAR telemetry overhead sampling result failed");
+  Require(result.within_budget, "IPAR telemetry overhead exceeded configured budget");
+  Require(result.sampling_bounds_enforced,
+          "IPAR telemetry sampling bounds were not enforced");
+  Require(result.sampled_top_context_count <= 1,
+          "IPAR sampled top-context count exceeded policy");
+  Require(result.sampled_top_category_count <= 1,
+          "IPAR sampled top-category count exceeded policy");
+  Require(result.sampled_row_count < result.observed_row_count,
+          "IPAR sampled mode did not reduce support-bundle rows");
+  Require(result.failure_evidence_preserved_under_sampling,
+          "IPAR sampled mode lost failure diagnostic evidence");
 }
 
 void TestClusterAndUnsupportedPaths() {
@@ -470,6 +538,7 @@ int main() {
   TestDefinitions();
   TestEmptySourcesDoNotFabricateRows();
   TestPopulatedRows();
+  TestMemoryOverheadSamplingBounds();
   TestClusterAndUnsupportedPaths();
   TestShowCatalogRequestCarriesIparSources();
   TestPlanOperationRequestCarriesIparSources();

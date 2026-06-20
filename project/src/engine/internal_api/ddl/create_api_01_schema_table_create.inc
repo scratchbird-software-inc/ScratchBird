@@ -178,6 +178,12 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
                               {"name", fallback_name},
                               {"state", state},
                               {"payload", "ddl_operation=" + operation_id}});
+  AddDdlPublicationResult(&result,
+                          operation_id,
+                          object_kind,
+                          result.primary_object.uuid.canonical,
+                          result.catalog_row_uuid.canonical,
+                          scope_uuid.empty() ? object_kind : scope_uuid);
   return result;
 }
 

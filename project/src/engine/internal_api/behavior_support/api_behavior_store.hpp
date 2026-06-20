@@ -58,6 +58,12 @@ EngineTypedValue ApiBehaviorValue(std::string value);
 EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields);
 void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);
 void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id);
+void AddDdlPublicationResult(EngineApiResult* result,
+                             const std::string& operation_id,
+                             const std::string& object_kind,
+                             const std::string& object_uuid,
+                             const std::string& catalog_row_uuid = {},
+                             const std::string& invalidation_scope = {});
 std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,
                                                          const std::string& object_kind,
                                                          std::uint64_t observer_tx);
@@ -124,6 +130,11 @@ TResult PersistedRecordResult(const TRequest& request,
                               {"name", persisted.record.default_name},
                               {"state", persisted.record.state},
                               {"payload", persisted.record.payload}});
+  AddDdlPublicationResult(&result,
+                          operation_id,
+                          persisted.record.object_kind,
+                          persisted.record.object_uuid,
+                          result.catalog_row_uuid.canonical);
   return result;
 }
 
@@ -156,6 +167,11 @@ TResult PersistedRecordResultWithPayload(const TRequest& request,
                               {"name", persisted.record.default_name},
                               {"state", persisted.record.state},
                               {"payload", persisted.record.payload}});
+  AddDdlPublicationResult(&result,
+                          operation_id,
+                          persisted.record.object_kind,
+                          persisted.record.object_uuid,
+                          result.catalog_row_uuid.canonical);
   return result;
 }
 

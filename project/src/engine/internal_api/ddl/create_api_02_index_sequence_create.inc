@@ -38,6 +38,12 @@
                               {"name", record.default_name},
                               {"state", "active"},
                               {"payload", record.payload}});
+  AddDdlPublicationResult(&result,
+                          "ddl.create_schema",
+                          "schema",
+                          record.schema_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "schema_tree");
   return result;
 }
 
@@ -66,6 +72,12 @@ EngineCreateSynonymResult EngineCreateSynonym(const EngineCreateSynonymRequest& 
   result.metadata_cache_epoch = created.metadata_cache_epoch;
   if (result.ok) {
     result.evidence.push_back({"ddl_catalog_route", "sys.catalog.synonym"});
+    AddDdlPublicationResult(&result,
+                            kOperation,
+                            "synonym",
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "catalog.synonym");
   }
   return result;
 }
