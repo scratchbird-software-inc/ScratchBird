@@ -4620,6 +4620,23 @@ if(TARGET sb_server_core)
     LABELS "ipar_server_protocol_cache_support_gate;IPAR-P1-07;IPAR-P1-08;IPAR-P1-09;IPAR-P1-11;IPAR-P1-17;IPAR-P1-20;IPAR-P1-21;protocol_batching;prepared_sblr_uuid_template_cache;resolved_uuid_descriptor_cache;dml_ddl_protocol_metadata;frame_crypto_reuse;result_buffer_cache;hot_failure_classification_cache;database_lifecycle;mga_transaction_regression"
   )
 
+  add_executable(ipar_parameter_specialization_variants_gate
+    ipar_parameter_specialization_variants_gate.cpp
+  )
+  target_compile_features(ipar_parameter_specialization_variants_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_parameter_specialization_variants_gate
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME ipar_parameter_specialization_variants_gate
+    COMMAND ipar_parameter_specialization_variants_gate
+  )
+  set_tests_properties(ipar_parameter_specialization_variants_gate PROPERTIES
+    LABELS "ipar_parameter_specialization_variants_gate;IPAR-P1-19;parameter_specialization_variants;prepared_execution_context;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(ipar_prepared_handle_authority_gate
     ipar_prepared_handle_authority_gate.cpp
   )

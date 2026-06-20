@@ -54,6 +54,7 @@ struct IparCacheAuthorityFlags {
 struct IparCacheStatus {
   bool accepted = false;
   bool cache_hit = false;
+  bool selected_specialized_variant = false;
   bool stale = false;
   bool cross_session = false;
   bool cross_authorization = false;
@@ -61,6 +62,8 @@ struct IparCacheStatus {
   bool authority_forbidden = false;
   std::string detail;
   std::string cache_key;
+  std::string selected_variant_id;
+  std::string selected_variant_path;
 };
 
 struct IparUuidDependency {
@@ -74,13 +77,81 @@ struct IparUuidDependency {
   std::uint64_t name_resolution_epoch = 1;
 };
 
+enum class IparParameterNullabilityClass {
+  kUnknown,
+  kAllNonNull,
+  kNullableSparse,
+  kNullableDense,
+  kAllNull,
+};
+
+enum class IparParameterWidthClass {
+  kUnknown,
+  kNarrow,
+  kMedium,
+  kWide,
+  kMixed,
+};
+
+enum class IparParameterLargeValueClass {
+  kUnknown,
+  kInlineOnly,
+  kLargeValueRefs,
+  kMixedInlineAndLarge,
+};
+
+enum class IparParameterKeyDistributionClass {
+  kUnknown,
+  kPointStable,
+  kHotKeySkew,
+  kRangeClustered,
+  kHashDistributed,
+};
+
+enum class IparParameterBatchSizeClass {
+  kUnknown,
+  kSingleRow,
+  kSmallBatch,
+  kMediumBatch,
+  kLargeBatch,
+  kBulkBatch,
+};
+
+struct IparPreparedParameterSpecializationProfile {
+  IparParameterNullabilityClass nullability_class =
+      IparParameterNullabilityClass::kUnknown;
+  IparParameterWidthClass width_class = IparParameterWidthClass::kUnknown;
+  IparParameterLargeValueClass large_value_class =
+      IparParameterLargeValueClass::kUnknown;
+  IparParameterKeyDistributionClass key_distribution_class =
+      IparParameterKeyDistributionClass::kUnknown;
+  IparParameterBatchSizeClass batch_size_class =
+      IparParameterBatchSizeClass::kUnknown;
+  std::uint64_t observed_batch_rows = 0;
+};
+
+struct IparPreparedSpecializedVariant {
+  std::string variant_id;
+  std::string fast_path_label;
+  IparPreparedParameterSpecializationProfile profile;
+  std::string statement_semantics_hash;
+  std::string authorization_context_hash;
+  IparCacheAuthorityFlags authority_flags;
+  bool changes_statement_semantics = false;
+  bool skips_authorization_recheck = false;
+  bool parser_or_driver_executes_sql = false;
+};
+
 struct IparPreparedTemplatePut {
   IparSupportSessionScope scope;
   std::string operation_id;
   std::string operation_family;
   std::string canonical_sblr_envelope;
   std::string result_descriptor_hash;
+  std::string statement_semantics_hash;
+  std::string authorization_context_hash;
   std::vector<IparUuidDependency> dependencies;
+  std::vector<IparPreparedSpecializedVariant> specialized_variants;
   bool parser_sql_text_present = false;
   bool all_names_resolved_to_uuid = true;
   IparCacheAuthorityFlags authority_flags;
@@ -94,10 +165,14 @@ struct IparPreparedTemplateRecord {
   std::string canonical_sblr_digest;
   std::string dependency_digest;
   std::string result_descriptor_hash;
+  std::string statement_semantics_hash;
+  std::string authorization_context_hash;
   std::vector<IparUuidDependency> dependencies;
+  std::vector<IparPreparedSpecializedVariant> specialized_variants;
   IparCacheAuthorityFlags authority_flags;
   std::uint64_t generation = 0;
   std::uint64_t hit_count = 0;
+  std::uint64_t specialized_variant_hit_count = 0;
 };
 
 struct IparPreparedTemplateLookup {
@@ -107,7 +182,10 @@ struct IparPreparedTemplateLookup {
   std::string operation_family;
   std::string canonical_sblr_envelope;
   std::string result_descriptor_hash;
+  std::string statement_semantics_hash;
+  std::string authorization_context_hash;
   std::vector<IparUuidDependency> dependencies;
+  IparPreparedParameterSpecializationProfile observed_parameter_profile;
 };
 
 struct IparResolvedDescriptorPut {
@@ -247,6 +325,8 @@ struct IparFailureClassificationResult {
 struct IparProtocolSupportMetrics {
   std::uint64_t prepared_template_hits = 0;
   std::uint64_t prepared_template_misses = 0;
+  std::uint64_t prepared_specialized_variant_hits = 0;
+  std::uint64_t prepared_specialized_variant_misses = 0;
   std::uint64_t descriptor_hits = 0;
   std::uint64_t descriptor_misses = 0;
   std::uint64_t stale_rejections = 0;
