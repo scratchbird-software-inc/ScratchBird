@@ -57,6 +57,7 @@ add_library(sb_core_index
   index_filter_access.cpp
   index_compact_encoding.cpp
   index_family_route_classification.cpp
+  ipar_index_support_services.cpp
   inverted_search_segment_publication.cpp
   index_key_encoding.cpp
   index_lineage.cpp

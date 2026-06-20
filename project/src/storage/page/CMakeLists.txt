@@ -44,6 +44,7 @@ add_library(sb_storage_page
   index_hash_page.cpp
   index_page_family.cpp
   index_specialized_pages.cpp
+  ipar_integrity_verifier.cpp
   ipar_storage_support_services.cpp
   late_payload_fetch.cpp
   large_payload.cpp

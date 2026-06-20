@@ -15,6 +15,7 @@ add_library(sb_core_catalog
   cluster_descriptor_manifest.cpp
   cluster_schema_gating.cpp
   catalog_index_profile.cpp
+  ipar_catalog_support_services.cpp
   catalog_record_codec.cpp
   catalog_records.cpp
 )
