@@ -2127,7 +2127,7 @@ void writeIparArtifacts(const std::filesystem::path& artifactRoot,
         }
     }
     std::ostringstream csv;
-    csv << "script_id,script,driver,route,parser_mode,page_size,sslmode,transport_mode";
+    csv << "script_id,script,driver,route,parser_mode,page_size,sslmode,transport_mode,tls_policy";
     for (const auto& field : metricFields) {
         csv << "," << field;
     }
@@ -2146,6 +2146,8 @@ void writeIparArtifacts(const std::filesystem::path& artifactRoot,
         csvEscape(csv, sslmode);
         csv << ",";
         csvEscape(csv, transportMode);
+        csv << ",";
+        csvEscape(csv, tlsPolicy);
         const json metrics = record.value("metrics", json::object());
         for (const auto& field : metricFields) {
             csv << ",";

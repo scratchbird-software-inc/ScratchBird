@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 add_library(sb_core_resources
+  resource_residency_cache.cpp
   resource_seed_pack.cpp
 )
 

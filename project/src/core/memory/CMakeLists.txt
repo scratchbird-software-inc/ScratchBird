@@ -14,6 +14,7 @@ add_library(sb_core_memory
   background_memory_reclamation.cpp
   foreign_memory_reservation.cpp
   hierarchical_memory_budget_ledger.cpp
+  ipar_memory_resource_services.cpp
   llvm_memory_accounting.cpp
   memory.cpp
   memory_adaptive_batch_working_set.cpp

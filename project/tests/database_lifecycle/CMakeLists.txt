@@ -1708,6 +1708,23 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "ipar_ddl_publication_result_gate;IPAR-P2-10;ddl_publish_packet;ddl_uuid_return;database_lifecycle;mga_transaction_regression"
   )
 
+  add_executable(ipar_catalog_ddl_support_service_gate
+    ipar_catalog_ddl_support_service_gate.cpp
+  )
+  target_compile_features(ipar_catalog_ddl_support_service_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_catalog_ddl_support_service_gate
+    PRIVATE
+      sb_engine_internal_api
+  )
+
+  add_test(
+    NAME ipar_catalog_ddl_support_service_gate
+    COMMAND ipar_catalog_ddl_support_service_gate
+  )
+  set_tests_properties(ipar_catalog_ddl_support_service_gate PROPERTIES
+    LABELS "ipar_catalog_ddl_support_service_gate;IPAR-P2-05;IPAR-P2-08;IPAR-P2-09;IPAR-P2-12;IPAR-P2-13;IPAR-P2-14;catalog_ddl_support_service;catalog_dependency_closure;ddl_impact_prediction;ddl_descriptor_prebuild;ddl_snapshot_rcu;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(ipar_memory_pressure_trim_gate
     ipar_memory_pressure_trim_gate.cpp
   )
@@ -4447,6 +4464,26 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		    LABELS "ipar_unique_index_probe_gate;IPAR-P4-01;IPAR-P4-03;synchronous_exact_unique_maintenance;unique_index_probe;physical_unique_index_probe;database_lifecycle;mga_transaction_regression"
 		  )
 		endif()
+
+add_executable(ipar_p6_support_services_gate
+  ipar_p6_support_services_gate.cpp
+)
+target_compile_features(ipar_p6_support_services_gate PRIVATE cxx_std_23)
+target_link_libraries(ipar_p6_support_services_gate
+  PRIVATE
+    sb_core_memory
+    sb_core_platform
+    sb_core_resources
+    sb_engine_internal_api
+)
+
+add_test(
+  NAME ipar_p6_support_services_gate
+  COMMAND ipar_p6_support_services_gate
+)
+set_tests_properties(ipar_p6_support_services_gate PROPERTIES
+  LABELS "ipar_p6_support_services_gate;IPAR-P6-11;IPAR-P6-14;IPAR-P6-17;IPAR-P6-18;IPAR-P6-19;IPAR-P6-22;IPAR-P6-23;IPAR-P6-24;IPAR-P6-25;IPAR-P6-26;IPAR-P6-31;memory_residency;resource_governance;row_encoder_cache;resource_residency;prewarm;capability_bitset;epoch_vector;noop_branch;statement_pool;diagnostic_template_cache;database_open_warm_profile;database_lifecycle;mga_transaction_regression"
+)
 
 if(TARGET sb_server_core)
   add_executable(ipar_prepared_execution_cache_authority_gate

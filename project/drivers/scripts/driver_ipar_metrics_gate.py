@@ -20,6 +20,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from generate_ipar_metrics_fixture import generate_fixture
+
 
 IPAR_GATE = Path("project/tests/conformance/drivers/full_surface_scripts/ipar_performance_proof_gate.py")
 IPAR_ARTIFACT_NAMES = {
@@ -336,7 +342,7 @@ def validate_driver_route_artifacts(
         errors.append("driver_artifact:route_proof:explicit_non_tls_test_route_missing")
 
     if csv_rows:
-        required_columns = {"script_id", "route", "parser_mode", "sslmode", "transport_mode"}
+        required_columns = {"script_id", "route", "parser_mode", "sslmode", "transport_mode", "tls_policy"}
         if not required_columns.issubset(csv_rows[0].keys()):
             errors.append("driver_artifact:csv:required_route_columns_missing")
     elif any(path.name == IPAR_ARTIFACT_NAMES["csv"] for path in inputs):
@@ -355,6 +361,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-missing-telemetry", action="store_true")
     parser.add_argument("--require-tls-route-proof", action="store_true")
     parser.add_argument("--require-non-tls-route-proof", action="store_true")
+    parser.add_argument(
+        "--generate-deterministic-fixture",
+        action="store_true",
+        help="Write deterministic IPAR proof artifacts to --artifact-root before validation.",
+    )
+    parser.add_argument(
+        "--generate-fixture-if-missing",
+        action="store_true",
+        help="Write deterministic IPAR proof artifacts only when no requested artifacts exist.",
+    )
     parser.add_argument(
         "--skip-if-no-artifacts",
         action="store_true",
@@ -381,10 +397,33 @@ def main() -> int:
         or repo_root / "build" / "reports" / "driver_ipar_metrics_gate.json"
     ).resolve()
 
+    generated_fixture_root: Path | None = None
+    generated_fixture_files: list[Path] = []
+
     try:
         ensure_build_path(repo_root, output_root)
         ensure_build_path(repo_root, report_path)
         shapes = {"json", "jsonl", "csv"} if args.shape == "all" else {args.shape}
+        if args.generate_deterministic_fixture:
+            if not args.artifact_root:
+                args.artifact_root = [repo_root / "build" / "drivers" / "ipar-metrics-proof"]
+            generated_fixture_root = ensure_build_path(repo_root, args.artifact_root[0])
+            generated_fixture_files = generate_fixture(
+                repo_root,
+                generated_fixture_root,
+                target_script_ids=args.target_script or None,
+            )
+        elif args.generate_fixture_if_missing:
+            if not args.artifact_root:
+                args.artifact_root = [repo_root / "build" / "drivers" / "ipar-metrics-proof"]
+            present_shapes, _missing_shapes = artifact_shape_presence(repo_root, args.artifact_root, shapes)
+            if not present_shapes:
+                generated_fixture_root = ensure_build_path(repo_root, args.artifact_root[0])
+                generated_fixture_files = generate_fixture(
+                    repo_root,
+                    generated_fixture_root,
+                    target_script_ids=args.target_script or None,
+                )
         present_shapes, missing_shapes = artifact_shape_presence(repo_root, args.artifact_root, shapes)
         if args.skip_if_no_artifacts and args.artifact_root and not present_shapes:
             print("driver_ipar_metrics_gate=skip:no_artifacts")
@@ -450,6 +489,8 @@ def main() -> int:
             "allow_missing_telemetry": args.allow_missing_telemetry,
             "require_tls_route_proof": args.require_tls_route_proof,
             "require_non_tls_route_proof": args.require_non_tls_route_proof,
+            "generated_fixture_root": str(generated_fixture_root) if generated_fixture_root else "",
+            "generated_fixture_files": [str(path) for path in generated_fixture_files],
             "preflight_errors": preflight_errors,
             "gate_returncode": result_returncode,
         },
