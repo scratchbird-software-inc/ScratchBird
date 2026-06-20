@@ -192,7 +192,7 @@ function(sb_add_driver_ipar_performance_proof_gate test_name mode)
   )
 endfunction()
 
-function(sb_add_driver_ipar_optional_artifact_gate test_name)
+function(sb_add_driver_ipar_artifact_gate test_name)
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -204,12 +204,11 @@ function(sb_add_driver_ipar_optional_artifact_gate test_name)
       "--report" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
       "--require-tls-route-proof"
       "--require-non-tls-route-proof"
-      "--skip-if-no-artifacts"
+      "--generate-deterministic-fixture"
   )
   set_tests_properties("${test_name}" PROPERTIES
-    LABELS "driver;driver_native_full_surface_gate;driver_ipar_metrics_gate;ipar_artifact_proof;IPAR-P0-02;IPAR-P5-03;IPAR-P7-01;IPAR-P7-03;${test_name}"
+    LABELS "driver;driver_native_full_surface_gate;driver_ipar_metrics_gate;ipar_artifact_contract;ipar_deterministic_artifact_fixture;IPAR-P5-03-contract;IPAR-P7-03-contract;${test_name}"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
-    SKIP_RETURN_CODE 77
   )
 endfunction()
 
@@ -320,7 +319,7 @@ sb_add_driver_native_full_surface_gate(driver_native_full_surface_tool_inventory
 sb_add_driver_full_surface_script_suite_gate(driver_full_surface_script_suite_gate)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_schema_gate schema)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_plan_gate plan)
-sb_add_driver_ipar_optional_artifact_gate(driver_ipar_metrics_artifact_proof_gate)
+sb_add_driver_ipar_artifact_gate(driver_ipar_metrics_artifact_proof_gate)
 
 sb_add_driver_status_package_gate(driver_row_status_manifest_gate driver-row-status DSR-030 DSR-032)
 sb_add_driver_status_package_gate(adapter_row_status_manifest_gate adapter-row-status DSR-031 DSR-032)

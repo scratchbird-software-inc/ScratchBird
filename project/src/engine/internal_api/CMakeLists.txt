@@ -111,9 +111,11 @@ add_library(sb_engine_internal_api
   catalog/catalog_lookup_api.cpp
   catalog/agent_catalog_runtime_schema_versioning.cpp
   catalog/datatype_transport_api.cpp
+  catalog/ddl_support_service.cpp
   catalog/descriptor_mutation_api.cpp
   catalog/descriptor_api.cpp
   catalog/datatype_index_optimizer_admission_api.cpp
+  catalog/ipar_fast_path_support.cpp
   catalog/name_registry.cpp
   catalog/name_resolution_api.cpp
   catalog/pinned_descriptor_cache.cpp
@@ -133,6 +135,7 @@ add_library(sb_engine_internal_api
   ddl/create_api.cpp
   ddl/drop_api.cpp
   diagnostics/diagnostic_rendering.cpp
+  diagnostics/diagnostic_template_cache.cpp
   dml/constraint_enforcement.cpp
   dml/delete_api.cpp
   dml/delete_batch.cpp
