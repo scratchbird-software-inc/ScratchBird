@@ -20229,8 +20229,46 @@ bool ConsumeCreateIndexKeyList(const CstDocument& cst,
     std::string envelope = token.text;
     std::size_t probe = cursor + 1;
     while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
-    if (probe < cst.tokens.size() && cst.tokens[probe].text == "(") {
-      if (ToUpperAscii(token.text) != "LOWER") return false;
+    if (ToUpperAscii(token.text) == "CAST") {
+      if (probe >= cst.tokens.size() || cst.tokens[probe].text != "(") return false;
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[probe])) return false;
+      const std::string expression_column = cst.tokens[probe].text;
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || ToUpperAscii(cst.tokens[probe].text) != "AS") return false;
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[probe])) return false;
+      const std::string cast_type = LowerAscii(cst.tokens[probe].text);
+      ++probe;
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe < cst.tokens.size() && cst.tokens[probe].text == "(") {
+        int type_depth = 1;
+        ++probe;
+        while (probe < cst.tokens.size() && type_depth > 0) {
+          if (cst.tokens[probe].kind == TokenKind::kEnd ||
+              cst.tokens[probe].kind == TokenKind::kStatementTerminator) {
+            return false;
+          }
+          if (cst.tokens[probe].text == "(") {
+            ++type_depth;
+          } else if (cst.tokens[probe].text == ")") {
+            --type_depth;
+          }
+          ++probe;
+        }
+        if (type_depth != 0) return false;
+      }
+      while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
+      if (probe >= cst.tokens.size() || cst.tokens[probe].text != ")") return false;
+      ++probe;
+      envelope = "cast:" + expression_column + ":" + cast_type;
+      if (expression_key_present != nullptr) *expression_key_present = true;
+    } else if (probe < cst.tokens.size() && cst.tokens[probe].text == "(") {
+      const std::string function_name = ToUpperAscii(token.text);
+      if (function_name != "LOWER" && function_name != "UPPER" && function_name != "LENGTH") return false;
       ++probe;
       while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
       if (probe >= cst.tokens.size() || !IsIdentifierLikeToken(cst.tokens[probe])) return false;
@@ -20239,13 +20277,14 @@ bool ConsumeCreateIndexKeyList(const CstDocument& cst,
       while (probe < cst.tokens.size() && IsTriviaToken(cst.tokens[probe])) ++probe;
       if (probe >= cst.tokens.size() || cst.tokens[probe].text != ")") return false;
       ++probe;
-      envelope = "lower:" + expression_column;
+      envelope = LowerAscii(token.text) + ":" + expression_column;
       if (expression_key_present != nullptr) *expression_key_present = true;
     } else {
       const std::string maybe_direction =
           probe < cst.tokens.size() ? ToUpperAscii(cst.tokens[probe].text) : "";
       if (maybe_direction == "ASC" || maybe_direction == "DESC") {
         ++probe;
+        if (maybe_direction == "DESC") envelope = "desc:" + envelope;
       }
     }
     key_envelopes->push_back(std::move(envelope));
@@ -21366,6 +21405,7 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
   }
   if (info.index_profile == "gin") info.index_profile = "full_text";
   if (info.index_profile == "fulltext") info.index_profile = "full_text";
+  if (info.index_profile == "unique_btree") info.index_profile = "btree_unique";
   if (info.unique && info.index_profile == "btree") info.index_profile = "btree_unique";
   bool expression_key_present = false;
   if (!ConsumeCreateIndexKeyList(cst,
@@ -21406,8 +21446,48 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
     if (ConsumeKeyword(cst, &index, "WHERE")) {
       std::size_t predicate_parts = 0;
       const std::size_t predicate_begin = index;
-      if (!ConsumeQualifiedName(cst, &index, &predicate_parts) ||
-          !ConsumeSymbolText(cst, &index, "=")) {
+      if (!ConsumeQualifiedName(cst, &index, &predicate_parts)) {
+        info.invalid_reason = "index_where_predicate_invalid";
+        return info;
+      }
+      const std::string predicate_column = LastQualifiedNameLeaf(cst, predicate_begin, index);
+      if (predicate_column.empty()) {
+        info.invalid_reason = "index_where_predicate_invalid";
+        return info;
+      }
+      if (ConsumeSymbolText(cst, &index, "%")) {
+        while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+        if (index >= cst.tokens.size() ||
+            cst.tokens[index].kind != TokenKind::kNumericLiteral) {
+          info.invalid_reason = "index_where_modulus_required";
+          return info;
+        }
+        const std::string divisor = DmlLiteralPayload(cst.tokens[index]);
+        ++index;
+        if (!ConsumeSymbolText(cst, &index, "=")) {
+          info.invalid_reason = "index_where_predicate_invalid";
+          return info;
+        }
+        while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+        if (index >= cst.tokens.size()) {
+          info.invalid_reason = "index_where_predicate_value_required";
+          return info;
+        }
+        const auto& value_token = cst.tokens[index];
+        if (value_token.kind != TokenKind::kStringLiteral &&
+            value_token.kind != TokenKind::kNumericLiteral &&
+            value_token.kind != TokenKind::kBooleanLiteral) {
+          info.invalid_reason = "index_where_predicate_value_required";
+          return info;
+        }
+        const std::string predicate_value = DmlLiteralPayload(value_token);
+        ++index;
+        info.key_envelopes.push_back("where_mod_eq:" + predicate_column + ":" +
+                                     divisor + "=" + predicate_value);
+        if (info.index_profile == "btree") info.index_profile = "partial";
+        continue;
+      }
+      if (!ConsumeSymbolText(cst, &index, "=")) {
         info.invalid_reason = "index_where_predicate_invalid";
         return info;
       }
@@ -21426,9 +21506,7 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
       }
       predicate_value = DmlLiteralPayload(value_token);
       ++index;
-      info.key_envelopes.push_back("where_eq:" +
-                                   LastQualifiedNameLeaf(cst, predicate_begin, index) +
-                                   "=" + predicate_value);
+      info.key_envelopes.push_back("where_eq:" + predicate_column + "=" + predicate_value);
       if (info.index_profile == "btree") info.index_profile = "partial";
       continue;
     }
@@ -27049,9 +27127,26 @@ void AppendSimpleCreateStatisticsJson(std::ostream& out, const SimpleCreateStati
 void AppendSimpleCreateIndexJson(std::ostream& out, const SimpleCreateIndexInfo& info) {
   if (!info.active || !info.valid) return;
   std::ostringstream key_envelopes;
+  bool has_expression_key = false;
+  bool has_predicate = false;
+  bool has_include = false;
   for (std::size_t index = 0; index < info.key_envelopes.size(); ++index) {
     if (index != 0) key_envelopes << ',';
     key_envelopes << info.key_envelopes[index];
+    const std::string& envelope = info.key_envelopes[index];
+    if (envelope.rfind("lower:", 0) == 0 ||
+        envelope.rfind("upper:", 0) == 0 ||
+        envelope.rfind("length:", 0) == 0 ||
+        envelope.rfind("cast:", 0) == 0) {
+      has_expression_key = true;
+    }
+    if (envelope.rfind("where_eq:", 0) == 0 ||
+        envelope.rfind("where_mod_eq:", 0) == 0) {
+      has_predicate = true;
+    }
+    if (envelope.rfind("include:", 0) == 0) {
+      has_include = true;
+    }
   }
   out << "\"catalog_envelope_kind\":\"create_index_ddl\","
       << "\"catalog_authority\":\"sys.catalog.index\","
@@ -27073,11 +27168,13 @@ void AppendSimpleCreateIndexJson(std::ostream& out, const SimpleCreateIndexInfo&
       << "\"mga_catalog_commit_required\":true,"
       << "\"mga_table_visibility_required\":true,"
       << "\"index_key_envelopes_bound_by_engine\":true,"
-      << "\"index_expression_keys_included\":false,"
-      << "\"index_predicate_included\":false,"
-      << "\"index_include_columns_included\":false,"
+      << "\"index_expression_keys_included\":" << (has_expression_key ? "true" : "false") << ','
+      << "\"index_predicate_included\":" << (has_predicate ? "true" : "false") << ','
+      << "\"index_include_columns_included\":" << (has_include ? "true" : "false") << ','
       << "\"index_options_included\":false,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":false,"
+      << "\"name_text_role\":\"create_object_catalog_name\","
       << "\"sql_text_included\":false,";
 }
 
@@ -31442,7 +31539,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.query.multimodel_or_ddl.v3" ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
         envelope.payload.find("\"object_name_text_included\":false") == std::string::npos ||
-        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
+        envelope.payload.find("\"name_text_authority\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"runtime_evidence_kind\"") == std::string::npos ||
         !HasValue(envelope.required_authority_steps,
@@ -31484,7 +31582,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"synthetic_replay\":false") == std::string::npos ||
         envelope.payload.find("\"private_error_vector_route\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
-        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
+        envelope.payload.find("\"name_text_authority\":false") == std::string::npos ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.syntax_evidence_only") ||
         !HasValue(envelope.required_authority_steps,
@@ -31921,10 +32020,11 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"index_target_uuid\"") == std::string::npos ||
         envelope.payload.find("\"index_key_count\"") == std::string::npos ||
         envelope.payload.find("\"index_profile\"") == std::string::npos ||
-        envelope.payload.find("\"index_expression_keys_included\":false") == std::string::npos ||
-        envelope.payload.find("\"index_predicate_included\":false") == std::string::npos ||
-        envelope.payload.find("\"index_include_columns_included\":false") == std::string::npos ||
-        envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"index_expression_keys_included\"") == std::string::npos ||
+        envelope.payload.find("\"index_predicate_included\"") == std::string::npos ||
+        envelope.payload.find("\"index_include_columns_included\"") == std::string::npos ||
+        envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
+        envelope.payload.find("\"name_text_authority\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_rights, "right.catalog_mutate") ||
         !HasValue(envelope.required_authority_steps, "authority.engine.ddl_create_index_api_required") ||
@@ -31936,7 +32036,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_refs, "sys.storage.index_descriptor") ||
         !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_INDEX_CATALOG_ENVELOPE_INVALID",
-                       "CREATE INDEX SBLR must carry index descriptor and table UUID authority without text authority");
+                       "CREATE INDEX SBLR must carry index descriptor, table UUID authority, and non-authoritative create-object name data");
     }
     if (envelope.payload.find("\"parser_executes_sql\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.PARSER_AUTHORITY_BYPASS",

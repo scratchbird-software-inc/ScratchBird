@@ -120,10 +120,10 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline() {
+PipelineArtifacts RunPipeline(std::string_view sql = kSql) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
-  artifacts.cst = BuildCst(kSql);
+  artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound =
       BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session,
@@ -213,22 +213,80 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CREATE INDEX payload missing non-unique evidence");
   Require(Contains(artifacts.envelope.payload, kSurfaceId),
           "CREATE INDEX payload missing row-identifiable surface evidence");
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
-          "CREATE INDEX payload did not prove no name text authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
+          "CREATE INDEX payload did not carry create-object catalog name data");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_authority\":false"),
+          "CREATE INDEX payload did not prove name text is non-authoritative");
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "CREATE INDEX payload did not prove no SQL text authority");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
           "CREATE INDEX payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, "replay_target_id_idx") &&
-              !Contains(artifacts.envelope.payload, "replay_target") &&
-              !Contains(artifacts.envelope.payload, std::string(kSql)),
-          "CREATE INDEX payload embedded SQL text or identifier names as authority");
+  Require(!Contains(artifacts.envelope.payload, std::string(kSql)),
+          "CREATE INDEX payload embedded SQL text as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "CREATE INDEX payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),
           "CREATE INDEX payload carried WAL/recovery authority");
+}
+
+void RequireGeneratedIndexForm(std::string_view sql,
+                               std::string_view expected_profile,
+                               std::string_view expected_key_fragment,
+                               std::string_view expected_flag) {
+  const auto artifacts = RunPipeline(sql);
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(), "generated CREATE INDEX CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "generated CREATE INDEX AST failed");
+  Require(artifacts.bound.bound, "generated CREATE INDEX bind failed");
+  Require(artifacts.verifier.admitted, "generated CREATE INDEX verifier rejected exact route");
+  Require(Contains(artifacts.envelope.payload, "\"catalog_envelope_kind\":\"create_index_ddl\""),
+          "generated CREATE INDEX missing create-index envelope");
+  Require(Contains(artifacts.envelope.payload, expected_profile),
+          "generated CREATE INDEX profile was not lowered");
+  Require(Contains(artifacts.envelope.payload, expected_key_fragment),
+          "generated CREATE INDEX key envelope was not lowered");
+  Require(Contains(artifacts.envelope.payload, expected_flag),
+          "generated CREATE INDEX feature flag was not lowered");
+  Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
+          "generated CREATE INDEX carried SQL text authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_authority\":false"),
+          "generated CREATE INDEX carried authoritative name text");
+  Require(!artifacts.envelope.parser_executes_sql,
+          "generated CREATE INDEX lowering allowed parser SQL execution");
+}
+
+void RequireGeneratedIndexForms() {
+  RequireGeneratedIndexForm(
+      "CREATE INDEX idx_unique ON replay_target USING UNIQUE_BTREE (id);",
+      "\"index_profile\":\"btree_unique\"",
+      "\"index_key_envelope\":\"id\"",
+      "\"index_predicate_included\":false");
+  RequireGeneratedIndexForm(
+      "CREATE INDEX idx_partial ON replay_target USING BTREE (id) WHERE id % 2 = 0;",
+      "\"index_profile\":\"partial\"",
+      "where_mod_eq:id:2=0",
+      "\"index_predicate_included\":true");
+  RequireGeneratedIndexForm(
+      "CREATE INDEX idx_cast ON replay_target USING BTREE (CAST(id AS VARCHAR(512)));",
+      "\"index_profile\":\"expression\"",
+      "cast:id:varchar",
+      "\"index_expression_keys_included\":true");
+  RequireGeneratedIndexForm(
+      "CREATE INDEX idx_desc ON replay_target USING BTREE (id DESC);",
+      "\"index_profile\":\"btree\"",
+      "desc:id",
+      "\"index_expression_keys_included\":false");
+  RequireGeneratedIndexForm(
+      "CREATE INDEX idx_covering ON replay_target USING BTREE (id) INCLUDE (id);",
+      "\"index_profile\":\"covering\"",
+      "include:id",
+      "\"index_include_columns_included\":true");
 }
 
 void RequireServerAdmission(const SblrEnvelope& envelope) {
@@ -369,15 +427,27 @@ api::EngineApiRequest EngineCreateTableApiRequest() {
   return request;
 }
 
-api::EngineApiRequest EngineCreateIndexApiRequest() {
+api::EngineApiRequest EngineCreateSchemaApiRequest() {
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.object_kind = "schema";
+  request.localized_names.push_back({"en", "primary", "", "create_index_exact_route", true});
+  return request;
+}
+
+api::EngineApiRequest EngineCreateIndexApiRequest(
+    std::string index_uuid = std::string(kIndexUuid),
+    std::string index_name = "replay_target_id_idx",
+    std::string index_kind = "btree",
+    std::vector<std::string> key_envelopes = {"id"}) {
   api::EngineApiRequest request;
   request.target_object.uuid.canonical = std::string(kTableUuid);
   request.target_object.object_kind = "table";
   api::EngineIndexDefinition index;
-  index.requested_index_uuid.canonical = std::string(kIndexUuid);
-  index.names.push_back({"en", "primary", "", "replay_target_id_idx", true});
-  index.index_kind = "btree";
-  index.key_envelopes.push_back("id");
+  index.requested_index_uuid.canonical = std::move(index_uuid);
+  index.names.push_back({"en", "primary", "", std::move(index_name), true});
+  index.index_kind = std::move(index_kind);
+  index.key_envelopes = std::move(key_envelopes);
   request.indexes.push_back(std::move(index));
   return request;
 }
@@ -396,11 +466,112 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string_view operation_id,
   return envelope;
 }
 
+void RequireCreateIndexDispatch(const api::EngineRequestContext& context,
+                                api::EngineApiRequest request,
+                                std::string_view expected_family,
+                                std::string_view failure_message) {
+  const sblr::SblrDispatchRequest create_index_request{
+      context,
+      EngineEnvelope(kOperationId,
+                     kOpcode,
+                     "trace.create_index.exact_route.generated_variant"),
+      std::move(request)};
+  const auto result = sblr::DispatchSblrOperation(create_index_request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.envelope_validated, "generated CREATE INDEX SBLR envelope did not validate");
+  Require(result.accepted, "generated CREATE INDEX SBLR dispatch did not accept");
+  Require(result.dispatched_to_api, "generated CREATE INDEX SBLR dispatch did not route to internal API");
+  Require(result.api_result.ok, failure_message);
+  Require(HasEvidence(result.api_result, "mga_relation_metadata", "index_create"),
+          "generated CREATE INDEX missing index-create MGA evidence");
+  Require(HasEvidence(result.api_result, "index_family", expected_family),
+          "generated CREATE INDEX missing expected index family evidence");
+}
+
+std::string EncodedCreateIndexOperationEnvelope(std::string_view index_uuid,
+                                                std::string_view index_name,
+                                                std::string_view index_profile,
+                                                std::string_view index_key_envelope,
+                                                bool unique) {
+  std::string envelope;
+  envelope += "operation_id=ddl.create_index\n";
+  envelope += "opcode=SBLR_DDL_CREATE_INDEX\n";
+  envelope += "sblr_operation_family=sblr.catalog.mutation.v3\n";
+  envelope += "result_shape=engine.api.result.v1\n";
+  envelope += "diagnostic_shape=engine.diagnostic.v1\n";
+  envelope += "trace_key=sbsql.create_index.typed_dispatch\n";
+  envelope += "contains_sql_text=false\n";
+  envelope += "parser_resolved_names_to_uuids=true\n";
+  envelope += "requires_security_context=true\n";
+  envelope += "requires_transaction_context=true\n";
+  envelope += "requires_cluster_authority=false\n";
+  envelope += "operand=text\tindex_object_uuid\t";
+  envelope += index_uuid;
+  envelope += "\n";
+  envelope += "operand=text\tindex_name\t";
+  envelope += index_name;
+  envelope += "\n";
+  envelope += "operand=text\tindex_target_uuid\t";
+  envelope += kTableUuid;
+  envelope += "\n";
+  envelope += "operand=text\tindex_target_kind\ttable\n";
+  envelope += "operand=text\tindex_profile\t";
+  envelope += index_profile;
+  envelope += "\n";
+  envelope += "operand=text\tindex_key_envelope\t";
+  envelope += index_key_envelope;
+  envelope += "\n";
+  envelope += "operand=text\tindex_unique\t";
+  envelope += unique ? "true\n" : "false\n";
+  return envelope;
+}
+
+void RequireCreateIndexDecodeDispatch(const api::EngineRequestContext& context,
+                                      std::string encoded_envelope,
+                                      std::string_view expected_family,
+                                      std::string_view failure_message) {
+  const auto result = sblr::DecodeAndDispatchSblrOperation(encoded_envelope, context);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.envelope_validated, "decoded CREATE INDEX SBLR envelope did not validate");
+  Require(result.accepted, "decoded CREATE INDEX SBLR dispatch did not accept");
+  Require(result.dispatched_to_api, "decoded CREATE INDEX SBLR dispatch did not route to internal API");
+  Require(result.api_result.ok, failure_message);
+  Require(HasEvidence(result.api_result, "index_family", expected_family),
+          "decoded CREATE INDEX missing expected index family evidence");
+}
+
 void RequireEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   auto context = BeginEngineTransaction(path, database_uuid);
+
+  const sblr::SblrDispatchRequest create_schema_request{
+      context,
+      EngineEnvelope("ddl.create_schema",
+                     "SBLR_DDL_CREATE_SCHEMA",
+                     "trace.create_index.exact_route.create_schema"),
+      EngineCreateSchemaApiRequest()};
+  const auto schema_result = sblr::DispatchSblrOperation(create_schema_request);
+  for (const auto& diagnostic : schema_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : schema_result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(schema_result.envelope_validated, "CREATE SCHEMA setup envelope did not validate");
+  Require(schema_result.accepted, "CREATE SCHEMA setup dispatch did not accept");
+  Require(schema_result.api_result.ok, "CREATE SCHEMA setup did not return success");
 
   const sblr::SblrDispatchRequest missing_target_index_request{
       context,
@@ -426,39 +597,130 @@ void RequireEngineDispatch() {
                      "trace.create_index.exact_route.create_table"),
       EngineCreateTableApiRequest()};
   const auto table_result = sblr::DispatchSblrOperation(create_table_request);
+  for (const auto& diagnostic : table_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : table_result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(table_result.envelope_validated, "CREATE TABLE setup envelope did not validate");
   Require(table_result.accepted, "CREATE TABLE setup dispatch did not accept");
   Require(table_result.api_result.ok, "CREATE TABLE setup did not return success");
 
-  const sblr::SblrDispatchRequest create_index_request{
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(),
+                             "btree",
+                             "EngineCreateIndex did not return success");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09812",
+                                 "replay_target_unique_idx",
+                                 "btree_unique",
+                                 {"id", "unique"}),
+                             "btree",
+                             "EngineCreateIndex btree_unique route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09813",
+                                 "replay_target_expression_idx",
+                                 "expression",
+                                 {"cast:id:varchar"}),
+                             "expression",
+                             "EngineCreateIndex expression route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09814",
+                                 "replay_target_desc_idx",
+                                 "btree",
+                                 {"desc:id"}),
+                             "btree",
+                             "EngineCreateIndex descending btree route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09815",
+                                 "replay_target_partial_idx",
+                                 "partial",
+                                 {"id", "where_mod_eq:id:2=0"}),
+                             "partial",
+                             "EngineCreateIndex partial route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09816",
+                                 "replay_target_covering_idx",
+                                 "covering",
+                                 {"id", "include:id"}),
+                             "covering",
+                             "EngineCreateIndex covering route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09817",
+                                 "replay_target_in_memory_idx",
+                                 "in_memory",
+                                 {"id"}),
+                             "in_memory",
+                             "EngineCreateIndex in-memory route failed");
+  RequireCreateIndexDispatch(context,
+                             EngineCreateIndexApiRequest(
+                                 "019f0000-0000-7000-8000-000000d09818",
+                                 "replay_target_reference_emulated_idx",
+                                 "reference_emulated",
+                                 {"id"}),
+                             "reference_emulated",
+                             "EngineCreateIndex reference-emulated route failed");
+  RequireCreateIndexDecodeDispatch(
       context,
-      EngineEnvelope(kOperationId,
-                     kOpcode,
-                     "trace.create_index.exact_route.SBSQL-D09825658F68"),
-      EngineCreateIndexApiRequest()};
-  const auto result = sblr::DispatchSblrOperation(create_index_request);
-  for (const auto& diagnostic : result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
-  }
-  for (const auto& diagnostic : result.api_result.diagnostics) {
-    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-  }
-  Require(result.envelope_validated, "engine SBLR envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept CREATE INDEX");
-  Require(result.dispatched_to_api, "engine SBLR dispatch did not route to internal API");
-  Require(result.api_result.ok, "EngineCreateIndex did not return success");
-  Require(result.api_result.operation_id == kOperationId,
-          "EngineCreateIndex returned wrong operation id");
-  Require(result.api_result.primary_object.object_kind == "index",
-          "EngineCreateIndex did not return index primary object");
-  Require(result.api_result.primary_object.uuid.canonical == kIndexUuid,
-          "EngineCreateIndex returned wrong index UUID");
-  Require(HasEvidence(result.api_result, "mga_relation_metadata", "index_create"),
-          "EngineCreateIndex missing index-create MGA evidence");
-  Require(HasEvidence(result.api_result, "index_family", "btree"),
-          "EngineCreateIndex missing btree family evidence");
-  Require(!result.api_result.catalog_row_uuid.canonical.empty(),
-          "EngineCreateIndex missing catalog row UUID evidence");
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09822",
+                                          "replay_target_typed_cast_idx",
+                                          "expression",
+                                          "cast:id:varchar",
+                                          false),
+      "expression",
+      "typed CREATE INDEX expression route failed");
+  RequireCreateIndexDecodeDispatch(
+      context,
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09823",
+                                          "replay_target_typed_desc_idx",
+                                          "btree",
+                                          "desc:id",
+                                          false),
+      "btree",
+      "typed CREATE INDEX descending route failed");
+  RequireCreateIndexDecodeDispatch(
+      context,
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09824",
+                                          "replay_target_typed_unique_idx",
+                                          "btree_unique",
+                                          "id",
+                                          true),
+      "btree",
+      "typed CREATE INDEX unique route failed");
+  RequireCreateIndexDecodeDispatch(
+      context,
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09825",
+                                          "replay_target_typed_partial_idx",
+                                          "partial",
+                                          "id,where_mod_eq:id:2=0",
+                                          false),
+      "partial",
+      "typed CREATE INDEX partial route failed");
+  RequireCreateIndexDecodeDispatch(
+      context,
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09826",
+                                          "replay_target_typed_in_memory_idx",
+                                          "in_memory",
+                                          "id,include:id",
+                                          false),
+      "in_memory",
+      "typed CREATE INDEX in-memory route failed");
+  RequireCreateIndexDecodeDispatch(
+      context,
+      EncodedCreateIndexOperationEnvelope("019f0000-0000-7000-8000-000000d09827",
+                                          "replay_target_typed_reference_idx",
+                                          "reference_emulated",
+                                          "id,where_mod_eq:id:2=0",
+                                          false),
+      "reference_emulated",
+      "typed CREATE INDEX reference-emulated route failed");
   RemoveDatabaseArtifacts(path);
 }
 
@@ -468,6 +730,7 @@ int main() {
   RequireRegistryEvidence();
   const auto artifacts = RunPipeline();
   RequireExactLowering(artifacts);
+  RequireGeneratedIndexForms();
   RequireServerAdmission(artifacts.envelope);
   RequireEngineDispatch();
   std::cout << "sbsql_create_index_exact_route_conformance=passed\n";

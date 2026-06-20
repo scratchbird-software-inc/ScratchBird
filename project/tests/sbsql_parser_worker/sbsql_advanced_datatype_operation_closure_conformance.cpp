@@ -132,6 +132,20 @@ api::EngineRequestContext BeginTransaction(api::EngineRequestContext context) {
   return context;
 }
 
+api::EngineLocalizedName Name(std::string value);
+std::string FirstDetail(const api::EngineApiResult& result);
+
+void CreateSchema(const api::EngineRequestContext& context) {
+  api::EngineCreateSchemaRequest request;
+  request.context = context;
+  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.object_kind = "schema";
+  request.localized_names.push_back(Name("cbq008_schema"));
+  const auto result = api::EngineCreateSchema(request);
+  if (!result.ok) { std::cerr << FirstDetail(result) << '\n'; }
+  Require(result.ok, "create schema failed for advanced datatype closure");
+}
+
 api::EngineDescriptor Descriptor(std::string type) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
@@ -531,17 +545,19 @@ void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
   Require(table.ok, "create table with inline advanced index failed");
   Require(HasEvidence(table, "inline_index_create", kInlineIndexUuid),
           "inline index create evidence missing");
-  RequireIndexFamilyPersisted(context, kInlineIndexUuid, "spatial");
+  RequireIndexFamilyPersisted(context, kInlineIndexUuid, "rtree");
 
   const std::vector<std::pair<api::EngineIndexDefinition, std::string>> positive_indexes = {
       {Index("019f0000-0000-7000-8000-000000080821", "embedding_hnsw_idx", "hnsw", {"embedding"}), "vector_hnsw"},
       {Index("019f0000-0000-7000-8000-000000080822", "embedding_ivfflat_idx", "ivfflat", {"embedding"}), "vector_ivf"},
-      {Index("019f0000-0000-7000-8000-000000080823", "body_inverted_idx", "inverted", {"body"}), "full_text"},
+      {Index("019f0000-0000-7000-8000-000000080823", "body_inverted_idx", "inverted", {"body"}), "inverted"},
       {Index("019f0000-0000-7000-8000-000000080824", "observed_time_partition_idx", "time_partition", {"observed_at"}), "columnar_zone"},
       {Index("019f0000-0000-7000-8000-000000080825", "body_expression_idx", "expression", {"lower:body"}), "expression"},
       {Index("019f0000-0000-7000-8000-000000080826", "id_partial_idx", "partial", {"id", "where_eq:id=42"}), "partial"},
       {Index("019f0000-0000-7000-8000-000000080827", "graph_adjacency_idx", "adjacency", {"graph_path"}), "graph_adjacency"},
       {Index("019f0000-0000-7000-8000-000000080828", "graph_adjacency_profile_idx", "graph_adjacency", {"graph_path"}), "graph_adjacency"},
+      {Index("019f0000-0000-7000-8000-000000080834", "full_partial_idx", "partial", {"id"}), "partial"},
+      {Index("019f0000-0000-7000-8000-000000080836", "policy_blocked_idx", "policy_blocked", {"id"}), "policy_blocked"},
   };
   for (const auto& [definition, expected_family] : positive_indexes) {
     const std::string uuid_text = definition.requested_index_uuid.canonical;
@@ -564,10 +580,6 @@ void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
   rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080833", "bad_expression_idx", "expression", {"substr:body"}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:unsupported_expression_index_envelope",
           "unsupported expression index diagnostic drifted");
-
-  rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080834", "bad_partial_idx", "partial", {"id"}));
-  Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:partial_predicate_required",
-          "partial predicate diagnostic drifted");
 
   rejected = CreateIndex(context, Index("019f0000-0000-7000-8000-000000080835", "opaque_idx", "btree", {"secret_payload"}));
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:opaque_column_index_denied",
@@ -645,6 +657,7 @@ int main() {
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginTransaction(EngineContext(path, database_uuid));
+  CreateSchema(context);
   RequireAdvancedIndexDDL(context);
   return EXIT_SUCCESS;
 }

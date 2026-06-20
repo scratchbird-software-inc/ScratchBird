@@ -181,12 +181,31 @@ bool DescriptorBoolLocal(const std::map<std::string, std::string>& fields,
   return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
+bool DirectIndexKeyEnvelope(const std::string& envelope) {
+  if (envelope.empty() || envelope == "unique" || envelope == "where_true" ||
+      StartsWithLocal(envelope, "include:") || StartsWithLocal(envelope, "where_eq:") ||
+      StartsWithLocal(envelope, "where_mod_eq:")) {
+    return false;
+  }
+  bool saw_name_char = false;
+  for (const unsigned char ch : envelope) {
+    if (std::isalnum(ch) || ch == '_' || ch == '$' || ch == '.') {
+      saw_name_char = true;
+      continue;
+    }
+    return false;
+  }
+  return saw_name_char;
+}
+
 bool SupportedExpressionEnvelope(const std::string& envelope) {
   return StartsWithLocal(envelope, "lower:") || StartsWithLocal(envelope, "upper:") ||
          StartsWithLocal(envelope, "length:") || StartsWithLocal(envelope, "identity:") ||
+         StartsWithLocal(envelope, "cast:") || StartsWithLocal(envelope, "desc:") ||
          (StartsWithLocal(envelope, "lower(") && envelope.back() == ')') ||
          (StartsWithLocal(envelope, "upper(") && envelope.back() == ')') ||
-         (StartsWithLocal(envelope, "length(") && envelope.back() == ')');
+         (StartsWithLocal(envelope, "length(") && envelope.back() == ')') ||
+         DirectIndexKeyEnvelope(envelope);
 }
 
 std::string LocalizedNamesEnvelope(const std::vector<EngineLocalizedName>& names) {
@@ -230,17 +249,20 @@ scratchbird::core::index::IndexFamily CoreIndexFamilyForCreateIndex(
   namespace idx = scratchbird::core::index;
   const std::string family =
       index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
-  if (family == kCrudIndexFamilyBtree) {
-    return index.unique ? idx::IndexFamily::unique_btree : idx::IndexFamily::btree;
+  const bool has_directives = !index.predicate_kind.empty() ||
+                              !index.include_columns.empty();
+  bool has_expression_or_direction_key = false;
+  for (const auto& key : index.key_envelopes) {
+    if (StartsWithLocal(key, "lower:") || StartsWithLocal(key, "upper:") ||
+        StartsWithLocal(key, "length:") || StartsWithLocal(key, "identity:") ||
+        StartsWithLocal(key, "cast:") || StartsWithLocal(key, "desc:")) {
+      has_expression_or_direction_key = true;
+      break;
+    }
   }
-  if (family == kCrudIndexFamilyExpression) {
-    return idx::IndexFamily::expression;
-  }
-  if (family == kCrudIndexFamilyPartial) {
-    return idx::IndexFamily::partial;
-  }
-  if (family == kCrudIndexFamilyCovering) {
-    return idx::IndexFamily::covering;
+  if (family == kCrudIndexFamilyBtree && !index.unique && !has_directives &&
+      !has_expression_or_direction_key) {
+    return idx::IndexFamily::btree;
   }
   return idx::IndexFamily::unknown;
 }
@@ -450,18 +472,26 @@ std::string ColumnDescriptorForName(const std::vector<std::pair<std::string, std
 bool DescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
   return descriptor == "opaque_extension" || StartsWithLocal(descriptor, "opaque_extension;") ||
          descriptor.find("canonical=opaque_extension") != std::string::npos ||
+         descriptor.find("canonical_type=opaque_extension") != std::string::npos ||
          descriptor.find("base_type=opaque_extension") != std::string::npos;
 }
 
 std::string ColumnNameFromIndexEnvelope(const std::string& envelope) {
   if (envelope.empty() || envelope == "unique" || StartsWithLocal(envelope, "include:") ||
-      StartsWithLocal(envelope, "where_eq:")) {
+      StartsWithLocal(envelope, "where_eq:") || StartsWithLocal(envelope, "where_mod_eq:") ||
+      envelope == "where_true") {
     return {};
   }
+  if (StartsWithLocal(envelope, "desc:")) { return envelope.substr(5); }
   if (StartsWithLocal(envelope, "lower:")) { return envelope.substr(6); }
   if (StartsWithLocal(envelope, "upper:")) { return envelope.substr(6); }
   if (StartsWithLocal(envelope, "length:")) { return envelope.substr(7); }
   if (StartsWithLocal(envelope, "identity:")) { return envelope.substr(9); }
+  if (StartsWithLocal(envelope, "cast:")) {
+    const std::string rest = envelope.substr(5);
+    const auto pos = rest.find(':');
+    return pos == std::string::npos ? rest : rest.substr(0, pos);
+  }
   const auto open = envelope.find('(');
   const auto close = envelope.rfind(')');
   if (open != std::string::npos && close == envelope.size() - 1 && close > open + 1) {

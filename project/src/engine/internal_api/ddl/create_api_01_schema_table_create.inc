@@ -26,6 +26,18 @@ bool IndexTouchesOpaqueColumn(const EngineIndexDefinition& definition,
       }
       continue;
     }
+    if (StartsWithLocal(envelope, "where_mod_eq:")) {
+      const std::string condition = envelope.substr(13);
+      const auto pos = condition.find(':');
+      if (pos != std::string::npos &&
+          DescriptorIsOpaqueRenderOnly(ColumnDescriptorForName(columns, condition.substr(0, pos)))) {
+        return true;
+      }
+      continue;
+    }
+    if (envelope == "where_true") {
+      continue;
+    }
     const std::string column_name = ColumnNameFromIndexEnvelope(envelope);
     if (!column_name.empty() && DescriptorIsOpaqueRenderOnly(ColumnDescriptorForName(columns, column_name))) { return true; }
   }
@@ -59,11 +71,25 @@ CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
         index.predicate_column = condition.substr(0, pos);
         index.predicate_value = condition.substr(pos + 1);
       }
+    } else if (StartsWithLocal(envelope, "where_mod_eq:")) {
+      const std::string condition = envelope.substr(13);
+      const auto colon = condition.find(':');
+      const auto equals = condition.find('=');
+      if (colon != std::string::npos && equals != std::string::npos && colon < equals) {
+        index.predicate_kind = "where_mod_eq";
+        index.predicate_column = condition.substr(0, colon);
+        index.predicate_value = condition.substr(colon + 1);
+      }
+    } else if (envelope == "where_true") {
+      index.predicate_kind = "where_true";
     } else if (!envelope.empty()) {
       index.key_envelopes.push_back(envelope);
     }
   }
-  if (!index.key_envelopes.empty()) { index.column_name = index.key_envelopes.front(); }
+  if (index.family == kCrudIndexFamilyPartial && index.predicate_kind.empty()) {
+    index.predicate_kind = "where_true";
+  }
+  if (!index.key_envelopes.empty()) { index.column_name = ColumnNameFromIndexEnvelope(index.key_envelopes.front()); }
   return index;
 }
 

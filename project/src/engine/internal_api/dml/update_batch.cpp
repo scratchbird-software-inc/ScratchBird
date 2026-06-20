@@ -73,6 +73,14 @@ bool EnvelopeTouchesAssignedColumn(const std::string& envelope, const std::vecto
     const auto eq = body.find('=');
     return AssignmentTouchesColumn(assigned_columns, eq == std::string::npos ? body : body.substr(0, eq));
   }
+  if (envelope.rfind("where_mod_eq:", 0) == 0) {
+    const auto body = envelope.substr(13);
+    const auto colon = body.find(':');
+    return AssignmentTouchesColumn(assigned_columns, colon == std::string::npos ? body : body.substr(0, colon));
+  }
+  if (envelope == "where_true") {
+    return false;
+  }
   if (envelope.rfind("lower:", 0) == 0 || envelope.rfind("upper:", 0) == 0) {
     return AssignmentTouchesColumn(assigned_columns, envelope.substr(6));
   }
@@ -81,6 +89,14 @@ bool EnvelopeTouchesAssignedColumn(const std::string& envelope, const std::vecto
   }
   if (envelope.rfind("identity:", 0) == 0) {
     return AssignmentTouchesColumn(assigned_columns, envelope.substr(9));
+  }
+  if (envelope.rfind("desc:", 0) == 0) {
+    return AssignmentTouchesColumn(assigned_columns, envelope.substr(5));
+  }
+  if (envelope.rfind("cast:", 0) == 0) {
+    const auto body = envelope.substr(5);
+    const auto colon = body.find(':');
+    return AssignmentTouchesColumn(assigned_columns, colon == std::string::npos ? body : body.substr(0, colon));
   }
   const auto open = envelope.find('(');
   const auto close = envelope.size() > open ? envelope.rfind(')') : std::string::npos;
@@ -158,7 +174,7 @@ UpdateIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index,
       index.family == kCrudIndexFamilyColumnarZone || index.family == kCrudIndexFamilyExpression ||
       index.family == kCrudIndexFamilyGraphAdjacency || index.family == kCrudIndexFamilyPartial ||
       index.family == kCrudIndexFamilyCovering || index.family == kCrudIndexFamilyInMemory ||
-      index.family == kCrudIndexFamilyReferenceEmulated) {
+      index.family == kCrudIndexFamilyReferenceEmulated || index.family == kCrudIndexFamilyPolicyBlocked) {
     return UpdateIndexMaintenanceAction::synchronous_exact_rewrite;
   }
   return UpdateIndexMaintenanceAction::reject_batch_path;

@@ -97,8 +97,9 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
     return kCrudIndexProfileRowStoreScalarBtreeV1;
   }
   if (profile == "btree" || profile == "btree_unique" ||
+      profile == "unique_btree" ||
       profile == "native_unique_btree") {
-    return profile == "native_unique_btree" ? "btree_unique" : profile;
+    return profile == "native_unique_btree" || profile == "unique_btree" ? "btree_unique" : profile;
   }
   if (profile == "rtree" || profile == "native_rtree") { return "rtree"; }
   if (profile == "geohash" || profile == "native_spatial") { return "spatial"; }
@@ -113,7 +114,7 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
   if (profile == "hnsw" || profile == "native_hnsw") { return "vector_hnsw"; }
   if (profile == "ivfflat" || profile == "ivf_flat" || profile == "ivf" || profile == "native_ivf") { return "vector_ivf"; }
   if (profile == "native_vector_exact") { return "vector_exact"; }
-  if (profile == "adjacency" || profile == "graph_adjacency" || profile == "native_graph_lookup") { return "graph_adjacency"; }
+  if (profile == "graph" || profile == "adjacency" || profile == "graph_adjacency" || profile == "native_graph_lookup") { return "graph_adjacency"; }
   if (profile == "time_partition" || profile == "time-partition" || profile == "native_columnar_zone") { return "columnar_zone"; }
   if (profile == "native_zone_summary") { return "brin_zone"; }
   if (profile == "native_bloom_summary") { return "bloom"; }
@@ -125,6 +126,7 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
   if (profile == "native_temporary_work") { return "temporary_work"; }
   if (profile == "native_in_memory") { return "in_memory"; }
   if (profile == "native_reference_emulated") { return "reference_emulated"; }
+  if (profile == "native_policy_blocked") { return "policy_blocked"; }
   if (profile == "hash" || profile == "bitmap" || profile == "brin_zone" || profile == "bloom" ||
       profile == "full_text" || profile == "gin" || profile == "inverted" || profile == "ngram" ||
       profile == "sparse_wand" || profile == "spatial" || profile == "rtree" || profile == "gist" ||
@@ -132,7 +134,7 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
       profile == "vector_ivf" || profile == "columnar_zone" || profile == "document_path" ||
       profile == "graph_adjacency" || profile == "expression" || profile == "partial" ||
       profile == "covering" || profile == "temporary_work" || profile == "in_memory" ||
-      profile == "reference_emulated") {
+      profile == "reference_emulated" || profile == "policy_blocked") {
     return profile;
   }
   if (StartsWith(profile, "reference:") || StartsWith(profile, "postgres_") || StartsWith(profile, "mysql_") ||
@@ -172,6 +174,7 @@ std::string CrudIndexFamilyForProfile(const std::string& profile) {
   if (normalized == "temporary_work") { return kCrudIndexFamilyTemporaryWork; }
   if (normalized == "in_memory") { return kCrudIndexFamilyInMemory; }
   if (normalized == "reference_emulated") { return kCrudIndexFamilyReferenceEmulated; }
+  if (normalized == "policy_blocked") { return kCrudIndexFamilyPolicyBlocked; }
   return {};
 }
 
@@ -232,6 +235,7 @@ std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string,
 bool CrudColumnDescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
   return descriptor == "opaque_extension" || StartsWith(descriptor, "opaque_extension;") ||
          descriptor.find("canonical=opaque_extension") != std::string::npos ||
+         descriptor.find("canonical_type=opaque_extension") != std::string::npos ||
          descriptor.find("base_type=opaque_extension") != std::string::npos;
 }
 
@@ -247,6 +251,12 @@ bool CrudExpressionTouchesColumn(const std::string& expression, const std::strin
   }
   if (StartsWith(expression, "length:") && expression.substr(7) == column_name) { return true; }
   if (StartsWith(expression, "identity:") && expression.substr(9) == column_name) { return true; }
+  if (StartsWith(expression, "desc:") && expression.substr(5) == column_name) { return true; }
+  if (StartsWith(expression, "cast:")) {
+    const std::string rest = expression.substr(5);
+    const auto pos = rest.find(':');
+    return (pos == std::string::npos ? rest : rest.substr(0, pos)) == column_name;
+  }
   return ExtractFunctionArgument(expression, "lower") == column_name ||
          ExtractFunctionArgument(expression, "upper") == column_name ||
          ExtractFunctionArgument(expression, "length") == column_name;
