@@ -37,6 +37,7 @@ add_library(sb_transaction_mga
   transaction_recovery.cpp
   transaction_lock.cpp
   transaction_snapshot.cpp
+  transaction_support_services.cpp
   transaction_inventory.cpp
   transaction_state.cpp
   visibility_status_cache.cpp

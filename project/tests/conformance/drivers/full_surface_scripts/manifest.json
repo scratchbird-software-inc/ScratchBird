@@ -445,7 +445,8 @@
       "assertions": [
         "SBDFS-020-001",
         "SBDFS-020-002",
-        "SBDFS-020-003"
+        "SBDFS-020-003",
+        "SBDFS-020-004"
       ]
     },
     {

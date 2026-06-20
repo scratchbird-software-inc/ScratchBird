@@ -188,6 +188,10 @@ void TestCacheWindowPersistenceAndRecovery() {
   Require(first.allocated_value == 10, "DBLC-013AH first cache value mismatch");
   Require(first.generator.durable_next_value == 13,
           "DBLC-013AH cache window was not durably advanced before return");
+  Require(HasEvidence(first, "sequence_policy_cache", "bounded_nonfinality_cache_v1"),
+          "DBLC-013AH sequence cache policy evidence missing");
+  Require(HasEvidence(first, "mga_transaction_authority", "allocation_not_transaction_finality"),
+          "DBLC-013AH sequence cache must not be transaction finality authority");
 
   const auto second = Allocate(path, 3, sequence_uuid);
   RequireOk(second, "DBLC-013AH second allocation failed");
@@ -203,6 +207,8 @@ void TestCacheWindowPersistenceAndRecovery() {
   recover.context = Context(path, 4);
   const auto recovered = seq_api::EngineSequenceRecoverGeneratorState(recover);
   RequireOk(recovered, "DBLC-013AH recovery snapshot failed");
+  Require(HasEvidence(recovered, "crash_recovery_uses_persisted_generator_high_water"),
+          "DBLC-013AH recovery high-water evidence missing");
   const auto& recovered_generator = RequireGenerator(recovered.state, sequence_uuid);
   Require(recovered_generator.recovered_from_persisted_state,
           "DBLC-013AH recovery snapshot evidence missing");
