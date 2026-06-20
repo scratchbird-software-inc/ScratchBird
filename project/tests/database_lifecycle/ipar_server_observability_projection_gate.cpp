@@ -74,6 +74,17 @@ bool HasRowValue(const info::SysInformationProjectionResult& result,
   return false;
 }
 
+const info::SysInformationIparTelemetryControlSource* FindControl(
+    const std::vector<info::SysInformationIparTelemetryControlSource>& controls,
+    std::string_view control_name) {
+  for (const auto& control : controls) {
+    if (control.control_name == control_name) {
+      return &control;
+    }
+  }
+  return nullptr;
+}
+
 info::SysInformationProjectionResult BuildSlowPathProjection(
     std::vector<info::SysInformationIparSlowPathReasonSource> rows) {
   return info::BuildSysInformationProjection("sys.ipar.slow_path_reasons",
@@ -149,6 +160,14 @@ void TestSlowPathRowsAreMetricBacked() {
   Require(HasRowValue(projection, "driver_visible_message",
                       "Slow path selected during unique_preflight: unique_physical_probe_cache_miss"),
           "metric-backed slow-path projection message drifted");
+  Require(HasRowValue(projection, "required_action",
+                      "inspect_unique_preflight_reason_unique_physical_probe_cache_miss"),
+          "metric-backed slow-path projection missing required action");
+  Require(HasRowValue(projection, "authority_scope",
+                      "diagnostic_evidence_only_not_finality_visibility_security_recovery_or_parser_authority"),
+          "metric-backed slow-path projection became authoritative");
+  Require(HasRowValue(projection, "finality_authority", "NO"),
+          "metric-backed slow-path projection claimed finality authority");
 }
 
 void TestEmptyMetricsDoNotFabricateRows() {
@@ -160,6 +179,77 @@ void TestEmptyMetricsDoNotFabricateRows() {
   const auto projection = BuildSlowPathProjection(sources);
   Require(projection.ok, "empty slow-path projection failed");
   Require(projection.rows.empty(), "empty slow-path projection fabricated rows");
+}
+
+void TestTelemetryControlsExposeBoundedBudget() {
+  server::ServerObservabilityState state;
+  state.metrics_enabled = true;
+  state.metric_persist_stride = 128;
+  state.audit_persist_stride = 64;
+  state.ipar_hot_path_budget_percent_x100 = 500;
+  state.ipar_detail_trace_enabled = false;
+  state.ipar_detail_trace_sample_stride = 512;
+  state.ipar_slow_path_reason_series_limit = 2;
+
+  const auto controls = server::BuildIparTelemetryControlProjectionSources(state);
+  const auto* metric_stride = FindControl(controls, "metric_persist_stride");
+  const auto* audit_stride = FindControl(controls, "audit_persist_stride");
+  const auto* hot_budget = FindControl(controls, "hot_path_budget_percent_x100");
+  const auto* detail_enabled = FindControl(controls, "detail_trace_enabled");
+  const auto* detail_stride = FindControl(controls, "detail_trace_sample_stride");
+  const auto* series_limit = FindControl(controls, "diagnostic_reason_series_limit");
+
+  Require(metric_stride != nullptr && metric_stride->sample_rate_per_mille == 7,
+          "metric persist stride control missing bounded sample rate");
+  Require(audit_stride != nullptr && audit_stride->sample_rate_per_mille == 15,
+          "audit persist stride control missing bounded sample rate");
+  Require(hot_budget != nullptr && hot_budget->observed_value == 500 &&
+              hot_budget->overhead_budget_percent == "5.0",
+          "hot-path overhead budget control missing");
+  Require(detail_enabled != nullptr && detail_enabled->observed_value == 0 &&
+              detail_enabled->sample_rate_per_mille == 0,
+          "detail trace must be disabled by default on hot path");
+  Require(detail_stride != nullptr && detail_stride->persist_stride == 512,
+          "detail trace sample stride control missing");
+  Require(series_limit != nullptr && series_limit->configured_value == 2,
+          "diagnostic reason series limit control missing");
+}
+
+void TestSlowPathSeriesLimitBoundsHotPathCardinality() {
+  server::ServerObservabilityState state;
+  state.metrics_enabled = true;
+  state.ipar_slow_path_reason_series_limit = 2;
+
+  for (int i = 0; i < 3; ++i) {
+    server::SetServerMetric(
+        &state,
+        "sys.metrics.ipar.insert.slow_path_total",
+        1,
+        "counter",
+        {{"metric_id", "IPAR-M035"},
+         {"statement_id", "SBDFS-059:copy-batch-" + std::to_string(i)},
+         {"result", "scan_fallback"},
+         {"reason", "bounded_diagnostic_series"},
+         {"validation_stage", "unique_preflight"},
+         {"diagnostic_code", "SB_IPAR_SLOW_PATH_REASON_RECORDED"},
+         {"sample_count", "1"}});
+  }
+
+  const auto sources = server::BuildIparSlowPathReasonProjectionSources(state);
+  Require(sources.size() == 2,
+          "slow-path diagnostic source adapter ignored configured series limit");
+  Require(state.ipar_slow_path_reason_series_count == 2,
+          "slow-path diagnostic retained series count drifted");
+  Require(state.ipar_slow_path_reason_series_dropped == 1,
+          "slow-path diagnostic dropped count drifted");
+
+  const auto controls = server::BuildIparTelemetryControlProjectionSources(state);
+  const auto* dropped = FindControl(controls, "diagnostic_reason_series_dropped");
+  const auto* dropped_total = FindControl(controls, "dropped_metric_count");
+  Require(dropped != nullptr && dropped->observed_value == 1,
+          "slow-path dropped diagnostic control missing");
+  Require(dropped_total != nullptr && dropped_total->dropped_metric_count == 1,
+          "aggregate dropped metric count did not include bounded slow-path drop");
 }
 
 server::HostedEngineState MakeEngineState() {
@@ -264,6 +354,8 @@ void TestSelectRowsUsesLiveIparProjectionSources() {
 int main() {
   TestSlowPathRowsAreMetricBacked();
   TestEmptyMetricsDoNotFabricateRows();
+  TestTelemetryControlsExposeBoundedBudget();
+  TestSlowPathSeriesLimitBoundsHotPathCardinality();
   TestSelectRowsUsesLiveIparProjectionSources();
   return EXIT_SUCCESS;
 }

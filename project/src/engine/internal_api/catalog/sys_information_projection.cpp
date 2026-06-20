@@ -14,6 +14,7 @@
 #include "datatype_wire_metadata.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -135,6 +136,31 @@ std::vector<std::string> SplitSemicolonList(std::string_view value) {
 
 bool ContainsToken(std::string_view value, std::string_view token) {
   return value.find(token) != std::string_view::npos;
+}
+
+std::string ProjectionToken(std::string_view value) {
+  std::string out;
+  out.reserve(value.size());
+  bool previous_underscore = false;
+  for (const unsigned char ch : value) {
+    char next = '_';
+    if (std::isalnum(ch)) {
+      next = static_cast<char>(std::tolower(ch));
+    }
+    if (next == '_') {
+      if (previous_underscore) {
+        continue;
+      }
+      previous_underscore = true;
+    } else {
+      previous_underscore = false;
+    }
+    out.push_back(next);
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out.empty() ? "unspecified" : out;
 }
 
 void AddUniqueText(std::vector<std::string>* values, std::string value) {
@@ -2120,7 +2146,10 @@ const std::vector<SysInformationProjectionDefinition>& BuiltinSysInformationProj
                   Column("driver_visible_message", "text"),
                   Column("diagnostic_code", "text", true),
                   Column("sample_count", "uint64"),
-                  Column("source_state", "text")},
+                  Column("source_state", "text"),
+                  Column("required_action", "text"),
+                  Column("authority_scope", "text"),
+                  Column("finality_authority", "yes_no")},
                  {SysInformationSourceKind::ipar_slow_path_reason,
                   SysInformationSourceKind::security_policy},
                  false,
@@ -3529,6 +3558,14 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "diagnostic_code", reason.diagnostic_code);
       AddField(&row, "sample_count", std::to_string(reason.sample_count));
       AddField(&row, "source_state", reason.source_state);
+      AddField(&row,
+               "required_action",
+               "inspect_" + ProjectionToken(reason.validation_stage) +
+                   "_reason_" + ProjectionToken(reason.reason_code));
+      AddField(&row,
+               "authority_scope",
+               "diagnostic_evidence_only_not_finality_visibility_security_recovery_or_parser_authority");
+      AddField(&row, "finality_authority", "NO");
       result.rows.push_back(std::move(row));
     }
     return result;

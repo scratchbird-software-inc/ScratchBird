@@ -35,16 +35,22 @@ struct MemoryObservabilityOverheadResult {
   bool within_budget = false;
   bool sampled_mode_exercised = false;
   bool failure_evidence_preserved_under_sampling = false;
+  bool sampling_bounds_enforced = false;
   u64 p50_microseconds = 0;
   u64 p95_microseconds = 0;
   u64 p99_microseconds = 0;
   u64 observed_row_count = 0;
   u64 sampled_row_count = 0;
+  u64 sampled_top_context_count = 0;
+  u64 sampled_top_category_count = 0;
+  u64 sampled_max_top_contexts = 0;
+  u64 sampled_max_top_categories = 0;
   std::vector<std::string> evidence;
 
   bool ok() const {
     return status.ok() && within_budget &&
-           failure_evidence_preserved_under_sampling;
+           failure_evidence_preserved_under_sampling &&
+           sampling_bounds_enforced;
   }
 };
 

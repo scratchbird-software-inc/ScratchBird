@@ -172,6 +172,21 @@ struct ServerFinalityRecord {
   std::uint64_t policy_generation = 1;
 };
 
+struct ServerAuthorityCacheEpochVector {
+  std::uint64_t catalog_generation = 1;
+  std::uint64_t security_epoch = 1;
+  std::uint64_t descriptor_epoch = 1;
+  std::uint64_t grant_epoch = 1;
+  std::uint64_t policy_generation = 1;
+  std::uint64_t capability_policy_generation = 1;
+  std::uint64_t cache_invalidation_epoch = 1;
+  std::uint64_t name_resolution_epoch = 1;
+  std::uint64_t resource_epoch = 1;
+  std::string role_set_hash = "roles/default";
+  std::string group_set_hash = "groups/default";
+  std::string search_path_hash = "search_path/default";
+};
+
 struct ServerPreparedStatementRecord {
   std::array<std::uint8_t, 16> prepared_statement_uuid{};
   std::array<std::uint8_t, 16> client_statement_uuid{};
@@ -220,6 +235,21 @@ struct ServerPreparedStatementRecord {
   bool closed = false;
 };
 
+struct ServerPreparedExecutionContextRecord {
+  std::array<std::uint8_t, 16> prepared_statement_uuid{};
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> auth_context_uuid{};
+  std::array<std::uint8_t, 16> principal_uuid{};
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  std::string database_uuid;
+  std::string operation_id;
+  std::string target_object_uuid;
+  std::string statement_shape_hash;
+  std::string authority_proof_hash;
+  ServerAuthorityCacheEpochVector epoch_vector;
+  bool grants_authority = false;
+};
+
 struct ServerSessionObjectHandleRecord {
   std::uint64_t handle_id = 0;
   std::uint64_t generation = 0;
@@ -247,6 +277,36 @@ struct ServerSessionObjectHandleValidation {
   bool accepted = false;
   std::string detail;
   const ServerSessionObjectHandleRecord* handle = nullptr;
+};
+
+struct ServerAuthorityCacheRecord {
+  std::string cache_key;
+  std::string cache_kind;
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> auth_context_uuid{};
+  std::array<std::uint8_t, 16> principal_uuid{};
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  std::string database_uuid;
+  std::string operation_id;
+  std::string target_object_uuid;
+  std::string statement_shape_hash;
+  ServerAuthorityCacheEpochVector epoch_vector;
+  std::string diagnostic_code;
+  std::string diagnostic_detail;
+  bool refusal = false;
+  bool grants_authority = false;
+  std::uint64_t generation = 0;
+  std::uint64_t hit_count = 0;
+};
+
+struct ServerAuthorityCacheValidation {
+  bool accepted = false;
+  bool stale = false;
+  bool cross_session = false;
+  bool cross_authorization = false;
+  bool grants_authority = false;
+  std::string detail;
+  const ServerAuthorityCacheRecord* record = nullptr;
 };
 
 struct ServerLanguageContextIdentity {
@@ -352,7 +412,10 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerFinalityRecord> finality_by_request_uuid;
   std::map<std::string, ServerRequestRecord> requests_by_uuid;
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
+  std::map<std::string, ServerPreparedExecutionContextRecord>
+      prepared_execution_contexts_by_uuid;
   std::map<std::string, ServerSessionObjectHandleRecord> object_handles_by_key;
+  std::map<std::string, ServerAuthorityCacheRecord> authority_cache_by_key;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, ServerLanguageResourceDirectoryRecord>
@@ -362,6 +425,7 @@ struct ServerSessionRegistry {
   std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>
       job_quotas_by_database_uuid;
   std::uint64_t next_session_object_handle_id = 1;
+  std::uint64_t next_authority_cache_generation = 1;
 };
 
 struct AuthHandoffPayload {
@@ -605,6 +669,31 @@ void CloseSessionObjectHandlesForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string detail = "session_closed");
+std::string ServerAuthorityCacheKey(const std::string& cache_kind,
+                                    const ServerSessionRecord& session,
+                                    const std::string& operation_id,
+                                    const std::string& target_object_uuid,
+                                    const std::string& statement_shape_hash);
+ServerAuthorityCacheRecord StoreServerAuthorityCacheDecision(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string cache_kind,
+    std::string operation_id,
+    std::string target_object_uuid,
+    std::string statement_shape_hash,
+    std::string diagnostic_code,
+    std::string diagnostic_detail,
+    bool refusal);
+ServerAuthorityCacheValidation ValidateServerAuthorityCacheEntry(
+    const ServerSessionRegistry& registry,
+    const ServerSessionRecord& session,
+    const std::string& cache_key,
+    const std::string& cache_kind,
+    const std::string& operation_id,
+    const std::string& target_object_uuid,
+    const std::string& statement_shape_hash);
+bool MarkServerAuthorityCacheHit(ServerSessionRegistry* registry,
+                                 const std::string& cache_key);
 void LinkServerRequestCursor(ServerSessionRegistry* registry,
                              const std::array<std::uint8_t, 16>& request_uuid,
                              const std::array<std::uint8_t, 16>& cursor_uuid,

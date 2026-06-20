@@ -27,6 +27,34 @@ IPAR_ARTIFACT_NAMES = {
     "jsonl": "ipar-metrics.jsonl",
     "csv": "ipar-metrics.csv",
 }
+PLACEHOLDER_VALUE_TOKENS = {
+    "deferred",
+    "fake",
+    "fixme",
+    "future",
+    "in_progress",
+    "missing",
+    "n_a",
+    "na",
+    "none",
+    "not_available",
+    "not_implemented",
+    "not_started",
+    "placeholder",
+    "stub",
+    "synthetic",
+    "tbd",
+    "todo",
+}
+PLACEHOLDER_VALUE_FRAGMENTS = (
+    "deferred",
+    "future",
+    "not_implemented",
+    "placeholder",
+    "to_be_done",
+)
+COPY_ROUTE_SCRIPT_IDS = {"SBDFS-059"}
+PREPARED_INSERT_ROUTE_SCRIPT_IDS = {"SBDFS-020", "SBDFS-130"}
 
 
 def repo_root_from_script() -> Path:
@@ -62,6 +90,22 @@ def artifact_inputs(repo_root: Path, artifact_roots: list[Path], shapes: set[str
             if candidate.is_file():
                 inputs.append(candidate)
     return inputs
+
+
+def artifact_shape_presence(repo_root: Path, artifact_roots: list[Path], shapes: set[str]) -> tuple[list[str], list[str]]:
+    present: list[str] = []
+    missing: list[str] = []
+    for root in artifact_roots:
+        build_root = ensure_build_path(repo_root, root)
+        for shape in ("json", "jsonl", "csv"):
+            if shape not in shapes:
+                continue
+            candidate = build_root / IPAR_ARTIFACT_NAMES[shape]
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                present.append(str(candidate))
+            else:
+                missing.append(str(candidate))
+    return present, missing
 
 
 def missing_artifact_shapes(repo_root: Path, artifact_roots: list[Path], shapes: set[str]) -> list[str]:
@@ -102,6 +146,66 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
+def placeholder_value_reason(value: Any) -> str | None:
+    if value is None:
+        return "missing"
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return "missing"
+    normalized = stripped.lower().replace("-", "_").replace(" ", "_").replace("/", "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    if normalized in PLACEHOLDER_VALUE_TOKENS:
+        return "placeholder"
+    if any(fragment in normalized for fragment in PLACEHOLDER_VALUE_FRAGMENTS):
+        return "placeholder"
+    return None
+
+
+def bool_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+def bool_false(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, str):
+        return value.strip().lower() == "false"
+    return False
+
+
+def validate_transport_fields(owner: str, row: dict[str, Any], errors: list[str]) -> None:
+    for field in ("script_id", "route", "parser_mode", "sslmode", "transport_mode", "tls_policy"):
+        value = row.get(field)
+        if value is None:
+            continue
+        reason = placeholder_value_reason(value)
+        if reason is not None:
+            errors.append(f"{owner}:{field}_{reason}_value")
+    transport_mode = str(row.get("transport_mode", "")).strip()
+    tls_policy = str(row.get("tls_policy", "")).strip()
+    sslmode = str(row.get("sslmode", "")).strip()
+    if transport_mode == "tls_required":
+        if tls_policy != "scratchbird_tls_1_3_floor":
+            errors.append(f"{owner}:tls_required_without_tls_floor_policy")
+        if sslmode == "disable":
+            errors.append(f"{owner}:tls_required_with_sslmode_disable")
+    elif transport_mode == "tls_disabled":
+        if tls_policy != "explicit_non_tls_test_route":
+            errors.append(f"{owner}:tls_disabled_without_explicit_test_policy")
+        if sslmode and sslmode != "disable":
+            errors.append(f"{owner}:tls_disabled_with_sslmode_{sslmode}")
+    elif transport_mode == "local_ipc_no_tls":
+        if tls_policy and tls_policy != "local_ipc_no_tls":
+            errors.append(f"{owner}:local_ipc_no_tls_policy_mismatch")
+
+
 def validate_driver_route_artifacts(
     inputs: list[Path],
     target_scripts: list[str],
@@ -137,9 +241,29 @@ def validate_driver_route_artifacts(
             errors.append("driver_artifact:json:engine_sql_text_execution_must_be_false")
         if contract.get("parser_output_to_engine_required") is not True:
             errors.append("driver_artifact:json:parser_output_to_engine_required_missing")
+        if (
+            "missing_required_metrics_fail_gate" in contract
+            and contract.get("missing_required_metrics_fail_gate") is not True
+        ):
+            errors.append("driver_artifact:json:missing_required_metrics_must_fail_gate")
         embedded_events = payload.get("route_proof_events", [])
         if isinstance(embedded_events, list):
             route_events.extend(item for item in embedded_events if isinstance(item, dict))
+        missing_evidence = payload.get("missing_metric_evidence", [])
+        if isinstance(missing_evidence, list):
+            for item in missing_evidence:
+                if not isinstance(item, dict):
+                    errors.append("driver_artifact:json:missing_metric_evidence_item_not_object")
+                    continue
+                script_id = str(item.get("script_id", ""))
+                if target_scripts and script_id and script_id not in set(target_scripts):
+                    continue
+                errors.append(
+                    "driver_artifact:json:missing_metric_evidence:"
+                    f"{script_id or 'unknown_script'}:{item.get('field', 'unknown_field')}"
+                )
+        elif missing_evidence:
+            errors.append("driver_artifact:json:missing_metric_evidence_not_list")
 
     present_scripts = {
         str(event.get("script_id"))
@@ -152,20 +276,45 @@ def validate_driver_route_artifacts(
             present_scripts.update(str(key) for key in target_metrics if str(key).startswith("SBDFS-"))
     selected = set(target_scripts) if target_scripts else present_scripts
 
-    if "SBDFS-059" in selected and not any(
-        event.get("script_id") == "SBDFS-059"
-        and event.get("copy_stream_used") is True
+    for index, event in enumerate(route_events, start=1):
+        owner = f"driver_artifact:route_event:{index}:{event.get('script_id', 'unknown_script')}"
+        validate_transport_fields(owner, event, errors)
+        for field in ("driver_payload_kind", "engine_payload_kind"):
+            value = event.get(field)
+            if value is None or str(value).strip() == "":
+                errors.append(f"{owner}:missing_{field}")
+                continue
+            reason = placeholder_value_reason(value)
+            if reason is not None:
+                errors.append(f"{owner}:{field}_{reason}_value")
+        if not bool_false(event.get("engine_sql_text_execution")):
+            errors.append(f"{owner}:engine_sql_text_execution_must_be_false")
+        if not bool_true(event.get("parser_output_to_engine_required")):
+            errors.append(f"{owner}:parser_output_to_engine_required_missing")
+        if not bool_true(event.get("sblr_uuid_or_canonical_rows_required")):
+            errors.append(f"{owner}:sblr_uuid_or_canonical_rows_required_missing")
+
+    copy_required = bool(COPY_ROUTE_SCRIPT_IDS & selected) or any(
+        event.get("script_id") in COPY_ROUTE_SCRIPT_IDS
+        and (bool_true(event.get("copy_stream_used")) or event.get("driver_payload_kind") == "copy_canonical_rows")
+        for event in route_events
+    )
+    if copy_required and not any(
+        event.get("script_id") in COPY_ROUTE_SCRIPT_IDS
+        and bool_true(event.get("copy_stream_used"))
         and event.get("driver_payload_kind") == "copy_canonical_rows"
         and event.get("engine_payload_kind") == "canonical_rows"
+        and bool_false(event.get("engine_sql_text_execution"))
         for event in route_events
     ):
         errors.append("driver_artifact:route_proof:SBDFS-059_copy_canonical_rows_missing")
 
-    prepared_scripts = {"SBDFS-020", "SBDFS-130"} & selected
+    prepared_scripts = PREPARED_INSERT_ROUTE_SCRIPT_IDS & selected
     if prepared_scripts and not any(
         event.get("script_id") in prepared_scripts
-        and event.get("prepared_handle_used") is True
-        and event.get("engine_sql_text_execution") is False
+        and bool_true(event.get("prepared_handle_used"))
+        and event.get("driver_payload_kind") == "prepared_descriptor_handle"
+        and bool_false(event.get("engine_sql_text_execution"))
         for event in route_events
     ):
         errors.append("driver_artifact:route_proof:prepared_descriptor_handle_missing")
@@ -207,6 +356,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-tls-route-proof", action="store_true")
     parser.add_argument("--require-non-tls-route-proof", action="store_true")
     parser.add_argument(
+        "--skip-if-no-artifacts",
+        action="store_true",
+        help="Return CTest skip code 77 when no requested artifact shapes exist.",
+    )
+    parser.add_argument(
         "--shape",
         choices=("json", "jsonl", "csv", "all"),
         default="json",
@@ -231,13 +385,19 @@ def main() -> int:
         ensure_build_path(repo_root, output_root)
         ensure_build_path(repo_root, report_path)
         shapes = {"json", "jsonl", "csv"} if args.shape == "all" else {args.shape}
-        missing_shapes = missing_artifact_shapes(repo_root, args.artifact_root, shapes)
+        present_shapes, missing_shapes = artifact_shape_presence(repo_root, args.artifact_root, shapes)
+        if args.skip_if_no_artifacts and args.artifact_root and not present_shapes:
+            print("driver_ipar_metrics_gate=skip:no_artifacts")
+            return 77
         if missing_shapes:
             raise ValueError(
                 "IPAR artifact root missing required shape(s): " + ", ".join(missing_shapes)
             )
         inputs = artifact_inputs(repo_root, args.artifact_root, shapes)
         inputs.extend(ensure_build_path(repo_root, item) for item in args.metrics_input)
+        if args.skip_if_no_artifacts and not inputs:
+            print("driver_ipar_metrics_gate=skip:no_artifacts")
+            return 77
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -14,6 +14,7 @@
 #include "engine_host.hpp"
 #include "security/authentication_api.hpp"
 #include "security/authorization_api.hpp"
+#include "security/security_crypto_policy.hpp"
 #include "security/security_model.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
@@ -2317,6 +2318,230 @@ void CloseSessionObjectHandlesForSession(
       ++handle.generation;
     }
   }
+}
+
+namespace {
+
+ServerAuthorityCacheEpochVector AuthorityCacheEpochVectorForSession(
+    const ServerSessionRecord& session) {
+  ServerAuthorityCacheEpochVector vector;
+  vector.catalog_generation = session.catalog_generation;
+  vector.security_epoch = session.security_epoch;
+  vector.descriptor_epoch = session.descriptor_epoch;
+  vector.grant_epoch = session.grant_epoch;
+  vector.policy_generation = session.policy_generation;
+  vector.capability_policy_generation = session.capability_policy_generation;
+  vector.cache_invalidation_epoch = session.cache_invalidation_epoch;
+  vector.name_resolution_epoch = session.name_resolution_epoch;
+  vector.resource_epoch = session.resource_epoch;
+  vector.role_set_hash = session.role_set_hash;
+  vector.group_set_hash = session.group_set_hash;
+  vector.search_path_hash = session.search_path_hash;
+  return vector;
+}
+
+bool AuthorityCacheEpochNumbersMatch(
+    const ServerAuthorityCacheEpochVector& cached,
+    const ServerAuthorityCacheEpochVector& current) {
+  return cached.catalog_generation == current.catalog_generation &&
+         cached.security_epoch == current.security_epoch &&
+         cached.descriptor_epoch == current.descriptor_epoch &&
+         cached.grant_epoch == current.grant_epoch &&
+         cached.policy_generation == current.policy_generation &&
+         cached.capability_policy_generation ==
+             current.capability_policy_generation &&
+         cached.cache_invalidation_epoch == current.cache_invalidation_epoch &&
+         cached.name_resolution_epoch == current.name_resolution_epoch &&
+         cached.resource_epoch == current.resource_epoch;
+}
+
+bool AuthorityCacheAuthorizationHashesMatch(
+    const ServerAuthorityCacheEpochVector& cached,
+    const ServerAuthorityCacheEpochVector& current) {
+  return cached.role_set_hash == current.role_set_hash &&
+         cached.group_set_hash == current.group_set_hash &&
+         cached.search_path_hash == current.search_path_hash;
+}
+
+std::string AuthorityCacheScopePayload(const std::string& cache_kind,
+                                       const ServerSessionRecord& session,
+                                       const std::string& operation_id,
+                                       const std::string& target_object_uuid,
+                                       const std::string& statement_shape_hash) {
+  const auto vector = AuthorityCacheEpochVectorForSession(session);
+  std::ostringstream out;
+  out << "cache_kind=" << cache_kind << '\n'
+      << "session_uuid=" << UuidBytesToText(session.session_uuid) << '\n'
+      << "auth_context_uuid=" << UuidBytesToText(session.auth_context_uuid) << '\n'
+      << "principal_uuid=" << UuidBytesToText(session.principal_uuid) << '\n'
+      << "effective_user_uuid=" << UuidBytesToText(session.effective_user_uuid)
+      << '\n'
+      << "database_uuid=" << session.database_uuid << '\n'
+      << "operation_id=" << operation_id << '\n'
+      << "target_object_uuid=" << target_object_uuid << '\n'
+      << "statement_shape_hash=" << statement_shape_hash << '\n'
+      << "catalog_generation=" << vector.catalog_generation << '\n'
+      << "security_epoch=" << vector.security_epoch << '\n'
+      << "descriptor_epoch=" << vector.descriptor_epoch << '\n'
+      << "grant_epoch=" << vector.grant_epoch << '\n'
+      << "policy_generation=" << vector.policy_generation << '\n'
+      << "capability_policy_generation=" << vector.capability_policy_generation
+      << '\n'
+      << "cache_invalidation_epoch=" << vector.cache_invalidation_epoch << '\n'
+      << "name_resolution_epoch=" << vector.name_resolution_epoch << '\n'
+      << "resource_epoch=" << vector.resource_epoch << '\n'
+      << "role_set_hash=" << vector.role_set_hash << '\n'
+      << "group_set_hash=" << vector.group_set_hash << '\n'
+      << "search_path_hash=" << vector.search_path_hash << '\n';
+  return out.str();
+}
+
+}  // namespace
+
+std::string ServerAuthorityCacheKey(const std::string& cache_kind,
+                                    const ServerSessionRecord& session,
+                                    const std::string& operation_id,
+                                    const std::string& target_object_uuid,
+                                    const std::string& statement_shape_hash) {
+  const std::string digest = engine_api::SecuritySha256Hex(
+      AuthorityCacheScopePayload(cache_kind,
+                                 session,
+                                 operation_id,
+                                 target_object_uuid,
+                                 statement_shape_hash));
+  return digest.empty() ? std::string{} : cache_kind + ":sha256:" + digest;
+}
+
+ServerAuthorityCacheRecord StoreServerAuthorityCacheDecision(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string cache_kind,
+    std::string operation_id,
+    std::string target_object_uuid,
+    std::string statement_shape_hash,
+    std::string diagnostic_code,
+    std::string diagnostic_detail,
+    bool refusal) {
+  ServerAuthorityCacheRecord record;
+  record.cache_key = ServerAuthorityCacheKey(cache_kind,
+                                             session,
+                                             operation_id,
+                                             target_object_uuid,
+                                             statement_shape_hash);
+  record.cache_kind = std::move(cache_kind);
+  record.session_uuid = session.session_uuid;
+  record.auth_context_uuid = session.auth_context_uuid;
+  record.principal_uuid = session.principal_uuid;
+  record.effective_user_uuid = session.effective_user_uuid;
+  record.database_uuid = session.database_uuid;
+  record.operation_id = std::move(operation_id);
+  record.target_object_uuid = std::move(target_object_uuid);
+  record.statement_shape_hash = std::move(statement_shape_hash);
+  record.epoch_vector = AuthorityCacheEpochVectorForSession(session);
+  record.diagnostic_code = std::move(diagnostic_code);
+  record.diagnostic_detail = std::move(diagnostic_detail);
+  record.refusal = refusal;
+  record.grants_authority = false;
+  if (registry != nullptr && !record.cache_key.empty()) {
+    const auto existing = registry->authority_cache_by_key.find(record.cache_key);
+    if (existing != registry->authority_cache_by_key.end()) {
+      record.generation = existing->second.generation;
+      record.hit_count = existing->second.hit_count;
+    } else {
+      record.generation = registry->next_authority_cache_generation++;
+    }
+    registry->authority_cache_by_key[record.cache_key] = record;
+  }
+  return record;
+}
+
+ServerAuthorityCacheValidation ValidateServerAuthorityCacheEntry(
+    const ServerSessionRegistry& registry,
+    const ServerSessionRecord& session,
+    const std::string& cache_key,
+    const std::string& cache_kind,
+    const std::string& operation_id,
+    const std::string& target_object_uuid,
+    const std::string& statement_shape_hash) {
+  ServerAuthorityCacheValidation validation;
+  const auto found = registry.authority_cache_by_key.find(cache_key);
+  if (found == registry.authority_cache_by_key.end()) {
+    validation.detail = "authority_cache_not_found";
+    return validation;
+  }
+  const auto& record = found->second;
+  validation.record = &record;
+  if (record.cache_kind != cache_kind) {
+    validation.detail = "authority_cache_kind_mismatch";
+    return validation;
+  }
+  if (record.grants_authority) {
+    validation.grants_authority = true;
+    validation.detail = "authority_cache_grant_forbidden";
+    return validation;
+  }
+  if (cache_kind == "negative_authorization" && !record.refusal) {
+    validation.detail = "negative_authorization_cache_must_refuse";
+    return validation;
+  }
+  if (record.session_uuid != session.session_uuid) {
+    validation.cross_session = true;
+    validation.detail = "authority_cache_cross_session";
+    return validation;
+  }
+  if (record.auth_context_uuid != session.auth_context_uuid) {
+    validation.cross_authorization = true;
+    validation.detail = "authority_cache_auth_context_stale";
+    return validation;
+  }
+  if (record.principal_uuid != session.principal_uuid ||
+      record.effective_user_uuid != session.effective_user_uuid) {
+    validation.cross_authorization = true;
+    validation.detail = "authority_cache_cross_user";
+    return validation;
+  }
+  if (record.database_uuid != session.database_uuid) {
+    validation.cross_authorization = true;
+    validation.detail = "authority_cache_cross_database";
+    return validation;
+  }
+  if (!operation_id.empty() && record.operation_id != operation_id) {
+    validation.detail = "authority_cache_operation_mismatch";
+    return validation;
+  }
+  if (!target_object_uuid.empty() &&
+      record.target_object_uuid != target_object_uuid) {
+    validation.detail = "authority_cache_target_mismatch";
+    return validation;
+  }
+  if (!statement_shape_hash.empty() &&
+      record.statement_shape_hash != statement_shape_hash) {
+    validation.detail = "authority_cache_statement_shape_mismatch";
+    return validation;
+  }
+  const auto current = AuthorityCacheEpochVectorForSession(session);
+  if (!AuthorityCacheEpochNumbersMatch(record.epoch_vector, current)) {
+    validation.stale = true;
+    validation.detail = "authority_cache_epoch_stale";
+    return validation;
+  }
+  if (!AuthorityCacheAuthorizationHashesMatch(record.epoch_vector, current)) {
+    validation.cross_authorization = true;
+    validation.detail = "authority_cache_authorization_hash_stale";
+    return validation;
+  }
+  validation.accepted = true;
+  validation.detail = "authority_cache_valid";
+  return validation;
+}
+
+bool MarkServerAuthorityCacheHit(ServerSessionRegistry* registry,
+                                 const std::string& cache_key) {
+  if (registry == nullptr) return false;
+  auto found = registry->authority_cache_by_key.find(cache_key);
+  if (found == registry->authority_cache_by_key.end()) return false;
+  ++found->second.hit_count;
+  return true;
 }
 
 void LinkServerRequestCursor(ServerSessionRegistry* registry,

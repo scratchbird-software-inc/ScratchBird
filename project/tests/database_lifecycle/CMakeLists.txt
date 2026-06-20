@@ -1683,6 +1683,31 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "ipar_prepared_cache_lifecycle_gate;IPAR-P1-02;IPAR-P1-04;IPAR-P5-04;IPAR-P6-01;prepared_cache;row_encoder_validator_execution;security_fast_path;memory_arena_reuse;database_lifecycle;mga_transaction_regression"
   )
 
+  add_executable(ipar_ddl_publication_result_gate
+    ipar_ddl_publication_result_gate.cpp
+  )
+  target_compile_features(ipar_ddl_publication_result_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_ddl_publication_result_gate
+    PRIVATE
+      sb_core_platform
+      sb_core_index
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME ipar_ddl_publication_result_gate
+    COMMAND ipar_ddl_publication_result_gate
+  )
+  set_tests_properties(ipar_ddl_publication_result_gate PROPERTIES
+    LABELS "ipar_ddl_publication_result_gate;IPAR-P2-10;ddl_publish_packet;ddl_uuid_return;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(ipar_memory_pressure_trim_gate
     ipar_memory_pressure_trim_gate.cpp
   )
@@ -1937,6 +1962,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(ipar_observability_projection_gate PRIVATE cxx_std_23)
   target_link_libraries(ipar_observability_projection_gate
     PRIVATE
+      sb_core_memory
       sb_engine_internal_api
       sb_engine_sblr
   )
@@ -1946,7 +1972,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND ipar_observability_projection_gate
   )
   set_tests_properties(ipar_observability_projection_gate PROPERTIES
-    LABELS "IPAR-P6-03;IPAR-P6-06;IPAR-P6-07;IPAR-P6-08;ipar_observability_projection_gate;database_lifecycle_sys_information_projection;database_lifecycle_catalog;observability;agent_runtime;mga_transaction_regression"
+    LABELS "IPAR-P6-03;IPAR-P6-06;IPAR-P6-07;IPAR-P6-08;IPAR-P6-13;ipar_observability_projection_gate;database_lifecycle_sys_information_projection;database_lifecycle_catalog;observability;agent_runtime;mga_transaction_regression"
   )
 
   add_executable(sys_agent_view_contract_documentation_gate
@@ -4423,6 +4449,23 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		endif()
 
 if(TARGET sb_server_core)
+  add_executable(ipar_prepared_execution_cache_authority_gate
+    ipar_prepared_execution_cache_authority_gate.cpp
+  )
+  target_compile_features(ipar_prepared_execution_cache_authority_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipar_prepared_execution_cache_authority_gate
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME ipar_prepared_execution_cache_authority_gate
+    COMMAND ipar_prepared_execution_cache_authority_gate
+  )
+  set_tests_properties(ipar_prepared_execution_cache_authority_gate PROPERTIES
+    LABELS "ipar_prepared_execution_cache_authority_gate;IPAR-P1-12;IPAR-P1-13;IPAR-P1-15;IPAR-P1-18;prepared_execution_context;negative_authorization_cache;capability_cache;statement_preflight_cache;database_lifecycle;mga_transaction_regression"
+  )
+
   add_executable(ipar_prepared_handle_authority_gate
     ipar_prepared_handle_authority_gate.cpp
   )
@@ -4455,7 +4498,7 @@ if(TARGET sb_server_core)
     COMMAND ipar_server_observability_projection_gate
   )
   set_tests_properties(ipar_server_observability_projection_gate PROPERTIES
-    LABELS "IPAR-P6-06;IPAR-P6-08;ipar_server_observability_projection_gate;server_observability;slow_path;database_lifecycle;mga_transaction_regression"
+    LABELS "IPAR-P6-06;IPAR-P6-07;IPAR-P6-08;IPAR-P6-13;ipar_server_observability_projection_gate;server_observability;slow_path;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(ipar_contention_quota_projection_gate

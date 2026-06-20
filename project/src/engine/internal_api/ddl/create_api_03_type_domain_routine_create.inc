@@ -15,6 +15,12 @@
       result.evidence.push_back({"inline_index_create", created_index.index_uuid});
     }
   }
+  AddDdlPublicationResult(&result,
+                          "ddl.create_table",
+                          "table",
+                          table_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "mga_relation_metadata");
   return result;
 }
 
@@ -185,6 +191,12 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
     result.evidence.push_back({"temporary_index_build_rows",
                                std::to_string(index_build_rows.size())});
   }
+  AddDdlPublicationResult(&result,
+                          "ddl.create_index",
+                          "index",
+                          index_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "mga_relation_metadata.index");
   return result;
 }
 
@@ -334,6 +346,12 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
                               {"statistics_kind", statistics_kind},
                               {"statistics_expression_count", std::to_string(expression_count)},
                               {"payload", persisted.record.payload}});
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          "statistics",
+                          statistics_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "optimizer.statistics");
   return result;
 }
 

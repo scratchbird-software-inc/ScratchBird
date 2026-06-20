@@ -262,6 +262,12 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
                                 {"name", updated.default_name},
                                 {"state", updated.state},
                                 {"payload", updated.payload}});
+    AddDdlPublicationResult(&result,
+                            "ddl.alter_object",
+                            "schema",
+                            updated.schema_uuid,
+                            result.catalog_row_uuid.canonical,
+                            "schema_tree");
     return result;
   }
   if (request.target_object.object_kind == "sequence") {
@@ -367,6 +373,12 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     if (restart.has_value()) {
       AddApiBehaviorEvidence(&result, "sequence_runtime_restart", std::to_string(*restart));
     }
+    AddDdlPublicationResult(&result,
+                            "ddl.alter_object",
+                            "sequence",
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "sequence_runtime");
     return result;
   }
   if (request.target_object.object_kind == "domain") {
@@ -581,7 +593,14 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     }
     auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(request.context, "ddl.alter_object");
     result.primary_object = request.target_object;
+    result.catalog_row_uuid.canonical = updated.catalog_row_uuid;
     result.evidence.push_back({"domain_event", "domain_alter"});
+    AddDdlPublicationResult(&result,
+                            "ddl.alter_object",
+                            "domain",
+                            updated.domain_uuid,
+                            result.catalog_row_uuid.canonical,
+                            "domain_event");
     return result;
   }
   auto result = PersistedRecordResult<EngineAlterObjectResult>(request, "ddl.alter_object", "object_alteration", true, "altered");
@@ -605,6 +624,12 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", names_appended);
   }
   AddApiBehaviorEvidence(&result, "name_registry", request.target_object.uuid.canonical);
+  AddDdlPublicationResult(&result,
+                          "ddl.alter_object",
+                          object_kind,
+                          request.target_object.uuid.canonical,
+                          result.catalog_row_uuid.canonical,
+                          object_kind);
   return result;
 }
 
@@ -632,6 +657,12 @@ EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintReq
   result.metadata_cache_epoch = applied.metadata_cache_epoch;
   if (result.ok) {
     result.evidence.push_back({"ddl_catalog_route", "sys.constraint_descriptor"});
+    AddDdlPublicationResult(&result,
+                            kOperation,
+                            "constraint",
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "constraint_descriptor");
   }
   return result;
 }

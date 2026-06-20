@@ -12,6 +12,7 @@
 
 #include "sbps.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <array>
@@ -225,6 +226,9 @@ std::string MetricPathToken(std::string value) {
 }
 
 bool IsIparSlowPathMetricSample(const ServerMetricSample& sample) {
+  if (sample.path.rfind("sys.metrics.ipar.", 0) != 0) {
+    return false;
+  }
   if (sample.path.find("slow_path") != std::string::npos ||
       sample.path.find("fallback") != std::string::npos) {
     return true;
@@ -232,6 +236,28 @@ bool IsIparSlowPathMetricSample(const ServerMetricSample& sample) {
   return sample.labels.find("reason") != sample.labels.end() &&
          (sample.labels.find("chosen_path") != sample.labels.end() ||
           sample.labels.find("result") != sample.labels.end());
+}
+
+std::uint64_t SampleRatePerMille(std::uint64_t persist_stride) {
+  if (persist_stride == 0) {
+    return 1000;
+  }
+  return std::min<std::uint64_t>(
+      1000, std::max<std::uint64_t>(1, 1000 / persist_stride));
+}
+
+std::string BudgetPercentText(std::uint64_t percent_x100) {
+  std::ostringstream out;
+  out << (percent_x100 / 100) << '.'
+      << std::setw(2) << std::setfill('0') << (percent_x100 % 100);
+  std::string text = out.str();
+  while (text.size() > 3 && text.back() == '0') {
+    text.pop_back();
+  }
+  if (!text.empty() && text.back() == '.') {
+    text.push_back('0');
+  }
+  return text;
 }
 
 std::string LifecycleMetricOutcome(std::string_view outcome) {
@@ -274,7 +300,7 @@ void SeedIparTelemetryMetrics(ServerObservabilityState* state) {
   if (state == nullptr) return;
   const std::map<std::string, std::string> labels{{"budget_id", "IPAR-M031"}};
   const std::uint64_t sample_rate_per_mille =
-      state->metric_persist_stride == 0 ? 1000 : 1000 / state->metric_persist_stride;
+      SampleRatePerMille(state->metric_persist_stride);
   SeedMetric(state,
              "sys.metrics.ipar.telemetry.metrics_enabled",
              "gauge",
@@ -308,7 +334,32 @@ void SeedIparTelemetryMetrics(ServerObservabilityState* state) {
   SeedMetric(state,
              "sys.metrics.ipar.telemetry.dropped_metric_count",
              "counter",
-             0,
+             state->ipar_slow_path_reason_series_dropped,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.hot_path_budget_percent_x100",
+             "gauge",
+             state->ipar_hot_path_budget_percent_x100,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.detail_trace_enabled",
+             "gauge",
+             state->ipar_detail_trace_enabled ? 1 : 0,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.detail_trace_sample_stride",
+             "gauge",
+             state->ipar_detail_trace_sample_stride,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.diagnostic_reason_series_limit",
+             "gauge",
+             state->ipar_slow_path_reason_series_limit,
+             labels);
+  SeedMetric(state,
+             "sys.metrics.ipar.telemetry.diagnostic_reason_series_dropped",
+             "counter",
+             state->ipar_slow_path_reason_series_dropped,
              labels);
 }
 
@@ -420,6 +471,15 @@ void SetServerMetric(ServerObservabilityState* state,
                                : "public_safe";
   sample.value = value;
   auto key = MetricKey(sample.path, sample.labels);
+  const bool is_new_metric = state->metrics.find(key) == state->metrics.end();
+  if (is_new_metric && IsIparSlowPathMetricSample(sample)) {
+    if (state->ipar_slow_path_reason_series_count >=
+        state->ipar_slow_path_reason_series_limit) {
+      ++state->ipar_slow_path_reason_series_dropped;
+      return;
+    }
+    ++state->ipar_slow_path_reason_series_count;
+  }
   state->metrics[key] = sample;
   AppendLine(state->metrics_path, MetricSampleJson(state->metrics[key]));
 }
@@ -894,11 +954,17 @@ std::vector<scratchbird::engine::internal_api::SysInformationIparTelemetryContro
 BuildIparTelemetryControlProjectionSources(const ServerObservabilityState& state) {
   using scratchbird::engine::internal_api::SysInformationIparTelemetryControlSource;
   const std::uint64_t metric_sample_rate =
-      state.metric_persist_stride == 0 ? 1000 : 1000 / state.metric_persist_stride;
+      SampleRatePerMille(state.metric_persist_stride);
   const std::uint64_t audit_sample_rate =
-      state.audit_persist_stride == 0 ? 1000 : 1000 / state.audit_persist_stride;
+      SampleRatePerMille(state.audit_persist_stride);
+  const std::uint64_t detail_trace_sample_rate =
+      state.ipar_detail_trace_enabled
+          ? SampleRatePerMille(state.ipar_detail_trace_sample_stride)
+          : 0;
   const std::string source_state = state.metrics_enabled ? "observed" : "metrics_disabled";
   std::vector<SysInformationIparTelemetryControlSource> out;
+  const std::string overhead_budget =
+      BudgetPercentText(state.ipar_hot_path_budget_percent_x100);
   auto push = [&](std::string control_name,
                   std::string metric_path,
                   std::uint64_t configured_value,
@@ -917,6 +983,7 @@ BuildIparTelemetryControlProjectionSources(const ServerObservabilityState& state
     source.persist_stride = persist_stride;
     source.skipped_count = skipped_count;
     source.dropped_metric_count = dropped_metric_count;
+    source.overhead_budget_percent = overhead_budget;
     out.push_back(std::move(source));
   };
   push("metrics_enabled",
@@ -970,11 +1037,51 @@ BuildIparTelemetryControlProjectionSources(const ServerObservabilityState& state
   push("dropped_metric_count",
        "sys.metrics.ipar.telemetry.dropped_metric_count",
        0,
-       0,
+       state.ipar_slow_path_reason_series_dropped,
        metric_sample_rate,
        state.metric_persist_stride,
        state.metric_persist_skipped,
-       0);
+       state.ipar_slow_path_reason_series_dropped);
+  push("hot_path_budget_percent_x100",
+       "sys.metrics.ipar.telemetry.hot_path_budget_percent_x100",
+       state.ipar_hot_path_budget_percent_x100,
+       state.ipar_hot_path_budget_percent_x100,
+       0,
+       0,
+       0,
+       state.ipar_slow_path_reason_series_dropped);
+  push("detail_trace_enabled",
+       "sys.metrics.ipar.telemetry.detail_trace_enabled",
+       0,
+       state.ipar_detail_trace_enabled ? 1 : 0,
+       detail_trace_sample_rate,
+       state.ipar_detail_trace_sample_stride,
+       0,
+       state.ipar_slow_path_reason_series_dropped);
+  push("detail_trace_sample_stride",
+       "sys.metrics.ipar.telemetry.detail_trace_sample_stride",
+       state.ipar_detail_trace_sample_stride,
+       state.ipar_detail_trace_sample_stride,
+       detail_trace_sample_rate,
+       state.ipar_detail_trace_sample_stride,
+       0,
+       state.ipar_slow_path_reason_series_dropped);
+  push("diagnostic_reason_series_limit",
+       "sys.metrics.ipar.telemetry.diagnostic_reason_series_limit",
+       state.ipar_slow_path_reason_series_limit,
+       state.ipar_slow_path_reason_series_count,
+       0,
+       0,
+       0,
+       state.ipar_slow_path_reason_series_dropped);
+  push("diagnostic_reason_series_dropped",
+       "sys.metrics.ipar.telemetry.diagnostic_reason_series_dropped",
+       0,
+       state.ipar_slow_path_reason_series_dropped,
+       0,
+       0,
+       0,
+       state.ipar_slow_path_reason_series_dropped);
   return out;
 }
 
@@ -986,9 +1093,14 @@ BuildIparSlowPathReasonProjectionSources(const ServerObservabilityState& state) 
     if (!IsIparSlowPathMetricSample(sample)) {
       continue;
     }
+    if (out.size() >= state.ipar_slow_path_reason_series_limit) {
+      break;
+    }
     const std::string reason = LabelValue(sample.labels, "reason", "unspecified");
     const std::string chosen_path =
         LabelValue(sample.labels, "chosen_path", LabelValue(sample.labels, "result", "degraded_path"));
+    const std::string validation_stage =
+        LabelValue(sample.labels, "validation_stage", "runtime_execution");
     SysInformationIparSlowPathReasonSource source;
     source.metric_id = LabelValue(sample.labels, "metric_id", "IPAR-M035");
     source.statement_id = LabelValue(sample.labels, "statement_id");
@@ -1000,8 +1112,7 @@ BuildIparSlowPathReasonProjectionSources(const ServerObservabilityState& state) 
     }
     source.chosen_path = chosen_path;
     source.reason_code = reason;
-    source.validation_stage =
-        LabelValue(sample.labels, "validation_stage", "runtime_execution");
+    source.validation_stage = validation_stage;
     source.driver_visible_message =
         LabelValue(sample.labels,
                    "driver_visible_message",

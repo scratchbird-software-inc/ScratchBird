@@ -60,6 +60,37 @@ METADATA_KEYS = {
     "value",
 }
 
+PLACEHOLDER_VALUE_TOKENS = {
+    "deferred",
+    "fake",
+    "fixme",
+    "future",
+    "in_progress",
+    "missing",
+    "n_a",
+    "na",
+    "none",
+    "not_available",
+    "not_implemented",
+    "not_started",
+    "placeholder",
+    "stub",
+    "synthetic",
+    "tbd",
+    "todo",
+}
+
+PLACEHOLDER_VALUE_FRAGMENTS = (
+    "deferred",
+    "future",
+    "not_implemented",
+    "placeholder",
+    "to_be_done",
+)
+
+COPY_ROUTE_SCRIPT_IDS = {"SBDFS-059"}
+PREPARED_INSERT_ROUTE_SCRIPT_IDS = {"SBDFS-020", "SBDFS-130"}
+
 
 def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[5]
@@ -362,6 +393,24 @@ def non_empty(value: Any) -> bool:
     return value is not None and str(value).strip() != ""
 
 
+def placeholder_value_reason(value: Any) -> str | None:
+    if value is None:
+        return "missing"
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return "missing"
+    normalized = stripped.lower().replace("-", "_").replace(" ", "_").replace("/", "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    if normalized in PLACEHOLDER_VALUE_TOKENS:
+        return "placeholder"
+    if any(fragment in normalized for fragment in PLACEHOLDER_VALUE_FRAGMENTS):
+        return "placeholder"
+    return None
+
+
 def is_number(value: Any) -> bool:
     if isinstance(value, bool):
         return False
@@ -486,6 +535,44 @@ def collect_artifact_records(
     return records, telemetry, slow_paths
 
 
+def collect_route_events_from_payload(payload: Any, source: Path, events: list[dict[str, Any]]) -> None:
+    if isinstance(payload, list):
+        for item in payload:
+            collect_route_events_from_payload(item, source, events)
+        return
+    if not isinstance(payload, dict):
+        return
+
+    if payload.get("event") == "ipar_route_proof":
+        event = dict(payload)
+        event.setdefault("_source_path", str(source))
+        events.append(event)
+
+    route_events = payload.get("route_proof_events")
+    if isinstance(route_events, list):
+        for item in route_events:
+            if isinstance(item, dict):
+                event = dict(item)
+                event.setdefault("_source_path", str(source))
+                events.append(event)
+
+    for key in ("records", "target_metrics", "script_metrics", "samples"):
+        container = payload.get(key)
+        if isinstance(container, list):
+            for item in container:
+                collect_route_events_from_payload(item, source, events)
+        elif isinstance(container, dict):
+            for item in container.values():
+                collect_route_events_from_payload(item, source, events)
+
+
+def collect_route_events(payloads: list[tuple[Path, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for source, payload in payloads:
+        collect_route_events_from_payload(payload, source, events)
+    return events
+
+
 def collect_observed_fields(
     records: list[dict[str, Any]],
     schema: dict[str, Any],
@@ -515,6 +602,9 @@ def collect_observed_fields(
 
 
 def validate_value_type(field: str, value: Any, schema: dict[str, Any]) -> str | None:
+    placeholder_reason = placeholder_value_reason(value)
+    if placeholder_reason is not None:
+        return f"{field}_{placeholder_reason}_value"
     field_type = str(as_dict(schema.get("field_types")).get(field, "scalar"))
     if field_type in NUMERIC_FIELD_TYPES and not is_number(value):
         return f"{field}_not_numeric"
@@ -523,6 +613,216 @@ def validate_value_type(field: str, value: Any, schema: dict[str, Any]) -> str |
     if field_type == "scalar" and not non_empty(value):
         return f"{field}_empty"
     return None
+
+
+def validate_artifact_metadata(
+    payloads: list[tuple[Path, Any]],
+    schema: dict[str, Any],
+    selected_script_ids: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    expected_schema_id = str(schema.get("schema_id", ""))
+    expected_suite_id = str(schema.get("suite_id", ""))
+    for source, payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        source_name = str(source)
+        if "schema_version" in payload and payload.get("schema_version") != 1:
+            errors.append(f"artifact:{source_name}:schema_version_must_be_1")
+        if payload.get("schema_id") is not None and str(payload.get("schema_id")) != expected_schema_id:
+            errors.append(f"artifact:{source_name}:schema_id_drift:{payload.get('schema_id')}")
+        if payload.get("suite_id") is not None and str(payload.get("suite_id")) != expected_suite_id:
+            errors.append(f"artifact:{source_name}:suite_id_drift:{payload.get('suite_id')}")
+
+        contract = payload.get("artifact_contract")
+        if isinstance(contract, dict):
+            if contract.get("engine_execution") != "sblr_uuid_only":
+                errors.append(f"artifact:{source_name}:artifact_contract:engine_execution_not_sblr_uuid_only")
+            if contract.get("engine_sql_text_execution") is not False:
+                errors.append(f"artifact:{source_name}:artifact_contract:engine_sql_text_execution_must_be_false")
+            if contract.get("parser_output_to_engine_required") is not True:
+                errors.append(f"artifact:{source_name}:artifact_contract:parser_output_to_engine_required_missing")
+            if (
+                "missing_required_metrics_fail_gate" in contract
+                and contract.get("missing_required_metrics_fail_gate") is not True
+            ):
+                errors.append(f"artifact:{source_name}:artifact_contract:missing_required_metrics_must_fail_gate")
+            if (
+                "proof_outputs_under_repo_prefix" in contract
+                and contract.get("proof_outputs_under_repo_prefix") != "build/"
+            ):
+                errors.append(f"artifact:{source_name}:artifact_contract:proof_outputs_must_be_under_build")
+
+        missing_evidence = payload.get("missing_metric_evidence")
+        if missing_evidence is None:
+            continue
+        if not isinstance(missing_evidence, list):
+            errors.append(f"artifact:{source_name}:missing_metric_evidence_not_list")
+            continue
+        for item in missing_evidence:
+            if not isinstance(item, dict):
+                errors.append(f"artifact:{source_name}:missing_metric_evidence_item_not_object")
+                continue
+            script_id = str(item.get("script_id", ""))
+            if script_id and script_id not in selected_script_ids:
+                continue
+            field = str(item.get("field", ""))
+            reason = str(item.get("reason", "missing"))
+            errors.append(
+                f"artifact:{source_name}:missing_metric_evidence:"
+                f"{script_id or 'unknown_script'}:{field or 'unknown_field'}:{reason}"
+            )
+    return errors
+
+
+def validate_transport_fields(owner: str, row: dict[str, Any], errors: list[str]) -> None:
+    for field in ("script_id", "route", "parser_mode", "sslmode", "transport_mode", "tls_policy"):
+        value = row.get(field)
+        if value is None:
+            continue
+        placeholder_reason = placeholder_value_reason(value)
+        if placeholder_reason is not None:
+            errors.append(f"{owner}:{field}_{placeholder_reason}_value")
+    transport_mode = str(row.get("transport_mode", "")).strip()
+    tls_policy = str(row.get("tls_policy", "")).strip()
+    sslmode = str(row.get("sslmode", "")).strip()
+    if transport_mode == "tls_required":
+        if tls_policy != "scratchbird_tls_1_3_floor":
+            errors.append(f"{owner}:tls_required_without_tls_floor_policy")
+        if sslmode == "disable":
+            errors.append(f"{owner}:tls_required_with_sslmode_disable")
+    elif transport_mode == "tls_disabled":
+        if tls_policy != "explicit_non_tls_test_route":
+            errors.append(f"{owner}:tls_disabled_without_explicit_test_policy")
+        if sslmode and sslmode != "disable":
+            errors.append(f"{owner}:tls_disabled_with_sslmode_{sslmode}")
+    elif transport_mode == "local_ipc_no_tls":
+        if tls_policy and tls_policy != "local_ipc_no_tls":
+            errors.append(f"{owner}:local_ipc_no_tls_policy_mismatch")
+
+
+def event_bool(event: dict[str, Any], key: str) -> bool:
+    value = event.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+def event_false(event: dict[str, Any], key: str) -> bool:
+    value = event.get(key)
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, str):
+        return value.strip().lower() == "false"
+    return False
+
+
+def metric_positive(
+    by_script: dict[str, dict[str, list[Any]]],
+    script_ids: set[str],
+    fields: set[str],
+) -> bool:
+    for script_id in script_ids:
+        for field in fields:
+            values = by_script.get(script_id, {}).get(field, [])
+            if values and (to_float(values[-1]) or 0.0) > 0.0:
+                return True
+    return False
+
+
+def validate_route_proofs(
+    records: list[dict[str, Any]],
+    route_events: list[dict[str, Any]],
+    schema: dict[str, Any],
+    selected_script_ids: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    by_script, _sources = collect_observed_fields(records, schema, selected_script_ids)
+
+    for record in records:
+        script_id = script_id_from_record(record)
+        if script_id in selected_script_ids:
+            validate_transport_fields(f"route_record:{script_id}", record, errors)
+
+    for index, event in enumerate(route_events, start=1):
+        owner = f"route_event:{index}:{event.get('script_id', 'unknown_script')}"
+        validate_transport_fields(owner, event, errors)
+        for field in ("driver_payload_kind", "engine_payload_kind"):
+            value = event.get(field)
+            if not non_empty(value):
+                errors.append(f"{owner}:missing_{field}")
+                continue
+            placeholder_reason = placeholder_value_reason(value)
+            if placeholder_reason is not None:
+                errors.append(f"{owner}:{field}_{placeholder_reason}_value")
+        if not event_false(event, "engine_sql_text_execution"):
+            errors.append(f"{owner}:engine_sql_text_execution_must_be_false")
+        if not event_bool(event, "parser_output_to_engine_required"):
+            errors.append(f"{owner}:parser_output_to_engine_required_missing")
+        if not event_bool(event, "sblr_uuid_or_canonical_rows_required"):
+            errors.append(f"{owner}:sblr_uuid_or_canonical_rows_required_missing")
+
+    copy_scripts = COPY_ROUTE_SCRIPT_IDS & selected_script_ids
+    copy_required = (
+        bool(copy_scripts & set(by_script))
+        or metric_positive(
+            by_script,
+            COPY_ROUTE_SCRIPT_IDS,
+            {"copy_route_proofs", "canonical_row_stream_proofs", "copy_rows", "copy_batches"},
+        )
+        or any(
+            event.get("script_id") in COPY_ROUTE_SCRIPT_IDS
+            and (
+                event_bool(event, "copy_stream_used")
+                or event.get("driver_payload_kind") == "copy_canonical_rows"
+            )
+            for event in route_events
+        )
+    )
+    if copy_required and not any(
+        event.get("script_id") in COPY_ROUTE_SCRIPT_IDS
+        and event_bool(event, "copy_stream_used")
+        and event.get("driver_payload_kind") == "copy_canonical_rows"
+        and event.get("engine_payload_kind") == "canonical_rows"
+        and event_false(event, "engine_sql_text_execution")
+        for event in route_events
+    ):
+        errors.append("route_proof:SBDFS-059_copy_canonical_rows_missing")
+
+    prepared_scripts = PREPARED_INSERT_ROUTE_SCRIPT_IDS & selected_script_ids
+    prepared_required = (
+        bool(prepared_scripts & set(by_script))
+        or metric_positive(
+            by_script,
+            PREPARED_INSERT_ROUTE_SCRIPT_IDS,
+            {
+                "prepared_insert_route_proofs",
+                "prepared_route_proofs",
+                "prepared_descriptor_session_handle_proofs",
+                "prepared_descriptor_hits",
+            },
+        )
+        or any(
+            event.get("script_id") in PREPARED_INSERT_ROUTE_SCRIPT_IDS
+            and (
+                event_bool(event, "prepared_handle_used")
+                or event.get("driver_payload_kind") == "prepared_descriptor_handle"
+            )
+            for event in route_events
+        )
+    )
+    if prepared_required and not any(
+        event.get("script_id") in PREPARED_INSERT_ROUTE_SCRIPT_IDS
+        and event_bool(event, "prepared_handle_used")
+        and event.get("driver_payload_kind") == "prepared_descriptor_handle"
+        and event_false(event, "engine_sql_text_execution")
+        for event in route_events
+    ):
+        errors.append("route_proof:prepared_descriptor_handle_missing")
+
+    return errors
 
 
 def validate_metrics_records(
@@ -651,9 +951,13 @@ def validate_performance_targets(
                     }
                 )
             return
-        numeric = to_float(values[-1])
+        placeholder_reason = placeholder_value_reason(values[-1])
+        numeric = None if placeholder_reason is not None else to_float(values[-1])
         if numeric is None:
-            errors.append(f"targets:{script_id}:{field}_not_numeric")
+            if placeholder_reason is not None:
+                errors.append(f"targets:{script_id}:{field}_{placeholder_reason}_value")
+            else:
+                errors.append(f"targets:{script_id}:{field}_not_numeric")
             status = "target_invalid"
         else:
             status = "target_pass"
@@ -694,6 +998,10 @@ def validate_telemetry(telemetry: dict[str, Any], schema: dict[str, Any], allow_
             if not allow_missing:
                 errors.append(f"telemetry:missing_required_summary_field:{field}")
             continue
+        placeholder_reason = placeholder_value_reason(value)
+        if placeholder_reason is not None:
+            errors.append(f"telemetry:{field}_{placeholder_reason}_value")
+            continue
         if not is_number(value):
             errors.append(f"telemetry:{field}_not_numeric")
     if telemetry.get("overhead_percent") is not None and is_number(telemetry["overhead_percent"]):
@@ -706,6 +1014,15 @@ def validate_telemetry(telemetry: dict[str, Any], schema: dict[str, Any], allow_
     missing_paths = [path for path in required_paths if path not in telemetry]
     if missing_paths and not allow_missing:
         errors.append(f"telemetry:missing_ipar_telemetry_metric_paths:{','.join(missing_paths)}")
+    for path in required_paths:
+        if path not in telemetry:
+            continue
+        value = telemetry[path]
+        placeholder_reason = placeholder_value_reason(value)
+        if placeholder_reason is not None:
+            errors.append(f"telemetry:{path}_{placeholder_reason}_value")
+        elif not is_number(value):
+            errors.append(f"telemetry:{path}_not_numeric")
     return errors
 
 
@@ -732,6 +1049,10 @@ def validate_slow_paths(
         for field in required_fields:
             if not non_empty(row.get(field)):
                 errors.append(f"slow_path:{index}:missing_required_field:{field}")
+                continue
+            placeholder_reason = placeholder_value_reason(row.get(field))
+            if placeholder_reason is not None:
+                errors.append(f"slow_path:{index}:{field}_{placeholder_reason}_value")
     return errors
 
 
@@ -837,6 +1158,13 @@ def selected_scripts(schema: dict[str, Any], requested: list[str] | None) -> set
     return {script_id for script_id in requested if script_id in available}
 
 
+def unknown_requested_scripts(schema: dict[str, Any], requested: list[str] | None) -> list[str]:
+    if not requested:
+        return []
+    available = set(schema_script_ids(schema))
+    return sorted(script_id for script_id in requested if script_id not in available)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
@@ -885,6 +1213,11 @@ def main() -> int:
     if schema:
         issues.extend(validate_ipar_schema(schema, manifest if isinstance(manifest, dict) else None))
     selected = selected_scripts(schema, args.target_script) if schema else set()
+    if schema:
+        issues.extend(
+            f"target_script:unknown:{script_id}"
+            for script_id in unknown_requested_scripts(schema, args.target_script)
+        )
 
     if args.mode in ("plan", "all") and schema and isinstance(manifest, dict):
         write_target_plan(output_root, schema, manifest, selected)
@@ -896,10 +1229,12 @@ def main() -> int:
             try:
                 payloads = load_artifact_payloads([path.resolve() for path in args.metrics_input])
                 records, telemetry, slow_paths = collect_artifact_records(payloads, schema)
+                issues.extend(validate_artifact_metadata(payloads, schema, selected))
                 metric_errors, proof_rows = validate_metrics_records(records, schema, selected)
                 issues.extend(metric_errors)
                 target_errors, target_rows = validate_performance_targets(records, schema, selected)
                 issues.extend(target_errors)
+                issues.extend(validate_route_proofs(records, collect_route_events(payloads), schema, selected))
                 proof_rows.extend(target_rows)
                 issues.extend(validate_telemetry(telemetry, schema, args.allow_missing_telemetry))
                 issues.extend(validate_slow_paths(slow_paths, schema))

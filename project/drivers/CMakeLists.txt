@@ -47,6 +47,12 @@ set(SB_DRIVER_NATIVE_FULL_SURFACE_GATE
 set(SB_DRIVER_FULL_SURFACE_SCRIPT_SUITE_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/full_surface_scripts/validate_full_surface_script_suite.py"
 )
+set(SB_DRIVER_IPAR_PERFORMANCE_PROOF_GATE
+  "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/full_surface_scripts/ipar_performance_proof_gate.py"
+)
+set(SB_DRIVER_IPAR_METRICS_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_ipar_metrics_gate.py"
+)
 set(SB_DRIVER_DBEAVER_MANAGEMENT_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/validate_dbeaver_management_platform_corpus.py"
 )
@@ -171,6 +177,42 @@ function(sb_add_driver_full_surface_script_suite_gate test_name)
   )
 endfunction()
 
+function(sb_add_driver_ipar_performance_proof_gate test_name mode)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_IPAR_PERFORMANCE_PROOF_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--mode" "${mode}"
+      "--output-root" "${SB_DRIVER_BUILD_ROOT}/ipar-performance-proof/${test_name}"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;driver_ipar_metrics_gate;ipar_performance_proof;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+  )
+endfunction()
+
+function(sb_add_driver_ipar_optional_artifact_gate test_name)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_IPAR_METRICS_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--artifact-root" "${SB_DRIVER_BUILD_ROOT}/ipar-metrics-proof"
+      "--shape" "all"
+      "--output-root" "${SB_DRIVER_BUILD_ROOT}/ipar-performance-proof/${test_name}"
+      "--report" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+      "--require-tls-route-proof"
+      "--require-non-tls-route-proof"
+      "--skip-if-no-artifacts"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;driver_ipar_metrics_gate;ipar_artifact_proof;IPAR-P0-02;IPAR-P5-03;IPAR-P7-01;IPAR-P7-03;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+    SKIP_RETURN_CODE 77
+  )
+endfunction()
+
 function(sb_add_driver_status_package_gate test_name mode)
   add_test(
     NAME "${test_name}"
@@ -276,6 +318,9 @@ sb_add_driver_dbeaver_management_gate(dbeaver_management_platform_corpus_gate)
 sb_add_driver_native_full_surface_gate(driver_native_full_surface_gate_input gate-input)
 sb_add_driver_native_full_surface_gate(driver_native_full_surface_tool_inventory tool-inventory)
 sb_add_driver_full_surface_script_suite_gate(driver_full_surface_script_suite_gate)
+sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_schema_gate schema)
+sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_plan_gate plan)
+sb_add_driver_ipar_optional_artifact_gate(driver_ipar_metrics_artifact_proof_gate)
 
 sb_add_driver_status_package_gate(driver_row_status_manifest_gate driver-row-status DSR-030 DSR-032)
 sb_add_driver_status_package_gate(adapter_row_status_manifest_gate adapter-row-status DSR-031 DSR-032)

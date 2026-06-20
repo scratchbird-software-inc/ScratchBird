@@ -41,6 +41,12 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     result.cluster_authority_required = dropped.cluster_authority_required;
     if (result.ok) {
       result.evidence.push_back({"ddl_catalog_route", "sys.catalog.synonym"});
+      AddDdlPublicationResult(&result,
+                              "ddl.drop_object",
+                              "synonym",
+                              result.primary_object.uuid.canonical,
+                              result.catalog_row_uuid.canonical,
+                              "catalog.synonym");
     }
     return result;
   }
@@ -84,6 +90,12 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     auto result = MakeCrudSuccessResult<EngineDropObjectResult>(request.context, "ddl.drop_object");
     result.primary_object = request.target_object;
     result.evidence.push_back({"domain_event", "domain_drop"});
+    AddDdlPublicationResult(&result,
+                            "ddl.drop_object",
+                            "domain",
+                            request.target_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "domain_event");
     return result;
   }
   if (kind == "table" || kind == "relation") {
@@ -124,6 +136,12 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
       result.evidence.push_back(
           {"temporary_drop_reclaimed_large_values",
            std::to_string(temporary_drop.reclaimed_large_value_count)});
+      AddDdlPublicationResult(&result,
+                              "ddl.drop_object",
+                              result.primary_object.object_kind,
+                              object_uuid,
+                              result.catalog_row_uuid.canonical,
+                              "temporary_relation_metadata");
       return result;
     }
   }
@@ -137,6 +155,12 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     return MakeCrudDiagnosticResult<EngineDropObjectResult>(request.context, "ddl.drop_object", retired);
   }
   result.evidence.push_back({"name_registry_retired", object_uuid});
+  AddDdlPublicationResult(&result,
+                          "ddl.drop_object",
+                          kind,
+                          object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          kind);
   return result;
 }
 
@@ -163,6 +187,12 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
   result.cluster_authority_required = dropped.cluster_authority_required;
   if (result.ok) {
     result.evidence.push_back({"ddl_catalog_route", "sys.constraint_descriptor"});
+    AddDdlPublicationResult(&result,
+                            kOperation,
+                            "constraint",
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "constraint_descriptor");
   }
   return result;
 }

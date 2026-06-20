@@ -71,13 +71,23 @@ MemoryObservabilityOverheadResult MeasureMemoryObservabilityOverhead(
       result.p99_microseconds <= policy.p99_budget_microseconds;
 
   auto sampled = request;
+  result.sampled_max_top_contexts = request.max_top_contexts;
+  result.sampled_max_top_categories = request.max_top_categories;
   if (policy.enable_sampling) {
     sampled.max_top_contexts = policy.sampled_max_top_contexts;
     sampled.max_top_categories = policy.sampled_max_top_categories;
+    result.sampled_max_top_contexts = policy.sampled_max_top_contexts;
+    result.sampled_max_top_categories = policy.sampled_max_top_categories;
     result.sampled_mode_exercised = true;
   }
   auto sampled_bundle = BuildMemorySupportBundleEvidence(std::move(sampled));
   result.sampled_row_count = sampled_bundle.rows.size();
+  result.sampled_top_context_count = sampled_bundle.top_context_count;
+  result.sampled_top_category_count = sampled_bundle.top_category_count;
+  result.sampling_bounds_enforced =
+      result.sampled_top_context_count <= result.sampled_max_top_contexts &&
+      result.sampled_top_category_count <= result.sampled_max_top_categories &&
+      result.sampled_row_count <= result.observed_row_count;
   result.failure_evidence_preserved_under_sampling =
       sampled_bundle.failure_reason_count == request.diagnostics.size();
 
@@ -95,6 +105,16 @@ MemoryObservabilityOverheadResult MeasureMemoryObservabilityOverhead(
       "memory_observability.failure_evidence_preserved_under_sampling=" +
       std::string(result.failure_evidence_preserved_under_sampling ? "true"
                                                                    : "false"));
+  result.evidence.push_back("memory_observability.sampling_bounds_enforced=" +
+                            std::string(result.sampling_bounds_enforced ? "true" : "false"));
+  result.evidence.push_back("memory_observability.sampled_top_context_count=" +
+                            std::to_string(result.sampled_top_context_count));
+  result.evidence.push_back("memory_observability.sampled_top_category_count=" +
+                            std::to_string(result.sampled_top_category_count));
+  result.evidence.push_back("memory_observability.sampled_max_top_contexts=" +
+                            std::to_string(result.sampled_max_top_contexts));
+  result.evidence.push_back("memory_observability.sampled_max_top_categories=" +
+                            std::to_string(result.sampled_max_top_categories));
   result.status = result.ok() ? OkStatus() : FailedStatus();
   return result;
 }
