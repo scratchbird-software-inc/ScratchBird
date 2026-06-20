@@ -35,6 +35,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -390,6 +392,52 @@ std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
     return std::nullopt;
   }
   return std::nullopt;
+}
+
+std::vector<CrudRowVersionRecord> FindVisibleRowUuidCandidates(
+    const CrudState& state,
+    const std::string& table_uuid,
+    const std::vector<std::string>& row_uuids,
+    const EngineRequestContext& context) {
+  std::vector<CrudRowVersionRecord> rows;
+  if (row_uuids.empty()) {
+    return rows;
+  }
+
+  std::unordered_set<std::string> requested;
+  requested.reserve(row_uuids.size());
+  for (const auto& row_uuid : row_uuids) {
+    if (!row_uuid.empty()) {
+      requested.insert(row_uuid);
+    }
+  }
+  if (requested.empty()) {
+    return rows;
+  }
+
+  std::unordered_map<std::string, CrudRowVersionRecord> newest_visible_by_uuid;
+  newest_visible_by_uuid.reserve(requested.size());
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid ||
+        requested.find(row.row_uuid) == requested.end() ||
+        !CrudRowVersionVisibleToContext(state, row, context)) {
+      continue;
+    }
+    const auto found = newest_visible_by_uuid.find(row.row_uuid);
+    if (found == newest_visible_by_uuid.end() ||
+        row.sequence > found->second.sequence) {
+      newest_visible_by_uuid[row.row_uuid] = row;
+    }
+  }
+
+  rows.reserve(row_uuids.size());
+  for (const auto& row_uuid : row_uuids) {
+    const auto found = newest_visible_by_uuid.find(row_uuid);
+    if (found != newest_visible_by_uuid.end() && !found->second.deleted) {
+      rows.push_back(found->second);
+    }
+  }
+  return rows;
 }
 
 DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
@@ -752,15 +800,18 @@ UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
         return stream;
       }
       stream.rows.reserve(stream.plan.row_uuids.size());
-      for (const auto& row_uuid : stream.plan.row_uuids) {
-        const auto row = FindVisibleRowUuidCandidate(state,
-                                                     table.table_uuid,
-                                                     row_uuid,
-                                                     request.context);
-        if (row && CrudRowMatchesPredicate(*row, request.update_predicate)) {
-          stream.rows.push_back(*row);
+      const auto candidate_rows =
+          FindVisibleRowUuidCandidates(state,
+                                       table.table_uuid,
+                                       stream.plan.row_uuids,
+                                       request.context);
+      stream.evidence.push_back({"update_row_uuid_list_lookup",
+                                 "single_pass_mga_visibility"});
+      for (const auto& row : candidate_rows) {
+        if (CrudRowMatchesPredicate(row, request.update_predicate)) {
+          stream.rows.push_back(row);
           AddDmlHotPointAdmissionEvidence(plan_request,
-                                          row->row_uuid,
+                                          row.row_uuid,
                                           &stream.evidence);
         }
       }
@@ -1076,15 +1127,18 @@ DeleteTargetCandidateStream BuildDeleteTargetCandidateStream(
         return stream;
       }
       stream.rows.reserve(stream.plan.row_uuids.size());
-      for (const auto& row_uuid : stream.plan.row_uuids) {
-        const auto row = FindVisibleRowUuidCandidate(state,
-                                                     table.table_uuid,
-                                                     row_uuid,
-                                                     request.context);
-        if (row && CrudRowMatchesPredicate(*row, request.delete_predicate)) {
-          stream.rows.push_back(*row);
+      const auto candidate_rows =
+          FindVisibleRowUuidCandidates(state,
+                                       table.table_uuid,
+                                       stream.plan.row_uuids,
+                                       request.context);
+      stream.evidence.push_back({"delete_row_uuid_list_lookup",
+                                 "single_pass_mga_visibility"});
+      for (const auto& row : candidate_rows) {
+        if (CrudRowMatchesPredicate(row, request.delete_predicate)) {
+          stream.rows.push_back(row);
           AddDmlHotPointAdmissionEvidence(plan_request,
-                                          row->row_uuid,
+                                          row.row_uuid,
                                           &stream.evidence);
         }
       }
