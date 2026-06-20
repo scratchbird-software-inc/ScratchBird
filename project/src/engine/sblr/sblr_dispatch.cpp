@@ -1810,7 +1810,14 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   if (typed.table_names.empty()) {
     std::string table_name = api::SecurityOptionValue(base, "table_name:");
     if (table_name.empty()) { table_name = api::SecurityOptionValue(base, "name:"); }
-    if (!table_name.empty()) { typed.table_names.push_back({"en", "primary", "", table_name, true}); }
+    if (!table_name.empty()) {
+      if (normalized_parent_path.empty() && !schema_parent_path.empty()) {
+        normalized_parent_path = JoinDottedIdentifierPath(SplitDottedIdentifierPath(schema_parent_path));
+      }
+      const std::string full_path =
+          normalized_parent_path.empty() ? std::string{} : normalized_parent_path + "." + table_name;
+      typed.table_names.push_back({"en", "primary", full_path, table_name, true});
+    }
   }
   typed.table_columns = base.columns;
   if (typed.table_columns.empty()) {

@@ -1972,6 +1972,18 @@ void writeIparArtifacts(const std::filesystem::path& artifactRoot,
     for (const auto& [_, record] : normalizedRecords) {
         appendJsonl(artifactRoot / "ipar-metrics.jsonl", record);
     }
+    appendJsonl(artifactRoot / "ipar-metrics.jsonl",
+                {{"event", "ipar_telemetry_summary"},
+                 {"metric_id", "IPAR-M031"},
+                 {"driver", "cpp"},
+                 {"run_id", runId},
+                 {"route", route},
+                 {"parser_mode", parserMode},
+                 {"page_size", pageSize},
+                 {"sslmode", sslmode},
+                 {"transport_mode", transportMode},
+                 {"tls_policy", tlsPolicy},
+                 {"telemetry_overhead", normalizedTelemetry}});
     for (const auto& item : slowPaths) {
         appendJsonl(artifactRoot / "ipar-metrics.jsonl", item);
     }
