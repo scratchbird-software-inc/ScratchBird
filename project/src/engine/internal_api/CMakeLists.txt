@@ -139,6 +139,7 @@ add_library(sb_engine_internal_api
   dml/constraint_enforcement.cpp
   dml/delete_api.cpp
   dml/delete_batch.cpp
+  dml/dml_ingestion_pipeline.cpp
   dml/dml_index_write_path.cpp
   dml/dml_operation_path_proof.cpp
   dml/dml_row_locator_stream.cpp

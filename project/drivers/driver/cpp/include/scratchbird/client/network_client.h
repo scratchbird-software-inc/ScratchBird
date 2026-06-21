@@ -355,6 +355,10 @@ public:
                                      core::ErrorContext* ctx = nullptr);
 
     void setCopyInputStream(std::istream* in) { copy_input_stream_ = in; }
+    void setCopyInputSizeHintBytes(uint64_t bytes) { copy_input_size_hint_bytes_ = bytes; }
+    void setCopyPreallocationFactorPercent(uint64_t percent) {
+        copy_preallocation_factor_percent_ = percent;
+    }
     void setCopyOutputStream(std::ostream* out) { copy_output_stream_ = out; }
 
 private:
@@ -460,6 +464,8 @@ private:
 
     std::istream* copy_input_stream_{nullptr};
     std::ostream* copy_output_stream_{nullptr};
+    uint64_t copy_input_size_hint_bytes_{0};
+    uint64_t copy_preallocation_factor_percent_{82};
 
     bool compression_enabled_{false};
 };

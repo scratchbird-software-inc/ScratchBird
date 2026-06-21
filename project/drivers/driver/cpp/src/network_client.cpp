@@ -282,6 +282,20 @@ bool isManagerProxyMode(const std::string& value) {
     return lower == "manager_proxy" || lower == "manager-proxy" || lower == "managed";
 }
 
+std::string firstSqlTokenUpper(std::string_view sql) {
+    std::size_t i = 0;
+    while (i < sql.size() && std::isspace(static_cast<unsigned char>(sql[i]))) {
+        ++i;
+    }
+    std::string token;
+    while (i < sql.size() &&
+           (std::isalnum(static_cast<unsigned char>(sql[i])) || sql[i] == '_')) {
+        token.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(sql[i]))));
+        ++i;
+    }
+    return token;
+}
+
 bool canAdoptFreshNativeBoundary(const NetworkClient::TransactionOptions& options) {
     return options.flags == 0 &&
            options.conflict_action == 0 &&
@@ -295,16 +309,7 @@ bool canAdoptFreshNativeBoundary(const NetworkClient::TransactionOptions& option
 }
 
 bool querySupportsServerAutocommit(std::string_view sql) {
-    std::size_t i = 0;
-    while (i < sql.size() && std::isspace(static_cast<unsigned char>(sql[i]))) {
-        ++i;
-    }
-    std::string token;
-    while (i < sql.size() &&
-           (std::isalnum(static_cast<unsigned char>(sql[i])) || sql[i] == '_')) {
-        token.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(sql[i]))));
-        ++i;
-    }
+    const std::string token = firstSqlTokenUpper(sql);
     if (token == "BEGIN" ||
         token == "COMMIT" ||
         token == "COPY" ||
@@ -2096,6 +2101,57 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                      in_transaction_ ? 1 : 0);
         std::fflush(stderr);
     }
+    const bool copy_statement = firstSqlTokenUpper(sql) == "COPY";
+    struct CopyHintLocalGuard {
+        NetworkClient* client{nullptr};
+        bool active{false};
+        ~CopyHintLocalGuard() {
+            if (active && client != nullptr) {
+                client->setCopyInputSizeHintBytes(0);
+                client->setCopyPreallocationFactorPercent(82);
+            }
+        }
+    } copy_hint_local_guard{this, copy_statement};
+    bool copy_hint_sent = false;
+    auto consume_copy_hint = [&]() {
+        if (copy_statement) {
+            copy_input_size_hint_bytes_ = 0;
+            copy_preallocation_factor_percent_ = 82;
+        }
+    };
+    auto clear_server_copy_hint = [&]() -> core::Status {
+        consume_copy_hint();
+        if (!copy_hint_sent) {
+            return core::Status::OK;
+        }
+        core::ErrorContext clear_ctx;
+        auto clear_status = setOption("copy.source_size_bytes", "", &clear_ctx);
+        if (clear_status != core::Status::OK) {
+            return clear_status;
+        }
+        return setOption("copy.preallocation_factor_percent", "", &clear_ctx);
+    };
+    if (copy_statement && copy_input_size_hint_bytes_ != 0) {
+        auto hint_status =
+            setOption("copy.source_size_bytes",
+                      std::to_string(copy_input_size_hint_bytes_),
+                      ctx);
+        if (hint_status != core::Status::OK) {
+            consume_copy_hint();
+            return hint_status;
+        }
+        copy_hint_sent = true;
+        if (copy_preallocation_factor_percent_ != 0) {
+            hint_status =
+                setOption("copy.preallocation_factor_percent",
+                          std::to_string(copy_preallocation_factor_percent_),
+                          ctx);
+            if (hint_status != core::Status::OK) {
+                consume_copy_hint();
+                return hint_status;
+            }
+        }
+    }
     uint32_t query_flags = protocol::kQueryFlagBinaryResult;
     if (config_.autocommit && !explicit_transaction_active_ &&
         querySupportsServerAutocommit(sql)) {
@@ -2279,7 +2335,11 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 break;
             }
             case protocol::MessageType::Error:
-                return errorAfterStatement(msg, ctx);
+                status = errorAfterStatement(msg, ctx);
+                if (copy_hint_sent) {
+                    (void)clear_server_copy_hint();
+                }
+                return status;
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
                 status = readyAfterStatement(msg.body, ctx);
@@ -2293,7 +2353,13 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                                           msg.header.sequence,
                                           tls_active_);
                 }
-                return status;
+                if (status != core::Status::OK || !copy_hint_sent) {
+                    return status;
+                }
+                {
+                    const auto clear_status = clear_server_copy_hint();
+                    return clear_status == core::Status::OK ? status : clear_status;
+                }
             default:
                 break;
         }

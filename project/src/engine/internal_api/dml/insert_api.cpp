@@ -1525,7 +1525,7 @@ bool DirectPhysicalInsertRouteEligible(
     const EngineInsertRowsRequest& request,
     std::string_view conflict_action,
     std::span<const EngineRowValue> input_rows) {
-  if (input_rows.size() < 2) {
+  if (input_rows.empty()) {
     return false;
   }
   if (!conflict_action.empty()) {

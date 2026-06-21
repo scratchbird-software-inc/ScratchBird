@@ -78,6 +78,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
@@ -128,6 +129,19 @@ std::string trimWhitespace(const std::string& value) {
 
 void portableSleepFor100ms() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+uint64_t regularFileSizeHint(const std::string& filename) {
+    struct stat st {};
+    if (stat(filename.c_str(), &st) != 0) {
+        return 0;
+    }
+#ifdef _WIN32
+    const bool regular = (st.st_mode & _S_IFREG) != 0;
+#else
+    const bool regular = S_ISREG(st.st_mode);
+#endif
+    return regular && st.st_size > 0 ? static_cast<uint64_t>(st.st_size) : 0;
 }
 
 void portableLocalTime(const std::time_t* source, std::tm* out) {
@@ -2604,12 +2618,15 @@ bool handleMetaCommand(const std::string& cmd) {
 
         ResultSet results;
         core::ErrorContext ctx;
+        g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
+        g_connection->setCopyPreallocationFactorPercent(82);
         g_connection->setCopyInputStream(&infile);
         const std::string sql = std::string("COPY ") + table_name +
             " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=" +
             (enabled ? "TRUE" : "FALSE") + ")";
         core::Status status = g_connection->executeQuery(sql, &results, &ctx);
         g_connection->setCopyInputStream(nullptr);
+        g_connection->setCopyInputSizeHintBytes(0);
         if (status != core::Status::OK) {
             std::cerr << "Error: " << ctx.message << "\n";
             return false;
@@ -2790,12 +2807,15 @@ bool handleMetaCommand(const std::string& cmd) {
             if (canonical_row_field_file) {
                 ResultSet results;
                 core::ErrorContext ctx;
+                g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
+                g_connection->setCopyPreallocationFactorPercent(82);
                 g_connection->setCopyInputStream(&infile);
                 core::Status status = g_connection->executeQuery(
                     "COPY " + table_or_query + " FROM STDIN",
                     &results,
                     &ctx);
                 g_connection->setCopyInputStream(nullptr);
+                g_connection->setCopyInputSizeHintBytes(0);
                 if (status != core::Status::OK) {
                     std::cerr << "Error: " << ctx.message << "\n";
                     return false;
