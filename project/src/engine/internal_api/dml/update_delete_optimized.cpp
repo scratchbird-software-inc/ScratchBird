@@ -29,7 +29,9 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -115,6 +117,7 @@ struct StagedUpdateRow {
   CrudRowVersionRecord original_row;
   std::vector<std::pair<std::string, std::string>> logical_values;
   mga::HotStableRowHeadDecisionResult hot_plus_decision;
+  std::size_t encoded_bytes = 0;
   bool toast_required = false;
 };
 
@@ -239,15 +242,20 @@ struct UpdateAssignmentExpression {
   std::string literal_value;
   std::string literal_type;
   std::vector<std::pair<long double, std::string>> case_ge_thresholds;
+  std::vector<std::pair<long long, std::string>> case_ge_integer_thresholds;
   std::optional<std::string> case_fallback;
+  bool case_ge_thresholds_integral = false;
 };
 
 bool ParseLongDoubleValue(const std::string& value, long double* out);
+bool ParseLongLongValue(const std::string& value, long long* out);
 
 bool CompileCaseGeThresholds(UpdateAssignmentExpression* expression) {
   if (expression == nullptr) { return false; }
   expression->case_ge_thresholds.clear();
+  expression->case_ge_integer_thresholds.clear();
   expression->case_fallback.reset();
+  expression->case_ge_thresholds_integral = true;
   for (const auto& term : SplitText(expression->literal_value, ',')) {
     const auto separator = term.find('=');
     if (separator == std::string::npos) { return false; }
@@ -260,6 +268,18 @@ bool CompileCaseGeThresholds(UpdateAssignmentExpression* expression) {
     long double threshold = 0.0;
     if (!ParseLongDoubleValue(left, &threshold)) { return false; }
     expression->case_ge_thresholds.push_back({threshold, right});
+    long long integer_threshold = 0;
+    if (ParseLongLongValue(left, &integer_threshold)) {
+      expression->case_ge_integer_thresholds.push_back(
+          {integer_threshold, right});
+    } else {
+      expression->case_ge_thresholds_integral = false;
+    }
+  }
+  if (expression->case_ge_integer_thresholds.size() !=
+      expression->case_ge_thresholds.size()) {
+    expression->case_ge_thresholds_integral = false;
+    expression->case_ge_integer_thresholds.clear();
   }
   return !expression->case_ge_thresholds.empty() ||
          expression->case_fallback.has_value();
@@ -340,6 +360,23 @@ std::string EvaluateCaseGeThresholds(const std::string& source_value,
                                      const UpdateAssignmentExpression& expression,
                                      bool* ok) {
   if (ok != nullptr) { *ok = false; }
+  if (expression.case_ge_thresholds_integral) {
+    long long source = 0;
+    if (ParseLongLongValue(source_value, &source)) {
+      for (const auto& [threshold, value] :
+           expression.case_ge_integer_thresholds) {
+        if (source >= threshold) {
+          if (ok != nullptr) { *ok = true; }
+          return value;
+        }
+      }
+      if (expression.case_fallback.has_value()) {
+        if (ok != nullptr) { *ok = true; }
+        return *expression.case_fallback;
+      }
+      return {};
+    }
+  }
   long double source = 0.0;
   if (!ParseLongDoubleValue(source_value, &source)) { return {}; }
   for (const auto& [threshold, value] : expression.case_ge_thresholds) {
@@ -366,6 +403,19 @@ bool ParseLongDoubleValue(const std::string& value, long double* out) {
   } catch (...) {
     return false;
   }
+}
+
+bool ParseLongLongValue(const std::string& value, long long* out) {
+  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  errno = 0;
+  char* end = nullptr;
+  const long long parsed = std::strtoll(value.c_str(), &end, 10);
+  if (errno == ERANGE || end == value.c_str() ||
+      end != value.c_str() + value.size()) {
+    return false;
+  }
+  *out = parsed;
+  return true;
 }
 
 bool LooksIntegralText(const std::string& value) {
@@ -486,6 +536,95 @@ bool IsUpdateRowScanPredicate(const EnginePredicateEnvelope& predicate) {
          predicate.predicate_kind == "column_greater_equal";
 }
 
+std::string LowerAsciiCopy(std::string value) {
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return value;
+}
+
+std::uint64_t UpdateMaxCommittedCrudTransactionId(const CrudState& state) {
+  std::uint64_t max_committed = 0;
+  for (const auto& [tx, status] : state.transactions) {
+    if (status == "committed" || status == "archived") {
+      max_committed = std::max(max_committed, tx);
+    }
+  }
+  return max_committed;
+}
+
+std::uint64_t UpdateVisibilityHighWaterForContext(
+    const CrudState& state,
+    const EngineRequestContext& context) {
+  const std::string isolation = context.transaction_isolation_level.empty()
+                                    ? std::string("read_committed")
+                                    : LowerAsciiCopy(context.transaction_isolation_level);
+  if ((isolation == "snapshot" || isolation == "repeatable_read" ||
+       isolation == "serializable") &&
+      context.snapshot_visible_through_local_transaction_id != 0) {
+    return context.snapshot_visible_through_local_transaction_id;
+  }
+  return UpdateMaxCommittedCrudTransactionId(state);
+}
+
+bool UpdateRowVersionVisibleWithHighWater(
+    const CrudState& state,
+    const CrudRowVersionRecord& row,
+    const EngineRequestContext& context,
+    std::uint64_t visible_through) {
+  if (!row.temporary_session_uuid.empty() &&
+      row.temporary_session_uuid != context.session_uuid.canonical) {
+    return false;
+  }
+  const std::uint64_t observer_tx = context.local_transaction_id;
+  if (row.creator_tx == observer_tx) {
+    const auto own = state.transactions.find(row.creator_tx);
+    if (own != state.transactions.end() &&
+        (own->second == "active" || own->second == "preparing" ||
+         own->second == "prepared")) {
+      return true;
+    }
+  }
+  const auto it = state.transactions.find(row.creator_tx);
+  if (it == state.transactions.end()) { return false; }
+  if (it->second != "committed" && it->second != "archived") { return false; }
+  return visible_through == 0 || row.creator_tx <= visible_through;
+}
+
+bool AppendOnlyUpdateCandidateRefs(
+    const CrudState& state,
+    const std::string& table_uuid,
+    const EngineRequestContext& context,
+    std::vector<const CrudRowVersionRecord*>* rows) {
+  if (rows == nullptr) { return false; }
+  rows->clear();
+  std::unordered_set<std::string> seen_row_uuids;
+  std::size_t target_row_count = 0;
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid) { continue; }
+    ++target_row_count;
+    if (row.deleted || !row.previous_version_uuid.empty() ||
+        row.previous_sequence != 0) {
+      rows->clear();
+      return false;
+    }
+    if (!seen_row_uuids.insert(row.row_uuid).second) {
+      rows->clear();
+      return false;
+    }
+  }
+  rows->reserve(target_row_count);
+  const std::uint64_t visible_through =
+      UpdateVisibilityHighWaterForContext(state, context);
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid) { continue; }
+    if (UpdateRowVersionVisibleWithHighWater(state, row, context, visible_through)) {
+      rows->push_back(&row);
+    }
+  }
+  return true;
+}
+
 std::vector<std::string> RowUuidListFromPredicate(
     const EnginePredicateEnvelope& predicate) {
   std::vector<std::string> row_uuids;
@@ -520,6 +659,67 @@ EngineTypedValue TextPredicateBoundValue(std::string value, std::string type_nam
   typed.is_null = false;
   typed.state = EngineValueState::value;
   return typed;
+}
+
+const std::string* CrudFieldValuePtr(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::string& field) {
+  for (const auto& [name, value] : values) {
+    if (name == field) { return &value; }
+  }
+  return nullptr;
+}
+
+bool TryParseFiniteDoubleNoThrow(const std::string& value, double* out) {
+  if (out == nullptr || value.empty() || value == "<NULL>") {
+    return false;
+  }
+  errno = 0;
+  char* end = nullptr;
+  const double parsed = std::strtod(value.c_str(), &end);
+  if (errno == ERANGE || end == value.c_str() ||
+      end != value.c_str() + value.size() || !std::isfinite(parsed)) {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+struct PreparedUpdatePredicate {
+  bool column_less_or_null_numeric = false;
+  std::string column_name;
+  double numeric_bound = 0.0;
+};
+
+PreparedUpdatePredicate PrepareUpdatePredicate(
+    const EnginePredicateEnvelope& predicate) {
+  PreparedUpdatePredicate prepared;
+  if (predicate.predicate_kind == "column_less_or_null" &&
+      !predicate.canonical_predicate_envelope.empty() &&
+      !predicate.bound_values.empty() &&
+      TryParseFiniteDoubleNoThrow(predicate.bound_values.front().encoded_value,
+                                  &prepared.numeric_bound)) {
+    prepared.column_less_or_null_numeric = true;
+    prepared.column_name = predicate.canonical_predicate_envelope;
+  }
+  return prepared;
+}
+
+bool CrudRowMatchesPreparedUpdatePredicate(
+    const CrudRowVersionRecord& row,
+    const EnginePredicateEnvelope& predicate,
+    const PreparedUpdatePredicate& prepared) {
+  if (prepared.column_less_or_null_numeric) {
+    const auto* value = CrudFieldValuePtr(row.values, prepared.column_name);
+    if (value == nullptr || value->empty() || *value == "<NULL>") {
+      return true;
+    }
+    double parsed = 0.0;
+    if (TryParseFiniteDoubleNoThrow(*value, &parsed)) {
+      return parsed < prepared.numeric_bound;
+    }
+  }
+  return CrudRowMatchesPredicate(row, predicate);
 }
 
 struct DmlProjectionPredicateResolution {
@@ -1621,9 +1821,31 @@ bool HotPlusSamePageBudgetAvailable(
          HotPlusSamePageBudgetBytes(request);
 }
 
+bool HotPlusSamePageBudgetAvailableForEncodedBytes(
+    const EngineUpdateRowsRequest& request,
+    std::size_t encoded_bytes,
+    bool toast_required) {
+  if (toast_required) {
+    return false;
+  }
+  return static_cast<std::uint64_t>(encoded_bytes) <=
+         HotPlusSamePageBudgetBytes(request);
+}
+
 bool IsSynchronousUpdateIndexAction(UpdateIndexMaintenanceAction action) {
   return action == UpdateIndexMaintenanceAction::synchronous_exact_rewrite ||
          action == UpdateIndexMaintenanceAction::synchronous_exact_probe_then_rewrite;
+}
+
+bool UpdatePlanHasMaintainableIndexWork(
+    const UpdateBatchContext& batch_context) {
+  for (const auto& entry : batch_context.index_plan.entries) {
+    if (IsSynchronousUpdateIndexAction(entry.action) ||
+        entry.action == UpdateIndexMaintenanceAction::committed_delta_ledger) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool HotPlusExactIndexKeysUnchanged(
@@ -1750,6 +1972,7 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     const CrudRowVersionRecord& old_row,
     const CrudRowVersionRecord& new_row,
     const std::vector<std::pair<std::string, std::string>>& new_values,
+    std::size_t new_values_encoded_bytes,
     bool toast_required,
     bool hot_update_shape_enabled) {
   HotPlusDecisionBuildResult result;
@@ -1831,7 +2054,10 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
   input.visibility_snapshot.allow_reader_own_uncommitted = true;
   input.exact_index_keys_unchanged = exact_index_keys_unchanged;
   input.same_page_budget_available =
-      HotPlusSamePageBudgetAvailable(request, new_values, toast_required);
+      HotPlusSamePageBudgetAvailableForEncodedBytes(
+          request,
+          new_values_encoded_bytes,
+          toast_required);
   input.parser_or_reference_authority = parser_or_reference_authority;
 
   result.ok = true;
@@ -1885,6 +2111,9 @@ std::uint64_t CountUnaffectedExactIndexChurnAvoided(
   if (!HotPlusDecisionAvoidsExactChurn(decision)) {
     return 0;
   }
+  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
+    return 0;
+  }
   std::uint64_t avoided = 0;
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action != UpdateIndexMaintenanceAction::unaffected) {
@@ -1924,6 +2153,9 @@ std::uint64_t PlannedUpdateIndexMaintenanceWrites(
     const std::vector<StagedUpdateRow>& staged_update_rows,
     bool hot_update_shape_enabled,
     std::string* first_index_uuid) {
+  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
+    return 0;
+  }
   std::uint64_t planned_writes = 0;
   for (const auto& entry : batch_context.index_plan.entries) {
     for (const auto& staged : staged_update_rows) {
@@ -1959,6 +2191,9 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
   // DPC_DEFERRED_INDEX_WRITE_PATH
   // DPC_HOT_UPDATE_SHAPE
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> entries;
+  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
+    return entries;
+  }
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action != UpdateIndexMaintenanceAction::committed_delta_ledger) {
       continue;
@@ -2019,6 +2254,9 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
   // actual old/new key comparison for each row version, while preserving the
   // append-plus-visible-row-recheck model used for key-changing updates.
   std::vector<MgaIndexEntryAppendBatch> append_batches;
+  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
+    return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
   for (const auto& entry : batch_context.index_plan.entries) {
     if (!IsSynchronousUpdateIndexAction(entry.action)) {
       continue;
@@ -2378,19 +2616,41 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                             result.evidence.end());
     return failure;
   }
-  const auto rows = candidate_stream.rows_ready
-                        ? candidate_stream.rows
-                        : VisibleCrudRowsForContext(
-                              state,
-                              effective_request.target_table.uuid.canonical,
-                              effective_request.context);
+  std::vector<CrudRowVersionRecord> materialized_rows;
+  std::vector<const CrudRowVersionRecord*> row_refs;
+  if (candidate_stream.rows_ready) {
+    row_refs.reserve(candidate_stream.rows.size());
+    for (const auto& row : candidate_stream.rows) {
+      row_refs.push_back(&row);
+    }
+  } else if (candidate_stream.plan.access_kind ==
+                 DmlTargetAccessKind::table_scan &&
+             AppendOnlyUpdateCandidateRefs(
+                 state,
+                 effective_request.target_table.uuid.canonical,
+                 effective_request.context,
+                 &row_refs)) {
+    result.evidence.push_back({"update_visible_row_stream",
+                               "append_only_single_version_fast_path"});
+  } else {
+    materialized_rows = VisibleCrudRowsForContext(
+        state,
+        effective_request.target_table.uuid.canonical,
+        effective_request.context);
+    row_refs.reserve(materialized_rows.size());
+    for (const auto& row : materialized_rows) {
+      row_refs.push_back(&row);
+    }
+  }
   mark_update_phase("materialize_visible_rows");
-  result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
+  result.dml_summary.visible_rows_scanned =
+      static_cast<EngineApiU64>(row_refs.size());
   const bool compact_update_row_evidence =
-      suppress_payload_rows && rows.size() >= 1024;
+      suppress_payload_rows && row_refs.size() >= 1024;
   UpdateRowEvidenceCompactor row_evidence_compactor;
   row_evidence_compactor.enabled = compact_update_row_evidence;
-  row_evidence_compactor.input_row_count = static_cast<EngineApiU64>(rows.size());
+  row_evidence_compactor.input_row_count =
+      static_cast<EngineApiU64>(row_refs.size());
   EngineApiU64 compacted_match_traces = 0;
   EngineApiU64 compacted_hot_proof_traces = 0;
   EngineApiU64 compacted_write_traces = 0;
@@ -2398,12 +2658,21 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   ConstraintDmlValidationCache constraint_cache;
   std::vector<CrudRowVersionRecord> returning_rows;
   if (!suppress_payload_rows) {
-    returning_rows.reserve(rows.size());
+    returning_rows.reserve(row_refs.size());
   }
   std::vector<StagedUpdateRow> staged_update_rows;
-  staged_update_rows.reserve(rows.size());
-  for (const auto& row : rows) {
-    if (!CrudRowMatchesPredicate(row, effective_request.update_predicate)) { continue; }
+  staged_update_rows.reserve(row_refs.size());
+  const auto prepared_update_predicate =
+      PrepareUpdatePredicate(effective_request.update_predicate);
+  for (const auto* row_ptr : row_refs) {
+    if (row_ptr == nullptr) { continue; }
+    const auto& row = *row_ptr;
+    if (!CrudRowMatchesPreparedUpdatePredicate(
+            row,
+            effective_request.update_predicate,
+            prepared_update_predicate)) {
+      continue;
+    }
     ++result.matched_count;
     ++batch_context.actual_match_count;
     if (compact_update_row_evidence) {
@@ -2470,10 +2739,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       }
     }
 
-    const bool update_toast_required = EncodedValueBytes(values) > kCrudVerticalSliceMaxEncodedValueBytes;
+    const auto encoded_bytes = EncodedValueBytes(values);
+    const bool update_toast_required = encoded_bytes > kCrudVerticalSliceMaxEncodedValueBytes;
     const auto memory_validation = ValidateUpdateBatchMemoryBudget(
         batch_context,
-        static_cast<EngineApiU64>(update_toast_required ? kCrudVerticalSliceMaxEncodedValueBytes : EncodedValueBytes(values)));
+        static_cast<EngineApiU64>(update_toast_required ? kCrudVerticalSliceMaxEncodedValueBytes : encoded_bytes));
     if (memory_validation.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", memory_validation);
     }
@@ -2507,14 +2777,15 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = false;
-    row_record.values = values;
+    row_record.values = std::move(values);
     auto hot_plus_decision = BuildHotPlusDecisionForStagedUpdate(
         request,
         hot_plus_inventory.inventory,
         batch_context,
         row,
         row_record,
-        values,
+        row_record.values,
+        encoded_bytes,
         update_toast_required,
         hot_update_shape_enabled);
     if (!hot_plus_decision.ok) {
@@ -2528,7 +2799,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const std::uint64_t unaffected_avoided =
         CountUnaffectedExactIndexChurnAvoided(batch_context,
                                               row,
-                                              values,
+                                              row_record.values,
                                               hot_plus_decision.decision);
     hot_update_counters.exact_secondary_churn_avoided += unaffected_avoided;
     hot_update_counters.index_churn_avoided += unaffected_avoided;
@@ -2568,10 +2839,18 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                      "proof",
                      hot_plus_decision_name);
     }
+    const bool retain_stage_logical_values =
+        !suppress_payload_rows || update_toast_required ||
+        UpdatePlanHasMaintainableIndexWork(batch_context);
+    std::vector<std::pair<std::string, std::string>> stage_logical_values;
+    if (retain_stage_logical_values) {
+      stage_logical_values = row_record.values;
+    }
     staged_update_rows.push_back({std::move(row_record),
                                   row,
-                                  values,
+                                  std::move(stage_logical_values),
                                   std::move(hot_plus_decision.decision),
+                                  encoded_bytes,
                                   update_toast_required});
   }
   mark_update_phase("stage_update_rows");
@@ -2619,19 +2898,21 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     std::vector<CrudRowVersionRecord> row_records;
     row_records.reserve(staged_update_rows.size());
     for (auto& staged : staged_update_rows) {
-      auto storage_values = staged.logical_values;
-      const auto large_value_persisted = PersistMgaLargeValuesForRow(request.context,
-                                                                     request.target_table.uuid.canonical,
-                                                                     staged.row_record.row_uuid,
-                                                                     staged.row_record.version_uuid,
-                                                                     staged.toast_required,
-                                                                     &storage_values,
-                                                                     &result.evidence);
-      if (large_value_persisted.error) {
-        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", large_value_persisted);
+      if (staged.toast_required) {
+        auto storage_values = staged.logical_values;
+        const auto large_value_persisted = PersistMgaLargeValuesForRow(request.context,
+                                                                       request.target_table.uuid.canonical,
+                                                                       staged.row_record.row_uuid,
+                                                                       staged.row_record.version_uuid,
+                                                                       true,
+                                                                       &storage_values,
+                                                                       &result.evidence);
+        if (large_value_persisted.error) {
+          return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", large_value_persisted);
+        }
+        staged.row_record.values = std::move(storage_values);
       }
-      staged.row_record.values = std::move(storage_values);
-      row_records.push_back(staged.row_record);
+      row_records.push_back(std::move(staged.row_record));
     }
     mark_update_phase("persist_large_values");
 
