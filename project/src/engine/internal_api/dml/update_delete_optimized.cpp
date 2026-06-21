@@ -2038,7 +2038,7 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     result.decision = OrdinaryHotPlusDecision();
     return result;
   }
-  if (batch_context.index_plan.entries.empty()) {
+  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     result.ok = true;
     result.decision = OrdinaryHotPlusDecision();
     return result;
