@@ -25,6 +25,11 @@ The workload records failed statements as evidence. It does not rewrite failed
 joins, updates, window functions, CTEs, or aggregate forms into easier
 ScratchBird-specific alternatives.
 
+Use `--phase-timing` to include DML phase timing summaries in `summary.json`.
+The runner always collects the C++ client trace. Parser-worker and engine DML
+trace files are included when the test server was started with the
+`server_env_expected` values reported in the phase timing block.
+
 By default the ScratchBird workload prefixes physical table names with
 `bench_` to avoid collisions with seeded driver-test objects such as
 `app.customers`. The logical workload IDs remain the same as the PostgreSQL

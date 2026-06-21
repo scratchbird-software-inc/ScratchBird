@@ -24,13 +24,16 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <iomanip>
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -451,6 +454,96 @@ void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   for (int shift = 0; shift < 64; shift += 8) {
     out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
   }
+}
+
+bool ParserPhaseTraceEnabled() {
+  static const bool enabled = [] {
+    const char* trace_path = std::getenv("SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE");
+    return trace_path != nullptr && *trace_path != '\0';
+  }();
+  return enabled;
+}
+
+std::int64_t ParserPhaseNowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+std::string ParserPhaseJsonEscape(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          out += "\\u00";
+          constexpr char hex[] = "0123456789abcdef";
+          out.push_back(hex[(static_cast<unsigned char>(ch) >> 4) & 0x0f]);
+          out.push_back(hex[static_cast<unsigned char>(ch) & 0x0f]);
+        } else {
+          out.push_back(ch);
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+void WriteParserPhaseTrace(std::string_view event,
+                           std::string_view phase,
+                           std::int64_t elapsed_ns,
+                           std::size_t bytes,
+                           std::size_t count,
+                           std::size_t rows,
+                           std::string_view detail = {}) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) return;
+  out << "{\"event\":\"" << ParserPhaseJsonEscape(event)
+      << "\",\"phase\":\"" << ParserPhaseJsonEscape(phase)
+      << "\",\"elapsed_us\":"
+      << (static_cast<double>(elapsed_ns) / 1000.0)
+      << ",\"bytes\":" << static_cast<unsigned long long>(bytes)
+      << ",\"count\":" << static_cast<unsigned long long>(count)
+      << ",\"rows\":" << static_cast<unsigned long long>(rows)
+      << ",\"detail\":\"" << ParserPhaseJsonEscape(detail) << "\"}\n";
+}
+
+void WriteParserPhaseTraceIfEnabled(bool enabled,
+                                    std::string_view event,
+                                    std::string_view phase,
+                                    std::int64_t started_ns,
+                                    std::size_t bytes,
+                                    std::size_t count,
+                                    std::size_t rows,
+                                    std::string_view detail = {}) {
+  if (!enabled) return;
+  WriteParserPhaseTrace(event,
+                        phase,
+                        ParserPhaseNowNs() - started_ns,
+                        bytes,
+                        count,
+                        rows,
+                        detail);
 }
 
 void PutI16(std::vector<std::uint8_t>* out, std::int16_t value) {
@@ -3576,28 +3669,73 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                                          CopyImportState rowset,
                                                          bool send_ready,
                                                          bool* command_accepted) {
+  const bool phase_trace = ParserPhaseTraceEnabled();
+  const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
+  const std::size_t row_count = rowset.rows.size();
+  const std::size_t sql_bytes = rowset.sql.size();
+  const auto write_total_trace = [&](std::string_view detail) {
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "total",
+                                   total_started,
+                                   sql_bytes,
+                                   1,
+                                   row_count,
+                                   detail);
+  };
   state->ready_sent_for_current_operation = false;
   if (command_accepted != nullptr) *command_accepted = true;
+  const std::int64_t resolve_started = phase_trace ? ParserPhaseNowNs() : 0;
   auto resolved = session->ResolvePublicNameForWire(rowset.target_name, false, "relation");
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 "resolve_target_uuid",
+                                 resolve_started,
+                                 rowset.target_name.size(),
+                                 1,
+                                 row_count,
+                                 resolved.resolved ? "resolved" : "not_resolved");
   if (!resolved.resolved || resolved.object_uuid.empty()) {
+    write_total_trace("not_applicable_unresolved_target");
     return std::nullopt;
   }
 
   rowset.target_object_uuid = std::move(resolved.object_uuid);
   state->security_policy_epoch =
       std::max(state->security_policy_epoch, session->session().security_policy_epoch);
+  const std::int64_t cache_lookup_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::string cache_key = SimpleInsertRowsetCacheKey(rowset);
   auto cache_it = state->simple_insert_rowset_cache.find(cache_key);
-  if (cache_it == state->simple_insert_rowset_cache.end() ||
-      cache_it->second.security_policy_epoch != state->security_policy_epoch ||
-      cache_it->second.prepared_statement_uuid.empty()) {
+  const bool cache_hit = cache_it != state->simple_insert_rowset_cache.end() &&
+                         cache_it->second.security_policy_epoch == state->security_policy_epoch &&
+                         !cache_it->second.prepared_statement_uuid.empty();
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 "prepare_cache_lookup",
+                                 cache_lookup_started,
+                                 cache_key.size(),
+                                 state->simple_insert_rowset_cache.size(),
+                                 row_count,
+                                 cache_hit ? "hit" : "miss_or_stale");
+  if (!cache_hit) {
     CopyImportState prepare_template;
     prepare_template.native_bulk_ingest = true;
     prepare_template.native_bulk_ingest_enabled = true;
     prepare_template.sql = rowset.sql;
     prepare_template.target_object_uuid = rowset.target_object_uuid;
+    const std::int64_t prepare_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const std::string prepare_envelope =
+        BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0);
     const auto prepared =
-        session->PrepareSblrForWire(BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
+        session->PrepareSblrForWire(prepare_envelope);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "prepare_sblr",
+                                   prepare_started,
+                                   prepare_envelope.size(),
+                                   1,
+                                   0,
+                                   prepared.accepted ? "accepted" : "rejected");
     if (prepared.accepted && !prepared.prepared_statement_uuid.empty()) {
       SimpleInsertRowsetPreparedEntry entry;
       entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
@@ -3610,12 +3748,33 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
     }
   }
 
+  const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::string envelope =
-      BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size(), false);
+      BuildNativeBulkIngestExecuteEnvelope(rowset, 0, row_count, false);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 "build_sblr_envelope",
+                                 envelope_started,
+                                 envelope.size(),
+                                 1,
+                                 row_count);
+  const std::int64_t packet_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::vector<std::uint8_t> data_packet =
-      BuildNativeRowPacket(rowset, 0, rowset.rows.size());
-  if (data_packet.empty()) return std::nullopt;
+      BuildNativeRowPacket(rowset, 0, row_count);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 "build_native_row_packet",
+                                 packet_started,
+                                 data_packet.size(),
+                                 1,
+                                 row_count);
+  if (data_packet.empty()) {
+    write_total_trace("not_applicable_empty_data_packet");
+    return std::nullopt;
+  }
 
+  const bool uses_prepared = cache_it != state->simple_insert_rowset_cache.end();
+  const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
   auto result = cache_it == state->simple_insert_rowset_cache.end()
                     ? session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false)
                     : session->RunPreparedSblrEnvelopeForWire(
@@ -3623,6 +3782,15 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                           envelope,
                           data_packet,
                           false);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 uses_prepared ? "run_prepared_sblr_with_data_packet"
+                                               : "run_sblr_with_data_packet",
+                                 execute_started,
+                                 envelope.size() + data_packet.size(),
+                                 1,
+                                 row_count,
+                                 result.accepted ? "accepted" : "rejected");
   if (!result.accepted || result.messages.has_errors()) {
     if (command_accepted != nullptr) *command_accepted = false;
     const std::string diagnostic_code =
@@ -3634,15 +3802,38 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                    FirstDiagnosticText(result.messages),
                    diagnostic_detail.empty() ? diagnostic_code
                                              : diagnostic_code + ";" + diagnostic_detail)) {
+      write_total_trace("send_error_failed");
       return false;
     }
+    write_total_trace("rejected");
     return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
   }
   RefreshWireTransactionStateFromSession(*session, state);
-  if (result.server_row_count == 0) result.server_row_count = rowset.rows.size();
+  if (result.server_row_count == 0) result.server_row_count = row_count;
   result.server_affected_rows_present = true;
-  if (result.server_affected_rows == 0) result.server_affected_rows = rowset.rows.size();
-  if (!SendPipelineResult(io, session, state, rowset.sql, result)) return false;
+  if (result.server_affected_rows == 0) result.server_affected_rows = row_count;
+  const std::int64_t send_started = phase_trace ? ParserPhaseNowNs() : 0;
+  if (!SendPipelineResult(io, session, state, rowset.sql, result)) {
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "send_pipeline_result",
+                                   send_started,
+                                   0,
+                                   1,
+                                   row_count,
+                                   "failed");
+    write_total_trace("send_pipeline_result_failed");
+    return false;
+  }
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "simple_insert_rowset_fast_path",
+                                 "send_pipeline_result",
+                                 send_started,
+                                 0,
+                                 1,
+                                 row_count,
+                                 "sent");
+  write_total_trace(uses_prepared ? "prepared_success" : "direct_success");
   return !send_ready || SendReady(io, state);
 }
 
@@ -4188,27 +4379,54 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 bool autocommit_emulation = false,
                 const SbwpTxnCommitRequest* commit_request = nullptr,
                 bool* command_accepted = nullptr) {
+  const bool phase_trace = ParserPhaseTraceEnabled();
+  const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   state->ready_sent_for_current_operation = false;
   if (command_accepted != nullptr) *command_accepted = true;
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   if (sql.empty()) {
     if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_sql",
+                                   "total",
+                                   total_started,
+                                   raw_sql.size(),
+                                   1,
+                                   0,
+                                   "empty");
     return !send_ready || SendReady(io, state);
   }
   if (auto fast_insert =
           TryExecuteSimpleInsertRowsetFastPath(
               session, io, state, sql, send_ready, autocommit_emulation, command_accepted);
       fast_insert.has_value()) {
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_sql",
+                                   "total",
+                                   total_started,
+                                   sql.size(),
+                                   1,
+                                   0,
+                                   *fast_insert ? "fast_insert_handled" : "fast_insert_failed");
     return *fast_insert;
   }
   state->simple_insert_rowset_cache.clear();
   const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
+  const std::int64_t pipeline_started = phase_trace ? ParserPhaseNowNs() : 0;
   const auto result = session->RunPipeline(sql,
                                            true,
                                            auto_cursor,
                                            0,
                                            autocommit_emulation && !auto_cursor);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "execute_sql",
+                                 "run_pipeline",
+                                 pipeline_started,
+                                 sql.size(),
+                                 1,
+                                 0,
+                                 result.accepted ? "accepted" : "rejected");
   if (!result.accepted || result.messages.has_errors()) {
     if (command_accepted != nullptr) *command_accepted = false;
     if (commit_request != nullptr && IsPostInventorySecondaryFailure(result.messages)) {
@@ -4237,6 +4455,14 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                    FirstDiagnosticCode(result.messages, "SBSQL.EXECUTION.REJECTED"))) {
       return false;
     }
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_sql",
+                                   "total",
+                                   total_started,
+                                   sql.size(),
+                                   1,
+                                   0,
+                                   "rejected");
     return !send_ready || SendReady(io, state);
   }
   RefreshWireTransactionStateFromSession(*session, state);
@@ -4308,6 +4534,14 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   if (commit_finality.has_value() && !SendTxnFinalityStatus(io, state, *commit_finality)) {
     return false;
   }
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "execute_sql",
+                                 "total",
+                                 total_started,
+                                 sql.size(),
+                                 1,
+                                 0,
+                                 result.server_operation_id);
   return !send_ready || SendReady(io, state);
 }
 
@@ -4323,16 +4557,37 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                         SbwpSessionState* state,
                         const QueryPayload& query,
                         bool send_ready) {
+  const bool phase_trace = ParserPhaseTraceEnabled();
+  const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   const bool autocommit_emulation = (query.flags & kQueryFlagAutocommit) != 0;
   std::vector<std::string> statements;
   if (QueryPayloadRequestsScriptIngest(query) || query.sql.find(';') != std::string::npos) {
+    const std::int64_t split_started = phase_trace ? ParserPhaseNowNs() : 0;
     statements = SplitSbwpScriptStatements(query.sql);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_script_or_sql",
+                                   "split_script_statements",
+                                   split_started,
+                                   query.sql.size(),
+                                   statements.size(),
+                                   0,
+                                   QueryPayloadRequestsScriptIngest(query) ? "script_ingest"
+                                                                           : "semicolon_detected");
   }
   if (statements.size() <= 1) {
     const std::string_view sql =
         statements.empty() ? std::string_view(query.sql)
                            : std::string_view(statements.front());
-    return ExecuteSql(session, io, state, sql, send_ready, autocommit_emulation);
+    const bool ok = ExecuteSql(session, io, state, sql, send_ready, autocommit_emulation);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_script_or_sql",
+                                   "total",
+                                   total_started,
+                                   query.sql.size(),
+                                   statements.empty() ? 1 : statements.size(),
+                                   0,
+                                   ok ? "single_statement" : "single_statement_failed");
+    return ok;
   }
 
   struct PendingInsertGroup {
@@ -4344,12 +4599,25 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   const auto flush_pending = [&]() -> bool {
     if (!pending.active) return true;
     bool accepted = true;
+    const std::size_t pending_rows = pending.rowset.rows.size();
+    const std::size_t fallback_count = pending.fallback_statements.size();
+    const std::int64_t fast_started = phase_trace ? ParserPhaseNowNs() : 0;
     auto fast_result = TryExecuteSimpleInsertRowsetFastPath(session,
                                                            io,
                                                            state,
                                                            std::move(pending.rowset),
                                                            false,
                                                            &accepted);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "script_insert_group",
+                                   "flush_fast_path",
+                                   fast_started,
+                                   0,
+                                   fallback_count,
+                                   pending_rows,
+                                   fast_result.has_value()
+                                       ? (accepted ? "handled" : "rejected")
+                                       : "not_applicable");
     if (fast_result.has_value()) {
       pending = PendingInsertGroup{};
       if (!*fast_result) return false;
@@ -4360,15 +4628,40 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
     }
     const auto fallback = std::move(pending.fallback_statements);
     pending = PendingInsertGroup{};
+    const std::int64_t fallback_started = phase_trace ? ParserPhaseNowNs() : 0;
     for (const auto& sql : fallback) {
       accepted = true;
       if (!ExecuteSql(session, io, state, sql, false, autocommit_emulation, nullptr, &accepted)) {
+        WriteParserPhaseTraceIfEnabled(phase_trace,
+                                       "script_insert_group",
+                                       "fallback_statement_execution",
+                                       fallback_started,
+                                       0,
+                                       fallback.size(),
+                                       pending_rows,
+                                       "failed");
         return false;
       }
       if (!accepted) {
+        WriteParserPhaseTraceIfEnabled(phase_trace,
+                                       "script_insert_group",
+                                       "fallback_statement_execution",
+                                       fallback_started,
+                                       0,
+                                       fallback.size(),
+                                       pending_rows,
+                                       "rejected");
         return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
     }
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "script_insert_group",
+                                   "fallback_statement_execution",
+                                   fallback_started,
+                                   0,
+                                   fallback.size(),
+                                   pending_rows,
+                                   "accepted");
     return true;
   };
 
@@ -4416,6 +4709,14 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   }
 
   if (!flush_pending()) return false;
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "execute_script_or_sql",
+                                 "total",
+                                 total_started,
+                                 query.sql.size(),
+                                 statements.size(),
+                                 0,
+                                 "multi_statement");
   return !send_ready || SendReady(io, state);
 }
 
@@ -4423,6 +4724,8 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                     ClientIo* io,
                     SbwpSessionState* state,
                     const Frame& frame) {
+  const bool phase_trace = ParserPhaseTraceEnabled();
+  const std::int64_t parse_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!state->authenticated || !state->copy_import.active) {
     return SendError(io,
                      state,
@@ -4434,6 +4737,16 @@ bool HandleCopyData(SbsqlTestWireSession* session,
   const auto rows = state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1
                         ? ParseBinaryCopyRows(frame.payload)
                         : ParseTextCopyRows(frame.payload);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "copy_data",
+                                 "parse_payload",
+                                 parse_started,
+                                 frame.payload.size(),
+                                 1,
+                                 rows.has_value() ? rows->size() : 0,
+                                 state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1
+                                     ? "binary_rowset_v1"
+                                     : "canonical_text");
   if (!rows.has_value()) {
     const bool was_binary_copy =
         state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1;
@@ -4458,6 +4771,8 @@ bool HandleCopyData(SbsqlTestWireSession* session,
 }
 
 bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionState* state) {
+  const bool phase_trace = ParserPhaseTraceEnabled();
+  const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!state->authenticated || !state->copy_import.active) {
     return SendError(io,
                      state,
@@ -4484,6 +4799,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   result.operation_family = "sblr.dml.operation.v3";
   result.server_operation_id =
       copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
+  std::size_t chunk_count = 0;
   for (std::size_t first_row = 0; first_row < copy.rows.size();
        first_row += kCopyExecuteRowsPerSblrEnvelope) {
     const std::size_t row_count =
@@ -4491,18 +4807,47 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
     const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
     const bool use_native_row_packet =
         copy.native_bulk_ingest && CopyRowsHaveSharedShape(copy, first_row, end_row);
+    const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
     const std::string envelope =
         copy.native_bulk_ingest
             ? BuildNativeBulkIngestExecuteEnvelope(
                   copy, first_row, row_count, !use_native_row_packet)
             : BuildCopyExecuteEnvelope(copy, first_row, row_count);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_done",
+                                   "build_execute_envelope",
+                                   envelope_started,
+                                   envelope.size(),
+                                   chunk_count + 1,
+                                   row_count,
+                                   use_native_row_packet ? "native_row_packet"
+                                                         : "inline_rows");
+    const std::int64_t packet_started = phase_trace ? ParserPhaseNowNs() : 0;
     const std::vector<std::uint8_t> data_packet =
         use_native_row_packet ? BuildNativeRowPacket(copy, first_row, row_count)
                               : std::vector<std::uint8_t>{};
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_done",
+                                   "build_native_row_packet",
+                                   packet_started,
+                                   data_packet.size(),
+                                   chunk_count + 1,
+                                   row_count,
+                                   use_native_row_packet ? "built" : "not_used");
+    const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
     auto chunk_result =
         data_packet.empty()
             ? session->RunSblrEnvelope(envelope, false)
             : session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_done",
+                                   data_packet.empty() ? "run_sblr_envelope"
+                                                       : "run_sblr_with_data_packet",
+                                   execute_started,
+                                   envelope.size() + data_packet.size(),
+                                   chunk_count + 1,
+                                   row_count,
+                                   chunk_result.accepted ? "accepted" : "rejected");
     if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
       const std::string diagnostic_code = FirstDiagnosticCode(
           chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
@@ -4518,6 +4863,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
       }
       return SendReady(io, state, ReadyReason::kErrorRecovered);
     }
+    ++chunk_count;
     result.statement_family = chunk_result.statement_family;
     result.operation_family = chunk_result.operation_family;
     result.server_operation_id = chunk_result.server_operation_id;
@@ -4536,7 +4882,25 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
       result.server_result_payload += chunk_result.server_result_payload;
     }
   }
+  const std::int64_t send_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!SendPipelineResult(io, session, state, copy_sql, result)) return false;
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "copy_done",
+                                 "send_pipeline_result",
+                                 send_started,
+                                 0,
+                                 chunk_count,
+                                 result.server_row_count,
+                                 "sent");
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "copy_done",
+                                 "total",
+                                 total_started,
+                                 0,
+                                 chunk_count,
+                                 result.server_row_count,
+                                 copy.native_bulk_ingest ? "native_bulk_ingest"
+                                                         : "import_rows");
   return SendReady(io, state, ReadyReason::kCommandComplete);
 }
 
