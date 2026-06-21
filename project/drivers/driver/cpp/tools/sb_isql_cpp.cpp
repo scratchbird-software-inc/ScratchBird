@@ -384,6 +384,8 @@ int main(int argc, char** argv) {
                         copyInputPayload = copyInputForStatement(sql);
                         if (!copyInputPayload.empty()) {
                             copyInput.str(copyInputPayload);
+                            conn.setCopyInputSizeHintBytes(copyInputPayload.size());
+                            conn.setCopyPreallocationFactorPercent(82);
                             conn.setCopyInputStream(&copyInput);
                         }
                         conn.setCopyOutputStream(&copyOutput);
@@ -398,6 +400,7 @@ int main(int argc, char** argv) {
                     }
                     if (copyStatement) {
                         conn.setCopyInputStream(nullptr);
+                        conn.setCopyInputSizeHintBytes(0);
                         conn.setCopyOutputStream(nullptr);
                         appendJsonl(paths.at("wire"), {{"event", "copy_stream"},
                                                        {"statement_id", statementId},

@@ -28,6 +28,7 @@
 #include <cstring>
 #include <deque>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <optional>
@@ -296,6 +297,9 @@ struct CopyImportState {
   std::string format_family{"canonical_row_fields"};
   std::uint8_t copy_data_format{kCopyFormatCanonicalRowFieldsText};
   std::uint32_t window_bytes{kCopyDefaultWindowBytes};
+  std::uint64_t source_size_bytes{0};
+  std::uint64_t preallocation_bytes{0};
+  std::uint64_t preallocation_factor_percent{82};
   std::vector<CopyImportRow> rows;
 };
 
@@ -912,6 +916,17 @@ std::string ParseQuerySql(const std::vector<std::uint8_t>& payload) {
 std::uint32_t ParseQueryFlags(const std::vector<std::uint8_t>& payload) {
   if (payload.size() < 4) return 0;
   return ReadU32(payload, 0);
+}
+
+bool ParseSetOptionPayload(const std::vector<std::uint8_t>& payload,
+                           std::string* name,
+                           std::string* value) {
+  if (name == nullptr || value == nullptr) return false;
+  std::size_t off = 0;
+  if (!ReadLpStr(payload, &off, name)) return false;
+  if (!ReadLpStr(payload, &off, value)) return false;
+  if (off != payload.size()) return false;
+  return !name->empty() && name->size() <= 256 && value->size() <= 4096;
 }
 
 std::size_t InferPlaceholderCount(std::string_view sql) {
@@ -1880,6 +1895,18 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
   out += "operand=text\tmemory.context_budget_bytes\t67108864\n";
   out += "operand=text\tmemory.bulk_load_budget_bytes\t67108864\n";
   out += "operand=text\tcopy_append_batch_rows\t" + std::to_string(end_row - first_row) + "\n";
+  if (copy.source_size_bytes != 0) {
+    out += "operand=text\tcopy.source_size_bytes\t" +
+           std::to_string(copy.source_size_bytes) + "\n";
+  }
+  if (copy.preallocation_bytes != 0) {
+    out += "operand=text\tcopy.preallocation_bytes\t" +
+           std::to_string(copy.preallocation_bytes) + "\n";
+  }
+  if (copy.preallocation_factor_percent != 0) {
+    out += "operand=text\tcopy.preallocation_factor_percent\t" +
+           std::to_string(copy.preallocation_factor_percent) + "\n";
+  }
   for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
     const auto& row = copy.rows[row_index];
     const std::string row_uuid = GenerateCopyImportRowUuid();
@@ -1936,6 +1963,21 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  if (copy.source_size_bytes != 0) {
+    out += "operand=text\tcopy.source_size_bytes\t";
+    out += std::to_string(copy.source_size_bytes);
+    out += "\n";
+  }
+  if (copy.preallocation_bytes != 0) {
+    out += "operand=text\tcopy.preallocation_bytes\t";
+    out += std::to_string(copy.preallocation_bytes);
+    out += "\n";
+  }
+  if (copy.preallocation_factor_percent != 0) {
+    out += "operand=text\tcopy.preallocation_factor_percent\t";
+    out += std::to_string(copy.preallocation_factor_percent);
+    out += "\n";
+  }
   if (end_row > first_row) {
     const std::size_t column_count = copy.rows[first_row].fields.size();
     const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row);
@@ -2002,6 +2044,24 @@ std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint
   return base;
 }
 
+std::uint64_t CopyU64ParameterForSession(const SbwpSessionState& state,
+                                         std::initializer_list<const char*> keys,
+                                         std::uint64_t fallback = 0) {
+  for (const char* key : keys) {
+    const auto found = state.session_parameters.find(key);
+    if (found == state.session_parameters.end()) {
+      continue;
+    }
+    try {
+      const auto parsed = static_cast<std::uint64_t>(std::stoull(found->second));
+      return parsed == 0 ? fallback : parsed;
+    } catch (...) {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 std::vector<std::uint8_t> CopyInResponsePayload(SbwpSessionState* state) {
   const bool binary_copy =
       state != nullptr && FeatureNegotiated(*state, kFeatureBinaryCopy);
@@ -2014,6 +2074,31 @@ std::vector<std::uint8_t> CopyInResponsePayload(SbwpSessionState* state) {
     state->copy_import.window_bytes = window_bytes;
     state->copy_import.format_family =
         binary_copy ? "binary_rowset_v1" : "canonical_row_fields";
+    state->copy_import.source_size_bytes =
+        CopyU64ParameterForSession(*state,
+                                   {"copy.source_size_bytes",
+                                    "copy_source_size_bytes",
+                                    "dml.ingest.source_size_bytes"});
+    state->copy_import.preallocation_bytes =
+        CopyU64ParameterForSession(*state,
+                                   {"copy.preallocation_bytes",
+                                    "copy_preallocation_bytes",
+                                    "dml.ingest.preallocation_bytes"});
+    state->copy_import.preallocation_factor_percent =
+        CopyU64ParameterForSession(*state,
+                                   {"copy.preallocation_factor_percent",
+                                    "copy_preallocation_factor_percent",
+                                    "dml.ingest.preallocation_factor_percent"},
+                                   82);
+    state->session_parameters.erase("copy.source_size_bytes");
+    state->session_parameters.erase("copy_source_size_bytes");
+    state->session_parameters.erase("dml.ingest.source_size_bytes");
+    state->session_parameters.erase("copy.preallocation_bytes");
+    state->session_parameters.erase("copy_preallocation_bytes");
+    state->session_parameters.erase("dml.ingest.preallocation_bytes");
+    state->session_parameters.erase("copy.preallocation_factor_percent");
+    state->session_parameters.erase("copy_preallocation_factor_percent");
+    state->session_parameters.erase("dml.ingest.preallocation_factor_percent");
   }
   std::vector<std::uint8_t> out;
   out.push_back(format);
@@ -4392,12 +4477,34 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
       case kUnsubscribe:
         if (!HandleSubscription(&io, &state, false)) rc = 1;
         break;
-      case kSetOption:
-        if (!SendParameterStatus(&io, &state, {{"session.option", "updated"}}) ||
+      case kSetOption: {
+        std::string option_name;
+        std::string option_value;
+        if (!ParseSetOptionPayload(frame.payload, &option_name, &option_value)) {
+          if (!SendError(&io,
+                         &state,
+                         "08P01",
+                         "SBWP.SET_OPTION.INVALID_PAYLOAD",
+                         "SetOption requires one non-empty option name and one bounded value") ||
+              !SendReady(&io, &state, ReadyReason::kErrorRecovered)) {
+            rc = 1;
+          }
+          break;
+        }
+        if (option_value.empty()) {
+          state.session_parameters.erase(option_name);
+        } else {
+          state.session_parameters[option_name] = option_value;
+        }
+        if (!SendParameterStatus(&io,
+                                 &state,
+                                 {{"session.option", "updated"},
+                                  {option_name, option_value}}) ||
             !SendReady(&io, &state, ReadyReason::kStateChange)) {
           rc = 1;
         }
         break;
+      }
       case kCopyData:
         if (!AdmitFrameTransaction(&io, &state, frame, "COPY_DATA")) {
           break;

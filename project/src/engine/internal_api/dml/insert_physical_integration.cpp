@@ -13,6 +13,7 @@
 #include "bulk_constraint_proof.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/dml_ingestion_pipeline.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
 #include "dml/insert_batch.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
@@ -4429,6 +4430,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   std::vector<CrudRowVersionRecord> staged_rows;
   std::vector<CrudRowVersionRecord> returning_rows;
   std::vector<std::vector<std::pair<std::string, std::string>>> logical_value_batch;
+  DmlIngestionPipelineConfig ingestion_config;
+  ingestion_config.context = request.context;
+  ingestion_config.option_envelopes = request.option_envelopes;
+  ingestion_config.state = state;
+  ingestion_config.operation_id = "dml.direct_physical_bulk_append";
+  ingestion_config.lane_operation = request.lane_operation;
+  ingestion_config.target_table_uuid = request.target_table.uuid.canonical;
+  ingestion_config.input_row_count =
+      static_cast<EngineApiU64>(request.borrowed_input_rows.size());
+  DmlIngestionPipeline ingestion_pipeline(std::move(ingestion_config));
+  (void)ingestion_pipeline.Start();
   const bool suppress_payload_rows =
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
   const bool has_default_validators =
@@ -4591,6 +4603,21 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  security_recheck_evidence.end());
         }
         logical_value_batch.push_back(row_record.values);
+        if (!ingestion_pipeline.EnqueuePreallocation(
+                {logical_value_batch.back(), encoded_bytes})) {
+          const auto ingestion_stats = ingestion_pipeline.Fence();
+          AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
+          const EngineApiDiagnostic diagnostic =
+              ingestion_stats.failed
+                  ? ingestion_stats.diagnostic
+                  : MakeInvalidRequestDiagnostic(
+                        "dml.direct_physical_bulk_append",
+                        "dml_ingestion_preallocation_refused");
+          return DirectBulkFailure(request,
+                                   diagnostic,
+                                   "dml_ingestion_preallocation_refused",
+                                   result.dml_summary);
+        }
         staged_rows.push_back(std::move(row_record));
         ++row_ordinal;
         continue;
@@ -4772,6 +4799,20 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
     staged_rows.push_back(std::move(row_record));
     logical_value_batch.push_back(std::move(prepared.values));
+    if (!ingestion_pipeline.EnqueuePreallocation(
+            {logical_value_batch.back(), prepared.encoded_bytes})) {
+      const auto ingestion_stats = ingestion_pipeline.Fence();
+      AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
+      const EngineApiDiagnostic diagnostic =
+          ingestion_stats.failed
+              ? ingestion_stats.diagnostic
+              : MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                             "dml_ingestion_preallocation_refused");
+      return DirectBulkFailure(request,
+                               diagnostic,
+                               "dml_ingestion_preallocation_refused",
+                               result.dml_summary);
+    }
     ++row_ordinal;
   }
   if (request.borrowed_input_rows.size() > kDirectBulkTraceRowsToStore) {
@@ -4880,149 +4921,205 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          ordered_ingest.evidence.end());
   mark_phase("constraint_index_plan");
 
-  const auto row_allocation_start = DirectSteadyClock::now();
-  const auto row_allocation = ReserveDmlPageAllocationRuntime(
-      request.context,
-      request.option_envelopes,
-      request.target_table.uuid.canonical,
-      DmlPageAllocationRuntimeFamily::row_data,
-      static_cast<std::uint64_t>(staged_rows.size()),
-      "direct_physical_bulk.row_data");
-  const EngineApiU64 row_allocation_elapsed =
-      DirectElapsedMicros(row_allocation_start, DirectSteadyClock::now());
-  if (!row_allocation.ok()) {
+  const auto ingestion_prealloc_stats = ingestion_pipeline.FencePreallocator();
+  if (ingestion_prealloc_stats.failed) {
+    AddDmlIngestionPipelineEvidence(ingestion_prealloc_stats, &result);
+    return DirectBulkFailure(request,
+                             ingestion_prealloc_stats.diagnostic,
+                             "dml_ingestion_preallocation_refused",
+                             result.dml_summary);
+  }
+  for (const auto& record : ingestion_prealloc_stats.allocations) {
+    if (!record.allocation.active) {
+      continue;
+    }
+    if (record.family == "row" || record.family == "row_source_size_hint") {
+      AddDirectAllocationResourceSummary(record.allocation,
+                                         "row",
+                                         record.row_count,
+                                         record.elapsed_microseconds,
+                                         batch_context,
+                                         false,
+                                         &result);
+    } else if (record.family == "index") {
+      AddDirectAllocationResourceSummary(record.allocation,
+                                         "index",
+                                         record.row_count,
+                                         record.elapsed_microseconds,
+                                         batch_context,
+                                         false,
+                                         &result);
+    }
+  }
+  const bool ingestion_row_capacity_ready =
+      ingestion_prealloc_stats.row_prework_rows >=
+      static_cast<EngineApiU64>(staged_rows.size());
+  result.evidence.push_back({"dml_ingestion_row_capacity_ready",
+                             ingestion_row_capacity_ready ? "true" : "false"});
+
+  DmlPageAllocationRuntimeResult row_allocation;
+  EngineApiU64 row_allocation_elapsed = 0;
+  if (!ingestion_row_capacity_ready) {
+    const auto row_allocation_start = DirectSteadyClock::now();
+    row_allocation = ReserveDmlPageAllocationRuntime(
+        request.context,
+        request.option_envelopes,
+        request.target_table.uuid.canonical,
+        DmlPageAllocationRuntimeFamily::row_data,
+        static_cast<std::uint64_t>(staged_rows.size()),
+        "direct_physical_bulk.row_data");
+    row_allocation_elapsed =
+        DirectElapsedMicros(row_allocation_start, DirectSteadyClock::now());
+    if (!row_allocation.ok()) {
+      AddDirectAllocationResourceSummary(
+          row_allocation,
+          "row",
+          static_cast<EngineApiU64>(staged_rows.size()),
+          row_allocation_elapsed,
+          batch_context,
+          false,
+          &result);
+      auto evidence = result.evidence;
+      evidence.insert(evidence.end(),
+                      row_allocation.evidence.begin(),
+                      row_allocation.evidence.end());
+      const std::string reason =
+          DirectPageExtentPreallocationRequired(request)
+              ? RequiredPreallocationFailureReason(row_allocation, "row")
+              : std::string{};
+      EngineDmlSummaryCounters summary = result.dml_summary;
+      AddPreallocationRuntimeCounters(row_allocation, &summary);
+      if (!reason.empty()) {
+        summary.preallocation_refused = std::max<EngineApiU64>(
+            summary.preallocation_refused,
+            1);
+      }
+      return DirectBulkFailureWithEvidence(
+          request,
+          row_allocation.diagnostic,
+          reason.empty() ? "row_page_allocation_refused" : reason,
+          evidence,
+          summary);
+    }
+    AddDmlPageAllocationRuntimeEvidence(row_allocation, &result);
     AddDirectAllocationResourceSummary(
         row_allocation,
         "row",
         static_cast<EngineApiU64>(staged_rows.size()),
         row_allocation_elapsed,
         batch_context,
-        false,
+        !DirectPageExtentPreallocationRequired(request),
         &result);
-    auto evidence = result.evidence;
-    evidence.insert(evidence.end(),
-                    row_allocation.evidence.begin(),
-                    row_allocation.evidence.end());
-    const std::string reason =
-        DirectPageExtentPreallocationRequired(request)
-            ? RequiredPreallocationFailureReason(row_allocation, "row")
-            : std::string{};
-    EngineDmlSummaryCounters summary = result.dml_summary;
-    AddPreallocationRuntimeCounters(row_allocation, &summary);
-    if (!reason.empty()) {
-      summary.preallocation_refused = std::max<EngineApiU64>(
-          summary.preallocation_refused,
-          1);
+    if (row_allocation.active) {
+      ++result.dml_summary.page_reservations;
     }
-    return DirectBulkFailureWithEvidence(
-        request,
-        row_allocation.diagnostic,
-        reason.empty() ? "row_page_allocation_refused" : reason,
-        evidence,
-        summary);
-  }
-  AddDmlPageAllocationRuntimeEvidence(row_allocation, &result);
-  AddDirectAllocationResourceSummary(
-      row_allocation,
-      "row",
-      static_cast<EngineApiU64>(staged_rows.size()),
-      row_allocation_elapsed,
-      batch_context,
-      !DirectPageExtentPreallocationRequired(request),
-      &result);
-  if (row_allocation.active) {
-    ++result.dml_summary.page_reservations;
-  }
-  if (DirectPageExtentPreallocationRequired(request)) {
-    const std::string reason =
-        RequiredPreallocationFailureReason(row_allocation, "row");
-    if (!reason.empty()) {
-      EngineDmlSummaryCounters summary = result.dml_summary;
-      AddPreallocationRuntimeCounters(row_allocation, &summary);
-      summary.preallocation_refused = std::max<EngineApiU64>(
-          summary.preallocation_refused,
-          1);
-      return DirectBulkFailureWithEvidence(
-          request,
-          MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", reason),
-          reason,
-          result.evidence,
-          summary);
+    if (DirectPageExtentPreallocationRequired(request)) {
+      const std::string reason =
+          RequiredPreallocationFailureReason(row_allocation, "row");
+      if (!reason.empty()) {
+        EngineDmlSummaryCounters summary = result.dml_summary;
+        AddPreallocationRuntimeCounters(row_allocation, &summary);
+        summary.preallocation_refused = std::max<EngineApiU64>(
+            summary.preallocation_refused,
+            1);
+        return DirectBulkFailureWithEvidence(
+            request,
+            MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", reason),
+            reason,
+            result.evidence,
+            summary);
+      }
     }
+  } else if (DirectPageExtentPreallocationRequired(request)) {
+    result.evidence.push_back({"page_extent_preallocation_required_satisfied_by",
+                               "dml_ingestion_preallocator"});
   }
   mark_phase("row_page_allocation");
 
-  const auto index_allocation_start = DirectSteadyClock::now();
-  const auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
-      request.context,
-      request.option_envelopes,
-      *state,
-      request.target_table.uuid.canonical,
-      logical_value_batch,
-      "direct_physical_bulk.index");
-  const EngineApiU64 index_allocation_elapsed =
-      DirectElapsedMicros(index_allocation_start, DirectSteadyClock::now());
-  if (!index_allocation.ok()) {
+  const bool ingestion_index_capacity_ready =
+      ingestion_prealloc_stats.index_prework_rows >=
+      static_cast<EngineApiU64>(logical_value_batch.size());
+  result.evidence.push_back({"dml_ingestion_index_capacity_ready",
+                             ingestion_index_capacity_ready ? "true" : "false"});
+
+  DmlPageAllocationRuntimeResult index_allocation;
+  EngineApiU64 index_allocation_elapsed = 0;
+  if (!ingestion_index_capacity_ready) {
+    const auto index_allocation_start = DirectSteadyClock::now();
+    index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
+        request.context,
+        request.option_envelopes,
+        *state,
+        request.target_table.uuid.canonical,
+        logical_value_batch,
+        "direct_physical_bulk.index");
+    index_allocation_elapsed =
+        DirectElapsedMicros(index_allocation_start, DirectSteadyClock::now());
+    if (!index_allocation.ok()) {
+      AddDirectAllocationResourceSummary(index_allocation,
+                                         "index",
+                                         0,
+                                         index_allocation_elapsed,
+                                         batch_context,
+                                         false,
+                                         &result);
+      auto evidence = result.evidence;
+      evidence.insert(evidence.end(),
+                      index_allocation.evidence.begin(),
+                      index_allocation.evidence.end());
+      const std::string reason =
+          DirectPageExtentPreallocationRequired(request)
+              ? RequiredPreallocationFailureReason(index_allocation, "index")
+              : std::string{};
+      EngineDmlSummaryCounters summary = result.dml_summary;
+      AddPreallocationRuntimeCounters(index_allocation, &summary);
+      if (!reason.empty()) {
+        summary.preallocation_refused = std::max<EngineApiU64>(
+            summary.preallocation_refused,
+            1);
+      }
+      return DirectBulkFailureWithEvidence(
+          request,
+          index_allocation.diagnostic,
+          reason.empty() ? "index_page_allocation_refused" : reason,
+          evidence,
+          summary);
+    }
+    AddDmlPageAllocationRuntimeEvidence(index_allocation, &result);
     AddDirectAllocationResourceSummary(index_allocation,
                                        "index",
                                        0,
                                        index_allocation_elapsed,
                                        batch_context,
-                                       false,
+                                       !DirectPageExtentPreallocationRequired(request),
                                        &result);
-    auto evidence = result.evidence;
-    evidence.insert(evidence.end(),
-                    index_allocation.evidence.begin(),
-                    index_allocation.evidence.end());
-    const std::string reason =
-        DirectPageExtentPreallocationRequired(request)
-            ? RequiredPreallocationFailureReason(index_allocation, "index")
-            : std::string{};
-    EngineDmlSummaryCounters summary = result.dml_summary;
-    AddPreallocationRuntimeCounters(index_allocation, &summary);
-    if (!reason.empty()) {
-      summary.preallocation_refused = std::max<EngineApiU64>(
-          summary.preallocation_refused,
-          1);
+    if (index_allocation.active) {
+      ++result.dml_summary.page_reservations;
     }
-    return DirectBulkFailureWithEvidence(
-        request,
-        index_allocation.diagnostic,
-        reason.empty() ? "index_page_allocation_refused" : reason,
-        evidence,
-        summary);
-  }
-  AddDmlPageAllocationRuntimeEvidence(index_allocation, &result);
-  AddDirectAllocationResourceSummary(index_allocation,
-                                     "index",
-                                     0,
-                                     index_allocation_elapsed,
-                                     batch_context,
-                                     !DirectPageExtentPreallocationRequired(request),
-                                     &result);
-  if (index_allocation.active) {
-    ++result.dml_summary.page_reservations;
-  }
-  if (DirectPageExtentPreallocationRequired(request)) {
-    const std::string reason =
-        RequiredPreallocationFailureReason(index_allocation, "index");
-    if (!reason.empty()) {
-      EngineDmlSummaryCounters summary = result.dml_summary;
-      AddPreallocationRuntimeCounters(index_allocation, &summary);
-      summary.preallocation_refused = std::max<EngineApiU64>(
-          summary.preallocation_refused,
-          1);
-      return DirectBulkFailureWithEvidence(
-          request,
-          MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", reason),
-          reason,
-          result.evidence,
-          summary);
+    if (DirectPageExtentPreallocationRequired(request)) {
+      const std::string reason =
+          RequiredPreallocationFailureReason(index_allocation, "index");
+      if (!reason.empty()) {
+        EngineDmlSummaryCounters summary = result.dml_summary;
+        AddPreallocationRuntimeCounters(index_allocation, &summary);
+        summary.preallocation_refused = std::max<EngineApiU64>(
+            summary.preallocation_refused,
+            1);
+        return DirectBulkFailureWithEvidence(
+            request,
+            MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append", reason),
+            reason,
+            result.evidence,
+            summary);
+      }
+      AddRequiredPreallocationSummary(row_allocation,
+                                      index_allocation,
+                                      staged_rows.size(),
+                                      &result);
     }
-    AddRequiredPreallocationSummary(row_allocation,
-                                    index_allocation,
-                                    staged_rows.size(),
-                                    &result);
+  } else if (DirectPageExtentPreallocationRequired(request)) {
+    result.evidence.push_back({"index_extent_preallocation_required_satisfied_by",
+                               "dml_ingestion_preallocator"});
   }
   mark_phase("index_page_allocation");
 
@@ -5069,20 +5166,56 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   mark_phase("large_value_persist");
 
-  const auto row_page_write =
-      WriteDirectPhysicalMgaCowRows(request, staged_rows);
+  DirectPhysicalMgaCowWriteResult row_page_write;
+  std::string ingestion_write_failure_reason;
+  const auto ok_ingestion_write =
+      []() {
+        return MakeEngineApiDiagnostic("SB_ENGINE_API_OK",
+                                       "engine.api.ok",
+                                       {},
+                                       false);
+      };
+  if (!ingestion_pipeline.EnqueueWrite(
+          {"physical_cow_write",
+           static_cast<EngineApiU64>(staged_rows.size()),
+           [&]() {
+             row_page_write = WriteDirectPhysicalMgaCowRows(request, staged_rows);
+             if (!row_page_write.ok && DirectPhysicalMgaCowRequired(request)) {
+               ingestion_write_failure_reason =
+                   "physical_mga_cow_row_page_refused";
+               return row_page_write.diagnostic;
+             }
+             return ok_ingestion_write();
+           }})) {
+    const auto ingestion_stats = ingestion_pipeline.Fence();
+    AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
+    return DirectBulkFailure(request,
+                             ingestion_stats.failed
+                                 ? ingestion_stats.diagnostic
+                                 : MakeInvalidRequestDiagnostic(
+                                       "dml.direct_physical_bulk_append",
+                                       "dml_ingestion_writer_refused"),
+                             ingestion_write_failure_reason.empty()
+                                 ? "dml_ingestion_writer_refused"
+                                 : ingestion_write_failure_reason,
+                             result.dml_summary);
+  }
+  const auto cow_writer_stats = ingestion_pipeline.DrainWriters();
   result.evidence.insert(result.evidence.end(),
                          row_page_write.evidence.begin(),
                          row_page_write.evidence.end());
+  if (cow_writer_stats.failed) {
+    AddDmlIngestionPipelineEvidence(cow_writer_stats, &result);
+    return DirectBulkFailureWithEvidence(
+        request,
+        cow_writer_stats.diagnostic,
+        ingestion_write_failure_reason.empty()
+            ? "dml_ingestion_writer_refused"
+            : ingestion_write_failure_reason,
+        result.evidence,
+        result.dml_summary);
+  }
   if (!row_page_write.ok) {
-    if (DirectPhysicalMgaCowRequired(request)) {
-      return DirectBulkFailureWithEvidence(
-          request,
-          row_page_write.diagnostic,
-          "physical_mga_cow_row_page_refused",
-          result.evidence,
-          result.dml_summary);
-    }
     result.evidence.push_back({"direct_physical_bulk_row_page_writer",
                                "fallback"});
     result.evidence.push_back({"direct_physical_bulk_row_page_fallback_reason",
@@ -5127,49 +5260,79 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         "row_append");
   }
   const auto rows_appended =
-      IparFaultPointRequested(request.option_envelopes, "row_append")
-          ? IparFaultDiagnostic("dml.direct_physical_bulk_append",
-                                "row_append",
-                                "phase=direct_physical_row_append")
-          :
-      hot_append.AppendRowVersions(&staged_rows, &written_event_sequences);
-  if (rows_appended.error) {
-    if (IparFaultPointRequested(request.option_envelopes, "row_append")) {
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  bool row_append_fault_injected = false;
+  if (!ingestion_pipeline.EnqueueWrite(
+          {"mga_row_append_flush",
+           static_cast<EngineApiU64>(staged_rows.size()),
+           [&]() {
+             if (IparFaultPointRequested(request.option_envelopes, "row_append")) {
+               row_append_fault_injected = true;
+               ingestion_write_failure_reason =
+                   "ipar_fault_injection_row_append";
+               return IparFaultDiagnostic("dml.direct_physical_bulk_append",
+                                          "row_append",
+                                          "phase=direct_physical_row_append");
+             }
+             const auto appended =
+                 hot_append.AppendRowVersions(&staged_rows, &written_event_sequences);
+             if (appended.error) {
+               ingestion_write_failure_reason = "mga_row_append_refused";
+               return appended;
+             }
+             const auto flushed = hot_append.FlushRowVersions();
+             if (flushed.error) {
+               ingestion_write_failure_reason = "mga_row_flush_refused";
+               return flushed;
+             }
+             return rows_appended;
+           }})) {
+    const auto ingestion_stats = ingestion_pipeline.Fence();
+    AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
+    return DirectBulkFailure(request,
+                             ingestion_stats.failed
+                                 ? ingestion_stats.diagnostic
+                                 : MakeInvalidRequestDiagnostic(
+                                       "dml.direct_physical_bulk_append",
+                                       "dml_ingestion_writer_refused"),
+                             ingestion_write_failure_reason.empty()
+                                 ? "dml_ingestion_writer_refused"
+                                 : ingestion_write_failure_reason,
+                             result.dml_summary);
+  }
+  const auto ingestion_writer_stats = ingestion_pipeline.Fence();
+  AddDmlIngestionPipelineEvidence(ingestion_writer_stats, &result);
+  if (ingestion_writer_stats.failed) {
+    if (row_append_fault_injected) {
       std::vector<EngineEvidenceReference> evidence = result.evidence;
       AppendIparFaultEvidence(&evidence,
                               "row_append",
                               "rollback_required_before_direct_physical_row_append");
-      return DirectBulkFailureWithEvidence(request,
-                                           rows_appended,
-                                           "ipar_fault_injection_row_append",
-                                           evidence,
-                                           result.dml_summary);
+      return DirectBulkFailureWithEvidence(
+          request,
+          ingestion_writer_stats.diagnostic,
+          "ipar_fault_injection_row_append",
+          evidence,
+          result.dml_summary);
     }
     if (strict_lifecycle.active) {
       return DirectStrictPhysicalPublicationFailure(request,
                                                     &strict_lifecycle,
                                                     result,
-                                                    rows_appended,
-                                                    "mga_row_append_refused",
-                                                    "row_append");
+                                                    ingestion_writer_stats.diagnostic,
+                                                    ingestion_write_failure_reason.empty()
+                                                        ? "mga_row_append_refused"
+                                                        : ingestion_write_failure_reason,
+                                                    ingestion_write_failure_reason ==
+                                                            "mga_row_flush_refused"
+                                                        ? "row_flush"
+                                                        : "row_append");
     }
     return DirectBulkFailure(request,
-                             rows_appended,
-                             "mga_row_append_refused");
-  }
-  const auto rows_flushed = hot_append.FlushRowVersions();
-  if (rows_flushed.error) {
-    if (strict_lifecycle.active) {
-      return DirectStrictPhysicalPublicationFailure(request,
-                                                    &strict_lifecycle,
-                                                    result,
-                                                    rows_flushed,
-                                                    "mga_row_flush_refused",
-                                                    "row_flush");
-    }
-    return DirectBulkFailure(request,
-                             rows_flushed,
-                             "mga_row_flush_refused");
+                             ingestion_writer_stats.diagnostic,
+                             ingestion_write_failure_reason.empty()
+                                 ? "mga_row_append_refused"
+                                 : ingestion_write_failure_reason);
   }
   mark_phase("row_stream_append_flush");
 

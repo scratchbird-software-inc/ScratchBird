@@ -1487,6 +1487,18 @@ void Connection::setCopyInputStream(std::istream* in) {
     }
 }
 
+void Connection::setCopyInputSizeHintBytes(uint64_t bytes) {
+    if (impl_) {
+        impl_->client.setCopyInputSizeHintBytes(bytes);
+    }
+}
+
+void Connection::setCopyPreallocationFactorPercent(uint64_t percent) {
+    if (impl_) {
+        impl_->client.setCopyPreallocationFactorPercent(percent);
+    }
+}
+
 void Connection::setCopyOutputStream(std::ostream* out) {
     if (impl_) {
         impl_->client.setCopyOutputStream(out);

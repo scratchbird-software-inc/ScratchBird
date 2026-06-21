@@ -1148,9 +1148,12 @@ int sb_execute_copy_from_buffer(sb_connection* conn,
         copy_data.assign(data, data + data_size);
     }
     std::istringstream input(copy_data);
+    conn->client.setCopyInputSizeHintBytes(data_size);
+    conn->client.setCopyPreallocationFactorPercent(82);
     conn->client.setCopyInputStream(&input);
     sb_result* result = sb_execute(conn, sql, err);
     conn->client.setCopyInputStream(nullptr);
+    conn->client.setCopyInputSizeHintBytes(0);
     if (!result) {
         return err ? static_cast<int>(err->code) : SB_ERR_UNKNOWN;
     }

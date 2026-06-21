@@ -211,8 +211,8 @@ Fixture MakeFixture(platform::u32 page_size, platform::u64 salt) {
 std::vector<std::string> DemandOptions() {
   return {"page_allocation.runtime=enabled",
           "dml_demand_hints=enabled",
-          "dml_demand_hints.max_pages=8",
-          "dml_demand_hints.available_capacity_pages=8"};
+          "dml_demand_hints.max_pages=128",
+          "dml_demand_hints.available_capacity_pages=128"};
 }
 
 bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
@@ -322,24 +322,53 @@ void RequirePreallocationEvidence(const std::vector<api::EngineEvidenceReference
 
 void RequireInsertPreworkQueueEvidence(
     const std::vector<api::EngineEvidenceReference>& evidence) {
-  Require(HasEvidence(evidence, "insert_prework_queue_enabled", "true"),
-          "IPAR insert prework queue was not enabled");
-  Require(HasEvidence(evidence, "insert_prework_helper_thread_started", "true"),
-          "IPAR insert prework helper did not start");
-  Require(EvidenceU64(evidence, "insert_prework_rows_enqueued") > 0,
-          "IPAR insert prework queue did not enqueue rows");
-  Require(EvidenceU64(evidence, "insert_prework_rows_prepared") > 0,
-          "IPAR insert prework queue did not prepare row capacity");
-  Require(HasEvidence(evidence, "insert_prework_row_capacity_ready", "true"),
-          "IPAR insert prework row capacity was not ready before write");
-  Require(HasEvidence(evidence, "insert_transaction_queue_return_before_flush",
+  Require(HasEvidence(evidence, "dml_ingestion_pipeline", "enabled"),
+          "IPAR DML ingestion pipeline was not enabled");
+  Require(HasEvidence(evidence, "dml_ingestion_preallocator_enabled", "true"),
+          "IPAR DML ingestion preallocator was not enabled");
+  Require(HasEvidence(evidence, "dml_ingestion_preallocator_thread_started", "true"),
+          "IPAR DML ingestion preallocator thread did not start");
+  Require(EvidenceU64(evidence, "dml_ingestion_preallocation_rows_enqueued") > 0,
+          "IPAR DML ingestion preallocator did not enqueue rows");
+  Require(EvidenceU64(evidence, "dml_ingestion_row_prework_rows") > 0,
+          "IPAR DML ingestion preallocator did not prepare row capacity");
+  Require(HasEvidence(evidence, "dml_ingestion_row_capacity_ready", "true"),
+          "IPAR DML ingestion row capacity was not ready before write");
+  Require(HasEvidence(evidence, "dml_ingestion_writer_enabled", "true"),
+          "IPAR DML ingestion writer was not enabled");
+  Require(EvidenceU64(evidence, "dml_ingestion_write_tasks_completed") >= 2,
+          "IPAR DML ingestion writer did not complete write tasks");
+  Require(HasEvidence(evidence, "dml_ingestion_return_before_flush",
                       "false"),
-          "IPAR insert prework queue allowed return before flush");
+          "IPAR DML ingestion queue allowed return before flush");
+  Require(HasEvidence(evidence, "dml_ingestion_commit_fence",
+                      "statement_queue_drained_before_result"),
+          "IPAR DML ingestion commit fence evidence missing");
   Require(HasEvidence(evidence, "mga_finality_authority",
                       "engine_transaction_inventory"),
-          "IPAR insert prework lost MGA transaction authority proof");
+          "IPAR DML ingestion lost MGA transaction authority proof");
   Require(HasEvidence(evidence, "parser_finality", "false"),
-          "IPAR insert prework made parser finality authoritative");
+          "IPAR DML ingestion made parser finality authoritative");
+}
+
+void RequireCopyIngestionSizeHintEvidence(
+    const std::vector<api::EngineEvidenceReference>& evidence) {
+  Require(HasEvidence(evidence, "dml_ingestion_pipeline", "enabled"),
+          "IPAR COPY ingestion pipeline was not enabled");
+  Require(HasEvidence(evidence, "dml_ingestion_source_size_hint_consumed", "true"),
+          "IPAR COPY source-size hint was not consumed");
+  Require(EvidenceU64(evidence, "dml_ingestion_source_size_bytes") == 250000,
+          "IPAR COPY source-size hint byte count mismatch");
+  Require(EvidenceU64(evidence, "dml_ingestion_source_preallocation_bytes") >= 205000,
+          "IPAR COPY source-size factor did not request enough bytes");
+  Require(EvidenceU64(evidence, "dml_ingestion_source_preallocation_pages") > 0,
+          "IPAR COPY source-size factor did not request pages");
+  Require(HasEvidence(evidence, "dml_ingestion_writer_enabled", "true"),
+          "IPAR COPY ingestion writer was not enabled");
+  Require(EvidenceU64(evidence, "dml_ingestion_write_tasks_completed") >= 2,
+          "IPAR COPY ingestion writer did not complete write tasks");
+  Require(HasEvidence(evidence, "dml_ingestion_return_before_flush", "false"),
+          "IPAR COPY ingestion returned before flushing writer tasks");
 }
 
 api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
@@ -355,9 +384,7 @@ api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
   request.estimated_row_count = static_cast<api::EngineApiU64>(rows.size());
   request.input_rows = std::move(rows);
   request.option_envelopes = DemandOptions();
-  request.option_envelopes.push_back("direct_physical_insert=disabled");
-  request.option_envelopes.push_back("dml.insert_prework_queue=enabled");
-  request.option_envelopes.push_back("dml.insert_prework_queue.min_rows=1");
+  request.option_envelopes.push_back("dml.ingest.preallocator.min_rows=1");
   return request;
 }
 
@@ -384,6 +411,8 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   request.option_envelopes = DemandOptions();
   request.option_envelopes.push_back("copy_append_batching=enabled");
   request.option_envelopes.push_back("copy_append_batch_rows=4");
+  request.option_envelopes.push_back("copy.source_size_bytes=250000");
+  request.option_envelopes.push_back("copy.preallocation_factor_percent=82");
   return request;
 }
 
@@ -412,6 +441,7 @@ void VerifyPageSize(platform::u32 page_size, platform::u64 salt) {
   Require(HasEvidence(imported.evidence, "import_execution", "direct_physical"),
           "IPAR page-size COPY did not use direct physical lane");
   RequirePreallocationEvidence(imported.evidence, "copy", false);
+  RequireCopyIngestionSizeHintEvidence(imported.evidence);
   Require(imported.dml_summary.preallocation_granted_pages > 0,
           "IPAR page-size COPY summary missing preallocation grants");
 }

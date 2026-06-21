@@ -315,6 +315,8 @@ public:
     std::string getParameterStatus(const std::string& name) const;
     const ConnectionConfig& getConfig() const;
     void setCopyInputStream(std::istream* in);
+    void setCopyInputSizeHintBytes(uint64_t bytes);
+    void setCopyPreallocationFactorPercent(uint64_t percent);
     void setCopyOutputStream(std::ostream* out);
 
 private:

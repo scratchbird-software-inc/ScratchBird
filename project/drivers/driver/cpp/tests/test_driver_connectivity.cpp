@@ -665,6 +665,33 @@ bool parseQueryPayloadSql(const std::vector<uint8_t>& payload,
     return true;
 }
 
+bool parseSetOptionPayload(const std::vector<uint8_t>& payload,
+                           std::string& name_out,
+                           std::string& value_out,
+                           std::string& error_out) {
+    if (payload.size() < 8) {
+        error_out = "set-option payload truncated";
+        return false;
+    }
+    size_t offset = 0;
+    const uint32_t name_len = readU32Le(payload.data() + offset);
+    offset += 4;
+    if (offset + name_len + 4 > payload.size()) {
+        error_out = "set-option name truncated";
+        return false;
+    }
+    name_out.assign(reinterpret_cast<const char*>(payload.data() + offset), name_len);
+    offset += name_len;
+    const uint32_t value_len = readU32Le(payload.data() + offset);
+    offset += 4;
+    if (offset + value_len != payload.size()) {
+        error_out = "set-option value truncated";
+        return false;
+    }
+    value_out.assign(reinterpret_cast<const char*>(payload.data() + offset), value_len);
+    return true;
+}
+
 bool parseParsePayloadStatementAndSql(const std::vector<uint8_t>& payload,
                                       std::string& statement_out,
                                       std::string& sql_out,
@@ -3818,6 +3845,43 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesBinaryCopyRowset) {
 
     ServerHarnessConfig harness_cfg;
     harness_cfg.exchanges = {
+        {scratchbird::protocol::MessageType::SetOption,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string name;
+             std::string value;
+             if (!parseSetOptionPayload(msg.body, name, value, error)) {
+                 return false;
+             }
+             if (name != "copy.source_size_bytes") {
+                 error = "unexpected COPY source-size option name";
+                 return false;
+             }
+             try {
+                 if (std::stoull(value) == 0) {
+                     error = "COPY source-size option was zero";
+                     return false;
+                 }
+             } catch (...) {
+                 error = "COPY source-size option was not numeric";
+                 return false;
+             }
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::SetOption,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string name;
+             std::string value;
+             if (!parseSetOptionPayload(msg.body, name, value, error)) {
+                 return false;
+             }
+             if (name != "copy.preallocation_factor_percent" || value != "82") {
+                 error = "unexpected COPY preallocation-factor option";
+                 return false;
+             }
+             return true;
+         }},
         {scratchbird::protocol::MessageType::Query,
          {{scratchbird::protocol::MessageType::CopyInResponse,
            scratchbird::protocol::buildCopyInResponsePayload(scratchbird::protocol::kFormatBinary,
@@ -3907,7 +3971,35 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesBinaryCopyRowset) {
         {scratchbird::protocol::MessageType::CopyDone,
          {{scratchbird::protocol::MessageType::CommandComplete,
            buildCommandCompletePayload(0, 2, 0, "COPY 2")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}}
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}},
+        {scratchbird::protocol::MessageType::SetOption,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string name;
+             std::string value;
+             if (!parseSetOptionPayload(msg.body, name, value, error)) {
+                 return false;
+             }
+             if (name != "copy.source_size_bytes" || !value.empty()) {
+                 error = "COPY source-size option was not cleared";
+                 return false;
+             }
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::SetOption,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             std::string name;
+             std::string value;
+             if (!parseSetOptionPayload(msg.body, name, value, error)) {
+                 return false;
+             }
+             if (name != "copy.preallocation_factor_percent" || !value.empty()) {
+                 error = "COPY preallocation-factor option was not cleared";
+                 return false;
+             }
+             return true;
+         }}
     };
 
     ServerHarness harness(std::move(harness_cfg));
