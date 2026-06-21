@@ -837,18 +837,31 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblr(
     const SessionContext& session,
     std::string_view encoded_sblr_envelope,
     bool cursor_requested) {
+  return ExecuteSblrWithDataPacket(session, encoded_sblr_envelope, {}, cursor_requested);
+}
+
+ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
+    const SessionContext& session,
+    std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
   ServerExecutionResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kExecuteSblr),
                          session);
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
-      TextToUuid(session.session_uuid), {}, std::string(encoded_sblr_envelope), cursor_requested);
+      TextToUuid(session.session_uuid),
+      {},
+      std::string(encoded_sblr_envelope),
+      cursor_requested,
+      data_packet);
   return DecodeExecutePayload(
       scratchbird::server::HandleExecuteSblr(&impl_->registry, impl_->engine_state, frame));
 #else
   (void)session;
   (void)encoded_sblr_envelope;
+  (void)data_packet;
   (void)cursor_requested;
   result.messages.diagnostics.push_back(MakeDiagnostic(
       "SBSQL.EMBEDDED.UNAVAILABLE",

@@ -460,6 +460,9 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerPublicNameResolutionCacheRecord>
       public_name_resolution_cache_by_key;
   std::deque<std::string> public_name_resolution_cache_lru;
+  std::map<std::string, ServerPublicNameResolutionCacheRecord>
+      stable_public_name_resolution_cache_by_key;
+  std::deque<std::string> stable_public_name_resolution_cache_lru;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerPublicAbiSessionContext>
       public_abi_sessions_by_session_uuid;

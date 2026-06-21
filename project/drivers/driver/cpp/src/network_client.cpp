@@ -629,6 +629,92 @@ std::string trimWhitespace(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+struct BinaryCopyField {
+    std::string name;
+    bool is_null{false};
+    std::string value;
+};
+
+using BinaryCopyRow = std::vector<BinaryCopyField>;
+
+bool equalsIgnoreAsciiCase(std::string_view left, std::string_view right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < left.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(left[i])) !=
+            std::tolower(static_cast<unsigned char>(right[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool parseCanonicalCopyLine(std::string_view line, BinaryCopyRow& row) {
+    row.clear();
+    const std::string trimmed = trimWhitespace(std::string(line));
+    if (trimmed.empty()) {
+        return true;
+    }
+    size_t start = 0;
+    while (start <= trimmed.size()) {
+        const size_t end = trimmed.find(';', start);
+        const std::string_view field(trimmed.data() + start,
+                                     (end == std::string::npos ? trimmed.size() : end) - start);
+        if (!field.empty()) {
+            const size_t eq = field.find('=');
+            if (eq == std::string::npos || eq == 0) {
+                return false;
+            }
+            BinaryCopyField parsed;
+            parsed.name.assign(field.substr(0, eq));
+            parsed.value.assign(field.substr(eq + 1));
+            parsed.is_null = equalsIgnoreAsciiCase(parsed.value, "NULL");
+            if (parsed.is_null) {
+                parsed.value.clear();
+            }
+            row.push_back(std::move(parsed));
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return !row.empty();
+}
+
+void appendLe32(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 16u) & 0xffu));
+    out.push_back(static_cast<uint8_t>((value >> 24u) & 0xffu));
+}
+
+std::vector<uint8_t> buildBinaryCopyFrame(const std::vector<BinaryCopyRow>& rows) {
+    std::vector<uint8_t> out;
+    out.reserve(12 + rows.size() * 32);
+    out.push_back('S');
+    out.push_back('B');
+    out.push_back('C');
+    out.push_back('P');
+    out.push_back(1);
+    out.push_back(0);
+    out.push_back(0);
+    out.push_back(0);
+    appendLe32(out, static_cast<uint32_t>(rows.size()));
+    for (const auto& row : rows) {
+        appendLe32(out, static_cast<uint32_t>(row.size()));
+        for (const auto& field : row) {
+            appendLe32(out, static_cast<uint32_t>(field.name.size()));
+            out.insert(out.end(), field.name.begin(), field.name.end());
+            out.push_back(field.is_null ? 1 : 0);
+            appendLe32(out, static_cast<uint32_t>(field.value.size()));
+            out.insert(out.end(), field.value.begin(), field.value.end());
+        }
+    }
+    return out;
+}
+
 std::string authMethodName(protocol::AuthMethod method) {
     switch (method) {
         case protocol::AuthMethod::Password:
@@ -1827,7 +1913,9 @@ core::Status NetworkClient::buildStartupParams(uint64_t& features_out,
                    protocol::kFeatureSavepoints |
                    protocol::kFeatureQueryPlan;
     if (config_.enable_copy_streaming) {
-        features_out |= protocol::kFeatureStreaming | protocol::kFeatureBulkRejects;
+        features_out |= protocol::kFeatureStreaming |
+                        protocol::kFeatureBinaryCopy |
+                        protocol::kFeatureBulkRejects;
     }
     if (config_.enable_compression) {
         features_out |= protocol::kFeatureCompression;
@@ -1888,7 +1976,9 @@ core::Status NetworkClient::probeDirectAuthSurface(AuthProbeResult& result,
     }
 
     const uint64_t required_features =
-        config_.enable_copy_streaming ? protocol::kFeatureStreaming : 0;
+        config_.enable_copy_streaming
+            ? (protocol::kFeatureStreaming | protocol::kFeatureBinaryCopy)
+            : 0;
     auto payload = protocol::buildP1StartupPayload(features, required_features, params);
     status = sendMessage(protocol::MessageType::Startup, payload, 0, true, nullptr, ctx);
     if (status != core::Status::OK) {
@@ -2115,7 +2205,7 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                     return status;
                 }
                 const int64_t copy_started = phase_trace ? driverPhaseNowNs() : 0;
-                status = sendCopyInputStream(ctx);
+                status = sendCopyInputStream(response, ctx);
                 if (phase_trace) {
                     writeDriverPhaseTrace("execute_query",
                                           "send_copy_input_stream",
@@ -2142,7 +2232,14 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 if (status != core::Status::OK) {
                     return status;
                 }
-                status = sendCopyInputStream(ctx);
+                {
+                    protocol::CopyInResponse response;
+                    status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                    if (status != core::Status::OK) {
+                        return status;
+                    }
+                    status = sendCopyInputStream(response, ctx);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2437,7 +2534,7 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
                 if (status != core::Status::OK) {
                     return status;
                 }
-                status = sendCopyInputStream(ctx);
+                status = sendCopyInputStream(response, ctx);
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2454,7 +2551,14 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
                 if (status != core::Status::OK) {
                     return status;
                 }
-                status = sendCopyInputStream(ctx);
+                {
+                    protocol::CopyInResponse response;
+                    status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                    if (status != core::Status::OK) {
+                        return status;
+                    }
+                    status = sendCopyInputStream(response, ctx);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2596,7 +2700,7 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
                 if (status != core::Status::OK) {
                     return status;
                 }
-                status = sendCopyInputStream(ctx);
+                status = sendCopyInputStream(response, ctx);
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -2613,7 +2717,14 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
                 if (status != core::Status::OK) {
                     return status;
                 }
-                status = sendCopyInputStream(ctx);
+                {
+                    protocol::CopyInResponse response;
+                    status = protocol::parseCopyInResponse(msg.body, response, ctx);
+                    if (status != core::Status::OK) {
+                        return status;
+                    }
+                    status = sendCopyInputStream(response, ctx);
+                }
                 if (status != core::Status::OK) {
                     return status;
                 }
@@ -3587,7 +3698,8 @@ core::Status NetworkClient::readExactWithTimeout(void* buffer, size_t size,
     return core::Status::OK;
 }
 
-core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
+core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& response,
+                                                core::ErrorContext* ctx) {
     if (!copy_input_stream_) {
         const std::string message = "COPY FROM STDIN requires a client input stream";
         const auto fail_payload = protocol::buildCopyFailPayload(message);
@@ -3605,7 +3717,10 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     size_t total_read = 0;
     size_t total_sent = 0;
     size_t chunk_count = 0;
-    const size_t chunk_size = std::max<uint32_t>(1, config_.copy_chunk_bytes);
+    const size_t chunk_size =
+        std::max<uint32_t>(1, response.window_bytes == 0 ? config_.copy_chunk_bytes
+                                                         : response.window_bytes);
+    const bool binary_copy = response.format == protocol::kFormatBinary;
     std::vector<uint8_t> buffer(chunk_size);
     std::string pending;
     auto send_payload = [&](const uint8_t* data, size_t size) -> core::Status {
@@ -3637,6 +3752,55 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
         ++chunk_count;
         return core::Status::OK;
     };
+    auto send_copy_fail = [&](const std::string& message,
+                              core::Status status_code) -> core::Status {
+        const auto fail_payload = protocol::buildCopyFailPayload(message);
+        auto fail_status = sendMessage(protocol::MessageType::CopyFail,
+                                       fail_payload,
+                                       0,
+                                       false,
+                                       nullptr,
+                                       ctx);
+        if (fail_status != core::Status::OK) {
+            return fail_status;
+        }
+        return setError(ctx, status_code, message);
+    };
+    std::vector<BinaryCopyRow> binary_rows;
+    size_t binary_payload_bytes = 12;
+    auto flush_binary_rows = [&](bool force) -> core::Status {
+        if (binary_rows.empty()) {
+            return core::Status::OK;
+        }
+        if (!force && binary_payload_bytes < chunk_size) {
+            return core::Status::OK;
+        }
+        const auto payload = buildBinaryCopyFrame(binary_rows);
+        auto status = send_payload(payload.data(), payload.size());
+        if (status != core::Status::OK) {
+            return status;
+        }
+        binary_rows.clear();
+        binary_payload_bytes = 12;
+        return core::Status::OK;
+    };
+    auto append_binary_line = [&](std::string_view line) -> core::Status {
+        BinaryCopyRow row;
+        if (!parseCanonicalCopyLine(line, row)) {
+            return send_copy_fail("COPY binary rowset conversion failed for canonical input row",
+                                  core::Status::INVALID_ARGUMENT);
+        }
+        if (row.empty()) {
+            return core::Status::OK;
+        }
+        size_t row_bytes = 4;
+        for (const auto& field : row) {
+            row_bytes += 4 + field.name.size() + 1 + 4 + field.value.size();
+        }
+        binary_payload_bytes += row_bytes;
+        binary_rows.push_back(std::move(row));
+        return flush_binary_rows(false);
+    };
     auto flush_ready_rows = [&]() -> core::Status {
         while (pending.size() >= chunk_size) {
             size_t split = pending.rfind('\n', chunk_size);
@@ -3647,9 +3811,27 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
                 break;
             }
             ++split;
-            auto status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()), split);
-            if (status != core::Status::OK) {
-                return status;
+            core::Status status = core::Status::OK;
+            if (binary_copy) {
+                size_t start = 0;
+                while (start < split) {
+                    const size_t end = pending.find('\n', start);
+                    const size_t line_end = end == std::string::npos || end > split ? split : end;
+                    status = append_binary_line(std::string_view(pending.data() + start,
+                                                                 line_end - start));
+                    if (status != core::Status::OK) {
+                        return status;
+                    }
+                    if (end == std::string::npos || end >= split) {
+                        break;
+                    }
+                    start = end + 1;
+                }
+            } else {
+                status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()), split);
+                if (status != core::Status::OK) {
+                    return status;
+                }
             }
             pending.erase(0, split);
         }
@@ -3679,16 +3861,34 @@ core::Status NetworkClient::sendCopyInputStream(core::ErrorContext* ctx) {
     }
     if (copy_input_stream_->bad()) {
         const std::string message = "COPY input stream read failed";
-        const auto fail_payload = protocol::buildCopyFailPayload(message);
-        auto fail_status = sendMessage(protocol::MessageType::CopyFail, fail_payload, 0, false, nullptr, ctx);
-        if (fail_status != core::Status::OK) {
-            return fail_status;
-        }
-        return setError(ctx, core::Status::IO_ERROR, message);
+        return send_copy_fail(message, core::Status::IO_ERROR);
     }
     if (!pending.empty()) {
-        auto status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()),
-                                   pending.size());
+        if (binary_copy) {
+            size_t start = 0;
+            while (start <= pending.size()) {
+                const size_t end = pending.find('\n', start);
+                const size_t line_end = end == std::string::npos ? pending.size() : end;
+                auto status = append_binary_line(
+                    std::string_view(pending.data() + start, line_end - start));
+                if (status != core::Status::OK) {
+                    return status;
+                }
+                if (end == std::string::npos) {
+                    break;
+                }
+                start = end + 1;
+            }
+        } else {
+            auto status = send_payload(reinterpret_cast<const uint8_t*>(pending.data()),
+                                       pending.size());
+            if (status != core::Status::OK) {
+                return status;
+            }
+        }
+    }
+    if (binary_copy) {
+        auto status = flush_binary_rows(true);
         if (status != core::Status::OK) {
             return status;
         }
@@ -4095,7 +4295,9 @@ core::Status NetworkClient::handshake(core::ErrorContext* ctx) {
     }
 
     const uint64_t required_features =
-        config_.enable_copy_streaming ? protocol::kFeatureStreaming : 0;
+        config_.enable_copy_streaming
+            ? (protocol::kFeatureStreaming | protocol::kFeatureBinaryCopy)
+            : 0;
     auto payload = protocol::buildP1StartupPayload(features, required_features, params);
     status = sendMessage(protocol::MessageType::Startup, payload, 0, true, nullptr, ctx);
     if (status != core::Status::OK) {
@@ -4232,8 +4434,14 @@ core::Status NetworkClient::handshake(core::ErrorContext* ctx) {
                 if (status != core::Status::OK) {
                     return status;
                 }
-                if (msg.header.attachment_id.size() == session_id_.size()) {
+                if (msg.header.attachment_id.size() == session_id_.size() &&
+                    !isZeroUuidBytes(msg.header.attachment_id)) {
                     session_id_ = msg.header.attachment_id;
+                } else if (session_id.size() == session_id_.size()) {
+                    std::copy(session_id.begin(), session_id.end(), session_id_.begin());
+                }
+                if (isZeroUuidBytes(session_id_)) {
+                    session_id_ = randomProtocolUuid();
                 }
                 if (scram && !info.empty()) {
                     std::string info_str(info.begin(), info.end());

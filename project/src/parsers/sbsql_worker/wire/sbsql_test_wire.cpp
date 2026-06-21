@@ -57,6 +57,7 @@ using scratchbird::core::platform::UuidKind;
 
 constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
 constexpr std::size_t kMaxSharedNameResolutionCacheEntries = 16384;
+constexpr std::size_t kMaxStableRelationNameResolutionCacheEntries = 4096;
 
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -191,10 +192,26 @@ bool ExecutionInvalidatesNameResolution(std::string_view operation_id) {
          operation_id.rfind("auth.", 0) == 0;
 }
 
+bool ExecutionPreservesReferencedRelationNames(std::string_view operation_id) {
+  return operation_id == "ddl.create_index" ||
+         operation_id == "ddl.create_index_template";
+}
+
+bool IsReferencedRelationNameClass(std::string_view object_class) {
+  return object_class == "relation" ||
+         object_class == "table" ||
+         object_class == "view";
+}
+
 struct ObjectReference {
   std::string presented_name;
   std::string object_class{"relation"};
   bool quoted{false};
+};
+
+struct ResolvedObjectReferenceSeed {
+  ObjectReference ref;
+  PublicNameResolutionResult resolved;
 };
 
 bool IsWord(const Token& token, std::string_view word) {
@@ -385,6 +402,35 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
       << "|roles=" << JoinStable(session.effective_role_uuids)
       << "|groups=" << JoinStable(session.effective_group_uuids)
       << "|search_path=" << JoinStable(session.search_path)
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|input_fallback=" << session.input_language_fallback_tag
+      << "|common_resource=" << session.common_resource_hash
+      << "|policy_profile=" << session.policy_profile_uuid
+      << "|resource_compat=" << session.resource_compatibility_identity
+      << "|resource_version=" << session.resource_version_identity;
+  return key.str();
+}
+
+std::string BuildStableRelationNameResolutionCacheKey(
+    const SessionContext& session,
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class) {
+  const bool qualified = presented_name.find('.') != std::string_view::npos;
+  std::ostringstream key;
+  key << presented_name << "|quoted=" << (quoted ? "1" : "0")
+      << "|class=" << object_class
+      << "|security=" << session.security_policy_epoch
+      << "|grant=" << session.grant_epoch
+      << "|localized_name=" << session.localized_name_epoch
+      << "|language_resource=" << session.language_resource_epoch
+      << "|message_resource=" << session.message_resource_epoch
+      << "|roles=" << JoinStable(session.effective_role_uuids)
+      << "|groups=" << JoinStable(session.effective_group_uuids)
+      << "|search_path=" << (qualified ? std::string("<qualified>")
+                                       : JoinStable(session.search_path))
       << "|language_profile=" << session.language_profile
       << "|language_tag=" << session.language_tag
       << "|input_syntax=" << session.input_syntax_profile
@@ -1701,6 +1747,1080 @@ void AppendRouteTextOperand(std::string* out, std::string_view name, std::string
   *out += "\n";
 }
 
+std::string HexEncodeRouteText(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2u);
+  for (const unsigned char ch : value) {
+    out.push_back(kHex[(ch >> 4u) & 0x0fu]);
+    out.push_back(kHex[ch & 0x0fu]);
+  }
+  return out;
+}
+
+struct FastInsertValueField {
+  std::string name;
+  std::string type_name;
+  std::string value;
+  bool is_null{false};
+};
+
+struct FastInsertValuesRoutePlan {
+  ObjectReference target;
+  std::vector<std::vector<FastInsertValueField>> rows;
+  std::size_t column_count{0};
+};
+
+struct FastCopyFromStdinRoutePlan {
+  ObjectReference target;
+  std::string format_family{"csv"};
+  bool copy_options_present{false};
+  bool copy_header_option{false};
+};
+
+std::string FastInsertTypedLiteralType(std::string upper);
+
+class FastCopyFromStdinScanner {
+public:
+  explicit FastCopyFromStdinScanner(std::string_view sql) : sql_(sql) {}
+
+  std::optional<FastCopyFromStdinRoutePlan> Parse() {
+    if (!ConsumeKeyword("COPY")) return std::nullopt;
+
+    std::vector<std::string> target_parts;
+    bool target_quoted = false;
+    if (!ConsumeQualifiedNameParts(&target_parts, &target_quoted)) return std::nullopt;
+
+    if (!ConsumeKeyword("FROM")) return std::nullopt;
+    if (!ConsumeKeyword("STDIN")) return std::nullopt;
+
+    FastCopyFromStdinRoutePlan plan;
+    plan.target.presented_name = JoinRouteNameParts(target_parts, 0, target_parts.size());
+    plan.target.quoted = target_quoted;
+    plan.target.object_class = "relation";
+
+    if (ConsumeKeyword("WITH")) {
+      plan.copy_options_present = true;
+      if (!ConsumeCopyOptions(&plan)) return std::nullopt;
+    }
+
+    SkipTrivia();
+    while (pos_ < sql_.size() && sql_[pos_] == ';') {
+      ++pos_;
+      SkipTrivia();
+    }
+    if (pos_ != sql_.size()) return std::nullopt;
+    return plan;
+  }
+
+private:
+  void SkipTrivia() {
+    for (;;) {
+      while (pos_ < sql_.size() &&
+             std::isspace(static_cast<unsigned char>(sql_[pos_]))) {
+        ++pos_;
+      }
+      if (pos_ + 1 < sql_.size() && sql_[pos_] == '-' && sql_[pos_ + 1] == '-') {
+        pos_ += 2;
+        while (pos_ < sql_.size() && sql_[pos_] != '\n') ++pos_;
+        continue;
+      }
+      if (pos_ + 1 < sql_.size() && sql_[pos_] == '/' && sql_[pos_ + 1] == '*') {
+        pos_ += 2;
+        while (pos_ + 1 < sql_.size() &&
+               !(sql_[pos_] == '*' && sql_[pos_ + 1] == '/')) {
+          ++pos_;
+        }
+        if (pos_ + 1 >= sql_.size()) {
+          pos_ = sql_.size();
+          return;
+        }
+        pos_ += 2;
+        continue;
+      }
+      break;
+    }
+  }
+
+  bool IsIdentifierStart(char ch) const {
+    const auto uch = static_cast<unsigned char>(ch);
+    return std::isalpha(uch) || ch == '_';
+  }
+
+  bool IsIdentifierBody(char ch) const {
+    const auto uch = static_cast<unsigned char>(ch);
+    return std::isalnum(uch) || ch == '_' || ch == '$';
+  }
+
+  bool KeywordBoundary(std::size_t end) const {
+    return end >= sql_.size() || !IsIdentifierBody(sql_[end]);
+  }
+
+  bool ConsumeKeyword(std::string_view keyword) {
+    SkipTrivia();
+    if (pos_ + keyword.size() > sql_.size()) return false;
+    for (std::size_t offset = 0; offset < keyword.size(); ++offset) {
+      const auto ch = static_cast<unsigned char>(sql_[pos_ + offset]);
+      if (std::toupper(ch) != keyword[offset]) return false;
+    }
+    const std::size_t end = pos_ + keyword.size();
+    if (!KeywordBoundary(end)) return false;
+    pos_ = end;
+    return true;
+  }
+
+  bool ConsumeChar(char expected) {
+    SkipTrivia();
+    if (pos_ >= sql_.size() || sql_[pos_] != expected) return false;
+    ++pos_;
+    return true;
+  }
+
+  bool ConsumeIdentifier(std::string* out, bool* quoted) {
+    if (out == nullptr || quoted == nullptr) return false;
+    SkipTrivia();
+    if (pos_ >= sql_.size()) return false;
+    out->clear();
+    *quoted = false;
+    if (sql_[pos_] == '"') {
+      *quoted = true;
+      ++pos_;
+      while (pos_ < sql_.size()) {
+        const char ch = sql_[pos_++];
+        if (ch == '"') {
+          if (pos_ < sql_.size() && sql_[pos_] == '"') {
+            out->push_back('"');
+            ++pos_;
+            continue;
+          }
+          return true;
+        }
+        out->push_back(ch);
+      }
+      return false;
+    }
+    if (!IsIdentifierStart(sql_[pos_])) return false;
+    const std::size_t begin = pos_++;
+    while (pos_ < sql_.size() && IsIdentifierBody(sql_[pos_])) ++pos_;
+    out->assign(sql_.substr(begin, pos_ - begin));
+    return true;
+  }
+
+  bool ConsumeQualifiedNameParts(std::vector<std::string>* parts, bool* quoted) {
+    if (parts == nullptr || quoted == nullptr) return false;
+    parts->clear();
+    *quoted = false;
+    for (;;) {
+      std::string part;
+      bool part_quoted = false;
+      if (!ConsumeIdentifier(&part, &part_quoted)) return false;
+      *quoted = *quoted || part_quoted;
+      parts->push_back(std::move(part));
+      SkipTrivia();
+      if (pos_ >= sql_.size() || sql_[pos_] != '.') break;
+      ++pos_;
+    }
+    return !parts->empty();
+  }
+
+  bool ConsumeSingleQuoted(std::string* out) {
+    if (out == nullptr) return false;
+    SkipTrivia();
+    if (pos_ >= sql_.size() || sql_[pos_] != '\'') return false;
+    out->clear();
+    ++pos_;
+    while (pos_ < sql_.size()) {
+      const char ch = sql_[pos_++];
+      if (ch == '\'') {
+        if (pos_ < sql_.size() && sql_[pos_] == '\'') {
+          out->push_back('\'');
+          ++pos_;
+          continue;
+        }
+        return true;
+      }
+      out->push_back(ch);
+    }
+    return false;
+  }
+
+  bool ConsumeOptionValue(std::string* value) {
+    if (value == nullptr) return false;
+    SkipTrivia();
+    if (ConsumeSingleQuoted(value)) return true;
+    bool quoted = false;
+    if (ConsumeIdentifier(value, &quoted)) {
+      (void)quoted;
+      return true;
+    }
+    if (pos_ >= sql_.size()) return false;
+    const std::size_t begin = pos_;
+    if (sql_[pos_] == '+' || sql_[pos_] == '-') ++pos_;
+    bool saw_digit = false;
+    while (pos_ < sql_.size() &&
+           std::isdigit(static_cast<unsigned char>(sql_[pos_]))) {
+      saw_digit = true;
+      ++pos_;
+    }
+    if (!saw_digit) {
+      pos_ = begin;
+      return false;
+    }
+    value->assign(sql_.substr(begin, pos_ - begin));
+    return true;
+  }
+
+  bool ConsumeCopyOptions(FastCopyFromStdinRoutePlan* plan) {
+    if (plan == nullptr) return false;
+    if (!ConsumeChar('(')) {
+      if (ConsumeKeyword("HEADER")) {
+        plan->copy_header_option = true;
+        return true;
+      }
+      return false;
+    }
+    for (;;) {
+      std::string option;
+      bool quoted = false;
+      if (!ConsumeIdentifier(&option, &quoted) || quoted) return false;
+      const std::string upper_option = ToUpperAscii(option);
+      std::string value;
+      if (ConsumeChar('=')) {
+        if (!ConsumeOptionValue(&value)) return false;
+      } else {
+        const std::size_t saved = pos_;
+        if (!ConsumeOptionValue(&value)) {
+          pos_ = saved;
+        }
+      }
+      if (upper_option == "HEADER") {
+        plan->copy_header_option = true;
+      } else if (upper_option == "FORMAT" && !value.empty()) {
+        const std::string upper_value = ToUpperAscii(value);
+        if (upper_value == "JSONL" || upper_value == "JSON") {
+          plan->format_family = "jsonl";
+        } else if (upper_value == "CSV") {
+          plan->format_family = "csv";
+        } else {
+          return false;
+        }
+      } else if (upper_option != "NATIVE_BULK_INGEST" &&
+                 upper_option != "NATIVE_BULK_INGEST_ENABLED") {
+        return false;
+      }
+      if (ConsumeChar(',')) continue;
+      if (!ConsumeChar(')')) return false;
+      break;
+    }
+    return true;
+  }
+
+  std::string_view sql_;
+  std::size_t pos_{0};
+};
+
+class FastInsertValuesScanner {
+public:
+  explicit FastInsertValuesScanner(std::string_view sql) : sql_(sql) {}
+
+  std::optional<FastInsertValuesRoutePlan> Parse() {
+    if (!ConsumeKeyword("INSERT")) return std::nullopt;
+    if (!ConsumeKeyword("INTO")) return std::nullopt;
+
+    std::vector<std::string> target_parts;
+    bool target_quoted = false;
+    if (!ConsumeQualifiedNameParts(&target_parts, &target_quoted)) return std::nullopt;
+
+    std::vector<std::string> column_names;
+    if (!ConsumeChar('(')) return std::nullopt;
+    for (;;) {
+      std::string column_name;
+      bool column_quoted = false;
+      if (!ConsumeIdentifier(&column_name, &column_quoted)) return std::nullopt;
+      (void)column_quoted;
+      column_names.push_back(std::move(column_name));
+      if (ConsumeChar(',')) continue;
+      if (!ConsumeChar(')')) return std::nullopt;
+      break;
+    }
+    if (column_names.empty()) return std::nullopt;
+    if (!ConsumeKeyword("VALUES")) return std::nullopt;
+
+    FastInsertValuesRoutePlan plan;
+    plan.target.presented_name =
+        JoinRouteNameParts(target_parts, 0, target_parts.size());
+    plan.target.quoted = target_quoted;
+    plan.target.object_class = "relation";
+    plan.column_count = column_names.size();
+
+    for (;;) {
+      if (!ConsumeChar('(')) return std::nullopt;
+      std::vector<FastInsertValueField> row;
+      row.reserve(column_names.size());
+      for (std::size_t column_index = 0; column_index < column_names.size(); ++column_index) {
+        FastInsertValueField field;
+        field.name = column_names[column_index];
+        if (!ConsumeLiteralValue(&field)) return std::nullopt;
+        row.push_back(std::move(field));
+        if (column_index + 1 < column_names.size() && !ConsumeChar(',')) {
+          return std::nullopt;
+        }
+      }
+      if (!ConsumeChar(')')) return std::nullopt;
+      plan.rows.push_back(std::move(row));
+      if (ConsumeChar(',')) continue;
+      break;
+    }
+
+    if (plan.rows.empty()) return std::nullopt;
+    SkipTrivia();
+    while (pos_ < sql_.size() && sql_[pos_] == ';') {
+      ++pos_;
+      SkipTrivia();
+    }
+    if (pos_ != sql_.size()) return std::nullopt;
+    return plan;
+  }
+
+private:
+  void SkipTrivia() {
+    for (;;) {
+      while (pos_ < sql_.size() &&
+             std::isspace(static_cast<unsigned char>(sql_[pos_]))) {
+        ++pos_;
+      }
+      if (pos_ + 1 < sql_.size() && sql_[pos_] == '-' && sql_[pos_ + 1] == '-') {
+        pos_ += 2;
+        while (pos_ < sql_.size() && sql_[pos_] != '\n') ++pos_;
+        continue;
+      }
+      if (pos_ + 1 < sql_.size() && sql_[pos_] == '/' && sql_[pos_ + 1] == '*') {
+        pos_ += 2;
+        while (pos_ + 1 < sql_.size() &&
+               !(sql_[pos_] == '*' && sql_[pos_ + 1] == '/')) {
+          ++pos_;
+        }
+        if (pos_ + 1 >= sql_.size()) {
+          pos_ = sql_.size();
+          return;
+        }
+        pos_ += 2;
+        continue;
+      }
+      break;
+    }
+  }
+
+  bool IsIdentifierStart(char ch) const {
+    const auto uch = static_cast<unsigned char>(ch);
+    return std::isalpha(uch) || ch == '_';
+  }
+
+  bool IsIdentifierBody(char ch) const {
+    const auto uch = static_cast<unsigned char>(ch);
+    return std::isalnum(uch) || ch == '_' || ch == '$';
+  }
+
+  bool KeywordBoundary(std::size_t end) const {
+    return end >= sql_.size() || !IsIdentifierBody(sql_[end]);
+  }
+
+  bool ConsumeKeyword(std::string_view keyword) {
+    SkipTrivia();
+    if (pos_ + keyword.size() > sql_.size()) return false;
+    for (std::size_t offset = 0; offset < keyword.size(); ++offset) {
+      const auto ch = static_cast<unsigned char>(sql_[pos_ + offset]);
+      if (std::toupper(ch) != keyword[offset]) return false;
+    }
+    const std::size_t end = pos_ + keyword.size();
+    if (!KeywordBoundary(end)) return false;
+    pos_ = end;
+    return true;
+  }
+
+  bool ConsumeChar(char expected) {
+    SkipTrivia();
+    if (pos_ >= sql_.size() || sql_[pos_] != expected) return false;
+    ++pos_;
+    return true;
+  }
+
+  bool ConsumeIdentifier(std::string* out, bool* quoted) {
+    if (out == nullptr || quoted == nullptr) return false;
+    SkipTrivia();
+    if (pos_ >= sql_.size()) return false;
+    out->clear();
+    *quoted = false;
+    if (sql_[pos_] == '"') {
+      *quoted = true;
+      ++pos_;
+      while (pos_ < sql_.size()) {
+        const char ch = sql_[pos_++];
+        if (ch == '"') {
+          if (pos_ < sql_.size() && sql_[pos_] == '"') {
+            out->push_back('"');
+            ++pos_;
+            continue;
+          }
+          return true;
+        }
+        out->push_back(ch);
+      }
+      return false;
+    }
+    if (!IsIdentifierStart(sql_[pos_])) return false;
+    const std::size_t begin = pos_++;
+    while (pos_ < sql_.size() && IsIdentifierBody(sql_[pos_])) ++pos_;
+    out->assign(sql_.substr(begin, pos_ - begin));
+    return true;
+  }
+
+  bool ConsumeQualifiedNameParts(std::vector<std::string>* parts, bool* quoted) {
+    if (parts == nullptr || quoted == nullptr) return false;
+    parts->clear();
+    *quoted = false;
+    for (;;) {
+      std::string part;
+      bool part_quoted = false;
+      if (!ConsumeIdentifier(&part, &part_quoted)) return false;
+      *quoted = *quoted || part_quoted;
+      parts->push_back(std::move(part));
+      SkipTrivia();
+      if (pos_ >= sql_.size() || sql_[pos_] != '.') break;
+      ++pos_;
+    }
+    return !parts->empty();
+  }
+
+  bool ConsumeSingleQuoted(std::string* out) {
+    if (out == nullptr) return false;
+    SkipTrivia();
+    if (pos_ >= sql_.size() || sql_[pos_] != '\'') return false;
+    out->clear();
+    ++pos_;
+    while (pos_ < sql_.size()) {
+      const char ch = sql_[pos_++];
+      if (ch == '\'') {
+        if (pos_ < sql_.size() && sql_[pos_] == '\'') {
+          out->push_back('\'');
+          ++pos_;
+          continue;
+        }
+        return true;
+      }
+      out->push_back(ch);
+    }
+    return false;
+  }
+
+  bool ConsumeUuidLiteral(std::string* out) {
+    if (out == nullptr) return false;
+    SkipTrivia();
+    constexpr std::size_t kUuidTextSize = 36;
+    if (pos_ + kUuidTextSize > sql_.size()) return false;
+    const auto is_hex = [](char ch) {
+      const auto uch = static_cast<unsigned char>(ch);
+      return std::isxdigit(uch) != 0;
+    };
+    for (std::size_t offset = 0; offset < kUuidTextSize; ++offset) {
+      const char ch = sql_[pos_ + offset];
+      if (offset == 8 || offset == 13 || offset == 18 || offset == 23) {
+        if (ch != '-') return false;
+      } else if (!is_hex(ch)) {
+        return false;
+      }
+    }
+    const std::size_t end = pos_ + kUuidTextSize;
+    if (end < sql_.size() && IsIdentifierBody(sql_[end])) return false;
+    out->assign(sql_.substr(pos_, kUuidTextSize));
+    pos_ = end;
+    return true;
+  }
+
+  std::string NumericTypeForLiteral(std::string_view text) const {
+    const std::string upper = ToUpperAscii(text);
+    const auto has_suffix = [&](std::string_view suffix) {
+      return upper.size() > suffix.size() &&
+             upper.compare(upper.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    if (has_suffix("UINT128") || has_suffix("U128")) return "uint128";
+    if (has_suffix("INT128") || has_suffix("I128")) return "int128";
+    if (has_suffix("REAL128") || has_suffix("R128")) return "real128";
+    if (has_suffix("UINT") || has_suffix("U")) return "uint64";
+    if (has_suffix("DECIMAL") || has_suffix("DEC") || has_suffix("D") ||
+        has_suffix("DOUBLE") || has_suffix("FLOAT") || has_suffix("F")) {
+      return "numeric";
+    }
+    return upper.find('.') != std::string::npos ||
+                   upper.find('E') != std::string::npos
+               ? "numeric"
+               : "bigint";
+  }
+
+  bool ConsumeNumericLiteral(std::string* value, std::string* type_name) {
+    if (value == nullptr || type_name == nullptr) return false;
+    SkipTrivia();
+    std::size_t cursor = pos_;
+    if (cursor >= sql_.size()) return false;
+    if (sql_[cursor] == '+' || sql_[cursor] == '-') ++cursor;
+    const std::size_t digits_begin = cursor;
+    while (cursor < sql_.size() &&
+           std::isdigit(static_cast<unsigned char>(sql_[cursor]))) {
+      ++cursor;
+    }
+    bool saw_digit = cursor > digits_begin;
+    if (cursor < sql_.size() && sql_[cursor] == '.') {
+      ++cursor;
+      const std::size_t fraction_begin = cursor;
+      while (cursor < sql_.size() &&
+             std::isdigit(static_cast<unsigned char>(sql_[cursor]))) {
+        ++cursor;
+      }
+      saw_digit = saw_digit || cursor > fraction_begin;
+    }
+    if (!saw_digit) return false;
+    if (cursor < sql_.size() && (sql_[cursor] == 'e' || sql_[cursor] == 'E')) {
+      std::size_t exponent = cursor + 1;
+      if (exponent < sql_.size() && (sql_[exponent] == '+' || sql_[exponent] == '-')) {
+        ++exponent;
+      }
+      const std::size_t exponent_digits = exponent;
+      while (exponent < sql_.size() &&
+             std::isdigit(static_cast<unsigned char>(sql_[exponent]))) {
+        ++exponent;
+      }
+      if (exponent == exponent_digits) return false;
+      cursor = exponent;
+    }
+    const std::size_t suffix_begin = cursor;
+    while (cursor < sql_.size() &&
+           std::isalpha(static_cast<unsigned char>(sql_[cursor]))) {
+      ++cursor;
+    }
+    if (cursor < sql_.size() && IsIdentifierBody(sql_[cursor])) return false;
+    if (suffix_begin != cursor) {
+      const std::string suffix =
+          ToUpperAscii(sql_.substr(suffix_begin, cursor - suffix_begin));
+      if (suffix != "UINT" && suffix != "U" && suffix != "INT128" &&
+          suffix != "I128" && suffix != "UINT128" && suffix != "U128" &&
+          suffix != "REAL128" && suffix != "R128" && suffix != "DECIMAL" &&
+          suffix != "DEC" && suffix != "D" && suffix != "DOUBLE" &&
+          suffix != "FLOAT" && suffix != "F") {
+        return false;
+      }
+    }
+    value->assign(sql_.substr(pos_, cursor - pos_));
+    *type_name = NumericTypeForLiteral(*value);
+    pos_ = cursor;
+    return true;
+  }
+
+  bool ConsumeWord(std::string* out) {
+    if (out == nullptr) return false;
+    SkipTrivia();
+    if (pos_ >= sql_.size() || !IsIdentifierStart(sql_[pos_])) return false;
+    const std::size_t begin = pos_++;
+    while (pos_ < sql_.size() && IsIdentifierBody(sql_[pos_])) ++pos_;
+    out->assign(sql_.substr(begin, pos_ - begin));
+    return true;
+  }
+
+  bool ConsumeLiteralValue(FastInsertValueField* field) {
+    if (field == nullptr) return false;
+    SkipTrivia();
+
+    std::string uuid_text;
+    if (ConsumeUuidLiteral(&uuid_text)) {
+      field->type_name = "uuid";
+      field->value = std::move(uuid_text);
+      field->is_null = false;
+      return true;
+    }
+
+    std::string string_value;
+    if (ConsumeSingleQuoted(&string_value)) {
+      field->type_name = "text";
+      field->value = std::move(string_value);
+      field->is_null = false;
+      return true;
+    }
+
+    std::string number_value;
+    std::string number_type;
+    if (ConsumeNumericLiteral(&number_value, &number_type)) {
+      field->type_name = std::move(number_type);
+      field->value = std::move(number_value);
+      field->is_null = false;
+      return true;
+    }
+
+    std::size_t word_position = pos_;
+    std::string word;
+    if (!ConsumeWord(&word)) return false;
+    const std::string upper = ToUpperAscii(word);
+    if (upper == "TRUE" || upper == "FALSE") {
+      field->type_name = "boolean";
+      field->value = upper == "TRUE" ? "true" : "false";
+      field->is_null = false;
+      return true;
+    }
+    if (upper == "NULL") {
+      field->type_name = "null";
+      field->value.clear();
+      field->is_null = true;
+      return true;
+    }
+    const std::string typed_literal = FastInsertTypedLiteralType(upper);
+    if (!typed_literal.empty()) {
+      if (!ConsumeSingleQuoted(&string_value)) {
+        pos_ = word_position;
+        return false;
+      }
+      field->type_name = typed_literal;
+      field->value = std::move(string_value);
+      field->is_null = false;
+      return true;
+    }
+    if ((upper == "X" || upper == "B") && ConsumeSingleQuoted(&string_value)) {
+      field->type_name = upper == "B" ? "bit_string" : "binary";
+      field->value = std::move(string_value);
+      field->is_null = false;
+      return true;
+    }
+    pos_ = word_position;
+    return false;
+  }
+
+  std::string_view sql_;
+  std::size_t pos_{0};
+};
+
+bool LooksLikeFastInsertValuesCandidate(std::string_view sql) {
+  std::size_t index = 0;
+  for (;;) {
+    while (index < sql.size() &&
+           std::isspace(static_cast<unsigned char>(sql[index]))) {
+      ++index;
+    }
+    if (index + 1 < sql.size() && sql[index] == '-' && sql[index + 1] == '-') {
+      index += 2;
+      while (index < sql.size() && sql[index] != '\n') ++index;
+      continue;
+    }
+    if (index + 1 < sql.size() && sql[index] == '/' && sql[index + 1] == '*') {
+      index += 2;
+      while (index + 1 < sql.size() && !(sql[index] == '*' && sql[index + 1] == '/')) {
+        ++index;
+      }
+      if (index + 1 < sql.size()) index += 2;
+      continue;
+    }
+    break;
+  }
+  constexpr std::string_view kInsert = "INSERT";
+  if (index + kInsert.size() > sql.size()) return false;
+  for (std::size_t offset = 0; offset < kInsert.size(); ++offset) {
+    const auto ch = static_cast<unsigned char>(sql[index + offset]);
+    if (std::toupper(ch) != kInsert[offset]) return false;
+  }
+  const std::size_t next = index + kInsert.size();
+  return next >= sql.size() ||
+         !std::isalnum(static_cast<unsigned char>(sql[next]));
+}
+
+bool LooksLikeFastCopyFromStdinCandidate(std::string_view sql) {
+  std::size_t index = 0;
+  for (;;) {
+    while (index < sql.size() &&
+           std::isspace(static_cast<unsigned char>(sql[index]))) {
+      ++index;
+    }
+    if (index + 1 < sql.size() && sql[index] == '-' && sql[index + 1] == '-') {
+      index += 2;
+      while (index < sql.size() && sql[index] != '\n') ++index;
+      continue;
+    }
+    if (index + 1 < sql.size() && sql[index] == '/' && sql[index + 1] == '*') {
+      index += 2;
+      while (index + 1 < sql.size() && !(sql[index] == '*' && sql[index + 1] == '/')) {
+        ++index;
+      }
+      if (index + 1 < sql.size()) index += 2;
+      continue;
+    }
+    break;
+  }
+  constexpr std::string_view kCopy = "COPY";
+  if (index + kCopy.size() > sql.size()) return false;
+  for (std::size_t offset = 0; offset < kCopy.size(); ++offset) {
+    const auto ch = static_cast<unsigned char>(sql[index + offset]);
+    if (std::toupper(ch) != kCopy[offset]) return false;
+  }
+  const std::size_t next = index + kCopy.size();
+  return next >= sql.size() ||
+         !std::isalnum(static_cast<unsigned char>(sql[next]));
+}
+
+std::optional<FastCopyFromStdinRoutePlan> TryParseFastCopyFromStdinRoutePlan(
+    std::string_view sql) {
+  return FastCopyFromStdinScanner(sql).Parse();
+}
+
+std::optional<FastInsertValuesRoutePlan> TryParseFastInsertValuesRoutePlan(
+    std::string_view sql) {
+  return FastInsertValuesScanner(sql).Parse();
+}
+
+bool ConsumeFastInsertKeyword(const CstDocument& cst,
+                              std::size_t* index,
+                              std::string_view keyword) {
+  return ConsumeRouteKeyword(cst, index, keyword);
+}
+
+bool ConsumeFastInsertSymbol(const CstDocument& cst,
+                             std::size_t* index,
+                             std::string_view symbol) {
+  return ConsumeRouteSymbol(cst, index, symbol);
+}
+
+std::string FastInsertLiteralPayload(const Token& token) {
+  if (token.kind == TokenKind::kBooleanLiteral) {
+    return ToUpperAscii(token.text) == "TRUE" ? "true" : "false";
+  }
+  return token.text;
+}
+
+std::string FastInsertScalarTypeForToken(const Token& token) {
+  if (token.kind == TokenKind::kNumericLiteral) {
+    if (token.literal_family == "uint") return "uint64";
+    if (token.literal_family == "int128") return "int128";
+    if (token.literal_family == "uint128") return "uint128";
+    if (token.literal_family == "real128") return "real128";
+    return token.literal_family == "decimal" || token.literal_family == "float" ? "numeric"
+                                                                                 : "bigint";
+  }
+  if (token.kind == TokenKind::kBooleanLiteral) return "boolean";
+  if (token.kind == TokenKind::kBinaryLiteral) {
+    return token.literal_family == "bit_binary" ? "bit_string" : "binary";
+  }
+  if (token.kind == TokenKind::kUuidLiteral) return "uuid";
+  if (token.kind == TokenKind::kTemporalLiteral) {
+    const std::string family = ToUpperAscii(token.literal_family);
+    if (family == "DATE") return "date";
+    if (family == "TIME") return "time";
+    if (family == "TIMESTAMP") return "timestamp";
+    if (family == "INTERVAL") return "interval";
+  }
+  if (token.kind == TokenKind::kDocumentLiteral) {
+    return ToUpperAscii(token.literal_family) == "JSON" ? "json_document" : "document";
+  }
+  if (token.kind == TokenKind::kVectorLiteral) return "dense_vector";
+  if (token.kind == TokenKind::kNullLiteral) return "null";
+  return "text";
+}
+
+bool IsFastInsertScalarLiteral(const Token& token) {
+  return token.kind == TokenKind::kNumericLiteral ||
+         token.kind == TokenKind::kStringLiteral ||
+         token.kind == TokenKind::kBinaryLiteral ||
+         token.kind == TokenKind::kBooleanLiteral ||
+         token.kind == TokenKind::kNullLiteral ||
+         token.kind == TokenKind::kUuidLiteral ||
+         (token.kind == TokenKind::kDocumentLiteral &&
+          (ToUpperAscii(token.literal_family) == "DOCUMENT" ||
+           ToUpperAscii(token.literal_family) == "JSON")) ||
+         (token.kind == TokenKind::kVectorLiteral &&
+          ToUpperAscii(token.literal_family) == "VECTOR") ||
+         (token.kind == TokenKind::kTemporalLiteral &&
+          (ToUpperAscii(token.literal_family) == "DATE" ||
+           ToUpperAscii(token.literal_family) == "TIME" ||
+           ToUpperAscii(token.literal_family) == "TIMESTAMP" ||
+           ToUpperAscii(token.literal_family) == "INTERVAL"));
+}
+
+std::string FastInsertTypedLiteralType(std::string upper) {
+  if (upper == "DATE") return "date";
+  if (upper == "TIME") return "time";
+  if (upper == "TIMESTAMP") return "timestamp";
+  if (upper == "TIMESTAMPTZ") return "timestamptz";
+  if (upper == "INTERVAL") return "interval";
+  if (upper == "UUID") return "uuid";
+  if (upper == "JSON") return "json_document";
+  if (upper == "XML") return "xml_document";
+  if (upper == "VECTOR") return "dense_vector";
+  return {};
+}
+
+bool ConsumeFastInsertLiteralValue(const CstDocument& cst,
+                                   std::size_t* index,
+                                   FastInsertValueField* field) {
+  if (index == nullptr || field == nullptr) return false;
+  SkipTriviaTokens(cst, index);
+  if (*index >= cst.tokens.size()) return false;
+
+  bool negative = false;
+  if (cst.tokens[*index].text == "-" &&
+      *index + 1 < cst.tokens.size() &&
+      cst.tokens[*index + 1].kind == TokenKind::kNumericLiteral) {
+    negative = true;
+    ++(*index);
+    SkipTriviaTokens(cst, index);
+  }
+  if (*index >= cst.tokens.size()) return false;
+  const Token& token = cst.tokens[*index];
+  if (negative && token.kind != TokenKind::kNumericLiteral) return false;
+
+  if (!negative && IsIdentifierLikeForRouteExecution(token)) {
+    const std::string typed_literal = FastInsertTypedLiteralType(ToUpperAscii(token.text));
+    std::size_t literal_index = *index + 1;
+    SkipTriviaTokens(cst, &literal_index);
+    if (!typed_literal.empty() && literal_index < cst.tokens.size() &&
+        cst.tokens[literal_index].kind == TokenKind::kStringLiteral) {
+      field->type_name = typed_literal;
+      field->value = cst.tokens[literal_index].text;
+      field->is_null = false;
+      *index = literal_index + 1;
+      return true;
+    }
+  }
+
+  if (!IsFastInsertScalarLiteral(token)) return false;
+  field->type_name = FastInsertScalarTypeForToken(token);
+  field->value = negative ? "-" + FastInsertLiteralPayload(token)
+                          : FastInsertLiteralPayload(token);
+  field->is_null = token.kind == TokenKind::kNullLiteral;
+  ++(*index);
+  return true;
+}
+
+std::string FastInsertCompactPayload(const FastInsertValuesRoutePlan& plan) {
+  std::string payload;
+  bool first = true;
+  for (const auto& row : plan.rows) {
+    for (const auto& field : row) {
+      if (!first) payload.push_back(';');
+      first = false;
+      payload += HexEncodeRouteText(field.name);
+      payload.push_back('|');
+      payload += HexEncodeRouteText(field.type_name);
+      payload.push_back('|');
+      payload += HexEncodeRouteText(field.value);
+      payload.push_back('|');
+      payload.push_back(field.is_null ? '1' : '0');
+    }
+  }
+  return payload;
+}
+
+std::optional<FastInsertValuesRoutePlan> TryParseFastInsertValuesRoutePlan(
+    const CstDocument& cst) {
+  std::size_t index = 0;
+  if (!ConsumeFastInsertKeyword(cst, &index, "INSERT")) return std::nullopt;
+  if (!ConsumeFastInsertKeyword(cst, &index, "INTO")) return std::nullopt;
+
+  std::vector<std::string> target_parts;
+  bool target_quoted = false;
+  if (!ConsumeRouteQualifiedNameParts(cst, &index, &target_parts, &target_quoted)) {
+    return std::nullopt;
+  }
+
+  std::vector<std::string> column_names;
+  if (!ConsumeFastInsertSymbol(cst, &index, "(")) return std::nullopt;
+  for (;;) {
+    std::string column_name;
+    if (!ConsumeRouteIdentifier(cst, &index, &column_name)) return std::nullopt;
+    column_names.push_back(std::move(column_name));
+    if (ConsumeFastInsertSymbol(cst, &index, ",")) continue;
+    if (!ConsumeFastInsertSymbol(cst, &index, ")")) return std::nullopt;
+    break;
+  }
+  if (column_names.empty()) return std::nullopt;
+  if (!ConsumeFastInsertKeyword(cst, &index, "VALUES")) return std::nullopt;
+
+  FastInsertValuesRoutePlan plan;
+  plan.target.presented_name = JoinRouteNameParts(target_parts, 0, target_parts.size());
+  plan.target.quoted = target_quoted;
+  plan.target.object_class = "relation";
+  plan.column_count = column_names.size();
+
+  for (;;) {
+    if (!ConsumeFastInsertSymbol(cst, &index, "(")) return std::nullopt;
+    std::vector<FastInsertValueField> row;
+    row.reserve(column_names.size());
+    for (std::size_t column_index = 0; column_index < column_names.size(); ++column_index) {
+      FastInsertValueField field;
+      field.name = column_names[column_index];
+      if (!ConsumeFastInsertLiteralValue(cst, &index, &field)) return std::nullopt;
+      row.push_back(std::move(field));
+      if (column_index + 1 < column_names.size()) {
+        if (!ConsumeFastInsertSymbol(cst, &index, ",")) return std::nullopt;
+      }
+    }
+    if (!ConsumeFastInsertSymbol(cst, &index, ")")) return std::nullopt;
+    plan.rows.push_back(std::move(row));
+    if (ConsumeFastInsertSymbol(cst, &index, ",")) continue;
+    break;
+  }
+
+  if (plan.rows.empty()) return std::nullopt;
+  SkipTriviaTokens(cst, &index);
+  while (index < cst.tokens.size() &&
+         cst.tokens[index].kind == TokenKind::kStatementTerminator) {
+    ++index;
+    SkipTriviaTokens(cst, &index);
+  }
+  if (index < cst.tokens.size() && cst.tokens[index].kind != TokenKind::kEnd) {
+    return std::nullopt;
+  }
+  return plan;
+}
+
+std::string BuildFastInsertNativeBulkEnvelope(
+    const FastInsertValuesRoutePlan& plan,
+    std::string_view target_object_uuid) {
+  std::string out;
+  out += "operation_id=dml.execute_native_bulk_ingest\n";
+  out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
+  out += "sblr_operation_family=sblr.dml.operation.v3\n";
+  out += "result_shape=engine.api.result.v1\n";
+  out += "diagnostic_shape=engine.diagnostic.v1\n";
+  out += "trace_key=sbsql.parser.fast_insert_values.native_bulk\n";
+  out += "contains_sql_text=false\n";
+  out += "parser_resolved_names_to_uuids=true\n";
+  out += "requires_security_context=true\n";
+  out += "requires_transaction_context=true\n";
+  out += "requires_cluster_authority=false\n";
+  out += "target_object_uuid=";
+  out += target_object_uuid;
+  out += "\n";
+  out += "target_object_kind=table\n";
+  out += "dml_surface_variant=sbsql_insert_values_fast_native_bulk\n";
+  out += "source_kind=sbsql_insert_values_compact_rowset\n";
+  out += "format_family=sbsql.insert_values.cells.v1\n";
+  out += "source_fingerprint=sbsql-fast-insert-values-explicit-columns\n";
+  out += "source_position=row:0\n";
+  out += "estimated_row_count=" + std::to_string(plan.rows.size()) + "\n";
+  out += "native_bulk_ingest=true\n";
+  out += "native_bulk_ingest_enabled=true\n";
+  out += "reject_mode=fail_fast\n";
+  out += "reject_limit_rows=0\n";
+  out += "reject_payload_policy=diagnostic_only\n";
+  out += "result_payload_policy=summary_only\n";
+  out += "resume_policy=fail_closed\n";
+  out += "checkpoint_mode=disabled\n";
+  out += "duplicate_mode=error\n";
+  out += "require_generated_row_uuid=true\n";
+  AppendRouteTextOperand(&out, "insert_values_row_count", std::to_string(plan.rows.size()));
+  AppendRouteTextOperand(&out, "insert_values_column_count", std::to_string(plan.column_count));
+  AppendRouteTextOperand(&out, "insert_values_column_list_present", "true");
+  AppendRouteTextOperand(&out, "insert_values_compact_format", "sbsql.insert_values.cells.v1");
+  AppendRouteTextOperand(&out, "insert_values_compact_payload", FastInsertCompactPayload(plan));
+  AppendRouteTextOperand(&out, "insert_values_parser_executes_sql", "false");
+  AppendRouteTextOperand(&out, "sblr.canonical_rowset_shared_shape", "true");
+  AppendRouteTextOperand(&out, "sblr.fast_insert_values_lowering", "true");
+  return out;
+}
+
+std::string BuildFastCopyPlanExecutionEnvelope(
+    const FastCopyFromStdinRoutePlan& plan,
+    std::string_view target_object_uuid) {
+  std::string out;
+  out += "operation_id=dml.plan_import_rows\n";
+  out += "opcode=SBLR_DML_PLAN_IMPORT_ROWS\n";
+  out += "sblr_operation_family=sblr.dml.operation.v3\n";
+  out += "result_shape=engine.api.result.v1\n";
+  out += "diagnostic_shape=engine.diagnostic.v1\n";
+  out += "trace_key=sbsql.parser.fast_copy.plan_import\n";
+  out += "contains_sql_text=false\n";
+  out += "parser_resolved_names_to_uuids=true\n";
+  out += "requires_security_context=true\n";
+  out += "requires_transaction_context=true\n";
+  out += "requires_cluster_authority=false\n";
+  out += "target_object_uuid=";
+  out += target_object_uuid;
+  out += "\n";
+  out += "target_object_kind=table\n";
+  out += "dml_surface_variant=copy_import_export\n";
+  out += "source_kind=native_sbsql_import\n";
+  out += "format_family=";
+  out += plan.format_family;
+  out += "\n";
+  AppendRouteTextOperand(&out, "target_object_uuid", target_object_uuid);
+  AppendRouteTextOperand(&out, "target_object_kind", "table");
+  AppendRouteTextOperand(&out, "dml_surface_variant", "copy_import_export");
+  AppendRouteTextOperand(&out, "source_kind", "native_sbsql_import");
+  AppendRouteTextOperand(&out, "format_family", plan.format_family);
+  AppendRouteTextOperand(&out, "copy_options_present",
+                         plan.copy_options_present ? "true" : "false");
+  AppendRouteTextOperand(&out, "copy_header_option",
+                         plan.copy_header_option ? "true" : "false");
+  AppendRouteTextOperand(&out, "source_handle_included", "false");
+  AppendRouteTextOperand(&out, "parser_decodes_bytes", "false");
+  AppendRouteTextOperand(&out, "row_persistence_claimed", "false");
+  AppendRouteTextOperand(&out, "import_execution_deferred", "true");
+  AppendRouteTextOperand(&out, "sblr.fast_copy_plan_lowering", "true");
+  (void)plan.target;
+  return out;
+}
+
+std::string BuildFastCopyPlanJsonPayload(
+    const FastCopyFromStdinRoutePlan& plan,
+    std::string_view target_object_uuid,
+    std::uint64_t statement_hash) {
+  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
+  out += "\"operation_family\":\"sblr.dml.operation.v3\",";
+  out += "\"surface_key\":\"copy_import_export\",";
+  out += "\"command_family\":\"dml\",";
+  out += "\"operation_id\":\"dml.plan_import_rows\",";
+  out += "\"engine_api_operation_id\":\"dml.plan_import_rows\",";
+  out += "\"sblr_operation\":\"SBLR_DML_PLAN_IMPORT_ROWS\",";
+  out += "\"statement_surface_name\":\"copy_import_export\",";
+  out += "\"sblr_operation_key\":\"sblr.dml.operation.v3\",";
+  out += "\"result_shape\":\"engine.api.result.v1\",";
+  out += "\"diagnostic_shape\":\"engine.diagnostic.v1\",";
+  out += "\"resource_contract\":\"resource.contract.dml.import.v1\",";
+  out += "\"trace_key\":\"sbsql.parser.fast_copy.plan_import\",";
+  out += "\"statement_hash\":";
+  out += std::to_string(statement_hash);
+  out += ",\"catalog_epoch\":0,\"security_policy_epoch\":0,\"descriptor_epoch\":0,";
+  out += "\"source_artifact_policy\":\"span_metadata_only\",";
+  out += "\"source_payload_embedded\":false,";
+  out += "\"real_file_effects\":false,";
+  out += "\"parser_executes_sql\":false,";
+  out += "\"import_execution_deferred\":true,";
+  out += "\"target_object_kind\":\"table\",";
+  out += "\"target_object_uuid\":\"";
+  out += EscapeJson(target_object_uuid);
+  out += "\",\"source_kind\":\"native_sbsql_import\",";
+  out += "\"format_family\":\"";
+  out += EscapeJson(plan.format_family);
+  out += "\",\"copy_options_present\":";
+  out += plan.copy_options_present ? "true" : "false";
+  out += ",\"copy_header_option\":";
+  out += plan.copy_header_option ? "true" : "false";
+  out += ",\"source_handle_included\":false,";
+  out += "\"parser_decodes_bytes\":false,";
+  out += "\"row_persistence_claimed\":false,";
+  out += "\"parser_authorizes\":false,";
+  out += "\"name_text_included\":false,";
+  out += "\"sql_text_included\":false,";
+  out += "\"resolved_object_uuids\":[\"";
+  out += EscapeJson(target_object_uuid);
+  out += "\"],";
+  out += "\"descriptor_refs\":[\"sys.storage.row_descriptor\",\"sys.import.plan_descriptor\"],";
+  out += "\"policy_refs\":[\"import_planning_authorization_policy\"],";
+  out += "\"required_rights\":[\"right.write\"],";
+  out += "\"required_authority_steps\":[";
+  out += "\"authority.parser.syntax_evidence_only\",";
+  out += "\"authority.server.resolve_name_registry_public\",";
+  out += "\"authority.server.security_policy_context_required\",";
+  out += "\"authority.server.transaction_context_required\",";
+  out += "\"authority.engine.import_planning_api_required\",";
+  out += "\"authority.parser.no_storage_or_finality\",";
+  out += "\"authority.parser.no_sql_text_execution\"]}";
+  return out;
+}
+
 std::optional<std::string> CreateTableRouteExecutionEnvelope(
     const CstDocument& cst,
     std::string_view operation_family) {
@@ -2376,11 +3496,20 @@ bool SbsqlTestWireSession::HasExecutionRoute() const {
 ServerExecutionResult SbsqlTestWireSession::ExecuteSblrOnRoute(
     std::string_view encoded_sblr_envelope,
     bool cursor_requested) {
+  return ExecuteSblrOnRouteWithDataPacket(encoded_sblr_envelope, {}, cursor_requested);
+}
+
+ServerExecutionResult SbsqlTestWireSession::ExecuteSblrOnRouteWithDataPacket(
+    std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->ExecuteSblr(session_, encoded_sblr_envelope, cursor_requested);
+    return embedded_client_->ExecuteSblrWithDataPacket(
+        session_, encoded_sblr_envelope, data_packet, cursor_requested);
   }
   SbpsClient client(config_.server_endpoint);
-  return client.ExecuteSblr(session_, encoded_sblr_envelope, cursor_requested);
+  return client.ExecuteSblrWithDataPacket(
+      session_, encoded_sblr_envelope, data_packet, cursor_requested);
 }
 
 ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view cursor_uuid,
@@ -2410,14 +3539,44 @@ ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_vi
   return client.CancelCursor(session_, cursor_uuid);
 }
 
-void SbsqlTestWireSession::ClearNameResolutionCache() {
+void SbsqlTestWireSession::ClearNameResolutionCache(
+    bool preserve_stable_relation_names) {
   const bool local_had_entries =
       !name_resolution_cache_.empty() || !name_resolution_lru_.empty();
   name_resolution_cache_.clear();
   name_resolution_lru_.clear();
   ClearSharedNameResolutionCache();
+  if (!preserve_stable_relation_names) {
+    stable_relation_name_resolution_cache_.clear();
+    stable_relation_name_resolution_lru_.clear();
+  }
   if (metrics_ && local_had_entries) {
     metrics_->Increment("sys.metrics.parsers.name_resolution_cache.clears_total");
+  }
+}
+
+void SbsqlTestWireSession::RehydrateStableRelationNameResolutionCache() {
+  std::vector<StableCachedPublicNameResolution> stable_entries;
+  stable_entries.reserve(stable_relation_name_resolution_cache_.size());
+  for (const auto& [_, stable] : stable_relation_name_resolution_cache_) {
+    if (stable.presented_name.empty() || stable.lookup_object_class.empty() ||
+        stable.resolved.object_uuid.empty()) {
+      continue;
+    }
+    stable_entries.push_back(stable);
+  }
+  for (const auto& stable : stable_entries) {
+    StoreNameResolutionCacheEntry(stable.presented_name,
+                                  stable.quoted,
+                                  stable.lookup_object_class,
+                                  stable.resolved.object_uuid,
+                                  stable.resolved.canonical_name,
+                                  session_.catalog_epoch,
+                                  session_.security_policy_epoch,
+                                  stable.resolved.object_class);
+  }
+  if (metrics_ && !stable_entries.empty()) {
+    metrics_->Increment("sys.metrics.parsers.name_resolution_cache.stable_rehydrates_total");
   }
 }
 
@@ -2428,7 +3587,8 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
     std::string_view object_uuid,
     std::string_view canonical_name,
     std::uint64_t catalog_epoch,
-    std::uint64_t security_epoch) {
+    std::uint64_t security_epoch,
+    std::string_view resolved_object_class) {
   if (presented_name.empty() || object_class.empty() || object_uuid.empty()) return;
   const std::string cache_key =
       BuildNameResolutionCacheKey(session_, presented_name, quoted, object_class);
@@ -2436,7 +3596,9 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
   cached.object_uuid = std::string(object_uuid);
   cached.canonical_name = canonical_name.empty() ? std::string(presented_name)
                                                  : std::string(canonical_name);
-  cached.object_class = std::string(object_class);
+  cached.object_class = resolved_object_class.empty()
+                            ? std::string(object_class)
+                            : std::string(resolved_object_class);
   cached.catalog_epoch = catalog_epoch;
   cached.security_epoch = security_epoch;
   name_resolution_cache_[cache_key] = std::move(cached);
@@ -2452,6 +3614,31 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
     name_resolution_lru_.pop_front();
   }
   if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.stores_total");
+
+  if (IsReferencedRelationNameClass(object_class) &&
+      IsReferencedRelationNameClass(name_resolution_cache_[cache_key].object_class)) {
+    const std::string stable_key =
+        BuildStableRelationNameResolutionCacheKey(session_, presented_name, quoted, object_class);
+    StableCachedPublicNameResolution stable;
+    stable.presented_name = std::string(presented_name);
+    stable.quoted = quoted;
+    stable.lookup_object_class = std::string(object_class);
+    stable.resolved = name_resolution_cache_[cache_key];
+    stable_relation_name_resolution_cache_[stable_key] = std::move(stable);
+    stable_relation_name_resolution_lru_.erase(
+        std::remove(stable_relation_name_resolution_lru_.begin(),
+                    stable_relation_name_resolution_lru_.end(),
+                    stable_key),
+        stable_relation_name_resolution_lru_.end());
+    stable_relation_name_resolution_lru_.push_back(stable_key);
+    while (stable_relation_name_resolution_cache_.size() >
+               kMaxStableRelationNameResolutionCacheEntries &&
+           !stable_relation_name_resolution_lru_.empty()) {
+      stable_relation_name_resolution_cache_.erase(
+          stable_relation_name_resolution_lru_.front());
+      stable_relation_name_resolution_lru_.pop_front();
+    }
+  }
 }
 
 void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
@@ -2528,14 +3715,30 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     resolved = client.ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
   }
   if (resolved.resolved) {
+    const std::string resolved_class =
+        resolved.object_class.empty() ? std::string(object_class)
+                                      : resolved.object_class;
+    session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
+    session_.security_policy_epoch =
+        std::max(session_.security_policy_epoch, resolved.security_epoch);
     StoreNameResolutionCacheEntry(presented_name,
                                   quoted,
-                                  resolved.object_class.empty() ? object_class
-                                                                : resolved.object_class,
+                                  object_class,
                                   resolved.object_uuid,
                                   resolved.canonical_name,
                                   resolved.catalog_epoch,
-                                  resolved.security_epoch);
+                                  resolved.security_epoch,
+                                  resolved_class);
+    if (resolved_class != std::string(object_class)) {
+      StoreNameResolutionCacheEntry(presented_name,
+                                    quoted,
+                                    resolved_class,
+                                    resolved.object_uuid,
+                                    resolved.canonical_name,
+                                    resolved.catalog_epoch,
+                                    resolved.security_epoch,
+                                    resolved_class);
+    }
   }
   return resolved;
 }
@@ -2662,6 +3865,142 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
+  if (submit && !cursor_requested && session_.authenticated && HasExecutionRoute() &&
+      LooksLikeFastCopyFromStdinCandidate(sql)) {
+    const auto fast_copy = TryParseFastCopyFromStdinRoutePlan(sql);
+    const std::uint64_t fast_statement_hash = Fnv1a64(sql);
+    mark_phase(fast_copy ? "fast_copy_parse_raw"
+                         : "fast_copy_parse_raw_fallback");
+    if (fast_copy) {
+      if (metrics_) {
+        metrics_->Increment("sys.metrics.parsers.fast_copy_from_stdin.attempts_total");
+      }
+      PipelineResult result;
+      result.statement_family = "dml.import";
+      result.operation_family = "sblr.dml.operation.v3";
+      result.statement_hash = fast_statement_hash;
+      result.parser_executes_sql = false;
+      result.cached_storage_authority = false;
+      result.cached_authorization_authority = false;
+      result.cached_finality_authority = false;
+
+      auto resolved = ResolveNameOnRoute(fast_copy->target.presented_name,
+                                         fast_copy->target.quoted,
+                                         fast_copy->target.object_class);
+      mark_phase("fast_copy_resolve_target");
+      if (!resolved.resolved) {
+        result.messages = std::move(resolved.messages);
+        result.accepted = false;
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+      }
+      session_.catalog_epoch =
+          std::max(session_.catalog_epoch, resolved.catalog_epoch);
+      session_.security_policy_epoch =
+          std::max(session_.security_policy_epoch, resolved.security_epoch);
+
+      const std::string execution_payload =
+          BuildFastCopyPlanExecutionEnvelope(*fast_copy, resolved.object_uuid);
+      result.sblr_payload = BuildFastCopyPlanJsonPayload(*fast_copy,
+                                                         resolved.object_uuid,
+                                                         fast_statement_hash);
+      mark_phase("fast_copy_build_sblr");
+      const auto executed = ExecuteSblrOnRoute(execution_payload, false);
+      mark_phase("fast_copy_execute_sblr_route");
+      if (!executed.accepted) {
+        result.accepted = false;
+        result.messages = executed.messages;
+      } else {
+        result.accepted = true;
+        result.server_operation_id = executed.operation_id;
+        result.server_cursor_uuid = executed.cursor_uuid;
+        result.server_row_count = executed.row_count;
+        result.server_affected_rows = executed.affected_rows;
+        result.server_affected_rows_present = executed.affected_rows_present;
+        result.server_result_payload = executed.row_packet;
+        ApplyExecutedTransactionState(executed, &session_);
+        if (metrics_) {
+          metrics_->Increment("sys.metrics.parsers.fast_copy_from_stdin.accepted_total");
+        }
+      }
+      WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+      return result;
+    }
+    if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.fast_copy_from_stdin.fallbacks_total");
+    }
+  }
+  if (submit && !cursor_requested && session_.authenticated && HasExecutionRoute() &&
+      LooksLikeFastInsertValuesCandidate(sql)) {
+    auto fast_insert = TryParseFastInsertValuesRoutePlan(sql);
+    std::uint64_t fast_statement_hash = Fnv1a64(sql);
+    mark_phase(fast_insert ? "fast_insert_parse_raw"
+                           : "fast_insert_parse_raw_fallback");
+    if (!fast_insert) {
+      auto fast_cst = BuildCst(sql);
+      mark_phase("fast_insert_build_cst");
+      if (!fast_cst.messages.has_errors()) {
+        fast_insert = TryParseFastInsertValuesRoutePlan(fast_cst);
+        fast_statement_hash = Fnv1a64(fast_cst.source);
+      }
+    }
+    if (fast_insert) {
+        if (metrics_) {
+          metrics_->Increment("sys.metrics.parsers.fast_insert_values.attempts_total");
+        }
+        PipelineResult result;
+        result.statement_family = "dml.insert";
+        result.operation_family = "sblr.dml.operation.v3";
+        result.statement_hash = fast_statement_hash;
+        result.parser_executes_sql = false;
+        result.cached_storage_authority = false;
+        result.cached_authorization_authority = false;
+        result.cached_finality_authority = false;
+
+        auto resolved = ResolveNameOnRoute(fast_insert->target.presented_name,
+                                           fast_insert->target.quoted,
+                                           fast_insert->target.object_class);
+        mark_phase("fast_insert_resolve_target");
+        if (!resolved.resolved) {
+          result.messages = std::move(resolved.messages);
+          result.accepted = false;
+          WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+          return result;
+        }
+        session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
+        session_.security_policy_epoch =
+            std::max(session_.security_policy_epoch, resolved.security_epoch);
+        result.sblr_payload =
+            BuildFastInsertNativeBulkEnvelope(*fast_insert, resolved.object_uuid);
+        if (autocommit_emulation) {
+          InjectAutocommitEmulation(&result.sblr_payload);
+        }
+        mark_phase("fast_insert_build_sblr");
+        const auto executed = ExecuteSblrOnRoute(result.sblr_payload, false);
+        mark_phase("fast_insert_execute_sblr_route");
+        if (!executed.accepted) {
+          result.accepted = false;
+          result.messages = executed.messages;
+        } else {
+          result.accepted = true;
+          result.server_operation_id = executed.operation_id;
+          result.server_cursor_uuid = executed.cursor_uuid;
+          result.server_row_count = executed.row_count;
+          result.server_affected_rows = executed.affected_rows;
+          result.server_affected_rows_present = executed.affected_rows_present;
+          result.server_result_payload = executed.row_packet;
+          ApplyExecutedTransactionState(executed, &session_);
+          if (metrics_) {
+            metrics_->Increment("sys.metrics.parsers.fast_insert_values.accepted_total");
+          }
+        }
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
+    }
+    if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.fast_insert_values.fallbacks_total");
+    }
+  }
   const auto frontdoor_cache_key = BuildFrontdoorLoweringCacheKey(config_, session_, sql);
   mark_phase("frontdoor_cache_key");
   if (cache_ != nullptr) {
@@ -2710,7 +4049,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             result.server_result_payload = executed.row_packet;
             ApplyExecutedTransactionState(executed, &session_);
             if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
-              ClearNameResolutionCache();
+              const bool preserve_stable_relations =
+                  ExecutionPreservesReferencedRelationNames(executed.operation_id);
+              ClearNameResolutionCache(preserve_stable_relations);
+              if (preserve_stable_relations) {
+                RehydrateStableRelationNameResolutionCache();
+              }
             }
           }
         }
@@ -2739,6 +4083,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   auto ast = BuildAst(cst);
   mark_phase("build_ast");
   std::vector<std::string> resolved_object_uuids;
+  std::vector<ResolvedObjectReferenceSeed> resolved_object_reference_seeds;
   PipelineResult result;
   result.statement_family = StatementFamilyName(ast.family);
   result.operation_family = ast.operation_family;
@@ -2755,8 +4100,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         break;
       }
       resolved_object_uuids.push_back(resolved.object_uuid);
+      resolved_object_reference_seeds.push_back({ref, resolved});
       session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
-      session_.security_policy_epoch = std::max(session_.security_policy_epoch, resolved.security_epoch);
+      session_.security_policy_epoch =
+          std::max(session_.security_policy_epoch, resolved.security_epoch);
     }
     mark_phase("resolve_object_references");
   }
@@ -2814,6 +4161,22 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.stores_total");
   }
   mark_phase("frontdoor_cache_store");
+  auto reseed_preserved_reference_names = [&](std::string_view operation_id) {
+    if (!ExecutionPreservesReferencedRelationNames(operation_id)) return;
+    for (const auto& seed : resolved_object_reference_seeds) {
+      if (!seed.resolved.resolved || seed.resolved.object_uuid.empty()) continue;
+      const std::string object_class =
+          seed.resolved.object_class.empty() ? seed.ref.object_class : seed.resolved.object_class;
+      if (!IsReferencedRelationNameClass(object_class)) continue;
+      StoreNameResolutionCacheEntry(seed.ref.presented_name,
+                                    seed.ref.quoted,
+                                    object_class,
+                                    seed.resolved.object_uuid,
+                                    seed.resolved.canonical_name,
+                                    session_.catalog_epoch,
+                                    session_.security_policy_epoch);
+    }
+  };
   if (submit && result.accepted) {
     if (!HasExecutionRoute()) {
       result.accepted = false;
@@ -2849,8 +4212,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.server_result_payload = executed.row_packet;
         ApplyExecutedTransactionState(executed, &session_);
         if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
-          ClearNameResolutionCache();
+          const bool preserve_stable_relations =
+              ExecutionPreservesReferencedRelationNames(executed.operation_id);
+          ClearNameResolutionCache(preserve_stable_relations);
+          if (preserve_stable_relations) {
+            RehydrateStableRelationNameResolutionCache();
+          }
         }
+        reseed_preserved_reference_names(executed.operation_id);
         SeedCreatedDdlNameResolutionCache(cst, result);
       }
     }
@@ -2861,6 +4230,13 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
 
 PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                                      bool cursor_requested) {
+  return RunSblrEnvelopeWithDataPacket(encoded_sblr_envelope, {}, cursor_requested);
+}
+
+PipelineResult SbsqlTestWireSession::RunSblrEnvelopeWithDataPacket(
+    std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
   PipelineResult result;
   result.accepted = false;
   if (!HasExecutionRoute()) {
@@ -2875,7 +4251,8 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sb
         "sbp_sbsql.wire"));
     return result;
   }
-  const auto executed = ExecuteSblrOnRoute(encoded_sblr_envelope, cursor_requested);
+  const auto executed =
+      ExecuteSblrOnRouteWithDataPacket(encoded_sblr_envelope, data_packet, cursor_requested);
   if (!executed.accepted) {
     result.messages = executed.messages;
     return result;
@@ -2889,7 +4266,12 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sb
   result.server_result_payload = executed.row_packet;
   ApplyExecutedTransactionState(executed, &session_);
   if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
-    ClearNameResolutionCache();
+    const bool preserve_stable_relations =
+        ExecutionPreservesReferencedRelationNames(executed.operation_id);
+    ClearNameResolutionCache(preserve_stable_relations);
+    if (preserve_stable_relations) {
+      RehydrateStableRelationNameResolutionCache();
+    }
   }
   return result;
 }
@@ -2959,7 +4341,12 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
   result.server_result_payload = executed.row_packet;
   ApplyExecutedTransactionState(executed, &session_);
   if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
-    ClearNameResolutionCache();
+    const bool preserve_stable_relations =
+        ExecutionPreservesReferencedRelationNames(executed.operation_id);
+    ClearNameResolutionCache(preserve_stable_relations);
+    if (preserve_stable_relations) {
+      RehydrateStableRelationNameResolutionCache();
+    }
   }
   return result;
 }

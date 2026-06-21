@@ -38,6 +38,10 @@ DEFAULT_LATEST_JSON = Path(
 )
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ROWS_AFFECTED_RE = re.compile(r"^Rows affected:\s+(\d+)\s*$", re.MULTILINE)
+COPY_ROWS_RE = re.compile(r"^COPY\s+(\d+)\s+rows\s+from\s+'.*'\s*$", re.MULTILINE)
+TIME_MS_RE = re.compile(r"^Time:\s+([0-9]+(?:\.[0-9]+)?)\s+ms\s*$", re.MULTILINE)
+ACTION_BEGIN_RE = re.compile(r"^__SB_ACTION_BEGIN__\s+([A-Za-z0-9_]+)\s*$")
+ACTION_END_RE = re.compile(r"^__SB_ACTION_END__\s+([A-Za-z0-9_]+)\s*$")
 DML_BENCHMARK_KINDS = {"dml"}
 
 
@@ -182,9 +186,43 @@ def sum_output_affected_rows(path: Path) -> int | None:
     return sum(values)
 
 
+def last_output_time_ms(path: Path) -> float | None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    values = [float(match.group(1)) for match in TIME_MS_RE.finditer(text)]
+    if not values:
+        return None
+    return values[-1]
+
+
 def output_affected_row_values(path: Path) -> list[int]:
     text = path.read_text(encoding="utf-8", errors="replace")
     return [int(match.group(1)) for match in ROWS_AFFECTED_RE.finditer(text)]
+
+
+def output_copy_row_values(path: Path) -> list[int]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [int(match.group(1)) for match in COPY_ROWS_RE.finditer(text)]
+
+
+def split_action_marked_output(text: str) -> dict[str, str]:
+    segments: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        begin = ACTION_BEGIN_RE.match(line.strip())
+        if begin:
+            current = begin.group(1)
+            segments[current] = []
+            continue
+        end = ACTION_END_RE.match(line.strip())
+        if end:
+            current = None
+            continue
+        if current is not None:
+            segments.setdefault(current, []).append(line)
+    return {
+        name: "\n".join(lines) + ("\n" if lines else "")
+        for name, lines in segments.items()
+    }
 
 
 def generate_customers(row_count: int):
@@ -331,18 +369,25 @@ class SbRunner:
         ]
 
     def run_sql_text(self, sql: str, *, output_path: Path | None = None) -> dict[str, Any]:
-        command = self.sbsql_base() + ["-c", sql]
-        return self._run(command, output_path=output_path)
+        command = self.sbsql_base() + ["-f", "-"]
+        return self._run(command, input_text=sql, output_path=output_path)
 
     def run_file(self, path: Path, *, output_path: Path | None = None) -> dict[str, Any]:
         command = self.sbsql_base() + ["-f", str(path)]
         return self._run(command, output_path=output_path)
 
-    def _run(self, command: list[str], *, output_path: Path | None = None) -> dict[str, Any]:
+    def _run(
+        self,
+        command: list[str],
+        *,
+        input_text: str | None = None,
+        output_path: Path | None = None,
+    ) -> dict[str, Any]:
         started = time.perf_counter()
         if output_path is None:
             proc = subprocess.run(
                 command,
+                input=input_text,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -356,6 +401,7 @@ class SbRunner:
             with output_path.open("w", encoding="utf-8") as out:
                 proc = subprocess.run(
                     command,
+                    input=input_text,
                     text=True,
                     stdout=out,
                     stderr=subprocess.PIPE,
@@ -422,12 +468,61 @@ def write_csv_file(path: Path, columns: list[str], rows: Iterable[list[Any]]) ->
     }
 
 
+def copy_field_value(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    text = str(value)
+    return "NULL" if text.upper() == "NULL" else text
+
+
+def write_canonical_copy_file(
+    path: Path,
+    columns: list[str],
+    rows: Iterable[list[Any]],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    count = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(
+                ";".join(
+                    f"{column}={copy_field_value(value)}"
+                    for column, value in zip(columns, row)
+                )
+            )
+            handle.write("\n")
+            count += 1
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "path": str(path),
+        "columns": columns,
+        "row_count": count,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "generation_duration_ms": duration_ms,
+        "format": "scratchbird_canonical_field_value",
+    }
+
+
 def generate_data_files(run_root: Path, scale: Scale) -> dict[str, Any]:
     data_dir = run_root / "data"
     result = {}
     generators = table_generators(scale)
     for table, rows in generators.items():
         result[table] = write_csv_file(data_dir / f"{table}.csv", TABLE_COLUMNS[table], rows)
+    return result
+
+
+def generate_copy_files(run_root: Path, scale: Scale) -> dict[str, Any]:
+    copy_dir = run_root / "copy-data"
+    result = {}
+    for table, rows in table_generators(scale).items():
+        result[table] = write_canonical_copy_file(
+            copy_dir / f"{table}.sbcopy",
+            TABLE_COLUMNS[table],
+            rows,
+        )
     return result
 
 
@@ -700,6 +795,53 @@ def run_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any
                 "stderr": result["stderr"].strip(),
                 "process_snapshot_before": before,
                 "process_snapshot_after": after,
+                "statement_count": meta["statement_count"],
+                "load_execution_mode": "insert-per-table",
+            }
+        )
+    return results
+
+
+def run_copy_load(sb: SbRunner, copy_files: dict[str, Any]) -> list[dict[str, Any]]:
+    results = []
+    output_dir = sb.run_root / "load-output"
+    for table, meta in copy_files.items():
+        output_path = output_dir / f"{table}_copy.out"
+        script_path = sb.run_root / "generated-load-sql" / f"{table}_copy.sbsql"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            f"\\copy {sb.full_table(table)} FROM '{meta['path']}'\n",
+            encoding="utf-8",
+        )
+        before = sb.process_snapshots()
+        result = sb.run_file(script_path, output_path=output_path)
+        after = sb.process_snapshots()
+        copy_values = output_copy_row_values(output_path) if output_path.exists() else []
+        rows = sum(copy_values)
+        duration_s = result["duration_ms"] / 1000.0
+        results.append(
+            {
+                "table_name": table,
+                "rows": rows,
+                "expected_rows": meta["row_count"],
+                "copy_path": meta["path"],
+                "copy_bytes": meta["bytes"],
+                "copy_sha256": meta["sha256"],
+                "script_path": str(script_path),
+                "script_bytes": script_path.stat().st_size,
+                "script_sha256": sha256_file(script_path),
+                "duration_ms": result["duration_ms"],
+                "rows_per_second": rows / duration_s if duration_s else 0.0,
+                "bytes_per_second": meta["bytes"] / duration_s if duration_s else 0.0,
+                "status": "passed" if result["returncode"] == 0 and rows == meta["row_count"] else "failed",
+                "stdout_path": str(output_path),
+                "stdout_bytes": result["stdout_bytes"],
+                "stdout_sha256": result["stdout_sha256"],
+                "stderr": result["stderr"].strip(),
+                "process_snapshot_before": before,
+                "process_snapshot_after": after,
+                "statement_count": 1,
+                "load_execution_mode": "copy",
             }
         )
     return results
@@ -750,7 +892,7 @@ def run_combined_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict
             "process_snapshot_after": after,
             "combined_table_results": per_table_rows,
             "statement_count": combined_meta["statement_count"],
-            "load_execution_mode": "combined",
+            "load_execution_mode": "insert-combined",
         }
     ]
 
@@ -1012,6 +1154,73 @@ def run_actions(sb: SbRunner, manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def run_actions_combined(sb: SbRunner, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    output_dir = sb.run_root / "action-output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    script_path = sb.run_root / "generated-load-sql" / "combined_actions.sbsql"
+    combined_output_path = output_dir / "combined_actions.out"
+
+    script_lines = ["\\timing on\n"]
+    action_sql_by_id: dict[str, str] = {}
+    for action in manifest["actions"]:
+        sql = action_sql(sb, action["id"], sb.scale)
+        action_sql_by_id[action["id"]] = sql
+        script_lines.append(f"\\echo __SB_ACTION_BEGIN__ {action['id']}\n")
+        script_lines.append(sql)
+        script_lines.append("\n")
+        script_lines.append(f"\\echo __SB_ACTION_END__ {action['id']}\n")
+    script_lines.append("\\timing off\n")
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("".join(script_lines), encoding="utf-8")
+
+    before = sb.process_snapshots()
+    result = sb.run_file(script_path, output_path=combined_output_path)
+    after = sb.process_snapshots()
+    combined_text = combined_output_path.read_text(encoding="utf-8", errors="replace")
+    segments = split_action_marked_output(combined_text)
+
+    results = []
+    for action in manifest["actions"]:
+        output_path = output_dir / f"{action['id']}.out"
+        segment = segments.get(action["id"], "")
+        output_path.write_text(segment, encoding="utf-8")
+        duration_ms = last_output_time_ms(output_path)
+        if duration_ms is None:
+            duration_ms = result["duration_ms"] if len(manifest["actions"]) == 1 else 0.0
+        duration_s = duration_ms / 1000.0
+        affected_rows = (
+            sum_output_affected_rows(output_path)
+            if result["returncode"] == 0 and output_path.exists()
+            else None
+        )
+        rows = count_output_rows(output_path) if result["returncode"] == 0 and output_path.exists() else 0
+        rows_returned = rows if action["kind"] == "query" else None
+        rows_affected = affected_rows if action["kind"] == "dml" else None
+        rows_for_rate = rows_affected if rows_affected is not None else rows
+        results.append(
+            {
+                "action_id": action["id"],
+                "kind": action["kind"],
+                "sql_sha256": sha256_text(action_sql_by_id[action["id"]]),
+                "status": "passed" if result["returncode"] == 0 and action["id"] in segments else "failed",
+                "duration_ms": duration_ms,
+                "rows_returned": rows_returned,
+                "rows_affected": rows_affected,
+                "rows_per_second": rows_for_rate / duration_s if duration_s else 0.0,
+                "stdout_path": str(output_path),
+                "stdout_bytes": output_path.stat().st_size,
+                "stdout_sha256": sha256_file(output_path),
+                "stderr": result["stderr"].strip(),
+                "process_snapshot_before": before,
+                "process_snapshot_after": after,
+                "combined_action_script": str(script_path),
+                "combined_action_stdout": str(combined_output_path),
+                "combined_action_duration_ms": result["duration_ms"],
+            }
+        )
+    return results
+
+
 def scoped_manifest(manifest: dict[str, Any], benchmark_scope: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if benchmark_scope == "all":
         return manifest, []
@@ -1064,11 +1273,18 @@ def compare_with_postgresql(sb_summary: dict[str, Any], pg_summary_path: Path | 
         )
     pg_load = pg.get("load_summary", {})
     sb_load = sb_summary.get("load_summary", {})
+    pg_load_mode = pg_load.get("load_execution_mode") or pg.get("provenance", {}).get("load_execution_mode")
+    if pg_load_mode is None and any("csv_bytes" in item for item in pg.get("load_results", [])):
+        pg_load_mode = "copy"
+    sb_load_mode = sb_load.get("load_execution_mode") or sb_summary.get("provenance", {}).get("load_execution_mode")
     pg_load_rps = float(pg_load.get("rows_per_second") or 0.0)
     sb_load_rps = float(sb_load.get("rows_per_second") or 0.0)
     return {
         "postgres_summary": str(pg_summary_path),
         "load": {
+            "postgres_load_execution_mode": pg_load_mode,
+            "scratchbird_load_execution_mode": sb_load_mode,
+            "mode_compatible": pg_load_mode == sb_load_mode,
             "postgres_rows_per_second": pg_load_rps,
             "scratchbird_rows_per_second": sb_load_rps,
             "scratchbird_vs_postgresql_ratio": sb_load_rps / pg_load_rps if pg_load_rps else None,
@@ -1106,10 +1322,14 @@ def write_csv_summary(run_root: Path, actions: list[dict[str, Any]], load: list[
                 "status",
                 "rows",
                 "expected_rows",
+                "copy_bytes",
                 "script_bytes",
                 "duration_ms",
                 "rows_per_second",
+                "bytes_per_second",
                 "stdout_bytes",
+                "statement_count",
+                "load_execution_mode",
                 "stderr",
             ],
         )
@@ -1158,15 +1378,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--postgres-summary", type=Path)
     parser.add_argument(
         "--load-execution-mode",
-        choices=("per-table", "combined"),
-        default="per-table",
-        help="Run generated load scripts as separate per-table SBsql processes or one combined long-lived SBsql process.",
+        choices=("copy", "insert-per-table", "insert-combined", "per-table", "combined"),
+        default="insert-per-table",
+        help="Run load as SBsql COPY, generated per-table INSERT scripts, or one combined INSERT script. Legacy aliases per-table/combined are accepted.",
     )
     parser.add_argument(
         "--benchmark-scope",
         choices=("all", "dml"),
         default="all",
         help="Limit timed action execution and PostgreSQL action comparison while still running setup/load/verification.",
+    )
+    parser.add_argument(
+        "--action-execution-mode",
+        choices=("per-action", "combined"),
+        default="per-action",
+        help="Run timed actions as separate SBsql processes or one marked long-lived SBsql script.",
     )
     return parser.parse_args(argv)
 
@@ -1185,6 +1411,10 @@ def main(argv: list[str]) -> int:
 
     manifest = json.loads((SUITE_ROOT / "manifest.json").read_text(encoding="utf-8"))
     action_manifest, skipped_actions = scoped_manifest(manifest, args.benchmark_scope)
+    if args.load_execution_mode == "per-table":
+        args.load_execution_mode = "insert-per-table"
+    elif args.load_execution_mode == "combined":
+        args.load_execution_mode = "insert-combined"
     started = time.perf_counter()
 
     version = subprocess.run(
@@ -1202,6 +1432,7 @@ def main(argv: list[str]) -> int:
         "scale": args.scale,
         "benchmark_scope": args.benchmark_scope,
         "load_execution_mode": args.load_execution_mode,
+        "action_execution_mode": args.action_execution_mode,
         "scale_counts": scale.__dict__,
         "connection": {
             "host": sb.host,
@@ -1238,6 +1469,7 @@ def main(argv: list[str]) -> int:
     }
     setup = run_setup(sb)
     data_files = generate_data_files(run_root, scale)
+    copy_files = generate_copy_files(run_root, scale)
     insert_scripts = generate_insert_scripts(run_root, sb, scale, args.insert_batch_size)
     load_results: list[dict[str, Any]] = []
     index_setup: list[dict[str, Any]] = []
@@ -1246,13 +1478,18 @@ def main(argv: list[str]) -> int:
     action_results: list[dict[str, Any]] = []
 
     if all(item["status"] == "passed" for item in setup):
-        if args.load_execution_mode == "combined":
+        if args.load_execution_mode == "copy":
+            load_results = run_copy_load(sb, copy_files)
+        elif args.load_execution_mode == "insert-combined":
             load_results = run_combined_load(sb, insert_scripts)
         else:
             load_results = run_load(sb, insert_scripts)
         index_setup, skipped_index_setup = run_index_setup(sb, include_analyze=args.benchmark_scope == "all")
         verification = verify_data(sb, scale, include_join_integrity=args.benchmark_scope == "all")
-        action_results = run_actions(sb, action_manifest)
+        if args.action_execution_mode == "combined":
+            action_results = run_actions_combined(sb, action_manifest)
+        else:
+            action_results = run_actions(sb, action_manifest)
 
     total_load_rows = sum(item.get("rows", 0) for item in load_results)
     total_load_ms = sum(item.get("duration_ms", 0.0) for item in load_results)
@@ -1275,12 +1512,15 @@ def main(argv: list[str]) -> int:
         "elapsed_ms": elapsed_ms,
         "setup": setup,
         "data_files": data_files,
+        "copy_files": copy_files,
         "insert_scripts": insert_scripts,
         "load_results": load_results,
         "load_summary": {
+            "load_execution_mode": args.load_execution_mode,
             "rows": total_load_rows,
             "duration_ms": total_load_ms,
             "rows_per_second": total_load_rows / (total_load_ms / 1000.0) if total_load_ms else 0.0,
+            "statement_count": sum(int(item.get("statement_count") or 0) for item in load_results),
         },
         "index_setup": index_setup,
         "skipped_index_setup": skipped_index_setup,

@@ -150,7 +150,7 @@ constexpr std::uint64_t kP1OnlyFeatureMask =
 constexpr std::uint64_t kServerSupportedFeatureMask =
     kFeatureNotifications | kFeatureBatch | kFeaturePipeline | kFeatureSavepoints |
     kFeatureMultiResult | kFeatureGeneratedKeys | kFeatureOutParameters |
-    kFeatureArrayBind | kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
+    kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
     kFeatureSessionReset | kFeatureReauth | kFeatureTraceContext;
 constexpr std::uint32_t kConnectFlagDormantReattach = 1u << 0;
 constexpr std::uint32_t kConnectFlagBoundDbUuid = 1u << 1;

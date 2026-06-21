@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "datatype_wire_metadata.hpp"
 #include "sbps.hpp"
 
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -28,15 +30,27 @@ namespace {
 
 constexpr std::size_t kHeaderSize = 40;
 constexpr std::uint8_t kStartup = 0x01;
+constexpr std::uint8_t kAuthResponse = 0x02;
+constexpr std::uint8_t kParse = 0x04;
+constexpr std::uint8_t kBind = 0x05;
 constexpr std::uint8_t kPing = 0x1b;
 constexpr std::uint8_t kResetSession = 0x21;
 constexpr std::uint8_t kAuthRequest = 0x40;
+constexpr std::uint8_t kAuthOk = 0x41;
+constexpr std::uint8_t kReady = 0x43;
 constexpr std::uint8_t kError = 0x48;
+constexpr std::uint8_t kParseComplete = 0x4a;
+constexpr std::uint8_t kBindComplete = 0x4b;
 constexpr std::uint8_t kPong = 0x5d;
 constexpr std::uint8_t kExtension = 0x81;
 constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
 constexpr std::uint16_t kVersionP1Current = 0x0101;
 constexpr std::uint64_t kFeatureSblr = 1ull << 2u;
+constexpr std::uint64_t kFeatureArrayBind = 1ull << 16u;
+constexpr std::uint32_t kOidInt8 = 20;
+constexpr std::uint32_t kOidText = 25;
+
+namespace datatypes = scratchbird::core::datatypes;
 
 struct Frame {
   std::uint8_t type{0};
@@ -194,10 +208,142 @@ Frame ExchangeOne(const std::vector<std::uint8_t>& request) {
   return response;
 }
 
+std::vector<Frame> ExchangeConversation(const std::vector<std::vector<std::uint8_t>>& requests) {
+  int fds[2]{-1, -1};
+  Require(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+  scratchbird::parser::sbsql::ParserConfig config;
+  config.probe_mode = true;
+  scratchbird::parser::sbsql::ParserMetrics metrics;
+  scratchbird::parser::sbsql::SblrTemplateCache cache;
+  scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
+
+  std::thread worker([&session, server_fd = fds[1]]() {
+    (void)session.ServeFd(server_fd);
+    (void)::close(server_fd);
+  });
+
+  std::vector<Frame> responses;
+  responses.reserve(requests.size());
+  for (const auto& request : requests) {
+    Require(WriteAll(fds[0], request), "SBWP request write failed");
+    responses.push_back(ReadFrame(fds[0]));
+  }
+  (void)::shutdown(fds[0], SHUT_WR);
+  worker.join();
+  (void)::close(fds[0]);
+  return responses;
+}
+
+std::string MakeTempDatabasePath() {
+  std::string tmpl = "/tmp/sb_p1_wire_array_bind.XXXXXX";
+  std::vector<char> writable(tmpl.begin(), tmpl.end());
+  writable.push_back('\0');
+  char* made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "array-bind temp database directory was not created");
+  return std::string(made) + "/array_bind.sbdb";
+}
+
+std::vector<Frame> ExchangeAuthenticatedArrayBindConversation(
+    const std::vector<std::vector<std::uint8_t>>& requests) {
+  int fds[2]{-1, -1};
+  Require(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+  scratchbird::parser::sbsql::ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = MakeTempDatabasePath();
+  scratchbird::parser::sbsql::ParserMetrics metrics;
+  scratchbird::parser::sbsql::SblrTemplateCache cache;
+  scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
+
+  std::thread worker([&session, server_fd = fds[1]]() {
+    (void)session.ServeFd(server_fd);
+    (void)::close(server_fd);
+  });
+
+  std::vector<Frame> responses;
+  responses.reserve(4);
+  Require(WriteAll(fds[0], requests[0]), "SBWP startup write failed");
+  responses.push_back(ReadFrame(fds[0]));
+  Require(responses.back().type == kAuthRequest, "array-bind startup did not request auth");
+
+  Require(WriteAll(fds[0], EncodeFrame(kAuthResponse, {})), "SBWP auth response write failed");
+  bool saw_auth_ok = false;
+  for (;;) {
+    Frame frame = ReadFrame(fds[0]);
+    if (frame.type == kAuthOk) saw_auth_ok = true;
+    if (frame.type == kError) {
+      responses.push_back(std::move(frame));
+      break;
+    }
+    if (frame.type == kReady) break;
+  }
+  Require(saw_auth_ok, "array-bind embedded auth did not produce AuthOk");
+
+  for (std::size_t i = 1; i < requests.size(); ++i) {
+    Require(WriteAll(fds[0], requests[i]), "SBWP authenticated request write failed");
+    responses.push_back(ReadFrame(fds[0]));
+  }
+  (void)::shutdown(fds[0], SHUT_WR);
+  worker.join();
+  (void)::close(fds[0]);
+  return responses;
+}
+
 bool PayloadContains(const Frame& frame, std::string_view needle) {
   const std::string payload(reinterpret_cast<const char*>(frame.payload.data()),
                             frame.payload.size());
   return payload.find(needle) != std::string::npos;
+}
+
+std::vector<std::uint8_t> ParsePayload(std::string_view name,
+                                       std::string_view sql,
+                                       const std::vector<std::uint32_t>& param_types) {
+  std::vector<std::uint8_t> out;
+  PutLpStr(&out, name);
+  PutLpStr(&out, sql);
+  PutU16(&out, static_cast<std::uint16_t>(param_types.size()));
+  PutU16(&out, 0);
+  for (std::uint32_t type : param_types) {
+    PutU32(&out, type);
+  }
+  return out;
+}
+
+datatypes::ParameterValueCell TextCell(std::uint32_t ordinal, std::string_view value) {
+  datatypes::ParameterValueCell cell;
+  cell.slot_ordinal = ordinal;
+  cell.value_state = datatypes::WireValueState::value_present;
+  cell.payload_encoding = datatypes::WirePayloadEncoding::utf8_text;
+  cell.payload.assign(value.begin(), value.end());
+  return cell;
+}
+
+std::vector<std::uint8_t> ArrayBindPayload() {
+  datatypes::ParameterDataPacket packet;
+  packet.bind_shape = datatypes::WireParameterBindShape::array_bind_rows;
+  for (std::uint32_t ordinal : {1u, 2u}) {
+    datatypes::ParameterBindingSlotDescriptor slot;
+    slot.ordinal = ordinal;
+    packet.slot_descriptors.push_back(slot);
+  }
+  datatypes::ParameterRowValueFrame first;
+  first.row_ordinal = 1;
+  first.values.push_back(TextCell(1, "1"));
+  first.values.push_back(TextCell(2, "alice"));
+  packet.row_value_frames.push_back(std::move(first));
+
+  datatypes::ParameterRowValueFrame second;
+  second.row_ordinal = 2;
+  second.values.push_back(TextCell(1, "2"));
+  second.values.push_back(TextCell(2, "bob"));
+  packet.row_value_frames.push_back(std::move(second));
+
+  auto encoded = datatypes::EncodeParameterDataPacket(packet);
+  Require(encoded.ok, "array-bind parameter data packet did not encode");
+  return std::move(encoded.bytes);
 }
 
 void ExpectError(const std::vector<std::uint8_t>& request,
@@ -300,14 +446,38 @@ void CheckSbpsUnknownCapabilityBits() {
           "SBPS hello with high-byte unknown capability bit was not refused");
 }
 
+void CheckArrayBindPacketNegotiated() {
+  const auto responses = ExchangeAuthenticatedArrayBindConversation({
+      EncodeFrame(kStartup,
+                  StartupPayload(kVersionP1Current,
+                                 kVersionP1Current,
+                                 0,
+                                 kFeatureArrayBind,
+                                 kFeatureArrayBind,
+                                 0)),
+      EncodeFrame(kParse,
+                  ParsePayload("stmt_array",
+                               "INSERT INTO users.public.array_bind_probe (id, name) VALUES (?, ?)",
+                               {kOidInt8, kOidText})),
+      EncodeFrame(kBind, ArrayBindPayload()),
+  });
+  Require(responses.size() == 3, "array-bind conversation response count mismatch");
+  Require(responses[0].type == kAuthRequest, "array-bind startup did not negotiate P1");
+  Require(responses[1].type == kParseComplete, "array-bind prepared parse failed");
+  Require(responses[2].type == kBindComplete,
+          "array-bind packet did not bind through the prepared rowset route");
+}
+
 }  // namespace
 
 int main() {
+  ::signal(SIGPIPE, SIG_IGN);
   CheckStartupNegotiationFailures();
   CheckSblrFeatureNegotiates();
   CheckFrameFailClosedPaths();
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();
+  CheckArrayBindPacketNegotiated();
   std::cout << "sbsql_native_wire_p1_conformance ok\n";
   return EXIT_SUCCESS;
 }

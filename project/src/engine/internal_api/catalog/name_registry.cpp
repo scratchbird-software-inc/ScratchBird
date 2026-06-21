@@ -18,7 +18,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 
@@ -73,6 +76,69 @@ std::string LowerAscii(std::string value) {
 
 bool StartsWithNameRegistry(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
+}
+
+std::string NameRegistryFileFingerprint(const std::string& path) {
+  std::error_code ec;
+  const std::filesystem::path fs_path(path);
+  if (!std::filesystem::exists(fs_path, ec) || ec) return path + ":missing";
+  const auto size = std::filesystem::file_size(fs_path, ec);
+  if (ec) return path + ":size_error";
+  const auto mtime = std::filesystem::last_write_time(fs_path, ec);
+  if (ec) return path + ":" + std::to_string(size) + ":mtime_error";
+  return path + ":" + std::to_string(size) + ":" +
+         std::to_string(mtime.time_since_epoch().count());
+}
+
+std::string NameRegistryLoadCacheKey(const EngineRequestContext& context,
+                                     std::uint64_t observer_tx) {
+  std::ostringstream key;
+  key << "db=" << context.database_path
+      << "|observer_tx=" << observer_tx
+      << "|local_tx=" << context.local_transaction_id
+      << "|catalog=" << context.catalog_generation_id
+      << "|security=" << context.security_epoch
+      << "|resource=" << context.resource_epoch
+      << "|name_resolution=" << context.name_resolution_epoch
+      << "|api=" << NameRegistryFileFingerprint(context.database_path + ".sb.api_events")
+      << "|crud=" << NameRegistryFileFingerprint(context.database_path + ".sb.crud_events")
+      << "|mga_meta=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_metadata")
+      << "|mga_desc=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_descriptors")
+      << "|mga_scope=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_scope")
+      << "|domains=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_catalog")
+      << "|domain_events=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_events")
+      << "|catalog_objects=" << NameRegistryFileFingerprint(context.database_path + ".sb.catalog_object_events");
+  return key.str();
+}
+
+std::mutex& NameRegistryLoadCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, NameRegistryLoadResult>& NameRegistryLoadCache() {
+  static std::map<std::string, NameRegistryLoadResult> cache;
+  return cache;
+}
+
+std::optional<NameRegistryLoadResult> LookupNameRegistryLoadCache(
+    const std::string& cache_key) {
+  std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
+  const auto found = NameRegistryLoadCache().find(cache_key);
+  if (found == NameRegistryLoadCache().end()) return std::nullopt;
+  return found->second;
+}
+
+void StoreNameRegistryLoadCache(const std::string& cache_key,
+                                const NameRegistryLoadResult& result) {
+  if (cache_key.empty() || !result.ok) return;
+  std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
+  auto& cache = NameRegistryLoadCache();
+  cache[cache_key] = result;
+  constexpr std::size_t kMaxNameRegistryLoadCacheEntries = 64;
+  while (cache.size() > kMaxNameRegistryLoadCacheEntries) {
+    cache.erase(cache.begin());
+  }
 }
 
 void MergeMgaRelationCatalogState(CrudState* base, const CrudState& mga_state) {
@@ -562,6 +628,11 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     result.diagnostic = path_status;
     return result;
   }
+  const std::string load_cache_key =
+      NameRegistryLoadCacheKey(context, observer_tx);
+  if (auto cached = LookupNameRegistryLoadCache(load_cache_key)) {
+    return *cached;
+  }
   const auto crud = LoadCrudState(context);
   if (!crud.ok) {
     result.diagnostic = crud.diagnostic;
@@ -687,6 +758,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   }
   result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  StoreNameRegistryLoadCache(load_cache_key, result);
   return result;
 }
 

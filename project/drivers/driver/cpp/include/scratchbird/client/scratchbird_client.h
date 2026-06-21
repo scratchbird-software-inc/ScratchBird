@@ -369,6 +369,12 @@ char* sb_probe_auth_surface_json(const char* conn_str, sb_error* err);
 char* sb_get_resolved_auth_context_json(sb_connection* conn, sb_error* err);
 
 sb_result* sb_execute(sb_connection* conn, const char* sql, sb_error* err);
+int sb_execute_copy_from_buffer(sb_connection* conn,
+                                const char* sql,
+                                const char* data,
+                                size_t data_size,
+                                int64_t* rows_affected_out,
+                                sb_error* err);
 sb_result* sb_query(sb_connection* conn, const char* sql, sb_error* err);
 sb_result* sb_metadata_query(sb_connection* conn, const char* collection_name, sb_error* err);
 char* sb_metadata_schema_payload(sb_connection* conn,

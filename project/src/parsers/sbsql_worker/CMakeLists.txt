@@ -49,6 +49,11 @@ add_library(sbl_sbsql_parser_worker_core STATIC
   wire/sbsql_test_wire.cpp
 )
 
+if(NOT TARGET sb_core_datatypes)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/core/datatypes
+                   ${CMAKE_BINARY_DIR}/src/core/datatypes)
+endif()
+
 target_compile_features(sbl_sbsql_parser_worker_core PUBLIC cxx_std_23)
 target_include_directories(sbl_sbsql_parser_worker_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -59,6 +64,7 @@ target_link_libraries(sbl_sbsql_parser_worker_core PUBLIC
   sbl_sbsql_parser_pipeline
   sbl_listener_control_plane
   sb_core_agents
+  sb_core_datatypes
   sb_core_uuid
   OpenSSL::SSL
   OpenSSL::Crypto

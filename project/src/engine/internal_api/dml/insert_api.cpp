@@ -624,11 +624,342 @@ std::string GeneratedProjectionType(const std::string& descriptor,
   return target_descriptor.empty() ? "text" : target_descriptor;
 }
 
+enum class GeneratedProjectionKind {
+  unsupported,
+  counter,
+  literal,
+  mod,
+  prefix_counter,
+  prefix_counter_offset,
+  case_zero_literal_else_literal,
+  case_zero_literal_else_prefix_counter_offset,
+  cast_divide,
+  counter_multiply,
+  mod_equals
+};
+
+struct ScaledDecimalOperand {
+  EngineApiU64 value = 0;
+  int scale = 0;
+};
+
 struct GeneratedProjectionPlan {
   std::string descriptor;
   std::vector<std::string> parts;
   std::string type_name;
+  std::string encoded_descriptor;
+  GeneratedProjectionKind kind = GeneratedProjectionKind::unsupported;
+  std::string literal_value;
+  std::string alternate_literal_value;
+  std::string prefix;
+  EngineApiU64 modulus = 0;
+  EngineApiU64 expected = 0;
+  long long offset = 0;
+  long double factor = 0.0L;
+  int scale = 0;
+  bool has_scaled_operand = false;
+  ScaledDecimalOperand scaled_operand;
 };
+
+bool ParseProjectionU64(const std::string& value, EngineApiU64* out) {
+  if (out == nullptr || value.empty()) { return false; }
+  try {
+    *out = static_cast<EngineApiU64>(std::stoull(value));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ParseProjectionLongLong(const std::string& value, long long* out) {
+  if (out == nullptr || value.empty()) { return false; }
+  try {
+    *out = std::stoll(value);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ParseProjectionLongDouble(const std::string& value, long double* out) {
+  if (out == nullptr || value.empty()) { return false; }
+  try {
+    *out = std::stold(value);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+std::optional<EngineApiU64> Pow10U64(int scale) {
+  if (scale < 0 || scale > 18) { return std::nullopt; }
+  EngineApiU64 value = 1;
+  for (int index = 0; index < scale; ++index) {
+    value *= 10;
+  }
+  return value;
+}
+
+std::optional<EngineApiU64> CheckedMultiplyU64(EngineApiU64 lhs,
+                                               EngineApiU64 rhs) {
+  if (lhs != 0 && rhs > std::numeric_limits<EngineApiU64>::max() / lhs) {
+    return std::nullopt;
+  }
+  return lhs * rhs;
+}
+
+std::optional<ScaledDecimalOperand> ParseProjectionScaledDecimal(
+    std::string_view value) {
+  if (value.empty() || value.front() == '-') { return std::nullopt; }
+  ScaledDecimalOperand operand;
+  bool seen_digit = false;
+  bool seen_dot = false;
+  for (const char ch : value) {
+    if (ch == '.') {
+      if (seen_dot) { return std::nullopt; }
+      seen_dot = true;
+      continue;
+    }
+    if (!std::isdigit(static_cast<unsigned char>(ch))) {
+      return std::nullopt;
+    }
+    seen_digit = true;
+    if (operand.value > (std::numeric_limits<EngineApiU64>::max() / 10)) {
+      return std::nullopt;
+    }
+    operand.value *= 10;
+    const auto digit = static_cast<EngineApiU64>(ch - '0');
+    if (operand.value > std::numeric_limits<EngineApiU64>::max() - digit) {
+      return std::nullopt;
+    }
+    operand.value += digit;
+    if (seen_dot) {
+      ++operand.scale;
+      if (operand.scale > 18) { return std::nullopt; }
+    }
+  }
+  if (!seen_digit) { return std::nullopt; }
+  if (operand.value == 0) { return std::nullopt; }
+  return operand;
+}
+
+std::string FormatScaledDecimal(EngineApiU64 scaled_value, int scale) {
+  if (scale <= 0) { return std::to_string(scaled_value); }
+  const auto divisor = Pow10U64(scale);
+  if (!divisor || *divisor == 0) { return {}; }
+  const EngineApiU64 whole = scaled_value / *divisor;
+  const EngineApiU64 fraction = scaled_value % *divisor;
+  std::string out = std::to_string(whole);
+  out.push_back('.');
+  std::string fraction_text = std::to_string(fraction);
+  if (fraction_text.size() < static_cast<std::size_t>(scale)) {
+    out.append(static_cast<std::size_t>(scale) - fraction_text.size(), '0');
+  }
+  out.append(fraction_text);
+  return out;
+}
+
+std::optional<EngineApiU64> RoundDivideU64(EngineApiU64 numerator,
+                                           EngineApiU64 denominator) {
+  if (denominator == 0) { return std::nullopt; }
+  const EngineApiU64 half = denominator / 2;
+  if (numerator > std::numeric_limits<EngineApiU64>::max() - half) {
+    return std::nullopt;
+  }
+  return (numerator + half) / denominator;
+}
+
+bool ParseProjectionScale(const std::string& value, int* out) {
+  if (out == nullptr || value.empty()) { return false; }
+  try {
+    const int parsed = std::stoi(value);
+    if (parsed < 0 || parsed > 18) { return false; }
+    *out = parsed;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+GeneratedProjectionPlan BuildGeneratedProjectionPlan(
+    const std::string& descriptor,
+    const std::string& target_descriptor) {
+  GeneratedProjectionPlan plan;
+  plan.descriptor = descriptor;
+  plan.parts = SplitText(descriptor, ':');
+  plan.type_name = GeneratedProjectionType(descriptor, target_descriptor);
+  if (plan.type_name.empty()) { plan.type_name = "text"; }
+  plan.encoded_descriptor = "type=" + plan.type_name;
+
+  if (descriptor == "counter") {
+    plan.kind = GeneratedProjectionKind::counter;
+    return plan;
+  }
+  if (plan.parts.empty()) { return plan; }
+  if (plan.parts[0] == "literal_text" && plan.parts.size() >= 2) {
+    plan.kind = GeneratedProjectionKind::literal;
+    plan.literal_value = plan.parts[1];
+    return plan;
+  }
+  if ((plan.parts[0] == "literal_boolean" ||
+       plan.parts[0] == "literal_integer") &&
+      plan.parts.size() == 2) {
+    plan.kind = GeneratedProjectionKind::literal;
+    plan.literal_value = plan.parts[1];
+    return plan;
+  }
+  if (plan.parts[0] == "mod" && plan.parts.size() == 2 &&
+      ParseProjectionU64(plan.parts[1], &plan.modulus) &&
+      plan.modulus != 0) {
+    plan.kind = GeneratedProjectionKind::mod;
+    return plan;
+  }
+  if (plan.parts[0] == "prefix_counter" && plan.parts.size() >= 2) {
+    plan.kind = GeneratedProjectionKind::prefix_counter;
+    plan.prefix = plan.parts[1];
+    return plan;
+  }
+  if (plan.parts[0] == "prefix_counter_offset" && plan.parts.size() == 3 &&
+      ParseProjectionLongLong(plan.parts[2], &plan.offset)) {
+    plan.kind = GeneratedProjectionKind::prefix_counter_offset;
+    plan.prefix = plan.parts[1];
+    return plan;
+  }
+  if (plan.parts[0] == "case_zero_literal_else_literal" &&
+      plan.parts.size() == 3) {
+    plan.kind = GeneratedProjectionKind::case_zero_literal_else_literal;
+    plan.literal_value = plan.parts[1];
+    plan.alternate_literal_value = plan.parts[2];
+    return plan;
+  }
+  if (plan.parts[0] == "case_zero_literal_else_prefix_counter_offset" &&
+      plan.parts.size() == 4 &&
+      ParseProjectionLongLong(plan.parts[3], &plan.offset)) {
+    plan.kind =
+        GeneratedProjectionKind::case_zero_literal_else_prefix_counter_offset;
+    plan.literal_value = plan.parts[1];
+    plan.prefix = plan.parts[2];
+    return plan;
+  }
+  if (plan.parts[0] == "cast_divide" && plan.parts.size() >= 4 &&
+      ParseProjectionLongDouble(plan.parts[2], &plan.factor) &&
+      plan.factor != 0.0L &&
+      ParseProjectionScale(plan.parts[3], &plan.scale)) {
+    plan.kind = GeneratedProjectionKind::cast_divide;
+    if (const auto scaled = ParseProjectionScaledDecimal(plan.parts[2])) {
+      plan.has_scaled_operand = true;
+      plan.scaled_operand = *scaled;
+    }
+    return plan;
+  }
+  if (plan.parts[0] == "counter_multiply" && plan.parts.size() >= 3 &&
+      ParseProjectionLongDouble(plan.parts[1], &plan.factor) &&
+      ParseProjectionScale(plan.parts[2], &plan.scale)) {
+    plan.kind = GeneratedProjectionKind::counter_multiply;
+    if (const auto scaled = ParseProjectionScaledDecimal(plan.parts[1])) {
+      plan.has_scaled_operand = true;
+      plan.scaled_operand = *scaled;
+    }
+    return plan;
+  }
+  if (plan.parts[0] == "mod_equals" && plan.parts.size() == 3 &&
+      ParseProjectionU64(plan.parts[1], &plan.modulus) &&
+      plan.modulus != 0 &&
+      ParseProjectionU64(plan.parts[2], &plan.expected)) {
+    plan.kind = GeneratedProjectionKind::mod_equals;
+    return plan;
+  }
+  return plan;
+}
+
+std::string GeneratedProjectionValue(const GeneratedProjectionPlan& plan,
+                                     EngineApiU64 counter) {
+  switch (plan.kind) {
+    case GeneratedProjectionKind::counter:
+      return std::to_string(counter);
+    case GeneratedProjectionKind::literal:
+      return plan.literal_value;
+    case GeneratedProjectionKind::mod:
+      return std::to_string(counter % plan.modulus);
+    case GeneratedProjectionKind::prefix_counter:
+      return plan.prefix + std::to_string(counter);
+    case GeneratedProjectionKind::prefix_counter_offset: {
+      const auto adjusted = static_cast<long long>(counter) + plan.offset;
+      return adjusted < 0 ? std::string{} : plan.prefix + std::to_string(adjusted);
+    }
+    case GeneratedProjectionKind::case_zero_literal_else_literal:
+      return counter == 0 ? plan.literal_value : plan.alternate_literal_value;
+    case GeneratedProjectionKind::case_zero_literal_else_prefix_counter_offset: {
+      if (counter == 0) { return plan.literal_value; }
+      const auto adjusted = static_cast<long long>(counter) + plan.offset;
+      return adjusted < 0 ? std::string{} : plan.prefix + std::to_string(adjusted);
+    }
+    case GeneratedProjectionKind::cast_divide: {
+      if (plan.has_scaled_operand) {
+        const auto scale_factor = Pow10U64(plan.scaled_operand.scale +
+                                           plan.scale);
+        if (scale_factor) {
+          const auto numerator = CheckedMultiplyU64(counter, *scale_factor);
+          if (numerator) {
+            const auto scaled_result =
+                RoundDivideU64(*numerator, plan.scaled_operand.value);
+            if (scaled_result) {
+              const std::string fast = FormatScaledDecimal(*scaled_result,
+                                                           plan.scale);
+              if (!fast.empty()) { return fast; }
+            }
+          }
+        }
+      }
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(plan.scale)
+          << (static_cast<long double>(counter) / plan.factor);
+      return out.str();
+    }
+    case GeneratedProjectionKind::counter_multiply: {
+      if (plan.has_scaled_operand) {
+        const auto output_scale = Pow10U64(plan.scale);
+        const auto operand_scale = Pow10U64(plan.scaled_operand.scale);
+        if (output_scale && operand_scale) {
+          const auto first = CheckedMultiplyU64(counter,
+                                                plan.scaled_operand.value);
+          const auto numerator =
+              first ? CheckedMultiplyU64(*first, *output_scale) : std::nullopt;
+          if (numerator) {
+            const auto scaled_result = RoundDivideU64(*numerator,
+                                                      *operand_scale);
+            if (scaled_result) {
+              const std::string fast = FormatScaledDecimal(*scaled_result,
+                                                           plan.scale);
+              if (!fast.empty()) { return fast; }
+            }
+          }
+        }
+      }
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(plan.scale)
+          << (static_cast<long double>(counter) * plan.factor);
+      return out.str();
+    }
+    case GeneratedProjectionKind::mod_equals:
+      return (counter % plan.modulus) == plan.expected ? "true" : "false";
+    case GeneratedProjectionKind::unsupported:
+      break;
+  }
+  return {};
+}
+
+EngineTypedValue GeneratedInsertValue(std::string value,
+                                      const GeneratedProjectionPlan& plan) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = plan.type_name;
+  typed.descriptor.encoded_descriptor = plan.encoded_descriptor;
+  typed.encoded_value = std::move(value);
+  typed.is_null = false;
+  typed.state = EngineValueState::value;
+  return typed;
+}
 
 std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     const EngineInsertRowsRequest& request,
@@ -750,25 +1081,27 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
       return {};
     }
     const auto& target_column = table.columns[static_cast<std::size_t>(index)];
-    projections.push_back({descriptor,
-                           SplitText(descriptor, ':'),
-                           GeneratedProjectionType(descriptor,
-                                                   target_column.second)});
+    auto projection = BuildGeneratedProjectionPlan(descriptor,
+                                                   target_column.second);
+    if (projection.kind == GeneratedProjectionKind::unsupported) {
+      if (diagnostic != nullptr) {
+        *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                   "insert_select_projection_descriptor_invalid");
+      }
+      return {};
+    }
+    projections.push_back(std::move(projection));
   }
 
   std::vector<EngineRowValue> rows;
   rows.reserve(static_cast<std::size_t>(*generated_count));
   for (EngineApiU64 counter = *start; counter <= *limit; counter += *step) {
     EngineRowValue row;
-    row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
     row.fields.reserve(projections.size());
     for (std::size_t column = 0; column < projections.size(); ++column) {
       const auto& target_column = table.columns[column];
       const auto& projection = projections[column];
-      const std::string value =
-          GeneratedProjectionValueFromParts(projection.descriptor,
-                                            projection.parts,
-                                            counter);
+      const std::string value = GeneratedProjectionValue(projection, counter);
       if (value.empty() && projection.descriptor != "prefix_counter:") {
         if (diagnostic != nullptr) {
           *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
@@ -778,7 +1111,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
       }
       row.fields.push_back({
           target_column.first,
-          GeneratedInsertValue(value, projection.type_name)});
+          GeneratedInsertValue(value, projection)});
     }
     rows.push_back(std::move(row));
     if (*limit - counter < *step) break;

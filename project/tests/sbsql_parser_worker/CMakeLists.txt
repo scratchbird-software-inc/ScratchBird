@@ -4220,6 +4220,7 @@ if(NOT WIN32 AND TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server_core)
     sbsql_native_wire_p1_conformance
     PRIVATE
       sbl_sbsql_parser_worker_core
+      sb_core_datatypes
       sb_server_core
   )
   add_test(

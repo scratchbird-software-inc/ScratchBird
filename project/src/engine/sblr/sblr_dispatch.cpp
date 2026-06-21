@@ -455,8 +455,11 @@ std::vector<std::string> LoadDescriptorColumnNamesForCompactInsert(
 
 void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
                                   api::EngineApiRequest* request) {
-  if (request == nullptr || envelope.operation_id != "dml.insert_rows" ||
-      !request->rows.empty()) {
+  const bool supported_operation =
+      envelope.operation_id == "dml.insert_rows" ||
+      envelope.operation_id == "dml.execute_native_bulk_ingest" ||
+      envelope.operation_id == "dml.execute_import_rows";
+  if (request == nullptr || !supported_operation || !request->rows.empty()) {
     return;
   }
   const auto compact_format = TextOperandValue(
@@ -534,6 +537,10 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
   }
   request->option_envelopes.push_back(
       "sblr.compact_insert_rowset_materialized=true");
+  if (envelope.operation_id != "dml.insert_rows") {
+    request->option_envelopes.push_back(
+        "sblr.compact_native_rowset_materialized=true");
+  }
   request->option_envelopes.push_back(
       "sblr.compact_insert_row_count:" + std::to_string(row_count));
 }
