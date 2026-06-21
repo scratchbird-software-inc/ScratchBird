@@ -21,6 +21,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -33,6 +34,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -548,6 +550,192 @@ void AppendIndexEntryStoreLine(std::string* out,
   AppendLineField(out, &first, row_uuid);
   AppendLineField(out, &first, version_uuid);
   out->push_back('\n');
+}
+
+struct PreparedIndexEntryLine {
+  std::string table_uuid;
+  std::string index_uuid;
+  std::string column_name;
+  std::string family;
+  std::string entry_kind;
+  std::string key;
+  std::string payload;
+  std::string row_uuid;
+  std::string version_uuid;
+};
+
+struct PreparedIndexAppendJob {
+  bool ok = true;
+  EngineApiDiagnostic diagnostic = OkDiagnostic();
+  std::vector<PreparedIndexEntryLine> entries;
+  std::uint64_t sorted_batch_count = 0;
+};
+
+struct PreparedIndexLineBufferJob {
+  bool ok = true;
+  std::map<std::string, std::string> scoped_lines;
+};
+
+bool BulkSortIndexMaterialAllowed(const CrudIndexRecord& index) {
+  const std::string family =
+      index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
+  return family == kCrudIndexFamilyBtree ||
+         family == "unique_btree" ||
+         index.unique ||
+         family == kCrudIndexFamilyExpression ||
+         family == kCrudIndexFamilyPartial ||
+         family == kCrudIndexFamilyCovering;
+}
+
+PreparedIndexAppendJob BuildPreparedIndexAppendJob(
+    std::vector<MgaIndexEntryAppendBatch> batches) {
+  PreparedIndexAppendJob job;
+  try {
+    for (const auto& batch : batches) {
+      if (batch.rows.empty()) { continue; }
+      const std::string table_uuid =
+          batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+      const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
+      const std::size_t before_batch = job.entries.size();
+      for (const auto& row : batch.rows) {
+        const auto keys = CrudIndexKeysForValues(batch.index, row.values);
+        if (keys.empty()) { continue; }
+        const std::string payload =
+            CrudFieldValue(row.values, batch.index.column_name);
+        for (const auto& key : keys) {
+          job.entries.push_back({table_uuid,
+                                 batch.index.index_uuid,
+                                 batch.index.column_name,
+                                 batch.index.family,
+                                 "exact",
+                                 key,
+                                 payload,
+                                 row.row_uuid,
+                                 row.version_uuid});
+        }
+      }
+      if (sort_allowed && job.entries.size() > before_batch + 1) {
+        ++job.sorted_batch_count;
+        std::stable_sort(job.entries.begin() + static_cast<std::ptrdiff_t>(before_batch),
+                         job.entries.end(),
+                         [](const PreparedIndexEntryLine& left,
+                            const PreparedIndexEntryLine& right) {
+                           return std::tie(left.table_uuid,
+                                           left.index_uuid,
+                                           left.key,
+                                           left.row_uuid,
+                                           left.version_uuid) <
+                                  std::tie(right.table_uuid,
+                                           right.index_uuid,
+                                           right.key,
+                                           right.row_uuid,
+                                           right.version_uuid);
+                         });
+      }
+    }
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  std::string("index_materialization_failed:") +
+                                                      ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  "index_materialization_failed");
+  }
+  return job;
+}
+
+PreparedIndexAppendJob BuildPreparedExactIndexAppendJob(
+    std::vector<MgaExactIndexEntryAppendBatch> batches) {
+  PreparedIndexAppendJob job;
+  try {
+    for (const auto& batch : batches) {
+      if (batch.entries.empty()) { continue; }
+      const std::string table_uuid =
+          batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+      const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
+      const std::size_t before_batch = job.entries.size();
+      for (const auto& entry : batch.entries) {
+        if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
+            entry.version_uuid.empty()) {
+          job.ok = false;
+          job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                        "exact_index_entry_invalid");
+          return job;
+        }
+        job.entries.push_back({table_uuid,
+                               batch.index.index_uuid,
+                               batch.index.column_name,
+                               batch.index.family,
+                               "exact",
+                               entry.encoded_key,
+                               entry.payload_value,
+                               entry.row_uuid,
+                               entry.version_uuid});
+      }
+      if (sort_allowed && job.entries.size() > before_batch + 1) {
+        ++job.sorted_batch_count;
+        std::stable_sort(job.entries.begin() + static_cast<std::ptrdiff_t>(before_batch),
+                         job.entries.end(),
+                         [](const PreparedIndexEntryLine& left,
+                            const PreparedIndexEntryLine& right) {
+                           return std::tie(left.table_uuid,
+                                           left.index_uuid,
+                                           left.key,
+                                           left.row_uuid,
+                                           left.version_uuid) <
+                                  std::tie(right.table_uuid,
+                                           right.index_uuid,
+                                           right.key,
+                                           right.row_uuid,
+                                           right.version_uuid);
+                         });
+      }
+    }
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  std::string("exact_index_materialization_failed:") +
+                                                      ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  "exact_index_materialization_failed");
+  }
+  return job;
+}
+
+PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
+    const EngineRequestContext& context,
+    std::vector<PreparedIndexEntryLine> entries,
+    std::uint64_t first_event_sequence) {
+  PreparedIndexLineBufferJob job;
+  std::map<std::string, std::size_t> entries_per_path;
+  for (const auto& entry : entries) {
+    entries_per_path[ScopedIndexStorePath(context, entry.table_uuid)] += 1;
+  }
+  for (const auto& [path, count] : entries_per_path) {
+    job.scoped_lines[path].reserve(count * 192);
+  }
+  std::uint64_t event_sequence = first_event_sequence;
+  for (const auto& entry : entries) {
+    std::string& scoped_buffer =
+        job.scoped_lines[ScopedIndexStorePath(context, entry.table_uuid)];
+    AppendIndexEntryStoreLine(&scoped_buffer,
+                              context.local_transaction_id,
+                              event_sequence++,
+                              entry.index_uuid,
+                              entry.table_uuid,
+                              entry.column_name,
+                              entry.family,
+                              entry.entry_kind,
+                              entry.key,
+                              entry.payload,
+                              entry.row_uuid,
+                              entry.version_uuid);
+  }
+  return job;
 }
 
 std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
@@ -3483,6 +3671,7 @@ struct MgaRelationHotAppendContext::Impl {
   std::vector<std::string> allocator_lines;
   std::map<std::string, std::string> scoped_row_lines;
   std::map<std::string, std::string> scoped_index_lines;
+  std::vector<std::future<PreparedIndexAppendJob>> pending_index_materialization_jobs;
   std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool row_dirty = false;
   bool index_dirty = false;
@@ -3669,88 +3858,29 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
-  struct IndexedRowPlan {
-    const MgaIndexEntryRowInput* row = nullptr;
-    std::vector<std::string> keys;
-    std::string payload;
-  };
-  struct IndexedBatchPlan {
-    const MgaIndexEntryAppendBatch* batch = nullptr;
-    std::string table_uuid;
-    std::vector<IndexedRowPlan> rows;
-  };
-  std::uint64_t entry_count = 0;
-  std::vector<IndexedBatchPlan> planned_batches;
-  planned_batches.reserve(batches.size());
-  std::map<std::string, std::size_t> index_entries_per_table;
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
-    IndexedBatchPlan planned_batch;
-    planned_batch.batch = &batch;
-    planned_batch.table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    planned_batch.rows.reserve(batch.rows.size());
-    for (const auto& row : batch.rows) {
-      IndexedRowPlan planned_row;
-      planned_row.row = &row;
-      planned_row.keys = CrudIndexKeysForValues(batch.index, row.values);
-      if (planned_row.keys.empty()) { continue; }
-      planned_row.payload = CrudFieldValue(row.values, batch.index.column_name);
-      entry_count += static_cast<std::uint64_t>(planned_row.keys.size());
-      index_entries_per_table[planned_batch.table_uuid] += planned_row.keys.size();
-      planned_batch.rows.push_back(std::move(planned_row));
-    }
-    if (!planned_batch.rows.empty()) {
-      planned_batches.push_back(std::move(planned_batch));
-    }
-  }
-  if (entry_count == 0) {
-    return OkDiagnostic();
-  }
-  const auto reservation = ReserveEventSequenceRange(
-      impl_->context,
-      "index_entries",
-      IndexStorePath(impl_->context),
-      entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); },
-      &impl_->allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  ++impl_->counters.index_range_reservations;
-  std::uint64_t event_sequence = reservation.first;
-  std::map<std::string, std::string> scoped_index_path_by_table;
-  for (const auto& [table_uuid, table_entry_count] : index_entries_per_table) {
-    const std::string scoped_path = ScopedIndexStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + table_entry_count * 192);
-    scoped_index_path_by_table.emplace(table_uuid, scoped_path);
-  }
-  for (const auto& planned_batch : planned_batches) {
-    const auto* batch = planned_batch.batch;
-    if (batch == nullptr) { continue; }
-    const auto scoped_path =
-        scoped_index_path_by_table.find(planned_batch.table_uuid);
-    for (const auto& planned_row : planned_batch.rows) {
-      if (planned_row.row == nullptr) { continue; }
-      for (const auto& key : planned_row.keys) {
-        std::string& scoped_buffer =
-            impl_->scoped_index_lines[scoped_path == scoped_index_path_by_table.end()
-                                          ? ScopedIndexStorePath(impl_->context,
-                                                                 planned_batch.table_uuid)
-                                          : scoped_path->second];
-        AppendIndexEntryStoreLine(&scoped_buffer,
-                                  impl_->context.local_transaction_id,
-                                  event_sequence++,
-                                  batch->index.index_uuid,
-                                  planned_batch.table_uuid,
-                                  batch->index.column_name,
-                                  batch->index.family,
-                                  "exact",
-                                  key,
-                                  planned_row.payload,
-                                  planned_row.row->row_uuid,
-                                  planned_row.row->version_uuid);
-        ++impl_->counters.index_entries_appended;
-      }
+    try {
+      std::vector<MgaIndexEntryAppendBatch> job_batches;
+      job_batches.push_back(batch);
+      impl_->pending_index_materialization_jobs.push_back(
+          std::async(std::launch::async,
+                     [job_batches = std::move(job_batches)]() mutable {
+                       return BuildPreparedIndexAppendJob(std::move(job_batches));
+                     }));
+      ++impl_->counters.index_materialization_jobs_queued;
+      impl_->counters.index_materialization_worker_count =
+          std::max<std::uint64_t>(
+              impl_->counters.index_materialization_worker_count,
+              static_cast<std::uint64_t>(
+                  impl_->pending_index_materialization_jobs.size()));
+    } catch (const std::exception& ex) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          std::string("index_materialization_enqueue_failed:") +
+                                              ex.what());
+    } catch (...) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "index_materialization_enqueue_failed");
     }
   }
   return OkDiagnostic();
@@ -3761,69 +3891,138 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
-  std::uint64_t entry_count = 0;
-  for (const auto& batch : batches) {
-    entry_count += static_cast<std::uint64_t>(batch.entries.size());
-  }
-  if (entry_count == 0) {
-    return OkDiagnostic();
-  }
-  const auto reservation = ReserveEventSequenceRange(
-      impl_->context,
-      "index_entries",
-      IndexStorePath(impl_->context),
-      entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); },
-      &impl_->allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  ++impl_->counters.index_range_reservations;
-  std::uint64_t event_sequence = reservation.first;
-  std::map<std::string, std::size_t> exact_entries_per_table;
   for (const auto& batch : batches) {
     if (batch.entries.empty()) { continue; }
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    exact_entries_per_table[table_uuid] += batch.entries.size();
-  }
-  std::map<std::string, std::string> scoped_index_path_by_table;
-  for (const auto& [table_uuid, table_entry_count] : exact_entries_per_table) {
-    const std::string scoped_path = ScopedIndexStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + table_entry_count * 192);
-    scoped_index_path_by_table.emplace(table_uuid, scoped_path);
-  }
-  for (const auto& batch : batches) {
-    if (batch.entries.empty()) { continue; }
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    const auto scoped_path = scoped_index_path_by_table.find(table_uuid);
     for (const auto& entry : batch.entries) {
       if (entry.encoded_key.empty() || entry.row_uuid.empty() || entry.version_uuid.empty()) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
       }
-      std::string& scoped_buffer =
-          impl_->scoped_index_lines[scoped_path == scoped_index_path_by_table.end()
-                                        ? ScopedIndexStorePath(impl_->context, table_uuid)
-                                        : scoped_path->second];
-      AppendIndexEntryStoreLine(&scoped_buffer,
-                                impl_->context.local_transaction_id,
-                                event_sequence++,
-                                batch.index.index_uuid,
-                                table_uuid,
-                                batch.index.column_name,
-                                batch.index.family,
-                                "exact",
-                                entry.encoded_key,
-                                entry.payload_value,
-                                entry.row_uuid,
-                                entry.version_uuid);
-      ++impl_->counters.index_entries_appended;
+    }
+    try {
+      std::vector<MgaExactIndexEntryAppendBatch> job_batches;
+      job_batches.push_back(batch);
+      impl_->pending_index_materialization_jobs.push_back(
+          std::async(std::launch::async,
+                     [job_batches = std::move(job_batches)]() mutable {
+                       return BuildPreparedExactIndexAppendJob(std::move(job_batches));
+                     }));
+      ++impl_->counters.index_materialization_jobs_queued;
+      impl_->counters.index_materialization_worker_count =
+          std::max<std::uint64_t>(
+              impl_->counters.index_materialization_worker_count,
+              static_cast<std::uint64_t>(
+                  impl_->pending_index_materialization_jobs.size()));
+    } catch (const std::exception& ex) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          std::string("exact_index_materialization_enqueue_failed:") +
+                                              ex.what());
+    } catch (...) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "exact_index_materialization_enqueue_failed");
     }
   }
   return OkDiagnostic();
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
+  if (!impl_->pending_index_materialization_jobs.empty()) {
+    std::vector<PreparedIndexAppendJob> prepared_jobs;
+    prepared_jobs.reserve(impl_->pending_index_materialization_jobs.size());
+    std::uint64_t entry_count = 0;
+    for (auto& future : impl_->pending_index_materialization_jobs) {
+      PreparedIndexAppendJob job;
+      try {
+        job = future.get();
+      } catch (const std::exception& ex) {
+        impl_->pending_index_materialization_jobs.clear();
+        return MakeInvalidRequestDiagnostic("mga.index_store",
+                                            std::string("index_materialization_worker_failed:") +
+                                                ex.what());
+      } catch (...) {
+        impl_->pending_index_materialization_jobs.clear();
+        return MakeInvalidRequestDiagnostic("mga.index_store",
+                                            "index_materialization_worker_failed");
+      }
+      ++impl_->counters.index_materialization_jobs_completed;
+      if (!job.ok) {
+        impl_->pending_index_materialization_jobs.clear();
+        return job.diagnostic;
+      }
+      entry_count += static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialized_entries +=
+          static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialization_sort_batches +=
+          job.sorted_batch_count;
+      prepared_jobs.push_back(std::move(job));
+    }
+    impl_->pending_index_materialization_jobs.clear();
+
+    if (entry_count != 0) {
+      const auto reservation = ReserveEventSequenceRange(
+          impl_->context,
+          "index_entries",
+          IndexStorePath(impl_->context),
+          entry_count,
+          [this]() { return ScanNextIndexEventSequence(impl_->context); },
+          &impl_->allocator_lines);
+      if (!reservation.ok) { return reservation.diagnostic; }
+      ++impl_->counters.index_range_reservations;
+
+      std::vector<std::future<PreparedIndexLineBufferJob>> line_futures;
+      line_futures.reserve(prepared_jobs.size());
+      std::uint64_t event_sequence = reservation.first;
+      for (auto& job : prepared_jobs) {
+        if (job.entries.empty()) { continue; }
+        const std::uint64_t first_sequence = event_sequence;
+        event_sequence += static_cast<std::uint64_t>(job.entries.size());
+        try {
+          line_futures.push_back(
+              std::async(std::launch::async,
+                         [context = impl_->context,
+                          entries = std::move(job.entries),
+                          first_sequence]() mutable {
+                           return BuildPreparedIndexLineBuffers(context,
+                                                                std::move(entries),
+                                                                first_sequence);
+                         }));
+        } catch (const std::exception& ex) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              std::string("index_line_buffer_enqueue_failed:") +
+                                                  ex.what());
+        } catch (...) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              "index_line_buffer_enqueue_failed");
+        }
+      }
+      impl_->counters.index_materialization_worker_count =
+          std::max<std::uint64_t>(
+              impl_->counters.index_materialization_worker_count,
+              static_cast<std::uint64_t>(line_futures.size()));
+
+      for (auto& future : line_futures) {
+        PreparedIndexLineBufferJob buffer_job;
+        try {
+          buffer_job = future.get();
+        } catch (const std::exception& ex) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              std::string("index_line_buffer_worker_failed:") +
+                                                  ex.what());
+        } catch (...) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              "index_line_buffer_worker_failed");
+        }
+        if (!buffer_job.ok) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              "index_line_buffer_worker_refused");
+        }
+        for (auto& [path, buffer] : buffer_job.scoped_lines) {
+          impl_->scoped_index_lines[path].append(buffer);
+        }
+      }
+      impl_->counters.index_entries_appended += entry_count;
+      impl_->index_dirty = true;
+    }
+  }
   if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
                                                  &impl_->allocator_lines,
                                                  &impl_->counters)) {

@@ -2890,6 +2890,21 @@ void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                               std::to_string(counters.index_range_reservations)});
   result->evidence.push_back({"mga_hot_append_index_entries",
                               std::to_string(counters.index_entries_appended)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_jobs_queued",
+                              std::to_string(counters.index_materialization_jobs_queued)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_jobs_completed",
+                              std::to_string(counters.index_materialization_jobs_completed)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_worker_count",
+                              std::to_string(counters.index_materialization_worker_count)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_sort_batches",
+                              std::to_string(counters.index_materialization_sort_batches)});
+  result->evidence.push_back({"mga_hot_append_index_materialized_entries",
+                              std::to_string(counters.index_materialized_entries)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_commit_barrier",
+                              counters.index_materialization_jobs_queued ==
+                                      counters.index_materialization_jobs_completed
+                                  ? "flush_waited"
+                                  : "incomplete"});
 }
 
 bool HasEvidence(const std::vector<EngineEvidenceReference>& evidence,
