@@ -34,7 +34,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
 std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(
     const sbps::Frame& frame,
     const HostedEngineState& engine_state,
-    const ServerSessionRegistry* session_registry);
+    ServerSessionRegistry* session_registry);
 std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(
     const sbps::Frame& frame,
     const ServerSessionRegistry* session_registry);

@@ -77,6 +77,12 @@ constexpr const char* kBoolAggRowC = "019f2100-0000-7000-8000-00000000021c";
 constexpr const char* kBoolAggRowD = "019f2100-0000-7000-8000-00000000021d";
 constexpr const char* kBoolAggRowE = "019f2100-0000-7000-8000-00000000021e";
 constexpr const char* kInsertSourceRow = "019f2100-0000-7000-8000-00000000021f";
+constexpr const char* kBulkRowA = "019f2100-0000-7000-8000-000000000220";
+constexpr const char* kBulkRowB = "019f2100-0000-7000-8000-000000000221";
+constexpr const char* kCopyFastRowA = "019f2100-0000-7000-8000-000000000222";
+constexpr const char* kCopyFastRowB = "019f2100-0000-7000-8000-000000000223";
+constexpr const char* kPublicCopyFastRowA = "019f2100-0000-7000-8000-000000000224";
+constexpr const char* kPublicCopyFastRowB = "019f2100-0000-7000-8000-000000000225";
 constexpr const char* kByNameLeftRowA = "019f2100-0000-7000-8000-000000000216";
 constexpr const char* kByNameLeftRowB = "019f2100-0000-7000-8000-000000000217";
 constexpr const char* kByNameRightRowA = "019f2100-0000-7000-8000-000000000218";
@@ -575,6 +581,45 @@ std::string PublicCopyExecuteEnvelope(bool include_target, bool include_rows) {
   return out;
 }
 
+std::string PublicCopyFailFastExecuteEnvelope() {
+  std::string out = AdmissionEnvelope("dml.execute_import_rows", "SBLR_DML_EXECUTE_IMPORT_ROWS");
+  out += "target_object_uuid=";
+  out += kTableUuid;
+  out += "\n";
+  out += "target_object_kind=table\n";
+  out += "source_kind=csv_stream\n";
+  out += "source_fingerprint=sbsfc021-public-copy-fast-fixture\n";
+  out += "source_position=row:0\n";
+  out += "format_family=csv\n";
+  out += "encoding=utf8\n";
+  out += "line_ending=lf\n";
+  out += "delimiter=,\n";
+  out += "quote=\"\n";
+  out += "escape=\"\n";
+  out += "header_policy=absent\n";
+  out += "estimated_row_count=2\n";
+  out += "duplicate_mode=error\n";
+  out += "require_generated_row_uuid=true\n";
+  out += "reject_mode=fail_fast\n";
+  out += "reject_limit_rows=0\n";
+  out += "reject_payload_policy=diagnostic_only\n";
+  out += "resume_policy=fail_closed\n";
+  out += "checkpoint_mode=disabled\n";
+  out += "operand=row_field\t";
+  out += kPublicCopyFastRowA;
+  out += "|id\t13\n";
+  out += "operand=row_field\t";
+  out += kPublicCopyFastRowA;
+  out += "|note\tcopy-public-fast-a\n";
+  out += "operand=row_field\t";
+  out += kPublicCopyFastRowB;
+  out += "|id\t14\n";
+  out += "operand=row_field\t";
+  out += kPublicCopyFastRowB;
+  out += "|note\tcopy-public-fast-b\n";
+  return out;
+}
+
 std::string PublicOrderedSelectEnvelope() {
   std::string out = AdmissionEnvelope("dml.select_rows", "SBLR_DML_SELECT_ROWS");
   out += "target_object_uuid=";
@@ -1049,6 +1094,42 @@ api::EngineApiResult ExecuteImportRowsThroughServer(const std::filesystem::path&
           "server public ABI COPY did not report MGA insert evidence");
 
   return SelectById(database_path, context, "6");
+}
+
+api::EngineApiResult ExecuteFailFastImportRowsThroughServer(
+    const std::filesystem::path& database_path,
+    const api::EngineRequestContext& context) {
+  auto route = MakeServerRoute(database_path, context);
+  auto execute = server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrame(route.session_uuid, PublicCopyFailFastExecuteEnvelope()));
+  if (!execute.accepted) {
+    std::cerr << "server public ABI fail-fast import rejected\n";
+    for (const auto& diagnostic : execute.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << field.key << '=' << field.value << '\n';
+      }
+    }
+  }
+  Require(execute.accepted, "server public ABI fail-fast COPY execution was rejected");
+  const auto decoded = DecodeServerExecuteResult(execute.payload);
+  Require(decoded.outcome == "accepted",
+          "server public ABI fail-fast COPY outcome mismatch");
+  Require(decoded.operation_id == "dml.execute_import_rows",
+          "server public ABI fail-fast COPY operation mismatch");
+  Require(decoded.row_count == 2,
+          "server public ABI fail-fast COPY row count mismatch");
+  Require(Contains(decoded.row_packet, "evidence=import_execution:direct_physical"),
+          "server public ABI fail-fast COPY did not select direct physical import");
+  Require(Contains(decoded.row_packet, "evidence=direct_physical_bulk_row_count:2"),
+          "server public ABI fail-fast COPY did not report direct bulk row count");
+  Require(Contains(decoded.row_packet, "note=copy-public-fast-a") &&
+              Contains(decoded.row_packet, "note=copy-public-fast-b"),
+          "server public ABI fail-fast COPY row packet missing imported rows");
+
+  return SelectById(database_path, context, "13");
 }
 
 void RequireOrderedSelectThroughServer(const std::filesystem::path& database_path,
@@ -2732,6 +2813,34 @@ api::EngineApiResult InsertIdOnlyRowIntoTable(const std::filesystem::path& datab
   return inserted.api_result;
 }
 
+api::EngineApiResult InsertBulkRowsIntoTable(const std::filesystem::path& database_path,
+                                             const api::EngineRequestContext& context) {
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.object_kind = "table";
+  request.rows.push_back(Row(kBulkRowA, "9", "bulk-direct-a"));
+  request.rows.push_back(Row(kBulkRowB, "10", "bulk-direct-b"));
+  request.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
+  auto inserted = Dispatch(database_path,
+                           "dml.insert_rows",
+                           "SBLR_DML_INSERT_ROWS",
+                           context,
+                           request,
+                           true);
+  Require(inserted.api_result.ok, "bulk direct insert failed");
+  Require(inserted.api_result.result_shape.rows.size() == 2,
+          "bulk direct insert did not return two rows");
+  Require(HasEvidence(inserted.api_result,
+                      "insert_direct_physical_bulk_route",
+                      "selected"),
+          "bulk insert did not select direct physical route");
+  Require(HasEvidence(inserted.api_result, "direct_physical_bulk_row_count", "2"),
+          "bulk insert direct physical row count evidence missing");
+  Require(HasEvidence(inserted.api_result, "direct_mga_append", "row_version_batch"),
+          "bulk insert direct MGA append evidence missing");
+  return inserted.api_result;
+}
+
 void RequireInsertSourceRowLabeledMgaProof(const std::filesystem::path& database_path,
                                            const api::EngineRequestContext& context) {
   const auto inserted = InsertIdOnlyRowIntoTable(
@@ -2964,6 +3073,45 @@ api::EngineApiResult ExecuteImportRows(const std::filesystem::path& database_pat
           "first imported row result mismatch");
   Require(FieldValue(executed.api_result, "note", 1) == "copy-exec-b",
           "second imported row result mismatch");
+  return executed.api_result;
+}
+
+api::EngineApiResult ExecuteFailFastImportRows(const std::filesystem::path& database_path,
+                                               const api::EngineRequestContext& context) {
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.object_kind = "table";
+  request.rows.push_back(Row(kCopyFastRowA, "11", "copy-fast-a"));
+  request.rows.push_back(Row(kCopyFastRowB, "12", "copy-fast-b"));
+  request.option_envelopes.push_back("source_kind:csv_stream");
+  request.option_envelopes.push_back("source_fingerprint:sbsfc021-fast-fixture");
+  request.option_envelopes.push_back("source_position:row:0");
+  request.option_envelopes.push_back("format_family:csv");
+  request.option_envelopes.push_back("estimated_row_count:2");
+  request.option_envelopes.push_back("reject_mode:fail_fast");
+  request.option_envelopes.push_back("reject_limit_rows:0");
+  request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
+  request.option_envelopes.push_back("resume_policy:fail_closed");
+  request.option_envelopes.push_back("checkpoint_mode:disabled");
+  auto executed = Dispatch(database_path,
+                           "dml.execute_import_rows",
+                           "SBLR_DML_EXECUTE_IMPORT_ROWS",
+                           context,
+                           request,
+                           true);
+  Require(executed.api_result.ok, "execute fail-fast import failed");
+  Require(HasEvidence(executed.api_result, "import_execution", "direct_physical"),
+          "fail-fast import did not select direct physical path");
+  Require(HasEvidence(executed.api_result, "import_execution_delegate", "none"),
+          "fail-fast import unexpectedly delegated to insert rows");
+  Require(HasEvidence(executed.api_result, "direct_physical_bulk_row_count", "2"),
+          "fail-fast import direct bulk row count evidence missing");
+  Require(HasEvidence(executed.api_result, "mga_row_store", "row_insert"),
+          "fail-fast import did not reach MGA row store");
+  Require(FieldValue(executed.api_result, "note", 0) == "copy-fast-a",
+          "first fail-fast imported row result mismatch");
+  Require(FieldValue(executed.api_result, "note", 1) == "copy-fast-b",
+          "second fail-fast imported row result mismatch");
   return executed.api_result;
 }
 
@@ -3338,6 +3486,34 @@ void VerifyDmlRowEffects(const std::filesystem::path& database_path) {
   (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryLeftTableUuid, kJoinRowE, "7");
   (void)InsertIdOnlyRowIntoTable(database_path, writer, kQueryRightTableUuid, kSetRowD, "7");
   RequireTableSetAllOperationsThroughServer(database_path, writer);
+  const auto bulk_insert = InsertBulkRowsIntoTable(database_path, writer);
+  Require(FieldValue(bulk_insert, "note", 0) == "bulk-direct-a",
+          "bulk direct insert first row result mismatch");
+  Require(FieldValue(bulk_insert, "note", 1) == "bulk-direct-b",
+          "bulk direct insert second row result mismatch");
+  const auto selected_bulk = SelectById(database_path, writer, "10");
+  Require(selected_bulk.result_shape.rows.size() == 1,
+          "bulk direct inserted row not visible");
+  Require(FieldValue(selected_bulk, "note") == "bulk-direct-b",
+          "bulk direct inserted row note mismatch");
+  const auto fast_import = ExecuteFailFastImportRows(database_path, writer);
+  Require(fast_import.result_shape.rows.size() == 2,
+          "fail-fast import execution did not return two rows");
+  const auto selected_fast_import_b = SelectById(database_path, writer, "12");
+  Require(selected_fast_import_b.result_shape.rows.size() == 1,
+          "fail-fast imported row B not visible");
+  Require(FieldValue(selected_fast_import_b, "note") == "copy-fast-b",
+          "fail-fast imported row B note mismatch");
+  const auto public_fast_import = ExecuteFailFastImportRowsThroughServer(database_path, writer);
+  Require(public_fast_import.result_shape.rows.size() == 1,
+          "server public ABI fail-fast imported row not visible");
+  Require(FieldValue(public_fast_import, "note") == "copy-public-fast-a",
+          "server public ABI fail-fast imported row note mismatch");
+  const auto public_fast_import_b = SelectById(database_path, writer, "14");
+  Require(public_fast_import_b.result_shape.rows.size() == 1,
+          "second server public ABI fail-fast imported row not visible");
+  Require(FieldValue(public_fast_import_b, "note") == "copy-public-fast-b",
+          "second server public ABI fail-fast imported row note mismatch");
   Commit(database_path, writer);
 
   auto reader = BeginTransaction(database_path, "202");
@@ -3362,6 +3538,21 @@ void VerifyDmlRowEffects(const std::filesystem::path& database_path) {
           "committed valid row from rejected import missing");
   Require(FieldValue(committed_reject_valid, "note") == "copy-reject-valid",
           "committed valid row from rejected import returned wrong note");
+  const auto committed_bulk = SelectById(database_path, reader, "10");
+  Require(committed_bulk.result_shape.rows.size() == 1,
+          "committed bulk direct row missing after commit");
+  Require(FieldValue(committed_bulk, "note") == "bulk-direct-b",
+          "committed bulk direct row returned wrong note");
+  const auto committed_fast_import = SelectById(database_path, reader, "12");
+  Require(committed_fast_import.result_shape.rows.size() == 1,
+          "committed fail-fast import row missing after commit");
+  Require(FieldValue(committed_fast_import, "note") == "copy-fast-b",
+          "committed fail-fast import row returned wrong note");
+  const auto committed_public_fast_import = SelectById(database_path, reader, "14");
+  Require(committed_public_fast_import.result_shape.rows.size() == 1,
+          "committed server public ABI fail-fast import row missing after commit");
+  Require(FieldValue(committed_public_fast_import, "note") == "copy-public-fast-b",
+          "committed server public ABI fail-fast import row returned wrong note");
   Commit(database_path, reader);
 
   auto rollback_writer = BeginTransaction(database_path, "203");

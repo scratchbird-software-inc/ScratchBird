@@ -19,6 +19,7 @@
 #include "scratchbird/engine/engine.h"
 
 #include <array>
+#include <deque>
 #include <map>
 #include <optional>
 #include <string>
@@ -309,6 +310,36 @@ struct ServerAuthorityCacheValidation {
   const ServerAuthorityCacheRecord* record = nullptr;
 };
 
+struct ServerPublicNameResolutionCacheRecord {
+  std::string cache_key;
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  std::string database_uuid;
+  std::string object_uuid;
+  std::string canonical_name;
+  std::string object_class;
+  std::uint64_t catalog_generation = 1;
+  std::uint64_t security_epoch = 1;
+  std::uint64_t descriptor_epoch = 1;
+  std::uint64_t grant_epoch = 1;
+  std::uint64_t policy_generation = 1;
+  std::uint64_t name_resolution_epoch = 1;
+  std::uint64_t language_resource_epoch = 1;
+  std::uint64_t localized_name_epoch = 1;
+  std::uint64_t message_resource_epoch = 1;
+  std::string role_set_hash = "roles/default";
+  std::string group_set_hash = "groups/default";
+  std::string search_path_hash = "search_path/default";
+  std::string language_profile = "sbsql.builtin.recovery.en";
+  std::string language_tag;
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
+  std::uint64_t generation = 0;
+  std::uint64_t hit_count = 0;
+};
+
 struct ServerLanguageContextIdentity {
   std::string language_profile_id = "sbsql.builtin.recovery.en";
   std::string language_tag = "en";
@@ -405,6 +436,16 @@ struct ServerRequestRecord {
   bool engine_result_retained = false;
 };
 
+struct ServerPublicAbiSessionContext {
+  sb_engine_handle_t engine = nullptr;
+  sb_engine_session_t engine_session = nullptr;
+  std::string database_path;
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> effective_user_uuid{};
+  bool embedded_in_process = false;
+  std::uint64_t reuse_count = 0;
+};
+
 struct ServerSessionRegistry {
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
   std::map<std::string, ServerSessionRecord> sessions_by_uuid;
@@ -416,7 +457,12 @@ struct ServerSessionRegistry {
       prepared_execution_contexts_by_uuid;
   std::map<std::string, ServerSessionObjectHandleRecord> object_handles_by_key;
   std::map<std::string, ServerAuthorityCacheRecord> authority_cache_by_key;
+  std::map<std::string, ServerPublicNameResolutionCacheRecord>
+      public_name_resolution_cache_by_key;
+  std::deque<std::string> public_name_resolution_cache_lru;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
+  std::map<std::string, ServerPublicAbiSessionContext>
+      public_abi_sessions_by_session_uuid;
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, ServerLanguageResourceDirectoryRecord>
       language_resource_directories_by_id;
@@ -426,6 +472,7 @@ struct ServerSessionRegistry {
       job_quotas_by_database_uuid;
   std::uint64_t next_session_object_handle_id = 1;
   std::uint64_t next_authority_cache_generation = 1;
+  std::uint64_t next_public_name_resolution_cache_generation = 1;
 };
 
 struct AuthHandoffPayload {
@@ -666,6 +713,10 @@ ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
     const std::string& operation_id,
     const std::string& column_set_hash = {});
 void CloseSessionObjectHandlesForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string detail = "session_closed");
+void CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string detail = "session_closed");

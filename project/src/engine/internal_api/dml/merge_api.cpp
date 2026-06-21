@@ -761,15 +761,15 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       source_table_uuid != target.uuid.canonical) {
     relation_scope_targets.push_back(source_table_uuid);
   }
-  const auto loaded = relation_scope_targets.size() == 1
-                          ? LoadMgaRelationStoreStateForMutationTarget(
-                                request.context,
-                                target.uuid.canonical)
-                          : LoadMgaRelationStoreStateForMutationTargets(
-                                request.context,
-                                relation_scope_targets);
+  auto loaded = relation_scope_targets.size() == 1
+                    ? LoadMgaRelationStoreStateForMutationTarget(
+                          request.context,
+                          target.uuid.canonical)
+                    : LoadMgaRelationStoreStateForMutationTargets(
+                          request.context,
+                          relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
   if (source_rows.empty() && !source_table_uuid.empty()) {
     const auto source_table =
         FindVisibleCrudTable(state,

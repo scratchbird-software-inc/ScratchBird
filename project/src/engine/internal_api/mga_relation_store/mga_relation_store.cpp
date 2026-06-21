@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -90,6 +91,12 @@ std::string ScopedIndexStorePath(const EngineRequestContext& context,
          ScopedRelationSegmentName(table_uuid) + ".indexes";
 }
 
+std::string ScopedSummaryStorePath(const EngineRequestContext& context,
+                                   const std::string& table_uuid) {
+  return ScopedRelationStoreRoot(context) + "/" +
+         ScopedRelationSegmentName(table_uuid) + ".summary";
+}
+
 std::string SecondaryIndexDeltaLedgerStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_secondary_index_delta_ledger";
 }
@@ -108,6 +115,11 @@ std::string LargeValueStorePath(const EngineRequestContext& context) {
 
 std::string SavepointStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_savepoints";
+}
+
+std::mutex& ScopedRelationSummaryMutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
 EngineApiDiagnostic OkDiagnostic() {
@@ -147,8 +159,18 @@ bool AppendLines(const std::string& path,
   std::ofstream out(path, std::ios::app | std::ios::binary);
   if (!out) { return false; }
   if (stream_opens != nullptr) { ++(*stream_opens); }
+  std::size_t buffer_bytes = 0;
   for (const auto& line : lines) {
-    out << line << '\n';
+    buffer_bytes += line.size() + 1;
+  }
+  std::string buffer;
+  buffer.reserve(buffer_bytes);
+  for (const auto& line : lines) {
+    buffer.append(line);
+    buffer.push_back('\n');
+  }
+  if (!buffer.empty()) {
+    out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
   }
   out.flush();
   if (stream_flushes != nullptr) { ++(*stream_flushes); }
@@ -283,6 +305,76 @@ std::string JoinLine(const std::vector<std::string>& fields) {
   return line;
 }
 
+void AppendTabField(std::string* line, std::string_view field) {
+  if (line == nullptr) {
+    return;
+  }
+  if (!line->empty()) {
+    line->push_back('\t');
+  }
+  line->append(field.data(), field.size());
+}
+
+std::string BuildRowVersionStoreLine(const CrudRowVersionRecord& row) {
+  const std::string creator_tx = std::to_string(row.creator_tx);
+  const std::string event_sequence = std::to_string(row.event_sequence);
+  const std::string previous_sequence = std::to_string(row.previous_sequence);
+  const std::string encoded_values = EncodeCrudPairs(row.values);
+  std::string line;
+  line.reserve(96 + creator_tx.size() + event_sequence.size() +
+               row.table_uuid.size() + row.row_uuid.size() +
+               row.version_uuid.size() + row.previous_version_uuid.size() +
+               previous_sequence.size() + encoded_values.size() +
+               row.temporary_session_uuid.size());
+  AppendTabField(&line, kRowStoreMagic);
+  AppendTabField(&line, "ROW_VERSION");
+  AppendTabField(&line, creator_tx);
+  AppendTabField(&line, event_sequence);
+  AppendTabField(&line, row.table_uuid);
+  AppendTabField(&line, row.row_uuid);
+  AppendTabField(&line, row.version_uuid);
+  AppendTabField(&line, row.deleted ? "1" : "0");
+  AppendTabField(&line, row.previous_version_uuid);
+  AppendTabField(&line, previous_sequence);
+  AppendTabField(&line, encoded_values);
+  AppendTabField(&line, row.temporary_session_uuid);
+  return line;
+}
+
+std::string BuildIndexEntryStoreLine(std::uint64_t creator_tx,
+                                     std::uint64_t event_sequence,
+                                     std::string_view index_uuid,
+                                     std::string_view table_uuid,
+                                     std::string_view column_name,
+                                     std::string_view family,
+                                     std::string_view entry_kind,
+                                     std::string_view key,
+                                     std::string_view payload,
+                                     std::string_view row_uuid,
+                                     std::string_view version_uuid) {
+  const std::string creator_text = std::to_string(creator_tx);
+  const std::string event_text = std::to_string(event_sequence);
+  std::string line;
+  line.reserve(96 + creator_text.size() + event_text.size() +
+               index_uuid.size() + table_uuid.size() + column_name.size() +
+               family.size() + entry_kind.size() + key.size() +
+               payload.size() + row_uuid.size() + version_uuid.size());
+  AppendTabField(&line, kRowStoreMagic);
+  AppendTabField(&line, "INDEX_ENTRY");
+  AppendTabField(&line, creator_text);
+  AppendTabField(&line, event_text);
+  AppendTabField(&line, index_uuid);
+  AppendTabField(&line, table_uuid);
+  AppendTabField(&line, column_name);
+  AppendTabField(&line, family);
+  AppendTabField(&line, entry_kind);
+  AppendTabField(&line, key);
+  AppendTabField(&line, payload);
+  AppendTabField(&line, row_uuid);
+  AppendTabField(&line, version_uuid);
+  return line;
+}
+
 std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
   if (text.empty()) { return fallback; }
   try {
@@ -290,6 +382,160 @@ std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
   } catch (...) {
     return fallback;
   }
+}
+
+struct ScopedRelationSummary {
+  bool trusted = false;
+  bool malformed = false;
+  std::uint64_t row_version_count = 0;
+  std::uint64_t tombstone_count = 0;
+  std::uint64_t update_count = 0;
+};
+
+struct ScopedRelationSummaryDelta {
+  std::uint64_t row_version_count = 0;
+  std::uint64_t tombstone_count = 0;
+  std::uint64_t update_count = 0;
+};
+
+ScopedRelationSummary RebuildScopedRelationSummaryFromRows(
+    const std::string& scoped_row_path) {
+  ScopedRelationSummary summary;
+  if (!FileExistsAndNotEmpty(scoped_row_path)) {
+    summary.trusted = true;
+    return summary;
+  }
+  for (const auto& line : ReadLines(scoped_row_path)) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+        fields[1] != "ROW_VERSION") {
+      summary.malformed = true;
+      summary.trusted = false;
+      return summary;
+    }
+    ++summary.row_version_count;
+    if (fields[7] == "1") {
+      ++summary.tombstone_count;
+    }
+    if (!fields[8].empty()) {
+      ++summary.update_count;
+    }
+  }
+  summary.trusted = true;
+  return summary;
+}
+
+ScopedRelationSummary LoadScopedRelationSummary(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  const std::string summary_path = ScopedSummaryStorePath(context, table_uuid);
+  const std::string row_path = ScopedRowStorePath(context, table_uuid);
+  if (!FileExistsAndNotEmpty(summary_path)) {
+    if (!FileExistsAndNotEmpty(row_path)) {
+      ScopedRelationSummary empty;
+      empty.trusted = true;
+      return empty;
+    }
+    return RebuildScopedRelationSummaryFromRows(row_path);
+  }
+
+  ScopedRelationSummary summary;
+  for (const auto& line : ReadLines(summary_path)) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 8 || fields[0] != "SBMGASUM1" ||
+        fields[1] != "RELATION_SCOPE") {
+      summary.malformed = true;
+      summary.trusted = false;
+      return summary;
+    }
+    for (std::size_t index = 2; index + 1 < fields.size(); index += 2) {
+      if (fields[index] == "row_versions") {
+        summary.row_version_count = ParseU64(fields[index + 1]);
+      } else if (fields[index] == "tombstones") {
+        summary.tombstone_count = ParseU64(fields[index + 1]);
+      } else if (fields[index] == "updates") {
+        summary.update_count = ParseU64(fields[index + 1]);
+      }
+    }
+    summary.trusted = true;
+  }
+  if (!summary.trusted && FileExistsAndNotEmpty(row_path)) {
+    return RebuildScopedRelationSummaryFromRows(row_path);
+  }
+  summary.trusted = true;
+  return summary;
+}
+
+bool WriteScopedRelationSummary(const EngineRequestContext& context,
+                                const std::string& table_uuid,
+                                const ScopedRelationSummary& summary) {
+  std::error_code ignored;
+  std::filesystem::create_directories(ScopedRelationStoreRoot(context),
+                                      ignored);
+  const std::string path = ScopedSummaryStorePath(context, table_uuid);
+  const std::string tmp_path = path + ".tmp." +
+      std::to_string(context.local_transaction_id) + "." +
+      std::to_string(summary.row_version_count);
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out) { return false; }
+    out << JoinLine({"SBMGASUM1",
+                     "RELATION_SCOPE",
+                     "row_versions",
+                     std::to_string(summary.row_version_count),
+                     "tombstones",
+                     std::to_string(summary.tombstone_count),
+                     "updates",
+                     std::to_string(summary.update_count)})
+        << '\n';
+    out.flush();
+    if (!out) { return false; }
+  }
+  std::error_code rename_error;
+  std::filesystem::rename(tmp_path, path, rename_error);
+  if (rename_error) {
+    std::error_code remove_error;
+    std::filesystem::remove(path, remove_error);
+    std::filesystem::rename(tmp_path, path, rename_error);
+  }
+  return !rename_error;
+}
+
+bool UpdateScopedRelationSummaries(
+    const EngineRequestContext& context,
+    const std::map<std::string, ScopedRelationSummaryDelta>& deltas) {
+  if (deltas.empty()) {
+    return true;
+  }
+  const std::lock_guard<std::mutex> guard(ScopedRelationSummaryMutex());
+  for (const auto& [table_uuid, delta] : deltas) {
+    if (table_uuid.empty() || delta.row_version_count == 0) {
+      continue;
+    }
+    ScopedRelationSummary summary = LoadScopedRelationSummary(context,
+                                                              table_uuid);
+    if (summary.malformed) {
+      return false;
+    }
+    const std::string summary_path = ScopedSummaryStorePath(context,
+                                                            table_uuid);
+    if (FileExistsAndNotEmpty(summary_path)) {
+      summary.row_version_count += delta.row_version_count;
+      summary.tombstone_count += delta.tombstone_count;
+      summary.update_count += delta.update_count;
+      summary.trusted = true;
+    } else {
+      summary = RebuildScopedRelationSummaryFromRows(
+          ScopedRowStorePath(context, table_uuid));
+      if (!summary.trusted || summary.malformed) {
+        return false;
+      }
+    }
+    if (!WriteScopedRelationSummary(context, table_uuid, summary)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::mutex& EventSequenceCacheMutex() {
@@ -1570,34 +1816,43 @@ EngineApiDiagnostic ValidateMgaMutatingTransactionAuthority(const EngineRequestC
   return OkDiagnostic();
 }
 
-EngineApiDiagnostic ValidateMgaRowVersionChains(const CrudState& state) {
-  std::map<std::string, CrudRowVersionRecord> by_version_uuid;
-  for (const auto& row : state.row_versions) {
+EngineApiDiagnostic ValidateMgaRowVersionRecordChains(
+    const std::vector<CrudRowVersionRecord>& row_versions) {
+  std::unordered_map<std::string, const CrudRowVersionRecord*> by_version_uuid;
+  by_version_uuid.reserve(row_versions.size());
+  for (const auto& row : row_versions) {
     if (row.version_uuid.empty()) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "row_version_uuid_required");
     }
-    if (by_version_uuid.count(row.version_uuid) != 0) {
+    const auto inserted = by_version_uuid.emplace(row.version_uuid, &row);
+    if (!inserted.second) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "duplicate_row_version_uuid");
     }
-    by_version_uuid[row.version_uuid] = row;
   }
-  for (const auto& row : state.row_versions) {
+  for (const auto& row : row_versions) {
     if (row.previous_version_uuid.empty()) { continue; }
     const auto previous = by_version_uuid.find(row.previous_version_uuid);
     if (previous == by_version_uuid.end()) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "previous_row_version_missing");
     }
-    if (previous->second.table_uuid != row.table_uuid || previous->second.row_uuid != row.row_uuid) {
+    const auto* previous_row = previous->second;
+    if (previous_row->table_uuid != row.table_uuid ||
+        previous_row->row_uuid != row.row_uuid) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "previous_row_version_wrong_chain");
     }
-    if (previous->second.sequence >= row.sequence) {
+    if (previous_row->sequence >= row.sequence) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "previous_row_version_not_older");
     }
-    if (row.previous_sequence != 0 && previous->second.sequence != row.previous_sequence) {
+    if (row.previous_sequence != 0 &&
+        previous_row->sequence != row.previous_sequence) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "previous_row_version_sequence_mismatch");
     }
   }
   return OkDiagnostic();
+}
+
+EngineApiDiagnostic ValidateMgaRowVersionChains(const CrudState& state) {
+  return ValidateMgaRowVersionRecordChains(state.row_versions);
 }
 
 void FilterMgaTemporaryObjectsForSession(const EngineRequestContext& context, CrudState* state) {
@@ -1763,6 +2018,35 @@ std::map<std::string, std::string> RelationDescriptorFields(
   return fields;
 }
 
+std::string RelationDescriptorFieldOrEmpty(
+    const std::map<std::string, std::string>& fields,
+    std::initializer_list<const char*> keys) {
+  for (const char* key : keys) {
+    const auto found = fields.find(key);
+    if (found != fields.end()) { return found->second; }
+  }
+  return {};
+}
+
+bool RelationDescriptorBoolField(
+    const std::map<std::string, std::string>& fields,
+    std::initializer_list<const char*> keys) {
+  const std::string value = RelationDescriptorLowerAscii(
+      RelationDescriptorFieldOrEmpty(fields, keys));
+  return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool RelationDescriptorRequiresDeferredStore(
+    const std::map<std::string, std::string>& fields) {
+  const std::string timing = RelationDescriptorLowerAscii(
+      RelationDescriptorFieldOrEmpty(fields, {"enforcement_timing", "timing"}));
+  if (timing == "deferred" || timing == "transaction_end" ||
+      timing == "initially_deferred") {
+    return true;
+  }
+  return RelationDescriptorBoolField(fields, {"deferrable", "initially_deferred"});
+}
+
 std::optional<std::string> ParentTableUuidFromRelationDescriptor(
     const std::string& descriptor) {
   const auto fields = RelationDescriptorFields(descriptor);
@@ -1872,6 +2156,104 @@ void AddRelationLoadEvidence(MgaRelationStoreResult* result,
 
 }  // namespace
 
+MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
+    const EngineRequestContext& context) {
+  MgaMetadataWorkPresenceResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic =
+        MakeInvalidRequestDiagnostic("mga.deferred_constraint_metadata",
+                                     "database_path_required");
+    return result;
+  }
+  CrudState metadata;
+  const auto loaded = LoadMgaMetadata(&metadata, context);
+  if (loaded.error) {
+    result.diagnostic = loaded;
+    return result;
+  }
+  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  for (const auto& table : metadata.tables) {
+    ++result.metadata_tables_scanned;
+    if (!CrudCreatorVisible(metadata,
+                            table.creator_tx,
+                            table.event_sequence,
+                            context.local_transaction_id)) {
+      continue;
+    }
+    for (const auto& [column_name, descriptor] : table.columns) {
+      (void)column_name;
+      if (RelationDescriptorRequiresDeferredStore(
+              RelationDescriptorFields(descriptor))) {
+        result.has_work = true;
+        ++result.metadata_tables_matched;
+        result.ok = true;
+        result.diagnostic = OkDiagnostic();
+        return result;
+      }
+    }
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
+    const EngineRequestContext& context,
+    bool include_delete_rows,
+    bool include_preserve_rows,
+    bool retire_private_metadata) {
+  MgaMetadataWorkPresenceResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic =
+        MakeInvalidRequestDiagnostic("mga.temporary_cleanup_metadata",
+                                     "database_path_required");
+    return result;
+  }
+  CrudState metadata;
+  const auto loaded = LoadMgaMetadata(&metadata, context);
+  if (loaded.error) {
+    result.diagnostic = loaded;
+    return result;
+  }
+  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  for (const auto& table : metadata.tables) {
+    ++result.metadata_tables_scanned;
+    if (!table.temporary) { continue; }
+    if (!CrudCreatorVisible(metadata,
+                            table.creator_tx,
+                            table.event_sequence,
+                            context.local_transaction_id)) {
+      continue;
+    }
+    const bool delete_rows_policy = table.on_commit_action == "delete_rows";
+    const bool preserve_rows_policy = table.on_commit_action == "preserve_rows";
+    if ((delete_rows_policy && include_delete_rows) ||
+        (preserve_rows_policy && include_preserve_rows) ||
+        retire_private_metadata) {
+      result.has_work = true;
+      ++result.metadata_tables_matched;
+      result.ok = true;
+      result.diagnostic = OkDiagnostic();
+      return result;
+    }
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context) {
   MgaRelationStoreResult result;
   result.full_state_load = true;
@@ -1967,7 +2349,8 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       return result;
     }
   }
-  const auto chain_status = ValidateMgaRowVersionChains(BuildCrudCompatibilityStateFromMga(result.state));
+  const auto chain_status =
+      ValidateMgaRowVersionRecordChains(result.state.row_versions);
   if (chain_status.error) {
     result.diagnostic = chain_status;
     return result;
@@ -1982,7 +2365,9 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
 MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     const EngineRequestContext& context,
     const std::vector<std::string>& table_uuids,
-    const std::string& evidence_route) {
+    const std::string& evidence_route,
+    bool include_index_entries = true,
+    bool include_row_versions = true) {
   MgaRelationStoreResult result;
   result.scoped_state_load = true;
   if (context.database_path.empty()) {
@@ -2045,19 +2430,16 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
 
   bool row_segments_used = false;
   bool index_segments_used = false;
-  auto row_lines = scoped_lines(true, &row_segments_used);
-  auto index_lines = scoped_lines(false, &index_segments_used);
-  const bool global_row_fallback = !row_segments_used;
-  const bool global_index_fallback = !index_segments_used;
-  if (global_row_fallback) {
-    row_lines = ReadLines(RowStorePath(context));
+  std::vector<std::string> row_lines;
+  if (include_row_versions) {
+    row_lines = scoped_lines(true, &row_segments_used);
   }
-  if (global_index_fallback) {
-    index_lines = ReadLines(IndexStorePath(context));
+  std::vector<std::string> index_lines;
+  if (include_index_entries) {
+    index_lines = scoped_lines(false, &index_segments_used);
   }
   result.scoped_physical_segments_used = row_segments_used || index_segments_used;
-  result.scoped_physical_segments_fallback =
-      global_row_fallback || global_index_fallback;
+  result.scoped_physical_segments_fallback = false;
 
   for (const auto& line : row_lines) {
     const auto fields = SplitTabs(line);
@@ -2122,7 +2504,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     ++result.index_entries_retained;
   }
 
-  if (RowsContainLargeValueLocators(result.state.row_versions)) {
+  if (include_row_versions && RowsContainLargeValueLocators(result.state.row_versions)) {
     const auto expanded_large_values =
         ExpandMgaLargeValueLocators(context, &result.state.row_versions);
     if (expanded_large_values.error) {
@@ -2130,16 +2512,22 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       return result;
     }
   }
-  const auto chain_status =
-      ValidateMgaRowVersionChains(BuildCrudCompatibilityStateFromMga(result.state));
-  if (chain_status.error) {
-    result.diagnostic = chain_status;
-    return result;
+  if (include_row_versions) {
+    const auto chain_status =
+        ValidateMgaRowVersionRecordChains(result.state.row_versions);
+    if (chain_status.error) {
+      result.diagnostic = chain_status;
+      return result;
+    }
   }
   FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   AddRelationLoadEvidence(&result, evidence_route);
+  result.evidence.push_back({"mga_relation_state_row_versions_loaded",
+                             include_row_versions ? "true" : "false"});
+  result.evidence.push_back({"mga_relation_state_index_entries_loaded",
+                             include_index_entries ? "true" : "false"});
   return result;
 }
 
@@ -2150,6 +2538,28 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
       context,
       std::vector<std::string>{table_uuid},
       "insert_target_scoped");
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreIndexesOnlyForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "insert_target_index_only_scoped",
+      true,
+      false);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreMetadataOnlyForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "insert_target_metadata_only_scoped",
+      false,
+      false);
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
@@ -2169,10 +2579,97 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
                                                 "mutation_targets_scoped");
 }
 
+MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "mutation_target_rows_only_scoped",
+      false);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids) {
+  return LoadMgaRelationStoreStateForTargetScope(context,
+                                                table_uuids,
+                                                "mutation_targets_rows_only_scoped",
+                                                false);
+}
+
+MgaRelationIndexOnlyProofEligibilityResult
+CanUseMgaRelationIndexOnlyProofForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  MgaRelationIndexOnlyProofEligibilityResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store",
+                                                     "database_path_required");
+    result.refusal_reason = "database_path_required";
+    return result;
+  }
+  if (table_uuid.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store",
+                                                     "target_table_uuid_required");
+    result.refusal_reason = "target_table_uuid_required";
+    return result;
+  }
+
+  const std::lock_guard<std::mutex> guard(ScopedRelationSummaryMutex());
+  const ScopedRelationSummary summary = LoadScopedRelationSummary(context,
+                                                                  table_uuid);
+  result.summary_trusted = summary.trusted && !summary.malformed;
+  result.row_version_count = summary.row_version_count;
+  result.tombstone_count = summary.tombstone_count;
+  result.update_count = summary.update_count;
+  result.evidence.push_back({"mga_relation_index_only_summary_trusted",
+                             result.summary_trusted ? "true" : "false"});
+  result.evidence.push_back({"mga_relation_index_only_row_versions",
+                             std::to_string(result.row_version_count)});
+  result.evidence.push_back({"mga_relation_index_only_tombstones",
+                             std::to_string(result.tombstone_count)});
+  result.evidence.push_back({"mga_relation_index_only_updates",
+                             std::to_string(result.update_count)});
+  if (summary.malformed) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.row_store",
+        "scoped_relation_summary_malformed");
+    result.refusal_reason = "scoped_relation_summary_malformed";
+    return result;
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  if (!summary.trusted) {
+    result.refusal_reason = "scoped_relation_summary_untrusted";
+  } else if (summary.tombstone_count != 0) {
+    result.refusal_reason = "scoped_relation_tombstones_present";
+  } else if (summary.update_count != 0) {
+    result.refusal_reason = "scoped_relation_updates_present";
+  } else {
+    result.eligible = true;
+    result.refusal_reason = "eligible";
+  }
+  result.evidence.push_back({"mga_relation_index_only_eligible",
+                             result.eligible ? "true" : "false"});
+  result.evidence.push_back({"mga_relation_index_only_reason",
+                             result.refusal_reason});
+  return result;
+}
+
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state) {
   CrudState merged = state.crud_metadata;
   merged.row_versions = state.row_versions;
   merged.index_entries = state.index_entries;
+  merged.max_sequence = state.max_row_event_sequence;
+  merged.max_index_sequence = state.max_index_event_sequence;
+  return merged;
+}
+
+CrudState BuildCrudCompatibilityStateFromMga(MgaRelationStoreState&& state) {
+  CrudState merged = std::move(state.crud_metadata);
+  merged.row_versions = std::move(state.row_versions);
+  merged.index_entries = std::move(state.index_entries);
   merged.max_sequence = state.max_row_event_sequence;
   merged.max_index_sequence = state.max_index_event_sequence;
   return merged;
@@ -2748,6 +3245,7 @@ struct MgaRelationHotAppendContext::Impl {
   std::vector<std::string> allocator_lines;
   std::map<std::string, std::vector<std::string>> scoped_row_lines;
   std::map<std::string, std::vector<std::string>> scoped_index_lines;
+  std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool row_dirty = false;
   bool index_dirty = false;
   MgaRelationHotAppendCounters counters;
@@ -2799,31 +3297,34 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
+  std::string row_buffer;
   for (auto& writable : *rows) {
     writable.event_sequence = event_sequence++;
     writable.sequence = writable.event_sequence;
-    const std::string line = JoinLine({kRowStoreMagic,
-                                       "ROW_VERSION",
-                                       std::to_string(writable.creator_tx),
-                                       std::to_string(writable.event_sequence),
-                                       writable.table_uuid,
-                                       writable.row_uuid,
-                                       writable.version_uuid,
-                                       writable.deleted ? "1" : "0",
-                                       writable.previous_version_uuid,
-                                       std::to_string(writable.previous_sequence),
-                                       EncodeCrudPairs(writable.values),
-                                       writable.temporary_session_uuid});
-    impl_->row_out << line << '\n';
-    if (!impl_->row_out) {
-      return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
-    }
+    const std::string line = BuildRowVersionStoreLine(writable);
+    row_buffer.append(line);
+    row_buffer.push_back('\n');
     impl_->scoped_row_lines[ScopedRowStorePath(impl_->context, writable.table_uuid)]
         .push_back(line);
+    auto& summary_delta = impl_->scoped_row_summary_deltas[writable.table_uuid];
+    ++summary_delta.row_version_count;
+    if (writable.deleted) {
+      ++summary_delta.tombstone_count;
+    }
+    if (!writable.previous_version_uuid.empty()) {
+      ++summary_delta.update_count;
+    }
     impl_->row_dirty = true;
     ++impl_->counters.row_versions_appended;
     if (written_event_sequences != nullptr) {
       written_event_sequences->push_back(writable.event_sequence);
+    }
+  }
+  if (!row_buffer.empty()) {
+    impl_->row_out.write(row_buffer.data(),
+                         static_cast<std::streamsize>(row_buffer.size()));
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
     }
   }
   return OkDiagnostic();
@@ -2854,7 +3355,13 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "scoped_row_version_append_failed");
   }
+  if (!UpdateScopedRelationSummaries(impl_->context,
+                                     impl_->scoped_row_summary_deltas)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "scoped_relation_summary_update_failed");
+  }
   impl_->scoped_row_lines.clear();
+  impl_->scoped_row_summary_deltas.clear();
   return OkDiagnostic();
 }
 
@@ -2891,6 +3398,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
+  std::string index_buffer;
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
     const std::string table_uuid =
@@ -2898,28 +3406,32 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
     for (const auto& row : batch.rows) {
       for (const auto& key : CrudIndexKeysForValues(batch.index, row.values)) {
         const std::string payload = CrudFieldValue(row.values, batch.index.column_name);
-        const std::string line = JoinLine({kRowStoreMagic,
-                                           "INDEX_ENTRY",
-                                           std::to_string(impl_->context.local_transaction_id),
-                                           std::to_string(event_sequence++),
-                                           batch.index.index_uuid,
-                                           table_uuid,
-                                           batch.index.column_name,
-                                           batch.index.family,
-                                           "exact",
-                                           key,
-                                           payload,
-                                           row.row_uuid,
-                                           row.version_uuid});
-        impl_->index_out << line << '\n';
-        if (!impl_->index_out) {
-          return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
-        }
+        const std::string line = BuildIndexEntryStoreLine(
+            impl_->context.local_transaction_id,
+            event_sequence++,
+            batch.index.index_uuid,
+            table_uuid,
+            batch.index.column_name,
+            batch.index.family,
+            "exact",
+            key,
+            payload,
+            row.row_uuid,
+            row.version_uuid);
+        index_buffer.append(line);
+        index_buffer.push_back('\n');
         impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
             .push_back(line);
         impl_->index_dirty = true;
         ++impl_->counters.index_entries_appended;
       }
+    }
+  }
+  if (!index_buffer.empty()) {
+    impl_->index_out.write(index_buffer.data(),
+                           static_cast<std::streamsize>(index_buffer.size()));
+    if (!impl_->index_out) {
+      return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
     }
   }
   return OkDiagnostic();
@@ -2954,6 +3466,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
+  std::string index_buffer;
   for (const auto& batch : batches) {
     if (batch.entries.empty()) { continue; }
     const std::string table_uuid =
@@ -2962,27 +3475,31 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       if (entry.encoded_key.empty() || entry.row_uuid.empty() || entry.version_uuid.empty()) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
       }
-      const std::string line = JoinLine({kRowStoreMagic,
-                                         "INDEX_ENTRY",
-                                         std::to_string(impl_->context.local_transaction_id),
-                                         std::to_string(event_sequence++),
-                                         batch.index.index_uuid,
-                                         table_uuid,
-                                         batch.index.column_name,
-                                         batch.index.family,
-                                         "exact",
-                                         entry.encoded_key,
-                                         entry.payload_value,
-                                         entry.row_uuid,
-                                         entry.version_uuid});
-      impl_->index_out << line << '\n';
-      if (!impl_->index_out) {
-        return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
-      }
+      const std::string line = BuildIndexEntryStoreLine(
+          impl_->context.local_transaction_id,
+          event_sequence++,
+          batch.index.index_uuid,
+          table_uuid,
+          batch.index.column_name,
+          batch.index.family,
+          "exact",
+          entry.encoded_key,
+          entry.payload_value,
+          entry.row_uuid,
+          entry.version_uuid);
+      index_buffer.append(line);
+      index_buffer.push_back('\n');
       impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
           .push_back(line);
       impl_->index_dirty = true;
       ++impl_->counters.index_entries_appended;
+    }
+  }
+  if (!index_buffer.empty()) {
+    impl_->index_out.write(index_buffer.data(),
+                           static_cast<std::streamsize>(index_buffer.size()));
+    if (!impl_->index_out) {
+      return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
     }
   }
   return OkDiagnostic();
@@ -4561,6 +5078,13 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
     return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup",
                                         "local_transaction_id_required");
   }
+  const auto cleanup_work = HasMgaTemporaryCleanupMetadataWork(context,
+                                                              include_delete_rows,
+                                                              include_preserve_rows,
+                                                              retire_private_metadata);
+  if (!cleanup_work.ok) { return cleanup_work.diagnostic; }
+  if (!cleanup_work.has_work) { return OkDiagnostic(); }
+
   auto load_context = context;
   load_context.local_transaction_id = local_transaction_id;
   auto loaded = LoadMgaRelationStoreState(load_context);

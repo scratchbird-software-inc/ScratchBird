@@ -25,9 +25,12 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -53,11 +56,40 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
+constexpr std::size_t kMaxSharedNameResolutionCacheEntries = 16384;
 
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+using ParserPipelineClock = std::chrono::steady_clock;
+
+std::uint64_t ParserPipelineElapsedMicros(ParserPipelineClock::time_point start,
+                                          ParserPipelineClock::time_point end) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+}
+
+void WriteParserPipelinePhaseTrace(
+    std::string_view sql,
+    const PipelineResult& result,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* path = std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') return;
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  out << "layer=sbsql_pipeline"
+      << "\toperation=" << result.operation_family
+      << "\tfamily=" << result.statement_family
+      << "\taccepted=" << (result.accepted ? "true" : "false")
+      << "\tsql_bytes=" << sql.size()
+      << "\tstatement_hash=" << result.statement_hash;
+  for (const auto& [phase, micros] : phase_micros) {
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << '\n';
 }
 
 std::string NewRowUuid() {
@@ -148,6 +180,15 @@ bool ApplyExecutedTransactionState(const ServerExecutionResult& executed,
   session->transaction_timestamp = executed.transaction_timestamp;
   session->transaction_context = "always_active";
   return changed;
+}
+
+bool ExecutionInvalidatesNameResolution(std::string_view operation_id) {
+  return operation_id.rfind("ddl.", 0) == 0 ||
+         operation_id.rfind("catalog.", 0) == 0 ||
+         operation_id.rfind("security.", 0) == 0 ||
+         operation_id.rfind("language.", 0) == 0 ||
+         operation_id.rfind("policy.", 0) == 0 ||
+         operation_id.rfind("auth.", 0) == 0;
 }
 
 struct ObjectReference {
@@ -335,7 +376,6 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
   key << presented_name << "|quoted=" << (quoted ? "1" : "0")
       << "|class=" << object_class
       << "|catalog=" << session.catalog_epoch
-      << "|local_txn=" << session.local_transaction_id
       << "|security=" << session.security_policy_epoch
       << "|grant=" << session.grant_epoch
       << "|descriptor=" << session.descriptor_epoch
@@ -354,6 +394,51 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
       << "|resource_compat=" << session.resource_compatibility_identity
       << "|resource_version=" << session.resource_version_identity;
   return key.str();
+}
+
+std::mutex& SharedNameResolutionCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, CachedPublicNameResolution>& SharedNameResolutionCache() {
+  static std::map<std::string, CachedPublicNameResolution> cache;
+  return cache;
+}
+
+std::deque<std::string>& SharedNameResolutionLru() {
+  static std::deque<std::string> lru;
+  return lru;
+}
+
+std::optional<CachedPublicNameResolution> LookupSharedNameResolutionCache(
+    const std::string& cache_key) {
+  std::lock_guard<std::mutex> guard(SharedNameResolutionCacheMutex());
+  const auto found = SharedNameResolutionCache().find(cache_key);
+  if (found == SharedNameResolutionCache().end()) return std::nullopt;
+  return found->second;
+}
+
+void StoreSharedNameResolutionCacheEntry(
+    const std::string& cache_key,
+    const CachedPublicNameResolution& cached) {
+  if (cache_key.empty() || cached.object_uuid.empty()) return;
+  std::lock_guard<std::mutex> guard(SharedNameResolutionCacheMutex());
+  auto& cache = SharedNameResolutionCache();
+  auto& lru = SharedNameResolutionLru();
+  cache[cache_key] = cached;
+  lru.erase(std::remove(lru.begin(), lru.end(), cache_key), lru.end());
+  lru.push_back(cache_key);
+  while (cache.size() > kMaxSharedNameResolutionCacheEntries && !lru.empty()) {
+    cache.erase(lru.front());
+    lru.pop_front();
+  }
+}
+
+void ClearSharedNameResolutionCache() {
+  std::lock_guard<std::mutex> guard(SharedNameResolutionCacheMutex());
+  SharedNameResolutionCache().clear();
+  SharedNameResolutionLru().clear();
 }
 
 std::optional<std::string> DdlResultRowField(std::string_view payload,
@@ -395,6 +480,12 @@ PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
   result.statement_hash = entry.statement_hash;
   result.sblr_payload = entry.sblr_payload;
   return result;
+}
+
+bool CanReuseFrontdoorCacheForSubmit(const PipelineResult& result) {
+  return result.operation_family == "sblr.dml.operation.v3" ||
+         result.operation_family == "sblr.query.relational.v3" ||
+         result.operation_family == "sblr.transaction.control.v3";
 }
 
 void AddResourceDiagnostic(MessageVectorSet* messages,
@@ -626,6 +717,8 @@ std::vector<ObjectReference> ExtractMergeObjectReferences(const CstDocument& cst
 std::vector<ObjectReference> ExtractInsertObjectReferences(const CstDocument& cst,
                                                            std::size_t first_token) {
   std::vector<ObjectReference> refs;
+  bool target_seen = false;
+  std::size_t after_target = first_token + 1;
   for (std::size_t i = first_token + 1; i < cst.tokens.size(); ++i) {
     const auto& token = cst.tokens[i];
     if (IsTriviaToken(token)) continue;
@@ -633,10 +726,38 @@ std::vector<ObjectReference> ExtractInsertObjectReferences(const CstDocument& cs
     if (IsWord(token, "INTO")) {
       if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
         refs.push_back(*ref);
+        target_seen = true;
       }
-      return refs;
+      after_target = i + 1;
+      break;
     }
     if (token.kind != TokenKind::kKeyword && token.kind != TokenKind::kIdentifier) {
+      break;
+    }
+  }
+  if (!target_seen) return refs;
+
+  bool saw_row_number = false;
+  bool left_source_seen = false;
+  for (std::size_t i = after_target; i < cst.tokens.size(); ++i) {
+    const auto& token = cst.tokens[i];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd) break;
+    if (!saw_row_number) {
+      if (IsWord(token, "ROW_NUMBER")) saw_row_number = true;
+      continue;
+    }
+    if (!left_source_seen && IsWord(token, "FROM")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+        left_source_seen = true;
+      }
+      continue;
+    }
+    if (left_source_seen && IsWord(token, "JOIN")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+      }
       break;
     }
   }
@@ -2290,10 +2411,14 @@ ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_vi
 }
 
 void SbsqlTestWireSession::ClearNameResolutionCache() {
-  if (name_resolution_cache_.empty() && name_resolution_lru_.empty()) return;
+  const bool local_had_entries =
+      !name_resolution_cache_.empty() || !name_resolution_lru_.empty();
   name_resolution_cache_.clear();
   name_resolution_lru_.clear();
-  if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.clears_total");
+  ClearSharedNameResolutionCache();
+  if (metrics_ && local_had_entries) {
+    metrics_->Increment("sys.metrics.parsers.name_resolution_cache.clears_total");
+  }
 }
 
 void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
@@ -2315,6 +2440,7 @@ void SbsqlTestWireSession::StoreNameResolutionCacheEntry(
   cached.catalog_epoch = catalog_epoch;
   cached.security_epoch = security_epoch;
   name_resolution_cache_[cache_key] = std::move(cached);
+  StoreSharedNameResolutionCacheEntry(cache_key, name_resolution_cache_[cache_key]);
   name_resolution_lru_.erase(std::remove(name_resolution_lru_.begin(),
                                          name_resolution_lru_.end(),
                                          cache_key),
@@ -2370,6 +2496,26 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     result.object_class = found->second.object_class;
     result.catalog_epoch = found->second.catalog_epoch;
     result.security_epoch = found->second.security_epoch;
+    return result;
+  }
+  if (auto shared = LookupSharedNameResolutionCache(cache_key)) {
+    if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.name_resolution_cache.shared_hits_total");
+      metrics_->Increment("sys.metrics.parsers.name_resolution_cache.route_skips_total");
+    }
+    name_resolution_cache_[cache_key] = *shared;
+    name_resolution_lru_.erase(std::remove(name_resolution_lru_.begin(),
+                                           name_resolution_lru_.end(),
+                                           cache_key),
+                               name_resolution_lru_.end());
+    name_resolution_lru_.push_back(cache_key);
+    PublicNameResolutionResult result;
+    result.resolved = true;
+    result.object_uuid = shared->object_uuid;
+    result.canonical_name = shared->canonical_name;
+    result.object_class = shared->object_class;
+    result.catalog_epoch = shared->catalog_epoch;
+    result.security_epoch = shared->security_epoch;
     return result;
   }
   if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.misses_total");
@@ -2477,13 +2623,28 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  bool cursor_requested,
                                                  std::uint64_t stream_row_count,
                                                  bool autocommit_emulation) {
+  const bool phase_trace =
+      std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
+  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  auto phase_start = ParserPipelineClock::now();
+  auto mark_phase = [&](std::string phase) {
+    if (!phase_trace) return;
+    const auto now = ParserPipelineClock::now();
+    phase_micros.push_back(
+        {std::move(phase), ParserPipelineElapsedMicros(phase_start, now)});
+    phase_start = now;
+  };
+
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
                            submit && session_.authenticated && HasExecutionRoute(),
                            ParserState::kActive,
                            ParserState::kAuthenticated);
   if (auto management = ParseServerManagementCommand(sql)) {
-    return RunServerManagementCommand(*management);
+    auto result = RunServerManagementCommand(*management);
+    mark_phase("server_management");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
   }
   if (sql.size() > config_.resource_budget.max_statement_bytes) {
     if (metrics_) {
@@ -2497,21 +2658,73 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         "ERROR",
         "statement exceeds parser resource budget",
         "sbp_sbsql.wire"));
+    mark_phase("resource_budget");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
   const auto frontdoor_cache_key = BuildFrontdoorLoweringCacheKey(config_, session_, sql);
-  if (!submit && cache_ != nullptr) {
+  mark_phase("frontdoor_cache_key");
+  if (cache_ != nullptr) {
     if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.attempts_total");
     if (auto cached = cache_->LookupEntry(frontdoor_cache_key)) {
-      if (metrics_) {
-        metrics_->Increment("sys.metrics.parsers.frontdoor_cache.hits_total");
-        metrics_->Increment("sys.metrics.parsers.frontdoor_cache.parse_lower_skips_total");
+      auto result = PipelineResultFromCacheEntry(*cached);
+      if (!submit || CanReuseFrontdoorCacheForSubmit(result)) {
+        if (metrics_) {
+          metrics_->Increment("sys.metrics.parsers.frontdoor_cache.hits_total");
+          metrics_->Increment("sys.metrics.parsers.frontdoor_cache.parse_lower_skips_total");
+        }
+        mark_phase("frontdoor_cache_hit");
+        if (!submit) {
+          WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+          return result;
+        }
+        if (!HasExecutionRoute()) {
+          result.accepted = false;
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBSQL.SERVER.UNAVAILABLE", "ERROR",
+              "SBLR submission requires an execution route",
+              "sbp_sbsql.wire"));
+        } else if (!session_.authenticated) {
+          result.accepted = false;
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBSQL.AUTH.REQUIRED", "ERROR",
+              "SBLR submission requires an authenticated server session",
+              "sbp_sbsql.wire"));
+        } else {
+          std::string execution_payload = result.sblr_payload;
+          if (autocommit_emulation && !cursor_requested) {
+            InjectAutocommitEmulation(&execution_payload);
+          }
+          mark_phase("prepare_execution_payload");
+          const auto executed = ExecuteSblrOnRoute(execution_payload, cursor_requested);
+          mark_phase("execute_sblr_route");
+          if (!executed.accepted) {
+            result.accepted = false;
+            result.messages = executed.messages;
+          } else {
+            result.server_operation_id = executed.operation_id;
+            result.server_cursor_uuid = executed.cursor_uuid;
+            result.server_row_count = executed.row_count;
+            result.server_affected_rows = executed.affected_rows;
+            result.server_affected_rows_present = executed.affected_rows_present;
+            result.server_result_payload = executed.row_packet;
+            ApplyExecutedTransactionState(executed, &session_);
+            if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
+              ClearNameResolutionCache();
+            }
+          }
+        }
+        WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+        return result;
       }
-      return PipelineResultFromCacheEntry(*cached);
+      if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.misses_total");
+    } else if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.frontdoor_cache.misses_total");
     }
-    if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.misses_total");
   }
+  mark_phase("frontdoor_cache_lookup");
   auto cst = BuildCst(sql);
+  mark_phase("build_cst");
   MessageVectorSet resource_messages = cst.messages;
   if (!EnforceCstResourceBudget(cst, config_.resource_budget, metrics_,
                                 &resource_messages)) {
@@ -2519,9 +2732,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     result.accepted = false;
     result.statement_hash = Fnv1a64(cst.source);
     result.messages = std::move(resource_messages);
+    mark_phase("cst_resource_budget");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
   auto ast = BuildAst(cst);
+  mark_phase("build_ast");
   std::vector<std::string> resolved_object_uuids;
   PipelineResult result;
   result.statement_family = StatementFamilyName(ast.family);
@@ -2531,6 +2747,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   if (!result.messages.has_errors() && ast.requires_name_resolution &&
       HasExecutionRoute() && session_.authenticated) {
     const auto refs = ExtractObjectReferences(cst);
+    mark_phase("extract_object_references");
     for (const auto& ref : refs) {
       auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
       if (!resolved.resolved) {
@@ -2541,13 +2758,17 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
       session_.security_policy_epoch = std::max(session_.security_policy_epoch, resolved.security_epoch);
     }
+    mark_phase("resolve_object_references");
   }
   if (result.messages.has_errors()) {
     result.accepted = false;
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
   auto bound = BindAst(ast, cst, config_, session_, resolved_object_uuids);
+  mark_phase("bind_ast");
   auto lowered = LowerToSblr(bound, cst, session_);
+  mark_phase("lower_to_sblr");
   if (!lowered.payload.empty() &&
       lowered.payload.size() > config_.resource_budget.max_sblr_envelope_bytes) {
     lowered.messages.diagnostics.push_back(MakeDiagnostic(
@@ -2575,8 +2796,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       InjectCursorFetchWindow(&result.sblr_payload, 1024, 4u * 1024u * 1024u);
     }
   }
+  mark_phase("shape_pipeline_result");
   result.messages = std::move(lowered.messages);
-  if (!submit && result.accepted && cache_ != nullptr) {
+  if (result.accepted && cache_ != nullptr &&
+      (!submit || CanReuseFrontdoorCacheForSubmit(result))) {
     CacheEntry entry;
     entry.key = BuildFrontdoorLoweringCacheKey(config_, session_, sql);
     entry.sblr_payload = result.sblr_payload;
@@ -2590,6 +2813,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     cache_->StoreEntry(std::move(entry));
     if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.stores_total");
   }
+  mark_phase("frontdoor_cache_store");
   if (submit && result.accepted) {
     if (!HasExecutionRoute()) {
       result.accepted = false;
@@ -2610,7 +2834,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       if (autocommit_emulation && !cursor_requested) {
         InjectAutocommitEmulation(&execution_payload);
       }
+      mark_phase("prepare_execution_payload");
       const auto executed = ExecuteSblrOnRoute(execution_payload, cursor_requested);
+      mark_phase("execute_sblr_route");
       if (!executed.accepted) {
         result.accepted = false;
         result.messages = executed.messages;
@@ -2618,14 +2844,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.server_operation_id = executed.operation_id;
         result.server_cursor_uuid = executed.cursor_uuid;
         result.server_row_count = executed.row_count;
+        result.server_affected_rows = executed.affected_rows;
+        result.server_affected_rows_present = executed.affected_rows_present;
         result.server_result_payload = executed.row_packet;
-        if (ApplyExecutedTransactionState(executed, &session_)) {
+        ApplyExecutedTransactionState(executed, &session_);
+        if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
           ClearNameResolutionCache();
         }
         SeedCreatedDdlNameResolutionCache(cst, result);
       }
     }
   }
+  WriteParserPipelinePhaseTrace(sql, result, phase_micros);
   return result;
 }
 
@@ -2654,8 +2884,11 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sb
   result.server_operation_id = executed.operation_id;
   result.server_cursor_uuid = executed.cursor_uuid;
   result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
   result.server_result_payload = executed.row_packet;
-  if (ApplyExecutedTransactionState(executed, &session_)) {
+  ApplyExecutedTransactionState(executed, &session_);
+  if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
     ClearNameResolutionCache();
   }
   return result;
@@ -2721,8 +2954,11 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
   result.server_operation_id = executed.operation_id;
   result.server_cursor_uuid = executed.cursor_uuid;
   result.server_row_count = executed.row_count;
+  result.server_affected_rows = executed.affected_rows;
+  result.server_affected_rows_present = executed.affected_rows_present;
   result.server_result_payload = executed.row_packet;
-  if (ApplyExecutedTransactionState(executed, &session_)) {
+  ApplyExecutedTransactionState(executed, &session_);
+  if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
     ClearNameResolutionCache();
   }
   return result;

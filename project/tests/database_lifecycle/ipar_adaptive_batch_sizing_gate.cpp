@@ -251,6 +251,7 @@ api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
   request.estimated_row_count = static_cast<api::EngineApiU64>(rows.size());
   request.input_rows = std::move(rows);
   request.option_envelopes = std::move(options);
+  request.option_envelopes.push_back("direct_physical_insert=disabled");
   return request;
 }
 

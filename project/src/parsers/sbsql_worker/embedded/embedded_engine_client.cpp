@@ -186,6 +186,11 @@ void PopulateTransactionStateFromPayload(std::string_view payload,
       return 0;
     }
   };
+  const auto affected_rows = line_value("server_affected_rows");
+  if (affected_rows) {
+    result->affected_rows = parse_u64(*affected_rows);
+    result->affected_rows_present = true;
+  }
   const auto replacement_id = line_value("replacement_local_transaction_id");
   const auto active_id = line_value("local_transaction_id");
   if (replacement_id || active_id) {

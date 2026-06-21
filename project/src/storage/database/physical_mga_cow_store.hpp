@@ -52,6 +52,11 @@ struct PhysicalMgaCowMutationRequest {
   std::vector<scratchbird::storage::page::RowDataCell> cells;
 };
 
+struct PhysicalMgaCowMutationBatchRequest {
+  std::vector<PhysicalMgaCowMutationRequest> mutations;
+  bool sync_after_batch = true;
+};
+
 struct PhysicalMgaCowFinalizeRequest {
   std::string database_path;
   scratchbird::transaction::mga::LocalTransactionId local_transaction_id;
@@ -85,6 +90,18 @@ struct PhysicalMgaCowMutationResult {
   scratchbird::storage::page::RowDataRecord row_version;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
+
+  bool ok() const {
+    return status.ok();
+  }
+};
+
+struct PhysicalMgaCowMutationBatchResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::vector<std::string> evidence;
+  u64 written_rows = 0;
+  u64 pages_written = 0;
 
   bool ok() const {
     return status.ok();
@@ -126,6 +143,8 @@ const char* PhysicalMgaCowFinalizeDecisionName(PhysicalMgaCowFinalizeDecision de
 
 PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
     const PhysicalMgaCowMutationRequest& request);
+PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
+    const PhysicalMgaCowMutationBatchRequest& request);
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
     const PhysicalMgaCowFinalizeRequest& request);
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(

@@ -407,6 +407,32 @@ def execute_row_query(
     return sequence
 
 
+def execute_command(
+    sock: ssl.SSLSocket,
+    sequence: int,
+    attachment: bytes,
+    txn_id: int,
+    sql: str,
+) -> int:
+    send_frame(sock, MSG_QUERY, sequence, query_payload(sql), attachment=attachment, txn_id=txn_id)
+    sequence += 1
+    saw_complete = False
+    while True:
+        msg_type, payload, _, _ = recv_frame(sock)
+        if msg_type in (MSG_ROW_DESCRIPTION, MSG_DATA_ROW):
+            continue
+        if msg_type == MSG_COMMAND_COMPLETE:
+            saw_complete = True
+            continue
+        if msg_type == MSG_READY:
+            if not saw_complete:
+                raise RouteError(f"{sql} did not complete before READY")
+            return sequence
+        if msg_type == MSG_ERROR:
+            raise RouteError(f"{sql} failed with ERROR payload {payload!r}")
+        raise RouteError(f"unexpected command frame 0x{msg_type:02x} payload={payload!r}")
+
+
 def local_password_evidence(user: str, verifier: bytes, *extra_fields: bytes) -> bytes:
     evidence = (
         b"scheme=local_password_v1;principal="
@@ -537,7 +563,7 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
                 "SELECT * FROM users.public.sbsfc021_stream_table",
             )
 
-        send_frame(sock, MSG_TXN_COMMIT, sequence, attachment=attachment, txn_id=txn_id)
+        send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
         sequence += 1
         ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_COMMIT")
         status, ready_txn = decode_ready(ready_payload)
@@ -565,7 +591,7 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
                 raise RouteError(f"COPY_IN_RESPONSE did not advertise canonical row-field text profile: {copy_in_payload!r}")
             if struct.unpack_from("<I", copy_in_payload, 1)[0] == 0:
                 raise RouteError("COPY_IN_RESPONSE advertised a zero-byte copy window")
-            copy_payload = b"id=9;payload=sbwp-copy-valid\nid=6;payload=sbwp-copy-duplicate\n"
+            copy_payload = b"id=9;payload=sbwp-copy-valid\nid=10;payload=sbwp-copy-second\n"
             send_frame(sock, MSG_COPY_DATA, sequence, copy_payload, attachment=attachment, txn_id=txn_id)
             sequence += 1
             send_frame(sock, MSG_COPY_DONE, sequence, b"", attachment=attachment, txn_id=txn_id)
@@ -580,7 +606,7 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
                 )
             txn_id = ready_txn
 
-            send_frame(sock, MSG_TXN_COMMIT, sequence, attachment=attachment, txn_id=txn_id)
+            send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
             sequence += 1
             ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_COMMIT after COPY")
             status, ready_txn = decode_ready(ready_payload)
@@ -590,6 +616,46 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
                 raise RouteError("engine transaction commit after COPY did not advance to a replacement transaction")
             txn_id = ready_txn
 
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
+def run_nested_schema_parent_route(port: int) -> None:
+    with connect_tls(port) as sock:
+        attachment, sequence, txn_id = authenticate(
+            sock,
+            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+        )
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "CREATE SCHEMA users.public.route_nested_regression",
+        )
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "CREATE TABLE users.public.route_nested_regression.route_nested_table "
+            "(id bigint, payload text)",
+        )
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "INSERT INTO users.public.route_nested_regression.route_nested_table "
+            "(id, payload) VALUES (1, 'nested-route'), (2, 'schema-parent')",
+        )
+        sequence = execute_row_query(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "SELECT * FROM users.public.route_nested_regression.route_nested_table",
+            expected_rows=((b"1", b"nested-route"),),
+        )
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
@@ -874,6 +940,7 @@ def main() -> int:
           run_plaintext_required_refusal(port)
           run_binary_copy_required_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
+          run_nested_schema_parent_route(port)
           run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, args.example_db_seeder is not None)
           run_negative_auth_route(port)

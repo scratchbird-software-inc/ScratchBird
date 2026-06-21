@@ -588,6 +588,37 @@ struct DmlInsertFieldInfo {
   bool is_null{false};
 };
 
+std::string DmlHexEncodeLower(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2u);
+  for (const unsigned char ch : value) {
+    out.push_back(kHex[(ch >> 4u) & 0x0fu]);
+    out.push_back(kHex[ch & 0x0fu]);
+  }
+  return out;
+}
+
+std::string CompactInsertValuesPayload(
+    const std::vector<std::vector<DmlInsertFieldInfo>>& rows) {
+  std::string payload;
+  bool first = true;
+  for (const auto& row : rows) {
+    for (const auto& field : row) {
+      if (!first) payload.push_back(';');
+      first = false;
+      payload += DmlHexEncodeLower(field.name);
+      payload.push_back('|');
+      payload += DmlHexEncodeLower(field.type_name);
+      payload.push_back('|');
+      payload += DmlHexEncodeLower(field.value);
+      payload.push_back('|');
+      payload.push_back(field.is_null ? '1' : '0');
+    }
+  }
+  return payload;
+}
+
 struct DmlRouteInfo {
   bool active{false};
   bool valid{false};
@@ -658,6 +689,8 @@ struct DmlRouteInfo {
   std::string insert_select_counter_step;
   std::string insert_select_counter_limit;
   std::string insert_select_counter_predicate;
+  std::string insert_select_source_uuid_0;
+  std::string insert_select_source_uuid_1;
   std::vector<std::string> insert_select_projections;
   std::string assertion_id;
   std::string actual_column_name;
@@ -7368,6 +7401,15 @@ bool ConsumeSelectProjectionInSubqueryPredicate(const std::vector<const Token*>&
     inner_value = DmlLiteralPayload(*tokens[cursor]);
     inner_value_type = BoundedWhereEqualityLiteralType(*tokens[cursor]);
     ++cursor;
+  } else if (cursor < tokens.size() &&
+             (tokens[cursor]->text == ">" || tokens[cursor]->text == ">=")) {
+    inner_predicate_kind =
+        tokens[cursor]->text == ">=" ? "column_greater_equal" : "column_greater";
+    ++cursor;
+    if (cursor >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[cursor])) return false;
+    inner_value = DmlLiteralPayload(*tokens[cursor]);
+    inner_value_type = BoundedWhereEqualityLiteralType(*tokens[cursor]);
+    ++cursor;
   } else if (cursor < tokens.size() && ToUpperAscii(tokens[cursor]->text) == "IN") {
     inner_predicate_kind = "column_in_projection";
     ++cursor;
@@ -7962,6 +8004,9 @@ bool IsScalarProjectionLiteral(const Token& token);
 bool TokenTextEquals(const std::vector<const Token*>& tokens,
                      std::size_t index,
                      std::string_view expected);
+bool ConsumeProjectionAlias(const std::vector<const Token*>& tokens,
+                            std::size_t* index,
+                            std::string* alias);
 
 struct ParsedUpdateAssignment {
   std::string target_column;
@@ -7971,6 +8016,112 @@ struct ParsedUpdateAssignment {
   std::string literal_type;
   bool expression{false};
 };
+
+bool ConsumeDmlCaseThresholdAssignment(
+    const std::vector<const Token*>& tokens,
+    std::size_t* index,
+    ParsedUpdateAssignment* assignment) {
+  if (index == nullptr || assignment == nullptr ||
+      !TokenTextEquals(tokens, *index, "CASE")) {
+    return false;
+  }
+
+  std::size_t cursor = *index + 1;
+  std::string source_column;
+  std::vector<std::string> threshold_terms;
+  std::string result_type;
+  while (TokenTextEquals(tokens, cursor, "WHEN")) {
+    ++cursor;
+    std::string when_column;
+    if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &when_column) ||
+        !TokenTextEquals(tokens, cursor, ">=") ||
+        cursor + 1 >= tokens.size() ||
+        !IsScalarProjectionLiteral(*tokens[cursor + 1])) {
+      return false;
+    }
+    if (source_column.empty()) {
+      source_column = when_column;
+    } else if (LowerAscii(source_column) != LowerAscii(when_column)) {
+      return false;
+    }
+    const std::string threshold = DmlLiteralPayload(*tokens[cursor + 1]);
+    cursor += 2;
+    if (!TokenTextEquals(tokens, cursor, "THEN") ||
+        cursor + 1 >= tokens.size() ||
+        !IsScalarProjectionLiteral(*tokens[cursor + 1])) {
+      return false;
+    }
+    if (result_type.empty()) {
+      result_type = ScalarProjectionTypeForToken(*tokens[cursor + 1]);
+    }
+    threshold_terms.push_back(threshold + "=" +
+                              DmlLiteralPayload(*tokens[cursor + 1]));
+    cursor += 2;
+  }
+  if (threshold_terms.empty() ||
+      !TokenTextEquals(tokens, cursor, "ELSE") ||
+      cursor + 1 >= tokens.size() ||
+      !IsScalarProjectionLiteral(*tokens[cursor + 1])) {
+    return false;
+  }
+  threshold_terms.push_back("else=" + DmlLiteralPayload(*tokens[cursor + 1]));
+  if (result_type.empty()) {
+    result_type = ScalarProjectionTypeForToken(*tokens[cursor + 1]);
+  }
+  cursor += 2;
+  if (!TokenTextEquals(tokens, cursor, "END")) return false;
+  ++cursor;
+
+  assignment->expression = true;
+  assignment->source_column = std::move(source_column);
+  assignment->operation = "case_ge_thresholds";
+  assignment->literal_type = std::move(result_type);
+  std::ostringstream plan;
+  for (std::size_t term = 0; term < threshold_terms.size(); ++term) {
+    if (term != 0) plan << ',';
+    plan << threshold_terms[term];
+  }
+  assignment->literal_value = plan.str();
+  *index = cursor;
+  return true;
+}
+
+bool ConsumeColumnLessOrNullPredicate(const std::vector<const Token*>& tokens,
+                                      std::size_t* index,
+                                      std::string* predicate_column,
+                                      std::string* predicate_value,
+                                      std::string* predicate_value_type) {
+  if (index == nullptr || predicate_column == nullptr ||
+      predicate_value == nullptr || predicate_value_type == nullptr) {
+    return false;
+  }
+  std::size_t cursor = *index;
+  std::string left_column;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &left_column) ||
+      !TokenTextEquals(tokens, cursor, "<") ||
+      cursor + 1 >= tokens.size() ||
+      !IsBoundedWhereEqualityLiteral(*tokens[cursor + 1])) {
+    return false;
+  }
+  const std::string bound_value = DmlLiteralPayload(*tokens[cursor + 1]);
+  const std::string bound_type = BoundedWhereEqualityLiteralType(*tokens[cursor + 1]);
+  cursor += 2;
+  if (!TokenTextEquals(tokens, cursor, "OR")) return false;
+  ++cursor;
+  std::string null_column;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &cursor, &null_column) ||
+      LowerAscii(null_column) != LowerAscii(left_column) ||
+      !TokenTextEquals(tokens, cursor, "IS") ||
+      !TokenTextEquals(tokens, cursor + 1, "NULL")) {
+    return false;
+  }
+  cursor += 2;
+  *predicate_column = std::move(left_column);
+  *predicate_value = bound_value;
+  *predicate_value_type = bound_type;
+  *index = cursor;
+  return true;
+}
 
 bool TokenTextInUpperSet(const Token& token,
                          const std::vector<std::string_view>& values) {
@@ -8033,16 +8184,24 @@ bool ConsumeDmlUpdateAssignments(
 
     std::size_t expression_cursor = *index;
     std::string source_leaf;
-    if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
+    if (ConsumeDmlCaseThresholdAssignment(tokens, &expression_cursor, &assignment)) {
+      *index = expression_cursor;
+    } else if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
         expression_cursor < tokens.size() &&
         (tokens[expression_cursor]->text == "+" ||
-         tokens[expression_cursor]->text == "-") &&
+         tokens[expression_cursor]->text == "-" ||
+         tokens[expression_cursor]->text == "*") &&
         expression_cursor + 1 < tokens.size() &&
         IsScalarProjectionLiteral(*tokens[expression_cursor + 1])) {
       assignment.expression = true;
       assignment.source_column = std::move(source_leaf);
-      assignment.operation =
-          tokens[expression_cursor]->text == "-" ? "subtract" : "add";
+      if (tokens[expression_cursor]->text == "-") {
+        assignment.operation = "subtract";
+      } else if (tokens[expression_cursor]->text == "*") {
+        assignment.operation = "multiply";
+      } else {
+        assignment.operation = "add";
+      }
       assignment.literal_value = DmlLiteralPayload(*tokens[expression_cursor + 1]);
       assignment.literal_type =
           ScalarProjectionTypeForToken(*tokens[expression_cursor + 1]);
@@ -8161,25 +8320,47 @@ void AnalyzeUpdateAssignmentPredicate(const CstDocument& cst, DmlRouteInfo* info
     info->predicate_value_type = std::move(modulo_value_types);
   } else {
     index = predicate_start;
-    std::string predicate_leaf;
-    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &predicate_leaf) ||
-        index >= tokens.size() || tokens[index]->text != "=") {
-      info->unsupported_query_family = true;
-      info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
-      return;
+    std::string less_or_null_column;
+    std::string less_or_null_value;
+    std::string less_or_null_value_type;
+    if (ConsumeColumnLessOrNullPredicate(tokens,
+                                         &index,
+                                         &less_or_null_column,
+                                         &less_or_null_value,
+                                         &less_or_null_value_type)) {
+      info->has_where_equality_predicate = true;
+      info->predicate_kind = "column_less_or_null";
+      info->predicate_column = std::move(less_or_null_column);
+      info->predicate_value = std::move(less_or_null_value);
+      info->predicate_value_type = std::move(less_or_null_value_type);
+    } else {
+      index = predicate_start;
+      if (ConsumeSelectProjectionInSubqueryPredicate(tokens, &index, info)) {
+        // Predicate descriptor installed by helper.
+      } else {
+        index = predicate_start;
+        std::string predicate_leaf;
+        if (!ConsumeTokenQualifiedLeaf(tokens, &index, &predicate_leaf) ||
+            index >= tokens.size() || tokens[index]->text != "=") {
+          info->unsupported_query_family = true;
+          info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
+          return;
+        }
+        ++index;
+        if (index >= tokens.size() ||
+            !IsBoundedWhereEqualityLiteral(*tokens[index])) {
+          info->unsupported_query_family = true;
+          info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
+          return;
+        }
+        info->has_where_equality_predicate = true;
+        info->predicate_kind = "column_equals";
+        info->predicate_column = std::move(predicate_leaf);
+        info->predicate_value = DmlLiteralPayload(*tokens[index]);
+        info->predicate_value_type = BoundedWhereEqualityLiteralType(*tokens[index]);
+        ++index;
+      }
     }
-    ++index;
-    if (index >= tokens.size() || !IsBoundedWhereEqualityLiteral(*tokens[index])) {
-      info->unsupported_query_family = true;
-      info->unsupported_feature = "update_where_requires_descriptor_bound_equality";
-      return;
-    }
-    info->has_where_equality_predicate = true;
-    info->predicate_kind = "column_equals";
-    info->predicate_column = std::move(predicate_leaf);
-    info->predicate_value = DmlLiteralPayload(*tokens[index]);
-    info->predicate_value_type = BoundedWhereEqualityLiteralType(*tokens[index]);
-    ++index;
   }
   if (index < tokens.size()) {
     if (ToUpperAscii(tokens[index]->text) == "RETURNING") {
@@ -8835,9 +9016,36 @@ bool ConsumeRecursiveInsertProjection(const std::vector<const Token*>& tokens,
   }
 
   cursor = *index;
+  bool wrapped_counter_expression = false;
+  if (TokenTextEquals(tokens, cursor, "(")) {
+    wrapped_counter_expression = true;
+    ++cursor;
+  }
   std::string leaf;
   if (ConsumeTokenQualifiedLeaf(tokens, &cursor, &leaf) &&
       LowerAscii(leaf) == LowerAscii(counter_column)) {
+    if (TokenTextEquals(tokens, cursor, "*") &&
+        cursor + 1 < tokens.size() &&
+        tokens[cursor + 1]->kind == TokenKind::kNumericLiteral) {
+      std::string scale = "0";
+      const std::string factor = tokens[cursor + 1]->text;
+      const auto dot = factor.find('.');
+      if (dot != std::string::npos) {
+        scale = std::to_string(factor.size() - dot - 1);
+      }
+      cursor += 2;
+      if (wrapped_counter_expression) {
+        if (!TokenTextEquals(tokens, cursor, ")")) return false;
+        ++cursor;
+      }
+      *descriptor = "counter_multiply:" + factor + ":" + scale;
+      *index = cursor;
+      return true;
+    }
+    if (wrapped_counter_expression) {
+      if (!TokenTextEquals(tokens, cursor, ")")) return false;
+      ++cursor;
+    }
     *descriptor = "counter";
     *index = cursor;
     return true;
@@ -9133,11 +9341,16 @@ DmlRouteInfo AnalyzeRecursiveCteInsertRoute(
   ++index;
   while (index < tokens.size()) {
     std::string projection;
-    if (!ConsumeRecursiveInsertProjection(tokens, &index, info.insert_select_counter_column, &projection)) {
+    if (!ConsumeRecursiveInsertProjection(tokens,
+                                          &index,
+                                          info.insert_select_counter_column,
+                                          &projection)) {
       info.unsupported_query_family = true;
       info.unsupported_feature = "insert_select_cte_projection_unsupported";
       return info;
     }
+    std::string ignored_alias;
+    ConsumeProjectionAlias(tokens, &index, &ignored_alias);
     info.insert_select_projections.push_back(std::move(projection));
     if (TokenTextEquals(tokens, index, ",")) {
       ++index;
@@ -9174,6 +9387,153 @@ DmlRouteInfo AnalyzeRecursiveCteInsertRoute(
   return info;
 }
 
+DmlRouteInfo AnalyzeRowNumberInsertSelectRoute(
+    const CstDocument& cst,
+    const std::vector<std::string>& resolved_object_uuids) {
+  DmlRouteInfo info;
+  const auto tokens = MeaningfulTokenPtrs(cst);
+  if (tokens.empty() || !TokenTextEquals(tokens, 0, "INSERT")) return info;
+
+  std::size_t index = 1;
+  if (!TokenTextEquals(tokens, index, "INTO")) return info;
+  ++index;
+  std::string ignored_target;
+  if (!ConsumeTokenQualifiedPath(tokens, &index, &ignored_target)) return info;
+  if (TokenTextEquals(tokens, index, "(")) {
+    int depth = 0;
+    while (index < tokens.size()) {
+      if (TokenTextEquals(tokens, index, "(")) {
+        ++depth;
+      } else if (TokenTextEquals(tokens, index, ")")) {
+        --depth;
+        ++index;
+        if (depth == 0) break;
+        continue;
+      }
+      ++index;
+      if (depth < 0) return info;
+    }
+    if (depth != 0) return info;
+  }
+  if (!TokenTextEquals(tokens, index, "SELECT")) return info;
+  ++index;
+
+  info.active = true;
+  info.operation_id = "dml.insert_rows";
+  info.opcode = DmlOpcodeForOperation(info.operation_id);
+  info.surface_variant = "insert_select_row_number_limit";
+  info.requires_target_uuid = true;
+  info.has_insert_select_recursive_cte = true;
+  info.insert_select_source_kind = "recursive_counter_cte";
+  info.insert_select_cte_name = "row_number";
+  info.insert_select_counter_column = "seq";
+  info.insert_select_counter_start = "1";
+  info.insert_select_counter_step = "1";
+  info.insert_select_counter_predicate = "lte";
+  AppendIfMissing(&info.keyword_surface_ids, "SBSQL-510838831CA8");
+
+  while (index < tokens.size()) {
+    std::string projection;
+    if (!ConsumeRecursiveInsertProjection(tokens, &index, info.insert_select_counter_column, &projection)) {
+      info.unsupported_query_family = true;
+      info.unsupported_feature = "insert_select_row_number_projection_unsupported";
+      return info;
+    }
+    std::string ignored_alias;
+    ConsumeProjectionAlias(tokens, &index, &ignored_alias);
+    info.insert_select_projections.push_back(std::move(projection));
+    if (TokenTextEquals(tokens, index, ",")) {
+      ++index;
+      continue;
+    }
+    break;
+  }
+
+  if (!TokenTextEquals(tokens, index, "FROM") ||
+      !TokenTextEquals(tokens, index + 1, "(") ||
+      !TokenTextEquals(tokens, index + 2, "SELECT") ||
+      !TokenTextEquals(tokens, index + 3, "ROW_NUMBER") ||
+      !TokenTextEquals(tokens, index + 4, "(") ||
+      !TokenTextEquals(tokens, index + 5, ")") ||
+      !TokenTextEquals(tokens, index + 6, "OVER") ||
+      !TokenTextEquals(tokens, index + 7, "(") ||
+      !TokenTextEquals(tokens, index + 8, ")") ||
+      !TokenTextEquals(tokens, index + 9, "AS")) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_source_required";
+    return info;
+  }
+  index += 10;
+  std::string row_number_alias;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &row_number_alias) ||
+      LowerAscii(row_number_alias) != info.insert_select_counter_column ||
+      !TokenTextEquals(tokens, index, "FROM")) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_alias_required";
+    return info;
+  }
+  ++index;
+  std::string ignored_left_source;
+  if (!ConsumeTokenQualifiedPath(tokens, &index, &ignored_left_source)) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_left_source_required";
+    return info;
+  }
+  if (index < tokens.size() && IsIdentifierLikeToken(*tokens[index]) &&
+      !TokenTextEquals(tokens, index, "CROSS")) {
+    ++index;
+  }
+  if (!TokenTextEquals(tokens, index, "CROSS") ||
+      !TokenTextEquals(tokens, index + 1, "JOIN")) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_cross_join_required";
+    return info;
+  }
+  index += 2;
+  std::string ignored_right_source;
+  if (!ConsumeTokenQualifiedPath(tokens, &index, &ignored_right_source)) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_right_source_required";
+    return info;
+  }
+  if (index < tokens.size() && IsIdentifierLikeToken(*tokens[index]) &&
+      !TokenTextEquals(tokens, index, "LIMIT")) {
+    ++index;
+  }
+  if (!TokenTextEquals(tokens, index, "LIMIT") ||
+      index + 1 >= tokens.size() ||
+      !IsUnsignedIntegerLiteral(*tokens[index + 1])) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_limit_required";
+    return info;
+  }
+  info.insert_select_counter_limit = tokens[index + 1]->text;
+  index += 2;
+  if (!TokenTextEquals(tokens, index, ")")) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_source_close_required";
+    return info;
+  }
+  ++index;
+  if (index < tokens.size() && IsIdentifierLikeToken(*tokens[index])) ++index;
+  if (index != tokens.size()) {
+    info.unsupported_query_family = true;
+    info.unsupported_feature = "insert_select_row_number_trailing_tokens";
+    return info;
+  }
+  if (resolved_object_uuids.size() < 3) {
+    info.valid = false;
+    return info;
+  }
+  info.target_object_uuid = resolved_object_uuids.front();
+  info.source_object_uuid = resolved_object_uuids[1];
+  info.insert_select_source_uuid_0 = resolved_object_uuids[1];
+  info.insert_select_source_uuid_1 = resolved_object_uuids[2];
+  info.insert_column_count = info.insert_select_projections.size();
+  info.valid = info.insert_column_count > 0;
+  return info;
+}
+
 DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
                              const std::vector<std::string>& resolved_object_uuids) {
   DmlRouteInfo info;
@@ -9206,6 +9566,9 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
       AnalyzeSelectOrderLimitOffset(cst, &info);
     }
   } else if (first == "INSERT") {
+    DmlRouteInfo row_number_insert =
+        AnalyzeRowNumberInsertSelectRoute(cst, resolved_object_uuids);
+    if (row_number_insert.active) return row_number_insert;
     info.active = true;
     info.operation_id = "dml.insert_rows";
     info.surface_variant = "insert";
@@ -9352,6 +9715,10 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
   if (info.valid && !resolved_object_uuids.empty()) {
     info.target_object_uuid = resolved_object_uuids.front();
     if (info.surface_variant == "merge" && resolved_object_uuids.size() >= 2) {
+      info.source_object_uuid = resolved_object_uuids[1];
+    } else if (info.surface_variant == "update" &&
+               !info.subquery_projection.empty() &&
+               resolved_object_uuids.size() >= 2) {
       info.source_object_uuid = resolved_object_uuids[1];
     }
   }
@@ -27809,6 +28176,9 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
                                                         : "row_version_mutation")) << "\","
       << "\"engine_dml_api_required\":true,"
       << "\"import_execution_deferred\":" << (info.import_planning ? "true" : "false") << ',';
+  if (!info.read && !info.import_planning) {
+    out << "\"result_payload_policy\":\"summary_only\",";
+  }
   if (info.has_order_by) {
     out << "\"order_by\":\"" << EscapeJson(info.order_by_column) << "\","
         << "\"order_direction\":\"" << EscapeJson(info.order_direction) << "\","
@@ -27914,32 +28284,41 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << "\"on_conflict_action\":\"do_update\",";
   }
   if (info.has_insert_values) {
+    constexpr std::size_t kPerCellInsertValueEvidenceLimit = 128;
+    const bool compact_only =
+        info.insert_rows.size() > kPerCellInsertValueEvidenceLimit;
     out << "\"insert_values_row_count\":\"" << info.insert_rows.size() << "\","
         << "\"insert_values_column_count\":\"" << info.insert_column_count << "\","
         << "\"insert_values_column_list_present\":"
         << (info.insert_column_list_present ? "true" : "false") << ','
         << "\"insert_values_descriptor_bound\":true,"
-        << "\"insert_values_parser_executes_sql\":false,";
+        << "\"insert_values_parser_executes_sql\":false,"
+        << "\"insert_values_compact_format\":\"sbsql.insert_values.cells.v1\","
+        << "\"insert_values_compact_payload\":\""
+        << CompactInsertValuesPayload(info.insert_rows) << "\",";
     if (info.insert_values_include_opaque_extension) {
       out << "\"bulk.allow_opaque_columns\":\"true\",";
     }
-    for (std::size_t row = 0; row < info.insert_rows.size(); ++row) {
-      for (std::size_t column = 0; column < info.insert_rows[row].size(); ++column) {
-        const auto& field = info.insert_rows[row][column];
-        out << "\"insert_values_" << row << '_' << column << "_name\":\""
-            << EscapeJson(field.name) << "\","
-            << "\"insert_values_" << row << '_' << column << "_type\":\""
-            << EscapeJson(field.type_name) << "\","
-            << "\"insert_values_" << row << '_' << column << "_value\":\""
-            << EscapeJson(field.value) << "\","
-            << "\"insert_values_" << row << '_' << column << "_is_null\":\""
-            << (field.is_null ? "true" : "false") << "\",";
+    if (compact_only) {
+      out << "\"insert_values_per_cell_fields_suppressed\":true,";
+    } else {
+      for (std::size_t row = 0; row < info.insert_rows.size(); ++row) {
+        for (std::size_t column = 0; column < info.insert_rows[row].size(); ++column) {
+          const auto& field = info.insert_rows[row][column];
+          out << "\"insert_values_" << row << '_' << column << "_name\":\""
+              << EscapeJson(field.name) << "\","
+              << "\"insert_values_" << row << '_' << column << "_type\":\""
+              << EscapeJson(field.type_name) << "\","
+              << "\"insert_values_" << row << '_' << column << "_value\":\""
+              << EscapeJson(field.value) << "\","
+              << "\"insert_values_" << row << '_' << column << "_is_null\":\""
+              << (field.is_null ? "true" : "false") << "\",";
+        }
       }
     }
   }
   if (info.has_insert_select_recursive_cte) {
     out << "\"insert_mode\":\"insert_select\","
-        << "\"result_payload_policy\":\"summary_only\","
         << "\"insert_select_source_kind\":\"" << EscapeJson(info.insert_select_source_kind) << "\","
         << "\"insert_select_cte_name\":\"" << EscapeJson(info.insert_select_cte_name) << "\","
         << "\"insert_select_counter_column\":\"" << EscapeJson(info.insert_select_counter_column) << "\","
@@ -27952,6 +28331,14 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << info.insert_select_projections.size() << "\","
         << "\"insert_select_descriptor_bound\":true,"
         << "\"insert_select_parser_executes_sql\":false,";
+    if (!info.insert_select_source_uuid_0.empty()) {
+      out << "\"insert_select_source_uuid_0\":\""
+          << EscapeJson(info.insert_select_source_uuid_0) << "\",";
+    }
+    if (!info.insert_select_source_uuid_1.empty()) {
+      out << "\"insert_select_source_uuid_1\":\""
+          << EscapeJson(info.insert_select_source_uuid_1) << "\",";
+    }
     for (std::size_t index = 0; index < info.insert_select_projections.size(); ++index) {
       out << "\"insert_select_projection_" << index << "\":\""
           << EscapeJson(info.insert_select_projections[index]) << "\",";

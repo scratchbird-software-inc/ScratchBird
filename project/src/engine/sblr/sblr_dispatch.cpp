@@ -101,9 +101,14 @@
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -114,6 +119,62 @@ namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace functions = scratchbird::engine::functions;
 namespace {
+
+using SblrSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t SblrElapsedMicros(SblrSteadyClock::time_point start,
+                                SblrSteadyClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+void WriteBaseApiPhaseTrace(const SblrOperationEnvelope& envelope,
+                            std::uint64_t operand_loop_us,
+                            std::uint64_t compact_materialize_us,
+                            std::uint64_t total_us,
+                            std::size_t row_count,
+                            std::size_t operand_count) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_BASE_API_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "operation=" << envelope.operation_id
+      << "\toperands=" << operand_count
+      << "\trows=" << row_count
+      << "\toperand_loop_us=" << operand_loop_us
+      << "\tcompact_materialize_us=" << compact_materialize_us
+      << "\ttotal_us=" << total_us
+      << '\n';
+}
+
+void WriteSblrDispatchPhaseTrace(
+    std::string_view layer,
+    std::string_view operation_id,
+    std::size_t encoded_size,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "layer=" << layer
+      << "\toperation=" << operation_id
+      << "\tencoded_bytes=" << encoded_size;
+  std::uint64_t total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << "\ttotal_us=" << total << '\n';
+}
 
 std::string LowerAscii(std::string value) {
   for (auto& ch : value) {
@@ -246,6 +307,237 @@ api::EngineTypedValue TypedValueFromLoweredLiteral(std::string value,
   return typed;
 }
 
+std::optional<std::string_view> TextOperandValue(
+    const SblrOperationEnvelope& envelope,
+    std::string_view name) {
+  for (const auto& operand : envelope.operands) {
+    if (operand.type == "text" && operand.name == name) {
+      return std::string_view(operand.value);
+    }
+  }
+  return std::nullopt;
+}
+
+std::uint64_t ParseCompactU64(std::string_view value) {
+  std::uint64_t out = 0;
+  if (value.empty()) return 0;
+  for (const unsigned char ch : value) {
+    if (!std::isdigit(ch)) return 0;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (out > (std::numeric_limits<std::uint64_t>::max() - digit) / 10u) {
+      return 0;
+    }
+    out = out * 10u + digit;
+  }
+  return out;
+}
+
+bool CompactBool(std::string_view value) {
+  const std::string lower = LowerAscii(std::string(value));
+  return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
+}
+
+bool LooksLikeOrdinalInsertFieldName(std::string_view name) {
+  if (name.size() < 2 || name.front() != 'c') return false;
+  for (std::size_t index = 1; index < name.size(); ++index) {
+    if (!std::isdigit(static_cast<unsigned char>(name[index]))) return false;
+  }
+  return true;
+}
+
+bool HexDecodeString(std::string_view text, std::string* out) {
+  if (out == nullptr) return false;
+  std::vector<std::uint8_t> bytes;
+  if (!HexDecodeBytes(text, &bytes)) return false;
+  out->assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
+}
+
+std::vector<std::string_view> SplitCompactInsertCell(std::string_view cell) {
+  std::vector<std::string_view> parts;
+  std::size_t start = 0;
+  while (start <= cell.size()) {
+    const std::size_t end = cell.find('|', start);
+    parts.push_back(cell.substr(
+        start,
+        end == std::string_view::npos ? cell.size() - start : end - start));
+    if (end == std::string_view::npos) break;
+    start = end + 1u;
+  }
+  return parts;
+}
+
+struct CompactInsertValueCell {
+  std::string name;
+  std::string type;
+  std::string value;
+  bool is_null = false;
+};
+
+std::vector<CompactInsertValueCell> DecodeCompactInsertCells(
+    std::string_view payload,
+    std::uint64_t row_count,
+    std::uint64_t column_count) {
+  const std::uint64_t cell_count = row_count * column_count;
+  std::vector<CompactInsertValueCell> cells;
+  if (payload.empty() || row_count == 0 || column_count == 0 ||
+      cell_count > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::size_t>::max())) {
+    return cells;
+  }
+  cells.resize(static_cast<std::size_t>(cell_count));
+  std::uint64_t ordinal = 0;
+  std::size_t start = 0;
+  while (start <= payload.size()) {
+    const std::size_t end = payload.find(';', start);
+    const std::string_view cell =
+        payload.substr(start,
+                       end == std::string_view::npos ? payload.size() - start
+                                                     : end - start);
+    if (ordinal >= cell_count) return {};
+    const auto parts = SplitCompactInsertCell(cell);
+    if (parts.size() != 4) return {};
+    auto& target = cells[static_cast<std::size_t>(ordinal)];
+    if (!HexDecodeString(parts[0], &target.name) ||
+        !HexDecodeString(parts[1], &target.type) ||
+        !HexDecodeString(parts[2], &target.value)) {
+      return {};
+    }
+    target.is_null = CompactBool(parts[3]);
+    ++ordinal;
+    if (end == std::string_view::npos) break;
+    start = end + 1u;
+  }
+  if (ordinal != cell_count) return {};
+  return cells;
+}
+
+std::vector<std::string> CompactDescriptorColumnNames(
+    const SblrOperationEnvelope& envelope,
+    std::uint64_t column_count) {
+  std::vector<std::string> columns;
+  columns.reserve(static_cast<std::size_t>(
+      std::min<std::uint64_t>(column_count, 1024)));
+  for (std::uint64_t index = 0; index < column_count; ++index) {
+    const auto value = TextOperandValue(
+        envelope,
+        "insert_values_descriptor_column_" + std::to_string(index));
+    columns.push_back(value ? std::string(*value) : std::string{});
+  }
+  return columns;
+}
+
+std::vector<std::string> LoadDescriptorColumnNamesForCompactInsert(
+    const api::EngineApiRequest& request,
+    std::uint64_t column_count) {
+  std::vector<std::string> columns;
+  if (column_count == 0 || request.target_object.uuid.canonical.empty()) {
+    return columns;
+  }
+  auto loaded = api::LoadMgaRelationStoreStateForInsertTarget(
+      request.context,
+      request.target_object.uuid.canonical);
+  if (!loaded.ok) return columns;
+  api::CrudState state = api::BuildCrudCompatibilityStateFromMga(
+      std::move(loaded.state));
+  const auto table = api::FindVisibleCrudTable(
+      state,
+      request.target_object.uuid.canonical,
+      request.context.local_transaction_id);
+  if (!table) return columns;
+  columns.reserve(table->columns.size());
+  for (const auto& [name, descriptor] : table->columns) {
+    (void)descriptor;
+    columns.push_back(name);
+  }
+  return columns;
+}
+
+void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
+                                  api::EngineApiRequest* request) {
+  if (request == nullptr || envelope.operation_id != "dml.insert_rows" ||
+      !request->rows.empty()) {
+    return;
+  }
+  const auto compact_format = TextOperandValue(
+      envelope,
+      "insert_values_compact_format");
+  const auto compact_payload = TextOperandValue(
+      envelope,
+      "insert_values_compact_payload");
+  if (!compact_format || *compact_format != "sbsql.insert_values.cells.v1" ||
+      !compact_payload || compact_payload->empty()) {
+    return;
+  }
+  const std::uint64_t row_count =
+      ParseCompactU64(TextOperandValue(envelope, "insert_values_row_count")
+                          .value_or(std::string_view{}));
+  const std::uint64_t column_count =
+      ParseCompactU64(TextOperandValue(envelope, "insert_values_column_count")
+                          .value_or(std::string_view{}));
+  if (row_count == 0 || column_count == 0) return;
+  auto cells =
+      DecodeCompactInsertCells(*compact_payload, row_count, column_count);
+  if (cells.empty()) return;
+  const bool explicit_column_list = CompactBool(
+      TextOperandValue(envelope, "insert_values_column_list_present")
+          .value_or(std::string_view{}));
+  std::vector<std::string> descriptor_columns;
+  if (!explicit_column_list) {
+    descriptor_columns = CompactDescriptorColumnNames(envelope, column_count);
+    bool missing_descriptor_column = descriptor_columns.size() < column_count;
+    for (const auto& column : descriptor_columns) {
+      if (column.empty()) {
+        missing_descriptor_column = true;
+        break;
+      }
+    }
+    if (missing_descriptor_column) {
+      descriptor_columns =
+          LoadDescriptorColumnNamesForCompactInsert(*request, column_count);
+    }
+  }
+  request->rows.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
+      row_count,
+      static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))));
+  for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+    api::EngineRowValue row;
+    row.fields.reserve(static_cast<std::size_t>(
+        std::min<std::uint64_t>(column_count, 1024)));
+    for (std::uint64_t column_index = 0; column_index < column_count;
+         ++column_index) {
+      const auto& cell =
+          cells[static_cast<std::size_t>(row_index * column_count +
+                                         column_index)];
+      std::string name = cell.name;
+      if (!explicit_column_list &&
+          (name.empty() || LooksLikeOrdinalInsertFieldName(name)) &&
+          column_index < descriptor_columns.size() &&
+          !descriptor_columns[static_cast<std::size_t>(column_index)].empty()) {
+        name = descriptor_columns[static_cast<std::size_t>(column_index)];
+      }
+      if (name.empty()) name = "c" + std::to_string(column_index);
+      std::string type = cell.type.empty() ? "text" : cell.type;
+      api::EngineTypedValue value;
+      value.descriptor.descriptor_kind = "scalar";
+      value.descriptor.canonical_type_name = type;
+      value.descriptor.encoded_descriptor = "type=" + type;
+      value.encoded_value = cell.value;
+      value.is_null = cell.is_null || type == "null";
+      if (value.is_null) {
+        value.encoded_value.clear();
+        value.setState(api::EngineValueState::sql_null);
+      }
+      row.fields.push_back({std::move(name), std::move(value)});
+    }
+    request->rows.push_back(std::move(row));
+  }
+  request->option_envelopes.push_back(
+      "sblr.compact_insert_rowset_materialized=true");
+  request->option_envelopes.push_back(
+      "sblr.compact_insert_row_count:" + std::to_string(row_count));
+}
+
 api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
                                    const std::string& operation_id,
                                    std::string code,
@@ -261,6 +553,7 @@ api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
 }
 
 api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
+  const auto phase_start = SblrSteadyClock::now();
   api::EngineApiRequest api_request = request.api_request;
   api_request.context = request.context;
   api_request.operation_id = request.envelope.operation_id;
@@ -384,6 +677,7 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
       api_request.predicate.canonical_predicate_envelope = operand.value;
     }
   }
+  const auto operand_loop_finish = SblrSteadyClock::now();
   const std::string current_role_uuid =
       api::SecurityOptionValue(api_request, "current_role_uuid:");
   if (!current_role_uuid.empty()) {
@@ -436,10 +730,20 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
                                          TypedValueFromLoweredLiteral(
                                              assignment_value,
                                              api::SecurityOptionValue(
-                                                 api_request,
+                                             api_request,
                                                  "assignment_value_type:"))});
     }
   }
+  const auto compact_start = SblrSteadyClock::now();
+  MaterializeCompactInsertRows(request.envelope, &api_request);
+  const auto compact_finish = SblrSteadyClock::now();
+  WriteBaseApiPhaseTrace(
+      request.envelope,
+      SblrElapsedMicros(phase_start, operand_loop_finish),
+      SblrElapsedMicros(compact_start, compact_finish),
+      SblrElapsedMicros(phase_start, compact_finish),
+      api_request.rows.size(),
+      request.envelope.operands.size());
   return api_request;
 }
 
@@ -1776,30 +2080,42 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.target_database = base.target_database;
   typed.target_schema = base.target_schema;
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
-  }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
-  }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
-  }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  const std::string explicit_target_schema_uuid =
+      api::SecurityOptionValue(base, "target_schema_uuid:");
+  const std::string explicit_schema_uuid = api::SecurityOptionValue(base, "schema_uuid:");
+  const std::string explicit_parent_schema_uuid =
+      api::SecurityOptionValue(base, "schema_parent_uuid:");
+  const bool has_explicit_schema_uuid = !explicit_target_schema_uuid.empty() ||
+                                        !explicit_schema_uuid.empty() ||
+                                        !explicit_parent_schema_uuid.empty();
+  bool unresolved_parent_path = false;
+  if (!schema_parent_path.empty() && !has_explicit_schema_uuid) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
       typed.target_schema.uuid.canonical = *resolved_parent;
+    } else {
+      typed.target_schema.uuid.canonical.clear();
+      unresolved_parent_path = true;
     }
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = explicit_target_schema_uuid;
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = explicit_schema_uuid;
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = explicit_parent_schema_uuid;
   }
   if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   typed.option_envelopes.clear();
   typed.option_envelopes = base.option_envelopes;
-  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+  if (unresolved_parent_path) {
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   typed.requested_table_uuid = base.target_object.uuid;
@@ -4104,11 +4420,79 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "ddl.alter_object") result.api_result = api::EngineAlterObject(TypedAlterObjectRequest(request));
   else if (op == "ddl.drop_object") result.api_result = api::EngineDropObject(TypedRequest<api::EngineDropObjectRequest>(request));
   else if (op == "ddl.comment_on_object") result.api_result = api::EngineCommentOnObject(TypedRequest<api::EngineCommentOnObjectRequest>(request));
-  else if (op == "dml.insert_rows") result.api_result = api::EngineInsertRows(TypedInsertRowsRequest(request));
+  else if (op == "dml.insert_rows") {
+    auto phase_last = SblrSteadyClock::now();
+    std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+    phase_micros.reserve(2);
+    const auto mark_phase = [&](std::string phase) {
+      const auto now = SblrSteadyClock::now();
+      phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
+      phase_last = now;
+    };
+    auto typed = TypedInsertRowsRequest(request);
+    mark_phase("typed_insert_request");
+    result.api_result = api::EngineInsertRows(typed);
+    mark_phase("engine_insert_rows");
+    WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
+                                op,
+                                request.envelope.operands.size(),
+                                phase_micros);
+  }
   else if (op == "dml.select_rows") result.api_result = api::EngineSelectRows(TypedSelectRowsRequest(request));
-  else if (op == "dml.update_rows") result.api_result = api::EngineUpdateRows(TypedUpdateRowsRequest(request));
-  else if (op == "dml.delete_rows") result.api_result = api::EngineDeleteRows(TypedDeleteRowsRequest(request));
-  else if (op == "dml.merge_rows") result.api_result = api::EngineMergeRows(TypedMergeRowsRequest(request));
+  else if (op == "dml.update_rows") {
+    auto phase_last = SblrSteadyClock::now();
+    std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+    phase_micros.reserve(2);
+    const auto mark_phase = [&](std::string phase) {
+      const auto now = SblrSteadyClock::now();
+      phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
+      phase_last = now;
+    };
+    auto typed = TypedUpdateRowsRequest(request);
+    mark_phase("typed_update_request");
+    result.api_result = api::EngineUpdateRows(typed);
+    mark_phase("engine_update_rows");
+    WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
+                                op,
+                                request.envelope.operands.size(),
+                                phase_micros);
+  }
+  else if (op == "dml.delete_rows") {
+    auto phase_last = SblrSteadyClock::now();
+    std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+    phase_micros.reserve(2);
+    const auto mark_phase = [&](std::string phase) {
+      const auto now = SblrSteadyClock::now();
+      phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
+      phase_last = now;
+    };
+    auto typed = TypedDeleteRowsRequest(request);
+    mark_phase("typed_delete_request");
+    result.api_result = api::EngineDeleteRows(typed);
+    mark_phase("engine_delete_rows");
+    WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
+                                op,
+                                request.envelope.operands.size(),
+                                phase_micros);
+  }
+  else if (op == "dml.merge_rows") {
+    auto phase_last = SblrSteadyClock::now();
+    std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+    phase_micros.reserve(2);
+    const auto mark_phase = [&](std::string phase) {
+      const auto now = SblrSteadyClock::now();
+      phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
+      phase_last = now;
+    };
+    auto typed = TypedMergeRowsRequest(request);
+    mark_phase("typed_merge_request");
+    result.api_result = api::EngineMergeRows(typed);
+    mark_phase("engine_merge_rows");
+    WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
+                                op,
+                                request.envelope.operands.size(),
+                                phase_micros);
+  }
   else if (op == "dml.plan_import_rows") result.api_result = api::EnginePlanImportRows(TypedPlanImportRowsRequest(request));
   else if (op == "dml.normalize_import_reject_model") result.api_result = api::EngineNormalizeImportRejectModel(TypedNormalizeImportRejectModelRequest(request));
   else if (op == "dml.normalize_import_checkpoint_model") result.api_result = api::EngineNormalizeImportCheckpointModel(TypedNormalizeImportCheckpointRequest(request));
@@ -4338,7 +4722,16 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
 SblrDispatchResult DecodeAndDispatchSblrOperation(std::string_view encoded_envelope,
                                                   api::EngineRequestContext context,
                                                   api::EngineApiRequest api_request) {
+  auto phase_last = SblrSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  phase_micros.reserve(4);
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = SblrSteadyClock::now();
+    phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
+    phase_last = now;
+  };
   const auto decoded = DecodeSblrEnvelope(encoded_envelope);
+  mark_phase("decode_text_envelope");
   if (!decoded.ok) {
     SblrDispatchResult result;
     result.envelope_validated = false;
@@ -4348,13 +4741,23 @@ SblrDispatchResult DecodeAndDispatchSblrOperation(std::string_view encoded_envel
                                       "SB_SBLR_DECODE_REJECTED",
                                       "engine.sblr.decode.rejected",
                                       "encoded envelope failed validation");
+    WriteSblrDispatchPhaseTrace("decode_and_dispatch",
+                                decoded.envelope.operation_id,
+                                encoded_envelope.size(),
+                                phase_micros);
     return result;
   }
   SblrDispatchRequest request;
   request.context = std::move(context);
   request.envelope = decoded.envelope;
   request.api_request = std::move(api_request);
-  return DispatchSblrOperation(request);
+  auto result = DispatchSblrOperation(request);
+  mark_phase("dispatch_operation");
+  WriteSblrDispatchPhaseTrace("decode_and_dispatch",
+                              request.envelope.operation_id,
+                              encoded_envelope.size(),
+                              phase_micros);
+  return result;
 }
 
 std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) {

@@ -4391,6 +4391,130 @@ void RequireRecursiveCteLowering() {
           "recursive CTE UNION ALL route did not report parser message vector");
 }
 
+void RequireBenchmarkDmlShapeLowering() {
+  const auto insert_select = RunPipeline(
+      "INSERT INTO bulk_insert_test (id, data, metric_value) "
+      "SELECT seq AS id, 'Data_' || CAST(seq AS VARCHAR(20)) AS data, "
+      "(seq * 1.5) AS metric_value "
+      "FROM (SELECT ROW_NUMBER() OVER () AS seq FROM orders o "
+      "CROSS JOIN order_items oi LIMIT 100000) sub",
+      {std::string(kTargetUuid),
+       std::string(kRelatedUuid),
+       std::string(kThirdRelationUuid)});
+  Require(insert_select.bound.bound,
+          "benchmark insert-select row_number route did not bind");
+  Require(insert_select.verifier.admitted,
+          "benchmark insert-select row_number verifier rejected exact route");
+  Require(insert_select.envelope.operation_family == "sblr.dml.operation.v3",
+          "benchmark insert-select operation family mismatch");
+  Require(insert_select.envelope.operation_id == "dml.insert_rows",
+          "benchmark insert-select operation id mismatch");
+  Require(insert_select.envelope.sblr_opcode == "SBLR_DML_INSERT_ROWS",
+          "benchmark insert-select opcode mismatch");
+  Require(HasValue(insert_select.envelope.required_authority_steps,
+                   "authority.engine.dml_api_required"),
+          "benchmark insert-select DML API authority step missing");
+  Require(HasValue(insert_select.envelope.required_authority_steps,
+                   "authority.parser.no_sql_text_execution"),
+          "benchmark insert-select parser SQL execution boundary missing");
+  Require(Contains(insert_select.envelope.payload,
+                   "\"dml_surface_variant\":\"insert_select_row_number_limit\""),
+          "benchmark insert-select surface variant missing");
+  Require(Contains(insert_select.envelope.payload,
+                   "\"insert_select_descriptor_bound\":true"),
+          "benchmark insert-select descriptor-bound marker missing");
+  Require(Contains(insert_select.envelope.payload,
+                   "\"insert_select_projection_0\":\"counter\""),
+          "benchmark insert-select counter projection missing");
+  Require(Contains(insert_select.envelope.payload,
+                   "\"insert_select_projection_1\":\"prefix_counter:Data_\""),
+          "benchmark insert-select text projection missing");
+  Require(Contains(insert_select.envelope.payload,
+                   "\"insert_select_projection_2\":\"counter_multiply:1.5:1\""),
+          "benchmark insert-select multiply projection missing");
+  Require(Contains(insert_select.envelope.payload,
+                   std::string("\"insert_select_source_uuid_0\":\"") +
+                       std::string(kRelatedUuid) + "\""),
+          "benchmark insert-select first source UUID missing");
+  Require(Contains(insert_select.envelope.payload,
+                   std::string("\"insert_select_source_uuid_1\":\"") +
+                       std::string(kThirdRelationUuid) + "\""),
+          "benchmark insert-select second source UUID missing");
+  Require(!Contains(insert_select.envelope.payload, "ROW_NUMBER"),
+          "benchmark insert-select payload embedded source SQL window text");
+  Require(!Contains(insert_select.envelope.payload, "CROSS JOIN"),
+          "benchmark insert-select payload embedded source SQL join text");
+
+  const auto update_case = RunPipeline(
+      "UPDATE order_items SET discount_pct = CASE "
+      "WHEN quantity >= 50 THEN 20.0 "
+      "WHEN quantity >= 20 THEN 15.0 "
+      "WHEN quantity >= 10 THEN 10.0 "
+      "ELSE 5.0 END "
+      "WHERE discount_pct < 5.0 OR discount_pct IS NULL",
+      {std::string(kTargetUuid)});
+  Require(update_case.bound.bound,
+          "benchmark CASE update route did not bind");
+  Require(update_case.verifier.admitted,
+          "benchmark CASE update verifier rejected exact route");
+  Require(update_case.envelope.operation_family == "sblr.dml.operation.v3",
+          "benchmark CASE update operation family mismatch");
+  Require(update_case.envelope.operation_id == "dml.update_rows",
+          "benchmark CASE update operation id mismatch");
+  Require(Contains(update_case.envelope.payload,
+                   "\"assignment_plan\":\"discount_pct|quantity|case_ge_thresholds|50=20.0,20=15.0,10=10.0,else=5.0|numeric\""),
+          "benchmark CASE update assignment descriptor missing");
+  Require(Contains(update_case.envelope.payload,
+                   "\"predicate_kind\":\"column_less_or_null\""),
+          "benchmark CASE update predicate kind missing");
+  Require(Contains(update_case.envelope.payload,
+                   "\"predicate_column\":\"discount_pct\""),
+          "benchmark CASE update predicate column missing");
+  Require(Contains(update_case.envelope.payload,
+                   "\"predicate_value\":\"5.0\""),
+          "benchmark CASE update predicate value missing");
+  Require(!Contains(update_case.envelope.payload, "CASE WHEN"),
+          "benchmark CASE update payload embedded SQL CASE text");
+
+  const auto update_join = RunPipeline(
+      "UPDATE orders SET total_amount = total_amount * 0.95 "
+      "WHERE customer_id IN ("
+      "SELECT customer_id FROM customers WHERE account_balance > 10000)",
+      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+  Require(update_join.bound.bound,
+          "benchmark update-subquery route did not bind");
+  Require(update_join.verifier.admitted,
+          "benchmark update-subquery verifier rejected exact route");
+  Require(update_join.envelope.operation_family == "sblr.dml.operation.v3",
+          "benchmark update-subquery operation family mismatch");
+  Require(update_join.envelope.operation_id == "dml.update_rows",
+          "benchmark update-subquery operation id mismatch");
+  Require(Contains(update_join.envelope.payload,
+                   "\"assignment_plan\":\"total_amount|total_amount|multiply|0.95|numeric\""),
+          "benchmark update-subquery multiply assignment missing");
+  Require(Contains(update_join.envelope.payload,
+                   "\"predicate_kind\":\"column_in_projection\""),
+          "benchmark update-subquery predicate kind missing");
+  Require(Contains(update_join.envelope.payload,
+                   "\"subquery_select_column\":\"customer_id\""),
+          "benchmark update-subquery select column missing");
+  Require(Contains(update_join.envelope.payload,
+                   "\"subquery_predicate_kind\":\"column_greater\""),
+          "benchmark update-subquery inner predicate kind missing");
+  Require(Contains(update_join.envelope.payload,
+                   "\"subquery_predicate_column\":\"account_balance\""),
+          "benchmark update-subquery inner predicate column missing");
+  Require(Contains(update_join.envelope.payload,
+                   "\"subquery_predicate_value\":\"10000\""),
+          "benchmark update-subquery inner predicate value missing");
+  Require(Contains(update_join.envelope.payload,
+                   std::string("\"source_uuid\":\"") +
+                       std::string(kRelatedUuid) + "\""),
+          "benchmark update-subquery source UUID missing");
+  Require(!Contains(update_join.envelope.payload, "SELECT customer_id"),
+          "benchmark update-subquery payload embedded source SQL text");
+}
+
 void RequireScalarSubqueryLowering() {
   const auto artifacts = RunPipeline(
       "SELECT (SELECT id FROM customer)",
@@ -4629,6 +4753,7 @@ int main() {
   RequireMaterializedCteLowering();
   RequireExplainWithCteAliasLowering();
   RequireRecursiveCteLowering();
+  RequireBenchmarkDmlShapeLowering();
   RequireScalarSubqueryLowering();
   RequireHavingClauseLowering();
   RequireUnsupportedQueryFamiliesFailClosed();

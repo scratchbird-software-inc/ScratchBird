@@ -320,6 +320,28 @@ void RequirePreallocationEvidence(const std::vector<api::EngineEvidenceReference
   Require(!std::string(prefix).empty(), "IPAR preallocation test label missing");
 }
 
+void RequireInsertPreworkQueueEvidence(
+    const std::vector<api::EngineEvidenceReference>& evidence) {
+  Require(HasEvidence(evidence, "insert_prework_queue_enabled", "true"),
+          "IPAR insert prework queue was not enabled");
+  Require(HasEvidence(evidence, "insert_prework_helper_thread_started", "true"),
+          "IPAR insert prework helper did not start");
+  Require(EvidenceU64(evidence, "insert_prework_rows_enqueued") > 0,
+          "IPAR insert prework queue did not enqueue rows");
+  Require(EvidenceU64(evidence, "insert_prework_rows_prepared") > 0,
+          "IPAR insert prework queue did not prepare row capacity");
+  Require(HasEvidence(evidence, "insert_prework_row_capacity_ready", "true"),
+          "IPAR insert prework row capacity was not ready before write");
+  Require(HasEvidence(evidence, "insert_transaction_queue_return_before_flush",
+                      "false"),
+          "IPAR insert prework queue allowed return before flush");
+  Require(HasEvidence(evidence, "mga_finality_authority",
+                      "engine_transaction_inventory"),
+          "IPAR insert prework lost MGA transaction authority proof");
+  Require(HasEvidence(evidence, "parser_finality", "false"),
+          "IPAR insert prework made parser finality authoritative");
+}
+
 api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
                                            std::string request_id,
                                            std::vector<api::EngineRowValue> rows) {
@@ -333,6 +355,9 @@ api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
   request.estimated_row_count = static_cast<api::EngineApiU64>(rows.size());
   request.input_rows = std::move(rows);
   request.option_envelopes = DemandOptions();
+  request.option_envelopes.push_back("direct_physical_insert=disabled");
+  request.option_envelopes.push_back("dml.insert_prework_queue=enabled");
+  request.option_envelopes.push_back("dml.insert_prework_queue.min_rows=1");
   return request;
 }
 
@@ -372,6 +397,7 @@ void VerifyPageSize(platform::u32 page_size, platform::u64 salt) {
   Require(inserted.inserted_count == 3,
           "IPAR page-size insert row count mismatch");
   RequirePreallocationEvidence(inserted.evidence, "insert", true);
+  RequireInsertPreworkQueueEvidence(inserted.evidence);
   Require(inserted.dml_summary.preallocation_granted_pages > 0,
           "IPAR page-size insert summary missing preallocation grants");
 

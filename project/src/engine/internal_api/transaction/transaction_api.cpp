@@ -24,10 +24,12 @@
 #include "write_path_batching.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cctype>
 #include <algorithm>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -79,6 +81,35 @@ using scratchbird::transaction::mga::TransactionWaitPolicy;
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+using TransactionApiSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t TransactionApiElapsedMicros(
+    TransactionApiSteadyClock::time_point begin,
+    TransactionApiSteadyClock::time_point end = TransactionApiSteadyClock::now()) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+}
+
+void WriteTransactionApiPhaseTrace(
+    std::string_view operation_id,
+    bool ok,
+    const std::map<std::string, std::uint64_t>& phases) {
+  const char* path = std::getenv("SCRATCHBIRD_TRANSACTION_API_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  out << "operation_id=" << operation_id
+      << '\t' << "ok=" << (ok ? "true" : "false");
+  for (const auto& [name, micros] : phases) {
+    out << '\t' << name << "_us=" << micros;
+  }
+  out << '\n';
 }
 
 std::mutex& TransactionInventoryGuardRegistryMutex() {
@@ -1220,34 +1251,58 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
 
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request) {
   const std::string operation_id = "transaction.commit";
+  const auto trace_start = TransactionApiSteadyClock::now();
+  auto phase_start = trace_start;
+  std::map<std::string, std::uint64_t> trace_phases;
+  auto mark_phase = [&](std::string name) {
+    const auto now = TransactionApiSteadyClock::now();
+    trace_phases[std::move(name)] += TransactionApiElapsedMicros(phase_start, now);
+    phase_start = now;
+  };
+  auto trace_and_return = [&](EngineCommitTransactionResult result) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, result.ok, trace_phases);
+    return result;
+  };
   const auto path_status = ValidateDatabasePath(request.context, operation_id);
+  mark_phase("validate_database_path");
   if (path_status.error) {
-    return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, path_status);
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+        request.context, operation_id, path_status));
   }
   if (request.context.local_transaction_id == 0) {
-    return MakeTxnError<EngineCommitTransactionResult>(
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required"));
+        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required")));
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
+  mark_phase("acquire_inventory_guard");
   const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  mark_phase("load_transaction_inventory");
   if (!loaded.ok()) {
-    return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(loaded.diagnostic, "SB-MGA-TXN-INV-LOAD-FAILED", "mga.transaction_inventory.load_failed"));
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed")));
   }
   if (auto policy_error = EnforceRuntimePolicyForExistingTransaction<EngineCommitTransactionResult>(
           request, operation_id, loaded.inventory, false)) {
-    return *policy_error;
+    mark_phase("enforce_existing_runtime_policy");
+    return trace_and_return(*policy_error);
   }
+  mark_phase("enforce_existing_runtime_policy");
   const auto committing_entry = FindTransaction(loaded.inventory,
                                                 MakeLocalTransactionId(request.context.local_transaction_id));
+  mark_phase("find_current_transaction");
   if (!committing_entry.has_value()) {
-    return MakeTxnError<EngineCommitTransactionResult>(
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found"));
+        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found")));
   }
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
   std::uint64_t temporary_deleted_rows = 0;
@@ -1255,13 +1310,16 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   CommitDurabilityBatchDecision durability_batch;
   if (!read_only_commit) {
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
+    mark_phase("validate_deferred_constraints");
     if (deferred_constraints.error) {
-      return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, deferred_constraints);
+      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+          request.context, operation_id, deferred_constraints));
     }
     durability_batch = EvaluateCommitDurabilityBatching(request, *committing_entry);
+    mark_phase("evaluate_commit_durability_batching");
     if (durability_batch.requested && !durability_batch.result.ok &&
         (durability_batch.required || durability_batch.result.fail_closed)) {
-      return MakeTxnError<EngineCommitTransactionResult>(
+      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
           request.context,
           operation_id,
           MakeEngineApiDiagnostic(
@@ -1270,17 +1328,20 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                   : durability_batch.result.diagnostic_code,
               "transaction.commit.durability_batching_refused",
               durability_batch.result.fallback_reason,
-              true));
+              true)));
     }
     const auto temporary_cleanup = ApplyMgaTemporaryOnCommitActions(request.context,
                                                                    request.context.local_transaction_id,
                                                                    &temporary_deleted_rows,
                                                                    &temporary_reclaimed_large_values);
+    mark_phase("temporary_on_commit_cleanup");
     if (temporary_cleanup.error) {
-      return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, temporary_cleanup);
+      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+          request.context, operation_id, temporary_cleanup));
     }
   }
   if (IparFaultPointRequested(request.option_envelopes, "commit_fence")) {
+    mark_phase("fault_point_check");
     auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
@@ -1299,22 +1360,34 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     AppendIparFaultEvidence(&result.evidence,
                             "commit_fence",
                             "rollback_required_before_inventory_commit");
-    return result;
+    return trace_and_return(std::move(result));
   }
+  mark_phase("fault_point_check");
   const auto committed = CommitLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
+  mark_phase("commit_local_transaction");
   if (!committed.ok()) {
-    return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(committed.diagnostic, "SB-MGA-TXN-LIFE-COMMIT-FAILED", "mga.transaction_lifecycle.commit_failed"));
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(committed.diagnostic,
+                          "SB-MGA-TXN-LIFE-COMMIT-FAILED",
+                          "mga.transaction_lifecycle.commit_failed")));
   }
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory);
+  mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
-    return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(persisted.diagnostic, "SB-MGA-TXN-INV-PERSIST-FAILED", "mga.transaction_inventory.persist_failed"));
+    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(persisted.diagnostic,
+                          "SB-MGA-TXN-INV-PERSIST-FAILED",
+                          "mga.transaction_inventory.persist_failed")));
   }
   // DPC_DEFERRED_INDEX_WRITE_PATH
   const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
       request.context,
       request.context.local_transaction_id);
+  mark_phase("commit_secondary_index_deltas");
   if (committed_deltas.error) {
     auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
@@ -1341,7 +1414,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
         1,
         1,
         DirtyPagesFencedForCommit(read_only_commit, durability_batch));
-    return result;
+    return trace_and_return(std::move(result));
   }
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
   result.local_transaction_id = committed.entry.identity.local_id.value;
@@ -1373,7 +1446,8 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       1,
       DirtyPagesFencedForCommit(read_only_commit, durability_batch));
   AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
-  return result;
+  mark_phase("shape_commit_result");
+  return trace_and_return(std::move(result));
 }
 
 EngineAutocommitBoundaryResult EngineAutocommitBoundary(
@@ -1381,11 +1455,24 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   const std::string operation_id = request.statement_succeeded
                                        ? "transaction.autocommit_commit_and_begin"
                                        : "transaction.autocommit_rollback_and_begin";
+  const auto trace_start = TransactionApiSteadyClock::now();
+  auto phase_start = trace_start;
+  std::map<std::string, std::uint64_t> trace_phases;
+  auto mark_phase = [&](std::string name) {
+    const auto now = TransactionApiSteadyClock::now();
+    trace_phases[std::move(name)] += TransactionApiElapsedMicros(phase_start, now);
+    phase_start = now;
+  };
   const auto path_status = ValidateDatabasePath(request.context, operation_id);
+  mark_phase("validate_database_path");
   if (path_status.error) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(request.context, operation_id, path_status);
   }
   if (request.context.local_transaction_id == 0) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1399,12 +1486,17 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   replacement_begin.isolation_level = request.replacement_isolation_level;
   replacement_begin.transaction_policy_profile = request.transaction_policy_profile;
   const auto admission_status = ValidateBeginTransactionAdmission(replacement_begin);
+  mark_phase("validate_replacement_admission");
   if (admission_status.error) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context, operation_id, admission_status);
   }
   std::string isolation = NormalizedIsolation(request.replacement_isolation_level);
   if (!IsSupportedIsolation(isolation)) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1412,12 +1504,18 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
   const auto read_settings = ResolveTransactionReadModeSettings(
       replacement_begin, &replacement_begin.transaction_policy_profile, operation_id);
+  mark_phase("resolve_read_mode");
   if (read_settings.diagnostic.error) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context, operation_id, read_settings.diagnostic);
   }
   const auto policy_status = ValidateTransactionPolicy(replacement_begin);
+  mark_phase("validate_transaction_policy");
   if (policy_status.error) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context, operation_id, policy_status);
   }
@@ -1426,15 +1524,22 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
       BuildRuntimePolicy(replacement_begin.transaction_policy_profile,
                          operation_id,
                          &begin_policy);
+  mark_phase("build_runtime_policy");
   if (begin_policy_status.error) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context, operation_id, begin_policy_status);
   }
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
+  mark_phase("acquire_inventory_guard");
   const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  mark_phase("load_transaction_inventory");
   if (!loaded.ok()) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1445,12 +1550,18 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   if (auto policy_error =
           EnforceRuntimePolicyForExistingTransaction<EngineAutocommitBoundaryResult>(
               request, operation_id, loaded.inventory, !request.statement_succeeded)) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return *policy_error;
   }
+  mark_phase("enforce_existing_runtime_policy");
   const auto current_entry =
       FindTransaction(loaded.inventory,
                       MakeLocalTransactionId(request.context.local_transaction_id));
+  mark_phase("find_current_transaction");
   if (!current_entry.has_value()) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1464,7 +1575,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   if (request.statement_succeeded && !read_only_finalize) {
     const auto deferred_constraints =
         ValidateDeferredTransactionConstraints(request.context);
+    mark_phase("validate_deferred_constraints");
     if (deferred_constraints.error) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context, operation_id, deferred_constraints);
     }
@@ -1472,8 +1586,11 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     commit_shape.context = request.context;
     commit_shape.option_envelopes = request.option_envelopes;
     durability_batch = EvaluateCommitDurabilityBatching(commit_shape, *current_entry);
+    mark_phase("evaluate_commit_durability_batching");
     if (durability_batch.requested && !durability_batch.result.ok &&
         (durability_batch.required || durability_batch.result.fail_closed)) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context,
           operation_id,
@@ -1490,13 +1607,17 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                                         request.context.local_transaction_id,
                                         &temporary_deleted_rows,
                                         &temporary_reclaimed_large_values);
+    mark_phase("temporary_on_commit_cleanup");
     if (temporary_cleanup.error) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context, operation_id, temporary_cleanup);
     }
   }
   if (request.statement_succeeded &&
       IparFaultPointRequested(request.option_envelopes, "commit_fence")) {
+    mark_phase("fault_point_check");
     auto result = MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1515,8 +1636,11 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     AppendIparFaultEvidence(&result.evidence,
                             "commit_fence",
                             "rollback_required_before_inventory_commit");
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return result;
   }
+  mark_phase("fault_point_check");
 
   LocalTransactionInventory finalized_inventory = loaded.inventory;
   TransactionInventoryEntry finalized_entry;
@@ -1525,7 +1649,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
         CommitLocalTransaction(finalized_inventory,
                                MakeLocalTransactionId(request.context.local_transaction_id),
                                CurrentUnixMillis());
+    mark_phase("commit_local_transaction");
     if (!committed.ok()) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context,
           operation_id,
@@ -1540,7 +1667,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
         RollbackLocalTransaction(finalized_inventory,
                                  MakeLocalTransactionId(request.context.local_transaction_id),
                                  CurrentUnixMillis());
+    mark_phase("rollback_local_transaction");
     if (!rolled_back.ok()) {
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context,
           operation_id,
@@ -1570,7 +1700,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
       break;
     }
   }
+  mark_phase("generate_replacement_transaction_uuid");
   if (!generated_transaction_uuid.has_value()) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     if (generation_diagnostic.diagnostic_code.empty()) {
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context,
@@ -1593,7 +1726,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                          : BeginLocalTransaction(finalized_inventory,
                                                  *generated_transaction_uuid,
                                                  begin_unix_epoch_millis);
+  mark_phase("begin_replacement_transaction");
   if (!begun.ok()) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1605,7 +1741,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   const auto persisted =
       PersistLocalTransactionInventoryToDatabase(request.context.database_path,
                                                 begun.inventory);
+  mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
+    trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+    WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return MakeTxnError<EngineAutocommitBoundaryResult>(
         request.context,
         operation_id,
@@ -1691,11 +1830,13 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   if (request.statement_succeeded) {
     AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
   }
+  mark_phase("shape_autocommit_result");
 
   if (request.statement_succeeded) {
     const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
         request.context,
         request.context.local_transaction_id);
+    mark_phase("commit_secondary_index_deltas");
     if (committed_deltas.error) {
       result.ok = false;
       result.diagnostics.push_back(MakeEngineApiDiagnostic(
@@ -1714,11 +1855,14 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     const auto rolled_back_deltas = RollbackMgaSecondaryIndexDeltaLedgerTransaction(
         request.context,
         request.context.local_transaction_id);
+    mark_phase("rollback_secondary_index_deltas");
     if (rolled_back_deltas.error) {
       result.ok = false;
       result.diagnostics.push_back(rolled_back_deltas);
     }
   }
+  trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+  WriteTransactionApiPhaseTrace(operation_id, result.ok, trace_phases);
   return result;
 }
 

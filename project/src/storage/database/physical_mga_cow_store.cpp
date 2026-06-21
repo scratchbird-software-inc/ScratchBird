@@ -434,7 +434,8 @@ PhysicalMgaCowReadResult ReadRowDataPageForRead(FileDevice* device,
 
 PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
                                               const DatabaseContextResult& context,
-                                              RowDataPageBody body) {
+                                              RowDataPageBody body,
+                                              bool sync_after_write = true) {
   body.page_generation = std::max<u64>(1, body.page_generation);
   body.compaction_generation = std::max<u64>(body.compaction_generation,
                                              body.page_generation);
@@ -487,10 +488,12 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
     return Propagate<PhysicalMgaCowMutationResult>(write_body.status,
                                                    write_body.diagnostic);
   }
-  const auto sync = device->Sync();
-  if (!sync.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(sync.status,
-                                                   sync.diagnostic);
+  if (sync_after_write) {
+    const auto sync = device->Sync();
+    if (!sync.ok()) {
+      return Propagate<PhysicalMgaCowMutationResult>(sync.status,
+                                                     sync.diagnostic);
+    }
   }
   PhysicalMgaCowMutationResult result;
   result.status = CowStoreOkStatus();
@@ -785,6 +788,228 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   result.evidence.push_back("physical_mga_cow.visibility_published_by_inventory=false");
   result.evidence.push_back(std::string("physical_mga_cow.kind=") +
                             PhysicalMgaCowMutationKindName(request.kind));
+  return result;
+}
+
+PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
+    const PhysicalMgaCowMutationBatchRequest& request) {
+  if (request.mutations.empty()) {
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+        "SB-PHYSICAL-MGA-COW-BATCH-EMPTY",
+        "storage.physical_mga_cow.batch_empty");
+  }
+
+  const auto first_valid = ValidateMutationRequest(request.mutations.front());
+  if (!first_valid.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(first_valid.status,
+                                                        first_valid.diagnostic);
+  }
+  const auto& first = request.mutations.front();
+  if (!first.use_existing_transaction ||
+      !first.existing_local_transaction_id.valid()) {
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+        "SB-PHYSICAL-MGA-COW-BATCH-EXISTING-TRANSACTION-REQUIRED",
+        "storage.physical_mga_cow.batch_existing_transaction_required");
+  }
+
+  FileDevice device;
+  const auto open = device.Open(first.database_path, FileOpenMode::open_existing);
+  if (!open.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(open.status,
+                                                        open.diagnostic);
+  }
+  const auto context = LoadDatabaseContext(&device);
+  if (!context.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(context.status,
+                                                        context.diagnostic);
+  }
+  const auto loaded_inventory =
+      LoadLocalTransactionInventoryFromOpenDevice(&device, context.page_size);
+  if (!loaded_inventory.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(
+        loaded_inventory.status,
+        loaded_inventory.diagnostic);
+  }
+
+  LocalTransactionInventory active_inventory = loaded_inventory.inventory;
+  const auto existing =
+      LookupLocalTransaction(active_inventory,
+                             first.existing_local_transaction_id);
+  if (!existing.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(existing.status,
+                                                        existing.diagnostic);
+  }
+  if (!(existing.entry.identity.transaction_uuid.value ==
+        first.transaction_uuid.value)) {
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+        "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-MISMATCH",
+        "storage.physical_mga_cow.transaction_uuid_mismatch");
+  }
+  if (existing.entry.state != TransactionState::active &&
+      existing.entry.state != TransactionState::preparing &&
+      existing.entry.state != TransactionState::committing) {
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+        "SB-PHYSICAL-MGA-COW-TRANSACTION-NOT-ACTIVE",
+        "storage.physical_mga_cow.transaction_not_active");
+  }
+  const TransactionInventoryEntry active_entry = existing.entry;
+
+  std::map<u64, RowDataPageBody> page_cache;
+  for (const auto& mutation_request : request.mutations) {
+    const auto valid = ValidateMutationRequest(mutation_request);
+    if (!valid.ok()) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(valid.status,
+                                                          valid.diagnostic);
+    }
+    if (mutation_request.database_path != first.database_path ||
+        !(mutation_request.transaction_uuid.value ==
+          first.transaction_uuid.value) ||
+        !mutation_request.use_existing_transaction ||
+        mutation_request.existing_local_transaction_id.value !=
+            first.existing_local_transaction_id.value) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-BATCH-SCOPE-MISMATCH",
+          "storage.physical_mga_cow.batch_scope_mismatch");
+    }
+
+    auto page = page_cache.find(mutation_request.page_number);
+    if (page == page_cache.end()) {
+      RowDataPageBody loaded_page;
+      auto read_page = ReadRowDataPage(&device,
+                                       context,
+                                       mutation_request,
+                                       &loaded_page);
+      if (!read_page.ok()) {
+        return Propagate<PhysicalMgaCowMutationBatchResult>(
+            read_page.status,
+            read_page.diagnostic);
+      }
+      if (!loaded_page.rows.empty()) {
+        ++loaded_page.page_generation;
+      }
+      page = page_cache.emplace(mutation_request.page_number,
+                                std::move(loaded_page)).first;
+    } else if (!SameUuid(page->second.relation_uuid,
+                         mutation_request.relation_uuid)) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-RELATION-MISMATCH",
+          "storage.physical_mga_cow.relation_mismatch",
+          std::to_string(mutation_request.page_number));
+    }
+
+    RowDataPageBody& row_page = page->second;
+    bool blocked = false;
+    DiagnosticRecord blocked_diagnostic;
+    const BaseRowSelection base = SelectBaseRow(row_page,
+                                                active_inventory,
+                                                mutation_request.row_uuid,
+                                                &blocked,
+                                                &blocked_diagnostic);
+    if (blocked) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(
+          blocked_diagnostic.status,
+          blocked_diagnostic);
+    }
+    if (mutation_request.kind == PhysicalMgaCowMutationKind::insert &&
+        base.found) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-DUPLICATE-VISIBLE-ROW",
+          "storage.physical_mga_cow.duplicate_visible_row");
+    }
+    if ((mutation_request.kind == PhysicalMgaCowMutationKind::update ||
+         mutation_request.kind == PhysicalMgaCowMutationKind::delete_row) &&
+        !base.found) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-BASE-ROW-REQUIRED",
+          "storage.physical_mga_cow.base_row_required",
+          PhysicalMgaCowMutationKindName(mutation_request.kind));
+    }
+
+    const u64 new_sequence = base.max_row_version + 1;
+    if (new_sequence == 0 ||
+        new_sequence > std::numeric_limits<u32>::max()) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-VERSION-SEQUENCE-INVALID",
+          "storage.physical_mga_cow.version_sequence_invalid");
+    }
+
+    RowIdentity row_identity;
+    row_identity.row_uuid = mutation_request.row_uuid;
+    const auto planned = PlanLocalCopyOnWriteMutationForTransaction(
+        active_entry,
+        row_identity,
+        ToTransactionCowKind(mutation_request.kind),
+        base.found ? base.row.row_version : 0,
+        new_sequence);
+    if (!planned.ok()) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(
+          planned.status,
+          planned.diagnostic);
+    }
+
+    if (base.found) {
+      row_page.rows[base.index].next_row_version = new_sequence;
+    } else if (base.max_row_version != 0) {
+      for (RowDataRecord& row : row_page.rows) {
+        if (SameUuid(row.row_uuid, mutation_request.row_uuid) &&
+            row.row_version == base.max_row_version) {
+          row.next_row_version = new_sequence;
+        }
+      }
+    }
+
+    RowDataRecord new_row;
+    new_row.row_uuid = mutation_request.row_uuid;
+    new_row.transaction_uuid = mutation_request.transaction_uuid;
+    new_row.local_transaction_id = active_entry.identity.local_id.value;
+    new_row.stable_slot_id = base.found
+                                 ? base.row.stable_slot_id
+                                 : (mutation_request.stable_slot_id == 0
+                                        ? NextStableSlotId(row_page)
+                                        : mutation_request.stable_slot_id);
+    new_row.row_version = static_cast<u32>(new_sequence);
+    new_row.previous_row_version = base.found ? base.row.row_version
+                                              : base.max_row_version;
+    new_row.next_row_version = 0;
+    new_row.deleted =
+        mutation_request.kind == PhysicalMgaCowMutationKind::delete_row;
+    if (!new_row.deleted) {
+      new_row.cells = mutation_request.cells;
+    }
+    row_page.rows.push_back(std::move(new_row));
+  }
+
+  PhysicalMgaCowMutationBatchResult result;
+  result.status = CowStoreOkStatus();
+  for (auto& [page_number, row_page] : page_cache) {
+    (void)page_number;
+    const auto written = WriteRowDataPage(&device,
+                                          context,
+                                          std::move(row_page),
+                                          false);
+    if (!written.ok()) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(written.status,
+                                                          written.diagnostic);
+    }
+    ++result.pages_written;
+  }
+  if (request.sync_after_batch) {
+    const auto sync = device.Sync();
+    if (!sync.ok()) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(sync.status,
+                                                          sync.diagnostic);
+    }
+  }
+  result.written_rows = static_cast<u64>(request.mutations.size());
+  result.evidence.push_back("physical_mga_cow.batch=true");
+  result.evidence.push_back("physical_mga_cow.batch_database_open_once=true");
+  result.evidence.push_back("physical_mga_cow.batch_inventory_loaded_once=true");
+  result.evidence.push_back("physical_mga_cow.batch_sync_after_pages=true");
+  result.evidence.push_back("physical_mga_cow.visibility_published_by_inventory=false");
+  result.evidence.push_back("physical_mga_cow.batch_written_rows=" +
+                            std::to_string(result.written_rows));
+  result.evidence.push_back("physical_mga_cow.batch_pages_written=" +
+                            std::to_string(result.pages_written));
   return result;
 }
 

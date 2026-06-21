@@ -11,6 +11,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
 #include "dml/insert_batch.hpp"
+#include "dml/insert_physical_integration.hpp"
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
@@ -27,15 +28,22 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstdint>
+#include <deque>
+#include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -43,6 +51,39 @@ namespace {
 
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
+
+using InsertApiSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t InsertApiElapsedMicros(InsertApiSteadyClock::time_point start,
+                                     InsertApiSteadyClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+void WriteInsertApiPhaseTrace(
+    std::string_view layer,
+    std::string_view operation_id,
+    std::size_t row_count,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_INSERT_API_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "layer=" << layer
+      << "\toperation=" << operation_id
+      << "\trows=" << row_count;
+  std::uint64_t total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << "\ttotal_us=" << total << '\n';
+}
 
 std::string LowerAscii(std::string value) {
   for (char& ch : value) {
@@ -403,6 +444,24 @@ std::optional<EngineApiU64> ParseInsertOptionU64(const EngineInsertRowsRequest& 
   }
 }
 
+std::vector<std::string> GeneratedInsertSelectSourceUuids(
+    const EngineInsertRowsRequest& request) {
+  std::vector<std::string> source_uuids;
+  for (const auto prefix : {"insert_select_source_uuid_0:",
+                            "insert_select_source_uuid_1:"}) {
+    const std::string uuid = InsertOptionValue(request, prefix);
+    if (!uuid.empty()) { source_uuids.push_back(uuid); }
+  }
+  return source_uuids;
+}
+
+std::optional<EngineApiU64> GeneratedCounterRowCount(EngineApiU64 start,
+                                                     EngineApiU64 step,
+                                                     EngineApiU64 limit) {
+  if (step == 0 || limit < start) return std::nullopt;
+  return ((limit - start) / step) + 1;
+}
+
 EngineTypedValue GeneratedInsertValue(std::string value, std::string type_name) {
   EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -477,6 +536,19 @@ std::string GeneratedProjectionValue(const std::string& descriptor, EngineApiU64
       return {};
     }
   }
+  if (parts[0] == "counter_multiply" && parts.size() >= 3) {
+    try {
+      const long double factor = std::stold(parts[1]);
+      const int scale = std::stoi(parts[2]);
+      if (scale < 0 || scale > 18) return {};
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(scale)
+          << (static_cast<long double>(counter) * factor);
+      return out.str();
+    } catch (...) {
+      return {};
+    }
+  }
   if (parts[0] == "mod_equals" && parts.size() == 3) {
     try {
       const auto modulus = static_cast<EngineApiU64>(std::stoull(parts[1]));
@@ -501,6 +573,7 @@ std::string GeneratedProjectionType(const std::string& descriptor,
   if (descriptor.rfind("prefix_counter_offset:", 0) == 0) return "text";
   if (descriptor.rfind("case_zero_literal_else_", 0) == 0) return "text";
   if (descriptor.rfind("cast_divide:", 0) == 0) return "decimal";
+  if (descriptor.rfind("counter_multiply:", 0) == 0) return "decimal";
   if (descriptor.rfind("mod_equals:", 0) == 0) return "boolean";
   if (target_descriptor.rfind("type=", 0) == 0) return target_descriptor.substr(5);
   return target_descriptor.empty() ? "text" : target_descriptor;
@@ -509,7 +582,9 @@ std::string GeneratedProjectionType(const std::string& descriptor,
 std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     const EngineInsertRowsRequest& request,
     const CrudTableRecord& table,
-    EngineApiDiagnostic* diagnostic) {
+    const CrudState& state,
+    EngineApiDiagnostic* diagnostic,
+    std::vector<EngineEvidenceReference>* evidence) {
   if (diagnostic != nullptr) {
     *diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
@@ -536,6 +611,62 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     }
     return {};
   }
+  const auto generated_count = GeneratedCounterRowCount(*start, *step, *limit);
+  if (!generated_count) {
+    if (diagnostic != nullptr) {
+      *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                 "insert_select_generator_bound_refused");
+    }
+    return {};
+  }
+
+  const std::vector<std::string> source_uuids =
+      GeneratedInsertSelectSourceUuids(request);
+  if (!source_uuids.empty()) {
+    EngineApiU64 visible_capacity = 1;
+    for (const auto& source_uuid : source_uuids) {
+      const auto source_table = FindVisibleCrudTable(state,
+                                                     source_uuid,
+                                                     request.context.local_transaction_id);
+      if (!source_table) {
+        if (diagnostic != nullptr) {
+          *diagnostic =
+              MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                           "insert_select_source_table_not_visible");
+        }
+        return {};
+      }
+      const auto source_rows =
+          VisibleCrudRowsForContext(state, source_uuid, request.context);
+      const auto source_count = static_cast<EngineApiU64>(source_rows.size());
+      if (source_count == 0) {
+        visible_capacity = 0;
+        break;
+      }
+      const EngineApiU64 required = *generated_count;
+      if (visible_capacity >= required ||
+          source_count >= ((required + visible_capacity - 1) / visible_capacity)) {
+        visible_capacity = required;
+      } else {
+        visible_capacity *= source_count;
+      }
+    }
+    if (evidence != nullptr) {
+      evidence->push_back({"insert_select_source_capacity_checked", "true"});
+      evidence->push_back({"insert_select_source_required_rows",
+                           std::to_string(*generated_count)});
+      evidence->push_back({"insert_select_source_visible_capacity",
+                           std::to_string(visible_capacity)});
+    }
+    if (visible_capacity < *generated_count) {
+      if (diagnostic != nullptr) {
+        *diagnostic =
+            MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                         "insert_select_source_capacity_insufficient");
+      }
+      return {};
+    }
+  }
 
   std::vector<std::string> projections;
   projections.reserve(static_cast<std::size_t>(*projection_count));
@@ -553,7 +684,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
   }
 
   std::vector<EngineRowValue> rows;
-  rows.reserve(static_cast<std::size_t>(((*limit - *start) / *step) + 1));
+  rows.reserve(static_cast<std::size_t>(*generated_count));
   for (EngineApiU64 counter = *start; counter <= *limit; counter += *step) {
     EngineRowValue row;
     row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
@@ -948,6 +1079,240 @@ bool InsertRequiresFullRelationState(const EngineInsertRowsRequest& request,
   return false;
 }
 
+bool InsertOptionKeyPresent(const std::vector<std::string>& options,
+                            std::string_view key) {
+  const std::string equals_prefix = std::string(key) + "=";
+  const std::string colon_prefix = std::string(key) + ":";
+  for (const auto& option : options) {
+    if (option == key ||
+        option.rfind(equals_prefix, 0) == 0 ||
+        option.rfind(colon_prefix, 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool InsertRowsShareFieldOrder(std::span<const EngineRowValue> input_rows) {
+  if (input_rows.size() < 2) {
+    return true;
+  }
+  const auto& first = input_rows.front().fields;
+  for (std::size_t row_index = 1; row_index < input_rows.size(); ++row_index) {
+    const auto& current = input_rows[row_index].fields;
+    if (current.size() != first.size()) {
+      return false;
+    }
+    for (std::size_t field_index = 0; field_index < first.size(); ++field_index) {
+      if (current[field_index].first != first[field_index].first) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool DirectPhysicalInsertRouteEligible(
+    const EngineInsertRowsRequest& request,
+    std::string_view conflict_action,
+    std::span<const EngineRowValue> input_rows) {
+  if (input_rows.size() < 2) {
+    return false;
+  }
+  if (!conflict_action.empty()) {
+    return false;
+  }
+  if (request.duplicate_mode != "error") {
+    return false;
+  }
+  if (request.reference_unique_checks_relaxed ||
+      request.reference_foreign_key_checks_relaxed ||
+      InsertBatchOptionEnabled(request, "reference.unique_checks=0") ||
+      InsertBatchOptionEnabled(request, "reference.foreign_key_checks=0")) {
+    return false;
+  }
+  if (InsertOptionEnabled(request, "direct_physical_insert=disabled") ||
+      InsertOptionEnabled(request, "insert.direct_physical=disabled")) {
+    return false;
+  }
+  return true;
+}
+
+dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
+    const EngineInsertRowsRequest& request,
+    std::span<const EngineRowValue> input_rows) {
+  dml::DirectPhysicalBulkAppendRequest direct;
+  direct.context = request.context;
+  direct.target_table = request.target_table;
+  direct.borrowed_input_rows = input_rows;
+  direct.option_envelopes = request.option_envelopes;
+  if (InsertRowsShareFieldOrder(input_rows) &&
+      !InsertOptionKeyPresent(direct.option_envelopes,
+                              "sblr.canonical_rowset_shared_shape")) {
+    direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
+  }
+  direct.diagnostic_options = request.diagnostic_options;
+  direct.estimated_row_count = request.estimated_row_count == 0
+                                   ? static_cast<EngineApiU64>(input_rows.size())
+                                   : request.estimated_row_count;
+  direct.lane_operation =
+      request.insert_mode == "insert_select" ||
+              InsertBatchOptionEnabled(request, "insert_mode=insert_select")
+          ? "insert_select"
+          : "insert_rows";
+  direct.duplicate_mode = request.duplicate_mode;
+  direct.require_generated_row_uuid = request.require_generated_row_uuid;
+  direct.strict_bulk_load_requested = request.strict_bulk_load_requested;
+  direct.direct_lane_enabled = true;
+  return direct;
+}
+
+EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
+    const EngineInsertRowsRequest& request,
+    dml::DirectPhysicalBulkAppendResult direct_result,
+    std::vector<EngineEvidenceReference> prefix_evidence) {
+  EngineInsertRowsResult result;
+  result.ok = direct_result.ok;
+  result.operation_id = "dml.insert_rows";
+  result.diagnostics = std::move(direct_result.diagnostics);
+  result.unsupported_features = std::move(direct_result.unsupported_features);
+  result.result_shape = std::move(direct_result.result_shape);
+  result.primary_object = direct_result.primary_object;
+  result.catalog_row_uuid = direct_result.catalog_row_uuid;
+  result.transaction_uuid = direct_result.transaction_uuid;
+  result.local_transaction_id = direct_result.local_transaction_id;
+  result.dml_summary = direct_result.dml_summary;
+  result.embedded_trust_mode_observed =
+      direct_result.embedded_trust_mode_observed;
+  result.cluster_authority_required = direct_result.cluster_authority_required;
+  result.inserted_count = direct_result.inserted_rows;
+  result.row_uuids = std::move(direct_result.row_uuids);
+  result.evidence = std::move(prefix_evidence);
+  result.evidence.push_back({"insert_direct_physical_bulk_route", "selected"});
+  result.evidence.push_back({"insert_direct_physical_bulk_guard",
+                             "serializable_and_security_checked"});
+  result.evidence.insert(result.evidence.end(),
+                         direct_result.evidence.begin(),
+                         direct_result.evidence.end());
+  result.evidence.push_back({"dml_returning", "affected_rows"});
+  result.dml_summary.rows_changed = result.inserted_count;
+  (void)request;
+  return result;
+}
+
+struct DirectPhysicalInsertAttempt {
+  bool attempted = false;
+  EngineInsertRowsResult result;
+};
+
+DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
+    const EngineInsertRowsRequest& request,
+    std::string_view conflict_action,
+    std::span<const EngineRowValue> input_rows,
+    std::vector<EngineEvidenceReference> prefix_evidence = {}) {
+  DirectPhysicalInsertAttempt attempt;
+  if (!DirectPhysicalInsertRouteEligible(request, conflict_action, input_rows)) {
+    return attempt;
+  }
+  attempt.attempted = true;
+  auto phase_last = InsertApiSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  phase_micros.reserve(6);
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = InsertApiSteadyClock::now();
+    phase_micros.push_back(
+        {std::move(phase), InsertApiElapsedMicros(phase_last, now)});
+    phase_last = now;
+  };
+
+  auto serializable_admission = dml::CheckSerializableInsertMutation(
+      request.context,
+      "dml.insert_rows",
+      request.target_table.uuid.canonical,
+      input_rows,
+      request.option_envelopes);
+  mark_phase("serializable_check");
+  if (!serializable_admission.ok) {
+    auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        serializable_admission.diagnostic);
+    failure.evidence = std::move(prefix_evidence);
+    failure.evidence.insert(failure.evidence.end(),
+                            serializable_admission.evidence.begin(),
+                            serializable_admission.evidence.end());
+    attempt.result = std::move(failure);
+    return attempt;
+  }
+
+  const auto execution_control = EvaluateInsertExecutionControl(
+      request,
+      static_cast<EngineApiU64>(input_rows.size()));
+  mark_phase("execution_control");
+  if (!execution_control.admitted) {
+    auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        execution_control.diagnostic);
+    failure.evidence = std::move(prefix_evidence);
+    failure.evidence.insert(failure.evidence.end(),
+                            execution_control.evidence.begin(),
+                            execution_control.evidence.end());
+    attempt.result = std::move(failure);
+    return attempt;
+  }
+
+  auto serializable_recorded = dml::RecordSerializableInsertMutation(
+      request.context,
+      "dml.insert_rows",
+      request.target_table.uuid.canonical,
+      input_rows,
+      request.option_envelopes);
+  mark_phase("serializable_record");
+  if (!serializable_recorded.ok) {
+    auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        serializable_recorded.diagnostic);
+    failure.evidence = std::move(prefix_evidence);
+    failure.evidence.insert(failure.evidence.end(),
+                            serializable_admission.evidence.begin(),
+                            serializable_admission.evidence.end());
+    failure.evidence.insert(failure.evidence.end(),
+                            execution_control.evidence.begin(),
+                            execution_control.evidence.end());
+    failure.evidence.insert(failure.evidence.end(),
+                            serializable_recorded.evidence.begin(),
+                            serializable_recorded.evidence.end());
+    attempt.result = std::move(failure);
+    return attempt;
+  }
+
+  prefix_evidence.insert(prefix_evidence.end(),
+                         serializable_admission.evidence.begin(),
+                         serializable_admission.evidence.end());
+  prefix_evidence.insert(prefix_evidence.end(),
+                         execution_control.evidence.begin(),
+                         execution_control.evidence.end());
+  prefix_evidence.insert(prefix_evidence.end(),
+                         serializable_recorded.evidence.begin(),
+                         serializable_recorded.evidence.end());
+  auto direct_request = MakeDirectPhysicalInsertRequest(request, input_rows);
+  mark_phase("make_direct_request");
+  auto direct_result = dml::ExecuteDirectPhysicalBulkAppend(std::move(direct_request));
+  mark_phase("execute_direct_physical_bulk_append");
+  attempt.result = ConvertDirectPhysicalInsertResult(
+      request,
+      std::move(direct_result),
+      std::move(prefix_evidence));
+  mark_phase("convert_direct_result");
+  WriteInsertApiPhaseTrace("try_direct_physical_insert_route",
+                           "dml.insert_rows",
+                           input_rows.size(),
+                           phase_micros);
+  return attempt;
+}
+
 bool RuntimeInsertPolicyApplies(const EngineMaterializedAuthorizationPolicy& policy,
                                 const std::string& table_uuid) {
   if (!policy.requires_runtime_recheck) {
@@ -1269,6 +1634,345 @@ void RecordDmlAllocationResourceMetrics(
                             1.0,
                             "resource_degraded",
                             fallback);
+  }
+}
+
+struct InsertPreworkQueueItem {
+  std::vector<std::pair<std::string, std::string>> logical_values;
+  EngineApiU64 encoded_bytes = 0;
+};
+
+struct InsertPreworkAllocationRecord {
+  DmlPageAllocationRuntimeResult allocation;
+  std::string family;
+  EngineApiU64 row_count = 0;
+  EngineApiU64 elapsed_microseconds = 0;
+};
+
+struct InsertPreworkQueueStats {
+  bool enabled = false;
+  bool helper_thread_started = false;
+  bool failed = false;
+  EngineApiDiagnostic diagnostic;
+  EngineApiU64 rows_enqueued = 0;
+  EngineApiU64 bytes_enqueued = 0;
+  EngineApiU64 row_prework_rows = 0;
+  EngineApiU64 index_prework_rows = 0;
+  EngineApiU64 max_depth = 0;
+  EngineApiU64 wait_count = 0;
+  std::vector<InsertPreworkAllocationRecord> allocations;
+};
+
+class InsertPreworkQueue {
+ public:
+  InsertPreworkQueue(const EngineInsertRowsRequest& request,
+                     const InsertBatchContext& batch_context,
+                     const CrudState& state,
+                     EngineApiU64 input_row_count,
+                     bool ordinary_insert)
+      : request_(request),
+        state_(state),
+        max_rows_(ResolveMaxRows(request, batch_context)),
+        max_bytes_(ResolveMaxBytes(request, batch_context)) {
+    stats_.enabled = ShouldEnable(request, input_row_count, ordinary_insert);
+    if (!stats_.enabled) {
+      return;
+    }
+    stats_.helper_thread_started = true;
+    worker_ = std::thread([this]() { WorkerLoop(); });
+  }
+
+  InsertPreworkQueue(const InsertPreworkQueue&) = delete;
+  InsertPreworkQueue& operator=(const InsertPreworkQueue&) = delete;
+
+  ~InsertPreworkQueue() { (void)Finish(); }
+
+  bool Enqueue(std::vector<std::pair<std::string, std::string>> logical_values,
+               EngineApiU64 encoded_bytes) {
+    if (!stats_.enabled) {
+      return true;
+    }
+    InsertPreworkQueueItem item{std::move(logical_values), encoded_bytes};
+    std::unique_lock<std::mutex> lock(mutex_);
+    auto fits = [&]() {
+      const bool row_space = queue_.size() < max_rows_;
+      const bool byte_space =
+          queued_bytes_ + item.encoded_bytes <= max_bytes_ || queue_.empty();
+      return row_space && byte_space;
+    };
+    while (!stop_requested_ && !stats_.failed && !fits()) {
+      ++stats_.wait_count;
+      space_available_.wait(lock);
+    }
+    if (stop_requested_ || stats_.failed) {
+      return false;
+    }
+    queued_bytes_ += item.encoded_bytes;
+    queue_.push_back(std::move(item));
+    ++stats_.rows_enqueued;
+    stats_.bytes_enqueued += encoded_bytes;
+    stats_.max_depth =
+        std::max<EngineApiU64>(stats_.max_depth,
+                               static_cast<EngineApiU64>(queue_.size()));
+    work_available_.notify_one();
+    return true;
+  }
+
+  InsertPreworkQueueStats Finish() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_requested_ = true;
+      work_available_.notify_all();
+      space_available_.notify_all();
+    }
+    if (worker_.joinable()) {
+      worker_.join();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stats_;
+  }
+
+ private:
+  static bool DisabledByOption(const EngineInsertRowsRequest& request) {
+    const std::string value =
+        LowerAscii(InsertBatchOptionValue(request, "dml.insert_prework_queue="));
+    const std::string insert_value =
+        LowerAscii(InsertBatchOptionValue(request, "insert.prework_queue="));
+    return value == "disabled" || value == "false" || value == "0" ||
+           insert_value == "disabled" || insert_value == "false" ||
+           insert_value == "0";
+  }
+
+  static bool ForcedByOption(const EngineInsertRowsRequest& request) {
+    const std::string value =
+        LowerAscii(InsertBatchOptionValue(request, "dml.insert_prework_queue="));
+    const std::string insert_value =
+        LowerAscii(InsertBatchOptionValue(request, "insert.prework_queue="));
+    return value == "enabled" || value == "true" || value == "1" ||
+           insert_value == "enabled" || insert_value == "true" ||
+           insert_value == "1";
+  }
+
+  static EngineApiU64 ResolveMinRows(const EngineInsertRowsRequest& request) {
+    EngineApiU64 min_rows =
+        InsertOptionU64(request, "dml.insert_prework_queue.min_rows=", 8);
+    min_rows = InsertOptionU64(request,
+                               "insert.prework_queue.min_rows=",
+                               min_rows);
+    return std::max<EngineApiU64>(1, min_rows);
+  }
+
+  static EngineApiU64 ResolveMaxRows(const EngineInsertRowsRequest& request,
+                                     const InsertBatchContext& batch_context) {
+    const EngineApiU64 admitted =
+        std::max<EngineApiU64>(1, batch_context.adaptive_batch_plan.admitted_rows);
+    const EngineApiU64 default_rows =
+        admitted > (std::numeric_limits<EngineApiU64>::max() / 2)
+            ? admitted
+            : std::max<EngineApiU64>(1024, admitted * 2);
+    EngineApiU64 max_rows =
+        InsertOptionU64(request,
+                        "dml.insert_prework_queue.max_rows=",
+                        default_rows);
+    max_rows = InsertOptionU64(request,
+                               "insert.prework_queue.max_rows=",
+                               max_rows);
+    return std::max<EngineApiU64>(1, max_rows);
+  }
+
+  static EngineApiU64 ResolveMaxBytes(const EngineInsertRowsRequest& request,
+                                      const InsertBatchContext& batch_context) {
+    const EngineApiU64 default_bytes = std::max<EngineApiU64>(
+        1024 * 1024,
+        batch_context.memory_policy.bulk_load_budget_bytes == 0
+            ? 1024 * 1024
+            : batch_context.memory_policy.bulk_load_budget_bytes / 2);
+    EngineApiU64 max_bytes =
+        InsertOptionU64(request,
+                        "dml.insert_prework_queue.max_bytes=",
+                        default_bytes);
+    max_bytes = InsertOptionU64(request,
+                                "insert.prework_queue.max_bytes=",
+                                max_bytes);
+    return std::max<EngineApiU64>(1, max_bytes);
+  }
+
+  static bool ShouldEnable(const EngineInsertRowsRequest& request,
+                           EngineApiU64 input_row_count,
+                           bool ordinary_insert) {
+    if (!ordinary_insert) {
+      return false;
+    }
+    if (DisabledByOption(request)) {
+      return false;
+    }
+    if (ForcedByOption(request)) {
+      return true;
+    }
+    return input_row_count >= ResolveMinRows(request);
+  }
+
+  void WorkerLoop() {
+    for (;;) {
+      std::deque<InsertPreworkQueueItem> work;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        work_available_.wait(lock, [&]() {
+          return stop_requested_ || !queue_.empty() || stats_.failed;
+        });
+        if ((queue_.empty() && stop_requested_) || stats_.failed) {
+          return;
+        }
+        while (!queue_.empty()) {
+          queued_bytes_ -= queue_.front().encoded_bytes;
+          work.push_back(std::move(queue_.front()));
+          queue_.pop_front();
+        }
+        space_available_.notify_all();
+      }
+      ProcessWork(std::move(work));
+    }
+  }
+
+  void ProcessWork(std::deque<InsertPreworkQueueItem> work) {
+    if (work.empty()) {
+      return;
+    }
+    const EngineApiU64 row_count =
+        static_cast<EngineApiU64>(work.size());
+    const auto row_allocation_start = InsertSteadyClock::now();
+    auto row_allocation = ReserveDmlPageAllocationRuntime(
+        request_.context,
+        request_.option_envelopes,
+        request_.target_table.uuid.canonical,
+        DmlPageAllocationRuntimeFamily::row_data,
+        row_count,
+        "insert.prework.row_data");
+    const EngineApiU64 row_allocation_elapsed =
+        ElapsedMicros(row_allocation_start, InsertSteadyClock::now());
+    if (!row_allocation.ok()) {
+      SetFailure(row_allocation.diagnostic);
+      return;
+    }
+
+    std::vector<std::vector<std::pair<std::string, std::string>>> index_value_batch;
+    index_value_batch.reserve(work.size());
+    for (auto& item : work) {
+      index_value_batch.push_back(std::move(item.logical_values));
+    }
+    const auto index_allocation_start = InsertSteadyClock::now();
+    auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
+        request_.context,
+        request_.option_envelopes,
+        state_,
+        request_.target_table.uuid.canonical,
+        index_value_batch,
+        "insert.prework.index");
+    const EngineApiU64 index_allocation_elapsed =
+        ElapsedMicros(index_allocation_start, InsertSteadyClock::now());
+    if (!index_allocation.ok()) {
+      SetFailure(index_allocation.diagnostic);
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_.allocations.push_back(
+        {std::move(row_allocation), "row", row_count, row_allocation_elapsed});
+    if (stats_.allocations.back().allocation.active) {
+      stats_.row_prework_rows += row_count;
+    }
+    stats_.allocations.push_back({std::move(index_allocation),
+                                  "index",
+                                  0,
+                                  index_allocation_elapsed});
+    if (stats_.allocations.back().allocation.active) {
+      stats_.index_prework_rows += row_count;
+    }
+  }
+
+  void SetFailure(const EngineApiDiagnostic& diagnostic) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_.failed = true;
+    stats_.diagnostic = diagnostic;
+    stop_requested_ = true;
+    work_available_.notify_all();
+    space_available_.notify_all();
+  }
+
+  const EngineInsertRowsRequest& request_;
+  const CrudState& state_;
+  const EngineApiU64 max_rows_ = 1;
+  const EngineApiU64 max_bytes_ = 1;
+  std::mutex mutex_;
+  std::condition_variable work_available_;
+  std::condition_variable space_available_;
+  std::deque<InsertPreworkQueueItem> queue_;
+  EngineApiU64 queued_bytes_ = 0;
+  bool stop_requested_ = false;
+  std::thread worker_;
+  InsertPreworkQueueStats stats_;
+};
+
+void AddInsertPreworkQueueEvidence(const InsertPreworkQueueStats& stats,
+                                   std::vector<EngineEvidenceReference>* evidence) {
+  if (evidence == nullptr) {
+    return;
+  }
+  evidence->push_back({"insert_transaction_queue_scope",
+                       stats.enabled
+                           ? "statement_with_transaction_authority"
+                           : "not_enabled"});
+  evidence->push_back({"insert_transaction_queue_return_before_flush", "false"});
+  evidence->push_back({"insert_prework_queue_enabled",
+                       stats.enabled ? "true" : "false"});
+  evidence->push_back({"insert_prework_rows_enqueued",
+                       std::to_string(stats.rows_enqueued)});
+  evidence->push_back({"insert_prework_bytes_enqueued",
+                       std::to_string(stats.bytes_enqueued)});
+  evidence->push_back({"insert_prework_rows_prepared",
+                       std::to_string(stats.row_prework_rows)});
+  evidence->push_back({"insert_prework_index_rows_prepared",
+                       std::to_string(stats.index_prework_rows)});
+  evidence->push_back({"insert_prework_helper_thread_started",
+                       stats.helper_thread_started ? "true" : "false"});
+  evidence->push_back({"insert_prework_queue_max_depth",
+                       std::to_string(stats.max_depth)});
+  evidence->push_back({"insert_prework_queue_wait_count",
+                       std::to_string(stats.wait_count)});
+  evidence->push_back({"insert_prework_queue_commit_flush_contract",
+                       "commit_waits_for_no_pending_statement_fenced"});
+  evidence->push_back({"insert_prework_target_parallelism",
+                       stats.enabled ? "target_table_queue_worker" : "not_enabled"});
+  evidence->push_back({"insert_prework_cross_statement_queue",
+                       "not_enabled_read_your_writes_overlay_required"});
+  evidence->push_back({"mga_finality_authority",
+                       "engine_transaction_inventory"});
+  evidence->push_back({"parser_finality", "false"});
+}
+
+void AddInsertPreworkAllocationResults(const InsertPreworkQueueStats& stats,
+                                       const InsertBatchContext& batch_context,
+                                       EngineInsertRowsResult* result) {
+  if (result == nullptr) {
+    return;
+  }
+  for (const auto& record : stats.allocations) {
+    AddDmlPageAllocationRuntimeEvidence(record.allocation, result);
+    AddDmlAllocationSummaryCounters(record.allocation,
+                                    record.family,
+                                    record.row_count,
+                                    &result->dml_summary);
+    AddDmlAllocationResourceEvidence(record.allocation,
+                                     record.family,
+                                     record.elapsed_microseconds,
+                                     &result->evidence);
+    if (record.allocation.active) {
+      ++result->dml_summary.page_reservations;
+    }
+    RecordDmlAllocationResourceMetrics(batch_context,
+                                       record.allocation,
+                                       record.family,
+                                       record.elapsed_microseconds);
   }
 }
 
@@ -1738,8 +2442,24 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (request.HasAmbiguousInputRows()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "input_rows_or_borrowed_rows_exclusive"));
   }
+  auto insert_phase_last = InsertApiSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> insert_phase_micros;
+  insert_phase_micros.reserve(12);
+  const auto mark_insert_phase = [&](std::string phase) {
+    const auto now = InsertApiSteadyClock::now();
+    insert_phase_micros.push_back(
+        {std::move(phase), InsertApiElapsedMicros(insert_phase_last, now)});
+    insert_phase_last = now;
+  };
+  const auto write_insert_outer_trace = [&](std::size_t row_count) {
+    WriteInsertApiPhaseTrace("engine_insert_rows",
+                             "dml.insert_rows",
+                             row_count,
+                             insert_phase_micros);
+  };
   const auto write_result_policy =
       ResolveWriteResultPolicy(request, "dml.insert_rows");
+  mark_insert_phase("resolve_write_result_policy");
   if (!write_result_policy.ok) {
     auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
@@ -1749,6 +2469,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     return failure;
   }
   const std::string conflict_action = ConflictAction(request);
+  mark_insert_phase("resolve_conflict_action");
   if (InsertRequestedCompatibilityFullRelationStateLoad(request)) {
     auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
@@ -1762,13 +2483,36 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                 "caller_requested_full_load_on_mutation_path"});
     return failure;
   }
+  const auto direct_initial_input_rows = request.EffectiveInputRows();
+  if (!direct_initial_input_rows.empty()) {
+    auto direct_attempt = TryDirectPhysicalInsertRoute(request,
+                                                      conflict_action,
+                                                      direct_initial_input_rows);
+    mark_insert_phase("direct_initial_attempt");
+    if (direct_attempt.attempted) {
+      write_insert_outer_trace(direct_initial_input_rows.size());
+      return std::move(direct_attempt.result);
+    }
+  }
   const bool full_relation_state_required =
       InsertRequiresFullRelationState(request, conflict_action);
-  const auto loaded = full_relation_state_required
-                          ? LoadMgaRelationStoreState(request.context)
-                          : LoadMgaRelationStoreStateForInsertTarget(
-                                request.context,
-                                request.target_table.uuid.canonical);
+  const auto generated_source_uuids = GeneratedInsertSelectSourceUuids(request);
+  std::vector<std::string> generated_insert_scope_uuids{
+      request.target_table.uuid.canonical};
+  generated_insert_scope_uuids.insert(generated_insert_scope_uuids.end(),
+                                      generated_source_uuids.begin(),
+                                      generated_source_uuids.end());
+  mark_insert_phase("plan_relation_state_scope");
+  auto loaded = full_relation_state_required
+                    ? LoadMgaRelationStoreState(request.context)
+                    : (!generated_source_uuids.empty()
+                           ? LoadMgaRelationStoreStateForMutationTargets(
+                                 request.context,
+                                 generated_insert_scope_uuids)
+                           : LoadMgaRelationStoreStateForInsertTarget(
+                                 request.context,
+                                 request.target_table.uuid.canonical));
+  mark_insert_phase("load_relation_state");
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
       request.target_table.uuid.canonical,
       ResolveInsertBatchMode(request) == InsertBatchMode::singleton
@@ -1780,12 +2524,15 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           ? (conflict_action == "do_update"
                  ? "on_conflict_do_update_requires_child_reference_state"
                  : "request_required_full_state")
-          : (conflict_action == "do_update"
-                 ? "insert_target_child_reference_scoped"
-                 : "insert_target_scoped"));
+          : (!generated_source_uuids.empty()
+                 ? "insert_select_target_source_scoped"
+                 : (conflict_action == "do_update"
+                        ? "insert_target_child_reference_scoped"
+                        : "insert_target_scoped")));
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
   const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  mark_insert_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "target_table_not_visible"));
   }
@@ -1799,11 +2546,17 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 
   EngineApiDiagnostic generated_rows_diagnostic =
       MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  std::vector<EngineEvidenceReference> generated_rows_evidence;
   std::vector<EngineRowValue> generated_insert_select_rows;
   if (request.EffectiveInputRows().empty()) {
     generated_insert_select_rows =
-        BuildRecursiveCounterInsertRows(request, *table, &generated_rows_diagnostic);
+        BuildRecursiveCounterInsertRows(request,
+                                        *table,
+                                        state,
+                                        &generated_rows_diagnostic,
+                                        &generated_rows_evidence);
   }
+  mark_insert_phase("build_generated_insert_rows");
   if (generated_rows_diagnostic.error) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
@@ -1817,6 +2570,26 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                             generated_insert_select_rows.size());
   if (input_rows.empty()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "at_least_one_row_required"));
+  }
+
+  if (!generated_insert_select_rows.empty()) {
+    std::vector<EngineEvidenceReference> direct_prefix_evidence;
+    direct_prefix_evidence.push_back({"insert_select_generator",
+                                      "recursive_counter_cte"});
+    direct_prefix_evidence.push_back({"insert_select_generated_row_count",
+                                      std::to_string(generated_insert_select_rows.size())});
+    direct_prefix_evidence.insert(direct_prefix_evidence.end(),
+                                  generated_rows_evidence.begin(),
+                                  generated_rows_evidence.end());
+    auto direct_attempt = TryDirectPhysicalInsertRoute(request,
+                                                      conflict_action,
+                                                      input_rows,
+                                                      std::move(direct_prefix_evidence));
+    mark_insert_phase("direct_generated_attempt");
+    if (direct_attempt.attempted) {
+      write_insert_outer_trace(input_rows.size());
+      return std::move(direct_attempt.result);
+    }
   }
 
   if (CrudRowsTouchOpaqueColumn(*table, input_rows) &&
@@ -1932,6 +2705,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     result.evidence.push_back({"insert_select_generator", "recursive_counter_cte"});
     result.evidence.push_back({"insert_select_generated_row_count",
                                std::to_string(generated_insert_select_rows.size())});
+    result.evidence.insert(result.evidence.end(),
+                           generated_rows_evidence.begin(),
+                           generated_rows_evidence.end());
   }
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
@@ -1947,9 +2723,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                    : "request_required_full_state"});
   } else {
     result.evidence.push_back({"relation_state_load_reason",
-                               conflict_action == "do_update"
-                                   ? "target_table_insert_and_child_reference_scope"
-                                   : "target_table_insert_scope"});
+                               !generated_source_uuids.empty()
+                                   ? "insert_select_target_source_scope"
+                                   : (conflict_action == "do_update"
+                                          ? "target_table_insert_and_child_reference_scope"
+                                          : "target_table_insert_scope")});
   }
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
@@ -1970,9 +2748,25 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   validation_evidence.enabled = suppress_payload_rows && input_rows.size() > 256;
   validation_evidence.input_row_count =
       static_cast<EngineApiU64>(input_rows.size());
+  const bool ordinary_insert_batch_unique_preflight = conflict_action.empty();
+  if (ordinary_insert_batch_unique_preflight) {
+    result.evidence.push_back({"insert_unique_statement_scope",
+                               "batch_key_tracker_plus_persisted_probe"});
+  }
   AddMutationOptimizerEvidence("insert", request.context.local_transaction_id != 0, true, &result.evidence);
   std::vector<CrudRowVersionRecord> returning_rows;
   std::vector<StagedInsertRow> staged_insert_rows;
+  InsertPreworkQueue insert_prework(request,
+                                    batch_context,
+                                    state,
+                                    static_cast<EngineApiU64>(input_rows.size()),
+                                    ordinary_insert_batch_unique_preflight);
+  auto finish_insert_prework = [&]() {
+    auto stats = insert_prework.Finish();
+    AddInsertPreworkQueueEvidence(stats, &result.evidence);
+    AddInsertPreworkAllocationResults(stats, batch_context, &result);
+    return stats;
+  };
   EngineApiU64 adaptive_write_window_count = 0;
   EngineApiU64 adaptive_write_window_max_rows = 0;
   EngineApiU64 adaptive_write_window_row_versions = 0;
@@ -2021,7 +2815,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                  batch_context.row_template,
                                  batch_context.row_encoder_plan);
     auto values = prepared.values;
-    const auto default_validation = ApplyConstraintDefaultsForInsert(request.context, *table, values);
+    const auto default_validation =
+        ApplyConstraintDefaultsForInsert(request.context, *table, values, &constraint_cache);
     if (!default_validation.ok) {
       return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", default_validation.diagnostic);
     }
@@ -2362,20 +3157,58 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           &result.evidence);
     } else {
       result.dml_summary.index_probes += UniqueIndexCount(visible_indexes);
-      auto* unique_evidence =
-          validation_evidence.CaptureTarget(&result.evidence);
-      const auto unique_check = ValidateIndexBackedUniquePreflightForRow(
-          state,
-          *table,
-          request.context,
-          statement_overlay,
-          physical_probe_cache,
-          visible_indexes,
-          prepared.row_uuid,
-          values,
-          &constraint_cache,
-          unique_evidence);
-      validation_evidence.FlushCapture();
+      EngineApiDiagnostic unique_check =
+          MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+      if (ordinary_insert_batch_unique_preflight) {
+        unique_check = ValidateInsertBatchUniquePreflight(&batch_context, values);
+        if (!unique_check.error) {
+          for (const auto& index : visible_indexes) {
+            if (!IsUniqueIndexForConflict(index)) {
+              continue;
+            }
+            const auto keys = CrudIndexKeysForValues(index, values);
+            if (const auto conflict = FindPersistedUniqueIndexConflict(
+                    state,
+                    request.target_table.uuid.canonical,
+                    request.context,
+                    physical_probe_cache,
+                    index,
+                    keys,
+                    prepared.row_uuid)) {
+              result.evidence.push_back({"insert_unique_probe_index", conflict->index_uuid});
+              result.evidence.push_back({"insert_unique_probe_key", conflict->key_value});
+              result.evidence.push_back({"insert_unique_probe_candidate_source",
+                                         conflict->candidate_source});
+              result.evidence.push_back({"physical_unique_index_probe_path",
+                                         conflict->physical_probe_path});
+              unique_check = UniqueConflictDiagnostic(*table, index);
+              break;
+            }
+            RecordIndexBackedUniquePreflightProof(&constraint_cache,
+                                                  request.context,
+                                                  index,
+                                                  prepared.row_uuid,
+                                                  values,
+                                                  validation_evidence.CaptureTarget(&result.evidence));
+            validation_evidence.FlushCapture();
+          }
+        }
+      } else {
+        auto* unique_evidence =
+            validation_evidence.CaptureTarget(&result.evidence);
+        unique_check = ValidateIndexBackedUniquePreflightForRow(
+            state,
+            *table,
+            request.context,
+            statement_overlay,
+            physical_probe_cache,
+            visible_indexes,
+            prepared.row_uuid,
+            values,
+            &constraint_cache,
+            unique_evidence);
+        validation_evidence.FlushCapture();
+      }
       if (unique_check.error) {
         return InsertDiagnosticResultWithEvidence(request.context,
                                                   unique_check,
@@ -2445,9 +3278,22 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     CrudRowVersionRecord overlay_row = row_record;
     AddInsertTrace(&batch_context, "insert.row.stage", "stage", prepared.row_uuid);
     staged_insert_rows.push_back({std::move(row_record), values, prepared.toast_required});
-    UpsertUniqueStatementOverlayRow(&statement_overlay,
-                                    visible_indexes,
-                                    std::move(overlay_row));
+    if (!insert_prework.Enqueue(values, prepared.encoded_bytes)) {
+      const auto prework_stats = finish_insert_prework();
+      const EngineApiDiagnostic diagnostic =
+          prework_stats.failed
+              ? prework_stats.diagnostic
+              : MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                             "insert_prework_queue_stopped");
+      return InsertDiagnosticResultWithEvidence(request.context,
+                                                diagnostic,
+                                                result.evidence);
+    }
+    if (!ordinary_insert_batch_unique_preflight) {
+      UpsertUniqueStatementOverlayRow(&statement_overlay,
+                                      visible_indexes,
+                                      std::move(overlay_row));
+    }
   }
 
   if (!staged_insert_rows.empty()) {
@@ -2462,6 +3308,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           request.context,
           "dml.insert_rows",
           serializable_recorded.diagnostic);
+      const auto prework_stats = finish_insert_prework();
+      (void)prework_stats;
       failure.evidence.insert(failure.evidence.end(),
                               result.evidence.begin(),
                               result.evidence.end());
@@ -2473,48 +3321,64 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
+    const auto prework_stats = finish_insert_prework();
+    mark_insert_phase("insert_prework_queue_fence");
+    if (prework_stats.failed) {
+      return InsertDiagnosticResultWithEvidence(request.context,
+                                                prework_stats.diagnostic,
+                                                result.evidence);
+    }
 
     const EngineApiU64 admitted_rows =
         std::max<EngineApiU64>(1, batch_context.adaptive_batch_plan.admitted_rows);
-    const auto row_allocation_start = InsertSteadyClock::now();
-    const auto row_allocation = ReserveDmlPageAllocationRuntime(
-        request.context,
-        request.option_envelopes,
-        request.target_table.uuid.canonical,
-        DmlPageAllocationRuntimeFamily::row_data,
-        admitted_rows,
-        "insert.row_data");
-    const EngineApiU64 row_allocation_elapsed =
-        ElapsedMicros(row_allocation_start, InsertSteadyClock::now());
-    if (!row_allocation.ok()) {
-      auto failure = AllocationFailureResult(request.context, row_allocation);
+    const bool prework_row_capacity_ready =
+        prework_stats.row_prework_rows >=
+        static_cast<EngineApiU64>(staged_insert_rows.size());
+    result.evidence.push_back({"insert_prework_row_capacity_ready",
+                               prework_row_capacity_ready ? "true" : "false"});
+    if (!prework_row_capacity_ready) {
+      const auto row_allocation_start = InsertSteadyClock::now();
+      const auto row_allocation = ReserveDmlPageAllocationRuntime(
+          request.context,
+          request.option_envelopes,
+          request.target_table.uuid.canonical,
+          DmlPageAllocationRuntimeFamily::row_data,
+          admitted_rows,
+          "insert.row_data");
+      const EngineApiU64 row_allocation_elapsed =
+          ElapsedMicros(row_allocation_start, InsertSteadyClock::now());
+      if (!row_allocation.ok()) {
+        auto failure = AllocationFailureResult(request.context, row_allocation);
+        AddDmlAllocationResourceEvidence(row_allocation,
+                                         "row",
+                                         row_allocation_elapsed,
+                                         &failure.evidence);
+        RecordDmlAllocationResourceMetrics(batch_context,
+                                           row_allocation,
+                                           "row",
+                                           row_allocation_elapsed);
+        return failure;
+      }
+      AddDmlPageAllocationRuntimeEvidence(row_allocation, &result);
+      AddDmlAllocationSummaryCounters(row_allocation,
+                                      "row",
+                                      admitted_rows,
+                                      &result.dml_summary);
       AddDmlAllocationResourceEvidence(row_allocation,
                                        "row",
                                        row_allocation_elapsed,
-                                       &failure.evidence);
+                                       &result.evidence);
+      if (row_allocation.active) {
+        ++result.dml_summary.page_reservations;
+      }
       RecordDmlAllocationResourceMetrics(batch_context,
                                          row_allocation,
                                          "row",
                                          row_allocation_elapsed);
-      return failure;
     }
-    AddDmlPageAllocationRuntimeEvidence(row_allocation, &result);
-    AddDmlAllocationSummaryCounters(row_allocation,
-                                    "row",
-                                    admitted_rows,
-                                    &result.dml_summary);
-    AddDmlAllocationResourceEvidence(row_allocation,
-                                     "row",
-                                     row_allocation_elapsed,
-                                     &result.evidence);
-    if (row_allocation.active) {
-      ++result.dml_summary.page_reservations;
-    }
-    RecordDmlAllocationResourceMetrics(batch_context,
-                                       row_allocation,
-                                       "row",
-                                       row_allocation_elapsed);
 
+    EngineApiU64 preworked_index_rows_remaining =
+        prework_stats.index_prework_rows;
     for (std::size_t window_begin = 0; window_begin < staged_insert_rows.size();) {
       const std::size_t window_size = static_cast<std::size_t>(
           std::min<EngineApiU64>(
@@ -2535,44 +3399,54 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       for (std::size_t index = window_begin; index < window_end; ++index) {
         index_value_batch.push_back(staged_insert_rows[index].logical_values);
       }
-      const auto index_allocation_start = InsertSteadyClock::now();
-      const auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
-          request.context,
-          request.option_envelopes,
-          state,
-          request.target_table.uuid.canonical,
-          index_value_batch,
-          "insert.index");
-      const EngineApiU64 index_allocation_elapsed =
-          ElapsedMicros(index_allocation_start, InsertSteadyClock::now());
-      if (!index_allocation.ok()) {
-        auto failure = AllocationFailureResult(request.context, index_allocation);
+      DmlPageAllocationRuntimeResult index_allocation;
+      bool prework_index_capacity_ready = false;
+      if (preworked_index_rows_remaining >= static_cast<EngineApiU64>(window_size)) {
+        prework_index_capacity_ready = true;
+        preworked_index_rows_remaining -= static_cast<EngineApiU64>(window_size);
+      }
+      result.evidence.push_back({"insert_prework_index_window_capacity_ready",
+                                 prework_index_capacity_ready ? "true" : "false"});
+      if (!prework_index_capacity_ready) {
+        const auto index_allocation_start = InsertSteadyClock::now();
+        index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
+            request.context,
+            request.option_envelopes,
+            state,
+            request.target_table.uuid.canonical,
+            index_value_batch,
+            "insert.index");
+        const EngineApiU64 index_allocation_elapsed =
+            ElapsedMicros(index_allocation_start, InsertSteadyClock::now());
+        if (!index_allocation.ok()) {
+          auto failure = AllocationFailureResult(request.context, index_allocation);
+          AddDmlAllocationResourceEvidence(index_allocation,
+                                           "index",
+                                           index_allocation_elapsed,
+                                           &failure.evidence);
+          RecordDmlAllocationResourceMetrics(batch_context,
+                                             index_allocation,
+                                             "index",
+                                             index_allocation_elapsed);
+          return failure;
+        }
+        AddDmlPageAllocationRuntimeEvidence(index_allocation, &result);
+        AddDmlAllocationSummaryCounters(index_allocation,
+                                        "index",
+                                        0,
+                                        &result.dml_summary);
         AddDmlAllocationResourceEvidence(index_allocation,
                                          "index",
                                          index_allocation_elapsed,
-                                         &failure.evidence);
+                                         &result.evidence);
+        if (index_allocation.active) {
+          ++result.dml_summary.page_reservations;
+        }
         RecordDmlAllocationResourceMetrics(batch_context,
                                            index_allocation,
                                            "index",
                                            index_allocation_elapsed);
-        return failure;
       }
-      AddDmlPageAllocationRuntimeEvidence(index_allocation, &result);
-      AddDmlAllocationSummaryCounters(index_allocation,
-                                      "index",
-                                      0,
-                                      &result.dml_summary);
-      AddDmlAllocationResourceEvidence(index_allocation,
-                                       "index",
-                                       index_allocation_elapsed,
-                                       &result.evidence);
-      if (index_allocation.active) {
-        ++result.dml_summary.page_reservations;
-      }
-      RecordDmlAllocationResourceMetrics(batch_context,
-                                         index_allocation,
-                                         "index",
-                                         index_allocation_elapsed);
 
       std::vector<CrudRowVersionRecord> row_records;
       row_records.reserve(window_size);
@@ -2699,7 +3573,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       if (index_flushed.error) {
         return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", index_flushed);
       }
-      if (index_allocation.active) {
+      if (index_allocation.active || prework_index_capacity_ready) {
         result.evidence.push_back({"mga_index_store", "row_insert"});
       }
       const auto hot_counters = hot_append.counters();
