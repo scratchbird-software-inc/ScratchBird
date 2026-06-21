@@ -434,6 +434,49 @@ void AppendLineU64Field(std::string* line, bool* first, std::uint64_t value) {
   AppendLineField(line, first, std::string_view(buffer, static_cast<std::size_t>(ptr - buffer)));
 }
 
+void AppendHexEncoded(std::string* out, std::string_view value) {
+  if (out == nullptr) { return; }
+  static constexpr char kHex[] = "0123456789abcdef";
+  const std::size_t offset = out->size();
+  out->resize(offset + value.size() * 2);
+  char* cursor = out->data() + offset;
+  for (const unsigned char c : value) {
+    *cursor++ = kHex[(c >> 4) & 0x0f];
+    *cursor++ = kHex[c & 0x0f];
+  }
+}
+
+std::size_t EncodedCrudPairsSize(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  std::size_t size = 0;
+  for (const auto& [key, value] : pairs) {
+    if (size != 0) { ++size; }
+    size += key.size() * 2 + 1 + value.size() * 2;
+  }
+  return size;
+}
+
+void AppendEncodedCrudPairsField(
+    std::string* line,
+    bool* first,
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  if (line == nullptr || first == nullptr) { return; }
+  if (!*first) {
+    line->push_back('\t');
+  }
+  *first = false;
+  bool first_pair = true;
+  for (const auto& [key, value] : pairs) {
+    if (!first_pair) {
+      line->push_back('|');
+    }
+    first_pair = false;
+    AppendHexEncoded(line, key);
+    line->push_back('=');
+    AppendHexEncoded(line, value);
+  }
+}
+
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   if (out == nullptr) { return; }
   const std::size_t required = out->size() + extra;
@@ -453,13 +496,13 @@ void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
 void AppendRowVersionStoreLine(std::string* out,
                                const CrudRowVersionRecord& row) {
   if (out == nullptr) { return; }
-  const std::string encoded_values = EncodeCrudPairs(row.values);
+  const std::size_t encoded_values_size = EncodedCrudPairsSize(row.values);
   ReserveAmortizedAppendCapacity(out,
                                  128 + row.table_uuid.size() +
                                      row.row_uuid.size() +
                                      row.version_uuid.size() +
                                      row.previous_version_uuid.size() +
-                                     encoded_values.size() +
+                                     encoded_values_size +
                                      row.temporary_session_uuid.size());
   bool first = true;
   AppendLineField(out, &first, kRowStoreMagic);
@@ -472,7 +515,7 @@ void AppendRowVersionStoreLine(std::string* out,
   AppendLineField(out, &first, row.deleted ? "1" : "0");
   AppendLineField(out, &first, row.previous_version_uuid);
   AppendLineU64Field(out, &first, row.previous_sequence);
-  AppendLineField(out, &first, encoded_values);
+  AppendEncodedCrudPairsField(out, &first, row.values);
   AppendLineField(out, &first, row.temporary_session_uuid);
 }
 

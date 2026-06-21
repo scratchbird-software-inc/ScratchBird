@@ -4653,8 +4653,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         logical_value_batch.push_back(row_record.values);
         add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
         const auto preallocation_enqueue_start = row_stage_timer_start();
-        if (!ingestion_pipeline.EnqueuePreallocation(
-                {logical_value_batch.back(), encoded_bytes})) {
+        DmlIngestionPreallocationItem preallocation_item;
+        preallocation_item.borrowed_logical_values = &logical_value_batch.back();
+        preallocation_item.encoded_bytes = encoded_bytes;
+        if (!ingestion_pipeline.EnqueuePreallocation(std::move(preallocation_item))) {
           const auto ingestion_stats = ingestion_pipeline.Fence();
           AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
           const EngineApiDiagnostic diagnostic =
@@ -4877,8 +4879,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     logical_value_batch.push_back(std::move(prepared.values));
     add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
     const auto preallocation_enqueue_start = row_stage_timer_start();
-    if (!ingestion_pipeline.EnqueuePreallocation(
-            {logical_value_batch.back(), prepared.encoded_bytes})) {
+    DmlIngestionPreallocationItem preallocation_item;
+    preallocation_item.borrowed_logical_values = &logical_value_batch.back();
+    preallocation_item.encoded_bytes = prepared.encoded_bytes;
+    if (!ingestion_pipeline.EnqueuePreallocation(std::move(preallocation_item))) {
       const auto ingestion_stats = ingestion_pipeline.Fence();
       AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
       const EngineApiDiagnostic diagnostic =
@@ -5340,6 +5344,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
   MgaRelationHotAppendContext hot_append(request.context);
   std::vector<std::uint64_t> written_event_sequences;
+  EngineApiU64 row_stream_append_us = 0;
+  EngineApiU64 row_stream_flush_us = 0;
   if (strict_lifecycle.active &&
       DirectOptionEnabled(request,
                           "strict_bulk_load.simulate_physical_publication_failure_after_evidence=true")) {
@@ -5367,13 +5373,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                           "row_append",
                                           "phase=direct_physical_row_append");
              }
+             const auto append_start = DirectSteadyClock::now();
              const auto appended =
                  hot_append.AppendRowVersions(&staged_rows, &written_event_sequences);
+             row_stream_append_us =
+                 DirectElapsedMicros(append_start, DirectSteadyClock::now());
              if (appended.error) {
                ingestion_write_failure_reason = "mga_row_append_refused";
                return appended;
              }
+             const auto flush_start = DirectSteadyClock::now();
              const auto flushed = hot_append.FlushRowVersions();
+             row_stream_flush_us =
+                 DirectElapsedMicros(flush_start, DirectSteadyClock::now());
              if (flushed.error) {
                ingestion_write_failure_reason = "mga_row_flush_refused";
                return flushed;
@@ -5428,6 +5440,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  : ingestion_write_failure_reason);
   }
   mark_phase("row_stream_append_flush");
+  phase_micros.push_back({"row_stream_append", row_stream_append_us});
+  phase_micros.push_back({"row_stream_flush", row_stream_flush_us});
 
   std::vector<MgaIndexEntryRowInput> index_rows;
   if (!direct_retail_exact_append_path) {

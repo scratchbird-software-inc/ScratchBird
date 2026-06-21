@@ -333,6 +333,7 @@ bool DmlIngestionPipeline::EnqueuePreallocation(
   }
   PreworkQueueItem queued;
   queued.logical_values = std::move(item.logical_values);
+  queued.borrowed_logical_values = item.borrowed_logical_values;
   queued.encoded_bytes = item.encoded_bytes;
   while (!prework_stop_requested_ && !stats_.failed &&
          !PreworkFitsLocked(queued)) {
@@ -440,8 +441,8 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
   EngineApiU64 row_count = 0;
   EngineApiU64 source_hint_pages = 0;
   EngineApiU64 source_hint_bytes = 0;
-  std::vector<std::vector<std::pair<std::string, std::string>>> index_values;
-  index_values.reserve(work.size());
+  std::vector<const std::vector<std::pair<std::string, std::string>>*> index_value_refs;
+  index_value_refs.reserve(work.size());
   for (auto& item : work) {
     if (item.source_hint_pages != 0) {
       source_hint_pages += item.source_hint_pages;
@@ -449,7 +450,9 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
       continue;
     }
     ++row_count;
-    index_values.push_back(std::move(item.logical_values));
+    index_value_refs.push_back(item.borrowed_logical_values != nullptr
+                                   ? item.borrowed_logical_values
+                                   : &item.logical_values);
   }
 
   if (source_hint_pages != 0) {
@@ -498,14 +501,14 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
 
   DmlPageAllocationRuntimeResult index_allocation;
   EngineApiU64 index_elapsed = 0;
-  if (config_.state != nullptr && !index_values.empty()) {
+  if (config_.state != nullptr && !index_value_refs.empty()) {
     const auto index_start = PipelineClock::now();
-    index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
+    index_allocation = ReserveDmlIndexPageAllocationRuntimeForRowRefs(
         config_.context,
         config_.option_envelopes,
         *config_.state,
         config_.target_table_uuid,
-        index_values,
+        index_value_refs,
         config_.lane_operation + ".ingestion_preallocator.index");
     index_elapsed = ElapsedMicros(index_start, PipelineClock::now());
     if (!index_allocation.ok()) {

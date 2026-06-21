@@ -20,6 +20,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <utility>
 
 namespace scratchbird::storage::database {
@@ -855,6 +856,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
   const TransactionInventoryEntry active_entry = existing.entry;
 
   std::map<u64, RowDataPageBody> page_cache;
+  std::map<u64, bool> page_empty_on_load;
+  std::map<u64, std::set<std::array<scratchbird::core::platform::byte, 16>>>
+      page_insert_row_uuids;
   for (const auto& mutation_request : request.mutations) {
     const auto valid = ValidateMutationRequest(mutation_request);
     if (!valid.ok()) {
@@ -887,6 +891,8 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
       if (!loaded_page.rows.empty()) {
         ++loaded_page.page_generation;
       }
+      page_empty_on_load.emplace(mutation_request.page_number,
+                                 loaded_page.rows.empty());
       page = page_cache.emplace(mutation_request.page_number,
                                 std::move(loaded_page)).first;
     } else if (!SameUuid(page->second.relation_uuid,
@@ -898,6 +904,48 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     }
 
     RowDataPageBody& row_page = page->second;
+    const bool page_started_empty =
+        page_empty_on_load.find(mutation_request.page_number) !=
+            page_empty_on_load.end() &&
+        page_empty_on_load[mutation_request.page_number];
+    if (page_started_empty &&
+        mutation_request.kind == PhysicalMgaCowMutationKind::insert &&
+        mutation_request.stable_slot_id != 0) {
+      auto& inserted_rows = page_insert_row_uuids[mutation_request.page_number];
+      if (!inserted_rows.insert(mutation_request.row_uuid.value.bytes).second) {
+        return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+            "SB-PHYSICAL-MGA-COW-DUPLICATE-VISIBLE-ROW",
+            "storage.physical_mga_cow.duplicate_visible_row");
+      }
+
+      RowIdentity row_identity;
+      row_identity.row_uuid = mutation_request.row_uuid;
+      const auto planned = PlanLocalCopyOnWriteMutationForTransaction(
+          active_entry,
+          row_identity,
+          ToTransactionCowKind(mutation_request.kind),
+          0,
+          1);
+      if (!planned.ok()) {
+        return Propagate<PhysicalMgaCowMutationBatchResult>(
+            planned.status,
+            planned.diagnostic);
+      }
+
+      RowDataRecord new_row;
+      new_row.row_uuid = mutation_request.row_uuid;
+      new_row.transaction_uuid = mutation_request.transaction_uuid;
+      new_row.local_transaction_id = active_entry.identity.local_id.value;
+      new_row.stable_slot_id = mutation_request.stable_slot_id;
+      new_row.row_version = 1;
+      new_row.previous_row_version = 0;
+      new_row.next_row_version = 0;
+      new_row.deleted = false;
+      new_row.cells = mutation_request.cells;
+      row_page.rows.push_back(std::move(new_row));
+      continue;
+    }
+
     bool blocked = false;
     DiagnosticRecord blocked_diagnostic;
     const BaseRowSelection base = SelectBaseRow(row_page,
