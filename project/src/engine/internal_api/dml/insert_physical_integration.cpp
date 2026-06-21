@@ -3010,6 +3010,13 @@ void WriteDirectBulkPhaseTrace(
         evidence.evidence_kind == "mga_hot_append_scoped_index_write_tickets_completed" ||
         evidence.evidence_kind == "mga_hot_append_scoped_index_write_worker_count") {
       out << '\t' << evidence.evidence_kind << '=' << evidence.evidence_id;
+    } else if (evidence.evidence_kind.rfind(
+                   "direct_physical_bulk_trace.",
+                   0) == 0) {
+      out << '\t'
+          << evidence.evidence_kind.substr(
+                 std::string_view("direct_physical_bulk_trace.").size())
+          << '=' << evidence.evidence_id;
     }
   }
   for (const auto& [phase, micros] : phase_micros) {
@@ -4092,17 +4099,31 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   auto phase_last = phase_start;
   std::vector<std::pair<std::string, EngineApiU64>> phase_micros;
   phase_micros.reserve(26);
+  std::vector<EngineEvidenceReference> descriptor_trace;
+  descriptor_trace.reserve(8);
   const auto mark_phase = [&](std::string phase) {
     const auto now = DirectSteadyClock::now();
     phase_micros.push_back(
         {std::move(phase), DirectElapsedMicros(phase_last, now)});
     phase_last = now;
   };
+  const auto mark_descriptor_step =
+      [&](std::string step,
+          DirectSteadyClock::time_point start,
+          DirectSteadyClock::time_point finish) {
+        descriptor_trace.push_back(
+            {"direct_physical_bulk_trace." + std::move(step) + "_us",
+             std::to_string(DirectElapsedMicros(start, finish))});
+      };
 
+  const auto index_only_start = DirectSteadyClock::now();
   const auto index_only_eligibility =
       CanUseMgaRelationIndexOnlyProofForInsertTarget(
           request.context,
           request.target_table.uuid.canonical);
+  mark_descriptor_step("index_only_eligibility",
+                       index_only_start,
+                       DirectSteadyClock::now());
   if (!index_only_eligibility.ok) {
     return DirectBulkFailure(request,
                              index_only_eligibility.diagnostic,
@@ -4134,6 +4155,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   MgaRelationStoreResult loaded;
   if (bulk_context_cache_hit) {
+    const auto relation_load_start = DirectSteadyClock::now();
     loaded.ok = true;
     loaded.evidence.push_back({"direct_physical_bulk_append_context_cache", "hit"});
     if (!append_index_cache_context_note.empty()) {
@@ -4142,7 +4164,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
     loaded.evidence.push_back({"direct_physical_bulk_append_context_scope",
                                "transaction_table_security_epoch"});
+    mark_descriptor_step("relation_state_load",
+                         relation_load_start,
+                         DirectSteadyClock::now());
   } else {
+    const auto relation_load_start = DirectSteadyClock::now();
     loaded =
         index_entries_authoritative
             ? (append_index_cache_hit
@@ -4155,6 +4181,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             : LoadMgaRelationStoreStateForInsertTarget(
                   request.context,
                   request.target_table.uuid.canonical);
+    mark_descriptor_step("relation_state_load",
+                         relation_load_start,
+                         DirectSteadyClock::now());
   }
   if (!loaded.ok) {
     return DirectBulkFailure(request,
@@ -4164,10 +4193,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   CrudState state_storage;
   const CrudState* state = nullptr;
   if (bulk_context_cache_hit) {
+    const auto state_build_start = DirectSteadyClock::now();
     state = bulk_context_cache.state.get();
+    mark_descriptor_step("state_build",
+                         state_build_start,
+                         DirectSteadyClock::now());
   } else {
+    const auto state_build_start = DirectSteadyClock::now();
     state_storage = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
     state = &state_storage;
+    mark_descriptor_step("state_build",
+                         state_build_start,
+                         DirectSteadyClock::now());
   }
   if (state == nullptr) {
     return DirectBulkFailure(
@@ -4184,9 +4221,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         state->index_entries);
     append_index_cache_hit = true;
   }
+  const auto find_table_start = DirectSteadyClock::now();
   auto table = FindVisibleCrudTable(*state,
                                     request.target_table.uuid.canonical,
                                     request.context.local_transaction_id);
+  mark_descriptor_step("find_visible_table",
+                       find_table_start,
+                       DirectSteadyClock::now());
   if (!table) {
     return DirectBulkFailure(
         request,
@@ -4258,9 +4299,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   std::vector<CrudIndexRecord> visible_indexes;
   MgaRelationStorageDescriptor relation_descriptor;
   if (bulk_context_cache_hit) {
+    const auto descriptor_start = DirectSteadyClock::now();
     visible_indexes = bulk_context_cache.visible_indexes;
     relation_descriptor = bulk_context_cache.relation_descriptor;
+    mark_descriptor_step("visible_indexes_descriptor",
+                         descriptor_start,
+                         DirectSteadyClock::now());
   } else {
+    const auto descriptor_start = DirectSteadyClock::now();
     visible_indexes = VisibleCrudIndexesForTable(
         *state,
         request.target_table.uuid.canonical,
@@ -4287,14 +4333,21 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                         index_entries_authoritative,
                                         append_index_cache_hit);
     }
+    mark_descriptor_step("visible_indexes_descriptor",
+                         descriptor_start,
+                         DirectSteadyClock::now());
   }
 
   const EngineInsertRowsRequest synthetic_insert =
       SyntheticInsertRequestForDirectBulk(request);
   const bool force_large_values_for_insert =
       InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
+  const auto begin_batch_start = DirectSteadyClock::now();
   InsertBatchContext batch_context =
       BeginInsertBatchContext(synthetic_insert, *state, *table, visible_indexes);
+  mark_descriptor_step("begin_insert_batch_context",
+                       begin_batch_start,
+                       DirectSteadyClock::now());
   if (!batch_context.accepted) {
     const std::string reason = batch_context.fallback_reason.empty()
                                    ? "direct_physical_batch_refused"
@@ -4315,7 +4368,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     AddInsertBatchEvidenceToResult(batch_context, &failure);
     return failure;
   }
+  const auto strict_eligibility_start = DirectSteadyClock::now();
   const auto bulk_validation = ValidateStrictBulkLoadEligibility(batch_context, *table);
+  mark_descriptor_step("strict_bulk_eligibility",
+                       strict_eligibility_start,
+                       DirectSteadyClock::now());
   if (bulk_validation.error) {
     return DirectBulkFailureWithEvidence(request,
                                          bulk_validation,
@@ -4331,6 +4388,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   result.local_transaction_id = request.context.local_transaction_id;
   result.transaction_uuid = request.context.transaction_uuid;
   result.direct_lane_selected = true;
+  result.evidence.insert(result.evidence.end(),
+                         descriptor_trace.begin(),
+                         descriptor_trace.end());
   AddEmbeddedTrustModeEvidence(request.context, &result);
   AddDirectLaneBaseEvidence(request, &result);
   result.evidence.insert(result.evidence.end(),
