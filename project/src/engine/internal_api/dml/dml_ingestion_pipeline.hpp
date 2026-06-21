@@ -100,6 +100,7 @@ class DmlIngestionPipeline {
 
   bool Start();
   bool EnqueuePreallocation(DmlIngestionPreallocationItem item);
+  bool EnqueuePreallocationBatch(std::vector<DmlIngestionPreallocationItem> items);
   bool EnqueueWrite(DmlIngestionWriteTask task);
   DmlIngestionPipelineStats FencePreallocator();
   DmlIngestionPipelineStats DrainWriters();

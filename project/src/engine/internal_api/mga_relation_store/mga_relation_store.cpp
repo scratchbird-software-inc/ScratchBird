@@ -619,6 +619,37 @@ struct PreparedIndexLineBufferJob {
   std::map<std::string, std::string> scoped_lines;
 };
 
+bool PreparedIndexEntryLineLess(const PreparedIndexEntryLine& left,
+                                const PreparedIndexEntryLine& right) {
+  return std::tie(left.table_uuid,
+                  left.index_uuid,
+                  left.key,
+                  left.row_uuid,
+                  left.version_uuid) <
+         std::tie(right.table_uuid,
+                  right.index_uuid,
+                  right.key,
+                  right.row_uuid,
+                  right.version_uuid);
+}
+
+void SortPreparedIndexEntryRangeIfNeeded(
+    std::vector<PreparedIndexEntryLine>* entries,
+    std::size_t first,
+    std::uint64_t* sorted_batch_count) {
+  if (entries == nullptr || sorted_batch_count == nullptr ||
+      entries->size() <= first + 1) {
+    return;
+  }
+  auto begin = entries->begin() + static_cast<std::ptrdiff_t>(first);
+  auto end = entries->end();
+  if (std::is_sorted(begin, end, PreparedIndexEntryLineLess)) {
+    return;
+  }
+  ++(*sorted_batch_count);
+  std::stable_sort(begin, end, PreparedIndexEntryLineLess);
+}
+
 bool BulkSortIndexMaterialAllowed(const CrudIndexRecord& index) {
   const std::string family =
       index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
@@ -637,9 +668,13 @@ void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
       batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
   const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
   const std::size_t before_batch = job->entries.size();
+  job->entries.reserve(before_batch + batch.rows.size());
   for (const auto& row : batch.rows) {
     const auto keys = CrudIndexKeysForValues(batch.index, row.values);
     if (keys.empty()) { continue; }
+    if (keys.size() > 1) {
+      job->entries.reserve(job->entries.size() + keys.size());
+    }
     const std::string payload =
         CrudFieldValue(row.values, batch.index.column_name);
     for (const auto& key : keys) {
@@ -655,22 +690,9 @@ void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
     }
   }
   if (sort_allowed && job->entries.size() > before_batch + 1) {
-    ++job->sorted_batch_count;
-    std::stable_sort(job->entries.begin() + static_cast<std::ptrdiff_t>(before_batch),
-                     job->entries.end(),
-                     [](const PreparedIndexEntryLine& left,
-                        const PreparedIndexEntryLine& right) {
-                       return std::tie(left.table_uuid,
-                                       left.index_uuid,
-                                       left.key,
-                                       left.row_uuid,
-                                       left.version_uuid) <
-                              std::tie(right.table_uuid,
-                                       right.index_uuid,
-                                       right.key,
-                                       right.row_uuid,
-                                       right.version_uuid);
-                     });
+    SortPreparedIndexEntryRangeIfNeeded(&job->entries,
+                                        before_batch,
+                                        &job->sorted_batch_count);
   }
 }
 
@@ -720,6 +742,7 @@ void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch
       batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
   const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
   const std::size_t before_batch = job->entries.size();
+  job->entries.reserve(before_batch + batch.entries.size());
   for (const auto& entry : batch.entries) {
     if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
         entry.version_uuid.empty()) {
@@ -739,22 +762,9 @@ void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch
                             entry.version_uuid});
   }
   if (sort_allowed && job->entries.size() > before_batch + 1) {
-    ++job->sorted_batch_count;
-    std::stable_sort(job->entries.begin() + static_cast<std::ptrdiff_t>(before_batch),
-                     job->entries.end(),
-                     [](const PreparedIndexEntryLine& left,
-                        const PreparedIndexEntryLine& right) {
-                       return std::tie(left.table_uuid,
-                                       left.index_uuid,
-                                       left.key,
-                                       left.row_uuid,
-                                       left.version_uuid) <
-                              std::tie(right.table_uuid,
-                                       right.index_uuid,
-                                       right.key,
-                                       right.row_uuid,
-                                       right.version_uuid);
-                     });
+    SortPreparedIndexEntryRangeIfNeeded(&job->entries,
+                                        before_batch,
+                                        &job->sorted_batch_count);
   }
 }
 
@@ -3818,24 +3828,48 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
   row_buffer.reserve(rows->size() * 192);
+  const std::string single_table_uuid = rows->front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
+        return row.table_uuid == single_table_uuid;
+      });
+  std::string* single_scoped_buffer = nullptr;
+  ScopedRelationSummaryDelta* single_summary_delta = nullptr;
   std::map<std::string, std::size_t> rows_per_table;
-  for (const auto& row : *rows) {
-    ++rows_per_table[row.table_uuid];
-  }
   std::map<std::string, std::string> scoped_row_path_by_table;
-  for (const auto& [table_uuid, row_count] : rows_per_table) {
-    const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + row_count * 192);
-    scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-    auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+  if (single_table_batch) {
+    const std::string scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
+    single_scoped_buffer = &impl_->scoped_row_lines[scoped_path];
+    single_scoped_buffer->reserve(single_scoped_buffer->size() +
+                                  rows->size() * 192);
+    single_summary_delta = &impl_->scoped_row_summary_deltas[single_table_uuid];
+    auto& summary_delta = *single_summary_delta;
     if (summary_delta.row_version_count == 0 &&
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
           !FileExistsAndNotEmpty(scoped_path) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
-                                                        table_uuid));
+                                                        single_table_uuid));
+    }
+  } else {
+    for (const auto& row : *rows) {
+      ++rows_per_table[row.table_uuid];
+    }
+    for (const auto& [table_uuid, row_count] : rows_per_table) {
+      const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
+      std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
+      scoped_buffer.reserve(scoped_buffer.size() + row_count * 192);
+      scoped_row_path_by_table.emplace(table_uuid, scoped_path);
+      auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+      if (summary_delta.row_version_count == 0 &&
+          summary_delta.tombstone_count == 0 &&
+          summary_delta.update_count == 0) {
+        summary_delta.first_scoped_write =
+            !FileExistsAndNotEmpty(scoped_path) &&
+            !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                          table_uuid));
+      }
     }
   }
   for (auto& writable : *rows) {
@@ -3844,14 +3878,17 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     const std::size_t line_start = row_buffer.size();
     AppendRowVersionStoreLine(&row_buffer, writable);
     row_buffer.push_back('\n');
-    const auto scoped_path = scoped_row_path_by_table.find(writable.table_uuid);
-    std::string& scoped_buffer =
-        impl_->scoped_row_lines[scoped_path == scoped_row_path_by_table.end()
-                                    ? ScopedRowStorePath(impl_->context, writable.table_uuid)
-                                    : scoped_path->second];
+    std::string& scoped_buffer = single_table_batch
+                                     ? *single_scoped_buffer
+                                     : impl_->scoped_row_lines
+                                           [scoped_row_path_by_table
+                                                .find(writable.table_uuid)
+                                                ->second];
     scoped_buffer.append(row_buffer.data() + line_start,
                          row_buffer.size() - line_start);
-    auto& summary_delta = impl_->scoped_row_summary_deltas[writable.table_uuid];
+    auto& summary_delta = single_table_batch
+                              ? *single_summary_delta
+                              : impl_->scoped_row_summary_deltas[writable.table_uuid];
     ++summary_delta.row_version_count;
     if (writable.deleted) {
       ++summary_delta.tombstone_count;

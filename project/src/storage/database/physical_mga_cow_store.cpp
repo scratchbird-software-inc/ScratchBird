@@ -440,7 +440,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   body.page_generation = std::max<u64>(1, body.page_generation);
   body.compaction_generation = std::max<u64>(body.compaction_generation,
                                              body.page_generation);
-  const auto built = BuildRowDataPageBody(body, context.page_size);
+  const auto built = BuildRowDataPageBodyOwned(std::move(body), context.page_size);
   if (!built.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(built.status,
                                                    built.diagnostic);

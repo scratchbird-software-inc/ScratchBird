@@ -324,32 +324,45 @@ void DmlIngestionPipeline::StartWritersIfNeeded() {
 
 bool DmlIngestionPipeline::EnqueuePreallocation(
     DmlIngestionPreallocationItem item) {
+  std::vector<DmlIngestionPreallocationItem> items;
+  items.push_back(std::move(item));
+  return EnqueuePreallocationBatch(std::move(items));
+}
+
+bool DmlIngestionPipeline::EnqueuePreallocationBatch(
+    std::vector<DmlIngestionPreallocationItem> items) {
   if (!Start()) {
     return false;
+  }
+  if (items.empty()) {
+    return true;
   }
   std::unique_lock<std::mutex> lock(mutex_);
   if (!stats_.preallocator_enabled) {
     return true;
   }
-  PreworkQueueItem queued;
-  queued.logical_values = std::move(item.logical_values);
-  queued.borrowed_logical_values = item.borrowed_logical_values;
-  queued.encoded_bytes = item.encoded_bytes;
-  while (!prework_stop_requested_ && !stats_.failed &&
-         !PreworkFitsLocked(queued)) {
-    ++stats_.preallocation_wait_count;
-    prework_space_available_.wait(lock);
+  for (auto& item : items) {
+    PreworkQueueItem queued;
+    queued.logical_values = std::move(item.logical_values);
+    queued.borrowed_logical_values = item.borrowed_logical_values;
+    queued.encoded_bytes = item.encoded_bytes;
+    while (!prework_stop_requested_ && !stats_.failed &&
+           !PreworkFitsLocked(queued)) {
+      ++stats_.preallocation_wait_count;
+      prework_space_available_.wait(lock);
+    }
+    if (prework_stop_requested_ || stats_.failed) {
+      return false;
+    }
+    prework_queued_bytes_ += queued.encoded_bytes;
+    prework_queue_.push_back(std::move(queued));
+    ++stats_.preallocation_rows_enqueued;
+    stats_.preallocation_bytes_enqueued += item.encoded_bytes;
+    stats_.preallocation_max_depth =
+        std::max<EngineApiU64>(stats_.preallocation_max_depth,
+                               static_cast<EngineApiU64>(prework_queue_.size()));
+    prework_available_.notify_one();
   }
-  if (prework_stop_requested_ || stats_.failed) {
-    return false;
-  }
-  prework_queued_bytes_ += queued.encoded_bytes;
-  prework_queue_.push_back(std::move(queued));
-  ++stats_.preallocation_rows_enqueued;
-  stats_.preallocation_bytes_enqueued += item.encoded_bytes;
-  stats_.preallocation_max_depth =
-      std::max<EngineApiU64>(stats_.preallocation_max_depth,
-                             static_cast<EngineApiU64>(prework_queue_.size()));
   prework_available_.notify_one();
   return true;
 }

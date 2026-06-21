@@ -2432,12 +2432,11 @@ bool DirectPhysicalMgaCowRequired(const DirectPhysicalBulkAppendRequest& request
 
 scratchbird::storage::page::RowDataCell DirectPhysicalCell(
     std::uint16_t ordinal,
-    const EngineTypedValue& value) {
+    const std::string& encoded_value) {
   scratchbird::storage::page::RowDataCell cell;
   cell.column_ordinal = ordinal;
   cell.value.type_id = scratchbird::core::datatypes::CanonicalTypeId::character;
-  cell.value.is_null = value.state == EngineValueState::sql_null || value.is_null;
-  cell.value.payload.assign(value.encoded_value.begin(), value.encoded_value.end());
+  cell.value.payload.assign(encoded_value.begin(), encoded_value.end());
   return cell;
 }
 
@@ -2447,10 +2446,7 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
   cells.reserve(values.size());
   std::uint16_t ordinal = 1;
   for (const auto& value : values) {
-    EngineTypedValue typed;
-    typed.encoded_value = value.second;
-    typed.state = EngineValueState::value;
-    cells.push_back(DirectPhysicalCell(ordinal++, typed));
+    cells.push_back(DirectPhysicalCell(ordinal++, value.second));
   }
   return cells;
 }
@@ -2667,14 +2663,45 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     return selection;
   }
 
+  const bool ordered_ingest_requested = DirectOrderedIngestRequested(request);
+  const bool derive_for_large_load =
+      DirectOrderedIngestDeriveForLargeLoad(request);
+  const std::uint64_t large_load_threshold =
+      DirectOptionU64(request, "ordered_ingest.large_load_threshold", 1024);
+  const bool physical_clustering_requested =
+      DirectPhysicalClusteringRequested(request);
+  const bool large_load =
+      large_load_threshold != 0 &&
+      staged_rows->size() >= large_load_threshold;
+  if (!ordered_ingest_requested &&
+      !(derive_for_large_load && large_load) &&
+      !physical_clustering_requested) {
+    selection.evidence.push_back({"bulk_placement_order_planner",
+                                  "engine_optimizer"});
+    selection.evidence.push_back({"bulk_placement_order_requested", "false"});
+    selection.evidence.push_back(
+        {"bulk_placement_order_large_load_threshold",
+         std::to_string(large_load_threshold)});
+    selection.evidence.push_back({"bulk_placement_order_input_rows",
+                                  std::to_string(staged_rows->size())});
+    selection.evidence.push_back({"bulk_placement_order_selected", "false"});
+    selection.evidence.push_back({"ordered_ingest_storage_policy",
+                                  "storage_page"});
+    selection.evidence.push_back({"ordered_ingest_selected", "false"});
+    selection.evidence.push_back(
+        {"ordered_ingest_physical_clustering_requested", "false"});
+    selection.evidence.push_back(
+        {"ordered_ingest_physical_clustering",
+         "not_requested_descriptor_unchanged"});
+    return selection;
+  }
+
   const std::string placement_key_column =
       DirectOrderedPlacementKeyColumn(request);
   scratchbird::engine::optimizer::BulkPlacementOrderRequest plan_request;
-  plan_request.ordered_ingest_requested = DirectOrderedIngestRequested(request);
-  plan_request.derive_for_large_load =
-      DirectOrderedIngestDeriveForLargeLoad(request);
-  plan_request.large_load_row_threshold =
-      DirectOptionU64(request, "ordered_ingest.large_load_threshold", 1024);
+  plan_request.ordered_ingest_requested = ordered_ingest_requested;
+  plan_request.derive_for_large_load = derive_for_large_load;
+  plan_request.large_load_row_threshold = large_load_threshold;
   plan_request.placement_key_column = placement_key_column;
   plan_request.rows.reserve(staged_rows->size());
   for (std::size_t index = 0; index < staged_rows->size(); ++index) {
@@ -2718,8 +2745,7 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
   clustering.requested_policy_uuid =
       DirectOptionValue(request, "physical_clustering.policy_uuid");
   clustering.ordered_ingest_selected = plan.ordered_ingest_selected;
-  clustering.physical_clustering_requested =
-      DirectPhysicalClusteringRequested(request);
+  clustering.physical_clustering_requested = physical_clustering_requested;
   clustering.explicit_policy_present =
       DirectOptionEnabled(request, "physical_clustering.policy=explicit") ||
       !clustering.requested_policy_uuid.empty();
@@ -4534,6 +4560,47 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         }
         counter += DirectElapsedMicros(start, DirectSteadyClock::now());
       };
+  constexpr std::size_t kDirectBulkPreallocationBatchRows = 512;
+  std::vector<DmlIngestionPreallocationItem> pending_preallocation_items;
+  pending_preallocation_items.reserve(
+      std::min<std::size_t>(kDirectBulkPreallocationBatchRows,
+                            request.borrowed_input_rows.size()));
+  auto flush_preallocation_items = [&]() {
+    if (pending_preallocation_items.empty()) {
+      return true;
+    }
+    const auto preallocation_enqueue_start = row_stage_timer_start();
+    const bool ok = ingestion_pipeline.EnqueuePreallocationBatch(
+        std::move(pending_preallocation_items));
+    add_row_stage_elapsed(row_stage_preallocation_enqueue_us,
+                          preallocation_enqueue_start);
+    pending_preallocation_items.clear();
+    pending_preallocation_items.reserve(
+        std::min<std::size_t>(kDirectBulkPreallocationBatchRows,
+                              request.borrowed_input_rows.size()));
+    return ok;
+  };
+  auto queue_preallocation_item = [&](DmlIngestionPreallocationItem item) {
+    pending_preallocation_items.push_back(std::move(item));
+    if (pending_preallocation_items.size() <
+        kDirectBulkPreallocationBatchRows) {
+      return true;
+    }
+    return flush_preallocation_items();
+  };
+  auto preallocation_failure = [&]() {
+    const auto ingestion_stats = ingestion_pipeline.Fence();
+    AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
+    const EngineApiDiagnostic diagnostic =
+        ingestion_stats.failed
+            ? ingestion_stats.diagnostic
+            : MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                           "dml_ingestion_preallocation_refused");
+    return DirectBulkFailure(request,
+                             diagnostic,
+                             "dml_ingestion_preallocation_refused",
+                             result.dml_summary);
+  };
 
   std::size_t row_ordinal = 0;
   for (const auto& input_row : request.borrowed_input_rows) {
@@ -4652,26 +4719,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         const auto logical_batch_start = row_stage_timer_start();
         logical_value_batch.push_back(row_record.values);
         add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
-        const auto preallocation_enqueue_start = row_stage_timer_start();
         DmlIngestionPreallocationItem preallocation_item;
         preallocation_item.borrowed_logical_values = &logical_value_batch.back();
         preallocation_item.encoded_bytes = encoded_bytes;
-        if (!ingestion_pipeline.EnqueuePreallocation(std::move(preallocation_item))) {
-          const auto ingestion_stats = ingestion_pipeline.Fence();
-          AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
-          const EngineApiDiagnostic diagnostic =
-              ingestion_stats.failed
-                  ? ingestion_stats.diagnostic
-                  : MakeInvalidRequestDiagnostic(
-                        "dml.direct_physical_bulk_append",
-                        "dml_ingestion_preallocation_refused");
-          return DirectBulkFailure(request,
-                                   diagnostic,
-                                   "dml_ingestion_preallocation_refused",
-                                   result.dml_summary);
+        if (!queue_preallocation_item(std::move(preallocation_item))) {
+          return preallocation_failure();
         }
-        add_row_stage_elapsed(row_stage_preallocation_enqueue_us,
-                              preallocation_enqueue_start);
         const auto row_push_start = row_stage_timer_start();
         staged_rows.push_back(std::move(row_record));
         add_row_stage_elapsed(row_stage_row_push_us, row_push_start);
@@ -4878,26 +4931,16 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     const auto logical_batch_start = row_stage_timer_start();
     logical_value_batch.push_back(std::move(prepared.values));
     add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
-    const auto preallocation_enqueue_start = row_stage_timer_start();
     DmlIngestionPreallocationItem preallocation_item;
     preallocation_item.borrowed_logical_values = &logical_value_batch.back();
     preallocation_item.encoded_bytes = prepared.encoded_bytes;
-    if (!ingestion_pipeline.EnqueuePreallocation(std::move(preallocation_item))) {
-      const auto ingestion_stats = ingestion_pipeline.Fence();
-      AddDmlIngestionPipelineEvidence(ingestion_stats, &result);
-      const EngineApiDiagnostic diagnostic =
-          ingestion_stats.failed
-              ? ingestion_stats.diagnostic
-              : MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
-                                             "dml_ingestion_preallocation_refused");
-      return DirectBulkFailure(request,
-                               diagnostic,
-                               "dml_ingestion_preallocation_refused",
-                               result.dml_summary);
+    if (!queue_preallocation_item(std::move(preallocation_item))) {
+      return preallocation_failure();
     }
-    add_row_stage_elapsed(row_stage_preallocation_enqueue_us,
-                          preallocation_enqueue_start);
     ++row_ordinal;
+  }
+  if (!flush_preallocation_items()) {
+    return preallocation_failure();
   }
   if (request.borrowed_input_rows.size() > kDirectBulkTraceRowsToStore) {
     const std::uint64_t omitted =
