@@ -182,6 +182,7 @@ struct MgaRelationHotAppendCounters {
   std::uint64_t index_entries_appended = 0;
   std::uint64_t index_materialization_jobs_queued = 0;
   std::uint64_t index_materialization_jobs_completed = 0;
+  std::uint64_t index_materialization_inline_jobs = 0;
   std::uint64_t index_materialization_worker_count = 0;
   std::uint64_t index_materialization_sort_batches = 0;
   std::uint64_t index_materialized_entries = 0;

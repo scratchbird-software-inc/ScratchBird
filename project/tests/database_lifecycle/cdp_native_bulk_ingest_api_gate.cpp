@@ -559,8 +559,11 @@ void TestApiAndSblrAcceptedRoutes() {
                       "mga_hot_append_index_materialized_entries") == 3,
           "CDP-040 native ingest index materialized entry count mismatch");
   Require(EvidenceU64(api_result.evidence,
-                      "mga_hot_append_index_materialization_worker_count") >= 1,
-          "CDP-040 native ingest did not use an index materialization worker");
+                      "mga_hot_append_index_materialization_inline_jobs") +
+              EvidenceU64(api_result.evidence,
+                          "mga_hot_append_index_materialization_worker_count") >=
+          1,
+          "CDP-040 native ingest did not materialize index work");
   Require(HasEvidence(api_result.evidence,
                       "mga_hot_append_index_materialization_commit_barrier",
                       "flush_waited"),

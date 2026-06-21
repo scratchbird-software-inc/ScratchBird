@@ -2894,6 +2894,8 @@ void AddHotAppendCounterEvidence(const MgaRelationHotAppendCounters& counters,
                               std::to_string(counters.index_materialization_jobs_queued)});
   result->evidence.push_back({"mga_hot_append_index_materialization_jobs_completed",
                               std::to_string(counters.index_materialization_jobs_completed)});
+  result->evidence.push_back({"mga_hot_append_index_materialization_inline_jobs",
+                              std::to_string(counters.index_materialization_inline_jobs)});
   result->evidence.push_back({"mga_hot_append_index_materialization_worker_count",
                               std::to_string(counters.index_materialization_worker_count)});
   result->evidence.push_back({"mga_hot_append_index_materialization_sort_batches",
@@ -4509,6 +4511,29 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   constexpr std::size_t kDirectBulkMaxStoredInsertTraceEvents = 128;
   constexpr std::size_t kDirectBulkTraceRowsToStore =
       kDirectBulkMaxStoredInsertTraceEvents / 2;
+  EngineApiU64 row_stage_prepare_us = 0;
+  EngineApiU64 row_stage_convert_us = 0;
+  EngineApiU64 row_stage_validation_us = 0;
+  EngineApiU64 row_stage_security_recheck_us = 0;
+  EngineApiU64 row_stage_value_copy_us = 0;
+  EngineApiU64 row_stage_logical_batch_us = 0;
+  EngineApiU64 row_stage_preallocation_enqueue_us = 0;
+  EngineApiU64 row_stage_row_push_us = 0;
+  const char* detailed_row_stage_trace_path =
+      std::getenv("SCRATCHBIRD_DML_ROW_STAGE_TRACE");
+  const bool detailed_row_stage_timing =
+      detailed_row_stage_trace_path != nullptr && *detailed_row_stage_trace_path != '\0';
+  const auto row_stage_timer_start = [&]() {
+    return detailed_row_stage_timing ? DirectSteadyClock::now()
+                                     : DirectSteadyClock::time_point{};
+  };
+  const auto add_row_stage_elapsed =
+      [&](EngineApiU64& counter, DirectSteadyClock::time_point start) {
+        if (!detailed_row_stage_timing) {
+          return;
+        }
+        counter += DirectElapsedMicros(start, DirectSteadyClock::now());
+      };
 
   std::size_t row_ordinal = 0;
   for (const auto& input_row : request.borrowed_input_rows) {
@@ -4522,6 +4547,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
 
     if (can_use_shared_row_stage_fast_path) {
+      const auto convert_start = row_stage_timer_start();
       CrudRowVersionRecord row_record;
       row_record.creator_tx = request.context.local_transaction_id;
       row_record.table_uuid = request.target_table.uuid.canonical;
@@ -4551,14 +4577,16 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           break;
         }
         if (typed.is_null) {
-          row_record.values.push_back({field, kDirectNullMarker});
+          row_record.values.emplace_back(field, kDirectNullMarker);
           encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
         } else {
-          row_record.values.push_back({field, typed.encoded_value});
+          row_record.values.emplace_back(field, typed.encoded_value);
           encoded_bytes += field.size() + typed.encoded_value.size();
         }
       }
+      add_row_stage_elapsed(row_stage_convert_us, convert_start);
       if (!saw_default_marker) {
+        const auto validation_start = row_stage_timer_start();
         if (!not_null_failure.empty()) {
           return DirectBulkFailure(
               request,
@@ -4581,6 +4609,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                    memory_validation,
                                    "insert_batch_memory_budget_refused");
         }
+        add_row_stage_elapsed(row_stage_validation_us, validation_start);
         if (store_row_trace) {
           AddInsertTrace(&batch_context,
                          "direct_physical_bulk.row.stage",
@@ -4588,6 +4617,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          row_record.row_uuid);
         }
         if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {
+          const auto security_recheck_start = row_stage_timer_start();
           std::vector<EngineEvidenceReference> security_recheck_evidence;
           const auto security_recheck =
               EvaluateDirectRuntimeInsertSecurityRecheck(
@@ -4616,8 +4646,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           result.evidence.insert(result.evidence.end(),
                                  security_recheck_evidence.begin(),
                                  security_recheck_evidence.end());
+          add_row_stage_elapsed(row_stage_security_recheck_us,
+                                security_recheck_start);
         }
+        const auto logical_batch_start = row_stage_timer_start();
         logical_value_batch.push_back(row_record.values);
+        add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
+        const auto preallocation_enqueue_start = row_stage_timer_start();
         if (!ingestion_pipeline.EnqueuePreallocation(
                 {logical_value_batch.back(), encoded_bytes})) {
           const auto ingestion_stats = ingestion_pipeline.Fence();
@@ -4633,12 +4668,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                    "dml_ingestion_preallocation_refused",
                                    result.dml_summary);
         }
+        add_row_stage_elapsed(row_stage_preallocation_enqueue_us,
+                              preallocation_enqueue_start);
+        const auto row_push_start = row_stage_timer_start();
         staged_rows.push_back(std::move(row_record));
+        add_row_stage_elapsed(row_stage_row_push_us, row_push_start);
         ++row_ordinal;
         continue;
       }
     }
 
+    const auto prepare_start = row_stage_timer_start();
     PreparedInsertRow prepared =
         can_use_shared_ordered_row_fast_path
             ? PrepareDirectBulkOrderedRowFast(input_row,
@@ -4658,6 +4698,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                              batch_context.row_encoder_plan);
     prepared.row_uuid = uuid_batch.row_uuids[row_ordinal];
     auto values = std::move(prepared.values);
+    add_row_stage_elapsed(row_stage_prepare_us, prepare_start);
 
     ConstraintDmlValidationOptions direct_constraint_options;
     direct_constraint_options.validate_unique_constraints = false;
@@ -4669,6 +4710,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           return field.second == "<DEFAULT>";
         });
     if (has_default_validators || default_requested) {
+      const auto validation_start = row_stage_timer_start();
       const auto default_validation =
           ApplyConstraintDefaultsForInsert(request.context, *table, values);
       if (!default_validation.ok) {
@@ -4681,9 +4723,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       result.evidence.insert(result.evidence.end(),
                              default_validation.evidence.begin(),
                              default_validation.evidence.end());
+      add_row_stage_elapsed(row_stage_validation_us, validation_start);
     }
 
     if (has_domain_validators) {
+      const auto validation_start = row_stage_timer_start();
       const auto domain_validation = ApplyDomainRulesToCrudValues(
           request.context,
           table->columns,
@@ -4700,9 +4744,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       result.evidence.insert(result.evidence.end(),
                              domain_validation.evidence.begin(),
                              domain_validation.evidence.end());
+      add_row_stage_elapsed(row_stage_validation_us, validation_start);
     }
 
     if (can_use_direct_not_null_validation) {
+      const auto validation_start = row_stage_timer_start();
       const std::string not_null_failure =
           can_use_shared_ordered_row_fast_path
               ? DirectNotNullValidationFailureOrdered(
@@ -4716,7 +4762,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                          "not_null_validation_refused"),
             "not_null_validation_refused:" + not_null_failure);
       }
+      add_row_stage_elapsed(row_stage_validation_us, validation_start);
     } else if (has_immediate_row_validators) {
+      const auto validation_start = row_stage_timer_start();
       const auto constraint_validation = ValidateImmediateRowConstraintsWithOptions(
           request.context,
           *state,
@@ -4736,9 +4784,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       result.evidence.insert(result.evidence.end(),
                              constraint_validation.evidence.begin(),
                              constraint_validation.evidence.end());
+      add_row_stage_elapsed(row_stage_validation_us, validation_start);
     }
 
     if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {
+      const auto security_recheck_start = row_stage_timer_start();
       std::vector<EngineEvidenceReference> security_recheck_evidence;
       const auto security_recheck =
           EvaluateDirectRuntimeInsertSecurityRecheck(
@@ -4767,6 +4817,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       result.evidence.insert(result.evidence.end(),
                              security_recheck_evidence.begin(),
                              security_recheck_evidence.end());
+      add_row_stage_elapsed(row_stage_security_recheck_us,
+                            security_recheck_start);
     }
 
     prepared.values = std::move(values);
@@ -4782,13 +4834,16 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                 : prepared.encoded_bytes;
     if (!batch_context.memory_policy.spill_allowed &&
         projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
+      const auto validation_start = row_stage_timer_start();
       const auto memory_validation = ValidateInsertBatchMemoryBudget(
           batch_context,
           projected_memory_bytes);
+      add_row_stage_elapsed(row_stage_validation_us, validation_start);
       return DirectBulkFailure(request,
                                memory_validation,
                                "insert_batch_memory_budget_refused");
     }
+    const auto validation_start = row_stage_timer_start();
     const auto batch_constraint =
         ValidateInsertBatchConstraints(batch_context, *state, prepared);
     if (batch_constraint.error) {
@@ -4796,6 +4851,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                batch_constraint,
                                "insert_batch_constraint_refused");
     }
+    add_row_stage_elapsed(row_stage_validation_us, validation_start);
 
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
@@ -4805,15 +4861,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     row_record.temporary_session_uuid =
         table->temporary ? request.context.session_uuid.canonical : "";
     row_record.deleted = false;
+    const auto value_copy_start = row_stage_timer_start();
     row_record.values = prepared.values;
+    add_row_stage_elapsed(row_stage_value_copy_us, value_copy_start);
     if (store_row_trace) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.stage",
                      "stage",
                      prepared.row_uuid);
     }
+    const auto row_push_start = row_stage_timer_start();
     staged_rows.push_back(std::move(row_record));
+    add_row_stage_elapsed(row_stage_row_push_us, row_push_start);
+    const auto logical_batch_start = row_stage_timer_start();
     logical_value_batch.push_back(std::move(prepared.values));
+    add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
+    const auto preallocation_enqueue_start = row_stage_timer_start();
     if (!ingestion_pipeline.EnqueuePreallocation(
             {logical_value_batch.back(), prepared.encoded_bytes})) {
       const auto ingestion_stats = ingestion_pipeline.Fence();
@@ -4828,6 +4891,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "dml_ingestion_preallocation_refused",
                                result.dml_summary);
     }
+    add_row_stage_elapsed(row_stage_preallocation_enqueue_us,
+                          preallocation_enqueue_start);
     ++row_ordinal;
   }
   if (request.borrowed_input_rows.size() > kDirectBulkTraceRowsToStore) {
@@ -4839,6 +4904,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     batch_context.trace_event_compacted_count += omitted;
   }
   mark_phase("row_stage_validate");
+  if (detailed_row_stage_timing) {
+    phase_micros.push_back({"row_stage.prepare", row_stage_prepare_us});
+    phase_micros.push_back({"row_stage.convert", row_stage_convert_us});
+    phase_micros.push_back({"row_stage.validation", row_stage_validation_us});
+    phase_micros.push_back({"row_stage.security_recheck",
+                            row_stage_security_recheck_us});
+    phase_micros.push_back({"row_stage.value_copy", row_stage_value_copy_us});
+    phase_micros.push_back({"row_stage.logical_batch",
+                            row_stage_logical_batch_us});
+    phase_micros.push_back({"row_stage.preallocation_enqueue",
+                            row_stage_preallocation_enqueue_us});
+    phase_micros.push_back({"row_stage.row_push", row_stage_row_push_us});
+  }
 
   std::map<std::string, std::set<std::string>> append_index_key_cache;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
