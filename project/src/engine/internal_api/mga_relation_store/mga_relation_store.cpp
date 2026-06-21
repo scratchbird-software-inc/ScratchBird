@@ -448,29 +448,35 @@ void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   out->reserve(grown);
 }
 
-std::string BuildRowVersionStoreLine(const CrudRowVersionRecord& row) {
-  const std::string creator_tx = std::to_string(row.creator_tx);
-  const std::string event_sequence = std::to_string(row.event_sequence);
-  const std::string previous_sequence = std::to_string(row.previous_sequence);
+void AppendRowVersionStoreLine(std::string* out,
+                               const CrudRowVersionRecord& row) {
+  if (out == nullptr) { return; }
   const std::string encoded_values = EncodeCrudPairs(row.values);
+  ReserveAmortizedAppendCapacity(out,
+                                 128 + row.table_uuid.size() +
+                                     row.row_uuid.size() +
+                                     row.version_uuid.size() +
+                                     row.previous_version_uuid.size() +
+                                     encoded_values.size() +
+                                     row.temporary_session_uuid.size());
+  bool first = true;
+  AppendLineField(out, &first, kRowStoreMagic);
+  AppendLineField(out, &first, "ROW_VERSION");
+  AppendLineU64Field(out, &first, row.creator_tx);
+  AppendLineU64Field(out, &first, row.event_sequence);
+  AppendLineField(out, &first, row.table_uuid);
+  AppendLineField(out, &first, row.row_uuid);
+  AppendLineField(out, &first, row.version_uuid);
+  AppendLineField(out, &first, row.deleted ? "1" : "0");
+  AppendLineField(out, &first, row.previous_version_uuid);
+  AppendLineU64Field(out, &first, row.previous_sequence);
+  AppendLineField(out, &first, encoded_values);
+  AppendLineField(out, &first, row.temporary_session_uuid);
+}
+
+std::string BuildRowVersionStoreLine(const CrudRowVersionRecord& row) {
   std::string line;
-  line.reserve(96 + creator_tx.size() + event_sequence.size() +
-               row.table_uuid.size() + row.row_uuid.size() +
-               row.version_uuid.size() + row.previous_version_uuid.size() +
-               previous_sequence.size() + encoded_values.size() +
-               row.temporary_session_uuid.size());
-  AppendTabField(&line, kRowStoreMagic);
-  AppendTabField(&line, "ROW_VERSION");
-  AppendTabField(&line, creator_tx);
-  AppendTabField(&line, event_sequence);
-  AppendTabField(&line, row.table_uuid);
-  AppendTabField(&line, row.row_uuid);
-  AppendTabField(&line, row.version_uuid);
-  AppendTabField(&line, row.deleted ? "1" : "0");
-  AppendTabField(&line, row.previous_version_uuid);
-  AppendTabField(&line, previous_sequence);
-  AppendTabField(&line, encoded_values);
-  AppendTabField(&line, row.temporary_session_uuid);
+  AppendRowVersionStoreLine(&line, row);
   return line;
 }
 
@@ -3554,16 +3560,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   for (auto& writable : *rows) {
     writable.event_sequence = event_sequence++;
     writable.sequence = writable.event_sequence;
-    const std::string line = BuildRowVersionStoreLine(writable);
-    row_buffer.append(line);
+    const std::size_t line_start = row_buffer.size();
+    AppendRowVersionStoreLine(&row_buffer, writable);
     row_buffer.push_back('\n');
     const auto scoped_path = scoped_row_path_by_table.find(writable.table_uuid);
     std::string& scoped_buffer =
         impl_->scoped_row_lines[scoped_path == scoped_row_path_by_table.end()
                                     ? ScopedRowStorePath(impl_->context, writable.table_uuid)
                                     : scoped_path->second];
-    scoped_buffer.append(line);
-    scoped_buffer.push_back('\n');
+    scoped_buffer.append(row_buffer.data() + line_start,
+                         row_buffer.size() - line_start);
     auto& summary_delta = impl_->scoped_row_summary_deltas[writable.table_uuid];
     ++summary_delta.row_version_count;
     if (writable.deleted) {
