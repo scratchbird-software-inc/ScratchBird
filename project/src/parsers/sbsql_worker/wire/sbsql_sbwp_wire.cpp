@@ -57,6 +57,8 @@ namespace scratchbird::parser::sbsql {
 namespace {
 namespace datatypes = scratchbird::core::datatypes;
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
+constexpr std::uint32_t kQueryFlagScriptIngest = 0x80;
+constexpr std::uint32_t kQueryFlagScriptSizeHint = 0x100;
 constexpr std::uint32_t kExecuteFlagAutocommit = 0x01;
 constexpr std::uint8_t kTxnFinalityPayloadVersion = 1;
 constexpr std::uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
@@ -85,7 +87,9 @@ constexpr std::uint16_t kSbwpVersionCurrent = 0x0101;
 constexpr std::uint32_t kMaxPayloadBytes = 64u * 1024u * 1024u;
 constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
 constexpr std::uint8_t kFrameFlagPartial = 1u << 1;
-constexpr std::uint8_t kFrameFlagKnownMask = kFrameFlagCompressed | kFrameFlagPartial;
+constexpr std::uint8_t kFrameFlagFinal = 1u << 2;
+constexpr std::uint8_t kFrameFlagKnownMask =
+    kFrameFlagCompressed | kFrameFlagPartial | kFrameFlagFinal;
 
 constexpr std::uint32_t kOidBool = 16;
 constexpr std::uint32_t kOidInt8 = 20;
@@ -210,8 +214,11 @@ constexpr std::uint8_t kCopyFormatBinaryRowsetV1 = 0x01;
 constexpr std::uint32_t kCopyDefaultWindowBytes = 1024u * 1024u;
 constexpr std::uint32_t kCopyBinaryWindowBytes = 4u * 1024u * 1024u;
 constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
+constexpr std::size_t kScriptInsertGroupFlushRows = kCopyExecuteRowsPerSblrEnvelope;
 constexpr std::uint64_t kAutoCursorFetchRows = 1024;
 constexpr std::uint64_t kAutoCursorFetchBytes = 4u * 1024u * 1024u;
+constexpr std::uint32_t kQueryScriptMetadataMagic = 0x53514253u;  // "SBQS"
+constexpr std::uint16_t kQueryScriptMetadataVersion = 1;
 constexpr std::uint64_t kKnownCoreFeatureMask = (FeatureBit(25) - 1u);
 constexpr std::uint64_t kP1OnlyFeatureMask =
     kFeatureMultiResult | kFeatureGeneratedKeys | kFeatureOutParameters |
@@ -304,6 +311,17 @@ struct CopyImportState {
   std::vector<CopyImportRow> rows;
 };
 
+struct QueryPayload {
+  std::uint32_t flags{0};
+  std::uint32_t max_rows{0};
+  std::uint32_t timeout_ms{0};
+  std::string sql;
+  bool has_script_metadata{false};
+  std::uint64_t declared_script_size_bytes{0};
+  std::uint32_t expected_statement_count{0};
+  std::uint32_t script_block_size_hint{0};
+};
+
 bool LooksInteger(std::string_view value);
 bool LooksDecimal(std::string_view value);
 
@@ -383,6 +401,8 @@ struct SbwpSessionState {
   std::deque<std::string> portal_lru;
   std::size_t bound_portal_bytes{0};
   CopyImportState copy_import;
+  bool partial_query_active{false};
+  std::vector<std::uint8_t> partial_query_payload;
   std::map<std::string, SimpleInsertRowsetPreparedEntry> simple_insert_rowset_cache;
   std::map<std::string, SbwpTxnFinalityRecord> finality_by_idempotency_key;
   std::map<std::string, std::string> idempotency_key_by_finality_token;
@@ -829,7 +849,8 @@ bool ParseSimpleInsertLiteralValue(std::string_view raw,
   return false;
 }
 
-std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view raw_sql) {
+std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view raw_sql,
+                                                                bool allow_single_row = false) {
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   const std::string upper = Upper(sql);
   if (!StartsWithWord(upper, "INSERT")) return std::nullopt;
@@ -906,7 +927,7 @@ std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view
     ++pos;
     while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
   }
-  if (rowset.rows.size() < 2) {
+  if (!allow_single_row && rowset.rows.size() < 2) {
     return std::nullopt;
   }
   return rowset;
@@ -921,6 +942,175 @@ std::string SimpleInsertRowsetCacheKey(const CopyImportState& rowset) {
     }
   }
   return key;
+}
+
+std::string ScriptChunkSetTermDirective(const std::string& chunk) {
+  std::istringstream lines(chunk);
+  std::string meaningful;
+  std::string line;
+  while (std::getline(lines, line)) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.empty() || trimmed.starts_with("--")) continue;
+    if (!meaningful.empty()) meaningful.push_back(' ');
+    meaningful += trimmed;
+  }
+  const std::string upper = Upper(meaningful);
+  if (!StartsWithWord(upper, "SET") ||
+      upper.find("TERM") == std::string::npos ||
+      upper.find("SET TERM") != 0) {
+    return {};
+  }
+  return Trim(meaningful.substr(8));
+}
+
+std::optional<std::string> TryReadDollarQuoteTag(std::string_view script,
+                                                 std::size_t offset) {
+  if (offset >= script.size() || script[offset] != '$') return std::nullopt;
+  std::size_t cursor = offset + 1;
+  while (cursor < script.size()) {
+    const char ch = script[cursor];
+    if (ch == '$') {
+      return std::string(script.substr(offset, cursor - offset + 1));
+    }
+    const auto uch = static_cast<unsigned char>(ch);
+    if (!std::isalnum(uch) && ch != '_') return std::nullopt;
+    ++cursor;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> SplitSbwpScriptStatements(std::string_view script) {
+  std::vector<std::string> statements;
+  std::string current;
+  std::string term = ";";
+  bool in_single = false;
+  bool in_double = false;
+  bool in_line_comment = false;
+  bool in_block_comment = false;
+  std::string dollar_quote_tag;
+
+  const auto flush = [&]() {
+    const std::string chunk = Trim(current);
+    current.clear();
+    if (chunk.empty()) return;
+    const std::string new_term = ScriptChunkSetTermDirective(chunk);
+    if (!new_term.empty()) {
+      term = new_term;
+      return;
+    }
+    statements.push_back(chunk);
+  };
+
+  for (std::size_t i = 0; i < script.size();) {
+    const char ch = script[i];
+    const char next = i + 1 < script.size() ? script[i + 1] : '\0';
+    if (in_line_comment) {
+      current.push_back(ch);
+      ++i;
+      if (ch == '\n') in_line_comment = false;
+      continue;
+    }
+    if (in_block_comment) {
+      current.push_back(ch);
+      if (ch == '*' && next == '/') {
+        current.push_back(next);
+        i += 2;
+        in_block_comment = false;
+      } else {
+        ++i;
+      }
+      continue;
+    }
+    if (!dollar_quote_tag.empty()) {
+      if (script.compare(i, dollar_quote_tag.size(), dollar_quote_tag) == 0) {
+        current.append(dollar_quote_tag);
+        i += dollar_quote_tag.size();
+        dollar_quote_tag.clear();
+      } else {
+        current.push_back(ch);
+        ++i;
+      }
+      continue;
+    }
+    if (!in_single && !in_double && ch == '-' && next == '-') {
+      current.push_back(ch);
+      current.push_back(next);
+      i += 2;
+      in_line_comment = true;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '/' && next == '*') {
+      current.push_back(ch);
+      current.push_back(next);
+      i += 2;
+      in_block_comment = true;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '$') {
+      if (auto tag = TryReadDollarQuoteTag(script, i)) {
+        dollar_quote_tag = *tag;
+        current.append(*tag);
+        i += tag->size();
+        continue;
+      }
+    }
+    if (ch == '\'' && !in_double) {
+      current.push_back(ch);
+      if (in_single && next == '\'') {
+        current.push_back(next);
+        i += 2;
+        continue;
+      }
+      in_single = !in_single;
+      ++i;
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      current.push_back(ch);
+      if (in_double && next == '"') {
+        current.push_back(next);
+        i += 2;
+        continue;
+      }
+      in_double = !in_double;
+      ++i;
+      continue;
+    }
+    if (!in_single && !in_double && !term.empty() &&
+        script.compare(i, term.size(), term) == 0) {
+      const std::size_t matched = term.size();
+      flush();
+      i += matched;
+      continue;
+    }
+    current.push_back(ch);
+    ++i;
+  }
+  flush();
+  return statements;
+}
+
+bool CompatibleSimpleInsertRowsetsForScript(const CopyImportState& existing,
+                                            const CopyImportState& candidate) {
+  if (existing.target_name != candidate.target_name) return false;
+  if (existing.rows.empty() || candidate.rows.empty()) return false;
+  const auto& left = existing.rows.front().fields;
+  const auto& right = candidate.rows.front().fields;
+  if (left.size() != right.size()) return false;
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    if (left[i].first != right[i].first) return false;
+  }
+  return true;
+}
+
+void AppendSimpleInsertRowsForScript(CopyImportState* existing,
+                                     const CopyImportState& candidate) {
+  if (existing == nullptr) return;
+  existing->rows.insert(existing->rows.end(),
+                        candidate.rows.begin(),
+                        candidate.rows.end());
+  existing->source_size_bytes += candidate.source_size_bytes;
+  existing->preallocation_bytes += candidate.preallocation_bytes;
 }
 
 std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_t* off) {
@@ -1056,14 +1246,38 @@ std::string ReadNullTerminatedSql(const std::vector<std::uint8_t>& payload, std:
   return std::string(reinterpret_cast<const char*>(payload.data() + off), end - off);
 }
 
+QueryPayload ParseQueryPayload(const std::vector<std::uint8_t>& payload) {
+  QueryPayload query;
+  if (payload.size() < 12) return query;
+  query.flags = ReadU32(payload, 0);
+  query.max_rows = ReadU32(payload, 4);
+  query.timeout_ms = ReadU32(payload, 8);
+  std::size_t end = 12;
+  while (end < payload.size() && payload[end] != 0) ++end;
+  if (end >= payload.size()) {
+    query.sql = ReadNullTerminatedSql(payload, 12);
+    return query;
+  }
+  query.sql.assign(reinterpret_cast<const char*>(payload.data() + 12), end - 12);
+  std::size_t off = end + 1;
+  if (off + 24 <= payload.size() &&
+      ReadU32(payload, off) == kQueryScriptMetadataMagic &&
+      ReadU16(payload, off + 4) == kQueryScriptMetadataVersion) {
+    query.has_script_metadata = true;
+    query.flags |= ReadU16(payload, off + 6);
+    query.declared_script_size_bytes = ReadU64(payload, off + 8);
+    query.expected_statement_count = ReadU32(payload, off + 16);
+    query.script_block_size_hint = ReadU32(payload, off + 20);
+  }
+  return query;
+}
+
 std::string ParseQuerySql(const std::vector<std::uint8_t>& payload) {
-  if (payload.size() < 12) return {};
-  return ReadNullTerminatedSql(payload, 12);
+  return ParseQueryPayload(payload).sql;
 }
 
 std::uint32_t ParseQueryFlags(const std::vector<std::uint8_t>& payload) {
-  if (payload.size() < 4) return 0;
-  return ReadU32(payload, 0);
+  return ParseQueryPayload(payload).flags;
 }
 
 bool ParseSetOptionPayload(const std::vector<std::uint8_t>& payload,
@@ -3359,22 +3573,20 @@ bool SendPipelineResult(ClientIo* io,
 std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* session,
                                                          ClientIo* io,
                                                          SbwpSessionState* state,
-                                                         std::string_view raw_sql,
+                                                         CopyImportState rowset,
                                                          bool send_ready,
-                                                         bool autocommit_emulation) {
+                                                         bool* command_accepted) {
   state->ready_sent_for_current_operation = false;
-  if (autocommit_emulation) return std::nullopt;
-  auto rowset = AnalyzeSimpleLiteralInsertRowset(raw_sql);
-  if (!rowset.has_value()) return std::nullopt;
-  auto resolved = session->ResolvePublicNameForWire(rowset->target_name, false, "relation");
+  if (command_accepted != nullptr) *command_accepted = true;
+  auto resolved = session->ResolvePublicNameForWire(rowset.target_name, false, "relation");
   if (!resolved.resolved || resolved.object_uuid.empty()) {
     return std::nullopt;
   }
 
-  rowset->target_object_uuid = std::move(resolved.object_uuid);
+  rowset.target_object_uuid = std::move(resolved.object_uuid);
   state->security_policy_epoch =
       std::max(state->security_policy_epoch, session->session().security_policy_epoch);
-  const std::string cache_key = SimpleInsertRowsetCacheKey(*rowset);
+  const std::string cache_key = SimpleInsertRowsetCacheKey(rowset);
   auto cache_it = state->simple_insert_rowset_cache.find(cache_key);
   if (cache_it == state->simple_insert_rowset_cache.end() ||
       cache_it->second.security_policy_epoch != state->security_policy_epoch ||
@@ -3382,29 +3594,37 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
     CopyImportState prepare_template;
     prepare_template.native_bulk_ingest = true;
     prepare_template.native_bulk_ingest_enabled = true;
-    prepare_template.sql = rowset->sql;
-    prepare_template.target_object_uuid = rowset->target_object_uuid;
+    prepare_template.sql = rowset.sql;
+    prepare_template.target_object_uuid = rowset.target_object_uuid;
     const auto prepared =
         session->PrepareSblrForWire(BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
-    if (!prepared.accepted || prepared.prepared_statement_uuid.empty()) {
-      return std::nullopt;
+    if (prepared.accepted && !prepared.prepared_statement_uuid.empty()) {
+      SimpleInsertRowsetPreparedEntry entry;
+      entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
+      entry.operation_id = prepared.operation_id;
+      entry.security_policy_epoch = state->security_policy_epoch;
+      cache_it =
+          state->simple_insert_rowset_cache.insert_or_assign(cache_key, std::move(entry)).first;
+    } else {
+      cache_it = state->simple_insert_rowset_cache.end();
     }
-    SimpleInsertRowsetPreparedEntry entry;
-    entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
-    entry.operation_id = prepared.operation_id;
-    entry.security_policy_epoch = state->security_policy_epoch;
-    cache_it = state->simple_insert_rowset_cache.insert_or_assign(cache_key, std::move(entry)).first;
   }
 
   const std::string envelope =
-      BuildNativeBulkIngestExecuteEnvelope(*rowset, 0, rowset->rows.size(), false);
+      BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size(), false);
   const std::vector<std::uint8_t> data_packet =
-      BuildNativeRowPacket(*rowset, 0, rowset->rows.size());
+      BuildNativeRowPacket(rowset, 0, rowset.rows.size());
   if (data_packet.empty()) return std::nullopt;
 
-  auto result = session->RunPreparedSblrEnvelopeForWire(
-      cache_it->second.prepared_statement_uuid, envelope, data_packet, false);
+  auto result = cache_it == state->simple_insert_rowset_cache.end()
+                    ? session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false)
+                    : session->RunPreparedSblrEnvelopeForWire(
+                          cache_it->second.prepared_statement_uuid,
+                          envelope,
+                          data_packet,
+                          false);
   if (!result.accepted || result.messages.has_errors()) {
+    if (command_accepted != nullptr) *command_accepted = false;
     const std::string diagnostic_code =
         FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
     const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
@@ -3419,11 +3639,30 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
     return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
   }
   RefreshWireTransactionStateFromSession(*session, state);
-  if (result.server_row_count == 0) result.server_row_count = rowset->rows.size();
+  if (result.server_row_count == 0) result.server_row_count = rowset.rows.size();
   result.server_affected_rows_present = true;
-  if (result.server_affected_rows == 0) result.server_affected_rows = rowset->rows.size();
-  if (!SendPipelineResult(io, session, state, rowset->sql, result)) return false;
+  if (result.server_affected_rows == 0) result.server_affected_rows = rowset.rows.size();
+  if (!SendPipelineResult(io, session, state, rowset.sql, result)) return false;
   return !send_ready || SendReady(io, state);
+}
+
+std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* session,
+                                                         ClientIo* io,
+                                                         SbwpSessionState* state,
+                                                         std::string_view raw_sql,
+                                                         bool send_ready,
+                                                         bool autocommit_emulation,
+                                                         bool* command_accepted = nullptr) {
+  if (command_accepted != nullptr) *command_accepted = true;
+  if (autocommit_emulation) return std::nullopt;
+  auto rowset = AnalyzeSimpleLiteralInsertRowset(raw_sql);
+  if (!rowset.has_value()) return std::nullopt;
+  return TryExecuteSimpleInsertRowsetFastPath(session,
+                                             io,
+                                             state,
+                                             std::move(*rowset),
+                                             send_ready,
+                                             command_accepted);
 }
 
 std::string SqlQuote(std::string_view value) {
@@ -3947,8 +4186,10 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 std::string_view raw_sql,
                 bool send_ready,
                 bool autocommit_emulation = false,
-                const SbwpTxnCommitRequest* commit_request = nullptr) {
+                const SbwpTxnCommitRequest* commit_request = nullptr,
+                bool* command_accepted = nullptr) {
   state->ready_sent_for_current_operation = false;
+  if (command_accepted != nullptr) *command_accepted = true;
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   if (sql.empty()) {
     if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
@@ -3956,7 +4197,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   }
   if (auto fast_insert =
           TryExecuteSimpleInsertRowsetFastPath(
-              session, io, state, sql, send_ready, autocommit_emulation);
+              session, io, state, sql, send_ready, autocommit_emulation, command_accepted);
       fast_insert.has_value()) {
     return *fast_insert;
   }
@@ -3969,6 +4210,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                            0,
                                            autocommit_emulation && !auto_cursor);
   if (!result.accepted || result.messages.has_errors()) {
+    if (command_accepted != nullptr) *command_accepted = false;
     if (commit_request != nullptr && IsPostInventorySecondaryFailure(result.messages)) {
       SbwpTxnFinalityRecord record;
       record.state = SbwpTxnFinalityState::kPostInventorySecondaryFailure;
@@ -4066,6 +4308,114 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   if (commit_finality.has_value() && !SendTxnFinalityStatus(io, state, *commit_finality)) {
     return false;
   }
+  return !send_ready || SendReady(io, state);
+}
+
+bool QueryPayloadRequestsScriptIngest(const QueryPayload& query) {
+  return (query.flags & kQueryFlagScriptIngest) != 0 ||
+         (query.flags & kQueryFlagScriptSizeHint) != 0 ||
+         query.has_script_metadata ||
+         query.expected_statement_count > 1;
+}
+
+bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
+                        ClientIo* io,
+                        SbwpSessionState* state,
+                        const QueryPayload& query,
+                        bool send_ready) {
+  const bool autocommit_emulation = (query.flags & kQueryFlagAutocommit) != 0;
+  std::vector<std::string> statements;
+  if (QueryPayloadRequestsScriptIngest(query) || query.sql.find(';') != std::string::npos) {
+    statements = SplitSbwpScriptStatements(query.sql);
+  }
+  if (statements.size() <= 1) {
+    const std::string_view sql =
+        statements.empty() ? std::string_view(query.sql)
+                           : std::string_view(statements.front());
+    return ExecuteSql(session, io, state, sql, send_ready, autocommit_emulation);
+  }
+
+  struct PendingInsertGroup {
+    CopyImportState rowset;
+    std::vector<std::string> fallback_statements;
+    bool active{false};
+  } pending;
+
+  const auto flush_pending = [&]() -> bool {
+    if (!pending.active) return true;
+    bool accepted = true;
+    auto fast_result = TryExecuteSimpleInsertRowsetFastPath(session,
+                                                           io,
+                                                           state,
+                                                           std::move(pending.rowset),
+                                                           false,
+                                                           &accepted);
+    if (fast_result.has_value()) {
+      pending = PendingInsertGroup{};
+      if (!*fast_result) return false;
+      if (!accepted) {
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+      return true;
+    }
+    const auto fallback = std::move(pending.fallback_statements);
+    pending = PendingInsertGroup{};
+    for (const auto& sql : fallback) {
+      accepted = true;
+      if (!ExecuteSql(session, io, state, sql, false, autocommit_emulation, nullptr, &accepted)) {
+        return false;
+      }
+      if (!accepted) {
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+      }
+    }
+    return true;
+  };
+
+  for (const auto& statement : statements) {
+    if (!autocommit_emulation) {
+      auto rowset = AnalyzeSimpleLiteralInsertRowset(statement, true);
+      if (rowset.has_value()) {
+        if (!pending.active) {
+          pending.rowset = std::move(*rowset);
+          pending.fallback_statements.push_back(statement);
+          pending.active = true;
+          if (pending.rowset.rows.size() >= kScriptInsertGroupFlushRows &&
+              !flush_pending()) {
+            return false;
+          }
+          continue;
+        }
+        if (CompatibleSimpleInsertRowsetsForScript(pending.rowset, *rowset)) {
+          AppendSimpleInsertRowsForScript(&pending.rowset, *rowset);
+          pending.fallback_statements.push_back(statement);
+          if (pending.rowset.rows.size() >= kScriptInsertGroupFlushRows &&
+              !flush_pending()) {
+            return false;
+          }
+          continue;
+        }
+      }
+    }
+
+    if (!flush_pending()) return false;
+    bool accepted = true;
+    if (!ExecuteSql(session,
+                    io,
+                    state,
+                    statement,
+                    false,
+                    autocommit_emulation,
+                    nullptr,
+                    &accepted)) {
+      return false;
+    }
+    if (!accepted) {
+      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+  }
+
+  if (!flush_pending()) return false;
   return !send_ready || SendReady(io, state);
 }
 
@@ -4417,19 +4767,62 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
   for (;;) {
     Frame frame;
     if (!ReadFrame(&io, &frame)) break;
+    const bool frame_compressed = (frame.header.flags & kFrameFlagCompressed) != 0;
+    const bool frame_partial = (frame.header.flags & kFrameFlagPartial) != 0;
+    const bool frame_final = (frame.header.flags & kFrameFlagFinal) != 0;
     if ((frame.header.flags & ~kFrameFlagKnownMask) != 0 ||
-        (frame.header.flags & kFrameFlagPartial) != 0 ||
-        ((frame.header.flags & kFrameFlagCompressed) != 0 &&
-         !FeatureNegotiated(state, kFeatureCompression))) {
+        (frame_compressed && !FeatureNegotiated(state, kFeatureCompression))) {
       (void)SendError(&io,
                       &state,
                       "08P01",
-                      (frame.header.flags & kFrameFlagCompressed) != 0
+                      frame_compressed
                           ? "SBWP.COMPRESSION.UNNEGOTIATED_FRAME"
                           : "SBWP.HEADER.RESERVED_BITS_SET",
                       "SBWP frame flags failed closed before payload dispatch");
       rc = 1;
       break;
+    }
+    if (frame_partial || frame_final || state.partial_query_active) {
+      if (frame.header.msg_type != kQuery) {
+        (void)SendError(&io,
+                        &state,
+                        "08P01",
+                        "SBWP.PARTIAL_QUERY.INVALID_MESSAGE",
+                        "partial/final frame continuation is only supported for Query payloads");
+        rc = 1;
+        break;
+      }
+      if (!FeatureNegotiated(state, kFeatureStreaming)) {
+        (void)SendFeatureNotNegotiated(&io, &state, frame.header.msg_type);
+        rc = 1;
+        break;
+      }
+      if (!state.partial_query_active) {
+        state.partial_query_payload.clear();
+        state.partial_query_active = true;
+      }
+      if (state.partial_query_payload.size() + frame.payload.size() > kMaxPayloadBytes) {
+        state.partial_query_active = false;
+        state.partial_query_payload.clear();
+        (void)SendError(&io,
+                        &state,
+                        "54000",
+                        "SBWP.PARTIAL_QUERY.PAYLOAD_TOO_LARGE",
+                        "partial Query payload exceeds the parser route payload budget");
+        rc = 1;
+        break;
+      }
+      state.partial_query_payload.insert(state.partial_query_payload.end(),
+                                         frame.payload.begin(),
+                                         frame.payload.end());
+      if (!frame_final) {
+        continue;
+      }
+      frame.payload = std::move(state.partial_query_payload);
+      state.partial_query_payload.clear();
+      state.partial_query_active = false;
+      frame.header.flags = static_cast<std::uint8_t>(
+          frame.header.flags & ~(kFrameFlagPartial | kFrameFlagFinal));
     }
     if (!IsKnownSbwpMessage(frame.header.msg_type)) {
       (void)SendError(&io,
@@ -4456,12 +4849,11 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
               !SendReady(&io, &state)) rc = 1;
         } else if (!AdmitFrameTransaction(&io, &state, frame, "QUERY")) {
           break;
-        } else if (!ExecuteSql(this,
-                               &io,
-                               &state,
-                               ParseQuerySql(frame.payload),
-                               true,
-                               (ParseQueryFlags(frame.payload) & kQueryFlagAutocommit) != 0)) {
+        } else if (!ExecuteScriptOrSql(this,
+                                       &io,
+                                       &state,
+                                       ParseQueryPayload(frame.payload),
+                                       true)) {
           rc = 1;
         }
         break;
