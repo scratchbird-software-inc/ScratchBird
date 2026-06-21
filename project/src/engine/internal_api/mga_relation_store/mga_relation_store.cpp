@@ -177,6 +177,21 @@ bool AppendLines(const std::string& path,
   return static_cast<bool>(out);
 }
 
+bool AppendBuffer(const std::string& path,
+                  const std::string& buffer,
+                  std::uint64_t* stream_opens,
+                  std::uint64_t* stream_flushes) {
+  if (buffer.empty()) { return true; }
+  if (path.empty()) { return false; }
+  std::ofstream out(path, std::ios::app | std::ios::binary);
+  if (!out) { return false; }
+  if (stream_opens != nullptr) { ++(*stream_opens); }
+  out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+  out.flush();
+  if (stream_flushes != nullptr) { ++(*stream_flushes); }
+  return static_cast<bool>(out);
+}
+
 bool AppendDeferredEventSequenceAllocatorLines(
     const EngineRequestContext& context,
     std::vector<std::string>* lines,
@@ -200,16 +215,16 @@ bool AppendDeferredEventSequenceAllocatorLines(
   return ok;
 }
 
-bool AppendScopedRelationLines(const std::string& path,
-                               const std::vector<std::string>& lines,
-                               std::uint64_t* stream_opens,
-                               std::uint64_t* stream_flushes) {
+bool AppendScopedRelationBuffer(const std::string& path,
+                                const std::string& buffer,
+                                std::uint64_t* stream_opens,
+                                std::uint64_t* stream_flushes) {
   if (path.empty()) { return false; }
-  if (lines.empty()) { return true; }
+  if (buffer.empty()) { return true; }
   std::error_code ignored;
   std::filesystem::create_directories(std::filesystem::path(path).parent_path(),
                                       ignored);
-  return AppendLines(path, lines, stream_opens, stream_flushes);
+  return AppendBuffer(path, buffer, stream_opens, stream_flushes);
 }
 
 struct ScopedRelationWriteTicket {
@@ -219,20 +234,20 @@ struct ScopedRelationWriteTicket {
   std::uint64_t stream_flushes = 0;
 };
 
-ScopedRelationWriteTicket AppendScopedRelationLinesTicket(
+ScopedRelationWriteTicket AppendScopedRelationBufferTicket(
     std::string path,
-    std::vector<std::string> lines) {
+    std::string buffer) {
   ScopedRelationWriteTicket ticket;
   ticket.path = path;
-  ticket.ok = AppendScopedRelationLines(ticket.path,
-                                        lines,
-                                        &ticket.stream_opens,
-                                        &ticket.stream_flushes);
+  ticket.ok = AppendScopedRelationBuffer(ticket.path,
+                                         buffer,
+                                         &ticket.stream_opens,
+                                         &ticket.stream_flushes);
   return ticket;
 }
 
 bool AppendScopedRelationLinesParallel(
-    const std::map<std::string, std::vector<std::string>>& pending,
+    const std::map<std::string, std::string>& pending,
     std::uint64_t* stream_opens,
     std::uint64_t* stream_flushes,
     std::uint64_t* write_batches,
@@ -250,13 +265,21 @@ bool AppendScopedRelationLinesParallel(
     *write_worker_count = std::max(*write_worker_count,
                                    static_cast<std::uint64_t>(pending.size()));
   }
+  if (pending.size() == 1) {
+    const auto& [path, buffer] = *pending.begin();
+    const auto ticket = AppendScopedRelationBufferTicket(path, buffer);
+    if (stream_opens != nullptr) { *stream_opens += ticket.stream_opens; }
+    if (stream_flushes != nullptr) { *stream_flushes += ticket.stream_flushes; }
+    if (write_tickets_completed != nullptr) { ++(*write_tickets_completed); }
+    return ticket.ok;
+  }
   std::vector<std::future<ScopedRelationWriteTicket>> futures;
   futures.reserve(pending.size());
-  for (const auto& [path, lines] : pending) {
+  for (const auto& [path, buffer] : pending) {
     futures.push_back(std::async(std::launch::async,
-                                 AppendScopedRelationLinesTicket,
+                                 AppendScopedRelationBufferTicket,
                                  path,
-                                 lines));
+                                 buffer));
   }
   bool ok = true;
   for (auto& future : futures) {
@@ -1667,13 +1690,51 @@ bool IndexEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
   return false;
 }
 
+struct DescriptorFieldsCacheRecord {
+  std::uintmax_t file_size = 0;
+  std::map<std::string, std::vector<std::pair<std::string, std::string>>>
+      descriptors;
+};
+
+std::mutex& DescriptorFieldsCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, DescriptorFieldsCacheRecord>& DescriptorFieldsCache() {
+  static std::map<std::string, DescriptorFieldsCacheRecord> cache;
+  return cache;
+}
+
+std::uintmax_t ExistingFileSize(const std::string& path) {
+  std::error_code ignored;
+  if (path.empty() || !std::filesystem::exists(path, ignored)) {
+    return 0;
+  }
+  return std::filesystem::file_size(path, ignored);
+}
+
 std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDescriptorFieldsByRelation(
     const EngineRequestContext& context) {
+  const std::string path = DescriptorStorePath(context);
+  const std::uintmax_t file_size = ExistingFileSize(path);
+  {
+    const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
+    const auto cached = DescriptorFieldsCache().find(path);
+    if (cached != DescriptorFieldsCache().end() &&
+        cached->second.file_size == file_size) {
+      return cached->second.descriptors;
+    }
+  }
   std::map<std::string, std::vector<std::pair<std::string, std::string>>> descriptors;
-  for (const auto& line : ReadLines(DescriptorStorePath(context))) {
+  for (const auto& line : ReadLines(path)) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kDescriptorMagic || fields[1] != "RELATION") { continue; }
     descriptors[fields[2]] = DecodeCrudPairs(fields[3]);
+  }
+  {
+    const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
+    DescriptorFieldsCache()[path] = {file_size, descriptors};
   }
   return descriptors;
 }
@@ -1685,8 +1746,17 @@ EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "database_path_required");
   }
   const std::string line = JoinLine({kDescriptorMagic, "RELATION", relation_uuid, EncodeCrudPairs(fields)});
-  if (!AppendLine(DescriptorStorePath(context), line)) {
+  const std::string path = DescriptorStorePath(context);
+  if (!AppendLine(path, line)) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "descriptor_store_append_failed");
+  }
+  {
+    const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
+    auto cached = DescriptorFieldsCache().find(path);
+    if (cached != DescriptorFieldsCache().end()) {
+      cached->second.descriptors[relation_uuid] = fields;
+      cached->second.file_size = ExistingFileSize(path);
+    }
   }
   return OkDiagnostic();
 }
@@ -3243,8 +3313,8 @@ struct MgaRelationHotAppendContext::Impl {
   std::ofstream row_out;
   std::ofstream index_out;
   std::vector<std::string> allocator_lines;
-  std::map<std::string, std::vector<std::string>> scoped_row_lines;
-  std::map<std::string, std::vector<std::string>> scoped_index_lines;
+  std::map<std::string, std::string> scoped_row_lines;
+  std::map<std::string, std::string> scoped_index_lines;
   std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool row_dirty = false;
   bool index_dirty = false;
@@ -3298,14 +3368,18 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
+  row_buffer.reserve(rows->size() * 192);
   for (auto& writable : *rows) {
     writable.event_sequence = event_sequence++;
     writable.sequence = writable.event_sequence;
     const std::string line = BuildRowVersionStoreLine(writable);
     row_buffer.append(line);
     row_buffer.push_back('\n');
-    impl_->scoped_row_lines[ScopedRowStorePath(impl_->context, writable.table_uuid)]
-        .push_back(line);
+    std::string& scoped_buffer =
+        impl_->scoped_row_lines[ScopedRowStorePath(impl_->context,
+                                                   writable.table_uuid)];
+    scoped_buffer.append(line);
+    scoped_buffer.push_back('\n');
     auto& summary_delta = impl_->scoped_row_summary_deltas[writable.table_uuid];
     ++summary_delta.row_version_count;
     if (writable.deleted) {
@@ -3399,6 +3473,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
   std::string index_buffer;
+  index_buffer.reserve(entry_count * 192);
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
     const std::string table_uuid =
@@ -3420,8 +3495,11 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
             row.version_uuid);
         index_buffer.append(line);
         index_buffer.push_back('\n');
-        impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
-            .push_back(line);
+        std::string& scoped_buffer =
+            impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context,
+                                                           table_uuid)];
+        scoped_buffer.append(line);
+        scoped_buffer.push_back('\n');
         impl_->index_dirty = true;
         ++impl_->counters.index_entries_appended;
       }
@@ -3467,6 +3545,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   ++impl_->counters.index_range_reservations;
   std::uint64_t event_sequence = reservation.first;
   std::string index_buffer;
+  index_buffer.reserve(entry_count * 192);
   for (const auto& batch : batches) {
     if (batch.entries.empty()) { continue; }
     const std::string table_uuid =
@@ -3489,8 +3568,11 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
           entry.version_uuid);
       index_buffer.append(line);
       index_buffer.push_back('\n');
-      impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context, table_uuid)]
-          .push_back(line);
+      std::string& scoped_buffer =
+          impl_->scoped_index_lines[ScopedIndexStorePath(impl_->context,
+                                                         table_uuid)];
+      scoped_buffer.append(line);
+      scoped_buffer.push_back('\n');
       impl_->index_dirty = true;
       ++impl_->counters.index_entries_appended;
     }

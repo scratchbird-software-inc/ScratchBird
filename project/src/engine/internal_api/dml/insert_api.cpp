@@ -462,6 +462,49 @@ std::optional<EngineApiU64> GeneratedCounterRowCount(EngineApiU64 start,
   return ((limit - start) / step) + 1;
 }
 
+struct InsertSelectSourceCapacitySnapshot {
+  bool usable = false;
+  std::map<std::string, EngineApiU64> visible_row_counts;
+  std::vector<EngineEvidenceReference> evidence;
+};
+
+InsertSelectSourceCapacitySnapshot TryBuildInsertSelectSourceCapacitySnapshot(
+    const EngineInsertRowsRequest& request,
+    const std::vector<std::string>& source_uuids) {
+  InsertSelectSourceCapacitySnapshot snapshot;
+  if (source_uuids.empty() ||
+      InsertOptionValue(request, "insert_select_source_kind:") !=
+          "recursive_counter_cte") {
+    return snapshot;
+  }
+
+  snapshot.usable = true;
+  for (const auto& source_uuid : source_uuids) {
+    const auto eligibility =
+        CanUseMgaRelationIndexOnlyProofForInsertTarget(request.context,
+                                                       source_uuid);
+    snapshot.evidence.push_back({"insert_select_source_capacity_summary_uuid",
+                                 source_uuid});
+    snapshot.evidence.push_back({"insert_select_source_capacity_summary_trusted",
+                                 eligibility.summary_trusted ? "true" : "false"});
+    snapshot.evidence.push_back({"insert_select_source_capacity_summary_rows",
+                                 std::to_string(eligibility.row_version_count)});
+    snapshot.evidence.push_back({"insert_select_source_capacity_summary_reason",
+                                 eligibility.refusal_reason});
+    if (!eligibility.ok || !eligibility.eligible) {
+      snapshot.usable = false;
+      snapshot.visible_row_counts.clear();
+      snapshot.evidence.push_back(
+          {"insert_select_source_capacity_summary_route", "exact_row_scan"});
+      return snapshot;
+    }
+    snapshot.visible_row_counts[source_uuid] = eligibility.row_version_count;
+  }
+  snapshot.evidence.push_back(
+      {"insert_select_source_capacity_summary_route", "append_only_summary"});
+  return snapshot;
+}
+
 EngineTypedValue GeneratedInsertValue(std::string value, std::string type_name) {
   EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -476,9 +519,11 @@ EngineTypedValue GeneratedInsertValue(std::string value, std::string type_name) 
   return typed;
 }
 
-std::string GeneratedProjectionValue(const std::string& descriptor, EngineApiU64 counter) {
+std::string GeneratedProjectionValueFromParts(
+    const std::string& descriptor,
+    const std::vector<std::string>& parts,
+    EngineApiU64 counter) {
   if (descriptor == "counter") return std::to_string(counter);
-  const auto parts = SplitText(descriptor, ':');
   if (parts.empty()) return {};
   if (parts[0] == "literal_text" && parts.size() >= 2) {
     return parts[1];
@@ -579,10 +624,17 @@ std::string GeneratedProjectionType(const std::string& descriptor,
   return target_descriptor.empty() ? "text" : target_descriptor;
 }
 
+struct GeneratedProjectionPlan {
+  std::string descriptor;
+  std::vector<std::string> parts;
+  std::string type_name;
+};
+
 std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     const EngineInsertRowsRequest& request,
     const CrudTableRecord& table,
     const CrudState& state,
+    const std::map<std::string, EngineApiU64>* source_visible_row_counts,
     EngineApiDiagnostic* diagnostic,
     std::vector<EngineEvidenceReference>* evidence) {
   if (diagnostic != nullptr) {
@@ -636,9 +688,26 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
         }
         return {};
       }
-      const auto source_rows =
-          VisibleCrudRowsForContext(state, source_uuid, request.context);
-      const auto source_count = static_cast<EngineApiU64>(source_rows.size());
+      EngineApiU64 source_count = 0;
+      if (source_visible_row_counts != nullptr &&
+          source_visible_row_counts->find(source_uuid) !=
+              source_visible_row_counts->end()) {
+        const auto source_count_it =
+            source_visible_row_counts->find(source_uuid);
+        source_count = source_count_it->second;
+        if (evidence != nullptr) {
+          evidence->push_back({"insert_select_source_capacity_route",
+                               "append_only_summary"});
+        }
+      } else {
+        const auto source_rows =
+            VisibleCrudRowsForContext(state, source_uuid, request.context);
+        source_count = static_cast<EngineApiU64>(source_rows.size());
+        if (evidence != nullptr) {
+          evidence->push_back({"insert_select_source_capacity_route",
+                               "exact_row_scan"});
+        }
+      }
       if (source_count == 0) {
         visible_capacity = 0;
         break;
@@ -668,7 +737,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     }
   }
 
-  std::vector<std::string> projections;
+  std::vector<GeneratedProjectionPlan> projections;
   projections.reserve(static_cast<std::size_t>(*projection_count));
   for (EngineApiU64 index = 0; index < *projection_count; ++index) {
     const std::string descriptor =
@@ -680,7 +749,11 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
       }
       return {};
     }
-    projections.push_back(descriptor);
+    const auto& target_column = table.columns[static_cast<std::size_t>(index)];
+    projections.push_back({descriptor,
+                           SplitText(descriptor, ':'),
+                           GeneratedProjectionType(descriptor,
+                                                   target_column.second)});
   }
 
   std::vector<EngineRowValue> rows;
@@ -688,10 +761,15 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
   for (EngineApiU64 counter = *start; counter <= *limit; counter += *step) {
     EngineRowValue row;
     row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
+    row.fields.reserve(projections.size());
     for (std::size_t column = 0; column < projections.size(); ++column) {
       const auto& target_column = table.columns[column];
-      const std::string value = GeneratedProjectionValue(projections[column], counter);
-      if (value.empty() && projections[column] != "prefix_counter:") {
+      const auto& projection = projections[column];
+      const std::string value =
+          GeneratedProjectionValueFromParts(projection.descriptor,
+                                            projection.parts,
+                                            counter);
+      if (value.empty() && projection.descriptor != "prefix_counter:") {
         if (diagnostic != nullptr) {
           *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
                                                      "insert_select_projection_evaluation_failed");
@@ -700,9 +778,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
       }
       row.fields.push_back({
           target_column.first,
-          GeneratedInsertValue(value,
-                               GeneratedProjectionType(projections[column],
-                                                       target_column.second))});
+          GeneratedInsertValue(value, projection.type_name)});
     }
     rows.push_back(std::move(row));
     if (*limit - counter < *step) break;
@@ -2497,6 +2573,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   const bool full_relation_state_required =
       InsertRequiresFullRelationState(request, conflict_action);
   const auto generated_source_uuids = GeneratedInsertSelectSourceUuids(request);
+  const auto generated_source_capacity =
+      TryBuildInsertSelectSourceCapacitySnapshot(request,
+                                                 generated_source_uuids);
   std::vector<std::string> generated_insert_scope_uuids{
       request.target_table.uuid.canonical};
   generated_insert_scope_uuids.insert(generated_insert_scope_uuids.end(),
@@ -2505,7 +2584,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   mark_insert_phase("plan_relation_state_scope");
   auto loaded = full_relation_state_required
                     ? LoadMgaRelationStoreState(request.context)
-                    : (!generated_source_uuids.empty()
+                    : (!generated_source_uuids.empty() &&
+                               !generated_source_capacity.usable
                            ? LoadMgaRelationStoreStateForMutationTargets(
                                  request.context,
                                  generated_insert_scope_uuids)
@@ -2525,7 +2605,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                  ? "on_conflict_do_update_requires_child_reference_state"
                  : "request_required_full_state")
           : (!generated_source_uuids.empty()
-                 ? "insert_select_target_source_scoped"
+                 ? (generated_source_capacity.usable
+                        ? "insert_select_target_scoped_source_summary"
+                        : "insert_select_target_source_scoped")
                  : (conflict_action == "do_update"
                         ? "insert_target_child_reference_scoped"
                         : "insert_target_scoped")));
@@ -2553,6 +2635,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         BuildRecursiveCounterInsertRows(request,
                                         *table,
                                         state,
+                                        generated_source_capacity.usable
+                                            ? &generated_source_capacity.visible_row_counts
+                                            : nullptr,
                                         &generated_rows_diagnostic,
                                         &generated_rows_evidence);
   }
@@ -2581,6 +2666,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     direct_prefix_evidence.insert(direct_prefix_evidence.end(),
                                   generated_rows_evidence.begin(),
                                   generated_rows_evidence.end());
+    direct_prefix_evidence.insert(direct_prefix_evidence.end(),
+                                  generated_source_capacity.evidence.begin(),
+                                  generated_source_capacity.evidence.end());
     auto direct_attempt = TryDirectPhysicalInsertRoute(request,
                                                       conflict_action,
                                                       input_rows,
