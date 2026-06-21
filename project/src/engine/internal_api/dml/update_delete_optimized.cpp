@@ -244,11 +244,21 @@ struct UpdateAssignmentExpression {
   std::vector<std::pair<long double, std::string>> case_ge_thresholds;
   std::vector<std::pair<long long, std::string>> case_ge_integer_thresholds;
   std::optional<std::string> case_fallback;
+  std::size_t cached_source_index = std::string::npos;
+  std::size_t cached_target_index = std::string::npos;
   bool case_ge_thresholds_integral = false;
 };
 
 bool ParseLongDoubleValue(const std::string& value, long double* out);
 bool ParseLongLongValue(const std::string& value, long long* out);
+const std::string* CachedCrudFieldValuePtr(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::string& field,
+    std::size_t* cached_index);
+std::string* CachedMutableCrudFieldValuePtr(
+    std::vector<std::pair<std::string, std::string>>* values,
+    const std::string& field,
+    std::size_t* cached_index);
 
 bool CompileCaseGeThresholds(UpdateAssignmentExpression* expression) {
   if (expression == nullptr) { return false; }
@@ -438,21 +448,31 @@ std::string FormatArithmeticResult(long double value, bool integral) {
 }
 
 EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
-    const std::vector<UpdateAssignmentExpression>& expressions,
+    std::vector<UpdateAssignmentExpression>* expressions,
     std::vector<std::pair<std::string, std::string>>* values) {
   if (values == nullptr) {
     return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_values_required");
   }
-  for (const auto& expression : expressions) {
+  if (expressions == nullptr) {
+    return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_plan_required");
+  }
+  for (auto& expression : *expressions) {
     std::string new_value = expression.literal_value;
+    const std::string* source_value =
+        expression.source_column.empty()
+            ? nullptr
+            : CachedCrudFieldValuePtr(*values,
+                                      expression.source_column,
+                                      &expression.cached_source_index);
     if (expression.operation == "copy_column") {
-      new_value = CrudFieldValue(*values, expression.source_column);
+      new_value = source_value == nullptr ? std::string{} : *source_value;
     } else if (expression.operation == "concat") {
-      new_value = CrudFieldValue(*values, expression.source_column) + expression.literal_value;
+      new_value = (source_value == nullptr ? std::string{} : *source_value) +
+                  expression.literal_value;
     } else if (expression.operation == "case_ge_thresholds") {
       bool case_ok = false;
       new_value = EvaluateCaseGeThresholds(
-          CrudFieldValue(*values, expression.source_column),
+          source_value == nullptr ? std::string{} : *source_value,
           expression,
           &case_ok);
       if (!case_ok) {
@@ -462,10 +482,10 @@ EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
     } else if (expression.operation == "add" ||
                expression.operation == "subtract" ||
                expression.operation == "multiply") {
-      const std::string source_value = CrudFieldValue(*values, expression.source_column);
       long double left = 0.0;
       long double right = 0.0;
-      if (!ParseLongDoubleValue(source_value, &left) ||
+      if (source_value == nullptr ||
+          !ParseLongDoubleValue(*source_value, &left) ||
           !ParseLongDoubleValue(expression.literal_value, &right)) {
         return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_arithmetic_requires_numeric_values");
       }
@@ -476,18 +496,19 @@ EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
         computed = left * right;
       }
       new_value = FormatArithmeticResult(computed,
-                                         LooksIntegralText(source_value) &&
+                                         LooksIntegralText(*source_value) &&
                                              LooksIntegralText(expression.literal_value));
     }
-    bool replaced = false;
-    for (auto& [field, value] : *values) {
-      if (field == expression.target_column) {
-        value = new_value;
-        replaced = true;
-        break;
-      }
+    std::string* target_value =
+        CachedMutableCrudFieldValuePtr(values,
+                                       expression.target_column,
+                                       &expression.cached_target_index);
+    if (target_value != nullptr) {
+      *target_value = std::move(new_value);
+    } else {
+      values->push_back({expression.target_column, std::move(new_value)});
+      expression.cached_target_index = values->size() - 1;
     }
-    if (!replaced) { values->push_back({expression.target_column, std::move(new_value)}); }
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
@@ -668,6 +689,42 @@ const std::string* CrudFieldValuePtr(
     if (name == field) { return &value; }
   }
   return nullptr;
+}
+
+std::size_t FindCrudFieldValueIndex(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::string& field) {
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (values[index].first == field) { return index; }
+  }
+  return std::string::npos;
+}
+
+const std::string* CachedCrudFieldValuePtr(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::string& field,
+    std::size_t* cached_index) {
+  if (cached_index != nullptr && *cached_index < values.size() &&
+      values[*cached_index].first == field) {
+    return &values[*cached_index].second;
+  }
+  const std::size_t found = FindCrudFieldValueIndex(values, field);
+  if (cached_index != nullptr) { *cached_index = found; }
+  return found == std::string::npos ? nullptr : &values[found].second;
+}
+
+std::string* CachedMutableCrudFieldValuePtr(
+    std::vector<std::pair<std::string, std::string>>* values,
+    const std::string& field,
+    std::size_t* cached_index) {
+  if (values == nullptr) { return nullptr; }
+  if (cached_index != nullptr && *cached_index < values->size() &&
+      (*values)[*cached_index].first == field) {
+    return &(*values)[*cached_index].second;
+  }
+  const std::size_t found = FindCrudFieldValueIndex(*values, field);
+  if (cached_index != nullptr) { *cached_index = found; }
+  return found == std::string::npos ? nullptr : &(*values)[found].second;
 }
 
 bool TryParseFiniteDoubleNoThrow(const std::string& value, double* out) {
@@ -1981,6 +2038,11 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     result.decision = OrdinaryHotPlusDecision();
     return result;
   }
+  if (batch_context.index_plan.entries.empty()) {
+    result.ok = true;
+    result.decision = OrdinaryHotPlusDecision();
+    return result;
+  }
 
   const bool parser_or_reference_authority =
       ParserOrReferenceAuthorityForHotProof(request);
@@ -2008,15 +2070,19 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
   const auto old_row_uuid =
       ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
                         old_row.row_uuid);
-  const auto new_row_uuid =
-      ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
-                        new_row.row_uuid);
   const auto old_version_uuid =
       ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
                         old_row.version_uuid);
+  const auto new_row_uuid =
+      new_row.row_uuid == old_row.row_uuid
+          ? old_row_uuid
+          : ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+                              new_row.row_uuid);
   const auto new_previous_version_uuid =
-      ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
-                        new_row.previous_version_uuid);
+      new_row.previous_version_uuid == old_row.version_uuid
+          ? old_version_uuid
+          : ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+                              new_row.previous_version_uuid);
   const auto old_previous_version_uuid =
       old_row.previous_version_uuid.empty()
           ? scratchbird::core::platform::TypedUuid{}
@@ -2495,7 +2561,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", descriptor_ready);
   }
   bool invalid_assignment_plan = false;
-  const auto assignment_expressions =
+  auto assignment_expressions =
       ParseUpdateAssignmentPlan(effective_request, &invalid_assignment_plan);
   if (invalid_assignment_plan) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -2683,7 +2749,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
 
     auto values = row.values;
     if (!assignment_expressions.empty()) {
-      const auto applied = ApplyUpdateAssignmentExpressions(assignment_expressions, &values);
+      const auto applied = ApplyUpdateAssignmentExpressions(&assignment_expressions, &values);
       if (applied.error) {
         return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", applied);
       }

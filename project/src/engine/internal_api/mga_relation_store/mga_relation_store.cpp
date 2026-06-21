@@ -351,6 +351,11 @@ std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> lines;
   std::ifstream in(path, std::ios::binary);
   if (!in) { return lines; }
+  std::error_code ignored;
+  const auto bytes = std::filesystem::file_size(path, ignored);
+  if (!ignored && bytes != static_cast<std::uintmax_t>(-1)) {
+    lines.reserve(static_cast<std::size_t>(std::max<std::uintmax_t>(1, bytes / 128)));
+  }
   std::string line;
   while (std::getline(in, line)) { lines.push_back(line); }
   return lines;
@@ -377,8 +382,11 @@ std::vector<std::string> ReadScopedRelationLinesForTables(
       continue;
     }
     used = true;
-    const auto segment_lines = ReadLines(path);
-    lines.insert(lines.end(), segment_lines.begin(), segment_lines.end());
+    auto segment_lines = ReadLines(path);
+    lines.reserve(lines.size() + segment_lines.size());
+    lines.insert(lines.end(),
+                 std::make_move_iterator(segment_lines.begin()),
+                 std::make_move_iterator(segment_lines.end()));
   }
   if (used_segments != nullptr) {
     *used_segments = used;
@@ -1948,6 +1956,40 @@ std::string DecodeCrudTextLocal(const std::string& encoded) {
   return decoded;
 }
 
+std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
+    const std::string& encoded,
+    std::unordered_map<std::string, std::string>* decoded_key_cache) {
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(8);
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto pipe = encoded.find('|', start);
+    const std::size_t end = pipe == std::string::npos ? encoded.size() : pipe;
+    const auto equals = encoded.find('=', start);
+    if (equals != std::string::npos && equals < end) {
+      std::string key;
+      const std::string encoded_key = encoded.substr(start, equals - start);
+      if (decoded_key_cache != nullptr) {
+        auto found = decoded_key_cache->find(encoded_key);
+        if (found == decoded_key_cache->end()) {
+          auto inserted =
+              decoded_key_cache->emplace(encoded_key, DecodeCrudTextLocal(encoded_key));
+          found = inserted.first;
+        }
+        key = found->second;
+      } else {
+        key = DecodeCrudTextLocal(encoded_key);
+      }
+      pairs.push_back({std::move(key),
+                       DecodeCrudTextLocal(encoded.substr(equals + 1,
+                                                          end - equals - 1))});
+    }
+    if (pipe == std::string::npos) { break; }
+    start = pipe + 1;
+  }
+  return pairs;
+}
+
 std::string MakeMgaLargeValueLocator(const std::string& overflow_uuid,
                                      const std::string& content_hash,
                                      std::uint64_t total_bytes) {
@@ -2825,6 +2867,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     return result;
   }
   const auto savepoints = ParseSavepoints(context);
+  std::unordered_map<std::string, std::string> row_value_key_cache;
   for (const auto& line : ReadLines(RowStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
@@ -2839,7 +2882,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     row.deleted = fields[7] == "1";
     row.previous_version_uuid = fields[8];
     row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairs(fields[10]);
+    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
     if (fields.size() >= 12) {
       row.temporary_session_uuid = fields[11];
     }
@@ -2997,6 +3040,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
   result.scoped_physical_segments_used = row_segments_used || index_segments_used;
   result.scoped_physical_segments_fallback = false;
 
+  std::unordered_map<std::string, std::string> row_value_key_cache;
   for (const auto& line : row_lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
@@ -3014,7 +3058,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     row.deleted = fields[7] == "1";
     row.previous_version_uuid = fields[8];
     row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairs(fields[10]);
+    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
     if (fields.size() >= 12) {
       row.temporary_session_uuid = fields[11];
     }
