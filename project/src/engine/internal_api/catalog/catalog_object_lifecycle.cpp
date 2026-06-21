@@ -13,8 +13,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -628,6 +630,65 @@ struct LoadOptions {
   bool enforce_visibility = true;
 };
 
+std::string CatalogLifecycleFileFingerprint(const std::string& path) {
+  std::error_code ec;
+  const std::filesystem::path fs_path(path);
+  if (!std::filesystem::exists(fs_path, ec) || ec) return path + ":missing";
+  const auto size = std::filesystem::file_size(fs_path, ec);
+  if (ec) return path + ":size_error";
+  const auto mtime = std::filesystem::last_write_time(fs_path, ec);
+  if (ec) return path + ":" + std::to_string(size) + ":mtime_error";
+  return path + ":" + std::to_string(size) + ":" +
+         std::to_string(mtime.time_since_epoch().count());
+}
+
+std::string CatalogLifecycleLoadCacheKey(const EngineRequestContext& context,
+                                         LoadOptions options) {
+  std::ostringstream key;
+  key << "db=" << context.database_path
+      << "|visible=" << (options.enforce_visibility ? "1" : "0")
+      << "|local_tx=" << context.local_transaction_id
+      << "|catalog=" << context.catalog_generation_id
+      << "|security=" << context.security_epoch
+      << "|resource=" << context.resource_epoch
+      << "|name_resolution=" << context.name_resolution_epoch
+      << "|events=" << CatalogLifecycleFileFingerprint(EventPath(context))
+      << "|crud=" << CatalogLifecycleFileFingerprint(context.database_path + ".sb.crud_events");
+  return key.str();
+}
+
+std::mutex& CatalogLifecycleLoadCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, EngineLoadCatalogObjectLifecycleStateResult>&
+CatalogLifecycleLoadCache() {
+  static std::map<std::string, EngineLoadCatalogObjectLifecycleStateResult> cache;
+  return cache;
+}
+
+std::optional<EngineLoadCatalogObjectLifecycleStateResult>
+LookupCatalogLifecycleLoadCache(const std::string& cache_key) {
+  std::lock_guard<std::mutex> guard(CatalogLifecycleLoadCacheMutex());
+  const auto found = CatalogLifecycleLoadCache().find(cache_key);
+  if (found == CatalogLifecycleLoadCache().end()) return std::nullopt;
+  return found->second;
+}
+
+void StoreCatalogLifecycleLoadCache(
+    const std::string& cache_key,
+    const EngineLoadCatalogObjectLifecycleStateResult& result) {
+  if (cache_key.empty() || !result.ok) return;
+  std::lock_guard<std::mutex> guard(CatalogLifecycleLoadCacheMutex());
+  auto& cache = CatalogLifecycleLoadCache();
+  cache[cache_key] = result;
+  constexpr std::size_t kMaxCatalogLifecycleLoadCacheEntries = 64;
+  while (cache.size() > kMaxCatalogLifecycleLoadCacheEntries) {
+    cache.erase(cache.begin());
+  }
+}
+
 EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext& context,
                                                       LoadOptions options) {
   EngineLoadCatalogObjectLifecycleStateResult result;
@@ -635,10 +696,16 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
     return result;
   }
+  const std::string load_cache_key =
+      CatalogLifecycleLoadCacheKey(context, options);
+  if (auto cached = LookupCatalogLifecycleLoadCache(load_cache_key)) {
+    return *cached;
+  }
   std::ifstream in(EventPath(context), std::ios::binary);
   if (!in) {
     result.ok = true;
     result.diagnostic = OkDiagnostic();
+    StoreCatalogLifecycleLoadCache(load_cache_key, result);
     return result;
   }
   const auto crud_state = LoadCrudState(context);
@@ -928,6 +995,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   }
   result.ok = true;
   result.diagnostic = OkDiagnostic();
+  StoreCatalogLifecycleLoadCache(load_cache_key, result);
   return result;
 }
 

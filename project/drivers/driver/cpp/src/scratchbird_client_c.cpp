@@ -1130,6 +1130,39 @@ sb_result* sb_execute(sb_connection* conn, const char* sql, sb_error* err) {
     return result;
 }
 
+int sb_execute_copy_from_buffer(sb_connection* conn,
+                                const char* sql,
+                                const char* data,
+                                size_t data_size,
+                                int64_t* rows_affected_out,
+                                sb_error* err) {
+    if (!conn || !sql || (!data && data_size > 0)) {
+        set_error(err, SB_ERR_NULL_POINTER, "Connection, SQL, and COPY data are required");
+        return SB_ERR_NULL_POINTER;
+    }
+    if (rows_affected_out) {
+        *rows_affected_out = 0;
+    }
+    std::string copy_data;
+    if (data_size > 0) {
+        copy_data.assign(data, data + data_size);
+    }
+    std::istringstream input(copy_data);
+    conn->client.setCopyInputStream(&input);
+    sb_result* result = sb_execute(conn, sql, err);
+    conn->client.setCopyInputStream(nullptr);
+    if (!result) {
+        return err ? static_cast<int>(err->code) : SB_ERR_UNKNOWN;
+    }
+    const int64_t affected = sb_rows_affected(result);
+    if (rows_affected_out) {
+        *rows_affected_out = affected;
+    }
+    sb_result_free(result);
+    set_error(err, SB_OK, "");
+    return SB_OK;
+}
+
 sb_result* sb_query(sb_connection* conn, const char* sql, sb_error* err) {
     return sb_execute(conn, sql, err);
 }

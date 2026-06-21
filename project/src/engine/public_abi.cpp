@@ -24,6 +24,7 @@
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -383,6 +384,145 @@ bool has_text_line_option(std::string_view encoded,
   return encoded.find(line) != std::string_view::npos;
 }
 
+bool text_line_field_equals(std::string_view encoded,
+                            std::string_view key,
+                            std::string_view expected_value) {
+  std::string line;
+  line.reserve(key.size() + expected_value.size() + 2);
+  line.append(key);
+  line.push_back('=');
+  line.append(expected_value);
+  if (encoded.size() >= line.size() &&
+      encoded.substr(0, line.size()) == line &&
+      (encoded.size() == line.size() || encoded[line.size()] == '\n')) {
+    return true;
+  }
+  line.insert(line.begin(), '\n');
+  line.push_back('\n');
+  return encoded.find(line) != std::string_view::npos;
+}
+
+std::uint16_t read_native_u16(const std::uint8_t* data, std::size_t offset) {
+  return static_cast<std::uint16_t>(data[offset]) |
+         (static_cast<std::uint16_t>(data[offset + 1]) << 8u);
+}
+
+std::uint32_t read_native_u32(const std::uint8_t* data, std::size_t offset) {
+  return static_cast<std::uint32_t>(data[offset]) |
+         (static_cast<std::uint32_t>(data[offset + 1]) << 8u) |
+         (static_cast<std::uint32_t>(data[offset + 2]) << 16u) |
+         (static_cast<std::uint32_t>(data[offset + 3]) << 24u);
+}
+
+std::uint64_t read_native_u64(const std::uint8_t* data, std::size_t offset) {
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    value |= static_cast<std::uint64_t>(data[offset + index]) << (index * 8u);
+  }
+  return value;
+}
+
+struct NativeRowPacketDecode {
+  bool ok = false;
+  scratchbird::engine::internal_api::EngineApiRequest request;
+  std::string detail;
+};
+
+NativeRowPacketDecode decode_native_row_packet(const std::uint8_t* data,
+                                               std::uint64_t size) {
+  NativeRowPacketDecode decoded;
+  if (size == 0) {
+    decoded.ok = true;
+    return decoded;
+  }
+  if (data == nullptr ||
+      size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    decoded.detail = "native_row_packet_invalid_pointer_or_size";
+    return decoded;
+  }
+  const auto packet_size = static_cast<std::size_t>(size);
+  if (packet_size < 20 ||
+      data[0] != 'S' || data[1] != 'B' || data[2] != 'N' || data[3] != 'R') {
+    decoded.detail = "native_row_packet_bad_header";
+    return decoded;
+  }
+  if (read_native_u16(data, 4) != 1) {
+    decoded.detail = "native_row_packet_version_unsupported";
+    return decoded;
+  }
+  const std::uint64_t row_count = read_native_u64(data, 8);
+  const std::uint32_t column_count = read_native_u32(data, 16);
+  if (row_count == 0 || column_count == 0 || column_count > 4096) {
+    decoded.detail = "native_row_packet_shape_invalid";
+    return decoded;
+  }
+  if (row_count >
+      static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / column_count)) {
+    decoded.detail = "native_row_packet_cell_count_overflow";
+    return decoded;
+  }
+  std::size_t offset = 20;
+  std::vector<std::string> columns;
+  columns.reserve(column_count);
+  for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
+    if (offset + 4 > packet_size) {
+      decoded.detail = "native_row_packet_column_truncated";
+      return decoded;
+    }
+    const std::uint32_t name_size = read_native_u32(data, offset);
+    offset += 4;
+    if (name_size == 0 || offset + name_size > packet_size) {
+      decoded.detail = "native_row_packet_column_name_invalid";
+      return decoded;
+    }
+    columns.emplace_back(reinterpret_cast<const char*>(data + offset), name_size);
+    offset += name_size;
+  }
+  decoded.request.rows.reserve(static_cast<std::size_t>(row_count));
+  for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+    scratchbird::engine::internal_api::EngineRowValue row;
+    row.fields.reserve(column_count);
+    for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
+      if (offset + 5 > packet_size) {
+        decoded.detail = "native_row_packet_cell_truncated";
+        return decoded;
+      }
+      const bool is_null = data[offset++] != 0;
+      const std::uint32_t value_size = read_native_u32(data, offset);
+      offset += 4;
+      if (offset + value_size > packet_size) {
+        decoded.detail = "native_row_packet_value_truncated";
+        return decoded;
+      }
+      scratchbird::engine::internal_api::EngineTypedValue value;
+      value.descriptor.descriptor_kind = "scalar";
+      value.descriptor.canonical_type_name = is_null ? "null" : "text";
+      value.descriptor.encoded_descriptor =
+          std::string("type=") + value.descriptor.canonical_type_name;
+      if (is_null) {
+        value.is_null = true;
+        value.setState(scratchbird::engine::internal_api::EngineValueState::sql_null);
+      } else {
+        value.encoded_value.assign(reinterpret_cast<const char*>(data + offset),
+                                   value_size);
+      }
+      offset += value_size;
+      row.fields.push_back({columns[column_index], std::move(value)});
+    }
+    decoded.request.rows.push_back(std::move(row));
+  }
+  if (offset != packet_size) {
+    decoded.detail = "native_row_packet_trailing_bytes";
+    return decoded;
+  }
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_materialized=true");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_format:scratchbird.native_rows.v1");
+  decoded.request.option_envelopes.push_back(
+      "sblr.native_row_packet_row_count:" + std::to_string(row_count));
+  decoded.ok = true;
+  return decoded;
+}
+
 std::uint64_t api_evidence_u64(const scratchbird::engine::internal_api::EngineApiResult& api_result,
                                std::string_view evidence_kind,
                                std::uint64_t fallback) {
@@ -548,6 +688,7 @@ sb_engine_status_t fail_result(sb_engine_status_t status,
 sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                const sb_engine_request_context_v1_t& context,
                                                const scratchbird::engine::SblrExecutionEnvelope& envelope,
+                                               const sb_engine_sblr_dispatch_params_v1_t& params,
                                                sb_engine_result_t* out_result) {
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view encoded(data, envelope.canonical_bytes.size());
@@ -561,7 +702,32 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   };
   const auto api_context = make_internal_context(session->engine, context);
   mark_phase("make_internal_context");
-  const auto dispatch_result = scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded, api_context);
+  scratchbird::engine::internal_api::EngineApiRequest api_request;
+  if (params.data_packet_size_bytes != 0) {
+    if (!text_line_field_equals(encoded, "operation_id", "dml.execute_native_bulk_ingest")) {
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                         out_result,
+                         4011,
+                         "SBLR.DATA_PACKET.OPERATION_MISMATCH",
+                         "sblr.data_packet.operation_mismatch",
+                         "native row packets are only admitted for dml.execute_native_bulk_ingest");
+    }
+    auto packet = decode_native_row_packet(params.data_packet_bytes,
+                                           params.data_packet_size_bytes);
+    if (!packet.ok) {
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                         out_result,
+                         4012,
+                         "SBLR.DATA_PACKET.INVALID",
+                         "sblr.data_packet.invalid",
+                         packet.detail);
+    }
+    api_request = std::move(packet.request);
+  }
+  const auto dispatch_result =
+      scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded,
+                                                                api_context,
+                                                                std::move(api_request));
   mark_phase("decode_and_dispatch_operation");
   if (!dispatch_result.accepted || !dispatch_result.api_result.ok) {
     const sb_engine_status_t status = operation_envelope_failure_status(dispatch_result);
@@ -1085,7 +1251,7 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4001, code, key);
   }
   if (looks_like_sblr_operation_envelope(decoded.envelope)) {
-    const auto status = dispatch_operation_envelope(session, *context, decoded.envelope, out_result);
+    const auto status = dispatch_operation_envelope(session, *context, decoded.envelope, *params, out_result);
     mark_phase("dispatch_operation_envelope");
     WriteEngineAbiPhaseTrace("dispatch_sblr",
                              "operation_envelope",

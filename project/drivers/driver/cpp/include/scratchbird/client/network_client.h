@@ -399,7 +399,8 @@ private:
                                 core::ErrorContext* ctx = nullptr);
     core::Status readExactWithTimeout(void* buffer, size_t size,
                                       core::ErrorContext* ctx = nullptr);
-    core::Status sendCopyInputStream(core::ErrorContext* ctx = nullptr);
+    core::Status sendCopyInputStream(const protocol::CopyInResponse& response,
+                                     core::ErrorContext* ctx = nullptr);
     core::Status handleCopyOutResponseMessage(const protocol::ProtocolMessage& msg,
                                               NetworkResultSet& results,
                                               core::ErrorContext* ctx = nullptr);

@@ -3812,43 +3812,102 @@ TEST(DriverTxnExecParityTest, BatchExecuteSupportsParameterizedOperations) {
     EXPECT_TRUE(harness.error.empty()) << harness.error;
 }
 
-TEST(DriverTxnExecParityTest, BulkInsertExecutesPreparedInsertRows) {
+TEST(DriverTxnExecParityTest, BulkInsertExecutesBinaryCopyRowset) {
     scratchbird::network::NetworkInitGuard guard;
     ASSERT_TRUE(guard.isInitialized());
 
     ServerHarnessConfig harness_cfg;
     harness_cfg.exchanges = {
-        {scratchbird::protocol::MessageType::Parse,
-         {},
+        {scratchbird::protocol::MessageType::Query,
+         {{scratchbird::protocol::MessageType::CopyInResponse,
+           scratchbird::protocol::buildCopyInResponsePayload(scratchbird::protocol::kFormatBinary,
+                                                              1024)}},
          [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
-             std::string stmt;
              std::string sql;
-             if (!parseParsePayloadStatementAndSql(msg.body, stmt, sql, error)) {
+             if (!parseQueryPayloadSql(msg.body, sql, error)) {
                  return false;
              }
-             if (sql != "INSERT INTO \"main\".\"users\" (\"id\", \"name\") VALUES ($1, $2)") {
-                 error = "unexpected bulk insert SQL";
+             if (sql != "COPY \"main\".\"users\" (\"id\", \"name\") FROM STDIN") {
+                 error = "unexpected bulk COPY SQL";
                  return false;
              }
              return true;
          }},
-        {scratchbird::protocol::MessageType::Describe, {}},
-        {scratchbird::protocol::MessageType::Sync,
-         {{scratchbird::protocol::MessageType::ParameterDescription,
-           buildParameterDescriptionPayload({scratchbird::protocol::kOidInt4, scratchbird::protocol::kOidText})},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 93, 93)}}},
-        {scratchbird::protocol::MessageType::Bind, {}},
-        {scratchbird::protocol::MessageType::Execute,
+        {scratchbird::protocol::MessageType::CopyData,
+         {},
+         [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
+             if (msg.body.size() < 12 ||
+                 msg.body[0] != 'S' || msg.body[1] != 'B' ||
+                 msg.body[2] != 'C' || msg.body[3] != 'P' ||
+                 msg.body[4] != 1) {
+                 error = "binary COPY frame header mismatch";
+                 return false;
+             }
+             size_t offset = 8;
+             const uint32_t row_count = readU32Le(msg.body.data() + offset);
+             offset += 4;
+             if (row_count != 2) {
+                 error = "binary COPY row count mismatch";
+                 return false;
+             }
+             std::vector<std::vector<std::pair<std::string, std::string>>> rows;
+             for (uint32_t row_index = 0; row_index < row_count; ++row_index) {
+                 if (offset + 4 > msg.body.size()) {
+                     error = "binary COPY field count truncated";
+                     return false;
+                 }
+                 const uint32_t field_count = readU32Le(msg.body.data() + offset);
+                 offset += 4;
+                 std::vector<std::pair<std::string, std::string>> fields;
+                 for (uint32_t field_index = 0; field_index < field_count; ++field_index) {
+                     if (offset + 4 > msg.body.size()) {
+                         error = "binary COPY field name length truncated";
+                         return false;
+                     }
+                     const uint32_t name_size = readU32Le(msg.body.data() + offset);
+                     offset += 4;
+                     if (offset + name_size + 1 + 4 > msg.body.size()) {
+                         error = "binary COPY field header truncated";
+                         return false;
+                     }
+                     const std::string name(
+                         reinterpret_cast<const char*>(msg.body.data() + offset), name_size);
+                     offset += name_size;
+                     const bool is_null = msg.body[offset++] != 0;
+                     const uint32_t value_size = readU32Le(msg.body.data() + offset);
+                     offset += 4;
+                     if (offset + value_size > msg.body.size()) {
+                         error = "binary COPY field value truncated";
+                         return false;
+                     }
+                     std::string value;
+                     if (!is_null) {
+                         value.assign(reinterpret_cast<const char*>(msg.body.data() + offset),
+                                      value_size);
+                     }
+                     offset += value_size;
+                     fields.push_back({name, value});
+                 }
+                 rows.push_back(std::move(fields));
+             }
+             if (offset != msg.body.size()) {
+                 error = "binary COPY frame trailing bytes";
+                 return false;
+             }
+             const std::vector<std::vector<std::pair<std::string, std::string>>> expected = {
+                 {{"id", "1"}, {"name", "alice"}},
+                 {{"id", "2"}, {"name", "bob"}}
+             };
+             if (rows != expected) {
+                 error = "binary COPY fields mismatch";
+                 return false;
+             }
+             return true;
+         }},
+        {scratchbird::protocol::MessageType::CopyDone,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "INSERT 1")}}},
-        {scratchbird::protocol::MessageType::Sync,
-         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 94, 94)}}},
-        {scratchbird::protocol::MessageType::Bind, {}},
-        {scratchbird::protocol::MessageType::Execute,
-         {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "INSERT 1")}}},
-        {scratchbird::protocol::MessageType::Sync,
-         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}}
+           buildCommandCompletePayload(0, 2, 0, "COPY 2")},
+          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));

@@ -113,6 +113,11 @@ class SbpsClient {
   ServerExecutionResult ExecuteSblr(const SessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false) const;
+  ServerExecutionResult ExecuteSblrWithDataPacket(
+      const SessionContext& session,
+      std::string_view encoded_sblr_envelope,
+      const std::vector<std::uint8_t>& data_packet,
+      bool cursor_requested = false) const;
   ServerPrepareSblrResult PrepareSblr(const SessionContext& session,
                                       std::string_view encoded_sblr_envelope) const;
   ServerExecutionResult ExecutePreparedSblr(const SessionContext& session,

@@ -43,7 +43,8 @@ std::vector<std::uint8_t> EncodeExecuteSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid,
     const std::string& encoded_sblr_envelope,
-    bool cursor_requested = false);
+    bool cursor_requested = false,
+    const std::vector<std::uint8_t>& data_packet = {});
 std::vector<std::uint8_t> EncodeFetchPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& cursor_uuid,

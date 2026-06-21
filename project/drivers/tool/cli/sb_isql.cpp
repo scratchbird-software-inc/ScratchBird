@@ -861,6 +861,7 @@ bool parseOnOff(const std::string& val, bool& result) {
 
 // Forward declaration for meta command handler (used by INPUT/OUTPUT commands)
 bool handleMetaCommand(const std::string& cmd);
+bool executeScriptStream(std::istream& input, const std::string& source_name);
 
 // Handle client-side SET commands
 // Returns true if command was handled locally, false if should be sent to server
@@ -1469,6 +1470,50 @@ static bool isExplainableStatement(const std::string& sql) {
            start.find("WITH") == 0;  // CTEs are also explainable
 }
 
+static bool dmlCanUseExecuteOnlyPath(const std::string& sql) {
+    std::string upper = sql;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+
+    const size_t pos = upper.find_first_not_of(" \t\n\r");
+    if (pos == std::string::npos) return false;
+    std::string trimmed = upper.substr(pos);
+    while (!trimmed.empty() &&
+           (trimmed.back() == ';' || trimmed.back() == ' ' ||
+            trimmed.back() == '\t' || trimmed.back() == '\n' ||
+            trimmed.back() == '\r')) {
+        trimmed.pop_back();
+    }
+
+    if (trimmed.find(" RETURNING ") != std::string::npos ||
+        trimmed.find("\nRETURNING ") != std::string::npos ||
+        trimmed.find("\tRETURNING ") != std::string::npos ||
+        trimmed.rfind("RETURNING ", 0) == 0 ||
+        trimmed.find(" PLAN ") != std::string::npos ||
+        trimmed.find(" CURSOR ") != std::string::npos) {
+        return false;
+    }
+
+    return trimmed.rfind("INSERT ", 0) == 0 ||
+           trimmed.rfind("UPDATE ", 0) == 0 ||
+           trimmed.rfind("DELETE ", 0) == 0 ||
+           trimmed.rfind("MERGE ", 0) == 0 ||
+           trimmed.rfind("UPSERT ", 0) == 0 ||
+           trimmed.rfind("COPY ", 0) == 0;
+}
+
+static void displayRowsAffected(int64_t rows_affected,
+                                bool show_timing,
+                                std::chrono::microseconds exec_time) {
+    auto& out = getOutput();
+    if (rows_affected >= 0 && g_config.count) {
+        out << "Rows affected: " << rows_affected << "\n";
+    }
+    if (show_timing || g_config.stats) {
+        out << "Time: " << std::fixed << std::setprecision(3)
+            << (exec_time.count() / 1000.0) << " ms\n";
+    }
+}
+
 /**
  * Display query execution_plan using EXPLAIN.
  * Returns true on success, false on error.
@@ -1903,9 +1948,14 @@ bool executeSQL(const std::string& sql) {
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    ResultSet results;
     core::ErrorContext ctx;
-    core::Status status = g_connection->executeQuery(processed_sql, &results, &ctx);
+    const bool execute_only = dmlCanUseExecuteOnlyPath(processed_sql);
+    int64_t rows_affected = -1;
+    ResultSet results;
+    core::Status status =
+        execute_only
+            ? g_connection->execute(processed_sql, &rows_affected, &ctx)
+            : g_connection->executeQuery(processed_sql, &results, &ctx);
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -1919,7 +1969,11 @@ bool executeSQL(const std::string& sql) {
     g_config.last_query = processed_sql;
     traceTxnState("after_execute", processed_sql);
 
-    displayResultSet(results, g_config.timing, duration);
+    if (execute_only) {
+        displayRowsAffected(rows_affected, g_config.timing, duration);
+    } else {
+        displayResultSet(results, g_config.timing, duration);
+    }
     return true;
 }
 
@@ -2031,6 +2085,104 @@ Variable substitution and concatenation:
     OUTPUT :dir||:filename            -> concatenates two variables
 
 )";
+}
+
+bool executeScriptStream(std::istream& input, const std::string& source_name) {
+    std::string line;
+    std::string sql;
+    bool had_error = false;
+    bool needs_commit = false;
+    while (std::getline(input, line)) {
+        const std::string trimmed_line = trimWhitespace(line);
+        // Skip comments
+        if (trimmed_line.empty() || trimmed_line[0] == '#' || trimmed_line.substr(0, 2) == "--") {
+            continue;
+        }
+        if (sql.empty() && trimmed_line[0] == '\\') {
+            traceScriptStatement("meta", trimmed_line);
+            const bool meta_needs_commit = metaCommandLikelyNeedsCommit(trimmed_line);
+            if (!handleMetaCommand(trimmed_line)) {
+                had_error = true;
+                if (g_config.bail) {
+                    std::cerr << "Stopping due to error (SET BAIL is ON)\n";
+                    break;
+                }
+            } else if (meta_needs_commit) {
+                needs_commit = true;
+            }
+            continue;
+        }
+
+        sql += line;
+        // Check for statement terminator (supports custom terminator)
+        const std::string& term = g_config.term;
+        if (sql.size() >= term.size() && sql.substr(sql.size() - term.size()) == term) {
+            // Remove terminator before executing
+            std::string sql_to_exec = sql.substr(0, sql.size() - term.size());
+            while (!sql_to_exec.empty() && (sql_to_exec.back() == ' ' || sql_to_exec.back() == '\t')) {
+                sql_to_exec.pop_back();
+            }
+            const bool statement_needs_commit = statementLikelyNeedsCommit(sql_to_exec);
+            const bool statement_is_ddl = statementIsDdlLike(sql_to_exec);
+            const bool statement_controls_txn = statementControlsTransaction(sql_to_exec);
+            needs_commit = needs_commit || statement_needs_commit;
+            traceScriptStatement("execute", sql_to_exec);
+            bool success = executeSQL(sql_to_exec);
+            if (!success) {
+                had_error = true;
+                if (g_config.bail) {
+                    std::cerr << "Stopping due to error (SET BAIL is ON)\n";
+                    break;
+                }
+            } else if (statement_controls_txn) {
+                needs_commit = false;
+            } else if (g_config.autoddl && statement_is_ddl && statement_needs_commit) {
+                if (!commitNonInteractiveWork()) {
+                    had_error = true;
+                    if (g_config.bail) {
+                        std::cerr << "Stopping due to auto-DDL commit failure (SET BAIL is ON)\n";
+                        break;
+                    }
+                } else {
+                    needs_commit = false;
+                }
+            }
+            sql.clear();
+        } else {
+            sql += " ";
+        }
+    }
+
+    if (!sql.empty() && !(had_error && g_config.bail)) {
+        const bool statement_needs_commit = statementLikelyNeedsCommit(sql);
+        const bool statement_is_ddl = statementIsDdlLike(sql);
+        const bool statement_controls_txn = statementControlsTransaction(sql);
+        needs_commit = needs_commit || statement_needs_commit;
+        traceScriptStatement("execute_tail", sql);
+        bool success = executeSQL(sql);
+        if (!success) {
+            had_error = true;
+        } else if (statement_controls_txn) {
+            needs_commit = false;
+        } else if (g_config.autoddl && statement_is_ddl && statement_needs_commit) {
+            if (!commitNonInteractiveWork()) {
+                had_error = true;
+            } else {
+                needs_commit = false;
+            }
+        }
+    }
+    if (input.bad()) {
+        std::cerr << "Error: Failed while reading " << source_name << "\n";
+        return false;
+    }
+    if (had_error) {
+        return false;
+    }
+    if (needs_commit && !commitNonInteractiveWork()) {
+        return false;
+    }
+    return true;
 }
 
 bool handleMetaCommand(const std::string& cmd) {
@@ -2184,103 +2336,17 @@ bool handleMetaCommand(const std::string& cmd) {
             return true;
         }
 
+        if (arg == "-") {
+            return executeScriptStream(std::cin, "stdin");
+        }
+
         std::ifstream file(arg);
         if (!file) {
             std::cerr << "Error: Cannot open file: " << arg << "\n";
             return true;
         }
 
-        std::string line;
-        std::string sql;
-        bool had_error = false;
-        bool needs_commit = false;
-        while (std::getline(file, line)) {
-            const std::string trimmed_line = trimWhitespace(line);
-            // Skip comments
-            if (trimmed_line.empty() || trimmed_line[0] == '#' || trimmed_line.substr(0, 2) == "--") {
-                continue;
-            }
-            if (sql.empty() && trimmed_line[0] == '\\') {
-                traceScriptStatement("meta", trimmed_line);
-                const bool meta_needs_commit = metaCommandLikelyNeedsCommit(trimmed_line);
-                if (!handleMetaCommand(trimmed_line)) {
-                    had_error = true;
-                    if (g_config.bail) {
-                        std::cerr << "Stopping due to error (SET BAIL is ON)\n";
-                        break;
-                    }
-                } else if (meta_needs_commit) {
-                    needs_commit = true;
-                }
-                continue;
-            }
-
-            sql += line;
-            // Check for statement terminator (supports custom terminator)
-            const std::string& term = g_config.term;
-            if (sql.size() >= term.size() && sql.substr(sql.size() - term.size()) == term) {
-                // Remove terminator before executing
-                std::string sql_to_exec = sql.substr(0, sql.size() - term.size());
-                while (!sql_to_exec.empty() && (sql_to_exec.back() == ' ' || sql_to_exec.back() == '\t')) {
-                    sql_to_exec.pop_back();
-                }
-                const bool statement_needs_commit = statementLikelyNeedsCommit(sql_to_exec);
-                const bool statement_is_ddl = statementIsDdlLike(sql_to_exec);
-                const bool statement_controls_txn = statementControlsTransaction(sql_to_exec);
-                needs_commit = needs_commit || statement_needs_commit;
-                traceScriptStatement("execute", sql_to_exec);
-                bool success = executeSQL(sql_to_exec);
-                if (!success) {
-                    had_error = true;
-                    if (g_config.bail) {
-                        std::cerr << "Stopping due to error (SET BAIL is ON)\n";
-                        break;
-                    }
-                } else if (statement_controls_txn) {
-                    needs_commit = false;
-                } else if (g_config.autoddl && statement_is_ddl && statement_needs_commit) {
-                    if (!commitNonInteractiveWork()) {
-                        had_error = true;
-                        if (g_config.bail) {
-                            std::cerr << "Stopping due to auto-DDL commit failure (SET BAIL is ON)\n";
-                            break;
-                        }
-                    } else {
-                        needs_commit = false;
-                    }
-                }
-                sql.clear();
-            } else {
-                sql += " ";
-            }
-        }
-
-        if (!sql.empty() && !(had_error && g_config.bail)) {
-            const bool statement_needs_commit = statementLikelyNeedsCommit(sql);
-            const bool statement_is_ddl = statementIsDdlLike(sql);
-            const bool statement_controls_txn = statementControlsTransaction(sql);
-            needs_commit = needs_commit || statement_needs_commit;
-            traceScriptStatement("execute_tail", sql);
-            bool success = executeSQL(sql);
-            if (!success) {
-                had_error = true;
-            } else if (statement_controls_txn) {
-                needs_commit = false;
-            } else if (g_config.autoddl && statement_is_ddl && statement_needs_commit) {
-                if (!commitNonInteractiveWork()) {
-                    had_error = true;
-                } else {
-                    needs_commit = false;
-                }
-            }
-        }
-        if (had_error) {
-            return false;
-        }
-        if (needs_commit && !commitNonInteractiveWork()) {
-            return false;
-        }
-        return true;
+        return executeScriptStream(file, arg);
     }
 
     if (command == "o" || command == "output") {
@@ -3530,7 +3596,7 @@ void printUsage(const char* program) {
     std::cout << "      --sslmode=<mode>      disable|allow|prefer|require|verify-ca|verify-full\n";
     std::cout << "      --conn-opt key=value  Extra connection option (repeatable)\n";
     std::cout << "  -c, --command=<sql>       Execute single command and exit\n";
-    std::cout << "  -f, --file=<file>         Execute commands from file and exit\n";
+    std::cout << "  -f, --file=<file>         Execute commands from file and exit (- reads stdin)\n";
     std::cout << "  -i, --input=<file>        Alias for -f (Firebird compatible)\n";
     std::cout << "  -o, --output=<file>       Write output to file\n";
     std::cout << "  -t, --tuples-only         Print tuples only (no headers/footers)\n";
@@ -3590,6 +3656,7 @@ void printUsage(const char* program) {
     std::cout << "  " << program << " /path/to/mydb.sbdb\n";
     std::cout << "  " << program << " mydb.sbdb -U admin -c \"SELECT * FROM users\"\n";
     std::cout << "  " << program << " mydb.sbdb -f queries.sql -o results.txt\n";
+    std::cout << "  " << program << " mydb.sbdb -f - < queries.sql\n";
     std::cout << "  " << program << " mydb.sbdb -b -f script.sql   # Stop on error\n";
     std::cout << "  " << program << " mydb.sbdb -x -o schema.sql   # Extract DDL to file\n";
     std::cout << "  " << program << " mydb.sbdb -ex > backup.sql   # Extract with CREATE DATABASE\n";

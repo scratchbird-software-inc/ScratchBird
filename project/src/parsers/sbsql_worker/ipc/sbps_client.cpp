@@ -266,6 +266,11 @@ void PutBytes32(std::vector<std::uint8_t>* out, const std::array<std::uint8_t, 3
   out->insert(out->end(), bytes.begin(), bytes.end());
 }
 
+void PutBytes(std::vector<std::uint8_t>* out, const std::vector<std::uint8_t>& value) {
+  PutU64(out, static_cast<std::uint64_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
 void PutString(std::vector<std::uint8_t>* out, std::string_view value) {
   if (value.size() >= kLongStringSentinel) {
     PutU16(out, kLongStringSentinel);
@@ -1312,12 +1317,16 @@ std::vector<std::uint8_t> EncodeAttachPayload(const std::array<std::uint8_t, 16>
 
 std::vector<std::uint8_t> EncodeExecutePayload(const std::array<std::uint8_t, 16>& session_uuid,
                                                std::string_view encoded_sblr_envelope,
-                                               bool cursor_requested) {
+                                               bool cursor_requested,
+                                               const std::vector<std::uint8_t>& data_packet = {}) {
   std::vector<std::uint8_t> out;
   PutUuid(&out, session_uuid);
   PutUuid(&out, {});
   PutU8(&out, cursor_requested ? 1 : 0);
   PutString(&out, encoded_sblr_envelope);
+  if (!data_packet.empty()) {
+    PutBytes(&out, data_packet);
+  }
   return out;
 }
 
@@ -1796,6 +1805,14 @@ PublicNameResolutionResult SbpsClient::RenderUuidPublic(const SessionContext& se
 ServerExecutionResult SbpsClient::ExecuteSblr(const SessionContext& session,
                                              std::string_view encoded_sblr_envelope,
                                              bool cursor_requested) const {
+  return ExecuteSblrWithDataPacket(session, encoded_sblr_envelope, {}, cursor_requested);
+}
+
+ServerExecutionResult SbpsClient::ExecuteSblrWithDataPacket(
+    const SessionContext& session,
+    std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) const {
   ServerExecutionResult result;
   const auto session_uuid = TextToUuid(session.session_uuid);
   const auto connection_uuid = TextToUuid(session.connection_uuid);
@@ -1806,7 +1823,10 @@ ServerExecutionResult SbpsClient::ExecuteSblr(const SessionContext& session,
                               kSchemaExecuteSblrV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeExecutePayload(session_uuid, encoded_sblr_envelope, cursor_requested),
+                   EncodeExecutePayload(session_uuid,
+                                        encoded_sblr_envelope,
+                                        cursor_requested,
+                                        data_packet),
                    &response,
                    &messages)) {
     result.messages = std::move(messages);

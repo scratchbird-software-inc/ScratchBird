@@ -137,6 +137,14 @@ void WriteServerPhaseTrace(
   out << "\ttotal_us=" << total << '\n';
 }
 
+std::string ServerTraceField(std::string_view value) {
+  std::string out(value);
+  for (char& ch : out) {
+    if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+  }
+  return out;
+}
+
 void PutU8(std::vector<std::uint8_t>* out, std::uint8_t value) { out->push_back(value); }
 void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
   out->push_back(static_cast<std::uint8_t>(value & 0xffu));
@@ -366,6 +374,24 @@ bool ReadString(const std::vector<std::uint8_t>& data, std::size_t* offset, std:
   if (*offset + length > data.size()) return false;
   out->assign(reinterpret_cast<const char*>(data.data() + *offset),
               static_cast<std::size_t>(length));
+  *offset += static_cast<std::size_t>(length);
+  return true;
+}
+
+void PutBytes(std::vector<std::uint8_t>* out, const std::vector<std::uint8_t>& value) {
+  PutU64(out, static_cast<std::uint64_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+bool ReadBytes(const std::vector<std::uint8_t>& data,
+               std::size_t* offset,
+               std::vector<std::uint8_t>* out) {
+  if (*offset + 8 > data.size()) return false;
+  const std::uint64_t length = GetU64(data, *offset);
+  *offset += 8;
+  if (length > static_cast<std::uint64_t>(data.size() - *offset)) return false;
+  out->assign(data.begin() + static_cast<std::ptrdiff_t>(*offset),
+              data.begin() + static_cast<std::ptrdiff_t>(*offset + length));
   *offset += static_cast<std::size_t>(length);
   return true;
 }
@@ -791,6 +817,7 @@ struct ExecutePayload {
   std::array<std::uint8_t, 16> prepared_statement_uuid{};
   bool cursor_requested = false;
   std::string encoded_sblr_envelope;
+  std::vector<std::uint8_t> data_packet;
 };
 
 struct CursorPayload {
@@ -822,6 +849,10 @@ std::optional<ExecutePayload> DecodeExecutePayload(const std::vector<std::uint8_
   out.prepared_statement_uuid = GetUuid(payload, offset); offset += 16;
   out.cursor_requested = payload[offset++] != 0;
   if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
+  if (offset < payload.size() && !ReadBytes(payload, &offset, &out.data_packet)) {
+    return std::nullopt;
+  }
+  if (offset != payload.size()) return std::nullopt;
   return out;
 }
 
@@ -1566,6 +1597,10 @@ void CapturePreparedLanguageContext(ServerPreparedStatementRecord* prepared,
 }
 
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key);
+std::string EncodedTextField(std::string_view encoded, const std::string& field);
+bool TextBoolField(std::string_view encoded,
+                   std::string_view key,
+                   bool default_value);
 
 void BindPreparedSessionObjectHandle(ServerSessionRegistry* registry,
                                      ServerPreparedStatementRecord* prepared,
@@ -1657,6 +1692,299 @@ void BumpSessionLanguageResourceEpochs(ServerSessionRecord* session) {
       session->name_resolution_epoch == 0
           ? session->localized_name_epoch
           : session->name_resolution_epoch + 1;
+}
+
+bool PreservesStablePublicRelationNameCache(std::string_view operation_id) {
+  return operation_id == "ddl.create_index" ||
+         operation_id == "ddl.create_index_template" ||
+         operation_id == "ddl.create_statistics";
+}
+
+bool PreservesQualifiedStablePublicRelationNameCache(std::string_view operation_id) {
+  return operation_id == "ddl.create_schema" ||
+         operation_id == "ddl.create_table" ||
+         operation_id == "ddl.create_view";
+}
+
+bool MutatesPublicNameResolutionAuthority(std::string_view operation_id) {
+  return operation_id.starts_with("ddl.") ||
+         operation_id.starts_with("catalog.") ||
+         operation_id.starts_with("security.") ||
+         operation_id.starts_with("policy.") ||
+         operation_id.starts_with("grant.") ||
+         operation_id.starts_with("role.") ||
+         operation_id.starts_with("group.") ||
+         operation_id.starts_with("auth.") ||
+         operation_id.starts_with("language.") ||
+         operation_id.starts_with("session.search_path.") ||
+         operation_id.starts_with("session.set_role") ||
+         operation_id.starts_with("session.set_group");
+}
+
+void ClearStablePublicRelationNameCacheForMutation(ServerSessionRegistry* registry,
+                                                   std::string_view operation_id) {
+  if (registry == nullptr) return;
+  if (!MutatesPublicNameResolutionAuthority(operation_id)) return;
+  if (PreservesStablePublicRelationNameCache(operation_id)) return;
+  if (PreservesQualifiedStablePublicRelationNameCache(operation_id)) {
+    for (auto it = registry->stable_public_name_resolution_cache_by_key.begin();
+         it != registry->stable_public_name_resolution_cache_by_key.end();) {
+      if (it->second.search_path_hash == "<qualified>") {
+        ++it;
+      } else {
+        registry->stable_public_name_resolution_cache_lru.erase(
+            std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
+                        registry->stable_public_name_resolution_cache_lru.end(),
+                        it->first),
+            registry->stable_public_name_resolution_cache_lru.end());
+        it = registry->stable_public_name_resolution_cache_by_key.erase(it);
+      }
+    }
+    return;
+  }
+  registry->stable_public_name_resolution_cache_by_key.clear();
+  registry->stable_public_name_resolution_cache_lru.clear();
+}
+
+std::optional<std::string> PipeDelimitedField(std::string_view row_packet,
+                                              std::size_t ordinal) {
+  const std::size_t line_end = row_packet.find('\n');
+  std::string_view line =
+      row_packet.substr(0, line_end == std::string_view::npos ? row_packet.size() : line_end);
+  std::size_t start = 0;
+  for (std::size_t index = 0; index <= ordinal; ++index) {
+    const std::size_t end = line.find('|', start);
+    if (index == ordinal) {
+      return std::string(line.substr(start,
+                                     end == std::string_view::npos ? line.size() - start
+                                                                   : end - start));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> ServerApiPayloadRowField(std::string_view payload,
+                                                    std::size_t row_index,
+                                                    std::string_view field_name) {
+  const std::string prefix = "row[" + std::to_string(row_index) + "]=";
+  std::size_t start = 0;
+  while (start <= payload.size()) {
+    const std::size_t end = payload.find('\n', start);
+    const std::string_view line =
+        payload.substr(start, end == std::string_view::npos ? payload.size() - start : end - start);
+    if (line.starts_with(prefix)) {
+      return SemicolonFieldValue(line.substr(prefix.size()), field_name);
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::nullopt;
+}
+
+bool LooksLikeUuidText(std::string_view text) {
+  std::size_t hex_count = 0;
+  for (const char ch : text) {
+    if (ch == '-') continue;
+    if (!std::isxdigit(static_cast<unsigned char>(ch))) return false;
+    ++hex_count;
+  }
+  return hex_count == 32;
+}
+
+std::string StablePublicRelationNameSeedKey(const ServerSessionRecord& session,
+                                            std::string_view presented_name,
+                                            std::string_view object_class) {
+  const bool qualified = presented_name.find('.') != std::string_view::npos;
+  const std::string_view stable_search_path_hash =
+      qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
+  std::ostringstream key;
+  key << "stable_relation_v1"
+      << "|db=" << session.database_uuid
+      << "|user=" << UuidBytesToText(session.effective_user_uuid)
+      << "|presented=" << presented_name
+      << "|quoted=0"
+      << "|class=" << object_class
+      << "|dialect=sbsql_v3"
+      << "|identifier_profile=sbsql_v3"
+      << "|request_language="
+      << (session.default_language_tag.empty() ? std::string_view("en")
+                                               : std::string_view(session.default_language_tag))
+      << "|request_search_path=" << (qualified ? std::string_view("<qualified>")
+                                               : std::string_view("sys,public"))
+      << "|security=" << session.security_epoch
+      << "|grant=" << session.grant_epoch
+      << "|policy=" << session.policy_generation
+      << "|role_hash=" << session.role_set_hash
+      << "|group_hash=" << session.group_set_hash
+      << "|search_path_hash=" << stable_search_path_hash
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|input_fallback=" << session.input_language_fallback_tag
+      << "|common_resource=" << session.common_resource_hash
+      << "|language_resource=" << session.language_resource_epoch
+      << "|localized_name=" << session.localized_name_epoch
+      << "|message_resource=" << session.message_resource_epoch
+      << "|resource_compat=" << session.resource_compatibility_identity
+      << "|resource_version=" << session.resource_version_identity;
+  return key.str();
+}
+
+void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
+                                       const ServerSessionRecord& session,
+                                       std::string_view presented_name,
+                                       std::string_view object_uuid,
+                                       std::string_view object_class) {
+  if (registry == nullptr || presented_name.empty() || object_uuid.empty() ||
+      object_class.empty()) {
+    return;
+  }
+  constexpr std::size_t kMaxServerStablePublicNameResolutionCacheEntries = 8192;
+  ServerPublicNameResolutionCacheRecord record;
+  record.cache_key =
+      StablePublicRelationNameSeedKey(session, presented_name, object_class);
+  record.effective_user_uuid = session.effective_user_uuid;
+  record.database_uuid = session.database_uuid;
+  record.object_uuid = std::string(object_uuid);
+  record.canonical_name = std::string(presented_name);
+  record.object_class = std::string(object_class);
+  record.catalog_generation = session.catalog_generation;
+  record.security_epoch = session.security_epoch;
+  record.descriptor_epoch = session.descriptor_epoch;
+  record.grant_epoch = session.grant_epoch;
+  record.policy_generation = session.policy_generation;
+  record.name_resolution_epoch = session.name_resolution_epoch;
+  record.language_resource_epoch = session.language_resource_epoch;
+  record.localized_name_epoch = session.localized_name_epoch;
+  record.message_resource_epoch = session.message_resource_epoch;
+  record.role_set_hash = session.role_set_hash;
+  record.group_set_hash = session.group_set_hash;
+  record.search_path_hash =
+      presented_name.find('.') != std::string_view::npos ? "<qualified>"
+                                                         : session.search_path_hash;
+  record.language_profile = session.language_profile;
+  record.language_tag = session.language_tag;
+  record.input_syntax_profile = session.input_syntax_profile;
+  record.input_language_fallback_tag = session.input_language_fallback_tag;
+  record.common_resource_hash = session.common_resource_hash;
+  record.resource_compatibility_identity = session.resource_compatibility_identity;
+  record.resource_version_identity = session.resource_version_identity;
+  record.generation = registry->next_public_name_resolution_cache_generation++;
+  const std::string cache_key = record.cache_key;
+  registry->stable_public_name_resolution_cache_by_key[cache_key] = std::move(record);
+  if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
+      trace_path != nullptr && *trace_path != '\0') {
+    std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+    if (out) {
+      out << "layer=server_public_name_resolution_seed"
+          << "\tpresented=" << ServerTraceField(presented_name)
+          << "\tclass=" << ServerTraceField(object_class)
+          << "\tobject_uuid=" << ServerTraceField(object_uuid)
+          << "\tstable_cache_key=" << ServerTraceField(cache_key)
+          << "\tstable_cache_entries="
+          << registry->stable_public_name_resolution_cache_by_key.size()
+          << "\tdatabase_uuid=" << ServerTraceField(session.database_uuid)
+          << "\tuser_uuid=" << UuidBytesToText(session.effective_user_uuid)
+          << "\tsearch_path_hash=" << ServerTraceField(session.search_path_hash)
+          << "\tlanguage_tag=" << ServerTraceField(session.language_tag)
+          << "\tdefault_language_tag=" << ServerTraceField(session.default_language_tag)
+          << '\n';
+    }
+  }
+  registry->stable_public_name_resolution_cache_lru.erase(
+      std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
+                  registry->stable_public_name_resolution_cache_lru.end(),
+                  cache_key),
+      registry->stable_public_name_resolution_cache_lru.end());
+  registry->stable_public_name_resolution_cache_lru.push_back(cache_key);
+  while (registry->stable_public_name_resolution_cache_by_key.size() >
+             kMaxServerStablePublicNameResolutionCacheEntries &&
+         !registry->stable_public_name_resolution_cache_lru.empty()) {
+    registry->stable_public_name_resolution_cache_by_key.erase(
+        registry->stable_public_name_resolution_cache_lru.front());
+    registry->stable_public_name_resolution_cache_lru.pop_front();
+  }
+}
+
+void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
+                                               const ServerSessionRecord& session,
+                                               std::string_view operation_id,
+                                               std::string_view encoded,
+                                               std::string_view row_packet) {
+  auto trace_skip = [&](std::string_view reason,
+                        std::string_view object_uuid,
+                        std::string_view object_name,
+                        std::string_view schema_parent_path) {
+    if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
+        trace_path != nullptr && *trace_path != '\0') {
+      std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+      if (out) {
+        out << "layer=server_public_name_resolution_seed_skip"
+            << "\toperation=" << ServerTraceField(operation_id)
+            << "\treason=" << ServerTraceField(reason)
+            << "\tobject_uuid=" << ServerTraceField(object_uuid)
+            << "\tobject_name=" << ServerTraceField(object_name)
+            << "\tschema_parent_path=" << ServerTraceField(schema_parent_path)
+            << "\tencoded_bytes=" << encoded.size()
+            << "\trow_packet_bytes=" << row_packet.size()
+            << '\n';
+      }
+    }
+  };
+  if (registry == nullptr) return;
+  if (operation_id != "ddl.create_table" && operation_id != "ddl.create_view") return;
+  const bool temporary =
+      JsonBoolField(encoded, "temporary_table", false) ||
+      JsonBoolField(encoded, "temporary", false) ||
+      TextBoolField(encoded, "temporary_table", false) ||
+      TextBoolField(encoded, "temporary", false);
+  if (temporary) {
+    trace_skip("temporary_relation", "", "", "");
+    return;
+  }
+  auto seed_field_value = [&](std::string_view field) -> std::string {
+    return ExistingTextOperandValue(encoded, field).value_or(
+        TextLineValue(encoded, field).value_or(
+            JsonTextField(encoded, field).value_or("")));
+  };
+  const std::string object_kind =
+      operation_id == "ddl.create_view" ? "view" : "table";
+  std::string object_uuid = seed_field_value(object_kind + std::string("_object_uuid"));
+  if (object_uuid.empty()) object_uuid = seed_field_value("target_object_uuid");
+  if (IsPublicRegistryPlaceholder(object_uuid)) object_uuid.clear();
+  if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
+  if (object_uuid.empty()) {
+    object_uuid = ServerApiPayloadRowField(row_packet, 0, "object_uuid").value_or("");
+  }
+  if (object_uuid.empty()) object_uuid = PipeDelimitedField(row_packet, 0).value_or("");
+  if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
+  std::string object_name = seed_field_value(object_kind + std::string("_name"));
+  if (object_name.empty()) object_name = seed_field_value("name");
+  if (object_name.empty()) {
+    object_name = ServerApiPayloadRowField(row_packet, 0, "object_name").value_or("");
+  }
+  if (object_name.empty()) {
+    object_name = ServerApiPayloadRowField(row_packet, 0, "name").value_or("");
+  }
+  if (object_name.empty()) object_name = PipeDelimitedField(row_packet, 3).value_or("");
+  std::string schema_parent_path = seed_field_value("schema_parent_path");
+  if (object_uuid.empty() || object_name.empty() || schema_parent_path.empty()) {
+    trace_skip("missing_seed_field", object_uuid, object_name, schema_parent_path);
+    return;
+  }
+  const std::string presented_name = schema_parent_path + "." + object_name;
+  StoreStablePublicRelationNameSeed(registry,
+                                    session,
+                                    presented_name,
+                                    object_uuid,
+                                    object_kind);
+  StoreStablePublicRelationNameSeed(registry,
+                                    session,
+                                    presented_name,
+                                    object_uuid,
+                                    "relation");
 }
 
 std::string LanguageSessionContextPacket(std::string_view operation_id,
@@ -5682,6 +6010,7 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
                                                  std::string_view operation_id,
                                                  std::string_view operation_family,
                                                  const std::string& encoded,
+                                                 const std::vector<std::uint8_t>& data_packet,
                                                  bool retain_result_handle) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
@@ -5811,6 +6140,8 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
     dispatch.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     dispatch.envelope_bytes = reinterpret_cast<const std::uint8_t*>(public_abi_envelope.data());
     dispatch.envelope_size_bytes = static_cast<std::uint64_t>(public_abi_envelope.size());
+    dispatch.data_packet_bytes = data_packet.empty() ? nullptr : data_packet.data();
+    dispatch.data_packet_size_bytes = static_cast<std::uint64_t>(data_packet.size());
     sb_engine_result_t abi_result = nullptr;
     const auto status = sb_engine_dispatch_sblr(cached_context.engine_session,
                                                 nullptr,
@@ -6038,13 +6369,18 @@ std::vector<std::uint8_t> EncodeExecuteSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid,
     const std::string& encoded_sblr_envelope,
-    bool cursor_requested) {
+    bool cursor_requested,
+    const std::vector<std::uint8_t>& data_packet) {
   std::vector<std::uint8_t> out;
-  out.reserve(16 + 16 + 1 + 2 + encoded_sblr_envelope.size());
+  out.reserve(16 + 16 + 1 + 2 + encoded_sblr_envelope.size() +
+              (data_packet.empty() ? 0 : 8 + data_packet.size()));
   PutUuid(&out, session_uuid);
   PutUuid(&out, prepared_statement_uuid);
   PutU8(&out, cursor_requested ? 1 : 0);
   PutString(&out, encoded_sblr_envelope);
+  if (!data_packet.empty()) {
+    PutBytes(&out, data_packet);
+  }
   return out;
 }
 
@@ -7638,6 +7974,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                                        admission.operation_id,
                                                        admission.operation_family,
                                                        encoded,
+                                                       decoded->data_packet,
                                                        retain_engine_result);
       mark_execute_phase("public_abi_dispatch");
       if (!public_abi.ok) {
@@ -7699,6 +8036,12 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                                             : public_abi.diagnostic_detail);
       }
       row_packet = public_abi.payload;
+      ClearStablePublicRelationNameCacheForMutation(registry, admission.operation_id);
+      SeedStablePublicRelationNameCacheAfterDdl(registry,
+                                                *session,
+                                                admission.operation_id,
+                                                encoded,
+                                                row_packet);
       if (public_abi.affected_rows != 0) {
         if (!row_packet.empty() && row_packet.back() != '\n') {
           row_packet.push_back('\n');

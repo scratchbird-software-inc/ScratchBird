@@ -146,6 +146,8 @@ typedef struct sb_engine_sblr_dispatch_params_v1_t {
   uint32_t abi_version;
   const uint8_t* envelope_bytes;
   uint64_t envelope_size_bytes;
+  const uint8_t* data_packet_bytes;
+  uint64_t data_packet_size_bytes;
   uint32_t result_contract;
   uint32_t flags;
   uint64_t reserved0;

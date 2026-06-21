@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -270,6 +271,157 @@ bool build_bulk_insert_sql(const char* table_name,
     sql << ")";
 
     *sql_out = sql.str();
+    return true;
+}
+
+bool build_bulk_copy_sql(const char* table_name,
+                         const char** columns,
+                         size_t column_count,
+                         std::string* sql_out,
+                         std::string* error) {
+    std::string insert_sql;
+    if (!build_bulk_insert_sql(table_name, columns, column_count, &insert_sql, error)) {
+        return false;
+    }
+    const std::string prefix = "INSERT INTO ";
+    const auto values_pos = insert_sql.find(" VALUES ");
+    if (insert_sql.rfind(prefix, 0) != 0 || values_pos == std::string::npos) {
+        if (error) {
+            *error = "Bulk insert SQL could not be converted to COPY";
+        }
+        return false;
+    }
+    *sql_out = "COPY " + insert_sql.substr(prefix.size(), values_pos - prefix.size()) +
+               " FROM STDIN";
+    return true;
+}
+
+bool append_copy_value(const sb_value& value, std::string* out, std::string* error) {
+    if (!out) {
+        return false;
+    }
+    if (value.is_null || value.type == SB_TYPE_NULL) {
+        out->append("NULL");
+        return true;
+    }
+    std::ostringstream text;
+    switch (value.type) {
+        case SB_TYPE_BOOLEAN:
+            text << (value.data.boolean_val ? "true" : "false");
+            break;
+        case SB_TYPE_SMALLINT:
+            text << value.data.smallint_val;
+            break;
+        case SB_TYPE_INTEGER:
+            text << value.data.integer_val;
+            break;
+        case SB_TYPE_BIGINT:
+            text << value.data.bigint_val;
+            break;
+        case SB_TYPE_REAL:
+            text << std::setprecision(9) << value.data.real_val;
+            break;
+        case SB_TYPE_DOUBLE:
+            text << std::setprecision(17) << value.data.double_val;
+            break;
+        case SB_TYPE_MONEY:
+            text << value.data.money_val;
+            break;
+        case SB_TYPE_UUID:
+            text << std::hex << std::setfill('0');
+            for (size_t i = 0; i < sizeof(value.data.uuid_val.bytes); ++i) {
+                text << std::setw(2) << static_cast<unsigned>(value.data.uuid_val.bytes[i]);
+            }
+            break;
+        case SB_TYPE_DATE:
+            text << value.data.date_val.year << '-'
+                 << std::setw(2) << std::setfill('0') << value.data.date_val.month << '-'
+                 << std::setw(2) << std::setfill('0') << value.data.date_val.day;
+            break;
+        case SB_TYPE_TIME:
+        case SB_TYPE_TIME_TZ:
+            text << std::setw(2) << std::setfill('0') << value.data.time_val.hour << ':'
+                 << std::setw(2) << std::setfill('0') << value.data.time_val.minute << ':'
+                 << std::setw(2) << std::setfill('0') << value.data.time_val.second;
+            if (value.data.time_val.microsecond != 0) {
+                text << '.' << std::setw(6) << std::setfill('0')
+                     << value.data.time_val.microsecond;
+            }
+            break;
+        case SB_TYPE_TIMESTAMP:
+        case SB_TYPE_TIMESTAMP_TZ:
+            text << value.data.timestamp_val.epoch_microseconds;
+            break;
+        case SB_TYPE_INTERVAL:
+            text << value.data.interval_val.months << " months "
+                 << value.data.interval_val.days << " days "
+                 << value.data.interval_val.micros << " micros";
+            break;
+        case SB_TYPE_BLOB:
+            text << "hex:";
+            text << std::hex << std::setfill('0');
+            for (size_t i = 0; i < value.data.binary_val.length; ++i) {
+                text << std::setw(2) << static_cast<unsigned>(value.data.binary_val.data[i]);
+            }
+            break;
+        default:
+            if (!value.data.string_val.data && value.data.string_val.length > 0) {
+                if (error) {
+                    *error = "String bulk value has null data";
+                }
+                return false;
+            }
+            text.write(value.data.string_val.data ? value.data.string_val.data : "",
+                       static_cast<std::streamsize>(value.data.string_val.length));
+            break;
+    }
+    const std::string rendered = text.str();
+    if (rendered.find_first_of(";\r\n") != std::string::npos) {
+        if (error) {
+            *error = "Bulk COPY canonical value contains a row or field delimiter";
+        }
+        return false;
+    }
+    out->append(rendered);
+    return true;
+}
+
+bool build_bulk_copy_data(const char** columns,
+                          size_t column_count,
+                          const sb_value** rows,
+                          size_t row_count,
+                          std::string* data_out,
+                          std::string* error) {
+    if (!data_out) {
+        return false;
+    }
+    data_out->clear();
+    for (size_t r = 0; r < row_count; ++r) {
+        const sb_value* row_values = rows[r];
+        if (!row_values) {
+            if (error) {
+                *error = "Bulk insert row values cannot be null";
+            }
+            return false;
+        }
+        for (size_t c = 0; c < column_count; ++c) {
+            if (c != 0) {
+                data_out->push_back(';');
+            }
+            if (!columns[c] || columns[c][0] == '\0') {
+                if (error) {
+                    *error = "Column name is required";
+                }
+                return false;
+            }
+            data_out->append(columns[c]);
+            data_out->push_back('=');
+            if (!append_copy_value(row_values[c], data_out, error)) {
+                return false;
+            }
+        }
+        data_out->push_back('\n');
+    }
     return true;
 }
 
@@ -652,58 +804,42 @@ int sb_bulk_insert(sb_connection* conn,
 
     std::string sql;
     std::string build_error;
-    if (!build_bulk_insert_sql(table_name, columns, column_count, &sql, &build_error)) {
+    if (!build_bulk_copy_sql(table_name, columns, column_count, &sql, &build_error)) {
+        set_error(err, SB_ERR_INVALID_PARAM, build_error);
+        return SB_ERR_INVALID_PARAM;
+    }
+
+    std::string copy_data;
+    if (!build_bulk_copy_data(columns,
+                              column_count,
+                              rows,
+                              row_count,
+                              &copy_data,
+                              &build_error)) {
         set_error(err, SB_ERR_INVALID_PARAM, build_error);
         return SB_ERR_INVALID_PARAM;
     }
 
     sb_error op_err{};
-    sb_prepared* stmt = sb_prepare(conn, sql.c_str(), &op_err);
-    if (!stmt) {
-        copy_error(err, op_err);
-        return op_err.code;
-    }
-
     int64_t inserted = 0;
-    for (size_t r = 0; r < row_count; ++r) {
-        const sb_value* row_values = rows[r];
-        if (!row_values) {
-            sb_prepared_free(stmt);
-            set_error(err, SB_ERR_INVALID_PARAM, "Bulk insert row values cannot be null");
-            return SB_ERR_INVALID_PARAM;
-        }
-        for (size_t c = 0; c < column_count; ++c) {
-            const int bind_rc = sb_bind_index(stmt, c + 1, &row_values[c], &op_err);
-            if (bind_rc != SB_OK) {
-                sb_prepared_free(stmt);
-                copy_error(err, op_err);
-                return bind_rc;
-            }
-        }
-
-        sb_result* result = sb_execute_prepared(stmt, &op_err);
-        if (!result) {
-            sb_prepared_free(stmt);
-            copy_error(err, op_err);
-            return op_err.code;
-        }
-
-        int64_t affected = sb_rows_affected(result);
-        if (affected <= 0) {
-            affected = count_rows(result);
-        }
-        if (affected <= 0) {
-            affected = 1;
-        }
-        inserted += affected;
-        sb_result_free(result);
-        ensure_tracking(conn);
+    const int rc = sb_execute_copy_from_buffer(conn,
+                                               sql.c_str(),
+                                               copy_data.data(),
+                                               copy_data.size(),
+                                               &inserted,
+                                               &op_err);
+    if (rc != SB_OK) {
+        copy_error(err, op_err);
+        return rc;
+    }
+    if (inserted <= 0) {
+        inserted = static_cast<int64_t>(row_count);
     }
 
-    sb_prepared_free(stmt);
     if (rows_inserted) {
         *rows_inserted = inserted;
     }
+    ensure_tracking(conn);
     set_error(err, SB_OK, "");
     return SB_OK;
 }

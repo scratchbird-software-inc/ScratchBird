@@ -77,6 +77,47 @@ CATEGORIES = [
 ]
 
 
+TABLE_COLUMNS: dict[str, list[str]] = {
+    "customers": [
+        "customer_id",
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "registration_date",
+        "country_code",
+        "account_balance",
+    ],
+    "products": [
+        "product_id",
+        "product_code",
+        "name",
+        "category",
+        "price",
+        "cost",
+        "stock_quantity",
+        "is_active",
+    ],
+    "orders": [
+        "order_id",
+        "customer_id",
+        "order_date",
+        "status",
+        "total_amount",
+        "shipping_cost",
+        "discount_amount",
+    ],
+    "order_items": [
+        "item_id",
+        "order_id",
+        "product_id",
+        "quantity",
+        "unit_price",
+        "discount_pct",
+    ],
+}
+
+
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -250,6 +291,110 @@ def write_csv(path: Path, header: list[str], rows: Any) -> dict[str, Any]:
         "path": str(path),
         "columns": header,
         "row_count": count,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "generation_duration_ms": duration_ms,
+    }
+
+
+def sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    text = str(value)
+    if text.upper() == "NULL":
+        return "NULL"
+    escaped = text.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def write_insert_script(
+    path: Path,
+    *,
+    physical_table: str,
+    columns: list[str],
+    rows: list[list[Any]],
+    batch_size: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    statement_count = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for start in range(0, len(rows), batch_size):
+            chunk = rows[start : start + batch_size]
+            values = [
+                "(" + ", ".join(sql_literal(value) for value in row) + ")"
+                for row in chunk
+            ]
+            handle.write(
+                f"INSERT INTO {physical_table} ({', '.join(columns)}) VALUES\n"
+                + ",\n".join(values)
+                + ";\n"
+            )
+            statement_count += 1
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "path": str(path),
+        "table": physical_table,
+        "row_count": len(rows),
+        "statement_count": statement_count,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "generation_duration_ms": duration_ms,
+        "batch_size": batch_size,
+    }
+
+
+def generate_insert_scripts(run_root: Path, scale: Scale, batch_size: int) -> dict[str, Any]:
+    script_dir = run_root / "generated-load-sql"
+    rows_by_table = {
+        "customers": list(generate_customers(scale.customers)),
+        "products": list(generate_products(scale.products)),
+        "orders": list(generate_orders(scale.orders, scale.customers)),
+        "order_items": list(generate_order_items(scale.order_items, scale.orders, scale.products)),
+    }
+    result = {}
+    for table, rows in rows_by_table.items():
+        result[table] = write_insert_script(
+            script_dir / f"{table}.sql",
+            physical_table=table,
+            columns=TABLE_COLUMNS[table],
+            rows=rows,
+            batch_size=batch_size,
+        )
+    return result
+
+
+def write_combined_insert_script(run_root: Path, insert_scripts: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    path = run_root / "generated-load-sql" / "combined_load.sql"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    total_rows = 0
+    total_statements = 0
+    tables: list[dict[str, Any]] = []
+    with path.open("w", encoding="utf-8") as handle:
+        for table, meta in insert_scripts.items():
+            source_path = Path(meta["path"])
+            handle.write(f"-- combined-load-table: {table}\n")
+            handle.write(source_path.read_text(encoding="utf-8"))
+            handle.write("\n")
+            total_rows += int(meta["row_count"])
+            total_statements += int(meta["statement_count"])
+            tables.append(
+                {
+                    "table_name": table,
+                    "row_count": meta["row_count"],
+                    "statement_count": meta["statement_count"],
+                    "source_path": meta["path"],
+                    "source_sha256": meta["sha256"],
+                }
+            )
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "path": str(path),
+        "table": "__combined__",
+        "row_count": total_rows,
+        "statement_count": total_statements,
+        "tables": tables,
         "bytes": path.stat().st_size,
         "sha256": sha256_file(path),
         "generation_duration_ms": duration_ms,
@@ -475,6 +620,19 @@ def parse_command_count(stdout: str) -> int | None:
     return None
 
 
+def command_counts(stdout: str) -> list[int]:
+    counts: list[int] = []
+    for line in [item.strip() for item in stdout.splitlines() if item.strip()]:
+        parts = line.split()
+        if not parts or parts[0] not in {"INSERT", "UPDATE", "DELETE", "COPY"}:
+            continue
+        try:
+            counts.append(int(parts[-1]))
+        except ValueError:
+            continue
+    return counts
+
+
 def count_output_rows(path: Path) -> int:
     with path.open("rb") as handle:
         return sum(1 for line in handle if line.strip())
@@ -586,9 +744,67 @@ def copy_data(pg: PgRunner, data_files: dict[str, Any]) -> list[dict[str, Any]]:
                 "status": "passed" if copy_result["returncode"] == 0 and rows == meta["row_count"] else "failed",
                 "stdout": copy_result["stdout"].strip(),
                 "stderr": copy_result["stderr"],
+                "statement_count": 1,
+                "load_execution_mode": "copy",
             }
         )
     return results
+
+
+def run_insert_load(pg: PgRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any]]:
+    results = []
+    for table, meta in insert_scripts.items():
+        sql = Path(meta["path"]).read_text(encoding="utf-8")
+        result = pg.run_sql_text(sql, env=pg.env_with_search_path())
+        counts = command_counts(result["stdout"])
+        rows = sum(counts)
+        duration_s = result["duration_ms"] / 1000.0
+        results.append(
+            {
+                "table_name": table,
+                "rows": rows,
+                "expected_rows": meta["row_count"],
+                "script_path": meta["path"],
+                "script_bytes": meta["bytes"],
+                "script_sha256": meta["sha256"],
+                "duration_ms": result["duration_ms"],
+                "rows_per_second": rows / duration_s if duration_s else 0.0,
+                "status": "passed" if result["returncode"] == 0 and rows == meta["row_count"] else "failed",
+                "stdout": result["stdout"].strip(),
+                "stderr": result["stderr"],
+                "statement_count": meta["statement_count"],
+                "command_counts": counts,
+                "load_execution_mode": "insert-per-table",
+            }
+        )
+    return results
+
+
+def run_combined_insert_load(pg: PgRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any]]:
+    combined_meta = write_combined_insert_script(pg.run_root, insert_scripts)
+    sql = Path(combined_meta["path"]).read_text(encoding="utf-8")
+    result = pg.run_sql_text(sql, env=pg.env_with_search_path())
+    counts = command_counts(result["stdout"])
+    rows = sum(counts)
+    duration_s = result["duration_ms"] / 1000.0
+    return [
+        {
+            "table_name": "__combined__",
+            "rows": rows,
+            "expected_rows": combined_meta["row_count"],
+            "script_path": combined_meta["path"],
+            "script_bytes": combined_meta["bytes"],
+            "script_sha256": combined_meta["sha256"],
+            "duration_ms": result["duration_ms"],
+            "rows_per_second": rows / duration_s if duration_s else 0.0,
+            "status": "passed" if result["returncode"] == 0 and rows == combined_meta["row_count"] else "failed",
+            "stdout": result["stdout"].strip(),
+            "stderr": result["stderr"],
+            "statement_count": combined_meta["statement_count"],
+            "command_counts": counts,
+            "load_execution_mode": "insert-combined",
+        }
+    ]
 
 
 def action_sql(action: dict[str, Any]) -> tuple[Path, str]:
@@ -739,9 +955,12 @@ def write_csv_summary(run_root: Path, actions: list[dict[str, Any]], load: list[
                 "rows",
                 "expected_rows",
                 "csv_bytes",
+                "script_bytes",
                 "duration_ms",
                 "rows_per_second",
                 "bytes_per_second",
+                "statement_count",
+                "load_execution_mode",
             ],
         )
         writer.writeheader()
@@ -758,6 +977,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--password", default=os.getenv("PGPASSWORD", ""))
     parser.add_argument("--schema", default="sb_pg_reference_bench")
     parser.add_argument("--scale", choices=sorted(SCALES), default="small")
+    parser.add_argument("--insert-batch-size", type=int, default=500)
+    parser.add_argument(
+        "--load-execution-mode",
+        choices=("copy", "insert-per-table", "insert-combined"),
+        default="copy",
+        help="Run PostgreSQL load as protocol COPY or generated INSERT statements.",
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--skip-explain-analyze", action="store_true")
     return parser.parse_args(argv)
@@ -780,6 +1006,8 @@ def main(argv: list[str]) -> int:
         "suite_root": str(SUITE_ROOT),
         "run_root": str(run_root),
         "scale": args.scale,
+        "load_execution_mode": args.load_execution_mode,
+        "insert_batch_size": args.insert_batch_size,
         "scale_counts": scale.__dict__,
         "connection": {
             "host": args.host,
@@ -800,7 +1028,15 @@ def main(argv: list[str]) -> int:
         return 1
 
     data_files = generate_data_files(run_root, scale)
-    load_results = copy_data(pg, data_files)
+    insert_scripts: dict[str, Any] = {}
+    if args.load_execution_mode == "copy":
+        load_results = copy_data(pg, data_files)
+    else:
+        insert_scripts = generate_insert_scripts(run_root, scale, args.insert_batch_size)
+        if args.load_execution_mode == "insert-combined":
+            load_results = run_combined_insert_load(pg, insert_scripts)
+        else:
+            load_results = run_insert_load(pg, insert_scripts)
     index_setup = run_index_setup(pg)
     verification = verify_data(pg, scale)
     relation_after_load = collect_relation_metrics(pg)
@@ -826,11 +1062,14 @@ def main(argv: list[str]) -> int:
         "elapsed_ms": elapsed_ms,
         "setup": setup,
         "data_files": data_files,
+        "insert_scripts": insert_scripts,
         "load_results": load_results,
         "load_summary": {
+            "load_execution_mode": args.load_execution_mode,
             "rows": total_load_rows,
             "duration_ms": total_load_ms,
             "rows_per_second": total_load_rows / (total_load_ms / 1000.0) if total_load_ms else 0.0,
+            "statement_count": sum(int(item.get("statement_count") or 0) for item in load_results),
         },
         "index_setup": index_setup,
         "verification": verification,

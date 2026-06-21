@@ -1095,6 +1095,23 @@ bool PsNameResolutionCacheable(const engine_api::EngineRequestContext& context,
   return true;
 }
 
+bool PsNameRelationLikeObjectClass(std::string_view object_class) {
+  return object_class == "relation" ||
+         object_class == "table" ||
+         object_class == "view" ||
+         object_class == "materialized_view" ||
+         object_class == "external_table" ||
+         object_class == "foreign_table";
+}
+
+bool PsNameStableResolutionCacheable(
+    const engine_api::EngineRequestContext& context,
+    std::string_view object_class,
+    std::string_view object_uuid) {
+  return PsNameRelationLikeObjectClass(object_class) &&
+         PsNameResolutionCacheable(context, object_class, object_uuid);
+}
+
 bool PsNameSessionBound(const ServerSessionRegistry* registry,
                         const std::array<std::uint8_t, 16>& session_uuid) {
   if (registry == nullptr || sbps::IsZeroUuid(session_uuid)) return false;
@@ -1142,6 +1159,79 @@ std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
   return request;
 }
 
+std::string PsNameTraceField(std::string_view value) {
+  std::string out(value);
+  for (char& ch : out) {
+    if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+  }
+  return out;
+}
+
+std::uint64_t PsNameTraceElapsedMicros(std::chrono::steady_clock::time_point begin) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - begin)
+          .count());
+}
+
+void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
+                                const ServerSessionRecord* session,
+                                std::string_view outcome,
+                                std::string_view detail,
+                                std::string_view object_uuid,
+                                std::string_view object_class,
+                                std::string_view cache_key,
+                                std::string_view stable_cache_key,
+                                bool normal_cache_checked,
+                                bool normal_cache_hit,
+                                bool stable_cache_checked,
+                                bool stable_cache_hit,
+                                std::uint64_t elapsed_us,
+                                const ServerSessionRegistry* registry) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) return;
+  out << "layer=server_public_name_resolution"
+      << "\toutcome=" << outcome
+      << "\tdetail=" << PsNameTraceField(detail)
+      << "\tpresented=" << PsNameTraceField(request.presented_name)
+      << "\tclass=" << PsNameTraceField(request.object_class)
+      << "\tresolved_class=" << PsNameTraceField(object_class)
+      << "\tobject_uuid=" << PsNameTraceField(object_uuid)
+      << "\tcache_key=" << PsNameTraceField(cache_key)
+      << "\tstable_cache_key=" << PsNameTraceField(stable_cache_key)
+      << "\tquoted=" << (request.quoted ? "true" : "false")
+      << "\tdialect=" << PsNameTraceField(request.dialect_profile)
+      << "\tlanguage=" << PsNameTraceField(request.language)
+      << "\tsearch_path=" << PsNameTraceField(request.search_path)
+      << "\tnormal_cache_checked=" << (normal_cache_checked ? "true" : "false")
+      << "\tnormal_cache_hit=" << (normal_cache_hit ? "true" : "false")
+      << "\tstable_cache_checked=" << (stable_cache_checked ? "true" : "false")
+      << "\tstable_cache_hit=" << (stable_cache_hit ? "true" : "false")
+      << "\tstable_cache_entries="
+      << (registry == nullptr ? 0 : registry->stable_public_name_resolution_cache_by_key.size())
+      << "\tnormal_cache_entries="
+      << (registry == nullptr ? 0 : registry->public_name_resolution_cache_by_key.size())
+      << "\telapsed_us=" << elapsed_us;
+  if (session != nullptr) {
+    out << "\tdatabase_uuid=" << PsNameTraceField(session->database_uuid)
+        << "\tuser_uuid=" << UuidBytesToText(session->effective_user_uuid)
+        << "\tcatalog_generation=" << session->catalog_generation
+        << "\tdescriptor_epoch=" << session->descriptor_epoch
+        << "\tname_resolution_epoch=" << session->name_resolution_epoch
+        << "\tsecurity_epoch=" << session->security_epoch
+        << "\tgrant_epoch=" << session->grant_epoch
+        << "\tpolicy_generation=" << session->policy_generation
+        << "\trole_hash=" << PsNameTraceField(session->role_set_hash)
+        << "\tgroup_hash=" << PsNameTraceField(session->group_set_hash)
+        << "\tsearch_path_hash=" << PsNameTraceField(session->search_path_hash)
+        << "\tlanguage_tag=" << PsNameTraceField(session->language_tag)
+        << "\tdefault_language_tag=" << PsNameTraceField(session->default_language_tag);
+  }
+  out << '\n';
+}
+
 std::string PsNameResolutionCacheKey(const ServerSessionRecord& session,
                                      const PsNameResolveRequest& request,
                                      std::string_view identifier_profile) {
@@ -1164,6 +1254,43 @@ std::string PsNameResolutionCacheKey(const ServerSessionRecord& session,
       << "|role_hash=" << session.role_set_hash
       << "|group_hash=" << session.group_set_hash
       << "|search_path_hash=" << session.search_path_hash
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|input_fallback=" << session.input_language_fallback_tag
+      << "|common_resource=" << session.common_resource_hash
+      << "|language_resource=" << session.language_resource_epoch
+      << "|localized_name=" << session.localized_name_epoch
+      << "|message_resource=" << session.message_resource_epoch
+      << "|resource_compat=" << session.resource_compatibility_identity
+      << "|resource_version=" << session.resource_version_identity;
+  return key.str();
+}
+
+std::string PsNameStableResolutionCacheKey(const ServerSessionRecord& session,
+                                           const PsNameResolveRequest& request,
+                                           std::string_view identifier_profile) {
+  const bool qualified = request.presented_name.find('.') != std::string_view::npos;
+  const std::string_view stable_search_path_hash =
+      qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
+  std::ostringstream key;
+  key << "stable_relation_v1"
+      << "|db=" << session.database_uuid
+      << "|user=" << UuidBytesToText(session.effective_user_uuid)
+      << "|presented=" << request.presented_name
+      << "|quoted=" << (request.quoted ? "1" : "0")
+      << "|class=" << request.object_class
+      << "|dialect=" << request.dialect_profile
+      << "|identifier_profile=" << identifier_profile
+      << "|request_language=" << request.language
+      << "|request_search_path=" << (qualified ? std::string_view("<qualified>")
+                                               : std::string_view(request.search_path))
+      << "|security=" << session.security_epoch
+      << "|grant=" << session.grant_epoch
+      << "|policy=" << session.policy_generation
+      << "|role_hash=" << session.role_set_hash
+      << "|group_hash=" << session.group_set_hash
+      << "|search_path_hash=" << stable_search_path_hash
       << "|language_profile=" << session.language_profile
       << "|language_tag=" << session.language_tag
       << "|input_syntax=" << session.input_syntax_profile
@@ -1203,6 +1330,31 @@ bool PsNameCachedRecordValid(const ServerPublicNameResolutionCacheRecord& record
          record.resource_version_identity == session.resource_version_identity;
 }
 
+bool PsNameStableCachedRecordValid(
+    const ServerPublicNameResolutionCacheRecord& record,
+    const ServerSessionRecord& session) {
+  return !record.object_uuid.empty() &&
+         record.database_uuid == session.database_uuid &&
+         record.effective_user_uuid == session.effective_user_uuid &&
+         record.security_epoch == session.security_epoch &&
+         record.grant_epoch == session.grant_epoch &&
+         record.policy_generation == session.policy_generation &&
+         record.language_resource_epoch == session.language_resource_epoch &&
+         record.localized_name_epoch == session.localized_name_epoch &&
+         record.message_resource_epoch == session.message_resource_epoch &&
+         record.role_set_hash == session.role_set_hash &&
+         record.group_set_hash == session.group_set_hash &&
+         (record.search_path_hash == "<qualified>" ||
+          record.search_path_hash == session.search_path_hash) &&
+         record.language_profile == session.language_profile &&
+         record.language_tag == session.language_tag &&
+         record.input_syntax_profile == session.input_syntax_profile &&
+         record.input_language_fallback_tag == session.input_language_fallback_tag &&
+         record.common_resource_hash == session.common_resource_hash &&
+         record.resource_compatibility_identity == session.resource_compatibility_identity &&
+         record.resource_version_identity == session.resource_version_identity;
+}
+
 std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameCache(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
@@ -1228,6 +1380,34 @@ std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameCache(
                   cache_key),
       registry->public_name_resolution_cache_lru.end());
   registry->public_name_resolution_cache_lru.push_back(cache_key);
+  return found->second;
+}
+
+std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameStableCache(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    const std::string& cache_key) {
+  if (registry == nullptr || cache_key.empty()) return std::nullopt;
+  auto found = registry->stable_public_name_resolution_cache_by_key.find(cache_key);
+  if (found == registry->stable_public_name_resolution_cache_by_key.end()) {
+    return std::nullopt;
+  }
+  if (!PsNameStableCachedRecordValid(found->second, session)) {
+    registry->stable_public_name_resolution_cache_by_key.erase(found);
+    registry->stable_public_name_resolution_cache_lru.erase(
+        std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
+                    registry->stable_public_name_resolution_cache_lru.end(),
+                    cache_key),
+        registry->stable_public_name_resolution_cache_lru.end());
+    return std::nullopt;
+  }
+  ++found->second.hit_count;
+  registry->stable_public_name_resolution_cache_lru.erase(
+      std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
+                  registry->stable_public_name_resolution_cache_lru.end(),
+                  cache_key),
+      registry->stable_public_name_resolution_cache_lru.end());
+  registry->stable_public_name_resolution_cache_lru.push_back(cache_key);
   return found->second;
 }
 
@@ -1287,6 +1467,110 @@ void StorePsNameCache(ServerSessionRegistry* registry,
   }
 }
 
+void StorePsNameStableCache(ServerSessionRegistry* registry,
+                            const ServerSessionRecord& session,
+                            const std::string& cache_key,
+                            std::string_view object_uuid,
+                            std::string_view canonical_name,
+                            std::string_view object_class,
+                            std::string_view search_path_hash) {
+  if (registry == nullptr || cache_key.empty() || object_uuid.empty()) return;
+  constexpr std::size_t kMaxServerStablePublicNameResolutionCacheEntries = 8192;
+  ServerPublicNameResolutionCacheRecord record;
+  record.cache_key = cache_key;
+  record.effective_user_uuid = session.effective_user_uuid;
+  record.database_uuid = session.database_uuid;
+  record.object_uuid = std::string(object_uuid);
+  record.canonical_name = canonical_name.empty() ? std::string(object_uuid)
+                                                 : std::string(canonical_name);
+  record.object_class = std::string(object_class);
+  record.catalog_generation = session.catalog_generation;
+  record.security_epoch = session.security_epoch;
+  record.descriptor_epoch = session.descriptor_epoch;
+  record.grant_epoch = session.grant_epoch;
+  record.policy_generation = session.policy_generation;
+  record.name_resolution_epoch = session.name_resolution_epoch;
+  record.language_resource_epoch = session.language_resource_epoch;
+  record.localized_name_epoch = session.localized_name_epoch;
+  record.message_resource_epoch = session.message_resource_epoch;
+  record.role_set_hash = session.role_set_hash;
+  record.group_set_hash = session.group_set_hash;
+  record.search_path_hash = search_path_hash.empty() ? session.search_path_hash
+                                                     : std::string(search_path_hash);
+  record.language_profile = session.language_profile;
+  record.language_tag = session.language_tag;
+  record.input_syntax_profile = session.input_syntax_profile;
+  record.input_language_fallback_tag = session.input_language_fallback_tag;
+  record.common_resource_hash = session.common_resource_hash;
+  record.resource_compatibility_identity = session.resource_compatibility_identity;
+  record.resource_version_identity = session.resource_version_identity;
+  record.generation = registry->next_public_name_resolution_cache_generation++;
+  registry->stable_public_name_resolution_cache_by_key[cache_key] = std::move(record);
+  registry->stable_public_name_resolution_cache_lru.erase(
+      std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
+                  registry->stable_public_name_resolution_cache_lru.end(),
+                  cache_key),
+      registry->stable_public_name_resolution_cache_lru.end());
+  registry->stable_public_name_resolution_cache_lru.push_back(cache_key);
+  while (registry->stable_public_name_resolution_cache_by_key.size() >
+             kMaxServerStablePublicNameResolutionCacheEntries &&
+         !registry->stable_public_name_resolution_cache_lru.empty()) {
+    registry->stable_public_name_resolution_cache_by_key.erase(
+        registry->stable_public_name_resolution_cache_lru.front());
+    registry->stable_public_name_resolution_cache_lru.pop_front();
+  }
+}
+
+void StorePsNameCacheVariants(ServerSessionRegistry* registry,
+                              const ServerSessionRecord& session,
+                              const PsNameResolveRequest& request,
+                              std::string_view identifier_profile,
+                              const engine_api::EngineRequestContext& context,
+                              std::string_view object_uuid,
+                              std::string_view canonical_name,
+                              std::string_view object_class,
+                              std::uint64_t catalog_epoch,
+                              std::uint64_t security_epoch) {
+  if (registry == nullptr || object_uuid.empty()) return;
+  std::vector<PsNameResolveRequest> requests;
+  requests.push_back(request);
+  if (!object_class.empty() && object_class != request.object_class) {
+    auto actual = request;
+    actual.object_class = std::string(object_class);
+    requests.push_back(std::move(actual));
+  }
+  if (PsNameRelationLikeObjectClass(object_class) && request.object_class != "relation") {
+    auto relation = request;
+    relation.object_class = "relation";
+    requests.push_back(std::move(relation));
+  }
+  for (const auto& cache_request : requests) {
+    const std::string cache_key =
+        PsNameResolutionCacheKey(session, cache_request, identifier_profile);
+    StorePsNameCache(registry,
+                     session,
+                     cache_key,
+                     object_uuid,
+                     canonical_name,
+                     object_class,
+                     catalog_epoch,
+                     security_epoch);
+    if (PsNameStableResolutionCacheable(context, object_class, object_uuid)) {
+      const bool qualified =
+          cache_request.presented_name.find('.') != std::string_view::npos;
+      StorePsNameStableCache(
+          registry,
+          session,
+          PsNameStableResolutionCacheKey(session, cache_request, identifier_profile),
+          object_uuid,
+          canonical_name,
+          object_class,
+          qualified ? std::string_view("<qualified>")
+                    : std::string_view(session.search_path_hash));
+    }
+  }
+}
+
 std::vector<std::uint8_t> EncodePsNameResolvePayload(std::string_view outcome,
                                                      const std::array<std::uint8_t, 16>& object_uuid,
                                                      std::string_view canonical_name,
@@ -1308,6 +1592,7 @@ std::vector<std::uint8_t> EncodePsNameResolvePayload(std::string_view outcome,
 std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                                  const HostedEngineState& engine_state,
                                                  ServerSessionRegistry* session_registry) {
+  const auto trace_begin = std::chrono::steady_clock::now();
   if (!PsNameSessionBound(session_registry, frame.header.session_uuid)) {
     return ErrorFrame({sbps::IpcDiagnostic("PARSER_SERVER_IPC.SESSION_REQUIRED",
                                            "parser_server_ipc.session_required",
@@ -1336,6 +1621,20 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
   const auto normalized = PsNameLower(decoded->presented_name);
   const std::string virtual_system_name = PsNameVirtualSystemName(normalized);
   if (!virtual_system_name.empty()) {
+    WritePsNameResolutionTrace(*decoded,
+                               nullptr,
+                               "resolved",
+                               "virtual_system_object",
+                               virtual_system_name,
+                               decoded->object_class.empty() ? "relation" : decoded->object_class,
+                               "",
+                               "",
+                               false,
+                               false,
+                               false,
+                               false,
+                               PsNameTraceElapsedMicros(trace_begin),
+                               session_registry);
     return PsNameResponseFrame(
         frame,
         static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
@@ -1360,9 +1659,30 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         PsNameCanonicalIdentifierProfile(decoded->dialect_profile);
     const std::string cache_key =
         PsNameResolutionCacheKey(*session, *decoded, identifier_profile);
+    const std::string stable_cache_key =
+        PsNameStableResolutionCacheKey(*session, *decoded, identifier_profile);
+    bool normal_cache_checked = true;
+    bool normal_cache_hit = false;
+    bool stable_cache_checked = false;
+    bool stable_cache_hit = false;
     if (const auto cached =
             LookupPsNameCache(session_registry, *session, cache_key)) {
       if (const auto object_uuid = PsNameUuidFromText(cached->object_uuid)) {
+        normal_cache_hit = true;
+        WritePsNameResolutionTrace(*decoded,
+                                   &*session,
+                                   "resolved",
+                                   "normal_cache",
+                                   cached->object_uuid,
+                                   cached->object_class,
+                                   cache_key,
+                                   stable_cache_key,
+                                   normal_cache_checked,
+                                   normal_cache_hit,
+                                   stable_cache_checked,
+                                   stable_cache_hit,
+                                   PsNameTraceElapsedMicros(trace_begin),
+                                   session_registry);
         return PsNameResponseFrame(
             frame,
             static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
@@ -1374,6 +1694,41 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                        cached->catalog_generation,
                                        cached->security_epoch,
                                        "server public name resolution cache"),
+            false);
+      }
+    }
+    stable_cache_checked = true;
+    if (const auto stable_cached = LookupPsNameStableCache(
+            session_registry,
+            *session,
+            stable_cache_key)) {
+      if (const auto object_uuid = PsNameUuidFromText(stable_cached->object_uuid)) {
+        stable_cache_hit = true;
+        WritePsNameResolutionTrace(*decoded,
+                                   &*session,
+                                   "resolved",
+                                   "stable_relation_cache",
+                                   stable_cached->object_uuid,
+                                   stable_cached->object_class,
+                                   cache_key,
+                                   stable_cache_key,
+                                   normal_cache_checked,
+                                   normal_cache_hit,
+                                   stable_cache_checked,
+                                   stable_cache_hit,
+                                   PsNameTraceElapsedMicros(trace_begin),
+                                   session_registry);
+        return PsNameResponseFrame(
+            frame,
+            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+            sbps::kSchemaResolveNameResultV1,
+            EncodePsNameResolvePayload("resolved",
+                                       *object_uuid,
+                                       stable_cached->canonical_name,
+                                       stable_cached->object_class,
+                                       session->catalog_generation,
+                                       session->security_epoch,
+                                       "server stable relation name resolution cache"),
             false);
       }
     }
@@ -1408,15 +1763,31 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         if (PsNameResolutionCacheable(request.context,
                                       resolved_object_class,
                                       resolved.primary_object.uuid.canonical)) {
-          StorePsNameCache(session_registry,
-                           *session,
-                           cache_key,
-                           resolved.primary_object.uuid.canonical,
-                           decoded->presented_name,
-                           resolved_object_class,
-                           catalog_epoch,
-                           security_epoch);
+          StorePsNameCacheVariants(session_registry,
+                                   *session,
+                                   *decoded,
+                                   identifier_profile,
+                                   request.context,
+                                   resolved.primary_object.uuid.canonical,
+                                   decoded->presented_name,
+                                   resolved_object_class,
+                                   catalog_epoch,
+                                   security_epoch);
         }
+        WritePsNameResolutionTrace(*decoded,
+                                   &*session,
+                                   "resolved",
+                                   "engine_catalog_resolver",
+                                   resolved.primary_object.uuid.canonical,
+                                   resolved_object_class,
+                                   cache_key,
+                                   stable_cache_key,
+                                   normal_cache_checked,
+                                   normal_cache_hit,
+                                   stable_cache_checked,
+                                   stable_cache_hit,
+                                   PsNameTraceElapsedMicros(trace_begin),
+                                   session_registry);
         return PsNameResponseFrame(
             frame,
             static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
@@ -1440,20 +1811,36 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         if (PsNameResolutionCacheable(request.context,
                                       registry_match->object_class,
                                       registry_match->object_uuid)) {
-          StorePsNameCache(session_registry,
-                           *session,
-                           cache_key,
-                           registry_match->object_uuid,
-                           decoded->presented_name,
-                           registry_match->object_class,
-                           registry_match->catalog_generation_id == 0
-                               ? session->catalog_generation
-                               : registry_match->catalog_generation_id,
-                           session->security_epoch);
+          StorePsNameCacheVariants(session_registry,
+                                   *session,
+                                   *decoded,
+                                   identifier_profile,
+                                   request.context,
+                                   registry_match->object_uuid,
+                                   decoded->presented_name,
+                                   registry_match->object_class,
+                                   registry_match->catalog_generation_id == 0
+                                       ? session->catalog_generation
+                                       : registry_match->catalog_generation_id,
+                                   session->security_epoch);
         }
+        WritePsNameResolutionTrace(*decoded,
+                                   &*session,
+                                   "resolved",
+                                   "engine_name_registry_resolver",
+                                   registry_match->object_uuid,
+                                   registry_match->object_class,
+                                   cache_key,
+                                   stable_cache_key,
+                                   normal_cache_checked,
+                                   normal_cache_hit,
+                                   stable_cache_checked,
+                                   stable_cache_hit,
+                                   PsNameTraceElapsedMicros(trace_begin),
+                                   session_registry);
         return PsNameResponseFrame(
-            frame,
-            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+          frame,
+          static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
             sbps::kSchemaResolveNameResultV1,
             EncodePsNameResolvePayload("resolved",
                                        *object_uuid,
@@ -1467,6 +1854,36 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
             false);
       }
     }
+    WritePsNameResolutionTrace(*decoded,
+                               &*session,
+                               "not_found_or_not_visible",
+                               "public_resolver_returned_no_uuid",
+                               "",
+                               decoded->object_class,
+                               cache_key,
+                               stable_cache_key,
+                               normal_cache_checked,
+                               normal_cache_hit,
+                               stable_cache_checked,
+                               stable_cache_hit,
+                               PsNameTraceElapsedMicros(trace_begin),
+                               session_registry);
+  }
+  if (!session || !parts || parts->empty()) {
+    WritePsNameResolutionTrace(*decoded,
+                               nullptr,
+                               "not_found_or_not_visible",
+                               "missing_session_or_invalid_parts",
+                               "",
+                               decoded->object_class,
+                               "",
+                               "",
+                               false,
+                               false,
+                               false,
+                               false,
+                               PsNameTraceElapsedMicros(trace_begin),
+                               session_registry);
   }
   return PsNameResponseFrame(
       frame,

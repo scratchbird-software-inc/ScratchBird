@@ -45,6 +45,13 @@ struct CachedPublicNameResolution {
   std::uint64_t security_epoch{0};
 };
 
+struct StableCachedPublicNameResolution {
+  std::string presented_name;
+  bool quoted{false};
+  std::string lookup_object_class;
+  CachedPublicNameResolution resolved;
+};
+
 struct WireResponse {
   bool close{false};
   std::string text;
@@ -63,6 +70,10 @@ class SbsqlTestWireSession {
                              bool autocommit_emulation = false);
   PipelineResult RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                  bool cursor_requested = false);
+  PipelineResult RunSblrEnvelopeWithDataPacket(
+      std::string_view encoded_sblr_envelope,
+      const std::vector<std::uint8_t>& data_packet,
+      bool cursor_requested = false);
   ServerPrepareSblrResult PrepareSblrForWire(std::string_view encoded_sblr_envelope);
   PipelineResult RunPreparedSblrEnvelopeForWire(std::string_view prepared_statement_uuid,
                                                 std::string_view encoded_sblr_envelope,
@@ -89,21 +100,30 @@ class SbsqlTestWireSession {
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::deque<std::string> name_resolution_lru_;
+  std::map<std::string, StableCachedPublicNameResolution>
+      stable_relation_name_resolution_cache_;
+  std::deque<std::string> stable_relation_name_resolution_lru_;
 
   bool HasExecutionRoute() const;
   ServerExecutionResult ExecuteSblrOnRoute(std::string_view encoded_sblr_envelope,
                                            bool cursor_requested = false);
+  ServerExecutionResult ExecuteSblrOnRouteWithDataPacket(
+      std::string_view encoded_sblr_envelope,
+      const std::vector<std::uint8_t>& data_packet,
+      bool cursor_requested = false);
   PublicNameResolutionResult ResolveNameOnRoute(std::string_view presented_name,
                                                 bool quoted,
                                                 std::string_view object_class);
-  void ClearNameResolutionCache();
+  void ClearNameResolutionCache(bool preserve_stable_relation_names = false);
+  void RehydrateStableRelationNameResolutionCache();
   void StoreNameResolutionCacheEntry(std::string_view presented_name,
                                      bool quoted,
                                      std::string_view object_class,
                                      std::string_view object_uuid,
                                      std::string_view canonical_name,
                                      std::uint64_t catalog_epoch,
-                                     std::uint64_t security_epoch);
+                                     std::uint64_t security_epoch,
+                                     std::string_view resolved_object_class = {});
   void SeedCreatedDdlNameResolutionCache(const CstDocument& cst,
                                          const PipelineResult& result);
   bool DisconnectExecutionRoute(MessageVectorSet* messages);

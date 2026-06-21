@@ -38,6 +38,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -1130,6 +1131,12 @@ std::vector<CrudIndexRecord> DirectSynchronousIndexes(
   return indexes;
 }
 
+bool DirectAllIndexesUnique(const std::vector<CrudIndexRecord>& indexes) {
+  return std::all_of(indexes.begin(), indexes.end(), [](const auto& index) {
+    return DirectIndexIsUnique(index);
+  });
+}
+
 EngineApiU64 DirectUniqueIndexProbeCount(
     const std::vector<CrudIndexRecord>& visible_indexes,
     std::size_t row_count) {
@@ -1182,6 +1189,35 @@ std::vector<MgaIndexEntryAppendBatch> DirectIndexAppendBatches(
   return batches;
 }
 
+std::vector<MgaExactIndexEntryAppendBatch> DirectExactIndexAppendBatches(
+    const std::vector<CrudIndexRecord>& indexes,
+    const std::string& table_uuid,
+    const std::vector<CrudRowVersionRecord>& staged_rows,
+    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
+  std::vector<MgaExactIndexEntryAppendBatch> batches;
+  batches.reserve(indexes.size());
+  for (const auto& index : indexes) {
+    MgaExactIndexEntryAppendBatch batch;
+    batch.index = index;
+    batch.table_uuid = table_uuid;
+    batch.entries.reserve(staged_rows.size());
+    for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
+      const auto& values = logical_value_batch[row_index];
+      const std::string payload = CrudFieldValue(values, index.column_name);
+      for (const auto& key : CrudIndexKeysForValues(index, values)) {
+        batch.entries.push_back({key,
+                                 payload,
+                                 staged_rows[row_index].row_uuid,
+                                 staged_rows[row_index].version_uuid});
+      }
+    }
+    if (!batch.entries.empty()) {
+      batches.push_back(std::move(batch));
+    }
+  }
+  return batches;
+}
+
 scratchbird::core::index::IndexFamily DirectCoreIndexFamily(
     const CrudIndexRecord& index) {
   namespace idx = scratchbird::core::index;
@@ -1220,6 +1256,12 @@ bool DirectOptionTruthy(const DirectPhysicalBulkAppendRequest& request,
                         const std::string& key) {
   const std::string value = DirectOptionValue(request, key);
   return !value.empty() && IsDirectTruthyValue(value);
+}
+
+bool DirectBypassPostAppendCacheForSingleWindowNativeBulk(
+    const DirectPhysicalBulkAppendRequest& request) {
+  return request.lane_operation == "native_bulk" &&
+         DirectOptionTruthy(request, "native_bulk.single_window");
 }
 
 bool DirectOpaqueColumnsAllowed(const DirectPhysicalBulkAppendRequest& request) {
@@ -1825,6 +1867,15 @@ struct DirectAppendIndexEntryCacheRecord {
       entry_by_index_key;
 };
 
+struct DirectBulkAppendContextCacheRecord {
+  std::uint64_t row_version_count = 0;
+  std::shared_ptr<const CrudState> state;
+  std::vector<CrudIndexRecord> visible_indexes;
+  MgaRelationStorageDescriptor relation_descriptor;
+  bool index_entries_authoritative = false;
+  bool append_index_cache_hit = false;
+};
+
 std::mutex& DirectAppendIndexEntryCacheMutex() {
   static std::mutex mutex;
   return mutex;
@@ -1836,9 +1887,27 @@ DirectAppendIndexEntryCache() {
   return cache;
 }
 
+std::map<std::string, DirectBulkAppendContextCacheRecord>&
+DirectBulkAppendContextCache() {
+  static std::map<std::string, DirectBulkAppendContextCacheRecord> cache;
+  return cache;
+}
+
 std::string DirectAppendIndexEntryCacheKey(const EngineRequestContext& context,
                                            const std::string& table_uuid) {
   return context.database_path + "\n" + table_uuid;
+}
+
+std::string DirectBulkAppendContextCacheKey(const EngineRequestContext& context,
+                                            const std::string& table_uuid) {
+  return context.database_path + "\n" +
+         std::to_string(context.local_transaction_id) + "\n" +
+         context.session_uuid.canonical + "\n" +
+         context.principal_uuid.canonical + "\n" +
+         context.current_role_uuid.canonical + "\n" +
+         std::to_string(context.catalog_generation_id) + "\n" +
+         std::to_string(context.security_epoch) + "\n" +
+         table_uuid;
 }
 
 std::map<std::string, std::set<std::string>> DirectBuildIndexKeyCache(
@@ -1890,6 +1959,105 @@ bool DirectLookupAppendIndexEntryCache(const EngineRequestContext& context,
   return true;
 }
 
+bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
+                                          const std::string& table_uuid,
+                                          std::uint64_t row_version_count) {
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  const auto found = DirectAppendIndexEntryCache().find(
+      DirectAppendIndexEntryCacheKey(context, table_uuid));
+  return found != DirectAppendIndexEntryCache().end() &&
+         found->second.row_version_count == row_version_count;
+}
+
+void DirectBuildAppendIndexConflictCaches(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::uint64_t row_version_count,
+    const std::vector<CrudIndexRecord>& indexes,
+    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
+    std::map<std::string, std::set<std::string>>* keys_by_index,
+    std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>*
+        entry_by_index_key) {
+  if (keys_by_index == nullptr && entry_by_index_key == nullptr) {
+    return;
+  }
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  const auto found = DirectAppendIndexEntryCache().find(
+      DirectAppendIndexEntryCacheKey(context, table_uuid));
+  if (found == DirectAppendIndexEntryCache().end() ||
+      found->second.row_version_count != row_version_count) {
+    return;
+  }
+  const auto& record = found->second;
+  for (const auto& index : indexes) {
+    if (!DirectIndexIsUnique(index)) {
+      continue;
+    }
+    const auto cached_keys = record.keys_by_index.find(index.index_uuid);
+    if (cached_keys == record.keys_by_index.end()) {
+      continue;
+    }
+    const auto cached_entries = record.entry_by_index_key.find(index.index_uuid);
+    for (const auto& values : logical_value_batch) {
+      for (const auto& key : CrudIndexKeysForValues(index, values)) {
+        if (cached_keys->second.count(key) == 0) {
+          continue;
+        }
+        if (keys_by_index != nullptr) {
+          (*keys_by_index)[index.index_uuid].insert(key);
+        }
+        if (entry_by_index_key != nullptr &&
+            cached_entries != record.entry_by_index_key.end()) {
+          const auto entry = cached_entries->second.find(key);
+          if (entry != cached_entries->second.end()) {
+            (*entry_by_index_key)[index.index_uuid][key] = entry->second;
+          }
+        }
+      }
+    }
+  }
+}
+
+bool DirectLookupBulkAppendContextCache(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::uint64_t row_version_count,
+    DirectBulkAppendContextCacheRecord* record) {
+  if (record == nullptr) return false;
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  const auto found = DirectBulkAppendContextCache().find(
+      DirectBulkAppendContextCacheKey(context, table_uuid));
+  if (found == DirectBulkAppendContextCache().end() ||
+      found->second.row_version_count != row_version_count ||
+      !found->second.state) {
+    return false;
+  }
+  *record = found->second;
+  return true;
+}
+
+void DirectStoreBulkAppendContextCache(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::uint64_t row_version_count,
+    const CrudState& state,
+    const std::vector<CrudIndexRecord>& visible_indexes,
+    const MgaRelationStorageDescriptor& relation_descriptor,
+    bool index_entries_authoritative,
+    bool append_index_cache_hit) {
+  DirectBulkAppendContextCacheRecord record;
+  record.row_version_count = row_version_count;
+  record.state = std::make_shared<CrudState>(state);
+  record.visible_indexes = visible_indexes;
+  record.relation_descriptor = relation_descriptor;
+  record.index_entries_authoritative = index_entries_authoritative;
+  record.append_index_cache_hit = append_index_cache_hit;
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  DirectBulkAppendContextCache()[DirectBulkAppendContextCacheKey(context,
+                                                                 table_uuid)] =
+      std::move(record);
+}
+
 void DirectStoreAppendIndexEntryCache(
     const EngineRequestContext& context,
     const std::string& table_uuid,
@@ -1900,9 +2068,9 @@ void DirectStoreAppendIndexEntryCache(
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
                                                                   table_uuid)];
   record.row_version_count = row_version_count;
-  record.entries = entries;
-  record.keys_by_index = DirectBuildIndexKeyCache(record.entries);
-  record.entry_by_index_key = DirectBuildIndexEntryKeyCache(record.entries);
+  record.entries.clear();
+  record.keys_by_index = DirectBuildIndexKeyCache(entries);
+  record.entry_by_index_key = DirectBuildIndexEntryKeyCache(entries);
 }
 
 std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromExactBatches(
@@ -1959,6 +2127,23 @@ std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromRetailBatches(
   return entries;
 }
 
+void DirectClearAppendIndexEntryCacheRecord(
+    DirectAppendIndexEntryCacheRecord* record) {
+  if (record == nullptr) { return; }
+  record->entries.clear();
+  record->keys_by_index.clear();
+  record->entry_by_index_key.clear();
+}
+
+void DirectAppendIndexEntryToCacheRecord(
+    DirectAppendIndexEntryCacheRecord* record,
+    CrudIndexEntryRecord entry) {
+  if (record == nullptr) { return; }
+  record->keys_by_index[entry.index_uuid].insert(entry.key_value);
+  record->entry_by_index_key[entry.index_uuid][entry.key_value] =
+      std::move(entry);
+}
+
 void DirectAppendIndexEntriesToCache(
     const EngineRequestContext& context,
     const std::string& table_uuid,
@@ -1970,14 +2155,67 @@ void DirectAppendIndexEntriesToCache(
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
                                                                   table_uuid)];
   if (record.row_version_count != previous_row_version_count) {
-    record.entries.clear();
+    DirectClearAppendIndexEntryCacheRecord(&record);
   }
-  record.entries.insert(record.entries.end(),
-                        appended_entries.begin(),
-                        appended_entries.end());
   for (const auto& entry : appended_entries) {
-    record.keys_by_index[entry.index_uuid].insert(entry.key_value);
-    record.entry_by_index_key[entry.index_uuid][entry.key_value] = entry;
+    DirectAppendIndexEntryToCacheRecord(&record, entry);
+  }
+  record.row_version_count = previous_row_version_count + appended_row_count;
+}
+
+void DirectAppendIndexBatchesToCache(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::uint64_t previous_row_version_count,
+    std::uint64_t appended_row_count,
+    const std::vector<MgaExactIndexEntryAppendBatch>& exact_batches,
+    const std::vector<MgaIndexEntryAppendBatch>& retail_batches) {
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  auto& record =
+      DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
+                                                                  table_uuid)];
+  if (record.row_version_count != previous_row_version_count) {
+    DirectClearAppendIndexEntryCacheRecord(&record);
+  }
+  for (const auto& batch : exact_batches) {
+    const std::string batch_table_uuid =
+        batch.index.table_uuid.empty() ? batch.table_uuid
+                                       : batch.index.table_uuid;
+    for (const auto& exact : batch.entries) {
+      CrudIndexEntryRecord entry;
+      entry.creator_tx = context.local_transaction_id;
+      entry.index_uuid = batch.index.index_uuid;
+      entry.table_uuid = batch_table_uuid;
+      entry.column_name = batch.index.column_name;
+      entry.family = batch.index.family;
+      entry.entry_kind = "exact";
+      entry.key_value = exact.encoded_key;
+      entry.payload_value = exact.payload_value;
+      entry.row_uuid = exact.row_uuid;
+      entry.version_uuid = exact.version_uuid;
+      DirectAppendIndexEntryToCacheRecord(&record, std::move(entry));
+    }
+  }
+  for (const auto& batch : retail_batches) {
+    const std::string batch_table_uuid =
+        batch.index.table_uuid.empty() ? batch.table_uuid
+                                       : batch.index.table_uuid;
+    for (const auto& row : batch.rows) {
+      for (const auto& key : CrudIndexKeysForValues(batch.index, row.values)) {
+        CrudIndexEntryRecord entry;
+        entry.creator_tx = context.local_transaction_id;
+        entry.index_uuid = batch.index.index_uuid;
+        entry.table_uuid = batch_table_uuid;
+        entry.column_name = batch.index.column_name;
+        entry.family = batch.index.family;
+        entry.entry_kind = "exact";
+        entry.key_value = key;
+        entry.payload_value = CrudFieldValue(row.values, batch.index.column_name);
+        entry.row_uuid = row.row_uuid;
+        entry.version_uuid = row.version_uuid;
+        DirectAppendIndexEntryToCacheRecord(&record, std::move(entry));
+      }
+    }
   }
   record.row_version_count = previous_row_version_count + appended_row_count;
 }
@@ -2676,6 +2914,28 @@ void WriteDirectBulkPhaseTrace(
       << "\trows=" << result.inserted_rows
       << "\taccepted=" << result.accepted_rows
       << "\ttx=" << request.context.local_transaction_id;
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == "direct_physical_bulk_append_context_cache" ||
+        evidence.evidence_kind == "direct_physical_append_index_cache" ||
+        evidence.evidence_kind == "direct_physical_append_index_cache_bypass" ||
+        evidence.evidence_kind == "direct_physical_bulk_index_entries_authoritative" ||
+        evidence.evidence_kind == "mga_relation_index_only_row_versions" ||
+        evidence.evidence_kind == "mga_relation_index_only_eligible" ||
+        evidence.evidence_kind == "mga_relation_index_only_reason" ||
+        evidence.evidence_kind == "relation_state_full_loads" ||
+        evidence.evidence_kind == "relation_state_scoped_loads" ||
+        evidence.evidence_kind == "relation_state_load_reason" ||
+        evidence.evidence_kind == "mga_hot_append_index_entries" ||
+        evidence.evidence_kind == "mga_hot_append_index_range_reservations" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_stream_opens" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_stream_flushes" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_write_batches" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_write_tickets_issued" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_write_tickets_completed" ||
+        evidence.evidence_kind == "mga_hot_append_scoped_index_write_worker_count") {
+      out << '\t' << evidence.evidence_kind << '=' << evidence.evidence_id;
+    }
+  }
   for (const auto& [phase, micros] : phase_micros) {
     out << '\t' << phase << "_us=" << micros;
   }
@@ -3755,7 +4015,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto phase_start = DirectSteadyClock::now();
   auto phase_last = phase_start;
   std::vector<std::pair<std::string, EngineApiU64>> phase_micros;
-  phase_micros.reserve(12);
+  phase_micros.reserve(26);
   const auto mark_phase = [&](std::string phase) {
     const auto now = DirectSteadyClock::now();
     phase_micros.push_back(
@@ -3773,49 +4033,82 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              "mga_relation_index_only_eligibility_failed");
   }
   bool index_entries_authoritative = index_only_eligibility.eligible;
+  const bool bypass_single_window_native_bulk_cache =
+      DirectBypassPostAppendCacheForSingleWindowNativeBulk(request);
   bool append_index_cache_hit = false;
-  std::map<std::string, std::set<std::string>> append_index_key_cache;
-  std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
-      append_index_entry_key_cache;
-  if (index_entries_authoritative) {
-    append_index_cache_hit = DirectLookupAppendIndexEntryCache(
+  if (index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
+    append_index_cache_hit = DirectAppendIndexEntryCacheAvailable(
         request.context,
         request.target_table.uuid.canonical,
-        index_only_eligibility.row_version_count,
-        nullptr,
-        &append_index_key_cache,
-        &append_index_entry_key_cache);
+        index_only_eligibility.row_version_count);
   }
-  auto loaded =
-      index_entries_authoritative
-          ? (append_index_cache_hit
-                 ? LoadMgaRelationStoreMetadataOnlyForInsertTarget(
-                       request.context,
-                       request.target_table.uuid.canonical)
-                 : LoadMgaRelationStoreIndexesOnlyForInsertTarget(
-                       request.context,
-                       request.target_table.uuid.canonical))
-          : LoadMgaRelationStoreStateForInsertTarget(
-                request.context,
-                request.target_table.uuid.canonical);
+  DirectBulkAppendContextCacheRecord bulk_context_cache;
+  std::string append_index_cache_context_note;
+  bool bulk_context_cache_hit = DirectLookupBulkAppendContextCache(
+      request.context,
+      request.target_table.uuid.canonical,
+      index_only_eligibility.row_version_count,
+      &bulk_context_cache);
+  if (bulk_context_cache_hit) {
+    index_entries_authoritative = bulk_context_cache.index_entries_authoritative;
+    if (index_entries_authoritative && !append_index_cache_hit) {
+      append_index_cache_context_note = "miss_after_context_hit";
+      bulk_context_cache_hit = false;
+    }
+  }
+  MgaRelationStoreResult loaded;
+  if (bulk_context_cache_hit) {
+    loaded.ok = true;
+    loaded.evidence.push_back({"direct_physical_bulk_append_context_cache", "hit"});
+    if (!append_index_cache_context_note.empty()) {
+      loaded.evidence.push_back({"direct_physical_append_index_cache",
+                                 append_index_cache_context_note});
+    }
+    loaded.evidence.push_back({"direct_physical_bulk_append_context_scope",
+                               "transaction_table_security_epoch"});
+  } else {
+    loaded =
+        index_entries_authoritative
+            ? (append_index_cache_hit
+                   ? LoadMgaRelationStoreMetadataOnlyForInsertTarget(
+                         request.context,
+                         request.target_table.uuid.canonical)
+                   : LoadMgaRelationStoreIndexesOnlyForInsertTarget(
+                         request.context,
+                         request.target_table.uuid.canonical))
+            : LoadMgaRelationStoreStateForInsertTarget(
+                  request.context,
+                  request.target_table.uuid.canonical);
+  }
   if (!loaded.ok) {
     return DirectBulkFailure(request,
                              loaded.diagnostic,
                              "mga_relation_store_load_failed");
   }
-  CrudState state =
-      BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
-  if (index_entries_authoritative && !append_index_cache_hit) {
+  CrudState state_storage;
+  const CrudState* state = nullptr;
+  if (bulk_context_cache_hit) {
+    state = bulk_context_cache.state.get();
+  } else {
+    state_storage = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+    state = &state_storage;
+  }
+  if (state == nullptr) {
+    return DirectBulkFailure(
+        request,
+        MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                     "direct_physical_context_cache_state_missing"),
+        "direct_physical_context_cache_state_missing");
+  }
+  if (!bulk_context_cache_hit && index_entries_authoritative && !append_index_cache_hit) {
     DirectStoreAppendIndexEntryCache(
         request.context,
         request.target_table.uuid.canonical,
         index_only_eligibility.row_version_count,
-        state.index_entries);
-    append_index_key_cache = DirectBuildIndexKeyCache(state.index_entries);
-    append_index_entry_key_cache =
-        DirectBuildIndexEntryKeyCache(state.index_entries);
+        state->index_entries);
+    append_index_cache_hit = true;
   }
-  auto table = FindVisibleCrudTable(state,
+  auto table = FindVisibleCrudTable(*state,
                                     request.target_table.uuid.canonical,
                                     request.context.local_transaction_id);
   if (!table) {
@@ -3835,8 +4128,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "mga_relation_store_load_failed");
     }
     loaded = std::move(reloaded);
-    state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
-    table = FindVisibleCrudTable(state,
+    state_storage = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+    state = &state_storage;
+    table = FindVisibleCrudTable(*state,
                                  request.target_table.uuid.canonical,
                                  request.context.local_transaction_id);
     if (!table) {
@@ -3885,20 +4179,38 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         summary);
   }
 
-  const auto visible_indexes = VisibleCrudIndexesForTable(
-      state,
-      request.target_table.uuid.canonical,
-      request.context.local_transaction_id);
+  std::vector<CrudIndexRecord> visible_indexes;
   MgaRelationStorageDescriptor relation_descriptor;
-  const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(
-      request.context,
-      *table,
-      visible_indexes,
-      &relation_descriptor);
-  if (descriptor_ready.error) {
-    return DirectBulkFailure(request,
-                             descriptor_ready,
-                             "relation_descriptor_refused");
+  if (bulk_context_cache_hit) {
+    visible_indexes = bulk_context_cache.visible_indexes;
+    relation_descriptor = bulk_context_cache.relation_descriptor;
+  } else {
+    visible_indexes = VisibleCrudIndexesForTable(
+        *state,
+        request.target_table.uuid.canonical,
+        request.context.local_transaction_id);
+    const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(
+        request.context,
+        *table,
+        visible_indexes,
+        &relation_descriptor);
+    if (descriptor_ready.error) {
+      return DirectBulkFailure(request,
+                               descriptor_ready,
+                               "relation_descriptor_refused");
+    }
+    if (index_entries_authoritative &&
+        !bypass_single_window_native_bulk_cache &&
+        !DirectTableDeclaresForeignKey(*table)) {
+      DirectStoreBulkAppendContextCache(request.context,
+                                        request.target_table.uuid.canonical,
+                                        index_only_eligibility.row_version_count,
+                                        *state,
+                                        visible_indexes,
+                                        relation_descriptor,
+                                        index_entries_authoritative,
+                                        append_index_cache_hit);
+    }
   }
 
   const EngineInsertRowsRequest synthetic_insert =
@@ -3906,7 +4218,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool force_large_values_for_insert =
       InsertBatchOptionEnabled(synthetic_insert, "large_value.force_toast=true");
   InsertBatchContext batch_context =
-      BeginInsertBatchContext(synthetic_insert, state, *table, visible_indexes);
+      BeginInsertBatchContext(synthetic_insert, *state, *table, visible_indexes);
   if (!batch_context.accepted) {
     const std::string reason = batch_context.fallback_reason.empty()
                                    ? "direct_physical_batch_refused"
@@ -3955,12 +4267,20 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              index_entries_authoritative ? "true" : "false"});
   result.evidence.push_back({"direct_physical_append_index_cache",
                              append_index_cache_hit ? "hit" : "miss"});
+  if (bypass_single_window_native_bulk_cache) {
+    result.evidence.push_back({"direct_physical_append_index_cache_bypass",
+                               "native_bulk_single_window"});
+  }
+  result.evidence.push_back({"direct_physical_bulk_append_context_cache",
+                             bulk_context_cache_hit ? "hit" : "miss"});
   result.evidence.push_back({"relation_state_full_loads",
                              loaded.full_state_load ? "1" : "0"});
   result.evidence.push_back({"relation_state_scoped_loads",
                              loaded.scoped_state_load ? "1" : "0"});
   result.evidence.push_back({"relation_state_load_reason",
-                             "direct_physical_bulk_insert_target_scoped"});
+                             bulk_context_cache_hit
+                                 ? "direct_physical_bulk_append_context_reuse"
+                                 : "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
                              relation_descriptor.descriptor_uuid.canonical});
   const DirectBulkUuidBatch uuid_batch = BuildDirectBulkUuidBatch(request);
@@ -4219,7 +4539,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     } else if (has_immediate_row_validators) {
       const auto constraint_validation = ValidateImmediateRowConstraintsWithOptions(
           request.context,
-          state,
+          *state,
           *table,
           prepared.row_uuid,
           values,
@@ -4290,7 +4610,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "insert_batch_memory_budget_refused");
     }
     const auto batch_constraint =
-        ValidateInsertBatchConstraints(batch_context, state, prepared);
+        ValidateInsertBatchConstraints(batch_context, *state, prepared);
     if (batch_constraint.error) {
       return DirectBulkFailure(request,
                                batch_constraint,
@@ -4326,9 +4646,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   mark_phase("row_stage_validate");
 
+  std::map<std::string, std::set<std::string>> append_index_key_cache;
+  std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
+      append_index_entry_key_cache;
+  if (index_entries_authoritative && append_index_cache_hit) {
+    DirectBuildAppendIndexConflictCaches(request.context,
+                                         request.target_table.uuid.canonical,
+                                         index_only_eligibility.row_version_count,
+                                         visible_indexes,
+                                         logical_value_batch,
+                                         &append_index_key_cache,
+                                         &append_index_entry_key_cache);
+  }
+
   const auto constraint_proof = BuildDirectBulkConstraintProof(
       request,
-      state,
+      *state,
       *table,
       visible_indexes,
       staged_rows,
@@ -4351,7 +4684,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto synchronous_indexes = DirectSynchronousIndexes(batch_context);
   const auto sorted_index_build = BuildDirectSortedBulkIndexArtifacts(
       request,
-      state,
+      *state,
       synchronous_indexes,
       staged_rows,
       logical_value_batch,
@@ -4372,6 +4705,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   result.evidence.insert(result.evidence.end(),
                          sorted_index_build.evidence.begin(),
                          sorted_index_build.evidence.end());
+
+  const bool direct_retail_exact_append_path =
+      !sorted_index_build.retail_indexes.empty() &&
+      (sorted_index_build.retail_indexes.size() == 1 ||
+       DirectAllIndexesUnique(sorted_index_build.retail_indexes));
 
   auto ordered_ingest =
       ApplyDirectOrderedIngestPlan(request, &staged_rows, &logical_value_batch);
@@ -4463,7 +4801,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
       request.context,
       request.option_envelopes,
-      state,
+      *state,
       request.target_table.uuid.canonical,
       logical_value_batch,
       "direct_physical_bulk.index");
@@ -4681,7 +5019,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   mark_phase("row_stream_append_flush");
 
   std::vector<MgaIndexEntryRowInput> index_rows;
-  index_rows.reserve(staged_rows.size());
+  if (!direct_retail_exact_append_path) {
+    index_rows.reserve(staged_rows.size());
+  }
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];
@@ -4693,9 +5033,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                    "direct_physical_bulk.index.maintain",
                    "index",
                    row.row_uuid);
-    index_rows.push_back({row.row_uuid,
-                          row.version_uuid,
-                          logical_value_batch[index]});
+    if (!direct_retail_exact_append_path) {
+      index_rows.push_back({row.row_uuid,
+                            row.version_uuid,
+                            logical_value_batch[index]});
+    }
     auto row_delta_entries =
         DirectDeltaEntries(batch_context, row, logical_value_batch[index]);
     delta_entries.insert(delta_entries.end(),
@@ -4722,13 +5064,6 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              "secondary_index_delta_append_refused");
   }
   mark_phase("index_delta_stage");
-
-  std::vector<CrudIndexEntryRecord> appended_index_cache_entries;
-  if (index_entries_authoritative) {
-    appended_index_cache_entries = DirectIndexEntriesFromExactBatches(
-        request.context,
-        sorted_index_build.exact_batches);
-  }
 
   if (!sorted_index_build.exact_batches.empty()) {
     const auto exact_appended = hot_append.AppendExactIndexEntryBatches(
@@ -4761,37 +5096,78 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
            "mga_relation_store.exact_index_entry_append"});
     }
   }
+  mark_phase("index_exact_append");
 
-  const auto index_apply_plan = PlanLocalityAwareIndexApplyBatches(
-      DirectIndexAppendBatches(sorted_index_build.retail_indexes,
-                               request.target_table.uuid.canonical,
-                               index_rows));
-  if (index_entries_authoritative) {
-    auto retail_cache_entries = DirectIndexEntriesFromRetailBatches(
-        request.context,
-        index_apply_plan.batches);
-    appended_index_cache_entries.insert(
-        appended_index_cache_entries.end(),
-        std::make_move_iterator(retail_cache_entries.begin()),
-        std::make_move_iterator(retail_cache_entries.end()));
-  }
+  std::vector<MgaIndexEntryAppendBatch> index_apply_batches;
+  std::vector<MgaExactIndexEntryAppendBatch> retail_exact_append_batches;
   if (!sorted_index_build.retail_indexes.empty()) {
-    if (index_apply_plan.diagnostic.error) {
-      if (strict_lifecycle.active) {
-        return DirectStrictPhysicalPublicationFailure(
-            request,
-            &strict_lifecycle,
-            result,
-            index_apply_plan.diagnostic,
-            "index_apply_locality_plan_refused",
-            "index_apply_locality_plan");
+    if (direct_retail_exact_append_path) {
+      retail_exact_append_batches = DirectExactIndexAppendBatches(
+          sorted_index_build.retail_indexes,
+          request.target_table.uuid.canonical,
+          staged_rows,
+          logical_value_batch);
+      mark_phase("index_exact_key_precompute");
+      result.evidence.push_back(
+          {"index_apply_planner",
+           sorted_index_build.retail_indexes.size() == 1
+               ? "single_index_exact_passthrough_v1"
+               : "all_unique_exact_passthrough_v1"});
+      result.evidence.push_back({"index_apply_grouping_before_append",
+                                 "false"});
+      result.evidence.push_back(
+          {"index_apply_output_batch_count",
+           std::to_string(retail_exact_append_batches.size())});
+      result.evidence.push_back(
+          {"index_apply_exact_entries_precomputed", "true"});
+      result.evidence.push_back(
+          {"index_apply_unique_order_preserved",
+           DirectAllIndexesUnique(sorted_index_build.retail_indexes)
+               ? "true"
+               : "not_required"});
+      result.evidence.push_back({"mga_finality_authority",
+                                 "engine_transaction_inventory"});
+    } else {
+      auto candidate_batches = DirectIndexAppendBatches(
+          sorted_index_build.retail_indexes,
+          request.target_table.uuid.canonical,
+          index_rows);
+      if (DirectAllIndexesUnique(sorted_index_build.retail_indexes)) {
+        index_apply_batches = std::move(candidate_batches);
+        result.evidence.push_back({"index_apply_planner",
+                                   "all_unique_passthrough_v1"});
+        result.evidence.push_back({"index_apply_grouping_before_append",
+                                   "false"});
+        result.evidence.push_back(
+            {"index_apply_output_batch_count",
+             std::to_string(index_apply_batches.size())});
+        result.evidence.push_back({"index_apply_unique_order_preserved",
+                                   "true"});
+        result.evidence.push_back({"mga_finality_authority",
+                                   "engine_transaction_inventory"});
+      } else {
+        const auto index_apply_plan =
+            PlanLocalityAwareIndexApplyBatches(candidate_batches);
+        if (index_apply_plan.diagnostic.error) {
+          if (strict_lifecycle.active) {
+            return DirectStrictPhysicalPublicationFailure(
+                request,
+                &strict_lifecycle,
+                result,
+                index_apply_plan.diagnostic,
+                "index_apply_locality_plan_refused",
+                "index_apply_locality_plan");
+          }
+          return DirectBulkFailure(request,
+                                   index_apply_plan.diagnostic,
+                                   "index_apply_locality_plan_refused");
+        }
+        AddLocalityAwareIndexApplyEvidence(index_apply_plan, &result.evidence);
+        index_apply_batches = std::move(index_apply_plan.batches);
       }
-      return DirectBulkFailure(request,
-                               index_apply_plan.diagnostic,
-                               "index_apply_locality_plan_refused");
     }
-    AddLocalityAwareIndexApplyEvidence(index_apply_plan, &result.evidence);
   }
+  mark_phase("index_apply_plan");
   if (IparFaultPointRequested(request.option_envelopes, "index_append")) {
     std::vector<EngineEvidenceReference> evidence = result.evidence;
     AppendIparFaultEvidence(&evidence,
@@ -4808,8 +5184,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         evidence,
         result.dml_summary);
   }
-  const auto index_appended = hot_append.AppendIndexEntryBatches(
-      index_apply_plan.batches);
+  const auto index_appended =
+      direct_retail_exact_append_path
+          ? hot_append.AppendExactIndexEntryBatches(retail_exact_append_batches)
+          : hot_append.AppendIndexEntryBatches(index_apply_batches);
   if (index_appended.error) {
     if (strict_lifecycle.active) {
       return DirectStrictPhysicalPublicationFailure(request,
@@ -4823,6 +5201,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              index_appended,
                              "mga_index_append_refused");
   }
+  mark_phase("index_retail_append");
   const auto index_flushed = hot_append.FlushIndexEntries();
   if (index_flushed.error) {
     if (strict_lifecycle.active) {
@@ -4837,15 +5216,31 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              index_flushed,
                              "mga_index_flush_refused");
   }
-  mark_phase("index_stream_append_flush");
+  mark_phase("index_stream_flush");
 
-  if (index_entries_authoritative) {
-    DirectAppendIndexEntriesToCache(
-        request.context,
-        request.target_table.uuid.canonical,
-        index_only_eligibility.row_version_count,
-        static_cast<std::uint64_t>(staged_rows.size()),
-        appended_index_cache_entries);
+  if (index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
+    if (retail_exact_append_batches.empty()) {
+      DirectAppendIndexBatchesToCache(
+          request.context,
+          request.target_table.uuid.canonical,
+          index_only_eligibility.row_version_count,
+          static_cast<std::uint64_t>(staged_rows.size()),
+          sorted_index_build.exact_batches,
+          index_apply_batches);
+    } else {
+      std::vector<MgaExactIndexEntryAppendBatch> cache_exact_batches =
+          sorted_index_build.exact_batches;
+      cache_exact_batches.insert(cache_exact_batches.end(),
+                                 retail_exact_append_batches.begin(),
+                                 retail_exact_append_batches.end());
+      DirectAppendIndexBatchesToCache(
+          request.context,
+          request.target_table.uuid.canonical,
+          index_only_eligibility.row_version_count,
+          static_cast<std::uint64_t>(staged_rows.size()),
+          cache_exact_batches,
+          index_apply_batches);
+    }
   }
 
   result = PublishDirectStrictBulkAfterPhysicalSuccess(request,
@@ -4853,6 +5248,20 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                                        std::move(result));
   if (!result.ok) {
     return result;
+  }
+  if (index_entries_authoritative &&
+      !bypass_single_window_native_bulk_cache &&
+      !DirectTableDeclaresForeignKey(*table)) {
+    DirectStoreBulkAppendContextCache(
+        request.context,
+        request.target_table.uuid.canonical,
+        index_only_eligibility.row_version_count +
+            static_cast<std::uint64_t>(staged_rows.size()),
+        *state,
+        visible_indexes,
+        relation_descriptor,
+        index_entries_authoritative,
+        true);
   }
   mark_phase("strict_publish");
 

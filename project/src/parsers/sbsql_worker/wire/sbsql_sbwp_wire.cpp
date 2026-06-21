@@ -9,6 +9,7 @@
 #include "wire/sbsql_test_wire.hpp"
 
 #include "embedded/embedded_engine_client.hpp"
+#include "datatype_wire_metadata.hpp"
 #include "ipc/sbps_client.hpp"
 #include "rendering/rendering.hpp"
 #include "uuid.hpp"
@@ -53,6 +54,7 @@
 
 namespace scratchbird::parser::sbsql {
 namespace {
+namespace datatypes = scratchbird::core::datatypes;
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
 constexpr std::uint32_t kExecuteFlagAutocommit = 0x01;
 constexpr std::uint8_t kTxnFinalityPayloadVersion = 1;
@@ -203,7 +205,9 @@ constexpr std::uint64_t kFeatureReauth = FeatureBit(22);
 constexpr std::uint64_t kFeatureFailoverHints = FeatureBit(23);
 constexpr std::uint64_t kFeatureTraceContext = FeatureBit(24);
 constexpr std::uint8_t kCopyFormatCanonicalRowFieldsText = 0x00;
-constexpr std::uint32_t kCopyDefaultWindowBytes = 64u * 1024u;
+constexpr std::uint8_t kCopyFormatBinaryRowsetV1 = 0x01;
+constexpr std::uint32_t kCopyDefaultWindowBytes = 1024u * 1024u;
+constexpr std::uint32_t kCopyBinaryWindowBytes = 4u * 1024u * 1024u;
 constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
 constexpr std::uint64_t kAutoCursorFetchRows = 1024;
 constexpr std::uint64_t kAutoCursorFetchBytes = 4u * 1024u * 1024u;
@@ -215,7 +219,7 @@ constexpr std::uint64_t kP1OnlyFeatureMask =
     kFeatureFailoverHints | kFeatureTraceContext;
 constexpr std::uint64_t kServerSupportedFeatureMask =
     kFeatureStreaming | kFeatureSblr | kFeatureNotifications | kFeatureBatch | kFeaturePipeline |
-    kFeatureSavepoints | kFeatureMultiResult |
+    kFeatureBinaryCopy | kFeatureSavepoints | kFeatureMultiResult |
     kFeatureGeneratedKeys | kFeatureOutParameters | kFeatureArrayBind |
     kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
     kFeatureSessionReset | kFeatureReauth | kFeatureTraceContext;
@@ -261,6 +265,7 @@ struct BoundPortal {
   std::string sql;
   std::vector<std::uint32_t> param_types;
   std::vector<std::optional<std::string>> param_values;
+  std::vector<std::vector<std::optional<std::string>>> param_rows;
   std::optional<PreparedStatement::InsertRowsetPlan> insert_rowset_plan;
 };
 
@@ -289,6 +294,8 @@ struct CopyImportState {
   std::string sql;
   std::string target_object_uuid;
   std::string format_family{"canonical_row_fields"};
+  std::uint8_t copy_data_format{kCopyFormatCanonicalRowFieldsText};
+  std::uint32_t window_bytes{kCopyDefaultWindowBytes};
   std::vector<CopyImportRow> rows;
 };
 
@@ -794,6 +801,12 @@ std::size_t BoundPortalBytes(const BoundPortal& portal) {
   std::size_t bytes = portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
   for (const auto& value : portal.param_values) {
     if (value.has_value()) bytes += value->size();
+  }
+  for (const auto& row : portal.param_rows) {
+    bytes += row.size() * sizeof(std::optional<std::string>);
+    for (const auto& value : row) {
+      if (value.has_value()) bytes += value->size();
+    }
   }
   if (portal.insert_rowset_plan.has_value()) {
     bytes += portal.insert_rowset_plan->target_name.size();
@@ -1662,6 +1675,137 @@ std::optional<std::vector<CopyImportRow>> ParseTextCopyRows(
   return rows;
 }
 
+std::string HexEncodeCopyText(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2u);
+  for (const unsigned char ch : value) {
+    out.push_back(kHex[(ch >> 4u) & 0x0fu]);
+    out.push_back(kHex[ch & 0x0fu]);
+  }
+  return out;
+}
+
+std::string CompactCopyRowsPayload(const CopyImportState& copy,
+                                   std::size_t first_row,
+                                   std::size_t end_row,
+                                   bool include_field_names = true) {
+  std::string out;
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    const auto& row = copy.rows[row_index];
+    for (const auto& [name, value] : row.fields) {
+      if (!out.empty()) out.push_back(';');
+      if (include_field_names) {
+        out += HexEncodeCopyText(name);
+      }
+      out.push_back('|');
+      out += HexEncodeCopyText(value.has_value() ? "text" : "null");
+      out.push_back('|');
+      out += HexEncodeCopyText(value.value_or(std::string{}));
+      out.push_back('|');
+      out += value.has_value() ? '0' : '1';
+    }
+  }
+  return out;
+}
+
+bool CopyRowsHaveSharedShape(const CopyImportState& copy,
+                             std::size_t first_row,
+                             std::size_t end_row) {
+  if (first_row >= end_row || end_row > copy.rows.size()) return false;
+  const std::size_t column_count = copy.rows[first_row].fields.size();
+  if (column_count == 0) return false;
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    const auto& row = copy.rows[row_index];
+    if (row.fields.size() != column_count) return false;
+    for (std::size_t column_index = 0; column_index < column_count; ++column_index) {
+      if (row.fields[column_index].first !=
+          copy.rows[first_row].fields[column_index].first) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
+                                               std::size_t first_row,
+                                               std::size_t row_count) {
+  const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
+  std::vector<std::uint8_t> out;
+  if (!CopyRowsHaveSharedShape(copy, first_row, end_row)) return out;
+  const auto& columns = copy.rows[first_row].fields;
+  out.reserve(20 + columns.size() * 16 + (end_row - first_row) * columns.size() * 12);
+  out.push_back('S');
+  out.push_back('B');
+  out.push_back('N');
+  out.push_back('R');
+  PutU16(&out, 1);
+  PutU16(&out, 0);
+  PutU64(&out, static_cast<std::uint64_t>(end_row - first_row));
+  PutU32(&out, static_cast<std::uint32_t>(columns.size()));
+  for (const auto& [name, _] : columns) {
+    PutU32(&out, static_cast<std::uint32_t>(name.size()));
+    out.insert(out.end(), name.begin(), name.end());
+  }
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    const auto& row = copy.rows[row_index];
+    for (const auto& [_, value] : row.fields) {
+      out.push_back(value.has_value() ? 0 : 1);
+      const auto value_size =
+          value.has_value() ? static_cast<std::uint32_t>(value->size()) : 0u;
+      PutU32(&out, value_size);
+      if (value.has_value()) {
+        out.insert(out.end(), value->begin(), value->end());
+      }
+    }
+  }
+  return out;
+}
+
+std::optional<std::vector<CopyImportRow>> ParseBinaryCopyRows(
+    const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 12 ||
+      payload[0] != 'S' || payload[1] != 'B' || payload[2] != 'C' || payload[3] != 'P' ||
+      payload[4] != 1) {
+    return std::nullopt;
+  }
+  std::size_t off = 8;
+  const std::uint32_t row_count = ReadU32(payload, off);
+  off += 4;
+  std::vector<CopyImportRow> rows;
+  rows.reserve(row_count);
+  for (std::uint32_t row_index = 0; row_index < row_count; ++row_index) {
+    if (off + 4 > payload.size()) return std::nullopt;
+    const std::uint32_t field_count = ReadU32(payload, off);
+    off += 4;
+    CopyImportRow row;
+    row.fields.reserve(field_count);
+    for (std::uint32_t field_index = 0; field_index < field_count; ++field_index) {
+      if (off + 4 > payload.size()) return std::nullopt;
+      const std::uint32_t name_size = ReadU32(payload, off);
+      off += 4;
+      if (off + name_size + 1u + 4u > payload.size()) return std::nullopt;
+      std::string name(reinterpret_cast<const char*>(payload.data() + off), name_size);
+      off += name_size;
+      const bool is_null = payload[off++] != 0;
+      const std::uint32_t value_size = ReadU32(payload, off);
+      off += 4;
+      if (off + value_size > payload.size()) return std::nullopt;
+      std::optional<std::string> value;
+      if (!is_null) {
+        value.emplace(reinterpret_cast<const char*>(payload.data() + off), value_size);
+      }
+      off += value_size;
+      if (name.empty()) return std::nullopt;
+      row.fields.emplace_back(std::move(name), std::move(value));
+    }
+    rows.push_back(std::move(row));
+  }
+  if (off != payload.size()) return std::nullopt;
+  return rows;
+}
+
 std::string GenerateCopyImportRowUuid() {
   static std::atomic<std::uint64_t> sequence{0};
   const auto now_millis = static_cast<std::uint64_t>(
@@ -1758,7 +1902,8 @@ std::string BuildCopyExecuteEnvelope(const CopyImportState& copy) {
 
 std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
                                                 std::size_t first_row,
-                                                std::size_t row_count) {
+                                                std::size_t row_count,
+                                                bool include_compact_payload = true) {
   const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
   std::string out;
   out += "operation_id=dml.execute_native_bulk_ingest\n";
@@ -1791,27 +1936,88 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
-  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
-    const auto& row = copy.rows[row_index];
-    const std::string row_uuid = GenerateCopyImportRowUuid();
-    for (const auto& [name, value] : row.fields) {
-      out += value.has_value() ? "operand=row_field:character\t"
-                               : "operand=row_null_field:character\t";
-      out += row_uuid;
-      out += "|";
-      out += EscapeOperationOperandField(name);
-      out += "\t";
-      out += value.has_value() ? EscapeOperationOperandField(*value) : "";
+  if (end_row > first_row) {
+    const std::size_t column_count = copy.rows[first_row].fields.size();
+    const bool shared_shape = CopyRowsHaveSharedShape(copy, first_row, end_row);
+    if (shared_shape) {
+      out += "operand=text\tinsert_values_row_count\t";
+      out += std::to_string(end_row - first_row);
       out += "\n";
+      out += "operand=text\tinsert_values_column_count\t";
+      out += std::to_string(column_count);
+      out += "\n";
+      out += "operand=text\tinsert_values_column_list_present\tfalse\n";
+      if (include_compact_payload) {
+        out += "operand=text\tinsert_values_compact_format\tsbsql.insert_values.cells.v1\n";
+        out += "operand=text\tinsert_values_compact_payload\t";
+        out += EscapeOperationOperandField(
+            CompactCopyRowsPayload(copy, first_row, end_row, false));
+        out += "\n";
+      } else {
+        out += "operand=text\tnative_row_packet_required\ttrue\n";
+        out += "operand=text\tnative_row_packet_format\tscratchbird.native_rows.v1\n";
+      }
+      out += "operand=text\tinsert_values_parser_executes_sql\tfalse\n";
+      for (std::size_t column_index = 0; column_index < column_count; ++column_index) {
+        out += "operand=text\tinsert_values_descriptor_column_";
+        out += std::to_string(column_index);
+        out += "\t";
+        out += EscapeOperationOperandField(copy.rows[first_row].fields[column_index].first);
+        out += "\n";
+      }
+      out += "operand=text\tsblr.canonical_rowset_shared_shape\ttrue\n";
+    } else {
+      for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+        const auto& row = copy.rows[row_index];
+        const std::string row_uuid = GenerateCopyImportRowUuid();
+        for (const auto& [name, value] : row.fields) {
+          out += value.has_value() ? "operand=row_field:character\t"
+                                   : "operand=row_null_field:character\t";
+          out += row_uuid;
+          out += "|";
+          out += EscapeOperationOperandField(name);
+          out += "\t";
+          out += value.has_value() ? EscapeOperationOperandField(*value) : "";
+          out += "\n";
+        }
+      }
     }
   }
   return out;
 }
 
-std::vector<std::uint8_t> CopyInResponsePayload() {
+std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint8_t format) {
+  const std::uint32_t base =
+      format == kCopyFormatBinaryRowsetV1 ? kCopyBinaryWindowBytes : kCopyDefaultWindowBytes;
+  if (const auto found = state.session_parameters.find("copy_window_bytes");
+      found != state.session_parameters.end()) {
+    try {
+      const auto parsed = static_cast<std::uint64_t>(std::stoull(found->second));
+      if (parsed >= 16u * 1024u && parsed <= 16u * 1024u * 1024u) {
+        return static_cast<std::uint32_t>(parsed);
+      }
+    } catch (...) {
+    }
+  }
+  return base;
+}
+
+std::vector<std::uint8_t> CopyInResponsePayload(SbwpSessionState* state) {
+  const bool binary_copy =
+      state != nullptr && FeatureNegotiated(*state, kFeatureBinaryCopy);
+  const std::uint8_t format =
+      binary_copy ? kCopyFormatBinaryRowsetV1 : kCopyFormatCanonicalRowFieldsText;
+  const std::uint32_t window_bytes =
+      state == nullptr ? kCopyDefaultWindowBytes : CopyWindowBytesForSession(*state, format);
+  if (state != nullptr) {
+    state->copy_import.copy_data_format = format;
+    state->copy_import.window_bytes = window_bytes;
+    state->copy_import.format_family =
+        binary_copy ? "binary_rowset_v1" : "canonical_row_fields";
+  }
   std::vector<std::uint8_t> out;
-  out.push_back(kCopyFormatCanonicalRowFieldsText);
-  PutU32(&out, kCopyDefaultWindowBytes);
+  out.push_back(format);
+  PutU32(&out, window_bytes);
   return out;
 }
 
@@ -3179,7 +3385,94 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   bound.sql = SubstituteParams(statement.sql, literals);
   bound.param_types = statement.param_types;
   bound.param_values = std::move(values);
+  bound.param_rows.push_back(bound.param_values);
   bound.insert_rowset_plan = statement.insert_rowset_plan;
+  return bound;
+}
+
+bool LooksLikeP1ParameterDataBind(const std::vector<std::uint8_t>& payload) {
+  return payload.size() >= 4 &&
+         ReadU16(payload, 0) == datatypes::kNativeWireMetadataLayoutVersion &&
+         payload[2] == static_cast<std::uint8_t>(datatypes::WireParameterPacketKind::bind_request);
+}
+
+const PreparedStatement* FindArrayBindStatement(
+    const datatypes::ParameterDataPacket& packet,
+    const std::map<std::string, PreparedStatement>& statements) {
+  const auto parameter_count = packet.slot_descriptors.size();
+  const PreparedStatement* selected = nullptr;
+  for (const auto& [name, statement] : statements) {
+    (void)name;
+    if (!statement.insert_rowset_plan.has_value()) continue;
+    if (statement.param_types.size() != parameter_count) continue;
+    if (selected != nullptr) return nullptr;
+    selected = &statement;
+  }
+  return selected;
+}
+
+std::optional<std::optional<std::string>> DecodeParameterPacketCell(
+    const datatypes::ParameterValueCell& cell,
+    std::uint32_t oid,
+    std::string* diagnostic_code) {
+  if (cell.value_state == datatypes::WireValueState::sql_null) {
+    return std::optional<std::string>{};
+  }
+  if (cell.value_state != datatypes::WireValueState::value_present) {
+    if (diagnostic_code != nullptr) *diagnostic_code = "SBWP.ARRAY_BIND.VALUE_STATE_UNSUPPORTED";
+    return std::nullopt;
+  }
+  const std::optional<std::vector<std::uint8_t>> payload = cell.payload;
+  const std::uint16_t format =
+      cell.payload_encoding == datatypes::WirePayloadEncoding::utf8_text ? 0 : 1;
+  return DecodeParamValue(oid, format, payload);
+}
+
+std::optional<BoundPortal> ParseArrayBindPayload(
+    const std::vector<std::uint8_t>& payload,
+    const std::map<std::string, PreparedStatement>& statements,
+    std::string* diagnostic_code) {
+  auto decoded = datatypes::DecodeParameterDataPacket(payload);
+  if (!decoded.ok) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = decoded.diagnostic_code.empty()
+                             ? "SBWP.ARRAY_BIND.PARAMETER_PACKET_INVALID"
+                             : decoded.diagnostic_code;
+    }
+    return std::nullopt;
+  }
+  if (decoded.packet.bind_shape != datatypes::WireParameterBindShape::array_bind_rows) {
+    if (diagnostic_code != nullptr) *diagnostic_code = "SBWP.ARRAY_BIND.SHAPE_UNSUPPORTED";
+    return std::nullopt;
+  }
+  const PreparedStatement* statement = FindArrayBindStatement(decoded.packet, statements);
+  if (statement == nullptr) {
+    if (diagnostic_code != nullptr) *diagnostic_code = "SBWP.ARRAY_BIND.STATEMENT_AMBIGUOUS";
+    return std::nullopt;
+  }
+  BoundPortal bound;
+  bound.sql = statement->sql;
+  bound.param_types = statement->param_types;
+  bound.insert_rowset_plan = statement->insert_rowset_plan;
+  bound.param_rows.reserve(decoded.packet.row_value_frames.size());
+  for (const auto& frame : decoded.packet.row_value_frames) {
+    std::vector<std::optional<std::string>> values(statement->param_types.size());
+    for (const auto& cell : frame.values) {
+      if (cell.slot_ordinal == 0 || cell.slot_ordinal > statement->param_types.size()) {
+        if (diagnostic_code != nullptr) *diagnostic_code = "SBWP.ARRAY_BIND.PARAMETER_ORDINAL_INVALID";
+        return std::nullopt;
+      }
+      const std::size_t index = static_cast<std::size_t>(cell.slot_ordinal - 1);
+      auto decoded_value = DecodeParameterPacketCell(cell, statement->param_types[index],
+                                                     diagnostic_code);
+      if (!decoded_value.has_value()) return std::nullopt;
+      values[index] = std::move(*decoded_value);
+    }
+    bound.param_rows.push_back(std::move(values));
+  }
+  if (!bound.param_rows.empty()) {
+    bound.param_values = bound.param_rows.front();
+  }
   return bound;
 }
 
@@ -3224,24 +3517,35 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
   rowset.native_bulk_ingest_enabled = true;
   rowset.sql = portal.sql;
   rowset.target_object_uuid = plan.target_object_uuid;
-  CopyImportRow row;
-  row.fields.reserve(plan.column_names.size());
-  for (std::size_t i = 0; i < plan.column_names.size(); ++i) {
-    const std::size_t parameter_index =
-        i < plan.parameter_indexes.size() ? plan.parameter_indexes[i] : portal.param_values.size();
-    if (parameter_index >= portal.param_values.size()) {
-      if (!SendError(io,
-                     state,
-                     "08P01",
-                     "SBWP.BIND.PARAMETER_MISSING",
-                     "prepared rowset bind did not supply every required parameter")) {
-        return false;
+  auto append_parameter_row = [&](const std::vector<std::optional<std::string>>& values) -> bool {
+    CopyImportRow row;
+    row.fields.reserve(plan.column_names.size());
+    for (std::size_t i = 0; i < plan.column_names.size(); ++i) {
+      const std::size_t parameter_index =
+          i < plan.parameter_indexes.size() ? plan.parameter_indexes[i] : values.size();
+      if (parameter_index >= values.size()) {
+        if (!SendError(io,
+                       state,
+                       "08P01",
+                       "SBWP.BIND.PARAMETER_MISSING",
+                       "prepared rowset bind did not supply every required parameter")) {
+          return false;
+        }
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
-      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+      row.fields.emplace_back(plan.column_names[i], values[parameter_index]);
     }
-    row.fields.emplace_back(plan.column_names[i], portal.param_values[parameter_index]);
+    rowset.rows.push_back(std::move(row));
+    return true;
+  };
+  rowset.rows.reserve(portal.param_rows.empty() ? 1 : portal.param_rows.size());
+  if (portal.param_rows.empty()) {
+    if (!append_parameter_row(portal.param_values)) return false;
+  } else {
+    for (const auto& values : portal.param_rows) {
+      if (!append_parameter_row(values)) return false;
+    }
   }
-  rowset.rows.push_back(std::move(row));
   const std::string envelope = BuildNativeBulkIngestExecuteEnvelope(rowset, 0, rowset.rows.size());
   auto result = plan.server_prepared_statement_uuid.empty()
                     ? session->RunSblrEnvelope(envelope, false)
@@ -3442,7 +3746,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
         native_bulk_ingest_enabled || native_bulk_ingest_requested;
     state->copy_import.sql = sql;
     state->copy_import.target_object_uuid = *target_uuid;
-    if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload())) return false;
+    if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload(state))) return false;
     return true;
   }
   if (!SendPipelineResult(io, session, state, sql, result)) return false;
@@ -3464,8 +3768,12 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      "COPY_DATA arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
-  const auto rows = ParseTextCopyRows(frame.payload);
+  const auto rows = state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1
+                        ? ParseBinaryCopyRows(frame.payload)
+                        : ParseTextCopyRows(frame.payload);
   if (!rows.has_value()) {
+    const bool was_binary_copy =
+        state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1;
     state->copy_import = CopyImportState{};
     if (session != nullptr) {
       RefreshWireTransactionStateFromSession(*session, state);
@@ -3474,10 +3782,15 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      state,
                      "22000",
                      "SBSQL.COPY.DATA_ROW_INVALID",
-                     "CopyData payload must contain newline-delimited canonical field=value rows") &&
+                     was_binary_copy
+                         ? "CopyData binary rowset frame is malformed"
+                         : "CopyData payload must contain newline-delimited canonical field=value rows") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
-  state->copy_import.rows.insert(state->copy_import.rows.end(), rows->begin(), rows->end());
+  state->copy_import.rows.reserve(state->copy_import.rows.size() + rows->size());
+  state->copy_import.rows.insert(state->copy_import.rows.end(),
+                                 std::make_move_iterator(rows->begin()),
+                                 std::make_move_iterator(rows->end()));
   return true;
 }
 
@@ -3512,11 +3825,21 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
        first_row += kCopyExecuteRowsPerSblrEnvelope) {
     const std::size_t row_count =
         std::min(kCopyExecuteRowsPerSblrEnvelope, copy.rows.size() - first_row);
+    const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
+    const bool use_native_row_packet =
+        copy.native_bulk_ingest && CopyRowsHaveSharedShape(copy, first_row, end_row);
     const std::string envelope =
         copy.native_bulk_ingest
-            ? BuildNativeBulkIngestExecuteEnvelope(copy, first_row, row_count)
+            ? BuildNativeBulkIngestExecuteEnvelope(
+                  copy, first_row, row_count, !use_native_row_packet)
             : BuildCopyExecuteEnvelope(copy, first_row, row_count);
-    auto chunk_result = session->RunSblrEnvelope(envelope, false);
+    const std::vector<std::uint8_t> data_packet =
+        use_native_row_packet ? BuildNativeRowPacket(copy, first_row, row_count)
+                              : std::vector<std::uint8_t>{};
+    auto chunk_result =
+        data_packet.empty()
+            ? session->RunSblrEnvelope(envelope, false)
+            : session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false);
     if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
       const std::string diagnostic_code = FirstDiagnosticCode(
           chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
@@ -3888,13 +4211,33 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
       }
       case kBind: {
         state.ready_sent_for_current_operation = false;
-        if (state.p1_payloads && frame.payload.size() >= 4 && ReadU16(frame.payload, 0) == 1 &&
-            frame.payload[3] != 0) {
+        if (state.p1_payloads && LooksLikeP1ParameterDataBind(frame.payload) &&
+            frame.payload[3] == static_cast<std::uint8_t>(
+                                    datatypes::WireParameterBindShape::array_bind_rows)) {
           if (!FeatureNegotiated(state, kFeatureArrayBind)) {
             if (!SendFeatureNotNegotiated(&io, &state, frame.header.msg_type)) rc = 1;
-          } else if (!SendUnsupportedFeature(&io, &state, "array-bind execute")) {
-            rc = 1;
+            break;
           }
+          std::string diagnostic_code;
+          auto bound = ParseArrayBindPayload(frame.payload, state.statements, &diagnostic_code);
+          if (!bound) {
+            if (!SendError(&io,
+                           &state,
+                           "08P01",
+                           diagnostic_code.empty() ? "SBWP.ARRAY_BIND.INVALID" : diagnostic_code,
+                           "invalid array-bind parameter data packet")) rc = 1;
+            break;
+          }
+          const std::string portal_name;
+          if (!StoreBoundPortal(&state, portal_name, std::move(*bound))) {
+            if (!SendError(&io,
+                           &state,
+                           "54000",
+                           "bound portal cache limit exceeded",
+                           "array-bind portal exceeds the per-session server cache budget")) rc = 1;
+            break;
+          }
+          if (!SendFrame(&io, &state, kBindComplete, {})) rc = 1;
           break;
         }
         std::string portal_name;

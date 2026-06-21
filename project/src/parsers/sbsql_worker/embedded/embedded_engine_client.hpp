@@ -13,6 +13,7 @@
 #include "ipc/sbps_client.hpp"
 
 #include <memory>
+#include <vector>
 
 namespace scratchbird::parser::sbsql {
 
@@ -40,6 +41,11 @@ class EmbeddedEngineClient {
   ServerExecutionResult ExecuteSblr(const SessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false);
+  ServerExecutionResult ExecuteSblrWithDataPacket(
+      const SessionContext& session,
+      std::string_view encoded_sblr_envelope,
+      const std::vector<std::uint8_t>& data_packet,
+      bool cursor_requested = false);
   ServerFetchResult FetchCursor(const SessionContext& session,
                                 std::string_view cursor_uuid,
                                 std::uint64_t max_rows = 1,
