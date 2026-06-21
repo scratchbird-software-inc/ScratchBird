@@ -331,7 +331,14 @@ bool LooksDecimal(std::string_view value);
 struct SimpleInsertRowsetPreparedEntry {
   std::string prepared_statement_uuid;
   std::string operation_id;
+  std::string target_object_uuid;
+  std::uint64_t catalog_epoch{0};
   std::uint64_t security_policy_epoch{0};
+  std::uint64_t grant_epoch{0};
+  std::uint64_t descriptor_epoch{0};
+  std::uint64_t localized_name_epoch{0};
+  std::uint64_t language_resource_epoch{0};
+  std::uint64_t message_resource_epoch{0};
 };
 
 enum class SbwpTxnFinalityState : std::uint8_t {
@@ -376,7 +383,10 @@ struct SbwpSessionState {
   std::uint32_t server_sequence{0};
   std::uint64_t txn_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  std::uint64_t catalog_epoch{0};
   std::uint64_t security_policy_epoch{0};
+  std::uint64_t grant_epoch{0};
+  std::uint64_t descriptor_epoch{0};
   bool authenticated{false};
   bool p1_payloads{false};
   bool ready_sent_for_current_operation{false};
@@ -1035,6 +1045,67 @@ std::string SimpleInsertRowsetCacheKey(const CopyImportState& rowset) {
     }
   }
   return key;
+}
+
+std::string SimpleInsertRowsetPresentedShapeKey(const CopyImportState& rowset) {
+  std::string key = rowset.target_name;
+  if (!rowset.rows.empty()) {
+    for (const auto& [name, _] : rowset.rows.front().fields) {
+      key.push_back('\x1f');
+      key += name;
+    }
+  }
+  return key;
+}
+
+void RefreshWireAuthorityEpochsFromSession(const SbsqlTestWireSession& session,
+                                           SbwpSessionState* state) {
+  if (state == nullptr) return;
+  const auto& context = session.session();
+  state->catalog_epoch = context.catalog_epoch;
+  state->security_policy_epoch = context.security_policy_epoch;
+  state->grant_epoch = context.grant_epoch;
+  state->descriptor_epoch = context.descriptor_epoch;
+  state->language_resource_epoch = context.language_resource_epoch;
+  state->localized_name_epoch = context.localized_name_epoch;
+  state->message_resource_epoch = context.message_resource_epoch;
+}
+
+bool SimpleInsertRowsetPreparedEntryCurrent(
+    const SimpleInsertRowsetPreparedEntry& entry,
+    const SessionContext& context) {
+  return !entry.prepared_statement_uuid.empty() &&
+         !entry.target_object_uuid.empty() &&
+         entry.catalog_epoch == context.catalog_epoch &&
+         entry.security_policy_epoch == context.security_policy_epoch &&
+         entry.grant_epoch == context.grant_epoch &&
+         entry.descriptor_epoch == context.descriptor_epoch &&
+         entry.localized_name_epoch == context.localized_name_epoch &&
+         entry.language_resource_epoch == context.language_resource_epoch &&
+         entry.message_resource_epoch == context.message_resource_epoch;
+}
+
+void CaptureSimpleInsertRowsetAuthorityEpochs(
+    const SbsqlTestWireSession& session,
+    SimpleInsertRowsetPreparedEntry* entry) {
+  if (entry == nullptr) return;
+  const auto& context = session.session();
+  entry->catalog_epoch = context.catalog_epoch;
+  entry->security_policy_epoch = context.security_policy_epoch;
+  entry->grant_epoch = context.grant_epoch;
+  entry->descriptor_epoch = context.descriptor_epoch;
+  entry->localized_name_epoch = context.localized_name_epoch;
+  entry->language_resource_epoch = context.language_resource_epoch;
+  entry->message_resource_epoch = context.message_resource_epoch;
+}
+
+bool SbwpOperationInvalidatesSimpleInsertPreparedCache(std::string_view operation_id) {
+  return operation_id.rfind("ddl.", 0) == 0 ||
+         operation_id.rfind("catalog.", 0) == 0 ||
+         operation_id.rfind("security.", 0) == 0 ||
+         operation_id.rfind("language.", 0) == 0 ||
+         operation_id.rfind("policy.", 0) == 0 ||
+         operation_id.rfind("auth.", 0) == 0;
 }
 
 std::string ScriptChunkSetTermDirective(const std::string& chunk) {
@@ -3517,6 +3588,7 @@ bool ShouldAutoCursor(std::string_view sql) {
 void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
                                             SbwpSessionState* state) {
   if (state == nullptr) return;
+  RefreshWireAuthorityEpochsFromSession(session, state);
   const auto& context = session.session();
   if (context.local_transaction_id == 0) return;
   state->txn_id = context.local_transaction_id;
@@ -3685,35 +3757,54 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
   };
   state->ready_sent_for_current_operation = false;
   if (command_accepted != nullptr) *command_accepted = true;
-  const std::int64_t resolve_started = phase_trace ? ParserPhaseNowNs() : 0;
-  auto resolved = session->ResolvePublicNameForWire(rowset.target_name, false, "relation");
-  WriteParserPhaseTraceIfEnabled(phase_trace,
-                                 "simple_insert_rowset_fast_path",
-                                 "resolve_target_uuid",
-                                 resolve_started,
-                                 rowset.target_name.size(),
-                                 1,
-                                 row_count,
-                                 resolved.resolved ? "resolved" : "not_resolved");
-  if (!resolved.resolved || resolved.object_uuid.empty()) {
-    write_total_trace("not_applicable_unresolved_target");
-    return std::nullopt;
-  }
+  RefreshWireAuthorityEpochsFromSession(*session, state);
+  const std::string presented_shape_key =
+      SimpleInsertRowsetPresentedShapeKey(rowset);
+  auto cache_it = state->simple_insert_rowset_cache.find(presented_shape_key);
+  bool cache_hit = cache_it != state->simple_insert_rowset_cache.end() &&
+                   SimpleInsertRowsetPreparedEntryCurrent(cache_it->second,
+                                                          session->session());
+  if (cache_hit) {
+    rowset.target_object_uuid = cache_it->second.target_object_uuid;
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "resolve_target_uuid",
+                                   phase_trace ? ParserPhaseNowNs() : 0,
+                                   rowset.target_name.size(),
+                                   1,
+                                   row_count,
+                                   "prepared_shape_cache_hit");
+  } else {
+    const std::int64_t resolve_started = phase_trace ? ParserPhaseNowNs() : 0;
+    auto resolved = session->ResolvePublicNameForWire(rowset.target_name, false, "relation");
+    RefreshWireAuthorityEpochsFromSession(*session, state);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "simple_insert_rowset_fast_path",
+                                   "resolve_target_uuid",
+                                   resolve_started,
+                                   rowset.target_name.size(),
+                                   1,
+                                   row_count,
+                                   resolved.resolved ? "resolved" : "not_resolved");
+    if (!resolved.resolved || resolved.object_uuid.empty()) {
+      write_total_trace("not_applicable_unresolved_target");
+      return std::nullopt;
+    }
 
-  rowset.target_object_uuid = std::move(resolved.object_uuid);
-  state->security_policy_epoch =
-      std::max(state->security_policy_epoch, session->session().security_policy_epoch);
+    rowset.target_object_uuid = std::move(resolved.object_uuid);
+    cache_it = state->simple_insert_rowset_cache.find(presented_shape_key);
+    cache_hit = cache_it != state->simple_insert_rowset_cache.end() &&
+                SimpleInsertRowsetPreparedEntryCurrent(cache_it->second,
+                                                       session->session()) &&
+                cache_it->second.target_object_uuid == rowset.target_object_uuid;
+  }
   const std::int64_t cache_lookup_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::string cache_key = SimpleInsertRowsetCacheKey(rowset);
-  auto cache_it = state->simple_insert_rowset_cache.find(cache_key);
-  const bool cache_hit = cache_it != state->simple_insert_rowset_cache.end() &&
-                         cache_it->second.security_policy_epoch == state->security_policy_epoch &&
-                         !cache_it->second.prepared_statement_uuid.empty();
   WriteParserPhaseTraceIfEnabled(phase_trace,
                                  "simple_insert_rowset_fast_path",
                                  "prepare_cache_lookup",
                                  cache_lookup_started,
-                                 cache_key.size(),
+                                 presented_shape_key.size() + cache_key.size(),
                                  state->simple_insert_rowset_cache.size(),
                                  row_count,
                                  cache_hit ? "hit" : "miss_or_stale");
@@ -3740,9 +3831,11 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
       SimpleInsertRowsetPreparedEntry entry;
       entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
       entry.operation_id = prepared.operation_id;
-      entry.security_policy_epoch = state->security_policy_epoch;
+      entry.target_object_uuid = rowset.target_object_uuid;
+      CaptureSimpleInsertRowsetAuthorityEpochs(*session, &entry);
       cache_it =
-          state->simple_insert_rowset_cache.insert_or_assign(cache_key, std::move(entry)).first;
+          state->simple_insert_rowset_cache.insert_or_assign(presented_shape_key,
+                                                             std::move(entry)).first;
     } else {
       cache_it = state->simple_insert_rowset_cache.end();
     }
@@ -3796,6 +3889,10 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
     const std::string diagnostic_code =
         FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
     const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
+    if (diagnostic_code.find("PREPARED_STATEMENT") != std::string::npos ||
+        diagnostic_detail.find("prepared_statement") != std::string::npos) {
+      state->simple_insert_rowset_cache.erase(presented_shape_key);
+    }
     if (!SendError(io,
                    state,
                    "42000",
@@ -4410,7 +4507,6 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                    *fast_insert ? "fast_insert_handled" : "fast_insert_failed");
     return *fast_insert;
   }
-  state->simple_insert_rowset_cache.clear();
   const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
   const std::int64_t pipeline_started = phase_trace ? ParserPhaseNowNs() : 0;
@@ -4466,6 +4562,9 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     return !send_ready || SendReady(io, state);
   }
   RefreshWireTransactionStateFromSession(*session, state);
+  if (SbwpOperationInvalidatesSimpleInsertPreparedCache(result.server_operation_id)) {
+    state->simple_insert_rowset_cache.clear();
+  }
   if (result.server_operation_id == "transaction.begin") {
     if (const auto local_id = TransactionIdFromResultPayload(result.server_result_payload)) {
       state->txn_id = *local_id;
@@ -4991,7 +5090,10 @@ bool HandleStartup(SbsqlTestWireSession* session,
   state->txn_id = session->session().local_transaction_id;
   state->snapshot_visible_through_local_transaction_id =
       session->session().snapshot_visible_through_local_transaction_id;
+  state->catalog_epoch = session->session().catalog_epoch;
   state->security_policy_epoch = session->session().security_policy_epoch;
+  state->grant_epoch = session->session().grant_epoch;
+  state->descriptor_epoch = session->session().descriptor_epoch;
   state->authenticated_user_uuid = session->session().authenticated_user_uuid;
   state->auth_provider_family = session->session().auth_provider_family.empty()
                                     ? credentials.provider_family
