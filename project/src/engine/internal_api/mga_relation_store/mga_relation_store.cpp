@@ -627,6 +627,9 @@ struct PreparedIndexLineBufferJob {
   std::map<std::string, std::string> scoped_lines;
 };
 
+constexpr std::size_t kHotAppendRowLineReserveBytes = 384;
+constexpr std::size_t kHotAppendIndexLineReserveBytes = 384;
+
 bool PreparedIndexEntryLineLess(const PreparedIndexEntryLine& left,
                                 const PreparedIndexEntryLine& right) {
   return std::tie(left.table_uuid,
@@ -831,7 +834,7 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
   if (single_table_batch) {
     const std::string scoped_path = ScopedIndexStorePath(context, single_table_uuid);
     std::string& scoped_buffer = job.scoped_lines[scoped_path];
-    scoped_buffer.reserve(entries.size() * 192);
+    scoped_buffer.reserve(entries.size() * kHotAppendIndexLineReserveBytes);
     std::uint64_t event_sequence = first_event_sequence;
     for (const auto& entry : entries) {
       AppendIndexEntryStoreLine(&scoped_buffer,
@@ -854,7 +857,7 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
     entries_per_path[ScopedIndexStorePath(context, entry.table_uuid)] += 1;
   }
   for (const auto& [path, count] : entries_per_path) {
-    job.scoped_lines[path].reserve(count * 192);
+    job.scoped_lines[path].reserve(count * kHotAppendIndexLineReserveBytes);
   }
   std::uint64_t event_sequence = first_event_sequence;
   for (const auto& entry : entries) {
@@ -3900,7 +3903,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
-  row_buffer.reserve(rows->size() * 192);
+  row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
   const std::string single_table_uuid = rows->front().table_uuid;
   const bool single_table_batch =
       std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
@@ -3913,8 +3916,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   if (single_table_batch) {
     const std::string scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
     single_scoped_buffer = &impl_->scoped_row_lines[scoped_path];
-    single_scoped_buffer->reserve(single_scoped_buffer->size() +
-                                  rows->size() * 192);
+    single_scoped_buffer->reserve(
+        single_scoped_buffer->size() +
+        rows->size() * kHotAppendRowLineReserveBytes);
     single_summary_delta = &impl_->scoped_row_summary_deltas[single_table_uuid];
     auto& summary_delta = *single_summary_delta;
     if (summary_delta.row_version_count == 0 &&
@@ -3932,7 +3936,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     for (const auto& [table_uuid, row_count] : rows_per_table) {
       const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
       std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
-      scoped_buffer.reserve(scoped_buffer.size() + row_count * 192);
+      scoped_buffer.reserve(scoped_buffer.size() +
+                            row_count * kHotAppendRowLineReserveBytes);
       scoped_row_path_by_table.emplace(table_uuid, scoped_path);
       auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
       if (summary_delta.row_version_count == 0 &&
