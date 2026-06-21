@@ -300,7 +300,17 @@ struct CopyImportState {
   std::uint64_t source_size_bytes{0};
   std::uint64_t preallocation_bytes{0};
   std::uint64_t preallocation_factor_percent{82};
+  std::string target_name;
   std::vector<CopyImportRow> rows;
+};
+
+bool LooksInteger(std::string_view value);
+bool LooksDecimal(std::string_view value);
+
+struct SimpleInsertRowsetPreparedEntry {
+  std::string prepared_statement_uuid;
+  std::string operation_id;
+  std::uint64_t security_policy_epoch{0};
 };
 
 enum class SbwpTxnFinalityState : std::uint8_t {
@@ -373,6 +383,7 @@ struct SbwpSessionState {
   std::deque<std::string> portal_lru;
   std::size_t bound_portal_bytes{0};
   CopyImportState copy_import;
+  std::map<std::string, SimpleInsertRowsetPreparedEntry> simple_insert_rowset_cache;
   std::map<std::string, SbwpTxnFinalityRecord> finality_by_idempotency_key;
   std::map<std::string, std::string> idempotency_key_by_finality_token;
 };
@@ -773,6 +784,143 @@ std::optional<PreparedStatement::InsertRowsetPlan> AnalyzePreparedInsertRowset(s
   plan.column_names = std::move(columns);
   plan.parameter_indexes = std::move(parameter_indexes);
   return plan;
+}
+
+bool DecodeSimpleSqlStringLiteral(std::string_view token, std::string* out) {
+  if (token.size() < 2 || token.front() != '\'' || token.back() != '\'') return false;
+  std::string decoded;
+  decoded.reserve(token.size() - 2);
+  for (std::size_t i = 1; i + 1 < token.size(); ++i) {
+    const char ch = token[i];
+    if (ch == '\'') {
+      if (i + 2 < token.size() && token[i + 1] == '\'') {
+        decoded.push_back('\'');
+        ++i;
+        continue;
+      }
+      return false;
+    }
+    decoded.push_back(ch);
+  }
+  *out = std::move(decoded);
+  return true;
+}
+
+bool ParseSimpleInsertLiteralValue(std::string_view raw,
+                                   std::optional<std::string>* value) {
+  std::string token = Trim(std::string(raw));
+  if (token.empty()) return false;
+  const std::string upper = Upper(token);
+  if (upper == "NULL") {
+    *value = std::nullopt;
+    return true;
+  }
+  if (upper == "DEFAULT") return false;
+  std::string decoded;
+  if (DecodeSimpleSqlStringLiteral(token, &decoded)) {
+    *value = std::move(decoded);
+    return true;
+  }
+  if (upper == "TRUE" || upper == "FALSE" || upper == "T" || upper == "F" ||
+      LooksInteger(token) || LooksDecimal(token)) {
+    *value = std::move(token);
+    return true;
+  }
+  return false;
+}
+
+std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view raw_sql) {
+  const std::string sql = StripSqlTerminator(std::string(raw_sql));
+  const std::string upper = Upper(sql);
+  if (!StartsWithWord(upper, "INSERT")) return std::nullopt;
+  const std::size_t into_pos = FindKeywordOutsideSql(sql, "INTO");
+  if (into_pos == std::string_view::npos) return std::nullopt;
+  std::size_t pos = into_pos + 4;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos >= sql.size()) return std::nullopt;
+  const std::size_t target_start = pos;
+  bool in_double = false;
+  while (pos < sql.size()) {
+    const char ch = sql[pos];
+    const char next = pos + 1 < sql.size() ? sql[pos + 1] : '\0';
+    if (ch == '"') {
+      if (in_double && next == '"') {
+        pos += 2;
+        continue;
+      }
+      in_double = !in_double;
+      ++pos;
+      continue;
+    }
+    if (!in_double && (std::isspace(static_cast<unsigned char>(ch)) || ch == '(')) break;
+    ++pos;
+  }
+  const std::string target_name = Trim(std::string(sql.substr(target_start, pos - target_start)));
+  if (target_name.empty()) return std::nullopt;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  if (pos >= sql.size() || sql[pos] != '(') return std::nullopt;
+  const std::size_t columns_end = FindMatchingSqlParen(sql, pos);
+  if (columns_end == std::string_view::npos) return std::nullopt;
+  auto columns = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, columns_end - pos - 1));
+  if (columns.empty()) return std::nullopt;
+  for (auto& column : columns) {
+    column = TrimIdentifierToken(std::move(column));
+    if (column.empty()) return std::nullopt;
+  }
+  const std::size_t values_pos = FindKeywordOutsideSql(sql, "VALUES", columns_end + 1);
+  if (values_pos == std::string_view::npos) return std::nullopt;
+  const std::string between = Trim(std::string(
+      std::string_view(sql).substr(columns_end + 1, values_pos - columns_end - 1)));
+  if (!between.empty()) return std::nullopt;
+
+  CopyImportState rowset;
+  rowset.native_bulk_ingest = true;
+  rowset.native_bulk_ingest_enabled = true;
+  rowset.sql = sql;
+  rowset.target_name = target_name;
+  rowset.source_size_bytes = sql.size();
+  rowset.preallocation_bytes = sql.size();
+  rowset.preallocation_factor_percent = 100;
+  rowset.format_family = "binary_typed_rows";
+
+  pos = values_pos + 6;
+  while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  while (pos < sql.size()) {
+    if (sql[pos] != '(') return std::nullopt;
+    const std::size_t row_end = FindMatchingSqlParen(sql, pos);
+    if (row_end == std::string_view::npos) return std::nullopt;
+    auto values = SplitTopLevelComma(std::string_view(sql).substr(pos + 1, row_end - pos - 1));
+    if (values.size() != columns.size()) return std::nullopt;
+    CopyImportRow row;
+    row.fields.reserve(columns.size());
+    for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
+      std::optional<std::string> value;
+      if (!ParseSimpleInsertLiteralValue(values[column_index], &value)) return std::nullopt;
+      row.fields.emplace_back(columns[column_index], std::move(value));
+    }
+    rowset.rows.push_back(std::move(row));
+    pos = row_end + 1;
+    while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+    if (pos == sql.size()) break;
+    if (sql[pos] != ',') return std::nullopt;
+    ++pos;
+    while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) ++pos;
+  }
+  if (rowset.rows.size() < 2) {
+    return std::nullopt;
+  }
+  return rowset;
+}
+
+std::string SimpleInsertRowsetCacheKey(const CopyImportState& rowset) {
+  std::string key = rowset.target_object_uuid;
+  if (!rowset.rows.empty()) {
+    for (const auto& [name, _] : rowset.rows.front().fields) {
+      key.push_back('\x1f');
+      key += name;
+    }
+  }
+  return key;
 }
 
 std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_t* off) {
@@ -3034,6 +3182,9 @@ std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
       if (sql_surface_is_copy) {
         return "COPY " + std::to_string(completion_count);
       }
+      if (normalized.starts_with("INSERT")) {
+        return "INSERT " + std::to_string(completion_count);
+      }
       return "NATIVE_BULK_INGEST " + std::to_string(completion_count);
     }
   }
@@ -3203,6 +3354,76 @@ bool SendPipelineResult(ClientIo* io,
                    kCommandComplete,
                    CommandCompletePayload(CommandCompleteRowsFor(result),
                                           CommandTagFor(sql, result)));
+}
+
+std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* session,
+                                                         ClientIo* io,
+                                                         SbwpSessionState* state,
+                                                         std::string_view raw_sql,
+                                                         bool send_ready,
+                                                         bool autocommit_emulation) {
+  state->ready_sent_for_current_operation = false;
+  if (autocommit_emulation) return std::nullopt;
+  auto rowset = AnalyzeSimpleLiteralInsertRowset(raw_sql);
+  if (!rowset.has_value()) return std::nullopt;
+  auto resolved = session->ResolvePublicNameForWire(rowset->target_name, false, "relation");
+  if (!resolved.resolved || resolved.object_uuid.empty()) {
+    return std::nullopt;
+  }
+
+  rowset->target_object_uuid = std::move(resolved.object_uuid);
+  state->security_policy_epoch =
+      std::max(state->security_policy_epoch, session->session().security_policy_epoch);
+  const std::string cache_key = SimpleInsertRowsetCacheKey(*rowset);
+  auto cache_it = state->simple_insert_rowset_cache.find(cache_key);
+  if (cache_it == state->simple_insert_rowset_cache.end() ||
+      cache_it->second.security_policy_epoch != state->security_policy_epoch ||
+      cache_it->second.prepared_statement_uuid.empty()) {
+    CopyImportState prepare_template;
+    prepare_template.native_bulk_ingest = true;
+    prepare_template.native_bulk_ingest_enabled = true;
+    prepare_template.sql = rowset->sql;
+    prepare_template.target_object_uuid = rowset->target_object_uuid;
+    const auto prepared =
+        session->PrepareSblrForWire(BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
+    if (!prepared.accepted || prepared.prepared_statement_uuid.empty()) {
+      return std::nullopt;
+    }
+    SimpleInsertRowsetPreparedEntry entry;
+    entry.prepared_statement_uuid = prepared.prepared_statement_uuid;
+    entry.operation_id = prepared.operation_id;
+    entry.security_policy_epoch = state->security_policy_epoch;
+    cache_it = state->simple_insert_rowset_cache.insert_or_assign(cache_key, std::move(entry)).first;
+  }
+
+  const std::string envelope =
+      BuildNativeBulkIngestExecuteEnvelope(*rowset, 0, rowset->rows.size(), false);
+  const std::vector<std::uint8_t> data_packet =
+      BuildNativeRowPacket(*rowset, 0, rowset->rows.size());
+  if (data_packet.empty()) return std::nullopt;
+
+  auto result = session->RunPreparedSblrEnvelopeForWire(
+      cache_it->second.prepared_statement_uuid, envelope, data_packet, false);
+  if (!result.accepted || result.messages.has_errors()) {
+    const std::string diagnostic_code =
+        FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
+    const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
+    if (!SendError(io,
+                   state,
+                   "42000",
+                   FirstDiagnosticText(result.messages),
+                   diagnostic_detail.empty() ? diagnostic_code
+                                             : diagnostic_code + ";" + diagnostic_detail)) {
+      return false;
+    }
+    return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  RefreshWireTransactionStateFromSession(*session, state);
+  if (result.server_row_count == 0) result.server_row_count = rowset->rows.size();
+  result.server_affected_rows_present = true;
+  if (result.server_affected_rows == 0) result.server_affected_rows = rowset->rows.size();
+  if (!SendPipelineResult(io, session, state, rowset->sql, result)) return false;
+  return !send_ready || SendReady(io, state);
 }
 
 std::string SqlQuote(std::string_view value) {
@@ -3635,7 +3856,7 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
   auto result = plan.server_prepared_statement_uuid.empty()
                     ? session->RunSblrEnvelope(envelope, false)
                     : session->RunPreparedSblrEnvelopeForWire(
-                          plan.server_prepared_statement_uuid, envelope, false);
+                          plan.server_prepared_statement_uuid, envelope, {}, false);
   if (!result.accepted || result.messages.has_errors()) {
     const std::string diagnostic_code =
         FirstDiagnosticCode(result.messages, "SBWP.PREPARED_ROWSET.EXECUTION_REJECTED");
@@ -3733,6 +3954,13 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
     return !send_ready || SendReady(io, state);
   }
+  if (auto fast_insert =
+          TryExecuteSimpleInsertRowsetFastPath(
+              session, io, state, sql, send_ready, autocommit_emulation);
+      fast_insert.has_value()) {
+    return *fast_insert;
+  }
+  state->simple_insert_rowset_cache.clear();
   const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
   const auto result = session->RunPipeline(sql,

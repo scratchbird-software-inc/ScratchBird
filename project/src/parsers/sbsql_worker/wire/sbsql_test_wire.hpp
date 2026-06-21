@@ -77,6 +77,7 @@ class SbsqlTestWireSession {
   ServerPrepareSblrResult PrepareSblrForWire(std::string_view encoded_sblr_envelope);
   PipelineResult RunPreparedSblrEnvelopeForWire(std::string_view prepared_statement_uuid,
                                                 std::string_view encoded_sblr_envelope,
+                                                const std::vector<std::uint8_t>& data_packet = {},
                                                 bool cursor_requested = false);
   ServerFetchResult FetchCursorOnRoute(std::string_view cursor_uuid,
                                        std::uint64_t max_rows = 1,

@@ -123,6 +123,7 @@ class SbpsClient {
   ServerExecutionResult ExecutePreparedSblr(const SessionContext& session,
                                             std::string_view prepared_statement_uuid,
                                             std::string_view encoded_sblr_envelope = {},
+                                            const std::vector<std::uint8_t>& data_packet = {},
                                             bool cursor_requested = false) const;
   ServerFetchResult FetchCursor(const SessionContext& session,
                                 std::string_view cursor_uuid,

@@ -1347,12 +1347,16 @@ std::vector<std::uint8_t> EncodeExecutePreparedPayload(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid,
     std::string_view encoded_sblr_envelope,
-    bool cursor_requested) {
+    bool cursor_requested,
+    const std::vector<std::uint8_t>& data_packet = {}) {
   std::vector<std::uint8_t> out;
   PutUuid(&out, session_uuid);
   PutUuid(&out, prepared_statement_uuid);
   PutU8(&out, cursor_requested ? 1 : 0);
   PutString(&out, encoded_sblr_envelope);
+  if (!data_packet.empty()) {
+    PutBytes(&out, data_packet);
+  }
   return out;
 }
 
@@ -1920,6 +1924,7 @@ ServerExecutionResult SbpsClient::ExecutePreparedSblr(
     const SessionContext& session,
     std::string_view prepared_statement_uuid,
     std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) const {
   ServerExecutionResult result;
   if (prepared_statement_uuid.empty()) {
@@ -1940,7 +1945,8 @@ ServerExecutionResult SbpsClient::ExecutePreparedSblr(
                    EncodeExecutePreparedPayload(session_uuid,
                                                 TextToUuid(prepared_statement_uuid),
                                                 encoded_sblr_envelope,
-                                                cursor_requested),
+                                                cursor_requested,
+                                                data_packet),
                    &response,
                    &messages)) {
     result.messages = std::move(messages);
