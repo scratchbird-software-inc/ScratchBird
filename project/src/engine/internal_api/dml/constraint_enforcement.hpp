@@ -50,6 +50,8 @@ struct ConstraintDmlProofContext {
 };
 
 struct ConstraintDmlValidationCache {
+  std::map<std::string, std::vector<std::pair<std::string, std::map<std::string, std::string>>>>
+      constraint_columns_by_table_uuid;
   std::map<std::string, std::vector<CrudRowVersionRecord>> visible_rows_by_table_uuid;
   std::set<std::string> visible_rows_built_for_table_uuid;
   std::map<std::string, std::map<std::string, std::set<std::string>>> unique_key_rows_by_index_uuid;
@@ -92,7 +94,8 @@ void RecordIndexBackedUniquePreflightProof(
 ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
-    const std::vector<std::pair<std::string, std::string>>& input_values);
+    const std::vector<std::pair<std::string, std::string>>& input_values,
+    ConstraintDmlValidationCache* cache = nullptr);
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const EngineRequestContext& context,
@@ -125,6 +128,14 @@ EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
     const CrudTableRecord& table,
     const CrudRowVersionRecord& old_row,
     const std::vector<std::pair<std::string, std::string>>& new_values);
+
+bool UpdateTouchesImmediateConstraintColumns(
+    const CrudTableRecord& table,
+    const std::vector<std::string>& assigned_columns,
+    const ConstraintDmlValidationOptions& options = ConstraintDmlValidationOptions{});
+
+bool UpdateTouchesParentKeyColumns(const CrudTableRecord& table,
+                                   const std::vector<std::string>& assigned_columns);
 
 EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestContext& context);
 

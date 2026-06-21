@@ -59,20 +59,23 @@ std::vector<CrudRowVersionRecord> VisibleCrudRows(const CrudState& state,
 std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const CrudState& state,
                                                             const std::string& table_uuid,
                                                             const EngineRequestContext& context) {
-  std::map<std::string, std::vector<CrudRowVersionRecord>> chains;
+  std::map<std::string, CrudRowVersionRecord> newest_visible_by_row;
   for (const auto& row : state.row_versions) {
-    if (row.table_uuid == table_uuid) { chains[row.row_uuid].push_back(row); }
+    if (row.table_uuid != table_uuid ||
+        !CrudRowVersionVisibleToContext(state, row, context)) {
+      continue;
+    }
+    const auto found = newest_visible_by_row.find(row.row_uuid);
+    if (found == newest_visible_by_row.end() ||
+        row.sequence > found->second.sequence) {
+      newest_visible_by_row[row.row_uuid] = row;
+    }
   }
   std::vector<CrudRowVersionRecord> visible;
-  for (auto& [row_uuid, versions] : chains) {
-    std::sort(versions.begin(), versions.end(), [](const auto& left, const auto& right) {
-      return left.sequence > right.sequence;
-    });
-    for (const auto& row : versions) {
-      if (!CrudRowVersionVisibleToContext(state, row, context)) { continue; }
-      if (!row.deleted) { visible.push_back(row); }
-      break;
-    }
+  visible.reserve(newest_visible_by_row.size());
+  for (const auto& [row_uuid, row] : newest_visible_by_row) {
+    (void)row_uuid;
+    if (!row.deleted) { visible.push_back(row); }
   }
   return visible;
 }
@@ -316,11 +319,27 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     }
     return true;
   }
-  if (predicate.predicate_kind == "column_like" || predicate.predicate_kind == "column_not_like") {
+  if (predicate.predicate_kind == "column_like" ||
+      predicate.predicate_kind == "column_not_like") {
     if (predicate.bound_values.empty()) return false;
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
-    const bool matches = CrudSqlLikePatternMatches(value, predicate.bound_values.front().encoded_value);
+    const bool matches = CrudSqlLikePatternMatches(value,
+                                                   predicate.bound_values.front().encoded_value);
     return predicate.predicate_kind == "column_like" ? matches : !matches;
+  }
+  if (predicate.predicate_kind == "column_less_or_null") {
+    if (predicate.bound_values.empty()) return false;
+    const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    if (value.empty() || value == "<NULL>") return true;
+    return CompareCrudScalar(value, predicate.bound_values.front().encoded_value) < 0;
+  }
+  if (predicate.predicate_kind == "column_greater" ||
+      predicate.predicate_kind == "column_greater_equal") {
+    if (predicate.bound_values.empty()) return false;
+    const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    const int compared = CompareCrudScalar(value,
+                                           predicate.bound_values.front().encoded_value);
+    return predicate.predicate_kind == "column_greater" ? compared > 0 : compared >= 0;
   }
   if (predicate.predicate_kind == "column_range") {
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);

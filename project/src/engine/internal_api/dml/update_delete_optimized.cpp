@@ -17,6 +17,7 @@
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
 #include "dml/update_batch.hpp"
+#include "dml/write_result_policy.hpp"
 #include "domain_support/domain_store.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -28,10 +29,15 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -47,6 +53,37 @@ namespace plan = scratchbird::engine::planner;
 namespace mga = scratchbird::transaction::mga;
 namespace storage_db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
+
+using UpdateDeleteSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t UpdateDeleteElapsedMicros(
+    UpdateDeleteSteadyClock::time_point begin,
+    UpdateDeleteSteadyClock::time_point end = UpdateDeleteSteadyClock::now()) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+}
+
+void WriteUpdateDeletePhaseTrace(
+    std::string_view layer,
+    std::string_view operation,
+    std::size_t row_count,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_UPDATE_DELETE_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) return;
+  out << "layer=" << layer
+      << '\t' << "operation=" << operation
+      << '\t' << "rows=" << row_count;
+  std::uint64_t total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << '\t' << "total_us=" << total << '\n';
+}
 
 void AddMutationOptimizerEvidence(const char* mutation_kind,
                                   bool transaction_context_present,
@@ -104,6 +141,54 @@ struct DeleteTargetCandidateStream {
   bool fail_closed = false;
 };
 
+struct UpdateRowEvidenceCompactor {
+  bool enabled = false;
+  EngineApiU64 input_row_count = 0;
+  EngineApiU64 total_compacted_entries = 0;
+  std::unordered_map<std::string, EngineApiU64> counts_by_kind;
+
+  void AppendOrCompact(const std::vector<EngineEvidenceReference>& evidence,
+                       std::vector<EngineEvidenceReference>* direct_target) {
+    if (!enabled) {
+      if (direct_target != nullptr) {
+        direct_target->insert(direct_target->end(), evidence.begin(), evidence.end());
+      }
+      return;
+    }
+    for (const auto& entry : evidence) {
+      ++total_compacted_entries;
+      ++counts_by_kind[entry.evidence_kind];
+    }
+  }
+
+  void PushOrCompact(EngineEvidenceReference evidence,
+                     std::vector<EngineEvidenceReference>* direct_target) {
+    if (!enabled) {
+      if (direct_target != nullptr) {
+        direct_target->push_back(std::move(evidence));
+      }
+      return;
+    }
+    ++total_compacted_entries;
+    ++counts_by_kind[evidence.evidence_kind];
+  }
+
+  void AddSummaryEvidence(std::vector<EngineEvidenceReference>* direct_target) const {
+    if (!enabled || direct_target == nullptr) {
+      return;
+    }
+    direct_target->push_back({"update_row_evidence_compacted", "true"});
+    direct_target->push_back({"update_row_evidence_input_rows",
+                              std::to_string(input_row_count)});
+    direct_target->push_back({"update_row_evidence_entry_count",
+                              std::to_string(total_compacted_entries)});
+    for (const auto& [kind, count] : counts_by_kind) {
+      direct_target->push_back({"update_row_evidence_count." + kind,
+                                std::to_string(count)});
+    }
+  }
+};
+
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.substr(0, prefix.size()) == prefix;
 }
@@ -153,7 +238,32 @@ struct UpdateAssignmentExpression {
   std::string operation;
   std::string literal_value;
   std::string literal_type;
+  std::vector<std::pair<long double, std::string>> case_ge_thresholds;
+  std::optional<std::string> case_fallback;
 };
+
+bool ParseLongDoubleValue(const std::string& value, long double* out);
+
+bool CompileCaseGeThresholds(UpdateAssignmentExpression* expression) {
+  if (expression == nullptr) { return false; }
+  expression->case_ge_thresholds.clear();
+  expression->case_fallback.reset();
+  for (const auto& term : SplitText(expression->literal_value, ',')) {
+    const auto separator = term.find('=');
+    if (separator == std::string::npos) { return false; }
+    const std::string left = term.substr(0, separator);
+    const std::string right = term.substr(separator + 1);
+    if (left == "else") {
+      expression->case_fallback = right;
+      continue;
+    }
+    long double threshold = 0.0;
+    if (!ParseLongDoubleValue(left, &threshold)) { return false; }
+    expression->case_ge_thresholds.push_back({threshold, right});
+  }
+  return !expression->case_ge_thresholds.empty() ||
+         expression->case_fallback.has_value();
+}
 
 std::vector<UpdateAssignmentExpression> ParseUpdateAssignmentPlan(
     const EngineUpdateRowsRequest& request,
@@ -178,6 +288,8 @@ std::vector<UpdateAssignmentExpression> ParseUpdateAssignmentPlan(
     if (expression.operation != "literal" &&
         expression.operation != "add" &&
         expression.operation != "subtract" &&
+        expression.operation != "multiply" &&
+        expression.operation != "case_ge_thresholds" &&
         expression.operation != "concat" &&
         expression.operation != "copy_column") {
       if (invalid != nullptr) { *invalid = true; }
@@ -187,9 +299,60 @@ std::vector<UpdateAssignmentExpression> ParseUpdateAssignmentPlan(
       if (invalid != nullptr) { *invalid = true; }
       return {};
     }
+    if (expression.operation == "case_ge_thresholds" &&
+        !CompileCaseGeThresholds(&expression)) {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
     expressions.push_back(std::move(expression));
   }
   return expressions;
+}
+
+std::vector<std::string> UpdateAssignedColumns(
+    const EngineUpdateRowsRequest& request,
+    const std::vector<UpdateAssignmentExpression>& expressions) {
+  std::set<std::string> assigned;
+  for (const auto& [field, typed] : request.assignments) {
+    (void)typed;
+    if (!field.empty()) { assigned.insert(field); }
+  }
+  for (const auto& expression : expressions) {
+    if (!expression.target_column.empty()) {
+      assigned.insert(expression.target_column);
+    }
+  }
+  return {assigned.begin(), assigned.end()};
+}
+
+bool UpdateTouchesDomainColumns(const CrudTableRecord& table,
+                                const std::vector<std::string>& assigned_columns) {
+  if (assigned_columns.empty()) { return true; }
+  const std::set<std::string> assigned(assigned_columns.begin(), assigned_columns.end());
+  for (const auto& [column_name, descriptor] : table.columns) {
+    if (assigned.find(column_name) == assigned.end()) { continue; }
+    if (!DomainUuidFromColumnDescriptor(descriptor).empty()) { return true; }
+  }
+  return false;
+}
+
+std::string EvaluateCaseGeThresholds(const std::string& source_value,
+                                     const UpdateAssignmentExpression& expression,
+                                     bool* ok) {
+  if (ok != nullptr) { *ok = false; }
+  long double source = 0.0;
+  if (!ParseLongDoubleValue(source_value, &source)) { return {}; }
+  for (const auto& [threshold, value] : expression.case_ge_thresholds) {
+    if (source >= threshold) {
+      if (ok != nullptr) { *ok = true; }
+      return value;
+    }
+  }
+  if (expression.case_fallback.has_value()) {
+    if (ok != nullptr) { *ok = true; }
+    return *expression.case_fallback;
+  }
+  return {};
 }
 
 bool ParseLongDoubleValue(const std::string& value, long double* out) {
@@ -236,7 +399,19 @@ EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
       new_value = CrudFieldValue(*values, expression.source_column);
     } else if (expression.operation == "concat") {
       new_value = CrudFieldValue(*values, expression.source_column) + expression.literal_value;
-    } else if (expression.operation == "add" || expression.operation == "subtract") {
+    } else if (expression.operation == "case_ge_thresholds") {
+      bool case_ok = false;
+      new_value = EvaluateCaseGeThresholds(
+          CrudFieldValue(*values, expression.source_column),
+          expression,
+          &case_ok);
+      if (!case_ok) {
+        return MakeInvalidRequestDiagnostic("dml.update_rows",
+                                            "assignment_case_threshold_evaluation_failed");
+      }
+    } else if (expression.operation == "add" ||
+               expression.operation == "subtract" ||
+               expression.operation == "multiply") {
       const std::string source_value = CrudFieldValue(*values, expression.source_column);
       long double left = 0.0;
       long double right = 0.0;
@@ -244,7 +419,12 @@ EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
           !ParseLongDoubleValue(expression.literal_value, &right)) {
         return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_arithmetic_requires_numeric_values");
       }
-      const long double computed = expression.operation == "subtract" ? left - right : left + right;
+      long double computed = left + right;
+      if (expression.operation == "subtract") {
+        computed = left - right;
+      } else if (expression.operation == "multiply") {
+        computed = left * right;
+      }
       new_value = FormatArithmeticResult(computed,
                                          LooksIntegralText(source_value) &&
                                              LooksIntegralText(expression.literal_value));
@@ -299,7 +479,11 @@ bool IsUpdateRangePredicate(const EnginePredicateEnvelope& predicate) {
 bool IsUpdateRowScanPredicate(const EnginePredicateEnvelope& predicate) {
   return predicate.predicate_kind == "columns_all_not_null" ||
          predicate.predicate_kind == "column_equals_column_or_left_null" ||
-         predicate.predicate_kind == "column_mod_equals";
+         predicate.predicate_kind == "column_mod_equals" ||
+         predicate.predicate_kind == "column_in_list" ||
+         predicate.predicate_kind == "column_less_or_null" ||
+         predicate.predicate_kind == "column_greater" ||
+         predicate.predicate_kind == "column_greater_equal";
 }
 
 std::vector<std::string> RowUuidListFromPredicate(
@@ -325,6 +509,98 @@ std::string PredicateDigest(const EnginePredicateEnvelope& predicate) {
     digest += ":" + value.encoded_value;
   }
   return digest;
+}
+
+EngineTypedValue TextPredicateBoundValue(std::string value, std::string type_name = "text") {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = type_name.empty() ? "text" : std::move(type_name);
+  typed.descriptor.encoded_descriptor = "type=" + typed.descriptor.canonical_type_name;
+  typed.encoded_value = std::move(value);
+  typed.is_null = false;
+  typed.state = EngineValueState::value;
+  return typed;
+}
+
+struct DmlProjectionPredicateResolution {
+  bool attempted{false};
+  bool ok{true};
+  EnginePredicateEnvelope predicate;
+  EngineApiDiagnostic diagnostic =
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  std::vector<EngineEvidenceReference> evidence;
+};
+
+DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
+    const EngineUpdateRowsRequest& request,
+    const CrudState& state) {
+  DmlProjectionPredicateResolution resolution;
+  if (request.update_predicate.predicate_kind != "column_in_projection") {
+    return resolution;
+  }
+  resolution.attempted = true;
+  resolution.ok = false;
+  const std::string source_uuid = UpdateOptionText(request, "source_uuid:");
+  const std::string select_column = UpdateOptionText(request, "subquery_select_column:");
+  const std::string subquery_predicate_kind =
+      UpdateOptionText(request, "subquery_predicate_kind:");
+  const std::string subquery_predicate_column =
+      UpdateOptionText(request, "subquery_predicate_column:");
+  const std::string subquery_predicate_value =
+      UpdateOptionText(request, "subquery_predicate_value:");
+  const std::string subquery_predicate_value_type =
+      UpdateOptionText(request, "subquery_predicate_value_type:");
+  if (source_uuid.empty() || select_column.empty() ||
+      subquery_predicate_kind.empty() || subquery_predicate_column.empty()) {
+    resolution.diagnostic =
+        MakeInvalidRequestDiagnostic("dml.update_rows",
+                                     "subquery_predicate_descriptor_incomplete");
+    return resolution;
+  }
+  const auto source_table = FindVisibleCrudTable(state,
+                                                 source_uuid,
+                                                 request.context.local_transaction_id);
+  if (!source_table) {
+    resolution.diagnostic =
+        MakeInvalidRequestDiagnostic("dml.update_rows",
+                                     "subquery_source_table_not_visible");
+    return resolution;
+  }
+
+  EnginePredicateEnvelope source_predicate;
+  source_predicate.predicate_kind = subquery_predicate_kind;
+  source_predicate.canonical_predicate_envelope = subquery_predicate_column;
+  if (!subquery_predicate_value.empty()) {
+    source_predicate.bound_values.push_back(
+        TextPredicateBoundValue(subquery_predicate_value,
+                                subquery_predicate_value_type));
+  }
+
+  EnginePredicateEnvelope resolved;
+  resolved.predicate_kind = "column_in_list";
+  resolved.canonical_predicate_envelope =
+      request.update_predicate.canonical_predicate_envelope;
+  const auto source_rows = VisibleCrudRowsForContext(state,
+                                                     source_uuid,
+                                                     request.context);
+  std::set<std::string> admitted_values;
+  for (const auto& row : source_rows) {
+    if (!CrudRowMatchesPredicate(row, source_predicate)) continue;
+    const std::string value = CrudFieldValue(row.values, select_column);
+    if (!value.empty() && value != "<NULL>") {
+      admitted_values.insert(value);
+    }
+  }
+  for (const auto& value : admitted_values) {
+    resolved.bound_values.push_back(TextPredicateBoundValue(value));
+  }
+  resolution.ok = true;
+  resolution.predicate = std::move(resolved);
+  resolution.evidence.push_back({"dml_subquery_predicate_materialized",
+                                 "column_in_projection_to_column_in_list"});
+  resolution.evidence.push_back({"dml_subquery_materialized_value_count",
+                                 std::to_string(resolution.predicate.bound_values.size())});
+  return resolution;
 }
 
 std::string CrudIndexResolvedFamily(const CrudIndexRecord& index) {
@@ -366,6 +642,19 @@ std::optional<CrudIndexRecord> SelectUpdateCandidateStreamIndex(
     }
   }
   return std::nullopt;
+}
+
+bool UpdateCandidateStreamNeedsIndexEntries(
+    const EngineUpdateRowsRequest& request,
+    const std::vector<CrudIndexRecord>& visible_indexes) {
+  if (!IsUpdateEqualityPredicate(request.update_predicate) &&
+      !IsUpdateRangePredicate(request.update_predicate)) {
+    return false;
+  }
+  bool unusable_index_present = false;
+  return SelectUpdateCandidateStreamIndex(visible_indexes,
+                                          request.update_predicate,
+                                          &unusable_index_present).has_value();
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
@@ -1856,12 +2145,51 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
   }
-  const auto loaded = LoadMgaRelationStoreStateForMutationTarget(
-      request.context,
-      request.target_table.uuid.canonical);
+  auto update_phase_last = UpdateDeleteSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> update_phase_micros;
+  update_phase_micros.reserve(18);
+  const auto mark_update_phase = [&](std::string phase) {
+    const auto now = UpdateDeleteSteadyClock::now();
+    update_phase_micros.push_back(
+        {std::move(phase), UpdateDeleteElapsedMicros(update_phase_last, now)});
+    update_phase_last = now;
+  };
+  const auto write_update_trace = [&](std::size_t row_count) {
+    WriteUpdateDeletePhaseTrace("engine_update_rows",
+                                "dml.update_rows",
+                                row_count,
+                                update_phase_micros);
+  };
+  const auto write_result_policy =
+      ResolveWriteResultPolicy(request, "dml.update_rows");
+  mark_update_phase("resolve_write_result_policy");
+  if (!write_result_policy.ok) {
+    auto failure = MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        write_result_policy.diagnostic);
+    AddWriteResultPolicyRefusalEvidence(write_result_policy, &failure);
+    return failure;
+  }
+  const bool suppress_payload_rows =
+      WriteResultPolicySuppressesPayloadRows(write_result_policy);
+  const std::string source_uuid = UpdateOptionText(request, "source_uuid:");
+  const bool needs_source_scope =
+      request.update_predicate.predicate_kind == "column_in_projection" &&
+      !source_uuid.empty();
+  auto loaded = needs_source_scope
+      ? LoadMgaRelationStoreRowsOnlyForMutationTargets(
+            request.context,
+            std::vector<std::string>{request.target_table.uuid.canonical,
+                                     source_uuid})
+      : LoadMgaRelationStoreRowsOnlyForMutationTarget(
+            request.context,
+            request.target_table.uuid.canonical);
+  mark_update_phase("load_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
-  const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
+  auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  mark_update_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
@@ -1875,7 +2203,20 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         MakeInvalidRequestDiagnostic("dml.update_rows",
                                      "temporary_table_requires_session_uuid"));
   }
-  if (CrudPredicateTouchesOpaqueColumn(*table, request.update_predicate)) {
+  EngineUpdateRowsRequest effective_request = request;
+  const auto resolved_projection_predicate =
+      ResolveColumnInProjectionPredicate(request, state);
+  if (resolved_projection_predicate.attempted) {
+    if (!resolved_projection_predicate.ok) {
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+          request.context,
+          "dml.update_rows",
+          resolved_projection_predicate.diagnostic);
+    }
+    effective_request.update_predicate = resolved_projection_predicate.predicate;
+  }
+  mark_update_phase("resolve_projection_predicate");
+  if (CrudPredicateTouchesOpaqueColumn(*table, effective_request.update_predicate)) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
         "dml.update_rows",
@@ -1888,12 +2229,12 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         UnsupportedCrudFeatureDiagnostic("dml.update_rows", "opaque_column_mutation_denied"));
   }
   auto serializable_admission = dml::CheckSerializablePredicateMutation(
-      request.context,
+      effective_request.context,
       "dml.update_rows",
-      request.target_table.uuid.canonical,
-      request.update_predicate,
+      effective_request.target_table.uuid.canonical,
+      effective_request.update_predicate,
       false,
-      request.option_envelopes);
+      effective_request.option_envelopes);
   if (!serializable_admission.ok) {
     auto failure = MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
@@ -1904,22 +2245,68 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                             serializable_admission.evidence.end());
     return failure;
   }
+  mark_update_phase("serializable_admission");
 
-  const auto visible_indexes = VisibleCrudIndexesForTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  auto visible_indexes = VisibleCrudIndexesForTable(
+      state,
+      effective_request.target_table.uuid.canonical,
+      effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(request.context, *table, visible_indexes, &relation_descriptor);
   if (descriptor_ready.error) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", descriptor_ready);
   }
   bool invalid_assignment_plan = false;
-  const auto assignment_expressions = ParseUpdateAssignmentPlan(request, &invalid_assignment_plan);
+  const auto assignment_expressions =
+      ParseUpdateAssignmentPlan(effective_request, &invalid_assignment_plan);
   if (invalid_assignment_plan) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
         "dml.update_rows",
         MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_plan_invalid"));
   }
-  UpdateBatchContext batch_context = BuildUpdateBatchContext(request, state, *table, visible_indexes);
+  const auto assigned_columns =
+      UpdateAssignedColumns(effective_request, assignment_expressions);
+  UpdateBatchContext batch_context =
+      BuildUpdateBatchContext(effective_request, state, *table, visible_indexes);
+  const bool update_needs_index_entries =
+      batch_context.index_plan.has_affected_unique_exact ||
+      UpdateCandidateStreamNeedsIndexEntries(effective_request, visible_indexes);
+  if (update_needs_index_entries && state.index_entries.empty()) {
+    auto reloaded = needs_source_scope
+        ? LoadMgaRelationStoreStateForMutationTargets(
+              request.context,
+              std::vector<std::string>{request.target_table.uuid.canonical,
+                                       source_uuid})
+        : LoadMgaRelationStoreStateForMutationTarget(
+              request.context,
+              request.target_table.uuid.canonical);
+    if (!reloaded.ok) {
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+          request.context,
+          "dml.update_rows",
+          reloaded.diagnostic);
+    }
+    loaded.evidence.insert(loaded.evidence.end(),
+                           reloaded.evidence.begin(),
+                           reloaded.evidence.end());
+    state = BuildCrudCompatibilityStateFromMga(std::move(reloaded.state));
+    table = FindVisibleCrudTable(state,
+                                 request.target_table.uuid.canonical,
+                                 request.context.local_transaction_id);
+    if (!table) {
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+          request.context,
+          "dml.update_rows",
+          MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_not_visible"));
+    }
+    visible_indexes = VisibleCrudIndexesForTable(
+        state,
+        effective_request.target_table.uuid.canonical,
+        effective_request.context.local_transaction_id);
+    batch_context =
+        BuildUpdateBatchContext(effective_request, state, *table, visible_indexes);
+  }
   if (!batch_context.accepted) {
     RecordUpdateBatchMetric(batch_context,
                             "sb_dml_update_batch_fallback_total",
@@ -1927,6 +2314,18 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                             "fallback",
                             batch_context.fallback_reason.empty() ? "update_batch_refused" : batch_context.fallback_reason);
   }
+  ConstraintDmlValidationOptions update_constraint_options;
+  update_constraint_options.validate_unique_constraints =
+      batch_context.index_plan.has_affected_unique_exact;
+  const bool validate_domain_rules =
+      UpdateTouchesDomainColumns(*table, assigned_columns);
+  const bool validate_row_constraints =
+      UpdateTouchesImmediateConstraintColumns(*table,
+                                             assigned_columns,
+                                             update_constraint_options);
+  const bool validate_parent_key_update =
+      UpdateTouchesParentKeyColumns(*table, assigned_columns);
+  mark_update_phase("descriptor_and_batch_context");
 
   auto result = MakeCrudSuccessResult<EngineUpdateRowsResult>(request.context, "dml.update_rows");
   result.evidence.insert(result.evidence.end(),
@@ -1938,7 +2337,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.evidence.insert(result.evidence.end(),
                          serializable_admission.evidence.begin(),
                          serializable_admission.evidence.end());
-  const bool hot_update_shape_enabled = HotUpdateShapeEnabled(request);
+  result.evidence.insert(result.evidence.end(),
+                         resolved_projection_predicate.evidence.begin(),
+                         resolved_projection_predicate.evidence.end());
+  const bool hot_update_shape_enabled = HotUpdateShapeEnabled(effective_request);
   HotUpdateIndexDisciplineCounters hot_update_counters;
   const auto hot_plus_inventory =
       storage_db::LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
@@ -1950,11 +2352,13 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                 "SB-MGA-HOT-STABLE-HEAD-TXN-INV-LOAD-FAILED",
                                 "row_version.hot_stable_head.inventory_load_failed"));
   }
+  mark_update_phase("load_hot_inventory");
   AddMutationOptimizerEvidence("update", request.context.local_transaction_id != 0, true, &result.evidence);
-  auto candidate_stream = BuildUpdateTargetCandidateStream(request,
+  auto candidate_stream = BuildUpdateTargetCandidateStream(effective_request,
                                                            state,
                                                            *table,
                                                            visible_indexes);
+  mark_update_phase("build_candidate_stream");
   result.evidence.insert(result.evidence.end(),
                          candidate_stream.evidence.begin(),
                          candidate_stream.evidence.end());
@@ -1976,19 +2380,37 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   const auto rows = candidate_stream.rows_ready
                         ? candidate_stream.rows
-                        : VisibleCrudRowsForContext(state,
-                                                    request.target_table.uuid.canonical,
-                                                    request.context);
+                        : VisibleCrudRowsForContext(
+                              state,
+                              effective_request.target_table.uuid.canonical,
+                              effective_request.context);
+  mark_update_phase("materialize_visible_rows");
   result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
+  const bool compact_update_row_evidence =
+      suppress_payload_rows && rows.size() >= 1024;
+  UpdateRowEvidenceCompactor row_evidence_compactor;
+  row_evidence_compactor.enabled = compact_update_row_evidence;
+  row_evidence_compactor.input_row_count = static_cast<EngineApiU64>(rows.size());
+  EngineApiU64 compacted_match_traces = 0;
+  EngineApiU64 compacted_hot_proof_traces = 0;
+  EngineApiU64 compacted_write_traces = 0;
+  std::unordered_map<std::string, EngineApiU64> compacted_hot_decisions;
   ConstraintDmlValidationCache constraint_cache;
   std::vector<CrudRowVersionRecord> returning_rows;
+  if (!suppress_payload_rows) {
+    returning_rows.reserve(rows.size());
+  }
   std::vector<StagedUpdateRow> staged_update_rows;
   staged_update_rows.reserve(rows.size());
   for (const auto& row : rows) {
-    if (!CrudRowMatchesPredicate(row, request.update_predicate)) { continue; }
+    if (!CrudRowMatchesPredicate(row, effective_request.update_predicate)) { continue; }
     ++result.matched_count;
     ++batch_context.actual_match_count;
-    AddUpdateTrace(&batch_context, "update.row.match", "match", row.row_uuid);
+    if (compact_update_row_evidence) {
+      ++compacted_match_traces;
+    } else {
+      AddUpdateTrace(&batch_context, "update.row.match", "match", row.row_uuid);
+    }
 
     auto values = row.values;
     if (!assignment_expressions.empty()) {
@@ -2009,37 +2431,43 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       }
     }
 
-    const auto domain_validation = ApplyDomainRulesToCrudValues(request.context,
-                                                                table->columns,
-                                                                values,
-                                                                request.context.local_transaction_id,
-                                                                &constraint_cache);
-    if (!domain_validation.ok) {
-      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", domain_validation.diagnostic);
+    if (validate_domain_rules) {
+      const auto domain_validation = ApplyDomainRulesToCrudValues(request.context,
+                                                                  table->columns,
+                                                                  values,
+                                                                  request.context.local_transaction_id,
+                                                                  &constraint_cache);
+      if (!domain_validation.ok) {
+        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", domain_validation.diagnostic);
+      }
+      values = domain_validation.values;
+      row_evidence_compactor.AppendOrCompact(domain_validation.evidence, &result.evidence);
     }
-    values = domain_validation.values;
-    for (const auto& evidence : domain_validation.evidence) {
-      result.evidence.push_back(evidence);
+    if (validate_row_constraints) {
+      const auto constraint_validation =
+          ValidateImmediateRowConstraintsWithOptions(request.context,
+                                                     state,
+                                                     *table,
+                                                     row.row_uuid,
+                                                     values,
+                                                     "update",
+                                                     update_constraint_options,
+                                                     &constraint_cache);
+      if (!constraint_validation.ok) {
+        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", constraint_validation.diagnostic);
+      }
+      values = constraint_validation.values;
+      row_evidence_compactor.AppendOrCompact(constraint_validation.evidence, &result.evidence);
     }
-    const auto constraint_validation = ValidateImmediateRowConstraints(request.context,
-                                                                       state,
-                                                                       *table,
-                                                                       row.row_uuid,
-                                                                       values,
-                                                                       "update",
-                                                                       &constraint_cache);
-    if (!constraint_validation.ok) {
-      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", constraint_validation.diagnostic);
-    }
-    values = constraint_validation.values;
-    for (const auto& evidence : constraint_validation.evidence) { result.evidence.push_back(evidence); }
-    const auto parent_key_update = ValidateImmediateParentKeyUpdateConstraints(request.context,
-                                                                              state,
-                                                                              *table,
-                                                                              row,
-                                                                              values);
-    if (parent_key_update.error) {
-      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", parent_key_update);
+    if (validate_parent_key_update) {
+      const auto parent_key_update = ValidateImmediateParentKeyUpdateConstraints(request.context,
+                                                                                state,
+                                                                                *table,
+                                                                                row,
+                                                                                values);
+      if (parent_key_update.error) {
+        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", parent_key_update);
+      }
     }
 
     const bool update_toast_required = EncodedValueBytes(values) > kCrudVerticalSliceMaxEncodedValueBytes;
@@ -2053,12 +2481,20 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (batch_unique.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", batch_unique);
     }
-    const auto unique_check = ValidateCrudUniqueIndexesForRow(state,
-                                                              request.target_table.uuid.canonical,
-                                                              row.row_uuid,
-                                                              values,
-                                                              request.context);
-    if (unique_check.error) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", unique_check); }
+    if (batch_context.index_plan.has_affected_unique_exact) {
+      const auto unique_check =
+          ValidateCrudUniqueIndexesForRow(state,
+                                          request.target_table.uuid.canonical,
+                                          row.row_uuid,
+                                          values,
+                                          request.context);
+      if (unique_check.error) {
+        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+            request.context,
+            "dml.update_rows",
+            unique_check);
+      }
+    }
 
     const std::string version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
@@ -2096,9 +2532,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                               hot_plus_decision.decision);
     hot_update_counters.exact_secondary_churn_avoided += unaffected_avoided;
     hot_update_counters.index_churn_avoided += unaffected_avoided;
-    result.evidence.push_back(
-        {"hot_plus_decision",
-         mga::HotStableRowHeadDecisionName(hot_plus_decision.decision.decision)});
+    const std::string hot_plus_decision_name =
+        mga::HotStableRowHeadDecisionName(hot_plus_decision.decision.decision);
+    row_evidence_compactor.PushOrCompact(
+        {"hot_plus_decision", hot_plus_decision_name},
+        &result.evidence);
+    if (compact_update_row_evidence) {
+      ++compacted_hot_decisions[hot_plus_decision_name];
+    }
     if (!hot_plus_decision.decision.ok()) {
       auto failure = MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
           request.context,
@@ -2119,17 +2560,21 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       AddUpdateBatchEvidenceToResult(batch_context, &failure);
       return failure;
     }
-    AddUpdateTrace(&batch_context,
-                   "update.hot_plus.decision",
-                   "proof",
-                   mga::HotStableRowHeadDecisionName(
-                       hot_plus_decision.decision.decision));
+    if (compact_update_row_evidence) {
+      ++compacted_hot_proof_traces;
+    } else {
+      AddUpdateTrace(&batch_context,
+                     "update.hot_plus.decision",
+                     "proof",
+                     hot_plus_decision_name);
+    }
     staged_update_rows.push_back({std::move(row_record),
                                   row,
                                   values,
                                   std::move(hot_plus_decision.decision),
                                   update_toast_required});
   }
+  mark_update_phase("stage_update_rows");
 
   if (!staged_update_rows.empty()) {
     const auto row_allocation = ReserveDmlPageAllocationRuntime(
@@ -2169,6 +2614,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (index_allocation.active) {
       ++result.dml_summary.page_reservations;
     }
+    mark_update_phase("reserve_page_allocations");
 
     std::vector<CrudRowVersionRecord> row_records;
     row_records.reserve(staged_update_rows.size());
@@ -2187,16 +2633,17 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       staged.row_record.values = std::move(storage_values);
       row_records.push_back(staged.row_record);
     }
+    mark_update_phase("persist_large_values");
 
     MgaRelationHotAppendContext hot_append_context(request.context);
     std::vector<std::uint64_t> written_event_sequences;
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
-        request.context,
+        effective_request.context,
         "dml.update_rows",
-        request.target_table.uuid.canonical,
-        request.update_predicate,
+        effective_request.target_table.uuid.canonical,
+        effective_request.update_predicate,
         false,
-        request.option_envelopes);
+        effective_request.option_envelopes);
     if (!serializable_recorded.ok) {
       auto failure = MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
           request.context,
@@ -2213,6 +2660,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
+    mark_update_phase("serializable_record");
     const auto appended = hot_append_context.AppendRowVersions(&row_records, &written_event_sequences);
     if (appended.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", appended);
@@ -2221,11 +2669,16 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (rows_flushed.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", rows_flushed);
     }
+    mark_update_phase("append_flush_rows");
 
     std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
     for (std::size_t index = 0; index < staged_update_rows.size(); ++index) {
       const auto& row_record = row_records[index];
-      AddUpdateTrace(&batch_context, "update.row.write", "write", row_record.row_uuid);
+      if (compact_update_row_evidence) {
+        ++compacted_write_traces;
+      } else {
+        AddUpdateTrace(&batch_context, "update.row.write", "write", row_record.row_uuid);
+      }
       auto row_delta_entries = UpdateDeltaEntries(batch_context,
                                                   staged_update_rows[index].original_row,
                                                   row_record,
@@ -2260,6 +2713,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (indexes_flushed.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", indexes_flushed);
     }
+    mark_update_phase("index_delta_and_flush");
     const auto& append_counters = hot_append_context.counters();
     result.dml_summary.append_calls += append_counters.row_range_reservations +
                                        append_counters.index_range_reservations;
@@ -2282,18 +2736,20 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
 
     for (std::size_t index = 0; index < staged_update_rows.size(); ++index) {
       const auto& row_record = row_records[index];
-      CrudRowVersionRecord returning_row;
-      returning_row.creator_tx = request.context.local_transaction_id;
-      returning_row.event_sequence = row_record.event_sequence;
-      returning_row.sequence = row_record.sequence;
-      returning_row.table_uuid = request.target_table.uuid.canonical;
-      returning_row.row_uuid = row_record.row_uuid;
-      returning_row.version_uuid = row_record.version_uuid;
-      returning_row.previous_version_uuid = row_record.previous_version_uuid;
-      returning_row.previous_sequence = row_record.previous_sequence;
-      returning_row.deleted = false;
-      returning_row.values = staged_update_rows[index].logical_values;
-      returning_rows.push_back(std::move(returning_row));
+      if (!suppress_payload_rows) {
+        CrudRowVersionRecord returning_row;
+        returning_row.creator_tx = request.context.local_transaction_id;
+        returning_row.event_sequence = row_record.event_sequence;
+        returning_row.sequence = row_record.sequence;
+        returning_row.table_uuid = request.target_table.uuid.canonical;
+        returning_row.row_uuid = row_record.row_uuid;
+        returning_row.version_uuid = row_record.version_uuid;
+        returning_row.previous_version_uuid = row_record.previous_version_uuid;
+        returning_row.previous_sequence = row_record.previous_sequence;
+        returning_row.deleted = false;
+        returning_row.values = staged_update_rows[index].logical_values;
+        returning_rows.push_back(std::move(returning_row));
+      }
       ++result.updated_count;
       ++batch_context.actual_update_count;
     }
@@ -2322,10 +2778,27 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
+    mark_update_phase("serializable_record_empty_update");
   }
 
   AddUpdateTrace(&batch_context, "update.batch.finish", "finish", std::to_string(batch_context.actual_update_count));
-  result.result_shape = CrudRowsToResultShape(returning_rows);
+  if (!suppress_payload_rows) {
+    result.result_shape = CrudRowsToResultShape(returning_rows);
+  }
+  row_evidence_compactor.AddSummaryEvidence(&result.evidence);
+  if (compact_update_row_evidence) {
+    result.evidence.push_back({"update_trace_compacted", "true"});
+    result.evidence.push_back({"update_trace_compacted.update_row_match",
+                               std::to_string(compacted_match_traces)});
+    result.evidence.push_back({"update_trace_compacted.hot_plus_proof",
+                               std::to_string(compacted_hot_proof_traces)});
+    result.evidence.push_back({"update_trace_compacted.update_row_write",
+                               std::to_string(compacted_write_traces)});
+    for (const auto& [decision, count] : compacted_hot_decisions) {
+      result.evidence.push_back({"hot_plus_decision_count." + decision,
+                                 std::to_string(count)});
+    }
+  }
   result.evidence.push_back({"mga_row_version", "row_update"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
@@ -2338,8 +2811,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   result.dml_summary.rows_changed = result.updated_count;
   AddDmlSummaryEvidence(&result);
+  ApplyWriteResultPolicy(write_result_policy, &result);
   RecordUpdateBatchMetric(batch_context, "sb_dml_update_batch_started_total", 1.0, "ok");
   RecordUpdateBatchMetric(batch_context, "sb_dml_update_rows_updated_total", static_cast<double>(result.updated_count), "ok");
+  mark_update_phase("result_evidence");
+  write_update_trace(static_cast<std::size_t>(result.updated_count));
   return result;
 }
 
@@ -2350,11 +2826,23 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_uuid_required"));
   }
-  const auto loaded = LoadMgaRelationStoreStateForMutationTarget(
+  const auto write_result_policy =
+      ResolveWriteResultPolicy(request, "dml.delete_rows");
+  if (!write_result_policy.ok) {
+    auto failure = MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        write_result_policy.diagnostic);
+    AddWriteResultPolicyRefusalEvidence(write_result_policy, &failure);
+    return failure;
+  }
+  const bool suppress_payload_rows =
+      WriteResultPolicySuppressesPayloadRows(write_result_policy);
+  auto loaded = LoadMgaRelationStoreStateForMutationTarget(
       request.context,
       request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
   const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
@@ -2452,6 +2940,9 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                                                     request.context);
   result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
   std::vector<CrudRowVersionRecord> returning_rows;
+  if (!suppress_payload_rows) {
+    returning_rows.reserve(rows.size());
+  }
   std::vector<StagedDeleteRow> staged_delete_rows;
   staged_delete_rows.reserve(rows.size());
   for (const auto& row : rows) {
@@ -2553,12 +3044,14 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     }
     for (std::size_t index = 0; index < staged_delete_rows.size(); ++index) {
       const auto& row_record = row_records[index];
-      CrudRowVersionRecord returning_row = staged_delete_rows[index].original_row;
-      returning_row.creator_tx = request.context.local_transaction_id;
-      returning_row.event_sequence = row_record.event_sequence;
-      returning_row.sequence = row_record.sequence;
-      returning_row.deleted = true;
-      returning_rows.push_back(std::move(returning_row));
+      if (!suppress_payload_rows) {
+        CrudRowVersionRecord returning_row = staged_delete_rows[index].original_row;
+        returning_row.creator_tx = request.context.local_transaction_id;
+        returning_row.event_sequence = row_record.event_sequence;
+        returning_row.sequence = row_record.sequence;
+        returning_row.deleted = true;
+        returning_rows.push_back(std::move(returning_row));
+      }
       ++result.deleted_count;
       ++batch_context.actual_delete_count;
     }
@@ -2590,7 +3083,9 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
 
   AddDeleteTrace(&batch_context, "delete.batch.finish", "finish", std::to_string(batch_context.actual_delete_count));
-  result.result_shape = CrudRowsToResultShape(returning_rows);
+  if (!suppress_payload_rows) {
+    result.result_shape = CrudRowsToResultShape(returning_rows);
+  }
   result.evidence.push_back({"mga_row_version", "row_delete_tombstone"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
@@ -2601,6 +3096,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   result.dml_summary.rows_changed = result.deleted_count;
   AddDmlSummaryEvidence(&result);
+  ApplyWriteResultPolicy(write_result_policy, &result);
   RecordDeleteBatchMetric(batch_context, "sb_dml_delete_batch_started_total", 1.0, "ok");
   RecordDeleteBatchMetric(batch_context, "sb_dml_delete_rows_deleted_total", static_cast<double>(result.deleted_count), "ok");
   return result;

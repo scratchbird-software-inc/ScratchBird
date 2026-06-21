@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -214,6 +215,35 @@ scratchbird::storage::disk::DiskDevicePolicy InventoryHeaderPolicy(FileDevice* d
 u64 CurrentUnixEpochMillisForInventoryPage() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+using LocalTransactionStoreSteadyClock = std::chrono::steady_clock;
+
+u64 LocalTransactionStoreElapsedMicros(
+    LocalTransactionStoreSteadyClock::time_point begin,
+    LocalTransactionStoreSteadyClock::time_point end = LocalTransactionStoreSteadyClock::now()) {
+  return static_cast<u64>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+}
+
+void WriteLocalTransactionStorePhaseTrace(
+    std::string_view operation_id,
+    bool ok,
+    const std::map<std::string, u64>& phases) {
+  const char* path = std::getenv("SCRATCHBIRD_LOCAL_TXN_STORE_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::app);
+  if (!out) {
+    return;
+  }
+  out << "operation_id=" << operation_id
+      << '\t' << "ok=" << (ok ? "true" : "false");
+  for (const auto& [name, micros] : phases) {
+    out << '\t' << name << "_us=" << micros;
+  }
+  out << '\n';
 }
 
 std::vector<std::string> SplitTabs(const std::string& line) {
@@ -781,11 +811,18 @@ LocalTransactionStoreResult WriteInventoryPageHeader(FileDevice* device,
 LocalTransactionStoreResult CollectExistingChainOrInitial(FileDevice* device,
                                                           u32 page_size,
                                                           const LocalTransactionInventory& replacement,
+                                                          LocalTransactionInventory* existing_inventory,
                                                           std::vector<u64>* existing_chain) {
-  LocalTransactionInventory current;
-  const auto loaded = LoadInventoryChain(device, page_size, &current, existing_chain);
+  if (existing_inventory == nullptr) {
+    return StorePageError("SB-TXN-INVENTORY-PAGE-CHAIN-INVALID",
+                          "transaction_inventory_page.null_inventory_or_chain");
+  }
+  existing_inventory->entries.clear();
+  existing_inventory->next_local_transaction_id = 1;
+  const auto loaded = LoadInventoryChain(device, page_size, existing_inventory, existing_chain);
   if (loaded.ok()) { return loaded; }
   if (replacement.entries.empty() && replacement.next_local_transaction_id == 1) {
+    *existing_inventory = scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory();
     existing_chain->clear();
     existing_chain->push_back(kTransactionInventoryPageNumber);
     return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
@@ -867,31 +904,50 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     FileDevice* device,
     u32 page_size,
     LocalTransactionInventory inventory) {
+  const auto trace_start = LocalTransactionStoreSteadyClock::now();
+  auto phase_start = trace_start;
+  std::map<std::string, u64> trace_phases;
+  auto mark_phase = [&](std::string name) {
+    const auto now = LocalTransactionStoreSteadyClock::now();
+    trace_phases[std::move(name)] += LocalTransactionStoreElapsedMicros(phase_start, now);
+    phase_start = now;
+  };
+  auto trace_and_return = [&](LocalTransactionStoreResult result) {
+    trace_phases["total"] = LocalTransactionStoreElapsedMicros(trace_start);
+    WriteLocalTransactionStorePhaseTrace(
+        "persist_local_transaction_inventory", result.ok(), trace_phases);
+    return result;
+  };
+
   PageManagerContext context;
   const auto context_result = MakeRootPageContext(device, page_size, &context);
-  if (!context_result.ok()) { return context_result; }
+  mark_phase("make_root_page_context");
+  if (!context_result.ok()) { return trace_and_return(context_result); }
 
   const auto horizons = ComputeLocalTransactionHorizons(inventory);
-  if (!horizons.ok()) { return StoreError(horizons.status, horizons.diagnostic); }
+  mark_phase("compute_transaction_horizons");
+  if (!horizons.ok()) { return trace_and_return(StoreError(horizons.status, horizons.diagnostic)); }
 
   const u32 capacity = MaxTransactionInventoryEntriesPerPage(page_size);
   if (capacity == 0) {
-    return StorePageError("SB-TXN-INVENTORY-PAGE-CAPACITY-INVALID",
-                          "transaction_inventory_page.zero_entry_capacity",
-                          std::to_string(page_size));
+    return trace_and_return(StorePageError("SB-TXN-INVENTORY-PAGE-CAPACITY-INVALID",
+                                           "transaction_inventory_page.zero_entry_capacity",
+                                           std::to_string(page_size)));
   }
 
   std::vector<u64> page_chain;
-  const auto existing_chain = CollectExistingChainOrInitial(device, page_size, inventory, &page_chain);
   LocalTransactionInventory old_inventory;
+  const auto existing_chain =
+      CollectExistingChainOrInitial(device, page_size, inventory, &old_inventory, &page_chain);
+  mark_phase("collect_existing_chain");
   bool old_inventory_loaded_from_journal = false;
   if (!existing_chain.ok()) {
     const auto journal = LoadPublishJournal(device);
     if (!journal.present) {
-      return existing_chain;
+      return trace_and_return(existing_chain);
     }
     if (!journal.ok()) {
-      return journal.store;
+      return trace_and_return(journal.store);
     }
     old_inventory = journal.journal.phase == "committed"
                         ? journal.journal.new_inventory
@@ -900,23 +956,13 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     page_chain.push_back(kTransactionInventoryPageNumber);
     old_inventory_loaded_from_journal = true;
   }
-  if (!old_inventory_loaded_from_journal) {
-    std::vector<u64> old_page_chain;
-    const auto old_loaded = LoadInventoryChain(device, page_size, &old_inventory, &old_page_chain);
-    if (!old_loaded.ok()) {
-      if (inventory.entries.empty() && inventory.next_local_transaction_id == 1) {
-        old_inventory = scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory();
-      } else {
-        return old_loaded;
-      }
-    }
-  }
+  (void)old_inventory_loaded_from_journal;
 
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);
   const u64 inventory_generation =
       std::max<u64>(1, inventory.next_local_transaction_id == 0
-                           ? 1
+      ? 1
                            : inventory.next_local_transaction_id - 1);
   u64 append_page = NextAppendPageNumber(device, page_size);
   while (page_chain.size() < required_pages) {
@@ -926,18 +972,20 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     page_chain.push_back(append_page++);
   }
   page_chain.resize(static_cast<std::size_t>(required_pages));
+  mark_phase("plan_inventory_pages");
 
   const auto publish_begin = PersistPublishJournal(device,
                                                    "publishing",
                                                    inventory_generation,
                                                    old_inventory,
                                                    inventory);
-  if (!publish_begin.ok()) { return publish_begin; }
+  mark_phase("publish_begin_journal");
+  if (!publish_begin.ok()) { return trace_and_return(publish_begin); }
 
   for (std::size_t page_index = 0; page_index < page_chain.size(); ++page_index) {
     if (page_index > 0) {
       const auto header = WriteInventoryPageHeader(device, context, page_chain[page_index], page_index);
-      if (!header.ok()) { return header; }
+      if (!header.ok()) { return trace_and_return(header); }
     }
 
     LocalTransactionInventory page_inventory;
@@ -958,30 +1006,33 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     body.inventory = std::move(page_inventory);
     body.horizons = (page_index == 0) ? horizons.horizons : scratchbird::transaction::mga::LocalTransactionHorizons{};
     const auto built = BuildTransactionInventoryPageBody(body, page_size);
-    if (!built.ok()) { return StoreError(built.status, built.diagnostic); }
+    if (!built.ok()) { return trace_and_return(StoreError(built.status, built.diagnostic)); }
     const auto body_offset = CheckedPageBodyOffset(page_size,
                                                    page_chain[page_index],
                                                    kPageHeaderSerializedBytes);
-    if (!body_offset.ok()) { return StoreError(body_offset.status, body_offset.diagnostic); }
+    if (!body_offset.ok()) { return trace_and_return(StoreError(body_offset.status, body_offset.diagnostic)); }
     const auto write_body = device->WriteAt(body_offset.offset,
                                             built.serialized.data(),
                                             built.serialized.size());
-    if (!write_body.ok()) { return StoreError(write_body.status, write_body.diagnostic); }
+    if (!write_body.ok()) { return trace_and_return(StoreError(write_body.status, write_body.diagnostic)); }
   }
+  mark_phase("write_inventory_pages");
 
   const auto sync = device->Sync();
-  if (!sync.ok()) { return StoreError(sync.status, sync.diagnostic); }
+  mark_phase("device_sync");
+  if (!sync.ok()) { return trace_and_return(StoreError(sync.status, sync.diagnostic)); }
   const auto publish_commit = PersistPublishJournal(device,
                                                     "committed",
                                                     inventory_generation,
                                                     old_inventory,
                                                     inventory);
-  if (!publish_commit.ok()) { return publish_commit; }
+  mark_phase("publish_commit_journal");
+  if (!publish_commit.ok()) { return trace_and_return(publish_commit); }
   LocalTransactionStoreResult result;
   result.status = StoreOkStatus();
   result.inventory = std::move(inventory);
   result.horizons = horizons.horizons;
-  return result;
+  return trace_and_return(std::move(result));
 }
 
 }  // namespace scratchbird::storage::database

@@ -1,10 +1,10 @@
 # Database Lifecycle Traceability Report
 
-Generated: `2026-06-06T10:21:30Z`
+Generated: `2026-06-20T17:08:10Z`
 Slice: `DBLC-013R`
 Acceptance gate: `DBLC_P13R_TRACEABILITY_COMPLETE`
-Status: `passed`
-Open traceability gaps: `0`
+Status: `failed`
+Open traceability gaps: `1`
 
 ## Scope
 
@@ -12,15 +12,14 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 ## Coverage Summary
 
-- Execution_Plan CTest labels observed in current CMake/test files: `3922`
-- Test source inventory entries observed: `13624`
-- Generated trace records: `592`
-- Fatal findings: `0`
+- Execution_Plan CTest labels observed in current CMake/test files: `5365`
+- Test source inventory entries observed: `20579`
+- Generated trace records: `448`
+- Fatal findings: `1`
 - Warnings: `0`
 
 | Trace category | Records |
 | --- | ---: |
-| `diagnostic` | `144` |
 | `invalid_transition_or_refusal` | `43` |
 | `operation_family` | `83` |
 | `route` | `24` |
@@ -35,7 +34,9 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 ## Findings
 
-No findings. Zero open traceability gaps remain for this slice.
+| Severity | Code | Location | Detail |
+| --- | --- | --- | --- |
+| `fatal` | `DBLC013R.TRACE_KIND_MISSING` | `diagnostic` | required traceability category has no generated records |
 
 ## Trace Samples
 
@@ -121,7 +122,7 @@ No findings. Zero open traceability gaps remain for this slice.
 | `state` | `process.quarantined` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
 | `state` | `process.ready` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
 | `state` | `process.starting` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `summary` | `512 additional generated records` | `covered` |
+| `summary` | `368 additional generated records` | `covered` |
 
 ## CMake Integration
 

@@ -2732,15 +2732,18 @@ std::vector<std::uint8_t> DataRowPayload(const std::vector<std::optional<std::st
 std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
   const auto normalized = Upper(StripSqlTerminator(std::string(sql)));
   const bool sql_surface_is_copy = normalized.starts_with("COPY");
+  const auto completion_count =
+      result.server_affected_rows_present ? result.server_affected_rows
+                                          : result.server_row_count;
   if (!result.server_operation_id.empty()) {
     if (result.server_operation_id == "transaction.begin") return "BEGIN";
     if (result.server_operation_id == "transaction.commit") return "COMMIT";
     if (result.server_operation_id == "transaction.rollback") return "ROLLBACK";
     if (result.server_operation_id == "dml.execute_native_bulk_ingest") {
       if (sql_surface_is_copy) {
-        return "COPY " + std::to_string(result.server_row_count);
+        return "COPY " + std::to_string(completion_count);
       }
-      return "NATIVE_BULK_INGEST " + std::to_string(result.server_row_count);
+      return "NATIVE_BULK_INGEST " + std::to_string(completion_count);
     }
   }
   std::string token;
@@ -2749,6 +2752,13 @@ std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
     token.push_back(ch);
   }
   return token.empty() ? "COMMAND" : token;
+}
+
+std::uint64_t CommandCompleteRowsFor(const PipelineResult& result) {
+  if (result.server_affected_rows_present) {
+    return result.server_affected_rows;
+  }
+  return result.server_row_count;
 }
 
 bool ShouldAutoCursor(std::string_view sql) {
@@ -2888,7 +2898,7 @@ bool SendPipelineResult(ClientIo* io,
       return SendFrame(io,
                        state,
                        kCommandComplete,
-                       CommandCompletePayload(result.server_row_count,
+                       CommandCompletePayload(CommandCompleteRowsFor(result),
                                               CommandTagFor(sql, result)));
     }
     return SendFrame(io,
@@ -2900,7 +2910,8 @@ bool SendPipelineResult(ClientIo* io,
   return SendFrame(io,
                    state,
                    kCommandComplete,
-                   CommandCompletePayload(result.server_row_count, CommandTagFor(sql, result)));
+                   CommandCompletePayload(CommandCompleteRowsFor(result),
+                                          CommandTagFor(sql, result)));
 }
 
 std::string SqlQuote(std::string_view value) {
@@ -3526,6 +3537,12 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
     result.server_operation_id = chunk_result.server_operation_id;
     result.server_row_count += chunk_result.server_row_count == 0 ? row_count
                                                                   : chunk_result.server_row_count;
+    result.server_affected_rows += chunk_result.server_affected_rows_present
+                                       ? chunk_result.server_affected_rows
+                                       : (chunk_result.server_row_count == 0
+                                              ? row_count
+                                              : chunk_result.server_row_count);
+    result.server_affected_rows_present = true;
     if (!chunk_result.server_result_payload.empty()) {
       if (!result.server_result_payload.empty() && result.server_result_payload.back() != '\n') {
         result.server_result_payload.push_back('\n');

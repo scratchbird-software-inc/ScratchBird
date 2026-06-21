@@ -848,6 +848,29 @@ std::vector<std::pair<std::string, std::map<std::string, std::string>>> Constrai
   return result;
 }
 
+const std::vector<std::pair<std::string, std::map<std::string, std::string>>>&
+CachedConstraintColumns(ConstraintDmlValidationCache* cache,
+                        const CrudTableRecord& table) {
+  if (cache == nullptr || table.table_uuid.empty()) {
+    static thread_local std::vector<std::pair<std::string, std::map<std::string, std::string>>>
+        uncached_columns;
+    uncached_columns = ConstraintColumns(table);
+    return uncached_columns;
+  }
+  auto found = cache->constraint_columns_by_table_uuid.find(table.table_uuid);
+  if (found == cache->constraint_columns_by_table_uuid.end()) {
+    found = cache->constraint_columns_by_table_uuid
+                .emplace(table.table_uuid, ConstraintColumns(table))
+                .first;
+  }
+  return found->second;
+}
+
+bool ContainsAssignedColumn(const std::set<std::string>& assigned_columns,
+                            const std::string& column_name) {
+  return assigned_columns.find(column_name) != assigned_columns.end();
+}
+
 bool IsKeyColumnReferencedByChildren(const std::map<std::string, std::string>& child_fields,
                                      const CrudTableRecord& parent_table,
                                      const std::string& parent_column) {
@@ -992,10 +1015,11 @@ void RecordIndexBackedUniquePreflightProof(
 ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
-    const std::vector<std::pair<std::string, std::string>>& input_values) {
+    const std::vector<std::pair<std::string, std::string>>& input_values,
+    ConstraintDmlValidationCache* cache) {
   ConstraintDmlValidationResult result;
   result.values = input_values;
-  for (const auto& [column_name, fields] : ConstraintColumns(table)) {
+  for (const auto& [column_name, fields] : CachedConstraintColumns(cache, table)) {
     const bool present = HasField(result.values, column_name);
     const bool requested_default = present && FieldValue(result.values, column_name) == "<DEFAULT>";
     if (present && !requested_default) { continue; }
@@ -1073,7 +1097,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     ConstraintDmlValidationCache* cache) {
   ConstraintDmlValidationResult result;
   result.values = values;
-  for (const auto& [column_name, fields] : ConstraintColumns(table)) {
+  for (const auto& [column_name, fields] : CachedConstraintColumns(cache, table)) {
     (void)mutation_kind;
     const bool not_null = BoolField(fields, {"not_null", "required"}) ||
                           BoolField(fields, {"primary_key", "pk"}) ||
@@ -1324,6 +1348,46 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
   return result;
 }
 
+bool UpdateTouchesImmediateConstraintColumns(
+    const CrudTableRecord& table,
+    const std::vector<std::string>& assigned_columns,
+    const ConstraintDmlValidationOptions& options) {
+  if (assigned_columns.empty()) { return true; }
+  const std::set<std::string> assigned(assigned_columns.begin(), assigned_columns.end());
+  for (const auto& [column_name, fields] : ConstraintColumns(table)) {
+    if (!ContainsAssignedColumn(assigned, column_name)) { continue; }
+    const bool not_null = BoolField(fields, {"not_null", "required"}) ||
+                          BoolField(fields, {"primary_key", "pk"}) ||
+                          FalseField(fields, {"nullable"});
+    if (not_null) { return true; }
+    if (!FieldOrEmpty(fields, {"check_constraint", "check", "predicate_sblr_ref"}).empty()) {
+      return true;
+    }
+    const bool primary_key = BoolField(fields, {"primary_key", "pk"});
+    const bool unique_key = primary_key || BoolField(fields, {"unique", "unique_key"});
+    if (unique_key && options.validate_unique_constraints) { return true; }
+    if (DescriptorDeclaresForeignKey(fields) && options.validate_foreign_key_constraints) {
+      return true;
+    }
+    if (DescriptorHasExclusion(fields)) { return true; }
+  }
+  return false;
+}
+
+bool UpdateTouchesParentKeyColumns(const CrudTableRecord& table,
+                                   const std::vector<std::string>& assigned_columns) {
+  if (assigned_columns.empty()) { return true; }
+  const std::set<std::string> assigned(assigned_columns.begin(), assigned_columns.end());
+  for (const auto& [column_name, fields] : ConstraintColumns(table)) {
+    if (!ContainsAssignedColumn(assigned, column_name)) { continue; }
+    if (BoolField(fields, {"primary_key", "pk"}) ||
+        BoolField(fields, {"unique", "unique_key"})) {
+      return true;
+    }
+  }
+  return false;
+}
+
 EngineApiDiagnostic ValidateImmediateDeleteConstraints(
     const EngineRequestContext& context,
     const CrudState& state,
@@ -1373,6 +1437,10 @@ EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
 }
 
 EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestContext& context) {
+  const auto metadata_work = HasVisibleMgaDeferredConstraintMetadata(context);
+  if (!metadata_work.ok) { return metadata_work.diagnostic; }
+  if (!metadata_work.has_work) { return OkDiagnostic(); }
+
   const auto loaded = LoadMgaRelationStoreState(context);
   if (!loaded.ok) { return loaded.diagnostic; }
   const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);

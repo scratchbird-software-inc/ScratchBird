@@ -83,6 +83,13 @@ EngineRequestContext BaseContext(const Args& args) {
   return context;
 }
 
+std::string DeterministicUuidText(scratchbird::core::platform::UuidKind kind,
+                                  std::uint64_t seed) {
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, seed);
+  return generated.ok() ? scratchbird::core::uuid::UuidToString(generated.value.value)
+                        : std::string{};
+}
+
 bool CreateProbeDatabase(const Args& args) {
   if (args.overwrite) {
     std::filesystem::remove(args.path + ".sb.mga_row_versions");
@@ -136,6 +143,15 @@ EngineBeginTransactionResult Begin(const EngineRequestContext& base, std::string
   request.context = base;
   request.isolation_level = std::move(isolation);
   return EngineBeginTransaction(request);
+}
+
+EngineCreateSchemaResult CreateProbeSchema(const EngineRequestContext& tx_context,
+                                           std::string schema_uuid) {
+  EngineCreateSchemaRequest request;
+  request.context = tx_context;
+  request.target_object.uuid.canonical = std::move(schema_uuid);
+  request.localized_names.push_back({"en", "default", "public", "public", true});
+  return EngineCreateSchema(request);
 }
 
 EngineCommitTransactionResult CommitResult(const EngineRequestContext& tx_context) {
@@ -341,10 +357,15 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const auto base = BaseContext(args);
+  auto base = BaseContext(args);
+  const std::string probe_schema_uuid =
+      DeterministicUuidText(scratchbird::core::platform::UuidKind::schema,
+                            args.creation_millis + 20);
+  base.current_schema_uuid.canonical = probe_schema_uuid;
 
   const auto setup_tx = Begin(base);
   const auto setup_context = TxContext(base, setup_tx);
+  const auto schema_result = CreateProbeSchema(setup_context, probe_schema_uuid);
   const auto table_result = CreatePersonTable(setup_context);
   const auto table = table_result.table_object;
   const auto insert_ada = InsertPerson(setup_context, table, "1", "Ada", "37");
@@ -583,6 +604,13 @@ int main(int argc, char** argv) {
 
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
+  std::cout << "  \"setup_begin_ok\": " << (setup_tx.ok ? "true" : "false") << ",\n";
+  std::cout << "  \"create_probe_schema_ok\": " << (schema_result.ok ? "true" : "false") << ",\n";
+  std::cout << "  \"create_person_table_ok\": " << (table_result.ok ? "true" : "false") << ",\n";
+  std::cout << "  \"insert_ada_ok\": " << (insert_ada.ok ? "true" : "false") << ",\n";
+  std::cout << "  \"insert_ada_inserted_count\": " << insert_ada.inserted_count << ",\n";
+  std::cout << "  \"insert_ada_row_uuid_present\": " << (!ada_row_uuid.empty() ? "true" : "false") << ",\n";
+  std::cout << "  \"setup_commit_ok\": " << (setup_commit_result.ok ? "true" : "false") << ",\n";
   std::cout << "  \"read_your_writes_insert\": " << (read_your_writes_insert ? "true" : "false") << ",\n";
   std::cout << "  \"commit_visibility_after_reopen\": " << (commit_visibility_after_reopen ? "true" : "false") << ",\n";
   std::cout << "  \"snapshot_reader_stable\": " << (snapshot_reader_stable ? "true" : "false") << ",\n";

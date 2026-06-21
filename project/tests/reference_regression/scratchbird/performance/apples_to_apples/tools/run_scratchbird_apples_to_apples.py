@@ -37,6 +37,8 @@ DEFAULT_LATEST_JSON = Path(
     "/home/dcalford/CliWork/local_work/scratchbird-driver-test-server/latest.json"
 )
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ROWS_AFFECTED_RE = re.compile(r"^Rows affected:\s+(\d+)\s*$", re.MULTILINE)
+DML_BENCHMARK_KINDS = {"dml"}
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,19 @@ def shell_literal(value: Any, column: str) -> str:
 def count_output_rows(path: Path) -> int:
     with path.open("rb") as handle:
         return sum(1 for line in handle if line.strip())
+
+
+def sum_output_affected_rows(path: Path) -> int | None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    values = [int(match.group(1)) for match in ROWS_AFFECTED_RE.finditer(text)]
+    if not values:
+        return None
+    return sum(values)
+
+
+def output_affected_row_values(path: Path) -> list[int]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [int(match.group(1)) for match in ROWS_AFFECTED_RE.finditer(text)]
 
 
 def generate_customers(row_count: int):
@@ -482,6 +497,43 @@ def generate_insert_scripts(run_root: Path, sb: SbRunner, scale: Scale, batch_si
     return result
 
 
+def write_combined_insert_script(run_root: Path, insert_scripts: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    path = run_root / "generated-load-sql" / "combined_load.sbsql"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    total_rows = 0
+    total_statements = 0
+    tables: list[dict[str, Any]] = []
+    with path.open("w", encoding="utf-8") as handle:
+        for table, meta in insert_scripts.items():
+            source_path = Path(meta["path"])
+            handle.write(f"-- combined-load-table: {table}\n")
+            handle.write(source_path.read_text(encoding="utf-8"))
+            handle.write("\n")
+            total_rows += int(meta["row_count"])
+            total_statements += int(meta["statement_count"])
+            tables.append(
+                {
+                    "table_name": table,
+                    "row_count": meta["row_count"],
+                    "statement_count": meta["statement_count"],
+                    "source_path": meta["path"],
+                    "source_sha256": meta["sha256"],
+                }
+            )
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "path": str(path),
+        "table": "__combined__",
+        "row_count": total_rows,
+        "statement_count": total_statements,
+        "tables": tables,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "generation_duration_ms": duration_ms,
+    }
+
+
 def setup_statements(sb: SbRunner) -> list[tuple[str, str]]:
     s = sb.full_schema
     customers = sb.full_table("customers")
@@ -592,9 +644,18 @@ def index_statements(sb: SbRunner) -> list[tuple[str, str]]:
     ]
 
 
-def run_index_setup(sb: SbRunner) -> list[dict[str, Any]]:
+def run_index_setup(sb: SbRunner, *, include_analyze: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     results = []
+    skipped = []
     for name, sql in index_statements(sb):
+        if not include_analyze and name.startswith("analyze_"):
+            skipped.append(
+                {
+                    "name": name,
+                    "reason": "benchmark_scope=dml",
+                }
+            )
+            continue
         result = sb.run_sql_text(sql)
         results.append(
             {
@@ -606,7 +667,7 @@ def run_index_setup(sb: SbRunner) -> list[dict[str, Any]]:
                 "stderr": result["stderr"].strip(),
             }
         )
-    return results
+    return results, skipped
 
 
 def run_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any]]:
@@ -617,7 +678,10 @@ def run_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any
         before = sb.process_snapshots()
         result = sb.run_file(Path(meta["path"]), output_path=output_path)
         after = sb.process_snapshots()
-        rows = count_output_rows(output_path) if output_path.exists() else 0
+        affected_rows = sum_output_affected_rows(output_path) if output_path.exists() else None
+        rows = affected_rows if affected_rows is not None else (
+            count_output_rows(output_path) if output_path.exists() else 0
+        )
         duration_s = result["duration_ms"] / 1000.0
         results.append(
             {
@@ -641,7 +705,57 @@ def run_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any
     return results
 
 
-def verify_data(sb: SbRunner, scale: Scale) -> dict[str, Any]:
+def run_combined_load(sb: SbRunner, insert_scripts: dict[str, Any]) -> list[dict[str, Any]]:
+    output_dir = sb.run_root / "load-output"
+    combined_meta = write_combined_insert_script(sb.run_root, insert_scripts)
+    output_path = output_dir / "combined_load.out"
+    before = sb.process_snapshots()
+    result = sb.run_file(Path(combined_meta["path"]), output_path=output_path)
+    after = sb.process_snapshots()
+    affected_values = output_affected_row_values(output_path) if output_path.exists() else []
+    affected_rows = sum(affected_values) if affected_values else None
+    rows = affected_rows if affected_rows is not None else (
+        count_output_rows(output_path) if output_path.exists() else 0
+    )
+    duration_s = result["duration_ms"] / 1000.0
+    per_table_rows = {}
+    offset = 0
+    for table, meta in insert_scripts.items():
+        statement_count = int(meta["statement_count"])
+        table_values = affected_values[offset : offset + statement_count]
+        offset += statement_count
+        per_table_rows[table] = {
+            "rows": sum(table_values) if table_values else None,
+            "expected_rows": meta["row_count"],
+            "statement_count": statement_count,
+        }
+    return [
+        {
+            "table_name": "__combined__",
+            "rows": rows,
+            "expected_rows": combined_meta["row_count"],
+            "script_path": combined_meta["path"],
+            "script_bytes": combined_meta["bytes"],
+            "script_sha256": combined_meta["sha256"],
+            "duration_ms": result["duration_ms"],
+            "rows_per_second": rows / duration_s if duration_s else 0.0,
+            "status": "passed"
+            if result["returncode"] == 0 and rows == combined_meta["row_count"]
+            else "failed",
+            "stdout_path": str(output_path),
+            "stdout_bytes": result["stdout_bytes"],
+            "stdout_sha256": result["stdout_sha256"],
+            "stderr": result["stderr"].strip(),
+            "process_snapshot_before": before,
+            "process_snapshot_after": after,
+            "combined_table_results": per_table_rows,
+            "statement_count": combined_meta["statement_count"],
+            "load_execution_mode": "combined",
+        }
+    ]
+
+
+def verify_data(sb: SbRunner, scale: Scale, *, include_join_integrity: bool) -> dict[str, Any]:
     expected = {
         "customers": scale.customers,
         "products": scale.products,
@@ -651,23 +765,25 @@ def verify_data(sb: SbRunner, scale: Scale) -> dict[str, Any]:
     counts = {
         table: sb.scalar(f"SELECT COUNT(*) FROM {sb.full_table(table)}") for table in expected
     }
-    integrity_sql = {
-        "invalid_order_customers": f"""
+    integrity_sql = {}
+    if include_join_integrity:
+        integrity_sql = {
+            "invalid_order_customers": f"""
 SELECT COUNT(*)
 FROM {sb.full_table('orders')} o
 LEFT JOIN {sb.full_table('customers')} c ON o.customer_id = c.customer_id
 WHERE c.customer_id IS NULL""",
-        "invalid_item_orders": f"""
+            "invalid_item_orders": f"""
 SELECT COUNT(*)
 FROM {sb.full_table('order_items')} oi
 LEFT JOIN {sb.full_table('orders')} o ON oi.order_id = o.order_id
 WHERE o.order_id IS NULL""",
-        "invalid_item_products": f"""
+            "invalid_item_products": f"""
 SELECT COUNT(*)
 FROM {sb.full_table('order_items')} oi
 LEFT JOIN {sb.full_table('products')} p ON oi.product_id = p.product_id
 WHERE p.product_id IS NULL""",
-    }
+        }
     integrity = {name: sb.scalar(sql) for name, sql in integrity_sql.items()}
     counts_passed = all(counts.get(k) == v for k, v in expected.items())
     integrity_passed = all(value == 0 for value in integrity.values())
@@ -675,6 +791,7 @@ WHERE p.product_id IS NULL""",
         "expected": expected,
         "actual_counts": counts,
         "integrity": integrity,
+        "integrity_skipped_reason": None if include_join_integrity else "benchmark_scope=dml",
         "counts_passed": counts_passed,
         "integrity_passed": integrity_passed,
         "passed": counts_passed and integrity_passed,
@@ -865,9 +982,15 @@ def run_actions(sb: SbRunner, manifest: dict[str, Any]) -> list[dict[str, Any]]:
         result = sb.run_sql_text(sql, output_path=output_path)
         after = sb.process_snapshots()
         duration_s = result["duration_ms"] / 1000.0
+        affected_rows = (
+            sum_output_affected_rows(output_path)
+            if result["returncode"] == 0 and output_path.exists()
+            else None
+        )
         rows = count_output_rows(output_path) if result["returncode"] == 0 and output_path.exists() else 0
         rows_returned = rows if action["kind"] == "query" else None
-        rows_affected = rows if action["kind"] == "dml" else None
+        rows_affected = affected_rows if action["kind"] == "dml" else None
+        rows_for_rate = rows_affected if rows_affected is not None else rows
         results.append(
             {
                 "action_id": action["id"],
@@ -877,7 +1000,7 @@ def run_actions(sb: SbRunner, manifest: dict[str, Any]) -> list[dict[str, Any]]:
                 "duration_ms": result["duration_ms"],
                 "rows_returned": rows_returned,
                 "rows_affected": rows_affected,
-                "rows_per_second": rows / duration_s if duration_s else 0.0,
+                "rows_per_second": rows_for_rate / duration_s if duration_s else 0.0,
                 "stdout_path": str(output_path),
                 "stdout_bytes": result["stdout_bytes"],
                 "stdout_sha256": result["stdout_sha256"],
@@ -889,6 +1012,30 @@ def run_actions(sb: SbRunner, manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def scoped_manifest(manifest: dict[str, Any], benchmark_scope: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if benchmark_scope == "all":
+        return manifest, []
+    if benchmark_scope != "dml":
+        raise ValueError(f"unsupported benchmark scope: {benchmark_scope}")
+
+    scoped = dict(manifest)
+    scoped_actions = []
+    skipped_actions = []
+    for action in manifest["actions"]:
+        if action.get("kind") in DML_BENCHMARK_KINDS:
+            scoped_actions.append(action)
+        else:
+            skipped_actions.append(
+                {
+                    "action_id": action.get("id"),
+                    "kind": action.get("kind"),
+                    "reason": "benchmark_scope=dml",
+                }
+            )
+    scoped["actions"] = scoped_actions
+    return scoped, skipped_actions
+
+
 def compare_with_postgresql(sb_summary: dict[str, Any], pg_summary_path: Path | None) -> dict[str, Any] | None:
     if pg_summary_path is None:
         return None
@@ -896,23 +1043,23 @@ def compare_with_postgresql(sb_summary: dict[str, Any], pg_summary_path: Path | 
     pg_actions = {item["action_id"]: item for item in pg.get("actions", [])}
     sb_actions = {item["action_id"]: item for item in sb_summary.get("actions", [])}
     action_rows = []
-    for action_id, pg_action in pg_actions.items():
-        sb_action = sb_actions.get(action_id)
+    for action_id, sb_action in sb_actions.items():
+        pg_action = pg_actions.get(action_id, {})
         pg_rps = float(pg_action.get("rows_per_second") or 0.0)
-        sb_rps = float((sb_action or {}).get("rows_per_second") or 0.0)
+        sb_rps = float(sb_action.get("rows_per_second") or 0.0)
         target = pg_rps * 0.97
         action_rows.append(
             {
                 "action_id": action_id,
-                "postgres_status": pg_action.get("status"),
-                "scratchbird_status": (sb_action or {}).get("status", "missing"),
+                "postgres_status": pg_action.get("status", "missing"),
+                "scratchbird_status": sb_action.get("status", "missing"),
                 "postgres_rows_per_second": pg_rps,
                 "scratchbird_rows_per_second": sb_rps,
                 "scratchbird_vs_postgresql_ratio": sb_rps / pg_rps if pg_rps else None,
-                "within_three_percent_target": sb_rps >= target if pg_rps and (sb_action or {}).get("status") == "passed" else False,
+                "within_three_percent_target": sb_rps >= target if pg_rps and sb_action.get("status") == "passed" else False,
                 "postgres_duration_ms": pg_action.get("duration_ms"),
-                "scratchbird_duration_ms": (sb_action or {}).get("duration_ms"),
-                "scratchbird_diagnostic": (sb_action or {}).get("stderr", ""),
+                "scratchbird_duration_ms": sb_action.get("duration_ms"),
+                "scratchbird_diagnostic": sb_action.get("stderr", ""),
             }
         )
     pg_load = pg.get("load_summary", {})
@@ -1009,6 +1156,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--insert-batch-size", type=int, default=500)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--postgres-summary", type=Path)
+    parser.add_argument(
+        "--load-execution-mode",
+        choices=("per-table", "combined"),
+        default="per-table",
+        help="Run generated load scripts as separate per-table SBsql processes or one combined long-lived SBsql process.",
+    )
+    parser.add_argument(
+        "--benchmark-scope",
+        choices=("all", "dml"),
+        default="all",
+        help="Limit timed action execution and PostgreSQL action comparison while still running setup/load/verification.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1025,6 +1184,7 @@ def main(argv: list[str]) -> int:
     sb = SbRunner(args, run_root, scale, latest)
 
     manifest = json.loads((SUITE_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    action_manifest, skipped_actions = scoped_manifest(manifest, args.benchmark_scope)
     started = time.perf_counter()
 
     version = subprocess.run(
@@ -1040,6 +1200,8 @@ def main(argv: list[str]) -> int:
         "suite_root": str(SUITE_ROOT),
         "run_root": str(run_root),
         "scale": args.scale,
+        "benchmark_scope": args.benchmark_scope,
+        "load_execution_mode": args.load_execution_mode,
         "scale_counts": scale.__dict__,
         "connection": {
             "host": sb.host,
@@ -1079,14 +1241,18 @@ def main(argv: list[str]) -> int:
     insert_scripts = generate_insert_scripts(run_root, sb, scale, args.insert_batch_size)
     load_results: list[dict[str, Any]] = []
     index_setup: list[dict[str, Any]] = []
+    skipped_index_setup: list[dict[str, Any]] = []
     verification: dict[str, Any] = {"passed": False, "skipped": "setup failed"}
     action_results: list[dict[str, Any]] = []
 
     if all(item["status"] == "passed" for item in setup):
-        load_results = run_load(sb, insert_scripts)
-        index_setup = run_index_setup(sb)
-        verification = verify_data(sb, scale)
-        action_results = run_actions(sb, manifest)
+        if args.load_execution_mode == "combined":
+            load_results = run_combined_load(sb, insert_scripts)
+        else:
+            load_results = run_load(sb, insert_scripts)
+        index_setup, skipped_index_setup = run_index_setup(sb, include_analyze=args.benchmark_scope == "all")
+        verification = verify_data(sb, scale, include_join_integrity=args.benchmark_scope == "all")
+        action_results = run_actions(sb, action_manifest)
 
     total_load_rows = sum(item.get("rows", 0) for item in load_results)
     total_load_ms = sum(item.get("duration_ms", 0.0) for item in load_results)
@@ -1117,8 +1283,10 @@ def main(argv: list[str]) -> int:
             "rows_per_second": total_load_rows / (total_load_ms / 1000.0) if total_load_ms else 0.0,
         },
         "index_setup": index_setup,
+        "skipped_index_setup": skipped_index_setup,
         "verification": verification,
         "actions": action_results,
+        "skipped_actions": skipped_actions,
         "pre_snapshot": pre_snapshot,
         "post_snapshot": {"processes": sb.process_snapshots()},
     }

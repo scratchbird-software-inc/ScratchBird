@@ -49,6 +49,26 @@ struct MgaRelationStoreResult {
   std::vector<EngineEvidenceReference> evidence;
 };
 
+struct MgaRelationIndexOnlyProofEligibilityResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  bool eligible = false;
+  bool summary_trusted = false;
+  std::string refusal_reason;
+  std::uint64_t row_version_count = 0;
+  std::uint64_t tombstone_count = 0;
+  std::uint64_t update_count = 0;
+  std::vector<EngineEvidenceReference> evidence;
+};
+
+struct MgaMetadataWorkPresenceResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  bool has_work = false;
+  std::uint64_t metadata_tables_scanned = 0;
+  std::uint64_t metadata_tables_matched = 0;
+};
+
 struct MgaTemporaryTableVisibilityResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
@@ -360,13 +380,37 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
 MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
     const EngineRequestContext& context,
     const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreIndexesOnlyForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreMetadataOnlyForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTarget(
     const EngineRequestContext& context,
     const std::string& table_uuid);
 MgaRelationStoreResult LoadMgaRelationStoreStateForMutationTargets(
     const EngineRequestContext& context,
     const std::vector<std::string>& table_uuids);
+MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids);
+MgaRelationIndexOnlyProofEligibilityResult
+CanUseMgaRelationIndexOnlyProofForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
+    const EngineRequestContext& context);
+MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
+    const EngineRequestContext& context,
+    bool include_delete_rows,
+    bool include_preserve_rows,
+    bool retire_private_metadata);
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state);
+CrudState BuildCrudCompatibilityStateFromMga(MgaRelationStoreState&& state);
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,
     const std::string& table_uuid);

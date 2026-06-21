@@ -21,6 +21,8 @@ struct ServerExecutionResult {
   std::string operation_id;
   std::string cursor_uuid;
   std::uint64_t row_count{0};
+  std::uint64_t affected_rows{0};
+  bool affected_rows_present{false};
   std::string row_packet;
   bool transaction_state_present{false};
   std::uint64_t local_transaction_id{0};

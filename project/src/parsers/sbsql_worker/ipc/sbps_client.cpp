@@ -13,11 +13,16 @@
 #include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <random>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -89,6 +94,59 @@ constexpr std::uint32_t kCursorCloseFlagCancel = 1u << 0;
 constexpr std::uint16_t kLongStringSentinel = 0xffff;
 constexpr std::uint32_t kDefaultSbpsRequestTimeoutMs = 300000;
 constexpr std::size_t kPortableAfUnixPathLimit = 108;
+constexpr std::size_t kMaxSbpsClientPublicResolutionCacheEntries = 8192;
+
+using SbpsClientTraceClock = std::chrono::steady_clock;
+
+std::uint64_t SbpsClientElapsedMicros(
+    SbpsClientTraceClock::time_point begin,
+    SbpsClientTraceClock::time_point end = SbpsClientTraceClock::now()) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+}
+
+void WriteSbpsClientPhaseTrace(std::string_view endpoint_path,
+                               std::uint16_t message_type,
+                               std::uint32_t schema_id,
+                               int attempt_index,
+                               std::size_t request_payload_bytes,
+                               std::size_t encoded_frame_count,
+                               std::size_t encoded_frame_bytes,
+                               std::size_t response_payload_bytes,
+                               bool success,
+                               std::uint64_t endpoint_us,
+                               std::uint64_t lock_wait_us,
+                               std::uint64_t connect_us,
+                               std::uint64_t encode_us,
+                               std::uint64_t write_us,
+                               std::uint64_t read_response_us,
+                               std::uint64_t attempt_us,
+                               std::uint64_t total_us) {
+  const char* path = std::getenv("SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE");
+  if (path == nullptr || *path == '\0') return;
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  out << "endpoint=" << endpoint_path
+      << '\t' << "message_type=" << message_type
+      << '\t' << "schema_id=" << schema_id
+      << '\t' << "attempt=" << attempt_index
+      << '\t' << "request_payload_bytes=" << request_payload_bytes
+      << '\t' << "encoded_frame_count=" << encoded_frame_count
+      << '\t' << "encoded_frame_bytes=" << encoded_frame_bytes
+      << '\t' << "response_payload_bytes=" << response_payload_bytes
+      << '\t' << "success=" << (success ? "true" : "false")
+      << '\t' << "endpoint_us=" << endpoint_us
+      << '\t' << "lock_wait_us=" << lock_wait_us
+      << '\t' << "connect_us=" << connect_us
+      << '\t' << "encode_us=" << encode_us
+      << '\t' << "write_us=" << write_us
+      << '\t' << "read_response_us=" << read_response_us
+      << '\t' << "attempt_us=" << attempt_us
+      << '\t' << "total_us=" << total_us
+      << '\n';
+}
 
 std::string NormalizeLanguageTag(std::string_view value) {
   return value.empty() ? "en" : std::string(value);
@@ -282,6 +340,11 @@ std::string EvidenceValue(std::string_view encoded, std::string_view evidence_ki
 void PopulateTransactionStateFromPayload(std::string_view payload,
                                          ServerExecutionResult* result) {
   if (result == nullptr) return;
+  std::uint64_t affected_rows = 0;
+  if (TextLineU64(payload, "server_affected_rows", &affected_rows)) {
+    result->affected_rows = affected_rows;
+    result->affected_rows_present = true;
+  }
   std::uint64_t local_transaction_id = 0;
   if (!TextLineU64(payload, "replacement_local_transaction_id", &local_transaction_id) &&
       !TextLineU64(payload, "local_transaction_id", &local_transaction_id)) {
@@ -790,6 +853,172 @@ void AppendDiagnostics(MessageVectorSet* target, const MessageVectorSet& source)
                              source.diagnostics.end());
 }
 
+std::string JoinStable(const std::vector<std::string>& values) {
+  std::vector<std::string> sorted = values;
+  std::sort(sorted.begin(), sorted.end());
+  std::string out;
+  for (const auto& value : sorted) {
+    if (!out.empty()) out.push_back(',');
+    out += value;
+  }
+  return out;
+}
+
+bool ExecutionInvalidatesPublicResolutionCache(std::string_view operation_id) {
+  return operation_id.rfind("ddl.", 0) == 0 ||
+         operation_id.rfind("catalog.", 0) == 0 ||
+         operation_id.rfind("security.", 0) == 0 ||
+         operation_id.rfind("language.", 0) == 0 ||
+         operation_id.rfind("policy.", 0) == 0 ||
+         operation_id.rfind("auth.", 0) == 0;
+}
+
+struct SbpsClientPublicResolutionCacheRecord {
+  std::string object_uuid;
+  std::string canonical_name;
+  std::string object_class;
+  std::uint64_t catalog_epoch{0};
+  std::uint64_t security_epoch{0};
+};
+
+std::mutex& SbpsClientPublicResolutionCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, SbpsClientPublicResolutionCacheRecord>&
+SbpsClientPublicResolutionCache() {
+  static std::map<std::string, SbpsClientPublicResolutionCacheRecord> cache;
+  return cache;
+}
+
+std::deque<std::string>& SbpsClientPublicResolutionLru() {
+  static std::deque<std::string> lru;
+  return lru;
+}
+
+std::string SbpsClientPublicResolutionScopeKey(std::string_view endpoint,
+                                               const SessionContext& session) {
+  std::ostringstream key;
+  key << "endpoint=" << endpoint
+      << "|session=" << session.session_uuid
+      << "|connection=" << session.connection_uuid
+      << "|database=" << session.database_uuid
+      << "|user=" << session.authenticated_user_uuid
+      << "|principal=" << session.principal_claim
+      << "|auth_provider=" << session.auth_provider_family
+      << "|catalog=" << session.catalog_epoch
+      << "|security=" << session.security_policy_epoch
+      << "|grant=" << session.grant_epoch
+      << "|descriptor=" << session.descriptor_epoch
+      << "|localized_name=" << session.localized_name_epoch
+      << "|language_resource=" << session.language_resource_epoch
+      << "|message_resource=" << session.message_resource_epoch
+      << "|roles=" << JoinStable(session.effective_role_uuids)
+      << "|groups=" << JoinStable(session.effective_group_uuids)
+      << "|search_path=" << JoinStable(session.search_path)
+      << "|default_language=" << session.default_language
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|input_fallback=" << session.input_language_fallback_tag
+      << "|common_resource=" << session.common_resource_hash
+      << "|dialect_profile=" << session.dialect_profile_uuid
+      << "|policy_profile=" << session.policy_profile_uuid
+      << "|resource_compat=" << session.resource_compatibility_identity
+      << "|resource_version=" << session.resource_version_identity;
+  return key.str();
+}
+
+std::string SbpsClientResolveNameCacheKey(std::string_view endpoint,
+                                          const SessionContext& session,
+                                          std::string_view presented_name,
+                                          bool quoted,
+                                          std::string_view object_class,
+                                          const ParserConfig& config) {
+  std::ostringstream key;
+  key << SbpsClientPublicResolutionScopeKey(endpoint, session)
+      << "|kind=resolve_name"
+      << "|name=" << presented_name
+      << "|quoted=" << (quoted ? "1" : "0")
+      << "|object_class=" << object_class
+      << "|parser_profile=" << config.profile_id
+      << "|parser_dialect=" << config.dialect
+      << "|registry=" << config.registry_version;
+  return key.str();
+}
+
+std::string SbpsClientRenderUuidCacheKey(std::string_view endpoint,
+                                         const SessionContext& session,
+                                         std::string_view object_uuid) {
+  std::ostringstream key;
+  key << SbpsClientPublicResolutionScopeKey(endpoint, session)
+      << "|kind=render_uuid"
+      << "|object_uuid=" << object_uuid;
+  return key.str();
+}
+
+PublicNameResolutionResult PublicResolutionResultFromCache(
+    const SbpsClientPublicResolutionCacheRecord& cached) {
+  PublicNameResolutionResult result;
+  result.resolved = true;
+  result.object_uuid = cached.object_uuid;
+  result.canonical_name = cached.canonical_name;
+  result.object_class = cached.object_class;
+  result.catalog_epoch = cached.catalog_epoch;
+  result.security_epoch = cached.security_epoch;
+  return result;
+}
+
+std::optional<SbpsClientPublicResolutionCacheRecord>
+LookupSbpsClientPublicResolutionCache(const std::string& cache_key) {
+  std::lock_guard<std::mutex> guard(SbpsClientPublicResolutionCacheMutex());
+  const auto found = SbpsClientPublicResolutionCache().find(cache_key);
+  if (found == SbpsClientPublicResolutionCache().end()) return std::nullopt;
+  return found->second;
+}
+
+void StoreSbpsClientPublicResolutionCacheEntry(
+    const std::string& cache_key,
+    const PublicNameResolutionResult& result) {
+  if (cache_key.empty() || !result.resolved || result.object_uuid.empty()) return;
+  std::lock_guard<std::mutex> guard(SbpsClientPublicResolutionCacheMutex());
+  auto& cache = SbpsClientPublicResolutionCache();
+  auto& lru = SbpsClientPublicResolutionLru();
+  cache[cache_key] = SbpsClientPublicResolutionCacheRecord{
+      result.object_uuid,
+      result.canonical_name,
+      result.object_class,
+      result.catalog_epoch,
+      result.security_epoch,
+  };
+  lru.erase(std::remove(lru.begin(), lru.end(), cache_key), lru.end());
+  lru.push_back(cache_key);
+  while (cache.size() > kMaxSbpsClientPublicResolutionCacheEntries && !lru.empty()) {
+    cache.erase(lru.front());
+    lru.pop_front();
+  }
+}
+
+void ClearSbpsClientPublicResolutionCacheForSession(std::string_view endpoint,
+                                                    const SessionContext& session) {
+  const std::string scope = SbpsClientPublicResolutionScopeKey(endpoint, session);
+  std::lock_guard<std::mutex> guard(SbpsClientPublicResolutionCacheMutex());
+  auto& cache = SbpsClientPublicResolutionCache();
+  auto& lru = SbpsClientPublicResolutionLru();
+  for (auto it = cache.begin(); it != cache.end();) {
+    if (it->first.rfind(scope, 0) == 0) {
+      it = cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  lru.erase(std::remove_if(lru.begin(), lru.end(), [&](const std::string& key) {
+              return key.rfind(scope, 0) == 0;
+            }),
+            lru.end());
+}
+
 void CloseCachedSbpsSocket(std::string_view path) {
   auto& sockets = CachedSbpsSockets();
   const auto found = sockets.find(std::string(path));
@@ -863,40 +1092,143 @@ bool SendRequest(const std::string& endpoint,
                  Frame* response,
                  MessageVectorSet* messages,
                  std::uint32_t timeout_ms = kDefaultSbpsRequestTimeoutMs) {
+  const auto total_begin = SbpsClientTraceClock::now();
+  const auto endpoint_begin = total_begin;
   const auto path = EndpointPath(endpoint);
+  const auto endpoint_us = SbpsClientElapsedMicros(endpoint_begin);
   if (!ValidateEndpointPath(path, messages)) return false;
-  std::lock_guard<std::mutex> lock(CachedSbpsSocketMutex());
+  const auto lock_begin = SbpsClientTraceClock::now();
+  std::unique_lock<std::mutex> lock(CachedSbpsSocketMutex());
+  const auto lock_wait_us = SbpsClientElapsedMicros(lock_begin);
   for (int attempt = 0; attempt < 2; ++attempt) {
+    const auto attempt_begin = SbpsClientTraceClock::now();
     MessageVectorSet attempt_messages;
+    const auto connect_begin = SbpsClientTraceClock::now();
     const SbpsSocketHandle fd = ConnectCachedSbpsSocket(path, &attempt_messages, timeout_ms);
+    const auto connect_us = SbpsClientElapsedMicros(connect_begin);
     if (fd == kInvalidSbpsSocket) {
+      WriteSbpsClientPhaseTrace(path,
+                                header.message_type,
+                                header.schema_id,
+                                attempt,
+                                payload.size(),
+                                0,
+                                0,
+                                0,
+                                false,
+                                endpoint_us,
+                                lock_wait_us,
+                                connect_us,
+                                0,
+                                0,
+                                0,
+                                SbpsClientElapsedMicros(attempt_begin),
+                                SbpsClientElapsedMicros(total_begin));
       AppendDiagnostics(messages, attempt_messages);
       return false;
     }
+    const auto encode_begin = SbpsClientTraceClock::now();
+    const auto encoded_frames = EncodeFrameSequence(header, payload);
+    const auto encode_us = SbpsClientElapsedMicros(encode_begin);
+    std::size_t encoded_frame_bytes = 0;
+    for (const auto& encoded : encoded_frames) encoded_frame_bytes += encoded.size();
     bool wrote_all = true;
-    for (const auto& encoded : EncodeFrameSequence(header, payload)) {
+    const auto write_begin = SbpsClientTraceClock::now();
+    for (const auto& encoded : encoded_frames) {
       if (!WriteAll(fd, encoded)) {
         wrote_all = false;
         break;
       }
     }
+    const auto write_us = SbpsClientElapsedMicros(write_begin);
     if (!wrote_all) {
       CloseCachedSbpsSocket(path);
       if (attempt == 0) continue;
+      WriteSbpsClientPhaseTrace(path,
+                                header.message_type,
+                                header.schema_id,
+                                attempt,
+                                payload.size(),
+                                encoded_frames.size(),
+                                encoded_frame_bytes,
+                                0,
+                                false,
+                                endpoint_us,
+                                lock_wait_us,
+                                connect_us,
+                                encode_us,
+                                write_us,
+                                0,
+                                SbpsClientElapsedMicros(attempt_begin),
+                                SbpsClientElapsedMicros(total_begin));
       AddDiagnostic(messages, "PARSER_SERVER_IPC.WRITE_FAILED", "The parser could not write to sb_server.");
       return false;
     }
+    const auto read_begin = SbpsClientTraceClock::now();
     if (ReadExpectedResponse(fd, header.request_uuid, response, &attempt_messages)) {
+      const auto read_us = SbpsClientElapsedMicros(read_begin);
       if (header.message_type == kMessageDisconnectNotice) {
         CloseCachedSbpsSocket(path);
       }
+      WriteSbpsClientPhaseTrace(path,
+                                header.message_type,
+                                header.schema_id,
+                                attempt,
+                                payload.size(),
+                                encoded_frames.size(),
+                                encoded_frame_bytes,
+                                response == nullptr ? 0 : response->payload.size(),
+                                true,
+                                endpoint_us,
+                                lock_wait_us,
+                                connect_us,
+                                encode_us,
+                                write_us,
+                                read_us,
+                                SbpsClientElapsedMicros(attempt_begin),
+                                SbpsClientElapsedMicros(total_begin));
       return true;
     }
+    const auto read_us = SbpsClientElapsedMicros(read_begin);
     CloseCachedSbpsSocket(path);
     if (attempt == 0) continue;
+    WriteSbpsClientPhaseTrace(path,
+                              header.message_type,
+                              header.schema_id,
+                              attempt,
+                              payload.size(),
+                              encoded_frames.size(),
+                              encoded_frame_bytes,
+                              response == nullptr ? 0 : response->payload.size(),
+                              false,
+                              endpoint_us,
+                              lock_wait_us,
+                              connect_us,
+                              encode_us,
+                              write_us,
+                              read_us,
+                              SbpsClientElapsedMicros(attempt_begin),
+                              SbpsClientElapsedMicros(total_begin));
     AppendDiagnostics(messages, attempt_messages);
     return false;
   }
+  WriteSbpsClientPhaseTrace(path,
+                            header.message_type,
+                            header.schema_id,
+                            2,
+                            payload.size(),
+                            0,
+                            0,
+                            0,
+                            false,
+                            endpoint_us,
+                            lock_wait_us,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SbpsClientElapsedMicros(total_begin));
   AddDiagnostic(messages, "PARSER_SERVER_IPC.REQUEST_FAILED", "The parser-server IPC request failed.");
   return false;
 }
@@ -1391,6 +1723,11 @@ PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& s
         "sbp_sbsql.sbps_client"));
     return result;
   }
+  const auto cache_key =
+      SbpsClientResolveNameCacheKey(endpoint_, session, presented_name, quoted, object_class, config);
+  if (const auto cached = LookupSbpsClientPublicResolutionCache(cache_key)) {
+    return PublicResolutionResultFromCache(*cached);
+  }
   MessageVectorSet messages;
   Frame response;
   const auto session_uuid = TextToUuid(session.session_uuid);
@@ -1411,7 +1748,9 @@ PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& s
     result.messages = std::move(messages);
     return result;
   }
-  return DecodePublicNameResultPayload(response, "resolved");
+  result = DecodePublicNameResultPayload(response, "resolved");
+  StoreSbpsClientPublicResolutionCacheEntry(cache_key, result);
+  return result;
 }
 
 PublicNameResolutionResult SbpsClient::RenderUuidPublic(const SessionContext& session,
@@ -1424,6 +1763,10 @@ PublicNameResolutionResult SbpsClient::RenderUuidPublic(const SessionContext& se
         "public UUID rendering requires an authenticated server session",
         "sbp_sbsql.sbps_client"));
     return result;
+  }
+  const auto cache_key = SbpsClientRenderUuidCacheKey(endpoint_, session, object_uuid);
+  if (const auto cached = LookupSbpsClientPublicResolutionCache(cache_key)) {
+    return PublicResolutionResultFromCache(*cached);
   }
   MessageVectorSet messages;
   Frame response;
@@ -1445,7 +1788,9 @@ PublicNameResolutionResult SbpsClient::RenderUuidPublic(const SessionContext& se
     result.messages = std::move(messages);
     return result;
   }
-  return DecodePublicNameResultPayload(response, "rendered");
+  result = DecodePublicNameResultPayload(response, "rendered");
+  StoreSbpsClientPublicResolutionCacheEntry(cache_key, result);
+  return result;
 }
 
 ServerExecutionResult SbpsClient::ExecuteSblr(const SessionContext& session,
@@ -1497,6 +1842,9 @@ ServerExecutionResult SbpsClient::ExecuteSblr(const SessionContext& session,
   }
   PopulateTransactionStateFromPayload(result.row_packet, &result);
   result.accepted = true;
+  if (ExecutionInvalidatesPublicResolutionCache(result.operation_id)) {
+    ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
+  }
   return result;
 }
 
@@ -1608,6 +1956,9 @@ ServerExecutionResult SbpsClient::ExecutePreparedSblr(
   }
   PopulateTransactionStateFromPayload(result.row_packet, &result);
   result.accepted = true;
+  if (ExecutionInvalidatesPublicResolutionCache(result.operation_id)) {
+    ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
+  }
   return result;
 }
 
@@ -1785,11 +2136,13 @@ ServerManagementResult SbpsClient::Manage(const SessionContext& session,
   result.payload.assign(reinterpret_cast<const char*>(response.payload.data()),
                         response.payload.size());
   result.accepted = true;
+  ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
   return result;
 }
 
 bool SbpsClient::DisconnectSession(const SessionContext& session, MessageVectorSet* messages) const {
   if (!session.authenticated || session.session_uuid.empty()) return true;
+  ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
   Frame response;
   const auto session_uuid = TextToUuid(session.session_uuid);
   const auto connection_uuid = TextToUuid(session.connection_uuid);

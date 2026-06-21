@@ -593,7 +593,9 @@ bool StartsWithText(const std::string& value, const std::string& prefix) {
 
 bool IsRejectableInsertDiagnostic(const EngineApiDiagnostic& diagnostic) {
   return ContainsText(diagnostic.detail, "unique_index_duplicate") ||
+         ContainsText(diagnostic.detail, "bulk_unique_proof_persisted_conflict") ||
          ContainsText(diagnostic.detail, "domain.validate_value") ||
+         StartsWithText(diagnostic.code, "SB-BULK-CONSTRAINT-") ||
          StartsWithText(diagnostic.code, "CLI.CONSTRAINT_") ||
          StartsWithText(diagnostic.message_key, "constraint.");
 }

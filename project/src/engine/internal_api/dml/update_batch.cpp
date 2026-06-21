@@ -199,7 +199,13 @@ std::uint64_t EstimateMatches(const EngineUpdateRowsRequest& request,
   if (request.update_predicate.predicate_kind == "row_uuid_match") {
     return 1;
   }
-  return static_cast<std::uint64_t>(VisibleCrudRows(state, table.table_uuid, request.context.local_transaction_id).size());
+  std::uint64_t estimate = 0;
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid == table.table_uuid && !row.deleted) {
+      ++estimate;
+    }
+  }
+  return estimate;
 }
 
 std::uint64_t AssignmentBytes(const EngineUpdateRowsRequest& request) {

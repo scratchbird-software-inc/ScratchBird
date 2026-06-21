@@ -2320,6 +2320,33 @@ void CloseSessionObjectHandlesForSession(
   }
 }
 
+void CloseServerPublicAbiSessionForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string) {
+  if (registry == nullptr) return;
+  const auto key = UuidBytesToText(session_uuid);
+  auto it = registry->public_abi_sessions_by_session_uuid.find(key);
+  if (it == registry->public_abi_sessions_by_session_uuid.end()) {
+    return;
+  }
+  auto& context = it->second;
+  if (context.engine_session != nullptr) {
+    sb_engine_session_end_params_v1_t end_params{};
+    end_params.struct_size = sizeof(end_params);
+    end_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end_params.rollback_active_transactions = 1;
+    end_params.cancel_open_results = 1;
+    (void)sb_engine_session_end(context.engine_session, &end_params, nullptr);
+    context.engine_session = nullptr;
+  }
+  if (context.engine != nullptr) {
+    (void)sb_engine_close(context.engine, nullptr);
+    context.engine = nullptr;
+  }
+  registry->public_abi_sessions_by_session_uuid.erase(it);
+}
+
 namespace {
 
 ServerAuthorityCacheEpochVector AuthorityCacheEpochVectorForSession(
@@ -3502,6 +3529,7 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
   CloseSessionObjectHandlesForSession(registry, session_uuid, disconnect_reason);
   std::uint64_t cursors_tombstoned = 0;
   std::uint64_t engine_results_released = 0;
+  std::uint64_t public_abi_contexts_closed = 0;
   std::uint64_t request_finality_records_updated = 0;
   for (auto& [_, cursor] : registry->cursors_by_uuid) {
     if (cursor.session_uuid == session_uuid) {
@@ -3534,6 +3562,13 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         }
       }
     }
+  }
+  if (registry->public_abi_sessions_by_session_uuid.find(key) !=
+      registry->public_abi_sessions_by_session_uuid.end()) {
+    CloseServerPublicAbiSessionForSession(registry,
+                                          session_uuid,
+                                          disconnect_reason);
+    public_abi_contexts_closed = 1;
   }
   for (auto& [_, request_record] : registry->requests_by_uuid) {
     if (request_record.session_uuid != session_uuid ||
@@ -3574,6 +3609,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
          {"prepared_tombstoned", std::to_string(prepared_tombstoned)},
          {"cursors_tombstoned", std::to_string(cursors_tombstoned)},
          {"engine_results_released", std::to_string(engine_results_released)},
+         {"public_abi_contexts_closed",
+          std::to_string(public_abi_contexts_closed)},
          {"request_finality_records_updated", std::to_string(request_finality_records_updated)},
          {"temporary_rows_deleted", std::to_string(temporary_rows_deleted)},
          {"temporary_large_values_reclaimed", std::to_string(temporary_large_values_reclaimed)},

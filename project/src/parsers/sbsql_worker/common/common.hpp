@@ -143,6 +143,8 @@ struct PipelineResult {
   std::string server_operation_id;
   std::string server_cursor_uuid;
   std::uint64_t server_row_count{0};
+  std::uint64_t server_affected_rows{0};
+  bool server_affected_rows_present{false};
   std::string server_result_payload;
   MessageVectorSet messages;
 };

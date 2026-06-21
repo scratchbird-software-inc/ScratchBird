@@ -141,6 +141,39 @@ bool valid_result(sb_engine_result_t handle) {
   return handle != nullptr && handle->magic == kResultMagic && !handle->released;
 }
 
+using EngineAbiSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t EngineAbiElapsedMicros(EngineAbiSteadyClock::time_point start,
+                                     EngineAbiSteadyClock::time_point finish) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+void WriteEngineAbiPhaseTrace(
+    std::string_view layer,
+    std::string_view operation_id,
+    std::size_t envelope_size,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_ENGINE_ABI_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "layer=" << layer
+      << "\toperation=" << operation_id
+      << "\tenvelope_bytes=" << envelope_size;
+  std::uint64_t total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << "\ttotal_us=" << total << '\n';
+}
+
 std::string uuid_to_canonical(const sb_engine_uuid_t& uuid) {
   constexpr char kHex[] = "0123456789abcdef";
   std::string out;
@@ -518,10 +551,24 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                sb_engine_result_t* out_result) {
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view encoded(data, envelope.canonical_bytes.size());
+  auto phase_last = EngineAbiSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  phase_micros.reserve(8);
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = EngineAbiSteadyClock::now();
+    phase_micros.push_back({std::move(phase), EngineAbiElapsedMicros(phase_last, now)});
+    phase_last = now;
+  };
   const auto api_context = make_internal_context(session->engine, context);
+  mark_phase("make_internal_context");
   const auto dispatch_result = scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded, api_context);
+  mark_phase("decode_and_dispatch_operation");
   if (!dispatch_result.accepted || !dispatch_result.api_result.ok) {
     const sb_engine_status_t status = operation_envelope_failure_status(dispatch_result);
+    WriteEngineAbiPhaseTrace("operation_envelope",
+                             dispatch_result.api_result.operation_id,
+                             envelope.canonical_bytes.size(),
+                             phase_micros);
     return fail_result(status,
                        out_result,
                        4010,
@@ -531,6 +578,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   }
 
   auto* result = make_result(SB_ENGINE_RESULT_ROW_BATCH, dispatch_result.api_result.operation_id);
+  mark_phase("make_result");
   const bool summary_only_requested =
       has_text_line_option(encoded, "result_payload_policy", "summary_only");
   const bool summary_only_import =
@@ -584,6 +632,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     result->row_values = api_row_values(dispatch_result.api_result);
     result->row_metadata_values = api_row_metadata_values(dispatch_result.api_result);
   }
+  mark_phase("shape_result_rows");
   if (summary_only_native_bulk) {
     result->evidence_values = {
         "direct_physical_bulk_row_count:" + std::to_string(result->rows_produced),
@@ -591,6 +640,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   } else {
     result->evidence_values = api_evidence_values(dispatch_result.api_result);
   }
+  mark_phase("shape_evidence");
   if (summary_only_import || summary_only_native_bulk || summary_only_dml_write) {
     const std::uint64_t summary_payload_rows =
         summary_only_native_bulk
@@ -607,7 +657,13 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   } else {
     result->payload = api_result_payload(dispatch_result.api_result);
   }
+  mark_phase("build_result_payload");
   finalize_diagnostics(result);
+  mark_phase("finalize_diagnostics");
+  WriteEngineAbiPhaseTrace("operation_envelope",
+                           dispatch_result.api_result.operation_id,
+                           envelope.canonical_bytes.size(),
+                           phase_micros);
   *out_result = result;
   return SB_ENGINE_STATUS_OK;
 }
@@ -993,9 +1049,22 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     *out_result = result;
     return SB_ENGINE_STATUS_OK;
   }
+  auto phase_last = EngineAbiSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  phase_micros.reserve(4);
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = EngineAbiSteadyClock::now();
+    phase_micros.push_back({std::move(phase), EngineAbiElapsedMicros(phase_last, now)});
+    phase_last = now;
+  };
   const auto decoded =
       scratchbird::engine::DecodeSblrEnvelopeBytes(params->envelope_bytes, params->envelope_size_bytes);
+  mark_phase("decode_sblr_envelope_bytes");
   if (decoded.status != scratchbird::engine::SblrCodecStatus::ok) {
+    WriteEngineAbiPhaseTrace("dispatch_sblr",
+                             "decode_rejected",
+                             static_cast<std::size_t>(params->envelope_size_bytes),
+                             phase_micros);
     const std::string code(decoded.diagnostic_code);
     const std::string key(decoded.message_key);
     if (decoded.status == scratchbird::engine::SblrCodecStatus::version_unsupported) {
@@ -1016,7 +1085,13 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4001, code, key);
   }
   if (looks_like_sblr_operation_envelope(decoded.envelope)) {
-    return dispatch_operation_envelope(session, *context, decoded.envelope, out_result);
+    const auto status = dispatch_operation_envelope(session, *context, decoded.envelope, out_result);
+    mark_phase("dispatch_operation_envelope");
+    WriteEngineAbiPhaseTrace("dispatch_sblr",
+                             "operation_envelope",
+                             static_cast<std::size_t>(params->envelope_size_bytes),
+                             phase_micros);
+    return status;
   }
   const auto* row =
       scratchbird::engine::FindSblrPriorityDRegistryRow(decoded.envelope.family, decoded.envelope.opcode);
