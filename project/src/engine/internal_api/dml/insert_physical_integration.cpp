@@ -627,6 +627,40 @@ bool DirectIndexCoversColumn(const CrudIndexRecord& index,
   return columns.size() == 1 && columns.front() == column_name;
 }
 
+const std::string* DirectFieldValuePtr(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const std::string& field) {
+  for (const auto& [key, value] : values) {
+    if (key == field) { return &value; }
+  }
+  return nullptr;
+}
+
+bool DirectSimpleScalarIndexKeyColumn(const CrudIndexRecord& index,
+                                      std::string* column_name) {
+  if (column_name == nullptr || index.column_name.empty()) {
+    return false;
+  }
+  if (!index.predicate_kind.empty() && index.predicate_kind != "where_true") {
+    return false;
+  }
+  const std::string family =
+      index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
+                           : index.family;
+  if (family != kCrudIndexFamilyBtree &&
+      family != kCrudIndexFamilyHash &&
+      family != "unique_btree" &&
+      !family.empty()) {
+    return false;
+  }
+  const auto columns = DirectIndexKeyColumns(index);
+  if (columns.size() != 1 || columns.front() != index.column_name) {
+    return false;
+  }
+  *column_name = columns.front();
+  return true;
+}
+
 std::optional<CrudIndexRecord> DirectVisibleUniqueIndexForColumn(
     const CrudState& state,
     const std::string& table_uuid,
@@ -1254,6 +1288,40 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
   for (const auto& index : indexes) {
     auto& entries = entries_by_index[index.index_uuid];
     entries.reserve(staged_rows.size());
+    std::string simple_column;
+    if (DirectSimpleScalarIndexKeyColumn(index, &simple_column)) {
+      std::optional<std::size_t> simple_ordinal;
+      if (!logical_value_batch.empty()) {
+        for (std::size_t ordinal = 0;
+             ordinal < logical_value_batch.front().size();
+             ++ordinal) {
+          if (logical_value_batch.front()[ordinal].first == simple_column) {
+            simple_ordinal = ordinal;
+            break;
+          }
+        }
+      }
+      for (std::size_t row_index = 0;
+           row_index < staged_rows.size();
+           ++row_index) {
+        const auto& values = logical_value_batch[row_index];
+        const std::string* value = nullptr;
+        if (simple_ordinal.has_value() &&
+            *simple_ordinal < values.size() &&
+            values[*simple_ordinal].first == simple_column) {
+          value = &values[*simple_ordinal].second;
+        } else {
+          value = DirectFieldValuePtr(values, simple_column);
+        }
+        if (value == nullptr || value->empty()) { continue; }
+        entries.push_back({*value,
+                           *value,
+                           staged_rows[row_index].row_uuid,
+                           staged_rows[row_index].version_uuid,
+                           static_cast<std::uint64_t>(row_index)});
+      }
+      continue;
+    }
     for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
       const auto& values = logical_value_batch[row_index];
       const std::string payload = CrudFieldValue(values, index.column_name);
