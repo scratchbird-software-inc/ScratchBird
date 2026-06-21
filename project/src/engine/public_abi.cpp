@@ -430,6 +430,19 @@ struct NativeRowPacketDecode {
 
 NativeRowPacketDecode decode_native_row_packet(const std::uint8_t* data,
                                                std::uint64_t size) {
+  auto make_descriptor =
+      [](const char* canonical_type_name)
+          -> scratchbird::engine::internal_api::EngineDescriptor {
+    scratchbird::engine::internal_api::EngineDescriptor descriptor;
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = canonical_type_name;
+    descriptor.encoded_descriptor = std::string("type=") + canonical_type_name;
+    return descriptor;
+  };
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kTextDescriptor = make_descriptor("text");
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kNullDescriptor = make_descriptor("null");
   NativeRowPacketDecode decoded;
   if (size == 0) {
     decoded.ok = true;
@@ -495,10 +508,7 @@ NativeRowPacketDecode decode_native_row_packet(const std::uint8_t* data,
         return decoded;
       }
       scratchbird::engine::internal_api::EngineTypedValue value;
-      value.descriptor.descriptor_kind = "scalar";
-      value.descriptor.canonical_type_name = is_null ? "null" : "text";
-      value.descriptor.encoded_descriptor =
-          std::string("type=") + value.descriptor.canonical_type_name;
+      value.descriptor = is_null ? kNullDescriptor : kTextDescriptor;
       if (is_null) {
         value.is_null = true;
         value.setState(scratchbird::engine::internal_api::EngineValueState::sql_null);

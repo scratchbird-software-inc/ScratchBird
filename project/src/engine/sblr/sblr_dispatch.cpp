@@ -3852,8 +3852,7 @@ api::EngineNormalizeImportCheckpointRequest TypedNormalizeImportCheckpointReques
 api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
     const SblrDispatchRequest& request) {
   api::EngineExecuteImportRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
   typed.target_table = TargetObjectForDml(base, "table");
   typed.source.source_kind = api::SecurityOptionValue(base, "source_kind:");
   if (typed.source.source_kind.empty()) typed.source.source_kind = "native_sbsql_import";
@@ -3877,22 +3876,21 @@ api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
       api::SecurityOptionBool(base, "reference_relaxed_semantics_requested:", false);
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   ApplyImportCheckpointPolicyOptions(base, &typed.checkpoint_policy);
-  typed.canonical_rows = base.rows;
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
   if (!duplicate_mode.empty()) { typed.duplicate_mode = duplicate_mode; }
   typed.require_generated_row_uuid =
       api::SecurityOptionBool(base, "require_generated_row_uuid:", true);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
+  typed.canonical_rows = std::move(static_cast<api::EngineApiRequest&>(typed).rows);
   return typed;
 }
 
 api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
     const SblrDispatchRequest& request) {
   api::EngineExecuteNativeBulkIngestRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.canonical_rows = base.rows;
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
   if (!duplicate_mode.empty()) { typed.duplicate_mode = duplicate_mode; }
@@ -3915,6 +3913,8 @@ api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
   }
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   ApplyImportCheckpointPolicyOptions(base, &typed.checkpoint_policy);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
+  typed.canonical_rows = std::move(static_cast<api::EngineApiRequest&>(typed).rows);
   return typed;
 }
 
