@@ -812,6 +812,35 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
     std::vector<PreparedIndexEntryLine> entries,
     std::uint64_t first_event_sequence) {
   PreparedIndexLineBufferJob job;
+  if (entries.empty()) {
+    return job;
+  }
+  const std::string single_table_uuid = entries.front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(entries.begin()), entries.end(), [&](const auto& entry) {
+        return entry.table_uuid == single_table_uuid;
+      });
+  if (single_table_batch) {
+    const std::string scoped_path = ScopedIndexStorePath(context, single_table_uuid);
+    std::string& scoped_buffer = job.scoped_lines[scoped_path];
+    scoped_buffer.reserve(entries.size() * 192);
+    std::uint64_t event_sequence = first_event_sequence;
+    for (const auto& entry : entries) {
+      AppendIndexEntryStoreLine(&scoped_buffer,
+                                context.local_transaction_id,
+                                event_sequence++,
+                                entry.index_uuid,
+                                entry.table_uuid,
+                                entry.column_name,
+                                entry.family,
+                                entry.entry_kind,
+                                entry.key,
+                                entry.payload,
+                                entry.row_uuid,
+                                entry.version_uuid);
+    }
+    return job;
+  }
   std::map<std::string, std::size_t> entries_per_path;
   for (const auto& entry : entries) {
     entries_per_path[ScopedIndexStorePath(context, entry.table_uuid)] += 1;
