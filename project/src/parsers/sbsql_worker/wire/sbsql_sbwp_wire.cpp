@@ -38,6 +38,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -2269,6 +2270,54 @@ bool CopyRowsHaveSharedShape(const CopyImportState& copy,
   return true;
 }
 
+enum class NativeRowColumnType : std::uint8_t {
+  kText = 1,
+  kInt64 = 2,
+};
+
+std::optional<std::int64_t> ParseLosslessNativeInt64(std::string_view value) {
+  if (value.empty()) return std::nullopt;
+  std::int64_t parsed = 0;
+  const auto* begin = value.data();
+  const auto* end = begin + value.size();
+  const auto result = std::from_chars(begin, end, parsed, 10);
+  if (result.ec != std::errc{} || result.ptr != end) return std::nullopt;
+  if (std::to_string(parsed) != value) return std::nullopt;
+  return parsed;
+}
+
+std::vector<NativeRowColumnType> InferNativeRowColumnTypes(const CopyImportState& copy,
+                                                          std::size_t first_row,
+                                                          std::size_t end_row) {
+  std::vector<NativeRowColumnType> types;
+  if (first_row >= end_row || end_row > copy.rows.size()) return types;
+  const std::size_t column_count = copy.rows[first_row].fields.size();
+  types.assign(column_count, NativeRowColumnType::kText);
+  for (std::size_t column_index = 0; column_index < column_count; ++column_index) {
+    bool saw_non_null = false;
+    bool all_lossless_int64 = true;
+    for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+      const auto& value = copy.rows[row_index].fields[column_index].second;
+      if (!value.has_value()) continue;
+      saw_non_null = true;
+      if (!ParseLosslessNativeInt64(*value).has_value()) {
+        all_lossless_int64 = false;
+        break;
+      }
+    }
+    if (saw_non_null && all_lossless_int64) {
+      types[column_index] = NativeRowColumnType::kInt64;
+    }
+  }
+  return types;
+}
+
+void PutI64(std::vector<std::uint8_t>* out, std::int64_t value) {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(value));
+  PutU64(out, bits);
+}
+
 std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
                                                std::size_t first_row,
                                                std::size_t row_count) {
@@ -2276,28 +2325,51 @@ std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
   std::vector<std::uint8_t> out;
   if (!CopyRowsHaveSharedShape(copy, first_row, end_row)) return out;
   const auto& columns = copy.rows[first_row].fields;
-  out.reserve(20 + columns.size() * 16 + (end_row - first_row) * columns.size() * 12);
+  const auto column_types = InferNativeRowColumnTypes(copy, first_row, end_row);
+  if (column_types.size() != columns.size()) return out;
+  const std::size_t null_bitmap_bytes = (columns.size() + 7u) / 8u;
+  out.reserve(20 + columns.size() * 18 + (end_row - first_row) *
+                                          (null_bitmap_bytes + columns.size() * 8));
   out.push_back('S');
   out.push_back('B');
   out.push_back('N');
   out.push_back('R');
-  PutU16(&out, 1);
+  PutU16(&out, 2);
   PutU16(&out, 0);
   PutU64(&out, static_cast<std::uint64_t>(end_row - first_row));
   PutU32(&out, static_cast<std::uint32_t>(columns.size()));
+  for (const auto type : column_types) {
+    out.push_back(static_cast<std::uint8_t>(type));
+  }
   for (const auto& [name, _] : columns) {
     PutU32(&out, static_cast<std::uint32_t>(name.size()));
     out.insert(out.end(), name.begin(), name.end());
   }
   for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
     const auto& row = copy.rows[row_index];
-    for (const auto& [_, value] : row.fields) {
-      out.push_back(value.has_value() ? 0 : 1);
-      const auto value_size =
-          value.has_value() ? static_cast<std::uint32_t>(value->size()) : 0u;
-      PutU32(&out, value_size);
-      if (value.has_value()) {
-        out.insert(out.end(), value->begin(), value->end());
+    std::vector<std::uint8_t> null_bitmap(null_bitmap_bytes, 0);
+    for (std::size_t column_index = 0; column_index < row.fields.size(); ++column_index) {
+      if (!row.fields[column_index].second.has_value()) {
+        null_bitmap[column_index / 8u] |=
+            static_cast<std::uint8_t>(1u << (column_index % 8u));
+      }
+    }
+    out.insert(out.end(), null_bitmap.begin(), null_bitmap.end());
+    for (std::size_t column_index = 0; column_index < row.fields.size(); ++column_index) {
+      const auto& value = row.fields[column_index].second;
+      if (!value.has_value()) continue;
+      switch (column_types[column_index]) {
+        case NativeRowColumnType::kInt64: {
+          const auto parsed = ParseLosslessNativeInt64(*value);
+          if (!parsed.has_value()) return {};
+          PutI64(&out, *parsed);
+          break;
+        }
+        case NativeRowColumnType::kText:
+        default:
+          PutU32(&out, static_cast<std::uint32_t>(value->size()));
+          out.insert(out.end(), value->begin(), value->end());
+          break;
       }
     }
   }
@@ -2523,7 +2595,7 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
         out += "\n";
       } else {
         out += "operand=text\tnative_row_packet_required\ttrue\n";
-        out += "operand=text\tnative_row_packet_format\tscratchbird.native_rows.v1\n";
+        out += "operand=text\tnative_row_packet_format\tscratchbird.native_rows.v2\n";
       }
       out += "operand=text\tinsert_values_parser_executes_sql\tfalse\n";
       for (std::size_t column_index = 0; column_index < column_count; ++column_index) {
@@ -3860,7 +3932,8 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                  packet_started,
                                  data_packet.size(),
                                  1,
-                                 row_count);
+                                 row_count,
+                                 "scratchbird.native_rows.v2");
   if (data_packet.empty()) {
     write_total_trace("not_applicable_empty_data_packet");
     return std::nullopt;
@@ -4932,7 +5005,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                                    data_packet.size(),
                                    chunk_count + 1,
                                    row_count,
-                                   use_native_row_packet ? "built" : "not_used");
+                                   use_native_row_packet ? "scratchbird.native_rows.v2" : "not_used");
     const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
     auto chunk_result =
         data_packet.empty()
