@@ -538,7 +538,9 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
   }
   stats_.allocations.push_back(
       {std::move(index_allocation), "index", row_count, 0, index_elapsed});
-  if (stats_.allocations.back().allocation.active) {
+  if (stats_.allocations.back().allocation.active ||
+      !DmlIngestionOptionTruthy(config_.option_envelopes,
+                                "page_allocation.runtime")) {
     stats_.index_prework_rows += row_count;
   }
 }

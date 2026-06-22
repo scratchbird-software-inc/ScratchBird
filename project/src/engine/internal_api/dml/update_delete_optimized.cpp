@@ -117,6 +117,13 @@ struct StagedUpdateRow {
   CrudRowVersionRecord original_row;
   std::vector<std::pair<std::string, std::string>> logical_values;
   mga::HotStableRowHeadDecisionResult hot_plus_decision;
+  struct IndexKeyState {
+    bool materialized = false;
+    bool keys_changed = false;
+    std::vector<std::string> old_keys;
+    std::vector<std::string> new_keys;
+  };
+  std::vector<IndexKeyState> index_key_states;
   std::size_t encoded_bytes = 0;
   bool toast_required = false;
 };
@@ -744,8 +751,13 @@ bool TryParseFiniteDoubleNoThrow(const std::string& value, double* out) {
 
 struct PreparedUpdatePredicate {
   bool column_less_or_null_numeric = false;
+  bool column_compare_numeric = false;
+  bool column_in_list_hash = false;
   std::string column_name;
   double numeric_bound = 0.0;
+  std::string compare_kind;
+  std::unordered_set<std::string> in_list_values;
+  std::size_t cached_column_index = std::string::npos;
 };
 
 PreparedUpdatePredicate PrepareUpdatePredicate(
@@ -759,24 +771,102 @@ PreparedUpdatePredicate PrepareUpdatePredicate(
     prepared.column_less_or_null_numeric = true;
     prepared.column_name = predicate.canonical_predicate_envelope;
   }
+  if ((predicate.predicate_kind == "column_greater" ||
+       predicate.predicate_kind == "column_greater_equal") &&
+      !predicate.canonical_predicate_envelope.empty() &&
+      !predicate.bound_values.empty() &&
+      TryParseFiniteDoubleNoThrow(predicate.bound_values.front().encoded_value,
+                                  &prepared.numeric_bound)) {
+    prepared.column_compare_numeric = true;
+    prepared.compare_kind = predicate.predicate_kind;
+    prepared.column_name = predicate.canonical_predicate_envelope;
+  }
+  if (predicate.predicate_kind == "column_in_list" &&
+      !predicate.canonical_predicate_envelope.empty() &&
+      !predicate.bound_values.empty()) {
+    prepared.column_in_list_hash = true;
+    prepared.column_name = predicate.canonical_predicate_envelope;
+    prepared.in_list_values.reserve(predicate.bound_values.size());
+    for (const auto& bound : predicate.bound_values) {
+      prepared.in_list_values.insert(bound.encoded_value);
+    }
+  }
   return prepared;
 }
 
 bool CrudRowMatchesPreparedUpdatePredicate(
     const CrudRowVersionRecord& row,
     const EnginePredicateEnvelope& predicate,
-    const PreparedUpdatePredicate& prepared) {
-  if (prepared.column_less_or_null_numeric) {
-    const auto* value = CrudFieldValuePtr(row.values, prepared.column_name);
+    PreparedUpdatePredicate* prepared) {
+  if (prepared == nullptr) {
+    return CrudRowMatchesPredicate(row, predicate);
+  }
+  if (prepared->column_less_or_null_numeric) {
+    const auto* value = CachedCrudFieldValuePtr(row.values,
+                                                prepared->column_name,
+                                                &prepared->cached_column_index);
     if (value == nullptr || value->empty() || *value == "<NULL>") {
       return true;
     }
     double parsed = 0.0;
-    if (TryParseFiniteDoubleNoThrow(*value, &parsed)) {
-      return parsed < prepared.numeric_bound;
+    if (!TryParseFiniteDoubleNoThrow(*value, &parsed)) {
+      return CrudRowMatchesPredicate(row, predicate);
     }
+    return parsed < prepared->numeric_bound;
+  }
+  if (prepared->column_compare_numeric) {
+    const auto* value = CachedCrudFieldValuePtr(row.values,
+                                                prepared->column_name,
+                                                &prepared->cached_column_index);
+    double parsed = 0.0;
+    if (value == nullptr || !TryParseFiniteDoubleNoThrow(*value, &parsed)) {
+      return CrudRowMatchesPredicate(row, predicate);
+    }
+    return prepared->compare_kind == "column_greater"
+               ? parsed > prepared->numeric_bound
+               : parsed >= prepared->numeric_bound;
+  }
+  if (prepared->column_in_list_hash) {
+    const auto* value = CachedCrudFieldValuePtr(row.values,
+                                                prepared->column_name,
+                                                &prepared->cached_column_index);
+    return prepared->in_list_values.find(value == nullptr ? std::string{} : *value) !=
+           prepared->in_list_values.end();
   }
   return CrudRowMatchesPredicate(row, predicate);
+}
+
+bool VisibleCrudRowRefsForContext(
+    const CrudState& state,
+    const std::string& table_uuid,
+    const EngineRequestContext& context,
+    std::vector<const CrudRowVersionRecord*>* rows) {
+  if (rows == nullptr) { return false; }
+  rows->clear();
+  if (table_uuid.empty()) { return false; }
+  std::unordered_map<std::string, const CrudRowVersionRecord*> newest_visible_by_uuid;
+  newest_visible_by_uuid.reserve(state.row_versions.size());
+  const std::uint64_t visible_through =
+      UpdateVisibilityHighWaterForContext(state, context);
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid ||
+        !UpdateRowVersionVisibleWithHighWater(state, row, context, visible_through)) {
+      continue;
+    }
+    const auto found = newest_visible_by_uuid.find(row.row_uuid);
+    if (found == newest_visible_by_uuid.end() ||
+        row.sequence > found->second->sequence) {
+      newest_visible_by_uuid[row.row_uuid] = &row;
+    }
+  }
+  rows->reserve(newest_visible_by_uuid.size());
+  for (const auto& [row_uuid, row] : newest_visible_by_uuid) {
+    (void)row_uuid;
+    if (row != nullptr && !row->deleted) {
+      rows->push_back(row);
+    }
+  }
+  return true;
 }
 
 struct DmlProjectionPredicateResolution {
@@ -837,15 +927,50 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
   resolved.predicate_kind = "column_in_list";
   resolved.canonical_predicate_envelope =
       request.update_predicate.canonical_predicate_envelope;
-  const auto source_rows = VisibleCrudRowsForContext(state,
-                                                     source_uuid,
-                                                     request.context);
   std::set<std::string> admitted_values;
-  for (const auto& row : source_rows) {
-    if (!CrudRowMatchesPredicate(row, source_predicate)) continue;
-    const std::string value = CrudFieldValue(row.values, select_column);
-    if (!value.empty() && value != "<NULL>") {
-      admitted_values.insert(value);
+  std::vector<const CrudRowVersionRecord*> source_row_refs;
+  auto prepared_source_predicate = PrepareUpdatePredicate(source_predicate);
+  std::size_t select_column_index = std::string::npos;
+  if (AppendOnlyUpdateCandidateRefs(state,
+                                    source_uuid,
+                                    request.context,
+                                    &source_row_refs)) {
+    for (const auto* row : source_row_refs) {
+      if (row == nullptr ||
+          !CrudRowMatchesPreparedUpdatePredicate(*row,
+                                                 source_predicate,
+                                                 &prepared_source_predicate)) {
+        continue;
+      }
+      const auto* selected_value = CachedCrudFieldValuePtr(row->values,
+                                                           select_column,
+                                                           &select_column_index);
+      const std::string value =
+          selected_value == nullptr ? std::string{} : *selected_value;
+      if (!value.empty() && value != "<NULL>") {
+        admitted_values.insert(value);
+      }
+    }
+    resolution.evidence.push_back({"dml_subquery_source_rows",
+                                   "append_only_ref_fast_path"});
+  } else {
+    const auto source_rows = VisibleCrudRowsForContext(state,
+                                                       source_uuid,
+                                                       request.context);
+    for (const auto& row : source_rows) {
+      if (!CrudRowMatchesPreparedUpdatePredicate(row,
+                                                 source_predicate,
+                                                 &prepared_source_predicate)) {
+        continue;
+      }
+      const auto* selected_value = CachedCrudFieldValuePtr(row.values,
+                                                           select_column,
+                                                           &select_column_index);
+      const std::string value =
+          selected_value == nullptr ? std::string{} : *selected_value;
+      if (!value.empty() && value != "<NULL>") {
+        admitted_values.insert(value);
+      }
     }
   }
   for (const auto& value : admitted_values) {
@@ -1894,6 +2019,11 @@ bool IsSynchronousUpdateIndexAction(UpdateIndexMaintenanceAction action) {
          action == UpdateIndexMaintenanceAction::synchronous_exact_probe_then_rewrite;
 }
 
+bool UpdateIndexActionNeedsKeyState(UpdateIndexMaintenanceAction action) {
+  return IsSynchronousUpdateIndexAction(action) ||
+         action == UpdateIndexMaintenanceAction::committed_delta_ledger;
+}
+
 bool UpdatePlanHasMaintainableIndexWork(
     const UpdateBatchContext& batch_context) {
   for (const auto& entry : batch_context.index_plan.entries) {
@@ -1905,16 +2035,53 @@ bool UpdatePlanHasMaintainableIndexWork(
   return false;
 }
 
-bool HotPlusExactIndexKeysUnchanged(
+std::vector<StagedUpdateRow::IndexKeyState> BuildStagedUpdateIndexKeyStates(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
     const std::vector<std::pair<std::string, std::string>>& new_values) {
-  for (const auto& entry : batch_context.index_plan.entries) {
+  std::vector<StagedUpdateRow::IndexKeyState> states;
+  states.resize(batch_context.index_plan.entries.size());
+  for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
+    const auto& entry = batch_context.index_plan.entries[index];
+    if (!UpdateIndexActionNeedsKeyState(entry.action)) {
+      continue;
+    }
+    auto& state = states[index];
+    state.old_keys = CrudIndexKeysForValues(entry.index, old_row.values);
+    state.new_keys = CrudIndexKeysForValues(entry.index, new_values);
+    state.keys_changed = state.old_keys != state.new_keys;
+    state.materialized = true;
+  }
+  return states;
+}
+
+const StagedUpdateRow::IndexKeyState* StagedUpdateIndexKeyStateAt(
+    const std::vector<StagedUpdateRow::IndexKeyState>* states,
+    std::size_t index) {
+  if (states == nullptr || index >= states->size()) {
+    return nullptr;
+  }
+  const auto& state = (*states)[index];
+  return state.materialized ? &state : nullptr;
+}
+
+bool HotPlusExactIndexKeysUnchanged(
+    const UpdateBatchContext& batch_context,
+    const CrudRowVersionRecord& old_row,
+    const std::vector<std::pair<std::string, std::string>>& new_values,
+    const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
+  for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
+    const auto& entry = batch_context.index_plan.entries[index];
     if (!IsSynchronousUpdateIndexAction(entry.action) &&
         entry.action != UpdateIndexMaintenanceAction::committed_delta_ledger) {
       continue;
     }
-    if (IndexKeysChanged(entry.index, old_row.values, new_values)) {
+    const auto* key_state = StagedUpdateIndexKeyStateAt(index_key_states, index);
+    const bool keys_changed =
+        key_state == nullptr
+            ? IndexKeysChanged(entry.index, old_row.values, new_values)
+            : key_state->keys_changed;
+    if (keys_changed) {
       return false;
     }
   }
@@ -2029,6 +2196,7 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     const CrudRowVersionRecord& old_row,
     const CrudRowVersionRecord& new_row,
     const std::vector<std::pair<std::string, std::string>>& new_values,
+    const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states,
     std::size_t new_values_encoded_bytes,
     bool toast_required,
     bool hot_update_shape_enabled) {
@@ -2047,7 +2215,10 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
   const bool parser_or_reference_authority =
       ParserOrReferenceAuthorityForHotProof(request);
   const bool exact_index_keys_unchanged =
-      HotPlusExactIndexKeysUnchanged(batch_context, old_row, new_values);
+      HotPlusExactIndexKeysUnchanged(batch_context,
+                                     old_row,
+                                     new_values,
+                                     index_key_states);
   if (!parser_or_reference_authority && !exact_index_keys_unchanged) {
     result.ok = true;
     result.decision = OrdinaryHotPlusDecision();
@@ -2173,7 +2344,8 @@ std::uint64_t CountUnaffectedExactIndexChurnAvoided(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
     const std::vector<std::pair<std::string, std::string>>& new_values,
-    const mga::HotStableRowHeadDecisionResult& decision) {
+    const mga::HotStableRowHeadDecisionResult& decision,
+    const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
   if (!HotPlusDecisionAvoidsExactChurn(decision)) {
     return 0;
   }
@@ -2181,24 +2353,34 @@ std::uint64_t CountUnaffectedExactIndexChurnAvoided(
     return 0;
   }
   std::uint64_t avoided = 0;
-  for (const auto& entry : batch_context.index_plan.entries) {
+  for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
+    const auto& entry = batch_context.index_plan.entries[index];
     if (entry.action != UpdateIndexMaintenanceAction::unaffected) {
       continue;
     }
-    if (IndexKeysChanged(entry.index, old_row.values, new_values)) {
+    const auto* key_state = StagedUpdateIndexKeyStateAt(index_key_states, index);
+    const bool keys_changed =
+        key_state == nullptr
+            ? IndexKeysChanged(entry.index, old_row.values, new_values)
+            : key_state->keys_changed;
+    if (keys_changed) {
       continue;
     }
     avoided += static_cast<std::uint64_t>(
-        CrudIndexKeysForValues(entry.index, old_row.values).size());
+        key_state == nullptr
+            ? CrudIndexKeysForValues(entry.index, old_row.values).size()
+            : key_state->old_keys.size());
   }
   return avoided;
 }
 
 bool ShouldMaintainUpdateIndex(const UpdateIndexMaintenancePlanEntry& entry,
+                               std::size_t entry_index,
                                const CrudRowVersionRecord& old_row,
                                const std::vector<std::pair<std::string, std::string>>& new_values,
                                bool hot_update_shape_enabled,
-                               const mga::HotStableRowHeadDecisionResult& hot_plus_decision) {
+                               const mga::HotStableRowHeadDecisionResult& hot_plus_decision,
+                               const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
   if (!IsSynchronousUpdateIndexAction(entry.action) &&
       entry.action != UpdateIndexMaintenanceAction::committed_delta_ledger) {
     return false;
@@ -2206,8 +2388,11 @@ bool ShouldMaintainUpdateIndex(const UpdateIndexMaintenancePlanEntry& entry,
   if (!hot_update_shape_enabled) {
     return true;
   }
+  const auto* key_state = StagedUpdateIndexKeyStateAt(index_key_states, entry_index);
   const bool keys_changed =
-      IndexKeysChanged(entry.index, old_row.values, new_values);
+      key_state == nullptr
+          ? IndexKeysChanged(entry.index, old_row.values, new_values)
+          : key_state->keys_changed;
   if (!keys_changed && HotPlusDecisionAvoidsExactChurn(hot_plus_decision)) {
     return false;
   }
@@ -2223,24 +2408,35 @@ std::uint64_t PlannedUpdateIndexMaintenanceWrites(
     return 0;
   }
   std::uint64_t planned_writes = 0;
-  for (const auto& entry : batch_context.index_plan.entries) {
+  for (std::size_t entry_index = 0; entry_index < batch_context.index_plan.entries.size(); ++entry_index) {
+    const auto& entry = batch_context.index_plan.entries[entry_index];
     for (const auto& staged : staged_update_rows) {
       if (!ShouldMaintainUpdateIndex(entry,
+                                     entry_index,
                                      staged.original_row,
                                      staged.logical_values,
                                      hot_update_shape_enabled,
-                                     staged.hot_plus_decision)) {
+                                     staged.hot_plus_decision,
+                                     &staged.index_key_states)) {
         continue;
       }
       if (first_index_uuid != nullptr && first_index_uuid->empty()) {
         *first_index_uuid = entry.index.index_uuid;
       }
+      const auto* key_state =
+          StagedUpdateIndexKeyStateAt(&staged.index_key_states, entry_index);
       if (entry.action == UpdateIndexMaintenanceAction::committed_delta_ledger) {
         planned_writes += static_cast<std::uint64_t>(
-            CrudIndexKeysForValues(entry.index, staged.original_row.values).size());
+            key_state == nullptr
+                ? CrudIndexKeysForValues(entry.index,
+                                         staged.original_row.values).size()
+                : key_state->old_keys.size());
       }
       planned_writes += static_cast<std::uint64_t>(
-          CrudIndexKeysForValues(entry.index, staged.logical_values).size());
+          key_state == nullptr
+              ? CrudIndexKeysForValues(entry.index,
+                                       staged.logical_values).size()
+              : key_state->new_keys.size());
     }
   }
   return planned_writes;
@@ -2251,6 +2447,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
     const CrudRowVersionRecord& old_row,
     const CrudRowVersionRecord& new_row,
     const std::vector<std::pair<std::string, std::string>>& new_values,
+    const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states,
     bool hot_update_shape_enabled,
     const mga::HotStableRowHeadDecisionResult& hot_plus_decision,
     HotUpdateIndexDisciplineCounters* counters) {
@@ -2260,11 +2457,16 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
   if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     return entries;
   }
-  for (const auto& entry : batch_context.index_plan.entries) {
+  for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
+    const auto& entry = batch_context.index_plan.entries[index];
     if (entry.action != UpdateIndexMaintenanceAction::committed_delta_ledger) {
       continue;
     }
-    const bool keys_changed = IndexKeysChanged(entry.index, old_row.values, new_values);
+    const auto* key_state = StagedUpdateIndexKeyStateAt(index_key_states, index);
+    const bool keys_changed =
+        key_state == nullptr
+            ? IndexKeysChanged(entry.index, old_row.values, new_values)
+            : key_state->keys_changed;
     if (hot_update_shape_enabled && !keys_changed &&
         HotPlusDecisionAvoidsExactChurn(hot_plus_decision)) {
       if (counters != nullptr) {
@@ -2319,20 +2521,29 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
   // DPC_HOT_UPDATE_SHAPE: synchronous index maintenance is now based on the
   // actual old/new key comparison for each row version, while preserving the
   // append-plus-visible-row-recheck model used for key-changing updates.
-  std::vector<MgaIndexEntryAppendBatch> append_batches;
+  std::vector<MgaExactIndexEntryAppendBatch> append_batches;
   if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  for (const auto& entry : batch_context.index_plan.entries) {
+  for (std::size_t entry_index = 0; entry_index < batch_context.index_plan.entries.size(); ++entry_index) {
+    const auto& entry = batch_context.index_plan.entries[entry_index];
     if (!IsSynchronousUpdateIndexAction(entry.action)) {
       continue;
     }
-    std::vector<MgaIndexEntryRowInput> index_rows;
-    index_rows.reserve(staged_update_rows.size());
+    MgaExactIndexEntryAppendBatch batch;
+    batch.index = entry.index;
+    batch.table_uuid = table_uuid;
+    batch.entries.reserve(staged_update_rows.size());
     for (std::size_t index = 0; index < staged_update_rows.size(); ++index) {
       const auto& staged = staged_update_rows[index];
+      const auto* key_state =
+          StagedUpdateIndexKeyStateAt(&staged.index_key_states, entry_index);
       const bool keys_changed =
-          IndexKeysChanged(entry.index, staged.original_row.values, staged.logical_values);
+          key_state == nullptr
+              ? IndexKeysChanged(entry.index,
+                                 staged.original_row.values,
+                                 staged.logical_values)
+              : key_state->keys_changed;
       if (hot_update_shape_enabled && !keys_changed &&
           HotPlusDecisionAvoidsExactChurn(staged.hot_plus_decision)) {
         if (counters != nullptr) {
@@ -2349,31 +2560,45 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
           ++counters->disabled_baseline_churn_decisions;
         }
       }
-      index_rows.push_back({row_records[index].row_uuid,
-                            row_records[index].version_uuid,
-                            staged.logical_values});
+      std::vector<std::string> fallback_keys;
+      const std::vector<std::string>* keys =
+          key_state == nullptr ? nullptr : &key_state->new_keys;
+      if (keys == nullptr) {
+        fallback_keys = CrudIndexKeysForValues(entry.index, staged.logical_values);
+        keys = &fallback_keys;
+      }
+      const std::string payload = CrudFieldValue(staged.logical_values,
+                                                 entry.index.column_name);
+      for (const auto& key : *keys) {
+        if (key.empty()) {
+          continue;
+        }
+        batch.entries.push_back({key,
+                                 payload,
+                                 row_records[index].row_uuid,
+                                 row_records[index].version_uuid});
+      }
     }
-    if (!index_rows.empty()) {
-      MgaIndexEntryAppendBatch batch;
-      batch.index = entry.index;
-      batch.table_uuid = table_uuid;
-      batch.rows = std::move(index_rows);
+    if (!batch.entries.empty()) {
       append_batches.push_back(std::move(batch));
     }
   }
   if (!append_batches.empty()) {
-    const auto index_apply_plan =
-        PlanLocalityAwareIndexApplyBatches(append_batches);
-    if (index_apply_plan.diagnostic.error) {
-      return index_apply_plan.diagnostic;
+    if (evidence != nullptr) {
+      std::uint64_t entry_count = 0;
+      for (const auto& batch : append_batches) {
+        entry_count += static_cast<std::uint64_t>(batch.entries.size());
+      }
+      evidence->push_back({"update_index_apply", "exact_key_cache_reuse"});
+      evidence->push_back({"update_index_apply_exact_entry_count",
+                           std::to_string(entry_count)});
     }
-    AddLocalityAwareIndexApplyEvidence(index_apply_plan, evidence);
     if (append_context != nullptr) {
-      return append_context->AppendIndexEntryBatches(index_apply_plan.batches);
+      return append_context->AppendExactIndexEntryBatches(append_batches);
     }
     MgaRelationHotAppendContext local_append_context(context);
     const auto appended =
-        local_append_context.AppendIndexEntryBatches(index_apply_plan.batches);
+        local_append_context.AppendExactIndexEntryBatches(append_batches);
     if (appended.error) { return appended; }
     return local_append_context.FlushIndexEntries();
   }
@@ -2698,6 +2923,16 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                  &row_refs)) {
     result.evidence.push_back({"update_visible_row_stream",
                                "append_only_single_version_fast_path"});
+  } else if (suppress_payload_rows &&
+             candidate_stream.plan.access_kind ==
+                 DmlTargetAccessKind::table_scan &&
+             VisibleCrudRowRefsForContext(
+                 state,
+                 effective_request.target_table.uuid.canonical,
+                 effective_request.context,
+                 &row_refs)) {
+    result.evidence.push_back({"update_visible_row_stream",
+                               "mga_latest_ref_fast_path"});
   } else {
     materialized_rows = VisibleCrudRowsForContext(
         state,
@@ -2728,7 +2963,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   std::vector<StagedUpdateRow> staged_update_rows;
   staged_update_rows.reserve(row_refs.size());
-  const auto prepared_update_predicate =
+  auto prepared_update_predicate =
       PrepareUpdatePredicate(effective_request.update_predicate);
   for (const auto* row_ptr : row_refs) {
     if (row_ptr == nullptr) { continue; }
@@ -2736,7 +2971,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (!CrudRowMatchesPreparedUpdatePredicate(
             row,
             effective_request.update_predicate,
-            prepared_update_predicate)) {
+            &prepared_update_predicate)) {
       continue;
     }
     ++result.matched_count;
@@ -2844,6 +3079,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     row_record.previous_sequence = row.sequence;
     row_record.deleted = false;
     row_record.values = std::move(values);
+    auto index_key_states =
+        BuildStagedUpdateIndexKeyStates(batch_context, row, row_record.values);
     auto hot_plus_decision = BuildHotPlusDecisionForStagedUpdate(
         request,
         hot_plus_inventory.inventory,
@@ -2851,6 +3088,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         row,
         row_record,
         row_record.values,
+        &index_key_states,
         encoded_bytes,
         update_toast_required,
         hot_update_shape_enabled);
@@ -2866,7 +3104,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         CountUnaffectedExactIndexChurnAvoided(batch_context,
                                               row,
                                               row_record.values,
-                                              hot_plus_decision.decision);
+                                              hot_plus_decision.decision,
+                                              &index_key_states);
     hot_update_counters.exact_secondary_churn_avoided += unaffected_avoided;
     hot_update_counters.index_churn_avoided += unaffected_avoided;
     const std::string hot_plus_decision_name =
@@ -2916,6 +3155,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                   row,
                                   std::move(stage_logical_values),
                                   std::move(hot_plus_decision.decision),
+                                  std::move(index_key_states),
                                   encoded_bytes,
                                   update_toast_required});
   }
@@ -3030,6 +3270,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                                   staged_update_rows[index].original_row,
                                                   row_record,
                                                   staged_update_rows[index].logical_values,
+                                                  &staged_update_rows[index].index_key_states,
                                                   hot_update_shape_enabled,
                                                   staged_update_rows[index].hot_plus_decision,
                                                   &hot_update_counters);
@@ -3040,9 +3281,15 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
         request.context,
         delta_entries,
-        &result.evidence);
+        compact_update_row_evidence ? nullptr : &result.evidence);
     if (delta_appended.error) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", delta_appended);
+    }
+    if (compact_update_row_evidence && !delta_entries.empty()) {
+      result.evidence.push_back({"mga_secondary_index_delta_ledger_compacted",
+                                 "true"});
+      result.evidence.push_back({"mga_secondary_index_delta_ledger_entry_count",
+                                 std::to_string(delta_entries.size())});
     }
     const auto index_appended = AppendSynchronousUpdateIndexEntries(request.context,
                                                                     batch_context,

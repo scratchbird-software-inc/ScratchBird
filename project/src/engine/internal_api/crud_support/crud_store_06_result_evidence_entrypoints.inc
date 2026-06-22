@@ -43,6 +43,48 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Cr
       predicate.predicate_kind == "vector_approx_nearest";
   std::size_t candidate_count = 0;
   if (!vector_ordered) {
+    std::unordered_map<std::string, const CrudRowVersionRecord*> newest_visible_by_uuid;
+    for (const auto& row : state.row_versions) {
+      if (row.table_uuid != table_uuid ||
+          !CrudRowVersionVisibleToContext(state, row, context)) {
+        continue;
+      }
+      const auto found = newest_visible_by_uuid.find(row.row_uuid);
+      if (found == newest_visible_by_uuid.end() ||
+          row.sequence > found->second->sequence) {
+        newest_visible_by_uuid[row.row_uuid] = &row;
+      }
+    }
+    std::unordered_set<std::string> in_list_key_values;
+    bool use_in_list_key_values = false;
+    if (predicate.predicate_kind == "column_in_list" &&
+        !predicate.canonical_predicate_envelope.empty()) {
+      const auto columns = CrudIndexKeyColumns(*selected);
+      const std::string first_column =
+          columns.empty() ? selected->column_name : columns.front();
+      if (predicate.canonical_predicate_envelope == first_column) {
+        in_list_key_values.reserve(predicate.bound_values.size());
+        for (const auto& bound : predicate.bound_values) {
+          in_list_key_values.insert(bound.encoded_value);
+        }
+        use_in_list_key_values = !in_list_key_values.empty();
+      }
+    }
+    const auto entry_matches_predicate = [&](const CrudIndexEntryRecord& entry) {
+      if (!use_in_list_key_values) {
+        return EntryKeyMatchesPredicate(*selected, entry, predicate);
+      }
+      return in_list_key_values.find(FirstCompositeComponent(entry.key_value)) !=
+             in_list_key_values.end();
+    };
+    const auto row_matches_predicate = [&](const CrudRowVersionRecord& row) {
+      if (!use_in_list_key_values) {
+        return CrudRowMatchesPredicate(row, predicate);
+      }
+      const std::string value =
+          CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+      return in_list_key_values.find(value) != in_list_key_values.end();
+    };
     std::set<std::string> seen_row_uuids;
     std::vector<CrudRowVersionRecord> rows;
     for (const auto& entry : state.index_entries) {
@@ -51,12 +93,13 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Cr
           !TxVisible(state, entry.creator_tx, observer_tx)) {
         continue;
       }
-      if (!EntryKeyMatchesPredicate(*selected, entry, predicate)) { continue; }
+      if (!entry_matches_predicate(entry)) { continue; }
       ++candidate_count;
       if (!seen_row_uuids.insert(entry.row_uuid).second) { continue; }
-      const auto row = FindVisibleCrudRowForContext(state, table_uuid, entry.row_uuid, context);
-      if (row && CrudRowMatchesPredicate(*row, predicate)) {
-        rows.push_back(*row);
+      const auto row = newest_visible_by_uuid.find(entry.row_uuid);
+      if (row != newest_visible_by_uuid.end() && row->second != nullptr &&
+          !row->second->deleted && row_matches_predicate(*row->second)) {
+        rows.push_back(*row->second);
         if (limit != 0 && rows.size() >= limit) { break; }
       }
     }
