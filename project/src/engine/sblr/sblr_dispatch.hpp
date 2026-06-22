@@ -31,7 +31,7 @@ struct SblrDispatchResult {
 };
 
 bool IsClusterOperationId(std::string_view operation_id);
-SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request);
+SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request);
 SblrDispatchResult DecodeAndDispatchSblrOperation(
     std::string_view encoded_envelope,
     scratchbird::engine::internal_api::EngineRequestContext context,

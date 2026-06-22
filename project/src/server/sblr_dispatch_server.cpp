@@ -6652,6 +6652,8 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   const std::string operation_hint = EncodedTextField(encoded, "operation_id");
   const std::string target_object_hint =
       EncodedTextField(encoded, "target_object_uuid");
+  const bool implicit_negative_cache_allowed =
+      !operation_hint.empty() && !target_object_hint.empty();
   mark_execute_phase("shape_and_hint_extract");
   const auto fail_authority_cache_before_dispatch =
       [&](std::string detail) -> SessionOperationResult {
@@ -6718,92 +6720,141 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
           "statement_preflight_cache_key", "statement_preflight", false)) {
     return *stale_preflight;
   }
-  const std::string implicit_negative_key =
-      ServerAuthorityCacheKey("negative_authorization",
-                              *session,
-                              operation_hint,
-                              target_object_hint,
-                              statement_shape_hash);
-  const auto implicit_negative =
-      ValidateServerAuthorityCacheEntry(*registry,
-                                        *session,
-                                        implicit_negative_key,
-                                        "negative_authorization",
-                                        operation_hint,
-                                        target_object_hint,
-                                        statement_shape_hash);
-  if (implicit_negative.accepted && implicit_negative.record != nullptr &&
-      implicit_negative.record->refusal) {
-    MarkServerAuthorityCacheHit(registry, implicit_negative_key);
-    const std::string detail =
-        implicit_negative.record->diagnostic_detail.empty()
-            ? "negative_authorization_cache_hit"
-            : implicit_negative.record->diagnostic_detail;
-    CompleteServerRequestLifecycle(registry,
-                                   request_record.request_uuid,
-                                   ServerRequestLifecycleState::kFailed,
-                                   detail);
-    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                   kSchemaExecuteResultTestV1,
-                   decoded->session_uuid,
-                   implicit_negative.record->diagnostic_code.empty()
-                       ? "PARSER_SERVER_IPC.NEGATIVE_AUTHORIZATION_CACHE_HIT"
-                       : implicit_negative.record->diagnostic_code,
-                   "The cached negative authorization decision refused this statement before SBLR dispatch.",
-                   detail);
+  if (implicit_negative_cache_allowed) {
+    const std::string implicit_negative_key =
+        ServerAuthorityCacheKey("negative_authorization",
+                                *session,
+                                operation_hint,
+                                target_object_hint,
+                                statement_shape_hash);
+    const auto implicit_negative =
+        ValidateServerAuthorityCacheEntry(*registry,
+                                          *session,
+                                          implicit_negative_key,
+                                          "negative_authorization",
+                                          operation_hint,
+                                          target_object_hint,
+                                          statement_shape_hash);
+    if (implicit_negative.accepted && implicit_negative.record != nullptr &&
+        implicit_negative.record->refusal) {
+      MarkServerAuthorityCacheHit(registry, implicit_negative_key);
+      const std::string detail =
+          implicit_negative.record->diagnostic_detail.empty()
+              ? "negative_authorization_cache_hit"
+              : implicit_negative.record->diagnostic_detail;
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     detail);
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     implicit_negative.record->diagnostic_code.empty()
+                         ? "PARSER_SERVER_IPC.NEGATIVE_AUTHORIZATION_CACHE_HIT"
+                         : implicit_negative.record->diagnostic_code,
+                     "The cached negative authorization decision refused this statement before SBLR dispatch.",
+                     detail);
+    }
   }
   mark_execute_phase("authority_cache_validation");
   encoded = StripDispatchAuthorityCacheMetadata(encoded);
   mark_execute_phase("strip_authority_cache_metadata");
-  const auto admission_phase_start = ServerSteadyClock::now();
-  auto admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
-  (void)admission_phase_start;
-  mark_execute_phase("admit_server_sblr_envelope");
-  if (!admission.admitted) {
-    const std::string diagnostic_code =
-        admission.diagnostics.empty()
-            ? "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"
-            : admission.diagnostics.front().code;
-    const std::string diagnostic_detail =
-        admission.diagnostics.empty()
-            ? "sblr_admission_rejected"
-            : DiagnosticDetailField(admission.diagnostics.front());
-    StoreServerAuthorityCacheDecision(registry,
-                                      *session,
-                                      "negative_authorization",
-                                      operation_hint,
-                                      target_object_hint,
-                                      statement_shape_hash,
-                                      diagnostic_code,
-                                      diagnostic_detail,
-                                      true);
+  ServerSblrAdmissionResult admission;
+  const bool prepared_operation_matches =
+      prepared_statement != nullptr &&
+      !prepared_statement->operation_id.empty() &&
+      operation_hint == prepared_statement->operation_id;
+  const bool prepared_target_matches =
+      prepared_statement == nullptr ||
+      prepared_statement->target_object_uuid.empty() ||
+      target_object_hint.empty() ||
+      target_object_hint == prepared_statement->target_object_uuid;
+  const auto prepared_reuse_dml_operation = [](std::string_view operation_id) {
+    return operation_id == "dml.insert_rows" ||
+           operation_id == "dml.update_rows" ||
+           operation_id == "dml.delete_rows" ||
+           operation_id == "dml.merge_rows" ||
+           operation_id == "dml.execute_import_rows" ||
+           operation_id == "dml.execute_native_bulk_ingest";
+  };
+  const bool prepared_admission_reuse_allowed =
+      prepared_operation_matches &&
+      prepared_target_matches &&
+      prepared_statement != nullptr &&
+      prepared_reuse_dml_operation(prepared_statement->operation_id);
+  if (prepared_statement != nullptr && !prepared_target_matches) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kFailed,
-                                   admission.diagnostics.empty()
-                                       ? "sblr_admission_rejected"
-                                       : admission.diagnostics.front().code);
-    return FailureWithDiagnostics(
-        static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-        kSchemaExecuteResultTestV1,
-        decoded->session_uuid,
-        admission.diagnostics,
-        admission.diagnostics.empty() ? "sblr_admission_rejected"
-                                      : admission.diagnostics.front().code);
-  }
-  if (prepared_statement != nullptr &&
-      (!prepared_statement->operation_id.empty() &&
-       prepared_statement->operation_id != admission.operation_id)) {
-    CompleteServerRequestLifecycle(registry,
-                                   request_record.request_uuid,
-                                   ServerRequestLifecycleState::kFailed,
-                                   "prepared_statement_shape_mismatch");
+                                   "prepared_statement_target_mismatch");
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
                    kSchemaExecuteResultTestV1,
                    decoded->session_uuid,
-                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_SHAPE_MISMATCH",
-                   "The execute SBLR envelope does not match the prepared statement operation.",
-                   "prepared_statement_shape_mismatch");
+                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_TARGET_MISMATCH",
+                   "The execute SBLR envelope does not match the prepared statement target.",
+                   "prepared_statement_target_mismatch");
+  }
+  if (prepared_admission_reuse_allowed) {
+    admission.admitted = true;
+    admission.operation_id = prepared_statement->operation_id;
+    admission.operation_family = prepared_statement->operation_family;
+    admission.requires_public_abi_dispatch = prepared_statement->requires_public_abi_dispatch;
+    admission.row_count_hint =
+        TextLineU64(encoded, "estimated_row_count").value_or(prepared_statement->row_count_hint);
+    mark_execute_phase("prepared_admission_reuse");
+  } else {
+    const auto admission_phase_start = ServerSteadyClock::now();
+    admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
+    (void)admission_phase_start;
+    mark_execute_phase("admit_server_sblr_envelope");
+    if (!admission.admitted) {
+      const std::string diagnostic_code =
+          admission.diagnostics.empty()
+              ? "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"
+              : admission.diagnostics.front().code;
+      const std::string diagnostic_detail =
+          admission.diagnostics.empty()
+              ? "sblr_admission_rejected"
+              : DiagnosticDetailField(admission.diagnostics.front());
+      if (implicit_negative_cache_allowed) {
+        StoreServerAuthorityCacheDecision(registry,
+                                          *session,
+                                          "negative_authorization",
+                                          operation_hint,
+                                          target_object_hint,
+                                          statement_shape_hash,
+                                          diagnostic_code,
+                                          diagnostic_detail,
+                                          true);
+      }
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     admission.diagnostics.empty()
+                                         ? "sblr_admission_rejected"
+                                         : admission.diagnostics.front().code);
+      return FailureWithDiagnostics(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          kSchemaExecuteResultTestV1,
+          decoded->session_uuid,
+          admission.diagnostics,
+          admission.diagnostics.empty() ? "sblr_admission_rejected"
+                                        : admission.diagnostics.front().code);
+    }
+    if (prepared_statement != nullptr &&
+        (!prepared_statement->operation_id.empty() &&
+         prepared_statement->operation_id != admission.operation_id)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "prepared_statement_shape_mismatch");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.PREPARED_STATEMENT_SHAPE_MISMATCH",
+                     "The execute SBLR envelope does not match the prepared statement operation.",
+                     "prepared_statement_shape_mismatch");
+    }
   }
   StoreServerAuthorityCacheDecision(registry,
                                     *session,

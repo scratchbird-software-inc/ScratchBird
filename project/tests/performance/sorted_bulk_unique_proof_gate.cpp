@@ -372,8 +372,17 @@ void BulkConstraintProofPathUsesSortedUniqueEvidence() {
   auto accepted = BulkRequest();
   accepted.unique_proofs[0].incoming_keys = {BulkRef('a', '1', 1001),
                                             BulkRef('b', '1', 1002)};
+  accepted.unique_proofs[0].incoming_keys_presorted = true;
   const auto accepted_result = bulk::ProveBulkConstraints(accepted);
   Require(accepted_result.ok(), "bulk constraint proof accepted case failed");
+  Require(HasBulkEvidence(accepted_result.evidence,
+                          "bulk_unique_proof_incoming_presorted",
+                          "true"),
+          "bulk proof presorted evidence missing");
+  Require(HasBulkEvidence(accepted_result.evidence,
+                          "bulk_unique_proof_presorted_order_valid",
+                          "true"),
+          "bulk proof presorted validation evidence missing");
   Require(HasBulkEvidence(accepted_result.evidence,
                           "bulk_unique_proof_order",
                           "encoded_key,row_uuid,version_uuid"),
@@ -405,6 +414,19 @@ void BulkConstraintProofPathUsesSortedUniqueEvidence() {
   Require(unsafe_result.diagnostic.diagnostic_code ==
               "SB-BULK-CONSTRAINT-UNIQUE-UNSAFE-KEY-ENCODING",
           "bulk unsafe key diagnostic drifted");
+
+  auto invalid_presorted = BulkRequest();
+  invalid_presorted.unique_proofs[0].incoming_keys = {
+      BulkRef('f', '1', 1301),
+      BulkRef('e', '1', 1302)};
+  invalid_presorted.unique_proofs[0].incoming_keys_presorted = true;
+  const auto invalid_presorted_result =
+      bulk::ProveBulkConstraints(invalid_presorted);
+  Require(!invalid_presorted_result.ok(),
+          "bulk invalid presorted order was accepted");
+  Require(invalid_presorted_result.diagnostic.diagnostic_code ==
+              "SB-BULK-CONSTRAINT-UNIQUE-PRESORTED-ORDER-INVALID",
+          "bulk invalid presorted diagnostic drifted");
 }
 
 }  // namespace

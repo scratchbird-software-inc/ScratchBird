@@ -41,6 +41,7 @@ struct BulkUniqueProofRequest {
   std::string table_uuid;
   std::string column_name;
   bool nulls_distinct = true;
+  bool incoming_keys_presorted = false;
   std::vector<BulkConstraintProofKeyRef> incoming_keys;
   std::vector<BulkConstraintProofKeyRef> visible_keys;
 };

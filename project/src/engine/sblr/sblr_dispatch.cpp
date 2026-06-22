@@ -559,9 +559,9 @@ api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
   return result;
 }
 
-api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
+api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
+                                          const SblrDispatchRequest& request) {
   const auto phase_start = SblrSteadyClock::now();
-  api::EngineApiRequest api_request = request.api_request;
   api_request.context = request.context;
   api_request.operation_id = request.envelope.operation_id;
   api_request.option_envelopes.reserve(api_request.option_envelopes.size() +
@@ -752,6 +752,14 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
       api_request.rows.size(),
       request.envelope.operands.size());
   return api_request;
+}
+
+api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
+  return BuildBaseApiRequest(request.api_request, request);
+}
+
+api::EngineApiRequest BaseApiRequestMove(SblrDispatchRequest& request) {
+  return BuildBaseApiRequest(std::move(request.api_request), request);
 }
 
 const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
@@ -3850,10 +3858,9 @@ api::EngineNormalizeImportCheckpointRequest TypedNormalizeImportCheckpointReques
 }
 
 api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
-    const SblrDispatchRequest& request) {
+    SblrDispatchRequest& request) {
   api::EngineExecuteImportRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequestMove(request);
   typed.target_table = TargetObjectForDml(base, "table");
   typed.source.source_kind = api::SecurityOptionValue(base, "source_kind:");
   if (typed.source.source_kind.empty()) typed.source.source_kind = "native_sbsql_import";
@@ -3877,22 +3884,21 @@ api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
       api::SecurityOptionBool(base, "reference_relaxed_semantics_requested:", false);
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   ApplyImportCheckpointPolicyOptions(base, &typed.checkpoint_policy);
-  typed.canonical_rows = base.rows;
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
   if (!duplicate_mode.empty()) { typed.duplicate_mode = duplicate_mode; }
   typed.require_generated_row_uuid =
       api::SecurityOptionBool(base, "require_generated_row_uuid:", true);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
+  typed.canonical_rows = std::move(static_cast<api::EngineApiRequest&>(typed).rows);
   return typed;
 }
 
 api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
-    const SblrDispatchRequest& request) {
+    SblrDispatchRequest& request) {
   api::EngineExecuteNativeBulkIngestRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequestMove(request);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.canonical_rows = base.rows;
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
   if (!duplicate_mode.empty()) { typed.duplicate_mode = duplicate_mode; }
@@ -3915,6 +3921,8 @@ api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
   }
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   ApplyImportCheckpointPolicyOptions(base, &typed.checkpoint_policy);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
+  typed.canonical_rows = std::move(static_cast<api::EngineApiRequest&>(typed).rows);
   return typed;
 }
 
@@ -4269,7 +4277,7 @@ bool IsAgentClusterManagementOperationId(std::string_view operation_id) {
          operation_id == "cluster.agent.control";
 }
 
-SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
+SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
@@ -4758,10 +4766,11 @@ SblrDispatchResult DecodeAndDispatchSblrOperation(std::string_view encoded_envel
   request.context = std::move(context);
   request.envelope = decoded.envelope;
   request.api_request = std::move(api_request);
-  auto result = DispatchSblrOperation(request);
+  const std::string operation_id = request.envelope.operation_id;
+  auto result = DispatchSblrOperation(std::move(request));
   mark_phase("dispatch_operation");
   WriteSblrDispatchPhaseTrace("decode_and_dispatch",
-                              request.envelope.operation_id,
+                              operation_id,
                               encoded_envelope.size(),
                               phase_micros);
   return result;

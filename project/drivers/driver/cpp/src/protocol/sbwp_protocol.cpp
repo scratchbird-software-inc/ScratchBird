@@ -13,6 +13,8 @@
 namespace scratchbird::protocol {
 namespace {
 constexpr uint16_t kTxnFlagHasReadCommittedMode = 0x0100;
+constexpr uint32_t kQueryScriptMetadataMagic = 0x53514253u;  // "SBQS"
+constexpr uint16_t kQueryScriptMetadataVersion = 1;
 
 void setError(core::ErrorContext* ctx, const char* msg) {
     if (ctx) {
@@ -258,14 +260,32 @@ std::vector<uint8_t> buildP1StartupPayload(uint64_t client_features,
 std::vector<uint8_t> buildQueryPayload(const std::string& query,
                                        uint32_t flags,
                                        uint32_t max_rows,
-                                       uint32_t timeout_ms) {
+                                       uint32_t timeout_ms,
+                                       const QueryScriptMetadata* script_metadata) {
     std::vector<uint8_t> query_bytes(query.begin(), query.end());
     query_bytes.push_back(0);
-    std::vector<uint8_t> payload(4 + 4 + 4 + query_bytes.size());
+    const size_t metadata_bytes = script_metadata != nullptr ? 24 : 0;
+    std::vector<uint8_t> payload(4 + 4 + 4 + query_bytes.size() + metadata_bytes);
     writeU32(payload, 0, flags);
     writeU32(payload, 4, max_rows);
     writeU32(payload, 8, timeout_ms);
     std::memcpy(payload.data() + 12, query_bytes.data(), query_bytes.size());
+    if (script_metadata != nullptr) {
+        size_t offset = 12 + query_bytes.size();
+        writeU32(payload, offset, kQueryScriptMetadataMagic);
+        offset += 4;
+        writeU16(payload, offset, kQueryScriptMetadataVersion);
+        offset += 2;
+        writeU16(payload,
+                 offset,
+                 static_cast<uint16_t>(script_metadata->script_flags & 0xffffu));
+        offset += 2;
+        writeU64(payload, offset, script_metadata->declared_script_size_bytes);
+        offset += 8;
+        writeU32(payload, offset, script_metadata->expected_statement_count);
+        offset += 4;
+        writeU32(payload, offset, script_metadata->script_block_size_hint);
+    }
     return payload;
 }
 

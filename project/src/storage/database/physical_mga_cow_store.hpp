@@ -144,7 +144,7 @@ const char* PhysicalMgaCowFinalizeDecisionName(PhysicalMgaCowFinalizeDecision de
 PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
     const PhysicalMgaCowMutationRequest& request);
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
-    const PhysicalMgaCowMutationBatchRequest& request);
+    PhysicalMgaCowMutationBatchRequest request);
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
     const PhysicalMgaCowFinalizeRequest& request);
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(

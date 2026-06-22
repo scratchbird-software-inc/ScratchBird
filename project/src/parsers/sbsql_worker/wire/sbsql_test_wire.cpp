@@ -4305,6 +4305,7 @@ ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
 PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
     std::string_view prepared_statement_uuid,
     std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) {
   PipelineResult result;
   result.accepted = false;
@@ -4321,12 +4322,13 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
     return result;
   }
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return RunSblrEnvelope(encoded_sblr_envelope, cursor_requested);
+    return RunSblrEnvelopeWithDataPacket(encoded_sblr_envelope, data_packet, cursor_requested);
   }
   SbpsClient client(config_.server_endpoint);
   const auto executed = client.ExecutePreparedSblr(session_,
                                                   prepared_statement_uuid,
                                                   encoded_sblr_envelope,
+                                                  data_packet,
                                                   cursor_requested);
   if (!executed.accepted) {
     result.messages = executed.messages;

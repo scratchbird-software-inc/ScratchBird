@@ -31,6 +31,7 @@ namespace {
 constexpr std::size_t kHeaderSize = 40;
 constexpr std::uint8_t kStartup = 0x01;
 constexpr std::uint8_t kAuthResponse = 0x02;
+constexpr std::uint8_t kQuery = 0x03;
 constexpr std::uint8_t kParse = 0x04;
 constexpr std::uint8_t kBind = 0x05;
 constexpr std::uint8_t kPing = 0x1b;
@@ -38,15 +39,23 @@ constexpr std::uint8_t kResetSession = 0x21;
 constexpr std::uint8_t kAuthRequest = 0x40;
 constexpr std::uint8_t kAuthOk = 0x41;
 constexpr std::uint8_t kReady = 0x43;
+constexpr std::uint8_t kCommandComplete = 0x46;
 constexpr std::uint8_t kError = 0x48;
 constexpr std::uint8_t kParseComplete = 0x4a;
 constexpr std::uint8_t kBindComplete = 0x4b;
 constexpr std::uint8_t kPong = 0x5d;
 constexpr std::uint8_t kExtension = 0x81;
 constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
+constexpr std::uint8_t kFrameFlagPartial = 1u << 1;
+constexpr std::uint8_t kFrameFlagFinal = 1u << 2;
 constexpr std::uint16_t kVersionP1Current = 0x0101;
+constexpr std::uint64_t kFeatureStreaming = 1ull << 1u;
 constexpr std::uint64_t kFeatureSblr = 1ull << 2u;
 constexpr std::uint64_t kFeatureArrayBind = 1ull << 16u;
+constexpr std::uint32_t kQueryFlagScriptIngest = 0x80;
+constexpr std::uint32_t kQueryFlagScriptSizeHint = 0x100;
+constexpr std::uint32_t kQueryScriptMetadataMagic = 0x53514253u;
+constexpr std::uint16_t kQueryScriptMetadataVersion = 1;
 constexpr std::uint32_t kOidInt8 = 20;
 constexpr std::uint32_t kOidText = 25;
 
@@ -244,6 +253,79 @@ std::string MakeTempDatabasePath() {
   return std::string(made) + "/array_bind.sbdb";
 }
 
+std::vector<Frame> ExchangeAuthenticatedQueryConversation(
+    const std::vector<std::vector<std::uint8_t>>& query_frames,
+    std::uint64_t client_features = 0,
+    std::uint64_t required_features = 0) {
+  int fds[2]{-1, -1};
+  Require(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+  scratchbird::parser::sbsql::ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_database_path = MakeTempDatabasePath();
+  scratchbird::parser::sbsql::ParserMetrics metrics;
+  scratchbird::parser::sbsql::SblrTemplateCache cache;
+  scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
+
+  std::thread worker([&session, server_fd = fds[1]]() {
+    (void)session.ServeFd(server_fd);
+    (void)::close(server_fd);
+  });
+
+  std::vector<Frame> responses;
+  Require(WriteAll(fds[0],
+                   EncodeFrame(kStartup,
+                               StartupPayload(kVersionP1Current,
+                                              kVersionP1Current,
+                                              0,
+                                              client_features,
+                                              required_features,
+                                              0))),
+          "SBWP script-ingest startup write failed");
+  responses.push_back(ReadFrame(fds[0]));
+  Require(responses.back().type == kAuthRequest, "script-ingest startup did not request auth");
+
+  Require(WriteAll(fds[0], EncodeFrame(kAuthResponse, {})),
+          "SBWP script-ingest auth response write failed");
+  bool saw_auth_ok = false;
+  for (;;) {
+    Frame frame = ReadFrame(fds[0]);
+    if (frame.type == kAuthOk) saw_auth_ok = true;
+    if (frame.type == kError) {
+      responses.push_back(std::move(frame));
+      break;
+    }
+    if (frame.type == kReady) break;
+  }
+  Require(saw_auth_ok, "script-ingest embedded auth did not produce AuthOk");
+
+  for (std::size_t i = 0; i < query_frames.size(); ++i) {
+    Require(WriteAll(fds[0], query_frames[i]), "SBWP script-ingest query write failed");
+    if (i + 1 < query_frames.size()) continue;
+  }
+  for (;;) {
+    Frame frame = ReadFrame(fds[0]);
+    responses.push_back(std::move(frame));
+    if (responses.back().type == kReady || responses.back().type == kError) break;
+  }
+  (void)::shutdown(fds[0], SHUT_WR);
+  worker.join();
+  (void)::close(fds[0]);
+  return responses;
+}
+
+std::vector<Frame> ExchangeAuthenticatedQueryConversation(
+    const std::vector<std::uint8_t>& query_frame,
+    std::uint64_t client_features = 0,
+    std::uint64_t required_features = 0) {
+  return ExchangeAuthenticatedQueryConversation(
+      std::vector<std::vector<std::uint8_t>>{query_frame},
+      client_features,
+      required_features);
+}
+
 std::vector<Frame> ExchangeAuthenticatedArrayBindConversation(
     const std::vector<std::vector<std::uint8_t>>& requests) {
   int fds[2]{-1, -1};
@@ -344,6 +426,23 @@ std::vector<std::uint8_t> ArrayBindPayload() {
   auto encoded = datatypes::EncodeParameterDataPacket(packet);
   Require(encoded.ok, "array-bind parameter data packet did not encode");
   return std::move(encoded.bytes);
+}
+
+std::vector<std::uint8_t> QueryScriptPayload(std::string_view sql,
+                                             std::uint32_t statement_count) {
+  std::vector<std::uint8_t> out;
+  PutU32(&out, kQueryFlagScriptIngest | kQueryFlagScriptSizeHint);
+  PutU32(&out, 0);
+  PutU32(&out, 0);
+  out.insert(out.end(), sql.begin(), sql.end());
+  out.push_back(0);
+  PutU32(&out, kQueryScriptMetadataMagic);
+  PutU16(&out, kQueryScriptMetadataVersion);
+  PutU16(&out, kQueryFlagScriptIngest | kQueryFlagScriptSizeHint);
+  PutU64(&out, static_cast<std::uint64_t>(sql.size()));
+  PutU32(&out, statement_count);
+  PutU32(&out, 1024u * 1024u);
+  return out;
 }
 
 void ExpectError(const std::vector<std::uint8_t>& request,
@@ -468,6 +567,59 @@ void CheckArrayBindPacketNegotiated() {
           "array-bind packet did not bind through the prepared rowset route");
 }
 
+void CheckScriptIngestQueryMetadata() {
+  constexpr std::string_view script =
+      "CREATE TABLE users.public.sbwp_script_ingest_probe (id BIGINT, name VARCHAR(32));"
+      "INSERT INTO users.public.sbwp_script_ingest_probe (id, name) VALUES (1, 'alpha');"
+      "INSERT INTO users.public.sbwp_script_ingest_probe (id, name) VALUES (2, 'bravo');"
+      "INSERT INTO users.public.sbwp_script_ingest_probe (id, name) VALUES (3, 'charlie');";
+  const auto responses = ExchangeAuthenticatedQueryConversation(
+      EncodeFrame(kQuery, QueryScriptPayload(script, 4)));
+  std::size_t command_completes = 0;
+  bool saw_ready = false;
+  bool saw_error = false;
+  for (const auto& response : responses) {
+    if (response.type == kCommandComplete) ++command_completes;
+    if (response.type == kReady) saw_ready = true;
+    if (response.type == kError) {
+      saw_error = true;
+      Require(false, "script-ingest query returned Error instead of grouped completion");
+    }
+  }
+  Require(!saw_error, "script-ingest query produced an error");
+  Require(saw_ready, "script-ingest query did not finish with Ready");
+  Require(command_completes == 2,
+          "script-ingest query did not collapse insert statements into one grouped completion");
+}
+
+void CheckScriptIngestPartialQueryFrames() {
+  constexpr std::string_view script =
+      "CREATE TABLE users.public.sbwp_script_partial_probe (id BIGINT, name VARCHAR(32));"
+      "INSERT INTO users.public.sbwp_script_partial_probe (id, name) VALUES (1, 'delta');"
+      "INSERT INTO users.public.sbwp_script_partial_probe (id, name) VALUES (2, 'echo');"
+      "INSERT INTO users.public.sbwp_script_partial_probe (id, name) VALUES (3, 'foxtrot');";
+  const auto payload = QueryScriptPayload(script, 4);
+  const std::size_t split = payload.size() / 2;
+  std::vector<std::uint8_t> first(payload.begin(), payload.begin() + split);
+  std::vector<std::uint8_t> second(payload.begin() + split, payload.end());
+  const auto responses = ExchangeAuthenticatedQueryConversation(
+      {EncodeFrame(kQuery, first, kFrameFlagPartial),
+       EncodeFrame(kQuery, second, kFrameFlagFinal)},
+      kFeatureStreaming,
+      kFeatureStreaming);
+  std::size_t command_completes = 0;
+  bool saw_ready = false;
+  for (const auto& response : responses) {
+    if (response.type == kCommandComplete) ++command_completes;
+    if (response.type == kReady) saw_ready = true;
+    Require(response.type != kError,
+            "partial script-ingest query returned Error instead of grouped completion");
+  }
+  Require(saw_ready, "partial script-ingest query did not finish with Ready");
+  Require(command_completes == 2,
+          "partial script-ingest query did not collapse insert statements into one grouped completion");
+}
+
 }  // namespace
 
 int main() {
@@ -478,6 +630,8 @@ int main() {
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();
   CheckArrayBindPacketNegotiated();
+  CheckScriptIngestQueryMetadata();
+  CheckScriptIngestPartialQueryFrames();
   std::cout << "sbsql_native_wire_p1_conformance ok\n";
   return EXIT_SUCCESS;
 }

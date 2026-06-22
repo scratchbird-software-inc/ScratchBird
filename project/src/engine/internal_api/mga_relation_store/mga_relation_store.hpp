@@ -180,6 +180,12 @@ struct MgaRelationHotAppendCounters {
   std::uint64_t index_stream_flushes = 0;
   std::uint64_t index_range_reservations = 0;
   std::uint64_t index_entries_appended = 0;
+  std::uint64_t index_materialization_jobs_queued = 0;
+  std::uint64_t index_materialization_jobs_completed = 0;
+  std::uint64_t index_materialization_inline_jobs = 0;
+  std::uint64_t index_materialization_worker_count = 0;
+  std::uint64_t index_materialization_sort_batches = 0;
+  std::uint64_t index_materialized_entries = 0;
   std::uint64_t scoped_index_stream_opens = 0;
   std::uint64_t scoped_index_stream_flushes = 0;
   std::uint64_t scoped_index_write_batches = 0;
@@ -220,6 +226,12 @@ class MgaRelationHotAppendContext {
   EngineApiDiagnostic AppendRowVersions(
       std::vector<CrudRowVersionRecord>* rows,
       std::vector<std::uint64_t>* written_event_sequences);
+  EngineApiDiagnostic AppendRowVersionsReadOnly(
+      const std::vector<CrudRowVersionRecord>& rows);
+  EngineApiDiagnostic AppendRowVersionsReadOnly(
+      const std::vector<CrudRowVersionRecord>& rows,
+      const std::vector<std::vector<std::pair<std::string, std::string>>>*
+          value_batch);
   EngineApiDiagnostic FlushRowVersions();
 
   EngineApiDiagnostic AppendIndexEntryBatches(

@@ -134,6 +134,8 @@ constexpr uint32_t kQueryFlagIncludePlan = 0x08;
 constexpr uint32_t kQueryFlagReturnSblr = 0x10;
 constexpr uint32_t kQueryFlagNoCache = 0x20;
 constexpr uint32_t kQueryFlagAutocommit = 0x40;
+constexpr uint32_t kQueryFlagScriptIngest = 0x80;
+constexpr uint32_t kQueryFlagScriptSizeHint = 0x100;
 constexpr uint32_t kExecuteFlagAutocommit = 0x01;
 
 constexpr uint8_t kTxnFinalityPayloadVersion = 1;
@@ -376,6 +378,13 @@ struct TxnFinalityStatus {
     std::string detail;
 };
 
+struct QueryScriptMetadata {
+    uint64_t declared_script_size_bytes{0};
+    uint32_t expected_statement_count{0};
+    uint32_t script_block_size_hint{0};
+    uint32_t script_flags{0};
+};
+
 std::vector<uint8_t> encodeMessage(const MessageHeader& header,
                                    const std::vector<uint8_t>& payload);
 core::Status decodeHeader(const std::vector<uint8_t>& header_bytes,
@@ -390,7 +399,8 @@ std::vector<uint8_t> buildP1StartupPayload(uint64_t client_features,
 std::vector<uint8_t> buildQueryPayload(const std::string& query,
                                        uint32_t flags,
                                        uint32_t max_rows,
-                                       uint32_t timeout_ms);
+                                       uint32_t timeout_ms,
+                                       const QueryScriptMetadata* script_metadata = nullptr);
 std::vector<uint8_t> buildParsePayload(const std::string& statement_name,
                                        const std::string& query,
                                        const std::vector<uint32_t>& param_types);

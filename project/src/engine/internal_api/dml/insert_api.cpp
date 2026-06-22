@@ -954,7 +954,6 @@ EngineTypedValue GeneratedInsertValue(std::string value,
   EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = plan.type_name;
-  typed.descriptor.encoded_descriptor = plan.encoded_descriptor;
   typed.encoded_value = std::move(value);
   typed.is_null = false;
   typed.state = EngineValueState::value;
@@ -1524,8 +1523,9 @@ bool InsertRowsShareFieldOrder(std::span<const EngineRowValue> input_rows) {
 bool DirectPhysicalInsertRouteEligible(
     const EngineInsertRowsRequest& request,
     std::string_view conflict_action,
-    std::span<const EngineRowValue> input_rows) {
-  if (input_rows.empty()) {
+    std::span<const EngineRowValue> input_rows,
+    EngineApiU64 effective_row_count) {
+  if (input_rows.empty() && effective_row_count == 0) {
     return false;
   }
   if (!conflict_action.empty()) {
@@ -1569,6 +1569,11 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
               InsertBatchOptionEnabled(request, "insert_mode=insert_select")
           ? "insert_select"
           : "insert_rows";
+  if (direct.lane_operation == "insert_select" &&
+      !InsertOptionKeyPresent(direct.option_envelopes,
+                              "insert_select.single_window")) {
+    direct.option_envelopes.push_back("insert_select.single_window=true");
+  }
   direct.duplicate_mode = request.duplicate_mode;
   direct.require_generated_row_uuid = request.require_generated_row_uuid;
   direct.strict_bulk_load_requested = request.strict_bulk_load_requested;
@@ -1603,6 +1608,62 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.evidence.insert(result.evidence.end(),
                          direct_result.evidence.begin(),
                          direct_result.evidence.end());
+  for (const auto& evidence : direct_result.evidence) {
+    if (evidence.evidence_kind != "page_allocation_runtime_phase") {
+      continue;
+    }
+    if (evidence.evidence_id == "direct_physical_bulk.row_data") {
+      result.evidence.push_back({"page_allocation_runtime_phase",
+                                 "insert.row"});
+    } else if (evidence.evidence_id == "direct_physical_bulk.index") {
+      result.evidence.push_back({"page_allocation_runtime_phase",
+                                 "insert.index"});
+    }
+  }
+  const auto add_direct_counter_alias =
+      [&](std::string_view direct_kind, std::string_view insert_kind) {
+        for (const auto& evidence : direct_result.evidence) {
+          if (evidence.evidence_kind == direct_kind) {
+            result.evidence.push_back({std::string(insert_kind),
+                                       evidence.evidence_id});
+            return;
+          }
+        }
+      };
+  add_direct_counter_alias("mga_hot_append_row_versions",
+                           "insert_hot_append_row_versions");
+  add_direct_counter_alias("mga_hot_append_index_entries",
+                           "insert_hot_append_index_entries");
+  add_direct_counter_alias("mga_hot_append_row_stream_opens",
+                           "insert_hot_append_stream_opens");
+  add_direct_counter_alias("mga_hot_append_row_stream_flushes",
+                           "insert_hot_append_stream_flushes");
+  add_direct_counter_alias("mga_hot_append_scoped_row_stream_opens",
+                           "insert_hot_append_scoped_stream_opens");
+  add_direct_counter_alias("mga_hot_append_scoped_row_stream_flushes",
+                           "insert_hot_append_scoped_stream_flushes");
+  add_direct_counter_alias("mga_hot_append_scoped_row_write_batches",
+                           "insert_hot_append_scoped_row_write_batches");
+  add_direct_counter_alias("mga_hot_append_scoped_row_write_tickets_issued",
+                           "insert_hot_append_scoped_row_write_tickets_issued");
+  add_direct_counter_alias("mga_hot_append_scoped_row_write_tickets_completed",
+                           "insert_hot_append_scoped_row_write_tickets_completed");
+  add_direct_counter_alias("mga_hot_append_scoped_row_write_worker_count",
+                           "insert_hot_append_scoped_row_write_worker_count");
+  add_direct_counter_alias("mga_hot_append_scoped_index_write_batches",
+                           "insert_hot_append_scoped_index_write_batches");
+  add_direct_counter_alias("mga_hot_append_scoped_index_write_tickets_issued",
+                           "insert_hot_append_scoped_index_write_tickets_issued");
+  add_direct_counter_alias("mga_hot_append_scoped_index_write_tickets_completed",
+                           "insert_hot_append_scoped_index_write_tickets_completed");
+  add_direct_counter_alias("mga_hot_append_scoped_index_write_worker_count",
+                           "insert_hot_append_scoped_index_write_worker_count");
+  add_direct_counter_alias("mga_hot_append_allocator_stream_opens",
+                           "insert_hot_append_allocator_stream_opens");
+  add_direct_counter_alias("mga_hot_append_allocator_stream_flushes",
+                           "insert_hot_append_allocator_stream_flushes");
+  add_direct_counter_alias("mga_hot_append_allocator_records",
+                           "insert_hot_append_allocator_records");
   result.evidence.push_back({"dml_returning", "affected_rows"});
   result.dml_summary.rows_changed = result.inserted_count;
   (void)request;
@@ -1620,7 +1681,26 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
     std::span<const EngineRowValue> input_rows,
     std::vector<EngineEvidenceReference> prefix_evidence = {}) {
   DirectPhysicalInsertAttempt attempt;
-  if (!DirectPhysicalInsertRouteEligible(request, conflict_action, input_rows)) {
+  EngineApiU64 effective_row_count =
+      input_rows.empty() ? request.estimated_row_count
+                         : static_cast<EngineApiU64>(input_rows.size());
+  if (input_rows.empty() &&
+      InsertOptionValue(request, "insert_select_source_kind:") ==
+          "recursive_counter_cte") {
+    const auto start = ParseInsertOptionU64(request, "insert_select_counter_start:");
+    const auto step = ParseInsertOptionU64(request, "insert_select_counter_step:");
+    const auto limit = ParseInsertOptionU64(request, "insert_select_counter_limit:");
+    const auto generated_count =
+        start && step && limit ? GeneratedCounterRowCount(*start, *step, *limit)
+                               : std::nullopt;
+    if (generated_count) {
+      effective_row_count = *generated_count;
+    }
+  }
+  if (!DirectPhysicalInsertRouteEligible(request,
+                                         conflict_action,
+                                         input_rows,
+                                         effective_row_count)) {
     return attempt;
   }
   attempt.attempted = true;
@@ -1656,7 +1736,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
 
   const auto execution_control = EvaluateInsertExecutionControl(
       request,
-      static_cast<EngineApiU64>(input_rows.size()));
+      effective_row_count);
   mark_phase("execution_control");
   if (!execution_control.admitted) {
     auto failure = MakeCrudDiagnosticResult<EngineInsertRowsResult>(
@@ -1707,6 +1787,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
                          serializable_recorded.evidence.begin(),
                          serializable_recorded.evidence.end());
   auto direct_request = MakeDirectPhysicalInsertRequest(request, input_rows);
+  direct_request.estimated_row_count = effective_row_count;
   mark_phase("make_direct_request");
   auto direct_result = dml::ExecuteDirectPhysicalBulkAppend(std::move(direct_request));
   mark_phase("execute_direct_physical_bulk_append");
@@ -1717,7 +1798,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
   mark_phase("convert_direct_result");
   WriteInsertApiPhaseTrace("try_direct_physical_insert_route",
                            "dml.insert_rows",
-                           input_rows.size(),
+                           static_cast<std::size_t>(effective_row_count),
                            phase_micros);
   return attempt;
 }
@@ -2957,6 +3038,75 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         "dml.insert_rows",
         MakeInvalidRequestDiagnostic("dml.insert_rows",
                                      "temporary_table_requires_session_uuid"));
+  }
+
+  const auto generated_start =
+      ParseInsertOptionU64(request, "insert_select_counter_start:");
+  const auto generated_step =
+      ParseInsertOptionU64(request, "insert_select_counter_step:");
+  const auto generated_limit =
+      ParseInsertOptionU64(request, "insert_select_counter_limit:");
+  const auto direct_generated_count =
+      generated_start && generated_step && generated_limit
+          ? GeneratedCounterRowCount(*generated_start,
+                                     *generated_step,
+                                     *generated_limit)
+          : std::nullopt;
+  if (request.EffectiveInputRows().empty() &&
+      direct_generated_count &&
+      generated_source_capacity.usable &&
+      InsertOptionValue(request, "insert_select_source_kind:") ==
+          "recursive_counter_cte") {
+    EngineApiU64 visible_capacity = 1;
+    for (const auto& [unused_source_uuid, source_count] :
+         generated_source_capacity.visible_row_counts) {
+      (void)unused_source_uuid;
+      if (source_count == 0) {
+        visible_capacity = 0;
+        break;
+      }
+      const EngineApiU64 required = *direct_generated_count;
+      if (visible_capacity >= required ||
+          source_count >= ((required + visible_capacity - 1) /
+                           visible_capacity)) {
+        visible_capacity = required;
+      } else {
+        visible_capacity *= source_count;
+      }
+    }
+    if (visible_capacity >= *direct_generated_count) {
+      std::vector<EngineEvidenceReference> direct_prefix_evidence;
+      direct_prefix_evidence.push_back({"insert_select_generator",
+                                        "recursive_counter_cte"});
+      direct_prefix_evidence.push_back({"insert_select_generated_row_count",
+                                        std::to_string(*direct_generated_count)});
+      direct_prefix_evidence.push_back({"insert_select_generated_route",
+                                        "direct_physical_counter_projection"});
+      direct_prefix_evidence.insert(direct_prefix_evidence.end(),
+                                    generated_source_capacity.evidence.begin(),
+                                    generated_source_capacity.evidence.end());
+      EngineInsertRowsRequest direct_generated_request = request;
+      direct_generated_request.estimated_row_count = *direct_generated_count;
+      const std::span<const EngineRowValue> no_materialized_rows;
+      auto direct_attempt =
+          TryDirectPhysicalInsertRoute(direct_generated_request,
+                                       conflict_action,
+                                       no_materialized_rows,
+                                       std::move(direct_prefix_evidence));
+      mark_insert_phase("direct_generated_attempt");
+      if (direct_attempt.attempted) {
+        const bool generated_direct_unsupported =
+            !direct_attempt.result.ok &&
+            !direct_attempt.result.diagnostics.empty() &&
+            direct_attempt.result.diagnostics.front().detail ==
+                "insert_select_generated_direct_unsupported";
+        if (!generated_direct_unsupported) {
+          write_insert_outer_trace(
+              static_cast<std::size_t>(*direct_generated_count));
+          return std::move(direct_attempt.result);
+        }
+      }
+    }
   }
 
   EngineApiDiagnostic generated_rows_diagnostic =

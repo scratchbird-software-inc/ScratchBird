@@ -59,6 +59,72 @@ constexpr uint8_t kCloseStatement = 'S';
 constexpr int64_t kMicrosPerSecond = 1000000LL;
 constexpr int64_t kMicrosPerDay = 86400LL * kMicrosPerSecond;
 constexpr int64_t kDaysFrom1970To2000 = 10957;
+constexpr uint32_t kScriptIngestBlockSizeHint = 1024u * 1024u;
+constexpr size_t kScriptSizeHintThresholdBytes = 64u * 1024u;
+
+uint32_t estimateTopLevelStatementCount(std::string_view sql) {
+    uint32_t count = 0;
+    bool saw_non_trivia = false;
+    bool in_single = false;
+    bool in_double = false;
+    bool in_line_comment = false;
+    bool in_block_comment = false;
+    for (size_t i = 0; i < sql.size(); ++i) {
+        const char ch = sql[i];
+        const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+        if (in_line_comment) {
+            if (ch == '\n') in_line_comment = false;
+            continue;
+        }
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                ++i;
+            }
+            continue;
+        }
+        if (!in_single && !in_double && ch == '-' && next == '-') {
+            in_line_comment = true;
+            ++i;
+            continue;
+        }
+        if (!in_single && !in_double && ch == '/' && next == '*') {
+            in_block_comment = true;
+            ++i;
+            continue;
+        }
+        if (ch == '\'' && !in_double) {
+            if (in_single && next == '\'') {
+                ++i;
+                continue;
+            }
+            in_single = !in_single;
+            saw_non_trivia = true;
+            continue;
+        }
+        if (ch == '"' && !in_single) {
+            if (in_double && next == '"') {
+                ++i;
+                continue;
+            }
+            in_double = !in_double;
+            saw_non_trivia = true;
+            continue;
+        }
+        if (!in_single && !in_double && ch == ';') {
+            if (saw_non_trivia) {
+                ++count;
+                saw_non_trivia = false;
+            }
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(ch))) {
+            saw_non_trivia = true;
+        }
+    }
+    if (saw_non_trivia) ++count;
+    return count;
+}
 
 bool isZeroUuidBytes(const std::array<uint8_t, 16>& uuid) {
     return std::all_of(uuid.begin(), uuid.end(), [](uint8_t byte) {
@@ -2157,8 +2223,21 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
         querySupportsServerAutocommit(sql)) {
         query_flags |= protocol::kQueryFlagAutocommit;
     }
+    const uint32_t estimated_statement_count = estimateTopLevelStatementCount(sql);
+    protocol::QueryScriptMetadata script_metadata{};
+    const protocol::QueryScriptMetadata* script_metadata_ptr = nullptr;
+    if (estimated_statement_count > 1 || sql.size() >= kScriptSizeHintThresholdBytes) {
+        script_metadata.declared_script_size_bytes = static_cast<uint64_t>(sql.size());
+        script_metadata.expected_statement_count = estimated_statement_count;
+        script_metadata.script_block_size_hint = kScriptIngestBlockSizeHint;
+        script_metadata.script_flags =
+            estimated_statement_count > 1 ? protocol::kQueryFlagScriptIngest : 0;
+        script_metadata.script_flags |= protocol::kQueryFlagScriptSizeHint;
+        query_flags |= script_metadata.script_flags;
+        script_metadata_ptr = &script_metadata;
+    }
     const int64_t build_started = phase_trace ? driverPhaseNowNs() : 0;
-    auto payload = protocol::buildQueryPayload(sql, query_flags, 0, 0);
+    auto payload = protocol::buildQueryPayload(sql, query_flags, 0, 0, script_metadata_ptr);
     if (phase_trace) {
         writeDriverPhaseTrace("execute_query",
                               "build_query_payload",

@@ -46,6 +46,7 @@ struct DmlIngestionPipelineConfig {
 
 struct DmlIngestionPreallocationItem {
   std::vector<std::pair<std::string, std::string>> logical_values;
+  const std::vector<std::pair<std::string, std::string>>* borrowed_logical_values = nullptr;
   EngineApiU64 encoded_bytes = 0;
 };
 
@@ -99,6 +100,7 @@ class DmlIngestionPipeline {
 
   bool Start();
   bool EnqueuePreallocation(DmlIngestionPreallocationItem item);
+  bool EnqueuePreallocationBatch(std::vector<DmlIngestionPreallocationItem> items);
   bool EnqueueWrite(DmlIngestionWriteTask task);
   DmlIngestionPipelineStats FencePreallocator();
   DmlIngestionPipelineStats DrainWriters();
@@ -108,6 +110,7 @@ class DmlIngestionPipeline {
  private:
   struct PreworkQueueItem {
     std::vector<std::pair<std::string, std::string>> logical_values;
+    const std::vector<std::pair<std::string, std::string>>* borrowed_logical_values = nullptr;
     EngineApiU64 encoded_bytes = 0;
     EngineApiU64 source_hint_pages = 0;
     EngineApiU64 source_hint_bytes = 0;

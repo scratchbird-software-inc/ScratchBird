@@ -204,6 +204,121 @@ def output_copy_row_values(path: Path) -> list[int]:
     return [int(match.group(1)) for match in COPY_ROWS_RE.finditer(text)]
 
 
+def summarize_jsonl_phase_trace(path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "available": path.exists(),
+        "path": str(path),
+        "line_count": 0,
+        "parse_errors": 0,
+        "events": {},
+    }
+    if not path.exists():
+        return summary
+    summary["bytes"] = path.stat().st_size
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            summary["line_count"] += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                summary["parse_errors"] += 1
+                continue
+            event = str(row.get("event") or "unknown")
+            phase = str(row.get("phase") or "unknown")
+            key = f"{event}/{phase}"
+            bucket = summary["events"].setdefault(
+                key,
+                {
+                    "event": event,
+                    "phase": phase,
+                    "count": 0,
+                    "elapsed_us_total": 0.0,
+                    "elapsed_us_max": 0.0,
+                    "bytes_total": 0,
+                    "row_count_total": 0,
+                    "unit_count_total": 0,
+                },
+            )
+            elapsed = float(row.get("elapsed_us") or 0.0)
+            bucket["count"] += 1
+            bucket["elapsed_us_total"] += elapsed
+            bucket["elapsed_us_max"] = max(bucket["elapsed_us_max"], elapsed)
+            bucket["bytes_total"] += int(row.get("bytes") or 0)
+            bucket["row_count_total"] += int(row.get("rows") or 0)
+            bucket["unit_count_total"] += int(row.get("count") or 0)
+    for bucket in summary["events"].values():
+        count = int(bucket["count"])
+        bucket["elapsed_us_avg"] = bucket["elapsed_us_total"] / count if count else 0.0
+    return summary
+
+
+def _parse_trace_kv_line(line: str) -> dict[str, str]:
+    row: dict[str, str] = {}
+    for part in line.rstrip("\n").split("\t"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            row[key] = value
+    return row
+
+
+def summarize_tsv_phase_trace(path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "available": path.exists(),
+        "path": str(path),
+        "line_count": 0,
+        "parse_errors": 0,
+        "operations": {},
+        "phase_totals_us": {},
+    }
+    if not path.exists():
+        return summary
+    summary["bytes"] = path.stat().st_size
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = _parse_trace_kv_line(line)
+            if not row:
+                summary["parse_errors"] += 1
+                continue
+            summary["line_count"] += 1
+            operation = row.get("operation") or row.get("layer") or "unknown"
+            bucket = summary["operations"].setdefault(
+                operation,
+                {
+                    "count": 0,
+                    "rows_total": 0,
+                    "accepted_total": 0,
+                    "phase_totals_us": {},
+                },
+            )
+            bucket["count"] += 1
+            try:
+                bucket["rows_total"] += int(row.get("rows") or 0)
+            except ValueError:
+                pass
+            try:
+                bucket["accepted_total"] += int(row.get("accepted") or 0)
+            except ValueError:
+                pass
+            for key, value in row.items():
+                if not key.endswith("_us"):
+                    continue
+                try:
+                    micros = float(value)
+                except ValueError:
+                    continue
+                bucket["phase_totals_us"][key] = (
+                    float(bucket["phase_totals_us"].get(key, 0.0)) + micros
+                )
+                summary["phase_totals_us"][key] = (
+                    float(summary["phase_totals_us"].get(key, 0.0)) + micros
+                )
+    return summary
+
+
 def split_action_marked_output(text: str) -> dict[str, str]:
     segments: dict[str, list[str]] = {}
     current: str | None = None
@@ -342,6 +457,21 @@ class SbRunner:
         self.password = args.password or latest.get("password_argument", "scratchbird")
         self.role = args.role or latest.get("user_role", "sysarch")
         self.table_prefix = args.table_prefix
+        self.phase_timing_enabled = bool(args.phase_timing)
+        self.phase_trace_dir = (
+            Path(args.phase_trace_dir)
+            if args.phase_trace_dir is not None
+            else run_root / "phase-traces"
+        )
+        self.phase_trace_files = {
+            "client_driver": self.phase_trace_dir / "cpp_driver_phase_trace.jsonl",
+            "parser_worker": self.phase_trace_dir / "sbsql_worker_phase_trace.jsonl",
+            "engine_insert_api": self.phase_trace_dir / "insert_api_phase_trace.tsv",
+            "engine_dml_direct": self.phase_trace_dir / "dml_phase_trace.tsv",
+            "engine_update_delete": self.phase_trace_dir / "update_delete_phase_trace.tsv",
+        }
+        if self.phase_timing_enabled:
+            self.phase_trace_dir.mkdir(parents=True, exist_ok=True)
 
     def table(self, logical_name: str) -> str:
         return validate_ident(f"{self.table_prefix}{logical_name}")
@@ -384,6 +514,12 @@ class SbRunner:
         output_path: Path | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        run_env = None
+        if self.phase_timing_enabled:
+            run_env = os.environ.copy()
+            run_env["SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE"] = str(
+                self.phase_trace_files["client_driver"]
+            )
         if output_path is None:
             proc = subprocess.run(
                 command,
@@ -391,6 +527,7 @@ class SbRunner:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=run_env,
                 check=False,
             )
             stdout = proc.stdout
@@ -405,6 +542,7 @@ class SbRunner:
                     text=True,
                     stdout=out,
                     stderr=subprocess.PIPE,
+                    env=run_env,
                     check=False,
                 )
             stdout = ""
@@ -419,6 +557,44 @@ class SbRunner:
             "stdout_bytes": stdout_bytes,
             "stdout_sha256": stdout_sha,
             "command": command,
+        }
+
+    def phase_timing_summary(self) -> dict[str, Any]:
+        if not self.phase_timing_enabled:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "trace_dir": str(self.phase_trace_dir),
+            "client_env": {
+                "SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE": str(
+                    self.phase_trace_files["client_driver"]
+                )
+            },
+            "server_env_expected": {
+                "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE": str(
+                    self.phase_trace_files["parser_worker"]
+                ),
+                "SCRATCHBIRD_INSERT_API_PHASE_TRACE_FILE": str(
+                    self.phase_trace_files["engine_insert_api"]
+                ),
+                "SCRATCHBIRD_DML_PHASE_TRACE_FILE": str(
+                    self.phase_trace_files["engine_dml_direct"]
+                ),
+                "SCRATCHBIRD_UPDATE_DELETE_PHASE_TRACE_FILE": str(
+                    self.phase_trace_files["engine_update_delete"]
+                ),
+            },
+            "client_driver": summarize_jsonl_phase_trace(self.phase_trace_files["client_driver"]),
+            "parser_worker": summarize_jsonl_phase_trace(self.phase_trace_files["parser_worker"]),
+            "engine_insert_api": summarize_tsv_phase_trace(self.phase_trace_files["engine_insert_api"]),
+            "engine_dml_direct": summarize_tsv_phase_trace(self.phase_trace_files["engine_dml_direct"]),
+            "engine_update_delete": summarize_tsv_phase_trace(
+                self.phase_trace_files["engine_update_delete"]
+            ),
+            "notes": [
+                "client_driver is collected by the benchmark runner process",
+                "parser_worker and engine traces require the test server to be started with server_env_expected before this run",
+            ],
         }
 
     def scalar(self, sql: str) -> Any:
@@ -1377,6 +1553,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--postgres-summary", type=Path)
     parser.add_argument(
+        "--phase-timing",
+        action="store_true",
+        help="Collect client/parser/engine phase timing traces into the benchmark summary.",
+    )
+    parser.add_argument(
+        "--phase-trace-dir",
+        type=Path,
+        help="Directory for phase trace files; defaults to <run_root>/phase-traces.",
+    )
+    parser.add_argument(
         "--load-execution-mode",
         choices=("copy", "insert-per-table", "insert-combined", "per-table", "combined"),
         default="insert-per-table",
@@ -1529,6 +1715,7 @@ def main(argv: list[str]) -> int:
         "skipped_actions": skipped_actions,
         "pre_snapshot": pre_snapshot,
         "post_snapshot": {"processes": sb.process_snapshots()},
+        "phase_timing": sb.phase_timing_summary(),
     }
     comparison = compare_with_postgresql(summary, args.postgres_summary)
     if comparison is not None:

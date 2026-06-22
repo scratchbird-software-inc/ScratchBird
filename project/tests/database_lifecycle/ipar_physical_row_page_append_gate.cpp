@@ -249,6 +249,16 @@ std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evide
   return count;
 }
 
+std::string EvidenceId(const std::vector<api::EngineEvidenceReference>& evidence,
+                       std::string_view kind) {
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind) {
+      return item.evidence_id;
+    }
+  }
+  return {};
+}
+
 api::EngineExecuteImportRowsRequest ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
@@ -337,13 +347,12 @@ void VerifyCommittedPhysicalRows() {
                       "direct_physical_bulk_row_page_writer",
                       "physical_mga_cow"),
           "IPAR-P3-01 physical row-page writer evidence missing");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.row_page_written=true") == 5,
+  Require(EvidenceId(imported.evidence,
+                     "direct_physical_bulk_row_page_written_rows") == "5",
           "IPAR-P3-01 physical row-page write count mismatch");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.existing_active_transaction_verified=true") == 5,
+  Require(HasEvidence(imported.evidence,
+                      "direct_physical_bulk_row_page_evidence",
+                      "physical_mga_cow.existing_active_transaction_verified=true"),
           "IPAR-P3-01 existing transaction evidence missing");
   Commit(context);
 
@@ -377,9 +386,8 @@ void VerifyRolledBackPhysicalRows() {
   RequireOk(imported, "IPAR-P3-01 rolled-back import failed");
   Require(imported.inserted_rows == 3 && imported.accepted_rows == 3,
           "IPAR-P3-01 rolled-back import row count mismatch");
-  Require(EvidenceCount(imported.evidence,
-                        "direct_physical_bulk_row_page_evidence",
-                        "physical_mga_cow.row_page_written=true") == 3,
+  Require(EvidenceId(imported.evidence,
+                     "direct_physical_bulk_row_page_written_rows") == "3",
           "IPAR-P3-01 rolled-back physical write count mismatch");
   Rollback(context);
 

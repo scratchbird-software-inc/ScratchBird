@@ -1286,6 +1286,22 @@ std::uint64_t IndexPagesForValueBatch(
   return pages;
 }
 
+std::uint64_t IndexPagesForValueRefs(
+    const CrudState& state,
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
+    std::string* first_index_uuid) {
+  std::uint64_t pages = 0;
+  for (const auto* values : row_values) {
+    if (values == nullptr) {
+      continue;
+    }
+    pages += IndexPagesForValues(state, context, table_uuid, *values, first_index_uuid);
+  }
+  return pages;
+}
+
 }  // namespace
 
 DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
@@ -1430,6 +1446,26 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     std::string mutation_phase) {
   std::string index_uuid;
   const auto pages = IndexPagesForValueBatch(state, context, table_uuid, row_values, &index_uuid);
+  if (pages == 0 || index_uuid.empty()) {
+    return {};
+  }
+  return ReserveDmlPageAllocationRuntime(context,
+                                         option_envelopes,
+                                         index_uuid,
+                                         DmlPageAllocationRuntimeFamily::index,
+                                         pages,
+                                         std::move(mutation_phase));
+}
+
+DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& option_envelopes,
+    const CrudState& state,
+    const std::string& table_uuid,
+    const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
+    std::string mutation_phase) {
+  std::string index_uuid;
+  const auto pages = IndexPagesForValueRefs(state, context, table_uuid, row_values, &index_uuid);
   if (pages == 0 || index_uuid.empty()) {
     return {};
   }
