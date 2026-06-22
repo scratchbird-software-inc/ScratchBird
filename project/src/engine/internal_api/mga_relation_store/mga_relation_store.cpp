@@ -21,6 +21,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -32,7 +33,9 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -349,6 +352,11 @@ std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> lines;
   std::ifstream in(path, std::ios::binary);
   if (!in) { return lines; }
+  std::error_code ignored;
+  const auto bytes = std::filesystem::file_size(path, ignored);
+  if (!ignored && bytes != static_cast<std::uintmax_t>(-1)) {
+    lines.reserve(static_cast<std::size_t>(std::max<std::uintmax_t>(1, bytes / 128)));
+  }
   std::string line;
   while (std::getline(in, line)) { lines.push_back(line); }
   return lines;
@@ -375,8 +383,11 @@ std::vector<std::string> ReadScopedRelationLinesForTables(
       continue;
     }
     used = true;
-    const auto segment_lines = ReadLines(path);
-    lines.insert(lines.end(), segment_lines.begin(), segment_lines.end());
+    auto segment_lines = ReadLines(path);
+    lines.reserve(lines.size() + segment_lines.size());
+    lines.insert(lines.end(),
+                 std::make_move_iterator(segment_lines.begin()),
+                 std::make_move_iterator(segment_lines.end()));
   }
   if (used_segments != nullptr) {
     *used_segments = used;
@@ -432,6 +443,49 @@ void AppendLineU64Field(std::string* line, bool* first, std::uint64_t value) {
   AppendLineField(line, first, std::string_view(buffer, static_cast<std::size_t>(ptr - buffer)));
 }
 
+void AppendHexEncoded(std::string* out, std::string_view value) {
+  if (out == nullptr) { return; }
+  static constexpr char kHex[] = "0123456789abcdef";
+  const std::size_t offset = out->size();
+  out->resize(offset + value.size() * 2);
+  char* cursor = out->data() + offset;
+  for (const unsigned char c : value) {
+    *cursor++ = kHex[(c >> 4) & 0x0f];
+    *cursor++ = kHex[c & 0x0f];
+  }
+}
+
+std::size_t EncodedCrudPairsSize(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  std::size_t size = 0;
+  for (const auto& [key, value] : pairs) {
+    if (size != 0) { ++size; }
+    size += key.size() * 2 + 1 + value.size() * 2;
+  }
+  return size;
+}
+
+void AppendEncodedCrudPairsField(
+    std::string* line,
+    bool* first,
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  if (line == nullptr || first == nullptr) { return; }
+  if (!*first) {
+    line->push_back('\t');
+  }
+  *first = false;
+  bool first_pair = true;
+  for (const auto& [key, value] : pairs) {
+    if (!first_pair) {
+      line->push_back('|');
+    }
+    first_pair = false;
+    AppendHexEncoded(line, key);
+    line->push_back('=');
+    AppendHexEncoded(line, value);
+  }
+}
+
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   if (out == nullptr) { return; }
   const std::size_t required = out->size() + extra;
@@ -449,29 +503,43 @@ void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
 }
 
 void AppendRowVersionStoreLine(std::string* out,
-                               const CrudRowVersionRecord& row) {
+                               const CrudRowVersionRecord& row,
+                               std::uint64_t event_sequence_override,
+                               const std::vector<std::pair<std::string, std::string>>&
+                                   values) {
   if (out == nullptr) { return; }
-  const std::string encoded_values = EncodeCrudPairs(row.values);
+  const std::size_t encoded_values_size = EncodedCrudPairsSize(values);
   ReserveAmortizedAppendCapacity(out,
                                  128 + row.table_uuid.size() +
                                      row.row_uuid.size() +
                                      row.version_uuid.size() +
                                      row.previous_version_uuid.size() +
-                                     encoded_values.size() +
+                                     encoded_values_size +
                                      row.temporary_session_uuid.size());
   bool first = true;
   AppendLineField(out, &first, kRowStoreMagic);
   AppendLineField(out, &first, "ROW_VERSION");
   AppendLineU64Field(out, &first, row.creator_tx);
-  AppendLineU64Field(out, &first, row.event_sequence);
+  AppendLineU64Field(out, &first, event_sequence_override);
   AppendLineField(out, &first, row.table_uuid);
   AppendLineField(out, &first, row.row_uuid);
   AppendLineField(out, &first, row.version_uuid);
   AppendLineField(out, &first, row.deleted ? "1" : "0");
   AppendLineField(out, &first, row.previous_version_uuid);
   AppendLineU64Field(out, &first, row.previous_sequence);
-  AppendLineField(out, &first, encoded_values);
+  AppendEncodedCrudPairsField(out, &first, values);
   AppendLineField(out, &first, row.temporary_session_uuid);
+}
+
+void AppendRowVersionStoreLine(std::string* out,
+                               const CrudRowVersionRecord& row,
+                               std::uint64_t event_sequence_override) {
+  AppendRowVersionStoreLine(out, row, event_sequence_override, row.values);
+}
+
+void AppendRowVersionStoreLine(std::string* out,
+                               const CrudRowVersionRecord& row) {
+  AppendRowVersionStoreLine(out, row, row.event_sequence);
 }
 
 std::string BuildRowVersionStoreLine(const CrudRowVersionRecord& row) {
@@ -548,6 +616,311 @@ void AppendIndexEntryStoreLine(std::string* out,
   AppendLineField(out, &first, row_uuid);
   AppendLineField(out, &first, version_uuid);
   out->push_back('\n');
+}
+
+struct PreparedIndexEntryLine {
+  std::string table_uuid;
+  std::string index_uuid;
+  std::string column_name;
+  std::string family;
+  std::string entry_kind;
+  std::string key;
+  std::string payload;
+  std::string row_uuid;
+  std::string version_uuid;
+};
+
+struct PreparedIndexAppendJob {
+  bool ok = true;
+  EngineApiDiagnostic diagnostic = OkDiagnostic();
+  std::vector<PreparedIndexEntryLine> entries;
+  std::uint64_t sorted_batch_count = 0;
+};
+
+struct PreparedIndexLineBufferJob {
+  bool ok = true;
+  std::map<std::string, std::string> scoped_lines;
+};
+
+constexpr std::size_t kHotAppendRowLineReserveBytes = 384;
+constexpr std::size_t kHotAppendIndexLineReserveBytes = 384;
+
+bool PreparedIndexEntryLineLess(const PreparedIndexEntryLine& left,
+                                const PreparedIndexEntryLine& right) {
+  return std::tie(left.table_uuid,
+                  left.index_uuid,
+                  left.key,
+                  left.row_uuid,
+                  left.version_uuid) <
+         std::tie(right.table_uuid,
+                  right.index_uuid,
+                  right.key,
+                  right.row_uuid,
+                  right.version_uuid);
+}
+
+void SortPreparedIndexEntryRangeIfNeeded(
+    std::vector<PreparedIndexEntryLine>* entries,
+    std::size_t first,
+    std::uint64_t* sorted_batch_count) {
+  if (entries == nullptr || sorted_batch_count == nullptr ||
+      entries->size() <= first + 1) {
+    return;
+  }
+  auto begin = entries->begin() + static_cast<std::ptrdiff_t>(first);
+  auto end = entries->end();
+  if (std::is_sorted(begin, end, PreparedIndexEntryLineLess)) {
+    return;
+  }
+  ++(*sorted_batch_count);
+  std::stable_sort(begin, end, PreparedIndexEntryLineLess);
+}
+
+bool BulkSortIndexMaterialAllowed(const CrudIndexRecord& index) {
+  const std::string family =
+      index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
+  return family == kCrudIndexFamilyBtree ||
+         family == "unique_btree" ||
+         index.unique ||
+         family == kCrudIndexFamilyExpression ||
+         family == kCrudIndexFamilyPartial ||
+         family == kCrudIndexFamilyCovering;
+}
+
+bool ExactIndexEntryInputLess(const MgaExactIndexEntryAppendBatch& batch,
+                              const MgaExactIndexEntryInput& left,
+                              const MgaExactIndexEntryInput& right) {
+  const std::string table_uuid =
+      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  return std::tie(table_uuid,
+                  batch.index.index_uuid,
+                  left.encoded_key,
+                  left.row_uuid,
+                  left.version_uuid) <
+         std::tie(table_uuid,
+                  batch.index.index_uuid,
+                  right.encoded_key,
+                  right.row_uuid,
+                  right.version_uuid);
+}
+
+bool ExactIndexBatchAlreadyInAppendOrder(
+    const MgaExactIndexEntryAppendBatch& batch) {
+  if (batch.entries.size() <= 1 || !BulkSortIndexMaterialAllowed(batch.index)) {
+    return true;
+  }
+  return std::is_sorted(batch.entries.begin(),
+                        batch.entries.end(),
+                        [&](const auto& left, const auto& right) {
+                          return ExactIndexEntryInputLess(batch, left, right);
+                        });
+}
+
+void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
+                                 PreparedIndexAppendJob* job) {
+  if (job == nullptr || batch.rows.empty()) { return; }
+  const std::string table_uuid =
+      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
+  const std::size_t before_batch = job->entries.size();
+  job->entries.reserve(before_batch + batch.rows.size());
+  for (const auto& row : batch.rows) {
+    const auto keys = CrudIndexKeysForValues(batch.index, row.values);
+    if (keys.empty()) { continue; }
+    if (keys.size() > 1) {
+      job->entries.reserve(job->entries.size() + keys.size());
+    }
+    const std::string payload =
+        CrudFieldValue(row.values, batch.index.column_name);
+    for (const auto& key : keys) {
+      job->entries.push_back({table_uuid,
+                              batch.index.index_uuid,
+                              batch.index.column_name,
+                              batch.index.family,
+                              "exact",
+                              key,
+                              payload,
+                              row.row_uuid,
+                              row.version_uuid});
+    }
+  }
+  if (sort_allowed && job->entries.size() > before_batch + 1) {
+    SortPreparedIndexEntryRangeIfNeeded(&job->entries,
+                                        before_batch,
+                                        &job->sorted_batch_count);
+  }
+}
+
+PreparedIndexAppendJob BuildPreparedIndexAppendJob(
+    const std::vector<MgaIndexEntryAppendBatch>& batches) {
+  PreparedIndexAppendJob job;
+  try {
+    for (const auto& batch : batches) {
+      AddPreparedIndexAppendBatch(batch, &job);
+    }
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  std::string("index_materialization_failed:") +
+                                                      ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  "index_materialization_failed");
+  }
+  return job;
+}
+
+PreparedIndexAppendJob BuildPreparedIndexAppendJob(
+    const MgaIndexEntryAppendBatch& batch) {
+  PreparedIndexAppendJob job;
+  try {
+    AddPreparedIndexAppendBatch(batch, &job);
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.index_store",
+        std::string("index_materialization_failed:") + ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.index_store",
+        "index_materialization_failed");
+  }
+  return job;
+}
+
+void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch,
+                                      PreparedIndexAppendJob* job) {
+  if (job == nullptr || batch.entries.empty()) { return; }
+  const std::string table_uuid =
+      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  const bool sort_allowed = BulkSortIndexMaterialAllowed(batch.index);
+  const std::size_t before_batch = job->entries.size();
+  job->entries.reserve(before_batch + batch.entries.size());
+  for (const auto& entry : batch.entries) {
+    if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
+        entry.version_uuid.empty()) {
+      job->ok = false;
+      job->diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                     "exact_index_entry_invalid");
+      return;
+    }
+    job->entries.push_back({table_uuid,
+                            batch.index.index_uuid,
+                            batch.index.column_name,
+                            batch.index.family,
+                            "exact",
+                            entry.encoded_key,
+                            entry.payload_value,
+                            entry.row_uuid,
+                            entry.version_uuid});
+  }
+  if (sort_allowed && job->entries.size() > before_batch + 1) {
+    SortPreparedIndexEntryRangeIfNeeded(&job->entries,
+                                        before_batch,
+                                        &job->sorted_batch_count);
+  }
+}
+
+PreparedIndexAppendJob BuildPreparedExactIndexAppendJob(
+    const std::vector<MgaExactIndexEntryAppendBatch>& batches) {
+  PreparedIndexAppendJob job;
+  try {
+    for (const auto& batch : batches) {
+      AddPreparedExactIndexAppendBatch(batch, &job);
+      if (!job.ok) { return job; }
+    }
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  std::string("exact_index_materialization_failed:") +
+                                                      ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  "exact_index_materialization_failed");
+  }
+  return job;
+}
+
+PreparedIndexAppendJob BuildPreparedExactIndexAppendJob(
+    const MgaExactIndexEntryAppendBatch& batch) {
+  PreparedIndexAppendJob job;
+  try {
+    AddPreparedExactIndexAppendBatch(batch, &job);
+  } catch (const std::exception& ex) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  std::string("exact_index_materialization_failed:") +
+                                                      ex.what());
+  } catch (...) {
+    job.ok = false;
+    job.diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
+                                                  "exact_index_materialization_failed");
+  }
+  return job;
+}
+
+PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
+    const EngineRequestContext& context,
+    std::vector<PreparedIndexEntryLine> entries,
+    std::uint64_t first_event_sequence) {
+  PreparedIndexLineBufferJob job;
+  if (entries.empty()) {
+    return job;
+  }
+  const std::string single_table_uuid = entries.front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(entries.begin()), entries.end(), [&](const auto& entry) {
+        return entry.table_uuid == single_table_uuid;
+      });
+  if (single_table_batch) {
+    const std::string scoped_path = ScopedIndexStorePath(context, single_table_uuid);
+    std::string& scoped_buffer = job.scoped_lines[scoped_path];
+    scoped_buffer.reserve(entries.size() * kHotAppendIndexLineReserveBytes);
+    std::uint64_t event_sequence = first_event_sequence;
+    for (const auto& entry : entries) {
+      AppendIndexEntryStoreLine(&scoped_buffer,
+                                context.local_transaction_id,
+                                event_sequence++,
+                                entry.index_uuid,
+                                entry.table_uuid,
+                                entry.column_name,
+                                entry.family,
+                                entry.entry_kind,
+                                entry.key,
+                                entry.payload,
+                                entry.row_uuid,
+                                entry.version_uuid);
+    }
+    return job;
+  }
+  std::map<std::string, std::size_t> entries_per_path;
+  for (const auto& entry : entries) {
+    entries_per_path[ScopedIndexStorePath(context, entry.table_uuid)] += 1;
+  }
+  for (const auto& [path, count] : entries_per_path) {
+    job.scoped_lines[path].reserve(count * kHotAppendIndexLineReserveBytes);
+  }
+  std::uint64_t event_sequence = first_event_sequence;
+  for (const auto& entry : entries) {
+    std::string& scoped_buffer =
+        job.scoped_lines[ScopedIndexStorePath(context, entry.table_uuid)];
+    AppendIndexEntryStoreLine(&scoped_buffer,
+                              context.local_transaction_id,
+                              event_sequence++,
+                              entry.index_uuid,
+                              entry.table_uuid,
+                              entry.column_name,
+                              entry.family,
+                              entry.entry_kind,
+                              entry.key,
+                              entry.payload,
+                              entry.row_uuid,
+                              entry.version_uuid);
+  }
+  return job;
 }
 
 std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
@@ -1630,6 +2003,171 @@ std::string DecodeCrudTextLocal(const std::string& encoded) {
   return decoded;
 }
 
+std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
+    const std::string& encoded,
+    std::unordered_map<std::string, std::string>* decoded_key_cache) {
+  std::vector<std::pair<std::string, std::string>> pairs;
+  pairs.reserve(8);
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto pipe = encoded.find('|', start);
+    const std::size_t end = pipe == std::string::npos ? encoded.size() : pipe;
+    const auto equals = encoded.find('=', start);
+    if (equals != std::string::npos && equals < end) {
+      std::string key;
+      const std::string encoded_key = encoded.substr(start, equals - start);
+      if (decoded_key_cache != nullptr) {
+        auto found = decoded_key_cache->find(encoded_key);
+        if (found == decoded_key_cache->end()) {
+          auto inserted =
+              decoded_key_cache->emplace(encoded_key, DecodeCrudTextLocal(encoded_key));
+          found = inserted.first;
+        }
+        key = found->second;
+      } else {
+        key = DecodeCrudTextLocal(encoded_key);
+      }
+      pairs.push_back({std::move(key),
+                       DecodeCrudTextLocal(encoded.substr(equals + 1,
+                                                          end - equals - 1))});
+    }
+    if (pipe == std::string::npos) { break; }
+    start = pipe + 1;
+  }
+  return pairs;
+}
+
+struct ScopedDecodedRowCacheEntry {
+  std::uintmax_t file_size = 0;
+  std::vector<CrudRowVersionRecord> rows;
+};
+
+constexpr std::size_t kScopedDecodedRowCacheMaxAutoWarmRows = 60000;
+
+std::mutex& ScopedDecodedRowCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<std::string, ScopedDecodedRowCacheEntry>&
+ScopedDecodedRowCache() {
+  static std::unordered_map<std::string, ScopedDecodedRowCacheEntry> cache;
+  return cache;
+}
+
+void UpdateScopedDecodedRowCacheAfterAppend(
+    const std::map<std::string, std::vector<CrudRowVersionRecord>>&
+        decoded_appends_by_path,
+    const std::map<std::string, std::string>& encoded_appends_by_path) {
+  if (decoded_appends_by_path.empty()) { return; }
+  const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
+  auto& cache = ScopedDecodedRowCache();
+  for (const auto& [path, decoded_rows] : decoded_appends_by_path) {
+    if (decoded_rows.empty()) { continue; }
+    if (decoded_rows.size() > kScopedDecodedRowCacheMaxAutoWarmRows) {
+      cache.erase(path);
+      continue;
+    }
+    const auto encoded = encoded_appends_by_path.find(path);
+    if (encoded == encoded_appends_by_path.end()) {
+      cache.erase(path);
+      continue;
+    }
+    std::error_code ignored;
+    const auto file_size = std::filesystem::file_size(path, ignored);
+    if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
+      cache.erase(path);
+      continue;
+    }
+    const std::uintmax_t appended_bytes =
+        static_cast<std::uintmax_t>(encoded->second.size());
+    auto existing = cache.find(path);
+    if (existing == cache.end()) {
+      if (file_size == appended_bytes) {
+        cache.emplace(path, ScopedDecodedRowCacheEntry{file_size, decoded_rows});
+      }
+      continue;
+    }
+    if (existing->second.rows.size() + decoded_rows.size() >
+        kScopedDecodedRowCacheMaxAutoWarmRows) {
+      cache.erase(existing);
+      continue;
+    }
+    if (file_size < appended_bytes ||
+        existing->second.file_size != file_size - appended_bytes) {
+      if (existing->second.file_size != file_size) {
+        cache.erase(existing);
+      }
+      continue;
+    }
+    existing->second.rows.insert(existing->second.rows.end(),
+                                 decoded_rows.begin(),
+                                 decoded_rows.end());
+    existing->second.file_size = file_size;
+  }
+}
+
+bool LoadDecodedScopedRowsForTable(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::vector<CrudRowVersionRecord>* rows,
+    bool* used_segment) {
+  if (rows == nullptr) { return false; }
+  rows->clear();
+  if (used_segment != nullptr) { *used_segment = false; }
+  const std::string path = ScopedRowStorePath(context, table_uuid);
+  if (!FileExistsAndNotEmpty(path)) {
+    return true;
+  }
+  if (used_segment != nullptr) { *used_segment = true; }
+  std::error_code ignored;
+  const auto file_size = std::filesystem::file_size(path, ignored);
+  if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
+    return false;
+  }
+  {
+    const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
+    const auto cached = ScopedDecodedRowCache().find(path);
+    if (cached != ScopedDecodedRowCache().end() &&
+        cached->second.file_size == file_size) {
+      *rows = cached->second.rows;
+      return true;
+    }
+  }
+
+  std::vector<CrudRowVersionRecord> decoded_rows;
+  std::unordered_map<std::string, std::string> row_value_key_cache;
+  row_value_key_cache.reserve(64);
+  for (const auto& line : ReadLines(path)) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+        fields[1] != "ROW_VERSION") {
+      continue;
+    }
+    CrudRowVersionRecord row;
+    row.creator_tx = ParseU64(fields[2]);
+    row.event_sequence = ParseU64(fields[3]);
+    row.sequence = row.event_sequence;
+    row.table_uuid = fields[4];
+    row.row_uuid = fields[5];
+    row.version_uuid = fields[6];
+    row.deleted = fields[7] == "1";
+    row.previous_version_uuid = fields[8];
+    row.previous_sequence = ParseU64(fields[9]);
+    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
+    if (fields.size() >= 12) {
+      row.temporary_session_uuid = fields[11];
+    }
+    decoded_rows.push_back(std::move(row));
+  }
+  {
+    const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
+    ScopedDecodedRowCache()[path] = {file_size, decoded_rows};
+  }
+  *rows = std::move(decoded_rows);
+  return true;
+}
+
 std::string MakeMgaLargeValueLocator(const std::string& overflow_uuid,
                                      const std::string& content_hash,
                                      std::uint64_t total_bytes) {
@@ -2507,6 +3045,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     return result;
   }
   const auto savepoints = ParseSavepoints(context);
+  std::unordered_map<std::string, std::string> row_value_key_cache;
   for (const auto& line : ReadLines(RowStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
@@ -2521,7 +3060,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     row.deleted = fields[7] == "1";
     row.previous_version_uuid = fields[8];
     row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairs(fields[10]);
+    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
     if (fields.size() >= 12) {
       row.temporary_session_uuid = fields[11];
     }
@@ -2662,13 +3201,6 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
 
   bool row_segments_used = false;
   bool index_segments_used = false;
-  std::vector<std::string> row_lines;
-  if (include_row_versions) {
-    row_lines = ReadScopedRelationLinesForTables(context,
-                                                 table_scope,
-                                                 true,
-                                                 &row_segments_used);
-  }
   std::vector<std::string> index_lines;
   if (include_index_entries) {
     index_lines = ReadScopedRelationLinesForTables(context,
@@ -2676,40 +3208,42 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
                                                    false,
                                                    &index_segments_used);
   }
+
+  if (include_row_versions) {
+    for (const auto& scoped_table_uuid : table_scope) {
+      std::vector<CrudRowVersionRecord> decoded_rows;
+      bool used_segment = false;
+      if (!LoadDecodedScopedRowsForTable(context,
+                                         scoped_table_uuid,
+                                         &decoded_rows,
+                                         &used_segment)) {
+        result.diagnostic = MakeInvalidRequestDiagnostic(
+            "mga.row_store",
+            "scoped_row_segment_decode_failed");
+        return result;
+      }
+      row_segments_used = row_segments_used || used_segment;
+      result.row_versions_scanned +=
+          static_cast<std::uint64_t>(decoded_rows.size());
+      for (auto& row : decoded_rows) {
+        if (table_scope.count(row.table_uuid) == 0 ||
+            retired_tables.count(row.table_uuid) != 0) {
+          continue;
+        }
+        if (RowEventRolledBackBySavepoint(savepoints,
+                                          row.creator_tx,
+                                          row.event_sequence)) {
+          continue;
+        }
+        result.state.max_row_event_sequence =
+            std::max(result.state.max_row_event_sequence, row.event_sequence);
+        result.state.row_versions.push_back(std::move(row));
+        ++result.row_versions_retained;
+      }
+    }
+  }
   result.scoped_physical_segments_used = row_segments_used || index_segments_used;
   result.scoped_physical_segments_fallback = false;
-
-  for (const auto& line : row_lines) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
-    ++result.row_versions_scanned;
-    if (table_scope.count(fields[4]) == 0 || retired_tables.count(fields[4]) != 0) {
-      continue;
-    }
-    CrudRowVersionRecord row;
-    row.creator_tx = ParseU64(fields[2]);
-    row.event_sequence = ParseU64(fields[3]);
-    row.sequence = row.event_sequence;
-    row.table_uuid = fields[4];
-    row.row_uuid = fields[5];
-    row.version_uuid = fields[6];
-    row.deleted = fields[7] == "1";
-    row.previous_version_uuid = fields[8];
-    row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairs(fields[10]);
-    if (fields.size() >= 12) {
-      row.temporary_session_uuid = fields[11];
-    }
-    if (RowEventRolledBackBySavepoint(savepoints,
-                                      row.creator_tx,
-                                      row.event_sequence)) {
-      continue;
-    }
-    result.state.max_row_event_sequence =
-        std::max(result.state.max_row_event_sequence, row.event_sequence);
-    result.state.row_versions.push_back(std::move(row));
-    ++result.row_versions_retained;
-  }
 
   for (const auto& line : index_lines) {
     const auto fields = SplitTabs(line);
@@ -3483,6 +4017,10 @@ struct MgaRelationHotAppendContext::Impl {
   std::vector<std::string> allocator_lines;
   std::map<std::string, std::string> scoped_row_lines;
   std::map<std::string, std::string> scoped_index_lines;
+  std::map<std::string, std::vector<CrudRowVersionRecord>>
+      scoped_decoded_row_appends;
+  std::vector<PreparedIndexAppendJob> pending_prepared_index_jobs;
+  std::vector<std::future<PreparedIndexAppendJob>> pending_index_materialization_jobs;
   std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool row_dirty = false;
   bool index_dirty = false;
@@ -3536,25 +4074,63 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
   std::string row_buffer;
-  row_buffer.reserve(rows->size() * 192);
+  row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
+  const std::string single_table_uuid = rows->front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
+        return row.table_uuid == single_table_uuid;
+      });
+  std::string single_scoped_path;
+  std::string* single_scoped_buffer = nullptr;
+  std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
+  ScopedRelationSummaryDelta* single_summary_delta = nullptr;
   std::map<std::string, std::size_t> rows_per_table;
-  for (const auto& row : *rows) {
-    ++rows_per_table[row.table_uuid];
-  }
   std::map<std::string, std::string> scoped_row_path_by_table;
-  for (const auto& [table_uuid, row_count] : rows_per_table) {
-    const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + row_count * 192);
-    scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-    auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+  if (single_table_batch) {
+    single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
+    single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
+    single_scoped_buffer->reserve(
+        single_scoped_buffer->size() +
+        rows->size() * kHotAppendRowLineReserveBytes);
+    if (rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      single_decoded_appends =
+          &impl_->scoped_decoded_row_appends[single_scoped_path];
+      single_decoded_appends->reserve(single_decoded_appends->size() +
+                                      rows->size());
+    }
+    single_summary_delta = &impl_->scoped_row_summary_deltas[single_table_uuid];
+    auto& summary_delta = *single_summary_delta;
     if (summary_delta.row_version_count == 0 &&
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
-          !FileExistsAndNotEmpty(scoped_path) &&
+          !FileExistsAndNotEmpty(single_scoped_path) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
-                                                        table_uuid));
+                                                        single_table_uuid));
+    }
+  } else {
+    for (const auto& row : *rows) {
+      ++rows_per_table[row.table_uuid];
+    }
+    for (const auto& [table_uuid, row_count] : rows_per_table) {
+      const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
+      std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
+      scoped_buffer.reserve(scoped_buffer.size() +
+                            row_count * kHotAppendRowLineReserveBytes);
+      scoped_row_path_by_table.emplace(table_uuid, scoped_path);
+      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+        auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
+        decoded_appends.reserve(decoded_appends.size() + row_count);
+      }
+      auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+      if (summary_delta.row_version_count == 0 &&
+          summary_delta.tombstone_count == 0 &&
+          summary_delta.update_count == 0) {
+        summary_delta.first_scoped_write =
+            !FileExistsAndNotEmpty(scoped_path) &&
+            !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                          table_uuid));
+      }
     }
   }
   for (auto& writable : *rows) {
@@ -3563,14 +4139,28 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     const std::size_t line_start = row_buffer.size();
     AppendRowVersionStoreLine(&row_buffer, writable);
     row_buffer.push_back('\n');
-    const auto scoped_path = scoped_row_path_by_table.find(writable.table_uuid);
+    const std::string& scoped_path =
+        single_table_batch
+            ? single_scoped_path
+            : scoped_row_path_by_table.find(writable.table_uuid)->second;
     std::string& scoped_buffer =
-        impl_->scoped_row_lines[scoped_path == scoped_row_path_by_table.end()
-                                    ? ScopedRowStorePath(impl_->context, writable.table_uuid)
-                                    : scoped_path->second];
+        single_table_batch ? *single_scoped_buffer
+                           : impl_->scoped_row_lines[scoped_path];
     scoped_buffer.append(row_buffer.data() + line_start,
                          row_buffer.size() - line_start);
-    auto& summary_delta = impl_->scoped_row_summary_deltas[writable.table_uuid];
+    if (single_table_batch) {
+      if (single_decoded_appends != nullptr) {
+        single_decoded_appends->push_back(writable);
+      }
+    } else {
+      auto decoded = impl_->scoped_decoded_row_appends.find(scoped_path);
+      if (decoded != impl_->scoped_decoded_row_appends.end()) {
+        decoded->second.push_back(writable);
+      }
+    }
+    auto& summary_delta = single_table_batch
+                              ? *single_summary_delta
+                              : impl_->scoped_row_summary_deltas[writable.table_uuid];
     ++summary_delta.row_version_count;
     if (writable.deleted) {
       ++summary_delta.tombstone_count;
@@ -3589,6 +4179,162 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
                          static_cast<std::streamsize>(row_buffer.size()));
     if (!impl_->row_out) {
       return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
+    }
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  return AppendRowVersionsReadOnly(
+      rows,
+      static_cast<const std::vector<std::vector<std::pair<std::string, std::string>>>*>(
+          nullptr));
+}
+
+EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
+    const std::vector<CrudRowVersionRecord>& rows,
+    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+        value_batch) {
+  if (impl_->context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+  }
+  if (rows.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
+  }
+  if (value_batch != nullptr && value_batch->size() != rows.size()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "row_value_batch_shape_invalid");
+  }
+  if (!impl_->row_out.is_open()) {
+    impl_->row_out.open(RowStorePath(impl_->context), std::ios::app | std::ios::binary);
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
+    }
+    ++impl_->counters.row_stream_opens;
+  }
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context,
+      "row_versions",
+      RowStorePath(impl_->context),
+      static_cast<std::uint64_t>(rows.size()),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) { return reservation.diagnostic; }
+  ++impl_->counters.row_range_reservations;
+  std::uint64_t event_sequence = reservation.first;
+  std::string row_buffer;
+  row_buffer.reserve(rows.size() * kHotAppendRowLineReserveBytes);
+  const std::string single_table_uuid = rows.front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(rows.begin()), rows.end(), [&](const auto& row) {
+        return row.table_uuid == single_table_uuid;
+      });
+  std::string single_scoped_path;
+  std::string* single_scoped_buffer = nullptr;
+  std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
+  ScopedRelationSummaryDelta* single_summary_delta = nullptr;
+  std::map<std::string, std::size_t> rows_per_table;
+  std::map<std::string, std::string> scoped_row_path_by_table;
+  if (single_table_batch) {
+    single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
+    single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
+    single_scoped_buffer->reserve(
+        single_scoped_buffer->size() +
+        rows.size() * kHotAppendRowLineReserveBytes);
+    if (rows.size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      single_decoded_appends =
+          &impl_->scoped_decoded_row_appends[single_scoped_path];
+      single_decoded_appends->reserve(single_decoded_appends->size() +
+                                      rows.size());
+    }
+    single_summary_delta = &impl_->scoped_row_summary_deltas[single_table_uuid];
+    auto& summary_delta = *single_summary_delta;
+    if (summary_delta.row_version_count == 0 &&
+        summary_delta.tombstone_count == 0 &&
+        summary_delta.update_count == 0) {
+      summary_delta.first_scoped_write =
+          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                        single_table_uuid));
+    }
+  } else {
+    for (const auto& row : rows) {
+      ++rows_per_table[row.table_uuid];
+    }
+    for (const auto& [table_uuid, row_count] : rows_per_table) {
+      const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
+      std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
+      scoped_buffer.reserve(scoped_buffer.size() +
+                            row_count * kHotAppendRowLineReserveBytes);
+      scoped_row_path_by_table.emplace(table_uuid, scoped_path);
+      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+        auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
+        decoded_appends.reserve(decoded_appends.size() + row_count);
+      }
+      auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+      if (summary_delta.row_version_count == 0 &&
+          summary_delta.tombstone_count == 0 &&
+          summary_delta.update_count == 0) {
+        summary_delta.first_scoped_write =
+            !FileExistsAndNotEmpty(scoped_path) &&
+            !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                          table_uuid));
+      }
+    }
+  }
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    const auto& row = rows[index];
+    const auto& values =
+        value_batch == nullptr ? row.values : (*value_batch)[index];
+    const std::uint64_t row_event_sequence = event_sequence++;
+    const std::size_t line_start = row_buffer.size();
+    AppendRowVersionStoreLine(&row_buffer, row, row_event_sequence, values);
+    row_buffer.push_back('\n');
+    const std::string& scoped_path =
+        single_table_batch
+            ? single_scoped_path
+            : scoped_row_path_by_table.find(row.table_uuid)->second;
+    std::string& scoped_buffer =
+        single_table_batch ? *single_scoped_buffer
+                           : impl_->scoped_row_lines[scoped_path];
+    scoped_buffer.append(row_buffer.data() + line_start,
+                         row_buffer.size() - line_start);
+    std::vector<CrudRowVersionRecord>* decoded_appends = nullptr;
+    if (single_table_batch) {
+      decoded_appends = single_decoded_appends;
+    } else {
+      auto decoded = impl_->scoped_decoded_row_appends.find(scoped_path);
+      if (decoded != impl_->scoped_decoded_row_appends.end()) {
+        decoded_appends = &decoded->second;
+      }
+    }
+    if (decoded_appends != nullptr) {
+      CrudRowVersionRecord cache_row = row;
+      cache_row.event_sequence = row_event_sequence;
+      cache_row.sequence = row_event_sequence;
+      cache_row.values = values;
+      decoded_appends->push_back(std::move(cache_row));
+    }
+    auto& summary_delta =
+        single_table_batch ? *single_summary_delta
+                           : impl_->scoped_row_summary_deltas[row.table_uuid];
+    ++summary_delta.row_version_count;
+    if (row.deleted) {
+      ++summary_delta.tombstone_count;
+    }
+    if (!row.previous_version_uuid.empty()) {
+      ++summary_delta.update_count;
+    }
+    impl_->row_dirty = true;
+    ++impl_->counters.row_versions_appended;
+  }
+  if (!row_buffer.empty()) {
+    impl_->row_out.write(row_buffer.data(),
+                         static_cast<std::streamsize>(row_buffer.size()));
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "row_version_append_failed");
     }
   }
   return OkDiagnostic();
@@ -3659,7 +4405,10 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "scoped_relation_summary_update_failed");
   }
+  UpdateScopedDecodedRowCacheAfterAppend(impl_->scoped_decoded_row_appends,
+                                         impl_->scoped_row_lines);
   impl_->scoped_row_lines.clear();
+  impl_->scoped_decoded_row_appends.clear();
   impl_->scoped_row_summary_deltas.clear();
   return OkDiagnostic();
 }
@@ -3669,88 +4418,38 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
-  struct IndexedRowPlan {
-    const MgaIndexEntryRowInput* row = nullptr;
-    std::vector<std::string> keys;
-    std::string payload;
-  };
-  struct IndexedBatchPlan {
-    const MgaIndexEntryAppendBatch* batch = nullptr;
-    std::string table_uuid;
-    std::vector<IndexedRowPlan> rows;
-  };
-  std::uint64_t entry_count = 0;
-  std::vector<IndexedBatchPlan> planned_batches;
-  planned_batches.reserve(batches.size());
-  std::map<std::string, std::size_t> index_entries_per_table;
+  const bool inline_materialization = batches.size() <= 1;
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
-    IndexedBatchPlan planned_batch;
-    planned_batch.batch = &batch;
-    planned_batch.table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    planned_batch.rows.reserve(batch.rows.size());
-    for (const auto& row : batch.rows) {
-      IndexedRowPlan planned_row;
-      planned_row.row = &row;
-      planned_row.keys = CrudIndexKeysForValues(batch.index, row.values);
-      if (planned_row.keys.empty()) { continue; }
-      planned_row.payload = CrudFieldValue(row.values, batch.index.column_name);
-      entry_count += static_cast<std::uint64_t>(planned_row.keys.size());
-      index_entries_per_table[planned_batch.table_uuid] += planned_row.keys.size();
-      planned_batch.rows.push_back(std::move(planned_row));
-    }
-    if (!planned_batch.rows.empty()) {
-      planned_batches.push_back(std::move(planned_batch));
-    }
-  }
-  if (entry_count == 0) {
-    return OkDiagnostic();
-  }
-  const auto reservation = ReserveEventSequenceRange(
-      impl_->context,
-      "index_entries",
-      IndexStorePath(impl_->context),
-      entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); },
-      &impl_->allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  ++impl_->counters.index_range_reservations;
-  std::uint64_t event_sequence = reservation.first;
-  std::map<std::string, std::string> scoped_index_path_by_table;
-  for (const auto& [table_uuid, table_entry_count] : index_entries_per_table) {
-    const std::string scoped_path = ScopedIndexStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + table_entry_count * 192);
-    scoped_index_path_by_table.emplace(table_uuid, scoped_path);
-  }
-  for (const auto& planned_batch : planned_batches) {
-    const auto* batch = planned_batch.batch;
-    if (batch == nullptr) { continue; }
-    const auto scoped_path =
-        scoped_index_path_by_table.find(planned_batch.table_uuid);
-    for (const auto& planned_row : planned_batch.rows) {
-      if (planned_row.row == nullptr) { continue; }
-      for (const auto& key : planned_row.keys) {
-        std::string& scoped_buffer =
-            impl_->scoped_index_lines[scoped_path == scoped_index_path_by_table.end()
-                                          ? ScopedIndexStorePath(impl_->context,
-                                                                 planned_batch.table_uuid)
-                                          : scoped_path->second];
-        AppendIndexEntryStoreLine(&scoped_buffer,
-                                  impl_->context.local_transaction_id,
-                                  event_sequence++,
-                                  batch->index.index_uuid,
-                                  planned_batch.table_uuid,
-                                  batch->index.column_name,
-                                  batch->index.family,
-                                  "exact",
-                                  key,
-                                  planned_row.payload,
-                                  planned_row.row->row_uuid,
-                                  planned_row.row->version_uuid);
-        ++impl_->counters.index_entries_appended;
+    try {
+      ++impl_->counters.index_materialization_jobs_queued;
+      if (inline_materialization) {
+        PreparedIndexAppendJob job =
+            BuildPreparedIndexAppendJob(batch);
+        if (!job.ok) { return job.diagnostic; }
+        impl_->pending_prepared_index_jobs.push_back(std::move(job));
+        ++impl_->counters.index_materialization_inline_jobs;
+      } else {
+        std::vector<MgaIndexEntryAppendBatch> job_batches;
+        job_batches.push_back(batch);
+        impl_->pending_index_materialization_jobs.push_back(
+            std::async(std::launch::async,
+                       [job_batches = std::move(job_batches)]() mutable {
+                         return BuildPreparedIndexAppendJob(std::move(job_batches));
+                       }));
+        impl_->counters.index_materialization_worker_count =
+            std::max<std::uint64_t>(
+                impl_->counters.index_materialization_worker_count,
+                static_cast<std::uint64_t>(
+                    impl_->pending_index_materialization_jobs.size()));
       }
+    } catch (const std::exception& ex) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          std::string("index_materialization_enqueue_failed:") +
+                                              ex.what());
+    } catch (...) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "index_materialization_enqueue_failed");
     }
   }
   return OkDiagnostic();
@@ -3761,50 +4460,44 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
-  std::uint64_t entry_count = 0;
-  for (const auto& batch : batches) {
-    entry_count += static_cast<std::uint64_t>(batch.entries.size());
-  }
-  if (entry_count == 0) {
-    return OkDiagnostic();
-  }
-  const auto reservation = ReserveEventSequenceRange(
-      impl_->context,
-      "index_entries",
-      IndexStorePath(impl_->context),
-      entry_count,
-      [this]() { return ScanNextIndexEventSequence(impl_->context); },
-      &impl_->allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  ++impl_->counters.index_range_reservations;
-  std::uint64_t event_sequence = reservation.first;
-  std::map<std::string, std::size_t> exact_entries_per_table;
-  for (const auto& batch : batches) {
-    if (batch.entries.empty()) { continue; }
+  if (batches.size() == 1 && impl_->pending_prepared_index_jobs.empty() &&
+      impl_->pending_index_materialization_jobs.empty() &&
+      ExactIndexBatchAlreadyInAppendOrder(batches.front())) {
+    const auto& batch = batches.front();
+    if (batch.entries.empty()) {
+      return OkDiagnostic();
+    }
     const std::string table_uuid =
         batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    exact_entries_per_table[table_uuid] += batch.entries.size();
-  }
-  std::map<std::string, std::string> scoped_index_path_by_table;
-  for (const auto& [table_uuid, table_entry_count] : exact_entries_per_table) {
-    const std::string scoped_path = ScopedIndexStorePath(impl_->context, table_uuid);
-    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() + table_entry_count * 192);
-    scoped_index_path_by_table.emplace(table_uuid, scoped_path);
-  }
-  for (const auto& batch : batches) {
-    if (batch.entries.empty()) { continue; }
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
-    const auto scoped_path = scoped_index_path_by_table.find(table_uuid);
+    if (table_uuid.empty() || batch.index.index_uuid.empty()) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "exact_index_entry_invalid");
+    }
     for (const auto& entry : batch.entries) {
-      if (entry.encoded_key.empty() || entry.row_uuid.empty() || entry.version_uuid.empty()) {
-        return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
+      if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
+          entry.version_uuid.empty()) {
+        return MakeInvalidRequestDiagnostic("mga.index_store",
+                                            "exact_index_entry_invalid");
       }
-      std::string& scoped_buffer =
-          impl_->scoped_index_lines[scoped_path == scoped_index_path_by_table.end()
-                                        ? ScopedIndexStorePath(impl_->context, table_uuid)
-                                        : scoped_path->second];
+    }
+
+    const auto reservation = ReserveEventSequenceRange(
+        impl_->context,
+        "index_entries",
+        IndexStorePath(impl_->context),
+        static_cast<std::uint64_t>(batch.entries.size()),
+        [this]() { return ScanNextIndexEventSequence(impl_->context); },
+        &impl_->allocator_lines);
+    if (!reservation.ok) { return reservation.diagnostic; }
+    ++impl_->counters.index_range_reservations;
+
+    const std::string scoped_path = ScopedIndexStorePath(impl_->context,
+                                                        table_uuid);
+    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
+    scoped_buffer.reserve(scoped_buffer.size() +
+                          batch.entries.size() * kHotAppendIndexLineReserveBytes);
+    std::uint64_t event_sequence = reservation.first;
+    for (const auto& entry : batch.entries) {
       AppendIndexEntryStoreLine(&scoped_buffer,
                                 impl_->context.local_transaction_id,
                                 event_sequence++,
@@ -3817,13 +4510,192 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
                                 entry.payload_value,
                                 entry.row_uuid,
                                 entry.version_uuid);
-      ++impl_->counters.index_entries_appended;
+    }
+
+    ++impl_->counters.index_materialization_jobs_queued;
+    ++impl_->counters.index_materialization_jobs_completed;
+    ++impl_->counters.index_materialization_inline_jobs;
+    impl_->counters.index_materialized_entries +=
+        static_cast<std::uint64_t>(batch.entries.size());
+    impl_->counters.index_entries_appended +=
+        static_cast<std::uint64_t>(batch.entries.size());
+    return OkDiagnostic();
+  }
+  const bool inline_materialization = batches.size() <= 1;
+  for (const auto& batch : batches) {
+    if (batch.entries.empty()) { continue; }
+    for (const auto& entry : batch.entries) {
+      if (entry.encoded_key.empty() || entry.row_uuid.empty() || entry.version_uuid.empty()) {
+        return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
+      }
+    }
+    try {
+      ++impl_->counters.index_materialization_jobs_queued;
+      if (inline_materialization) {
+        PreparedIndexAppendJob job =
+            BuildPreparedExactIndexAppendJob(batch);
+        if (!job.ok) { return job.diagnostic; }
+        impl_->pending_prepared_index_jobs.push_back(std::move(job));
+        ++impl_->counters.index_materialization_inline_jobs;
+      } else {
+        std::vector<MgaExactIndexEntryAppendBatch> job_batches;
+        job_batches.push_back(batch);
+        impl_->pending_index_materialization_jobs.push_back(
+            std::async(std::launch::async,
+                       [job_batches = std::move(job_batches)]() mutable {
+                         return BuildPreparedExactIndexAppendJob(std::move(job_batches));
+                       }));
+        impl_->counters.index_materialization_worker_count =
+            std::max<std::uint64_t>(
+                impl_->counters.index_materialization_worker_count,
+                static_cast<std::uint64_t>(
+                    impl_->pending_index_materialization_jobs.size()));
+      }
+    } catch (const std::exception& ex) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          std::string("exact_index_materialization_enqueue_failed:") +
+                                              ex.what());
+    } catch (...) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "exact_index_materialization_enqueue_failed");
     }
   }
   return OkDiagnostic();
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
+  if (!impl_->pending_prepared_index_jobs.empty() ||
+      !impl_->pending_index_materialization_jobs.empty()) {
+    std::vector<PreparedIndexAppendJob> prepared_jobs;
+    prepared_jobs.reserve(impl_->pending_prepared_index_jobs.size() +
+                          impl_->pending_index_materialization_jobs.size());
+    std::uint64_t entry_count = 0;
+    for (auto& job : impl_->pending_prepared_index_jobs) {
+      ++impl_->counters.index_materialization_jobs_completed;
+      if (!job.ok) {
+        impl_->pending_prepared_index_jobs.clear();
+        impl_->pending_index_materialization_jobs.clear();
+        return job.diagnostic;
+      }
+      entry_count += static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialized_entries +=
+          static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialization_sort_batches +=
+          job.sorted_batch_count;
+      prepared_jobs.push_back(std::move(job));
+    }
+    impl_->pending_prepared_index_jobs.clear();
+    for (auto& future : impl_->pending_index_materialization_jobs) {
+      PreparedIndexAppendJob job;
+      try {
+        job = future.get();
+      } catch (const std::exception& ex) {
+        impl_->pending_prepared_index_jobs.clear();
+        impl_->pending_index_materialization_jobs.clear();
+        return MakeInvalidRequestDiagnostic("mga.index_store",
+                                            std::string("index_materialization_worker_failed:") +
+                                                ex.what());
+      } catch (...) {
+        impl_->pending_prepared_index_jobs.clear();
+        impl_->pending_index_materialization_jobs.clear();
+        return MakeInvalidRequestDiagnostic("mga.index_store",
+                                            "index_materialization_worker_failed");
+      }
+      ++impl_->counters.index_materialization_jobs_completed;
+      if (!job.ok) {
+        impl_->pending_prepared_index_jobs.clear();
+        impl_->pending_index_materialization_jobs.clear();
+        return job.diagnostic;
+      }
+      entry_count += static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialized_entries +=
+          static_cast<std::uint64_t>(job.entries.size());
+      impl_->counters.index_materialization_sort_batches +=
+          job.sorted_batch_count;
+      prepared_jobs.push_back(std::move(job));
+    }
+    impl_->pending_index_materialization_jobs.clear();
+
+    if (entry_count != 0) {
+      const auto reservation = ReserveEventSequenceRange(
+          impl_->context,
+          "index_entries",
+          IndexStorePath(impl_->context),
+          entry_count,
+          [this]() { return ScanNextIndexEventSequence(impl_->context); },
+          &impl_->allocator_lines);
+      if (!reservation.ok) { return reservation.diagnostic; }
+      ++impl_->counters.index_range_reservations;
+
+      std::vector<std::future<PreparedIndexLineBufferJob>> line_futures;
+      line_futures.reserve(prepared_jobs.size());
+      std::uint64_t event_sequence = reservation.first;
+      for (auto& job : prepared_jobs) {
+        if (job.entries.empty()) { continue; }
+        const std::uint64_t first_sequence = event_sequence;
+        event_sequence += static_cast<std::uint64_t>(job.entries.size());
+        if (prepared_jobs.size() == 1) {
+          PreparedIndexLineBufferJob buffer_job =
+              BuildPreparedIndexLineBuffers(impl_->context,
+                                            std::move(job.entries),
+                                            first_sequence);
+          if (!buffer_job.ok) {
+            return MakeInvalidRequestDiagnostic("mga.index_store",
+                                                "index_line_buffer_worker_refused");
+          }
+          for (auto& [path, buffer] : buffer_job.scoped_lines) {
+            impl_->scoped_index_lines[path].append(buffer);
+          }
+        } else {
+          try {
+            line_futures.push_back(
+                std::async(std::launch::async,
+                           [context = impl_->context,
+                            entries = std::move(job.entries),
+                            first_sequence]() mutable {
+                             return BuildPreparedIndexLineBuffers(context,
+                                                                  std::move(entries),
+                                                                  first_sequence);
+                           }));
+          } catch (const std::exception& ex) {
+            return MakeInvalidRequestDiagnostic("mga.index_store",
+                                                std::string("index_line_buffer_enqueue_failed:") +
+                                                    ex.what());
+          } catch (...) {
+            return MakeInvalidRequestDiagnostic("mga.index_store",
+                                                "index_line_buffer_enqueue_failed");
+          }
+        }
+      }
+      impl_->counters.index_materialization_worker_count =
+          std::max<std::uint64_t>(
+              impl_->counters.index_materialization_worker_count,
+              static_cast<std::uint64_t>(line_futures.size()));
+
+      for (auto& future : line_futures) {
+        PreparedIndexLineBufferJob buffer_job;
+        try {
+          buffer_job = future.get();
+        } catch (const std::exception& ex) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              std::string("index_line_buffer_worker_failed:") +
+                                                  ex.what());
+        } catch (...) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              "index_line_buffer_worker_failed");
+        }
+        if (!buffer_job.ok) {
+          return MakeInvalidRequestDiagnostic("mga.index_store",
+                                              "index_line_buffer_worker_refused");
+        }
+        for (auto& [path, buffer] : buffer_job.scoped_lines) {
+          impl_->scoped_index_lines[path].append(buffer);
+        }
+      }
+      impl_->counters.index_entries_appended += entry_count;
+      impl_->index_dirty = true;
+    }
+  }
   if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
                                                  &impl_->allocator_lines,
                                                  &impl_->counters)) {

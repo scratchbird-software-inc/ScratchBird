@@ -324,31 +324,45 @@ void DmlIngestionPipeline::StartWritersIfNeeded() {
 
 bool DmlIngestionPipeline::EnqueuePreallocation(
     DmlIngestionPreallocationItem item) {
+  std::vector<DmlIngestionPreallocationItem> items;
+  items.push_back(std::move(item));
+  return EnqueuePreallocationBatch(std::move(items));
+}
+
+bool DmlIngestionPipeline::EnqueuePreallocationBatch(
+    std::vector<DmlIngestionPreallocationItem> items) {
   if (!Start()) {
     return false;
+  }
+  if (items.empty()) {
+    return true;
   }
   std::unique_lock<std::mutex> lock(mutex_);
   if (!stats_.preallocator_enabled) {
     return true;
   }
-  PreworkQueueItem queued;
-  queued.logical_values = std::move(item.logical_values);
-  queued.encoded_bytes = item.encoded_bytes;
-  while (!prework_stop_requested_ && !stats_.failed &&
-         !PreworkFitsLocked(queued)) {
-    ++stats_.preallocation_wait_count;
-    prework_space_available_.wait(lock);
+  for (auto& item : items) {
+    PreworkQueueItem queued;
+    queued.logical_values = std::move(item.logical_values);
+    queued.borrowed_logical_values = item.borrowed_logical_values;
+    queued.encoded_bytes = item.encoded_bytes;
+    while (!prework_stop_requested_ && !stats_.failed &&
+           !PreworkFitsLocked(queued)) {
+      ++stats_.preallocation_wait_count;
+      prework_space_available_.wait(lock);
+    }
+    if (prework_stop_requested_ || stats_.failed) {
+      return false;
+    }
+    prework_queued_bytes_ += queued.encoded_bytes;
+    prework_queue_.push_back(std::move(queued));
+    ++stats_.preallocation_rows_enqueued;
+    stats_.preallocation_bytes_enqueued += item.encoded_bytes;
+    stats_.preallocation_max_depth =
+        std::max<EngineApiU64>(stats_.preallocation_max_depth,
+                               static_cast<EngineApiU64>(prework_queue_.size()));
+    prework_available_.notify_one();
   }
-  if (prework_stop_requested_ || stats_.failed) {
-    return false;
-  }
-  prework_queued_bytes_ += queued.encoded_bytes;
-  prework_queue_.push_back(std::move(queued));
-  ++stats_.preallocation_rows_enqueued;
-  stats_.preallocation_bytes_enqueued += item.encoded_bytes;
-  stats_.preallocation_max_depth =
-      std::max<EngineApiU64>(stats_.preallocation_max_depth,
-                             static_cast<EngineApiU64>(prework_queue_.size()));
   prework_available_.notify_one();
   return true;
 }
@@ -440,8 +454,8 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
   EngineApiU64 row_count = 0;
   EngineApiU64 source_hint_pages = 0;
   EngineApiU64 source_hint_bytes = 0;
-  std::vector<std::vector<std::pair<std::string, std::string>>> index_values;
-  index_values.reserve(work.size());
+  std::vector<const std::vector<std::pair<std::string, std::string>>*> index_value_refs;
+  index_value_refs.reserve(work.size());
   for (auto& item : work) {
     if (item.source_hint_pages != 0) {
       source_hint_pages += item.source_hint_pages;
@@ -449,7 +463,9 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
       continue;
     }
     ++row_count;
-    index_values.push_back(std::move(item.logical_values));
+    index_value_refs.push_back(item.borrowed_logical_values != nullptr
+                                   ? item.borrowed_logical_values
+                                   : &item.logical_values);
   }
 
   if (source_hint_pages != 0) {
@@ -498,14 +514,14 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
 
   DmlPageAllocationRuntimeResult index_allocation;
   EngineApiU64 index_elapsed = 0;
-  if (config_.state != nullptr && !index_values.empty()) {
+  if (config_.state != nullptr && !index_value_refs.empty()) {
     const auto index_start = PipelineClock::now();
-    index_allocation = ReserveDmlIndexPageAllocationRuntimeForRows(
+    index_allocation = ReserveDmlIndexPageAllocationRuntimeForRowRefs(
         config_.context,
         config_.option_envelopes,
         *config_.state,
         config_.target_table_uuid,
-        index_values,
+        index_value_refs,
         config_.lane_operation + ".ingestion_preallocator.index");
     index_elapsed = ElapsedMicros(index_start, PipelineClock::now());
     if (!index_allocation.ok()) {
@@ -522,7 +538,9 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
   }
   stats_.allocations.push_back(
       {std::move(index_allocation), "index", row_count, 0, index_elapsed});
-  if (stats_.allocations.back().allocation.active) {
+  if (stats_.allocations.back().allocation.active ||
+      !DmlIngestionOptionTruthy(config_.option_envelopes,
+                                "page_allocation.runtime")) {
     stats_.index_prework_rows += row_count;
   }
 }

@@ -192,43 +192,30 @@ BulkConstraintProofResult ProveUniqueConstraints(
     }
 
     std::vector<BulkConstraintProofKeyRef> incoming;
-    incoming.reserve(proof.incoming_keys.size());
-    for (const auto& ref : proof.incoming_keys) {
-      if (UnsafeLegacyKey(ref)) {
-        AddEvidence(&result, "bulk_unique_proof_unsafe_key_encoding", "SBK1");
-        AddEvidence(&result, "bulk_unique_proof_conflict_constraint",
-                    proof.constraint_uuid);
-        return Refuse(std::move(result),
-                      "SB-BULK-CONSTRAINT-UNIQUE-UNSAFE-KEY-ENCODING",
-                      "core.bulk_load.constraint.unique_unsafe_key_encoding",
-                      "bulk_unique_proof_unsafe_key_encoding",
-                      ConflictDetail("bulk_unique_proof_unsafe_key_encoding",
-                                     proof.constraint_uuid,
-                                     proof.index_uuid,
-                                     "SBK1"));
-      }
-      if (EffectiveKeyRef(ref, proof.nulls_distinct)) {
-        incoming.push_back(ref);
-      }
-    }
-    std::stable_sort(incoming.begin(), incoming.end(), RefLess);
-    result.unique_incoming_key_count += static_cast<u64>(incoming.size());
+    const std::vector<BulkConstraintProofKeyRef>* incoming_for_visible_probe =
+        &incoming;
     AddEvidence(&result, "bulk_unique_proof_null_policy",
                 proof.nulls_distinct ? "nulls_distinct"
                                      : "nulls_not_distinct");
+    AddEvidence(&result, "bulk_unique_proof_incoming_presorted",
+                proof.incoming_keys_presorted ? "true" : "false");
 
-    std::string previous_key;
-    bool have_previous = false;
-    u64 sorted_run_count = 0;
-    for (const auto& ref : incoming) {
-      if (!have_previous || !KeyEqual(ref.encoded_key, previous_key)) {
-        ++sorted_run_count;
-        previous_key = ref.encoded_key;
-        have_previous = true;
-        continue;
-      }
-      AddEvidence(&result, "bulk_unique_proof_conflict_key",
-                  ref.encoded_key);
+    auto unsafe_key_refused = [&](std::string key) {
+      AddEvidence(&result, "bulk_unique_proof_unsafe_key_encoding", "SBK1");
+      AddEvidence(&result, "bulk_unique_proof_conflict_constraint",
+                  proof.constraint_uuid);
+      return Refuse(std::move(result),
+                    "SB-BULK-CONSTRAINT-UNIQUE-UNSAFE-KEY-ENCODING",
+                    "core.bulk_load.constraint.unique_unsafe_key_encoding",
+                    "bulk_unique_proof_unsafe_key_encoding",
+                    ConflictDetail("bulk_unique_proof_unsafe_key_encoding",
+                                   proof.constraint_uuid,
+                                   proof.index_uuid,
+                                   std::move(key)));
+    };
+
+    auto duplicate_key_refused = [&](const std::string& key) {
+      AddEvidence(&result, "bulk_unique_proof_conflict_key", key);
       AddEvidence(&result, "bulk_unique_proof_conflict_constraint",
                   proof.constraint_uuid);
       AddEvidence(&result, "bulk_unique_proof_duplicate_run_count", "1");
@@ -240,7 +227,74 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     ConflictDetail("bulk_unique_proof_duplicate_in_batch",
                                    proof.constraint_uuid,
                                    proof.index_uuid,
-                                   ref.encoded_key));
+                                   key));
+    };
+
+    auto presorted_order_refused = [&](const std::string& key) {
+      AddEvidence(&result, "bulk_unique_proof_conflict_key", key);
+      AddEvidence(&result, "bulk_unique_proof_conflict_constraint",
+                  proof.constraint_uuid);
+      AddEvidence(&result, "bulk_unique_proof_presorted_order_valid",
+                  "false");
+      return Refuse(std::move(result),
+                    "SB-BULK-CONSTRAINT-UNIQUE-PRESORTED-ORDER-INVALID",
+                    "core.bulk_load.constraint.unique_presorted_order_invalid",
+                    "bulk_unique_proof_presorted_order_invalid",
+                    ConflictDetail("bulk_unique_proof_presorted_order_invalid",
+                                   proof.constraint_uuid,
+                                   proof.index_uuid,
+                                   key));
+    };
+
+    u64 sorted_run_count = 0;
+    if (proof.incoming_keys_presorted) {
+      const BulkConstraintProofKeyRef* previous = nullptr;
+      for (const auto& ref : proof.incoming_keys) {
+        if (UnsafeLegacyKey(ref)) {
+          return unsafe_key_refused("SBK1");
+        }
+        if (!EffectiveKeyRef(ref, proof.nulls_distinct)) {
+          continue;
+        }
+        ++result.unique_incoming_key_count;
+        if (previous != nullptr) {
+          if (KeyEqual(ref.encoded_key, previous->encoded_key)) {
+            return duplicate_key_refused(ref.encoded_key);
+          }
+          if (RefLess(ref, *previous)) {
+            return presorted_order_refused(ref.encoded_key);
+          }
+        }
+        ++sorted_run_count;
+        previous = &ref;
+      }
+      AddEvidence(&result, "bulk_unique_proof_presorted_order_valid",
+                  "true");
+      incoming_for_visible_probe = &proof.incoming_keys;
+    } else {
+      incoming.reserve(proof.incoming_keys.size());
+      for (const auto& ref : proof.incoming_keys) {
+        if (UnsafeLegacyKey(ref)) {
+          return unsafe_key_refused("SBK1");
+        }
+        if (EffectiveKeyRef(ref, proof.nulls_distinct)) {
+          incoming.push_back(ref);
+        }
+      }
+      std::stable_sort(incoming.begin(), incoming.end(), RefLess);
+      result.unique_incoming_key_count += static_cast<u64>(incoming.size());
+
+      std::string previous_key;
+      bool have_previous = false;
+      for (const auto& ref : incoming) {
+        if (!have_previous || !KeyEqual(ref.encoded_key, previous_key)) {
+          ++sorted_run_count;
+          previous_key = ref.encoded_key;
+          have_previous = true;
+          continue;
+        }
+        return duplicate_key_refused(ref.encoded_key);
+      }
     }
     AddEvidence(&result, "bulk_unique_proof_sorted_key_run_count",
                 std::to_string(sorted_run_count));
@@ -267,7 +321,10 @@ BulkConstraintProofResult ProveUniqueConstraints(
       }
     }
     result.unique_visible_key_count += static_cast<u64>(visible_keys.size());
-    for (const auto& ref : incoming) {
+    for (const auto& ref : *incoming_for_visible_probe) {
+      if (!EffectiveKeyRef(ref, proof.nulls_distinct)) {
+        continue;
+      }
       if (visible_keys.count(ref.encoded_key) == 0) {
         continue;
       }

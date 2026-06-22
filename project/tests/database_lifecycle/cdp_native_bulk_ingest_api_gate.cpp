@@ -116,6 +116,7 @@ struct Fixture {
   std::filesystem::path database_path;
   std::string database_uuid;
   std::string table_uuid;
+  std::string index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -150,6 +151,19 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
     if (item.evidence_kind == kind && item.evidence_id == id) return true;
   }
   return false;
+}
+
+api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& evidence,
+                              std::string_view kind) {
+  for (const auto& item : evidence) {
+    if (item.evidence_kind != kind) { continue; }
+    try {
+      return static_cast<api::EngineApiU64>(std::stoull(item.evidence_id));
+    } catch (...) {
+      return 0;
+    }
+  }
+  return 0;
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -229,6 +243,18 @@ api::CrudTableRecord Table(const Fixture& fixture,
   return table;
 }
 
+api::CrudIndexRecord Index(const Fixture& fixture,
+                           const api::EngineRequestContext& context) {
+  api::CrudIndexRecord index;
+  index.creator_tx = context.local_transaction_id;
+  index.index_uuid = fixture.index_uuid;
+  index.table_uuid = fixture.table_uuid;
+  index.column_name = "payload";
+  index.family = api::kCrudIndexFamilyBtree;
+  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  return index;
+}
+
 Fixture MakeFixture(std::string name, platform::u64 salt) {
   Fixture fixture;
   fixture.salt = salt;
@@ -254,10 +280,13 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
 
   fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
   fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-metadata");
   const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
   Require(!table.error, "CDP-040 table metadata append failed");
+  const auto index = api::AppendMgaIndexMetadata(metadata, Index(fixture, metadata));
+  Require(!index.error, "CDP-040 index metadata append failed");
   Commit(metadata);
   return fixture;
 }
@@ -518,6 +547,27 @@ void TestApiAndSblrAcceptedRoutes() {
           "CDP-040 direct physical lane evidence missing");
   Require(HasEvidence(api_result.evidence, "native_bulk_ingest_delegate", "none"),
           "CDP-040 native ingest delegated instead of using direct lane");
+  Require(EvidenceU64(api_result.evidence,
+                      "mga_hot_append_index_materialization_jobs_queued") >= 1,
+          "CDP-040 native ingest did not queue index materialization work");
+  Require(EvidenceU64(api_result.evidence,
+                      "mga_hot_append_index_materialization_jobs_completed") ==
+              EvidenceU64(api_result.evidence,
+                          "mga_hot_append_index_materialization_jobs_queued"),
+          "CDP-040 native ingest did not wait for queued index materialization");
+  Require(EvidenceU64(api_result.evidence,
+                      "mga_hot_append_index_materialized_entries") == 3,
+          "CDP-040 native ingest index materialized entry count mismatch");
+  Require(EvidenceU64(api_result.evidence,
+                      "mga_hot_append_index_materialization_inline_jobs") +
+              EvidenceU64(api_result.evidence,
+                          "mga_hot_append_index_materialization_worker_count") >=
+          1,
+          "CDP-040 native ingest did not materialize index work");
+  Require(HasEvidence(api_result.evidence,
+                      "mga_hot_append_index_materialization_commit_barrier",
+                      "flush_waited"),
+          "CDP-040 native ingest index materialization was not commit-barriered");
   Require(SelectCount(fixture, api_context) == 3,
           "CDP-040 API native ingest rows not visible in writer transaction");
   Commit(api_context);

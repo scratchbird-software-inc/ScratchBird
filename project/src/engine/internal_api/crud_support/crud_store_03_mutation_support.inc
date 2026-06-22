@@ -281,10 +281,16 @@ bool CrudPredicateTouchesOpaqueColumn(const CrudTableRecord& table, const Engine
 }
 
 bool CrudRowsTouchOpaqueColumn(const CrudTableRecord& table, std::span<const EngineRowValue> rows) {
+  std::set<std::string> opaque_columns;
+  for (const auto& [column_name, descriptor] : table.columns) {
+    if (CrudColumnDescriptorIsOpaqueRenderOnly(descriptor)) {
+      opaque_columns.insert(column_name);
+    }
+  }
   for (const auto& row : rows) {
     for (const auto& [field, typed] : row.fields) {
       if (CrudTypedValueIsOpaqueRenderOnly(typed) ||
-          CrudColumnDescriptorIsOpaqueRenderOnly(CrudColumnDescriptorForName(table.columns, field))) {
+          opaque_columns.count(field) != 0) {
         return true;
       }
     }

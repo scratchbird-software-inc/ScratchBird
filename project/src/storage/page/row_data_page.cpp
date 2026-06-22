@@ -253,14 +253,14 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   return result;
 }
 
-RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size) {
+RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size) {
   if (page_size <= kPageHeaderSerializedBytes + kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-SIZE-TOO-SMALL",
                         "storage.row_data_page.page_size_too_small",
                         std::to_string(page_size));
   }
 
-  RowDataPageBody body_with_ordinals = body;
+  RowDataPageBody body_with_ordinals = std::move(body);
   AssignDenseInternalRowOrdinals(&body_with_ordinals);
   if (!IsTypedEngineIdentity(body_with_ordinals.relation_uuid, UuidKind::object)) {
     return RowPageError("SB-ROW-DATA-PAGE-RELATION-UUID-REQUIRED",
@@ -406,6 +406,10 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
   StoreLittle32(result.serialized.data() + kOffsetBodyBytes, offset);
   StoreLittle64(result.serialized.data() + kOffsetBodyChecksum, ComputeRowDataPageChecksum(result.serialized));
   return result;
+}
+
+RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size) {
+  return BuildRowDataPageBodyOwned(body, page_size);
 }
 
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number) {
