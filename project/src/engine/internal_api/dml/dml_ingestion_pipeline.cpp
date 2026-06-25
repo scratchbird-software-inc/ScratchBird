@@ -98,6 +98,21 @@ void AddAllocationSummary(const DmlPageAllocationRuntimeResult& allocation,
   }
 }
 
+void AddPhaseMicros(std::vector<std::pair<std::string, EngineApiU64>>* phases,
+                    const std::string& phase,
+                    EngineApiU64 micros) {
+  if (phases == nullptr || phase.empty() || micros == 0) {
+    return;
+  }
+  for (auto& item : *phases) {
+    if (item.first == phase) {
+      item.second += micros;
+      return;
+    }
+  }
+  phases->push_back({phase, micros});
+}
+
 }  // namespace
 
 std::string DmlIngestionOptionValue(const std::vector<std::string>& options,
@@ -377,7 +392,10 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
   }
   std::lock_guard<std::mutex> lock(mutex_);
   if (!stats_.writer_enabled) {
+    const auto execute_start = PipelineClock::now();
     const auto diagnostic = task.execute();
+    stats_.write_inline_execute_us +=
+        ElapsedMicros(execute_start, PipelineClock::now());
     if (diagnostic.error) {
       stats_.failed = true;
       stats_.diagnostic = diagnostic;
@@ -390,9 +408,13 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
     write_drained_.notify_all();
     return true;
   }
-  write_queue_.push_back(std::move(task));
+  const EngineApiU64 row_count = task.row_count;
+  QueuedWriteTask queued;
+  queued.task = std::move(task);
+  queued.enqueued_at = PipelineClock::now();
+  write_queue_.push_back(std::move(queued));
   ++stats_.write_tasks_enqueued;
-  stats_.write_rows_enqueued += write_queue_.back().row_count;
+  stats_.write_rows_enqueued += row_count;
   stats_.write_queue_max_depth =
       std::max<EngineApiU64>(stats_.write_queue_max_depth,
                              static_cast<EngineApiU64>(write_queue_.size()));
@@ -416,10 +438,13 @@ DmlIngestionPipelineStats DmlIngestionPipeline::FencePreallocator() {
 
 DmlIngestionPipelineStats DmlIngestionPipeline::DrainWriters() {
   std::unique_lock<std::mutex> lock(mutex_);
+  const auto drain_start = PipelineClock::now();
   write_drained_.wait(lock, [&]() {
     return stats_.failed ||
            stats_.write_tasks_completed >= stats_.write_tasks_enqueued;
   });
+  stats_.write_drain_wait_us +=
+      ElapsedMicros(drain_start, PipelineClock::now());
   return stats_;
 }
 
@@ -547,7 +572,7 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
 
 void DmlIngestionPipeline::WriterLoop() {
   for (;;) {
-    DmlIngestionWriteTask task;
+    QueuedWriteTask queued;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       write_available_.wait(lock, [&]() {
@@ -557,16 +582,29 @@ void DmlIngestionPipeline::WriterLoop() {
       if ((write_queue_.empty() && write_stop_requested_) || stats_.failed) {
         return;
       }
-      task = std::move(write_queue_.front());
+      queued = std::move(write_queue_.front());
       write_queue_.pop_front();
     }
+    const EngineApiU64 queue_wait_us =
+        ElapsedMicros(queued.enqueued_at, PipelineClock::now());
     EngineApiDiagnostic diagnostic = OkDiagnostic();
+    const auto execute_start = PipelineClock::now();
     try {
-      diagnostic = task.execute();
+      diagnostic = queued.task.execute();
     } catch (...) {
       diagnostic = PipelineDiagnostic("write_task_exception");
     }
+    const EngineApiU64 execute_us =
+        ElapsedMicros(execute_start, PipelineClock::now());
     std::lock_guard<std::mutex> lock(mutex_);
+    stats_.write_queue_wait_us += queue_wait_us;
+    stats_.write_task_execute_us += execute_us;
+    AddPhaseMicros(&stats_.write_phase_queue_wait_us,
+                   queued.task.phase,
+                   queue_wait_us);
+    AddPhaseMicros(&stats_.write_phase_execute_us,
+                   queued.task.phase,
+                   execute_us);
     if (diagnostic.error) {
       stats_.failed = true;
       stats_.diagnostic = diagnostic;
@@ -579,7 +617,7 @@ void DmlIngestionPipeline::WriterLoop() {
       return;
     }
     ++stats_.write_tasks_completed;
-    stats_.write_rows_completed += task.row_count;
+    stats_.write_rows_completed += queued.task.row_count;
     write_drained_.notify_all();
   }
 }
@@ -676,6 +714,40 @@ void AddDmlIngestionPipelineEvidence(const DmlIngestionPipelineStats& stats,
                               std::to_string(stats.write_queue_max_depth)});
   result->evidence.push_back({"dml_ingestion_write_wait_count",
                               std::to_string(stats.write_wait_count)});
+  result->evidence.push_back({"dml_ingestion_write_queue_wait_us",
+                              std::to_string(stats.write_queue_wait_us)});
+  result->evidence.push_back({"dml_ingestion_write_task_execute_us",
+                              std::to_string(stats.write_task_execute_us)});
+  result->evidence.push_back({"dml_ingestion_write_inline_execute_us",
+                              std::to_string(stats.write_inline_execute_us)});
+  result->evidence.push_back({"dml_ingestion_write_drain_wait_us",
+                              std::to_string(stats.write_drain_wait_us)});
+  result->evidence.push_back({"direct_physical_bulk_trace.dml_ingestion_write_queue_wait_us",
+                              std::to_string(stats.write_queue_wait_us)});
+  result->evidence.push_back({"direct_physical_bulk_trace.dml_ingestion_write_task_execute_us",
+                              std::to_string(stats.write_task_execute_us)});
+  result->evidence.push_back({"direct_physical_bulk_trace.dml_ingestion_write_inline_execute_us",
+                              std::to_string(stats.write_inline_execute_us)});
+  result->evidence.push_back({"direct_physical_bulk_trace.dml_ingestion_write_drain_wait_us",
+                              std::to_string(stats.write_drain_wait_us)});
+  for (const auto& [phase, micros] : stats.write_phase_execute_us) {
+    result->evidence.push_back(
+        {"dml_ingestion_write_phase_execute_us." + phase,
+         std::to_string(micros)});
+    result->evidence.push_back(
+        {"direct_physical_bulk_trace.dml_ingestion_write_phase_execute_us." +
+             phase,
+         std::to_string(micros)});
+  }
+  for (const auto& [phase, micros] : stats.write_phase_queue_wait_us) {
+    result->evidence.push_back(
+        {"dml_ingestion_write_phase_queue_wait_us." + phase,
+         std::to_string(micros)});
+    result->evidence.push_back(
+        {"direct_physical_bulk_trace.dml_ingestion_write_phase_queue_wait_us." +
+             phase,
+         std::to_string(micros)});
+  }
   result->evidence.push_back({"dml_ingestion_return_before_flush", "false"});
   result->evidence.push_back({"dml_ingestion_commit_fence",
                               "statement_queue_drained_before_result"});

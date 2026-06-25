@@ -2725,6 +2725,7 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  out += "operand=text\tphysical_mga_cow\tfalse\n";
   if (copy.source_size_bytes != 0) {
     out += "operand=text\tcopy.source_size_bytes\t";
     out += std::to_string(copy.source_size_bytes);
@@ -2824,6 +2825,7 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   out += "checkpoint_mode=disabled\n";
   out += "duplicate_mode=error\n";
   out += "require_generated_row_uuid=true\n";
+  out += "operand=text\tphysical_mga_cow\tfalse\n";
   if (copy.source_size_bytes != 0) {
     out += "operand=text\tcopy.source_size_bytes\t";
     out += std::to_string(copy.source_size_bytes);

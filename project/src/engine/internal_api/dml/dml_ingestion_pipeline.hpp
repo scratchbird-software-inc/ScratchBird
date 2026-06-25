@@ -12,6 +12,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -85,6 +86,12 @@ struct DmlIngestionPipelineStats {
   EngineApiU64 write_rows_completed = 0;
   EngineApiU64 write_queue_max_depth = 0;
   EngineApiU64 write_wait_count = 0;
+  EngineApiU64 write_queue_wait_us = 0;
+  EngineApiU64 write_task_execute_us = 0;
+  EngineApiU64 write_inline_execute_us = 0;
+  EngineApiU64 write_drain_wait_us = 0;
+  std::vector<std::pair<std::string, EngineApiU64>> write_phase_execute_us;
+  std::vector<std::pair<std::string, EngineApiU64>> write_phase_queue_wait_us;
   bool failed = false;
   EngineApiDiagnostic diagnostic;
   std::vector<DmlIngestionAllocationRecord> allocations;
@@ -115,6 +122,10 @@ class DmlIngestionPipeline {
     EngineApiU64 source_hint_pages = 0;
     EngineApiU64 source_hint_bytes = 0;
   };
+  struct QueuedWriteTask {
+    DmlIngestionWriteTask task;
+    std::chrono::steady_clock::time_point enqueued_at;
+  };
 
   void StartPreallocatorIfNeeded();
   void StartWritersIfNeeded();
@@ -136,7 +147,7 @@ class DmlIngestionPipeline {
   std::condition_variable write_available_;
   std::condition_variable write_drained_;
   std::deque<PreworkQueueItem> prework_queue_;
-  std::deque<DmlIngestionWriteTask> write_queue_;
+  std::deque<QueuedWriteTask> write_queue_;
   EngineApiU64 prework_queued_bytes_ = 0;
   bool started_ = false;
   bool prework_stop_requested_ = false;
