@@ -4130,6 +4130,133 @@ bool DirectParseI64Text(std::string_view text, std::int64_t* out) {
   return parse.ec == std::errc{} && parse.ptr == end;
 }
 
+bool DirectReadBinarySignedI64(const EngineTypedValue& typed, std::int64_t* out) {
+  if (out == nullptr || typed.binary_value.size() != sizeof(std::int64_t)) {
+    return false;
+  }
+  std::uint64_t bits = 0;
+  for (std::size_t index = 0; index < sizeof(std::int64_t); ++index) {
+    bits |= static_cast<std::uint64_t>(typed.binary_value[index]) << (index * 8u);
+  }
+  std::memcpy(out, &bits, sizeof(bits));
+  return true;
+}
+
+bool DirectSignedI64FitsBytes(std::int64_t value, std::size_t bytes) {
+  switch (bytes) {
+    case 1:
+      return value >= std::numeric_limits<std::int8_t>::min() &&
+             value <= std::numeric_limits<std::int8_t>::max();
+    case 2:
+      return value >= std::numeric_limits<std::int16_t>::min() &&
+             value <= std::numeric_limits<std::int16_t>::max();
+    case 4:
+      return value >= std::numeric_limits<std::int32_t>::min() &&
+             value <= std::numeric_limits<std::int32_t>::max();
+    case 8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectUnsignedI64FitsBytes(std::int64_t value, std::size_t bytes) {
+  if (value < 0) {
+    return false;
+  }
+  const auto unsigned_value = static_cast<std::uint64_t>(value);
+  switch (bytes) {
+    case 1:
+      return unsigned_value <= std::numeric_limits<std::uint8_t>::max();
+    case 2:
+      return unsigned_value <= std::numeric_limits<std::uint16_t>::max();
+    case 4:
+      return unsigned_value <= std::numeric_limits<std::uint32_t>::max();
+    case 8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectTargetIsSignedInteger(dt::CanonicalTypeId target_type) {
+  switch (target_type) {
+    case dt::CanonicalTypeId::int8:
+    case dt::CanonicalTypeId::int16:
+    case dt::CanonicalTypeId::int32:
+    case dt::CanonicalTypeId::int64:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectTargetIsUnsignedInteger(dt::CanonicalTypeId target_type) {
+  switch (target_type) {
+    case dt::CanonicalTypeId::uint8:
+    case dt::CanonicalTypeId::uint16:
+    case dt::CanonicalTypeId::uint32:
+    case dt::CanonicalTypeId::uint64:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectBinaryIntegerPayloadCompatible(dt::CanonicalTypeId target_type,
+                                          const EngineTypedValue& typed,
+                                          std::size_t inline_bytes) {
+  if (typed.binary_value.empty()) {
+    return false;
+  }
+  if (inline_bytes != 0 && typed.binary_value.size() == inline_bytes) {
+    return true;
+  }
+  std::int64_t parsed = 0;
+  if (!DirectReadBinarySignedI64(typed, &parsed)) {
+    return false;
+  }
+  if (DirectTargetIsSignedInteger(target_type)) {
+    return DirectSignedI64FitsBytes(parsed, inline_bytes);
+  }
+  if (DirectTargetIsUnsignedInteger(target_type)) {
+    return DirectUnsignedI64FitsBytes(parsed, inline_bytes);
+  }
+  return false;
+}
+
+bool DirectPackBinaryIntegerPayload(dt::CanonicalTypeId target_type,
+                                    const EngineTypedValue& typed,
+                                    std::size_t inline_bytes,
+                                    std::vector<scratchbird::core::platform::byte>* out) {
+  if (out == nullptr || !DirectBinaryIntegerPayloadCompatible(target_type,
+                                                              typed,
+                                                              inline_bytes)) {
+    return false;
+  }
+  if (inline_bytes != 0 && typed.binary_value.size() == inline_bytes) {
+    *out = typed.binary_value;
+    return true;
+  }
+  std::int64_t parsed = 0;
+  if (!DirectReadBinarySignedI64(typed, &parsed)) {
+    return false;
+  }
+  if (DirectTargetIsSignedInteger(target_type)) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &parsed, sizeof(parsed));
+    DirectAppendLittleUnsigned(out, bits, inline_bytes);
+    return true;
+  }
+  if (DirectTargetIsUnsignedInteger(target_type)) {
+    DirectAppendLittleUnsigned(out,
+                               static_cast<std::uint64_t>(parsed),
+                               inline_bytes);
+    return true;
+  }
+  return false;
+}
+
 bool DirectParseIntervalPayload(std::string_view text,
                                 std::vector<scratchbird::core::platform::byte>* out) {
   std::int64_t seconds = 0;
@@ -4403,6 +4530,9 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     *out = typed.binary_value;
     return true;
   }
+  if (DirectPackBinaryIntegerPayload(target_type, typed, inline_bytes, out)) {
+    return true;
+  }
   switch (target_type) {
     case dt::CanonicalTypeId::character:
       out->assign(typed.encoded_value.begin(), typed.encoded_value.end());
@@ -4460,6 +4590,15 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
   }
 }
 
+struct DirectFixedWidthPayloadValidationColumnPlan {
+  std::string column_name;
+  std::string canonical_type_name;
+  dt::CanonicalTypeId target_type = dt::CanonicalTypeId::unknown;
+  bool character_type = false;
+  bool inline_fixed = false;
+  std::size_t inline_bytes = 0;
+};
+
 scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
     std::uint16_t ordinal,
     const EngineTypedValue& typed,
@@ -4498,6 +4637,49 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValue(
   return cell;
 }
 
+scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan(
+    std::uint16_t ordinal,
+    const EngineTypedValue& typed,
+    const DirectFixedWidthPayloadValidationColumnPlan& column_plan) {
+  scratchbird::storage::page::RowDataCell cell;
+  cell.column_ordinal = ordinal;
+  if (typed.isSqlNull()) {
+    cell.value.type_id = dt::CanonicalTypeId::null_type;
+    cell.value.is_null = true;
+    return cell;
+  }
+  const dt::CanonicalTypeId target_type = column_plan.target_type;
+  if (target_type != dt::CanonicalTypeId::unknown &&
+      !column_plan.character_type) {
+    std::vector<scratchbird::core::platform::byte> payload;
+    if (column_plan.inline_fixed) {
+      if (DirectPackBinaryIntegerPayload(target_type,
+                                          typed,
+                                          column_plan.inline_bytes,
+                                          &payload) ||
+          DirectPackTypedPayload(target_type, typed, &payload)) {
+        cell.value.type_id = target_type;
+        cell.value.payload = std::move(payload);
+        return cell;
+      }
+      cell.value.type_id = target_type;
+      return cell;
+    }
+    cell.value.type_id = target_type;
+    if (!typed.binary_value.empty()) {
+      cell.value.payload = typed.binary_value;
+    } else {
+      cell.value.payload.assign(typed.encoded_value.begin(),
+                                typed.encoded_value.end());
+    }
+    return cell;
+  }
+  cell.value.type_id = dt::CanonicalTypeId::character;
+  cell.value.payload.assign(typed.encoded_value.begin(),
+                            typed.encoded_value.end());
+  return cell;
+}
+
 std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
     const std::vector<std::pair<std::string, std::string>>& values) {
   std::vector<scratchbird::storage::page::RowDataCell> cells;
@@ -4518,9 +4700,27 @@ struct DirectPhysicalTypedCells {
   std::map<dt::CanonicalTypeId, std::uint64_t> typed_cell_counts;
 };
 
+struct DirectFixedWidthPayloadValidationStats {
+  std::uint64_t rows_checked = 0;
+  std::uint64_t cells_seen = 0;
+  std::uint64_t null_cells = 0;
+  std::uint64_t unknown_type_skips = 0;
+  std::uint64_t character_type_skips = 0;
+  std::uint64_t non_fixed_type_skips = 0;
+  std::uint64_t binary_exact_hits = 0;
+  std::uint64_t binary_integer_downcast_hits = 0;
+  std::uint64_t binary_shape_hits = 0;
+  std::uint64_t text_pack_attempts = 0;
+  std::uint64_t text_pack_successes = 0;
+  std::uint64_t text_pack_failures = 0;
+  std::map<dt::CanonicalTypeId, std::uint64_t> cells_by_type;
+  std::map<dt::CanonicalTypeId, std::uint64_t> text_pack_attempts_by_type;
+};
+
 DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
     const EngineRowValue& input_row,
-    const InsertRowEncoderPlan& row_encoder_plan) {
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const std::vector<DirectFixedWidthPayloadValidationColumnPlan>* column_plan = nullptr) {
   DirectPhysicalTypedCells result;
   result.cells.reserve(input_row.fields.size());
   std::uint16_t ordinal = 1;
@@ -4532,8 +4732,14 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
             ? std::string_view(row_encoder_plan.columns[field_index].canonical_type_name)
             : std::string_view{};
     const dt::CanonicalTypeId target_type_id =
-        dt::CanonicalTypeIdFromStableName(std::string(target_type));
-    auto cell = DirectPhysicalCellFromTypedValue(ordinal++, typed, target_type);
+        column_plan != nullptr && field_index < column_plan->size()
+            ? (*column_plan)[field_index].target_type
+            : dt::CanonicalTypeIdFromStableName(std::string(target_type));
+    auto cell =
+        column_plan != nullptr && field_index < column_plan->size()
+            ? DirectPhysicalCellFromTypedValueWithPlan(
+                  ordinal++, typed, (*column_plan)[field_index])
+            : DirectPhysicalCellFromTypedValue(ordinal++, typed, target_type);
     if (cell.value.is_null) {
       ++result.null_cells;
     } else if (cell.value.type_id == dt::CanonicalTypeId::int64) {
@@ -4552,36 +4758,163 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
   return result;
 }
 
+std::vector<DirectFixedWidthPayloadValidationColumnPlan>
+BuildDirectFixedWidthPayloadValidationPlan(
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const EngineRowValue* first_row = nullptr) {
+  std::vector<DirectFixedWidthPayloadValidationColumnPlan> plan;
+  plan.reserve(row_encoder_plan.columns.size());
+  for (std::size_t index = 0; index < row_encoder_plan.columns.size(); ++index) {
+    const auto& column = row_encoder_plan.columns[index];
+    DirectFixedWidthPayloadValidationColumnPlan column_plan;
+    column_plan.column_name = column.column_name;
+    column_plan.canonical_type_name = column.canonical_type_name;
+    column_plan.target_type =
+        dt::CanonicalTypeIdFromStableName(column_plan.canonical_type_name);
+    if (column_plan.target_type == dt::CanonicalTypeId::unknown &&
+        first_row != nullptr &&
+        index < first_row->fields.size()) {
+      const std::string& input_type =
+          first_row->fields[index].second.descriptor.canonical_type_name;
+      const dt::CanonicalTypeId input_type_id =
+          dt::CanonicalTypeIdFromStableName(input_type);
+      if (input_type_id != dt::CanonicalTypeId::unknown) {
+        column_plan.target_type = input_type_id;
+        column_plan.canonical_type_name = input_type;
+      }
+    }
+    column_plan.character_type =
+        column_plan.target_type == dt::CanonicalTypeId::character;
+    if (column_plan.target_type != dt::CanonicalTypeId::unknown &&
+        !column_plan.character_type) {
+      const auto layout = dt::LookupDatatypeStorageLayout(column_plan.target_type);
+      if (layout.ok() &&
+          layout.layout.storage_class == dt::DatatypeStorageClass::inline_fixed) {
+        column_plan.inline_fixed = true;
+        column_plan.inline_bytes =
+            static_cast<std::size_t>(layout.layout.inline_bytes);
+      }
+    }
+    plan.push_back(std::move(column_plan));
+  }
+  return plan;
+}
+
 std::string DirectFixedWidthTypedPayloadFailure(
     const EngineRowValue& input_row,
-    const InsertRowEncoderPlan& row_encoder_plan) {
-  if (input_row.fields.size() != row_encoder_plan.columns.size()) {
+    const std::vector<DirectFixedWidthPayloadValidationColumnPlan>& plan,
+    DirectFixedWidthPayloadValidationStats* stats = nullptr) {
+  if (stats != nullptr) {
+    ++stats->rows_checked;
+  }
+  if (input_row.fields.size() != plan.size()) {
     return "typed_row_shape_mismatch";
   }
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
     if (typed.isSqlNull()) {
+      if (stats != nullptr) {
+        ++stats->null_cells;
+      }
       continue;
     }
-    const auto& column = row_encoder_plan.columns[field_index];
-    const dt::CanonicalTypeId target_type =
-        dt::CanonicalTypeIdFromStableName(column.canonical_type_name);
-    if (target_type == dt::CanonicalTypeId::unknown ||
-        target_type == dt::CanonicalTypeId::character) {
+    if (stats != nullptr) {
+      ++stats->cells_seen;
+    }
+    const auto& column = plan[field_index];
+    const dt::CanonicalTypeId target_type = column.target_type;
+    if (target_type == dt::CanonicalTypeId::unknown) {
+      if (stats != nullptr) {
+        ++stats->unknown_type_skips;
+      }
       continue;
     }
-    const auto layout = dt::LookupDatatypeStorageLayout(target_type);
-    if (!layout.ok() ||
-        layout.layout.storage_class != dt::DatatypeStorageClass::inline_fixed) {
+    if (stats != nullptr) {
+      ++stats->cells_by_type[target_type];
+    }
+    if (column.character_type) {
+      if (stats != nullptr) {
+        ++stats->character_type_skips;
+      }
       continue;
+    }
+    if (!column.inline_fixed) {
+      if (stats != nullptr) {
+        ++stats->non_fixed_type_skips;
+      }
+      continue;
+    }
+    const std::size_t inline_bytes = column.inline_bytes;
+    if (!typed.binary_value.empty() &&
+        inline_bytes != 0 &&
+        typed.binary_value.size() == inline_bytes) {
+      if (stats != nullptr) {
+        ++stats->binary_exact_hits;
+      }
+      continue;
+    }
+    if (DirectBinaryIntegerPayloadCompatible(target_type, typed, inline_bytes)) {
+      if (stats != nullptr) {
+        ++stats->binary_integer_downcast_hits;
+      }
+      continue;
+    }
+    if (!typed.binary_value.empty() &&
+        (inline_bytes == 0 || typed.binary_value.size() == inline_bytes)) {
+      if (stats != nullptr) {
+        ++stats->binary_shape_hits;
+      }
+      continue;
+    }
+    if (stats != nullptr) {
+      ++stats->text_pack_attempts;
+      ++stats->text_pack_attempts_by_type[target_type];
     }
     std::vector<scratchbird::core::platform::byte> payload;
     if (!DirectPackTypedPayload(target_type, typed, &payload)) {
+      if (stats != nullptr) {
+        ++stats->text_pack_failures;
+      }
       return "typed_fixed_payload_invalid:" + column.column_name + ":" +
              std::string(dt::CanonicalTypeName(target_type));
     }
+    if (stats != nullptr) {
+      ++stats->text_pack_successes;
+    }
   }
   return {};
+}
+
+void AddFixedWidthPayloadValidationEvidence(
+    const DirectFixedWidthPayloadValidationStats& stats,
+    DirectPhysicalBulkAppendResult* result) {
+  if (result == nullptr || stats.rows_checked == 0) {
+    return;
+  }
+  const auto add = [&](std::string key, std::uint64_t value) {
+    result->evidence.push_back(
+        {"direct_physical_bulk_trace.native_bulk_payload_validate_" +
+             std::move(key),
+         std::to_string(value)});
+  };
+  add("rows_checked", stats.rows_checked);
+  add("cells_seen", stats.cells_seen);
+  add("null_cells", stats.null_cells);
+  add("unknown_type_skips", stats.unknown_type_skips);
+  add("character_type_skips", stats.character_type_skips);
+  add("non_fixed_type_skips", stats.non_fixed_type_skips);
+  add("binary_exact_hits", stats.binary_exact_hits);
+  add("binary_integer_downcast_hits", stats.binary_integer_downcast_hits);
+  add("binary_shape_hits", stats.binary_shape_hits);
+  add("text_pack_attempts", stats.text_pack_attempts);
+  add("text_pack_successes", stats.text_pack_successes);
+  add("text_pack_failures", stats.text_pack_failures);
+  for (const auto& [type_id, count] : stats.cells_by_type) {
+    add("type_" + std::string(dt::CanonicalTypeName(type_id)), count);
+  }
+  for (const auto& [type_id, count] : stats.text_pack_attempts_by_type) {
+    add("text_pack_type_" + std::string(dt::CanonicalTypeName(type_id)), count);
+  }
 }
 
 struct DirectPhysicalMgaCowWriteResult {
@@ -4642,6 +4975,13 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
       row_encoder_plan->columns.size() == request.shared_row_field_order.size() &&
       DirectSharedFieldOrderMatchesEncoderOrder(request.shared_row_field_order,
                                                 *row_encoder_plan);
+  std::vector<DirectFixedWidthPayloadValidationColumnPlan> physical_cell_plan;
+  if (use_typed_input_rows && !request.borrowed_input_rows.empty()) {
+    physical_cell_plan =
+        BuildDirectFixedWidthPayloadValidationPlan(
+            *row_encoder_plan,
+            &request.borrowed_input_rows.front());
+  }
   std::uint64_t typed_int64_cells = 0;
   std::uint64_t typed_binary_cells = 0;
   std::uint64_t typed_null_cells = 0;
@@ -4673,7 +5013,8 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     if (use_typed_input_rows) {
       auto typed_cells =
           DirectPhysicalCellsFromTypedInputRow(request.borrowed_input_rows[index],
-                                              *row_encoder_plan);
+                                              *row_encoder_plan,
+                                              &physical_cell_plan);
       typed_int64_cells += typed_cells.int64_cells;
       typed_binary_cells += typed_cells.typed_binary_cells;
       typed_null_cells += typed_cells.null_cells;
@@ -6593,7 +6934,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto phase_start = DirectSteadyClock::now();
   auto phase_last = phase_start;
   std::vector<std::pair<std::string, EngineApiU64>> phase_micros;
-  phase_micros.reserve(26);
+  phase_micros.reserve(32);
   std::vector<EngineEvidenceReference> descriptor_trace;
   descriptor_trace.reserve(8);
   const auto mark_phase = [&](std::string phase) {
@@ -7054,11 +7395,26 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (request.lane_operation == "native_bulk" &&
       !request.borrowed_input_rows.empty() &&
       !batch_context.row_encoder_plan.columns.empty()) {
+    const auto fixed_width_payload_plan =
+        BuildDirectFixedWidthPayloadValidationPlan(
+            batch_context.row_encoder_plan,
+            &request.borrowed_input_rows.front());
+    const bool collect_fixed_width_payload_stats =
+        std::getenv("SCRATCHBIRD_DML_PHASE_TRACE_FILE") != nullptr;
+    DirectFixedWidthPayloadValidationStats fixed_width_payload_stats_storage;
+    DirectFixedWidthPayloadValidationStats* fixed_width_payload_stats =
+        collect_fixed_width_payload_stats ? &fixed_width_payload_stats_storage
+                                          : nullptr;
     for (const auto& input_row : request.borrowed_input_rows) {
       const std::string payload_failure =
           DirectFixedWidthTypedPayloadFailure(input_row,
-                                              batch_context.row_encoder_plan);
+                                              fixed_width_payload_plan,
+                                              fixed_width_payload_stats);
       if (!payload_failure.empty()) {
+        if (fixed_width_payload_stats != nullptr) {
+          AddFixedWidthPayloadValidationEvidence(*fixed_width_payload_stats,
+                                                 &result);
+        }
         return DirectBulkFailure(
             request,
             MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
@@ -7067,7 +7423,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             result.dml_summary);
       }
     }
+    if (fixed_width_payload_stats != nullptr) {
+      AddFixedWidthPayloadValidationEvidence(*fixed_width_payload_stats,
+                                             &result);
+    }
   }
+  mark_phase("native_bulk_payload_validate");
   if (!suppress_payload_rows) {
     returning_rows.reserve(direct_row_count);
   }
