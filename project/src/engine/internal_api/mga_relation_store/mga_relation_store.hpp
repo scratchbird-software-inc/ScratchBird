@@ -242,6 +242,7 @@ class MgaRelationHotAppendContext {
       const std::vector<std::vector<std::pair<std::string, std::string>>>*
           value_batch);
   EngineApiDiagnostic FlushRowVersions();
+  void SetDecodedRowCacheAutoWarm(bool enabled);
 
   EngineApiDiagnostic AppendIndexEntryBatches(
       const std::vector<MgaIndexEntryAppendBatch>& batches);

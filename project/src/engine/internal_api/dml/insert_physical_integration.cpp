@@ -8483,6 +8483,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 		          ? &logical_value_batch
 		          : nullptr;
   MgaRelationHotAppendContext hot_append(request.context);
+  const std::uint64_t decoded_cache_autowarm_max_rows =
+      DirectOptionU64(request, "mga.row_cache.autowarm_max_rows", 4096);
+  const bool decoded_cache_autowarm_enabled =
+      !(request.lane_operation == "native_bulk" &&
+        decoded_cache_autowarm_max_rows != 0 &&
+        staged_rows.size() > decoded_cache_autowarm_max_rows);
+  hot_append.SetDecodedRowCacheAutoWarm(decoded_cache_autowarm_enabled);
+  result.evidence.push_back(
+      {"mga_row_append_decoded_cache_autowarm",
+       decoded_cache_autowarm_enabled ? "enabled" : "disabled"});
+  result.evidence.push_back(
+      {"mga_row_append_decoded_cache_autowarm_max_rows",
+       std::to_string(decoded_cache_autowarm_max_rows)});
   std::vector<std::uint64_t> written_event_sequences;
   EngineApiU64 row_stream_append_us = 0;
   EngineApiU64 row_stream_flush_us = 0;
