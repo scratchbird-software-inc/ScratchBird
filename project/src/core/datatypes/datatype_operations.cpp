@@ -340,6 +340,82 @@ bool IsOpaqueRenderOnly(CanonicalTypeId type_id) {
   return type_id == CanonicalTypeId::opaque_extension;
 }
 
+bool DisplayAsMetadataSummary(CanonicalTypeId type_id) {
+  switch (type_id) {
+    case CanonicalTypeId::blob:
+    case CanonicalTypeId::binary_json_document:
+    case CanonicalTypeId::bson_document:
+    case CanonicalTypeId::raster:
+    case CanonicalTypeId::columnar_segment:
+    case CanonicalTypeId::aggregate_state:
+    case CanonicalTypeId::hll_sketch:
+    case CanonicalTypeId::bloom_filter:
+    case CanonicalTypeId::quantile_sketch:
+    case CanonicalTypeId::histogram_sketch:
+    case CanonicalTypeId::ranking_summary:
+    case CanonicalTypeId::vector_summary:
+    case CanonicalTypeId::lob_locator:
+    case CanonicalTypeId::external_file_locator:
+    case CanonicalTypeId::remote_object_locator:
+    case CanonicalTypeId::bridge_handle:
+    case CanonicalTypeId::cursor_handle:
+    case CanonicalTypeId::system_reference:
+    case CanonicalTypeId::opaque_extension:
+    case CanonicalTypeId::cursor:
+    case CanonicalTypeId::result_set:
+    case CanonicalTypeId::table_value:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DisplayAsStructuredText(CanonicalTypeId type_id) {
+  switch (type_id) {
+    case CanonicalTypeId::document:
+    case CanonicalTypeId::json_document:
+    case CanonicalTypeId::xml_document:
+    case CanonicalTypeId::hstore_document:
+    case CanonicalTypeId::object_document:
+    case CanonicalTypeId::flattened_object_document:
+    case CanonicalTypeId::set_value:
+    case CanonicalTypeId::array:
+    case CanonicalTypeId::list:
+    case CanonicalTypeId::map:
+    case CanonicalTypeId::row:
+    case CanonicalTypeId::composite:
+    case CanonicalTypeId::variant:
+    case CanonicalTypeId::range:
+    case CanonicalTypeId::multirange:
+    case CanonicalTypeId::token_stream:
+    case CanonicalTypeId::search_query:
+    case CanonicalTypeId::search_rank_feature:
+    case CanonicalTypeId::search_completion:
+    case CanonicalTypeId::search_percolator:
+    case CanonicalTypeId::geometry:
+    case CanonicalTypeId::geography:
+    case CanonicalTypeId::point:
+    case CanonicalTypeId::shape:
+    case CanonicalTypeId::vector:
+    case CanonicalTypeId::dense_vector:
+    case CanonicalTypeId::sparse_vector:
+    case CanonicalTypeId::binary_vector:
+    case CanonicalTypeId::quantized_vector:
+    case CanonicalTypeId::graph_node:
+    case CanonicalTypeId::graph_edge:
+    case CanonicalTypeId::graph_path:
+    case CanonicalTypeId::time_series_value:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string DisplayMetadataSummary(CanonicalTypeId type_id, std::size_t payload_size) {
+  return std::string("<") + CanonicalTypeName(type_id) + ":" +
+         std::to_string(payload_size) + " bytes>";
+}
+
 std::uint32_t IntegerBits(CanonicalTypeId type_id) {
   switch (type_id) {
     case CanonicalTypeId::int8:
@@ -2266,12 +2342,11 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
     result.display_value = "0x" + HexEncodeLower(request.value.encoded_value);
     return result;
   }
-  if (request.value.type_id == CanonicalTypeId::opaque_extension &&
-      request.redact_opaque_payload) {
+  if (DisplayAsMetadataSummary(request.value.type_id) &&
+      (request.redact_opaque_payload || request.value.type_id != CanonicalTypeId::opaque_extension)) {
     result.payload_redacted = true;
-    result.display_value = std::string("<opaque:") + result.canonical_type_name +
-                           ":" + std::to_string(request.value.encoded_value.size()) +
-                           " bytes>";
+    result.display_value =
+        DisplayMetadataSummary(request.value.type_id, request.value.encoded_value.size());
     return result;
   }
   if (request.export_literal && request.value.type_id == CanonicalTypeId::character) {
@@ -2285,6 +2360,10 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
     }
     quoted.push_back('\'');
     result.display_value = std::move(quoted);
+    return result;
+  }
+  if (DisplayAsStructuredText(request.value.type_id)) {
+    result.display_value = request.value.encoded_value;
     return result;
   }
   result.display_value = request.value.encoded_value;

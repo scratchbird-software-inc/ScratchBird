@@ -338,6 +338,61 @@ void TestExplicitDisplayBoundaryRendering() {
               rendered_opaque.display_value.find("secret") == std::string::npos,
           "MDF-014 opaque display boundary leaked payload");
 
+  const auto rendered_json = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::json_document, "{\"k\":1}")});
+  Require(rendered_json.ok() && rendered_json.explicit_display_boundary &&
+              !rendered_json.payload_redacted &&
+              rendered_json.display_value == "{\"k\":1}",
+          "MDF-014 JSON display boundary drifted");
+
+  const auto rendered_array = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::array, "[1,2,3]")});
+  Require(rendered_array.ok() && !rendered_array.payload_redacted &&
+              rendered_array.display_value == "[1,2,3]",
+          "MDF-014 array display boundary drifted");
+
+  const auto rendered_spatial = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::geometry, "POINT(1 2)")});
+  Require(rendered_spatial.ok() && !rendered_spatial.payload_redacted &&
+              rendered_spatial.display_value == "POINT(1 2)",
+          "MDF-014 spatial display boundary drifted");
+
+  const auto rendered_vector = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::dense_vector, "[0.1,0.2]")});
+  Require(rendered_vector.ok() && !rendered_vector.payload_redacted &&
+              rendered_vector.display_value == "[0.1,0.2]",
+          "MDF-014 vector display boundary drifted");
+
+  const auto rendered_binary_json = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::binary_json_document, "binary-json-payload")});
+  Require(rendered_binary_json.ok() && rendered_binary_json.payload_redacted &&
+              rendered_binary_json.display_value == "<binary_json_document:19 bytes>" &&
+              rendered_binary_json.display_value.find("binary-json-payload") ==
+                  std::string::npos,
+          "MDF-014 binary document display boundary leaked payload");
+
+  const auto rendered_sketch = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::bloom_filter, "sketch-payload")});
+  Require(rendered_sketch.ok() && rendered_sketch.payload_redacted &&
+              rendered_sketch.display_value == "<bloom_filter:14 bytes>" &&
+              rendered_sketch.display_value.find("sketch-payload") == std::string::npos,
+          "MDF-014 sketch display boundary leaked payload");
+
+  const auto rendered_locator = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::lob_locator, "locator-payload")});
+  Require(rendered_locator.ok() && rendered_locator.payload_redacted &&
+              rendered_locator.display_value == "<lob_locator:15 bytes>" &&
+              rendered_locator.display_value.find("locator-payload") == std::string::npos,
+          "MDF-014 locator display boundary leaked payload");
+
+  const auto rendered_result_set = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::result_set, "result-set-descriptor")});
+  Require(rendered_result_set.ok() && rendered_result_set.payload_redacted &&
+              rendered_result_set.display_value == "<result_set:21 bytes>" &&
+              rendered_result_set.display_value.find("result-set-descriptor") ==
+                  std::string::npos,
+          "MDF-014 result-set display boundary leaked payload");
+
   const auto unknown = dt::RenderDatatypeValueForDisplay(
       {Value(dt::CanonicalTypeId::unknown, "payload")});
   Require(!unknown.ok() &&
