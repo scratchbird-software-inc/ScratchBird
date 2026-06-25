@@ -13,6 +13,7 @@
 #include "dml/select_api.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "physical_mga_cow_store.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -45,6 +46,7 @@ namespace server = scratchbird::server;
 namespace sbps = scratchbird::server::sbps;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
+namespace dt = scratchbird::core::datatypes;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -757,6 +759,29 @@ api::EngineApiU64 SelectCount(const Fixture& fixture,
   return selected.visible_count;
 }
 
+platform::TypedUuid RelationUuid(const Fixture& fixture) {
+  const auto parsed =
+      uuid::ParseTypedUuid(platform::UuidKind::object, fixture.table_uuid);
+  Require(parsed.ok(), "CDP-040 table UUID parse failed");
+  return parsed.value;
+}
+
+db::PhysicalMgaCowReadResult ReadPhysicalPage(const Fixture& fixture,
+                                              platform::u64 page_number) {
+  db::PhysicalMgaCowReadRequest request;
+  request.database_path = fixture.database_path.string();
+  request.relation_uuid = RelationUuid(fixture);
+  request.page_number = page_number;
+  request.use_latest_committed_snapshot = true;
+  const auto read = db::ReadPhysicalMgaCowRows(request);
+  if (!read.ok()) {
+    std::cerr << read.diagnostic.diagnostic_code << ':'
+              << read.diagnostic.message_key << '\n';
+  }
+  Require(read.ok(), "CDP-040 physical typed row-page read failed");
+  return read;
+}
+
 sblr::SblrOperand Operand(std::string type, std::string name, std::string value) {
   sblr::SblrOperand operand;
   operand.type = std::move(type);
@@ -1282,6 +1307,31 @@ void TestTypedScalarRowPageStorage() {
   Require(SelectCount(fixture, context) == 2,
           "CDP-040 typed scalar rows were not visible in writer transaction");
   Commit(context);
+
+  const auto page = ReadPhysicalPage(fixture, 1024);
+  Require(page.visible_rows.size() == 2,
+          "CDP-040 typed scalar physical row-page visible count drifted");
+  std::map<dt::CanonicalTypeId, api::EngineApiU64> recovered_counts;
+  for (const auto& row : page.visible_rows) {
+    for (const auto& cell : row.cells) {
+      if (!cell.value.is_null &&
+          cell.value.type_id != dt::CanonicalTypeId::character) {
+        ++recovered_counts[cell.value.type_id];
+      }
+    }
+  }
+  Require(recovered_counts[dt::CanonicalTypeId::int64] == 2,
+          "CDP-040 recovered int64 row-page cells were not typed");
+  Require(recovered_counts[dt::CanonicalTypeId::int128] == 2,
+          "CDP-040 recovered int128 row-page cells were not typed");
+  Require(recovered_counts[dt::CanonicalTypeId::uint128] == 2,
+          "CDP-040 recovered uint128 row-page cells were not typed");
+  Require(recovered_counts[dt::CanonicalTypeId::real128] == 2,
+          "CDP-040 recovered real128 row-page cells were not typed");
+  Require(recovered_counts[dt::CanonicalTypeId::uuid] == 2,
+          "CDP-040 recovered UUID row-page cells were not typed");
+  Require(recovered_counts[dt::CanonicalTypeId::binary] == 2,
+          "CDP-040 recovered binary row-page cells were not typed");
 }
 
 void TestMalformedInlineFixedTypedValueRefuses() {
