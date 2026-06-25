@@ -751,6 +751,12 @@ struct DirectTypedIndexKeyStats {
   std::uint64_t sbkohex_keys = 0;
 };
 
+struct DirectStageSimpleIndexPrecomputePlan {
+  std::string index_uuid;
+  std::string column_name;
+  std::size_t ordinal = 0;
+};
+
 inline constexpr std::string_view kDirectSbkoHexPrefix = "SBKOHEX:";
 
 int DirectCompareUnsignedText(std::string_view left, std::string_view right) {
@@ -1801,6 +1807,78 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
   }
   DirectSortPrecomputedIndexEntries(&entries_by_index);
   return entries_by_index;
+}
+
+std::optional<std::size_t> DirectEncoderColumnOrdinal(
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const std::string& column_name) {
+  for (std::size_t ordinal = 0;
+       ordinal < row_encoder_plan.columns.size();
+       ++ordinal) {
+    if (row_encoder_plan.columns[ordinal].column_name == column_name) {
+      return ordinal;
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<DirectStageSimpleIndexPrecomputePlan>
+DirectBuildStageSimpleIndexPrecomputePlan(
+    const std::vector<CrudIndexRecord>& indexes,
+    const InsertRowEncoderPlan& row_encoder_plan) {
+  std::vector<DirectStageSimpleIndexPrecomputePlan> plans;
+  plans.reserve(indexes.size());
+  for (const auto& index : indexes) {
+    std::string column_name;
+    if (!DirectSimpleScalarIndexKeyColumn(index, &column_name)) {
+      plans.clear();
+      return plans;
+    }
+    const auto ordinal = DirectEncoderColumnOrdinal(row_encoder_plan, column_name);
+    if (!ordinal.has_value()) {
+      plans.clear();
+      return plans;
+    }
+    plans.push_back({index.index_uuid, std::move(column_name), *ordinal});
+  }
+  return plans;
+}
+
+void DirectReserveStageSimpleIndexEntries(
+    const std::vector<DirectStageSimpleIndexPrecomputePlan>& plans,
+    std::size_t row_count,
+    DirectPrecomputedIndexEntryMap* entries_by_index) {
+  if (entries_by_index == nullptr) {
+    return;
+  }
+  for (const auto& plan : plans) {
+    (*entries_by_index)[plan.index_uuid].reserve(row_count);
+  }
+}
+
+void DirectAppendStageSimpleIndexEntries(
+    const std::vector<DirectStageSimpleIndexPrecomputePlan>& plans,
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudRowVersionRecord& row,
+    std::uint64_t source_ordinal,
+    DirectPrecomputedIndexEntryMap* entries_by_index) {
+  if (entries_by_index == nullptr || plans.empty()) {
+    return;
+  }
+  for (const auto& plan : plans) {
+    if (plan.ordinal >= values.size()) {
+      continue;
+    }
+    const auto& field_value = values[plan.ordinal];
+    if (field_value.first != plan.column_name || field_value.second.empty()) {
+      continue;
+    }
+    (*entries_by_index)[plan.index_uuid].push_back({field_value.second,
+                                                    field_value.second,
+                                                    row.row_uuid,
+                                                    row.version_uuid,
+                                                    source_ordinal});
+  }
 }
 
 std::vector<MgaExactIndexEntryAppendBatch> DirectExactIndexAppendBatches(
@@ -7364,6 +7442,30 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       !has_check_validators;
   const bool can_stage_shared_values_externally =
       can_use_shared_row_stage_fast_path;
+  DirectPrecomputedIndexEntryMap direct_precomputed_index_entries;
+  DirectTypedIndexKeyStats direct_typed_index_key_stats;
+  const bool can_precompute_simple_indexes_during_stage =
+      direct_retail_exact_append_candidate &&
+      request.lane_operation == "native_bulk" &&
+      !generated_counter_direct_input &&
+      can_use_shared_row_stage_fast_path &&
+      DirectSharedFieldOrderMatchesEncoderOrder(request.shared_row_field_order,
+                                                batch_context.row_encoder_plan);
+  const std::vector<DirectStageSimpleIndexPrecomputePlan>
+      stage_simple_index_precompute_plans =
+          can_precompute_simple_indexes_during_stage
+              ? DirectBuildStageSimpleIndexPrecomputePlan(
+                    synchronous_indexes,
+                    batch_context.row_encoder_plan)
+              : std::vector<DirectStageSimpleIndexPrecomputePlan>{};
+  bool precompute_simple_indexes_during_stage =
+      can_precompute_simple_indexes_during_stage &&
+      stage_simple_index_precompute_plans.size() == synchronous_indexes.size();
+  if (precompute_simple_indexes_during_stage) {
+    DirectReserveStageSimpleIndexEntries(stage_simple_index_precompute_plans,
+                                         direct_row_count,
+                                         &direct_precomputed_index_entries);
+  }
   const bool rowset_default_markers_absent =
       DirectOptionTruthy(request, "sblr.rowset_default_markers_absent");
   const bool compact_typed_null_state_authoritative =
@@ -7801,6 +7903,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         } else {
           logical_value_batch.push_back(row_record.values);
         }
+        if (precompute_simple_indexes_during_stage) {
+          DirectAppendStageSimpleIndexEntries(
+              stage_simple_index_precompute_plans,
+              logical_value_batch.back(),
+              row_record,
+              static_cast<std::uint64_t>(row_ordinal),
+              &direct_precomputed_index_entries);
+        }
         add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
         DmlIngestionPreallocationItem preallocation_item;
         preallocation_item.borrowed_logical_values = &logical_value_batch.back();
@@ -8064,11 +8174,32 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     result.evidence.push_back({"native_bulk_value_batch_ownership",
                                "external_logical_batch"});
   }
+  if (precompute_simple_indexes_during_stage) {
+    for (const auto& plan : stage_simple_index_precompute_plans) {
+      const auto found = direct_precomputed_index_entries.find(plan.index_uuid);
+      if (found == direct_precomputed_index_entries.end() ||
+          found->second.size() != staged_rows.size()) {
+        direct_precomputed_index_entries.clear();
+        precompute_simple_indexes_during_stage = false;
+        break;
+      }
+    }
+    if (precompute_simple_indexes_during_stage) {
+      DirectSortPrecomputedIndexEntries(&direct_precomputed_index_entries);
+      result.evidence.push_back({"direct_index_key_stage_precompute",
+                                 "shared_rowset_simple_scalar"});
+      result.evidence.push_back(
+          {"direct_index_key_stage_precompute_indexes",
+           std::to_string(stage_simple_index_precompute_plans.size())});
+    }
+  }
 
   std::map<std::string, std::set<std::string>> append_index_key_cache;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
       append_index_entry_key_cache;
-	  if (index_entries_authoritative && append_index_cache_hit) {
+	  if (index_entries_authoritative &&
+	      append_index_cache_hit &&
+	      index_only_eligibility.row_version_count != 0) {
 	    DirectBuildAppendIndexConflictCaches(request.context,
 	                                         request.target_table.uuid.canonical,
 	                                         index_only_eligibility.row_version_count,
@@ -8080,8 +8211,6 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                              : nullptr);
   }
 
-  DirectPrecomputedIndexEntryMap direct_precomputed_index_entries;
-  DirectTypedIndexKeyStats direct_typed_index_key_stats;
   if (direct_retail_exact_append_candidate) {
     bool generated_counter_index_precomputed = false;
     if (generated_counter_direct_input) {
@@ -8095,6 +8224,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     if (generated_counter_index_precomputed) {
       result.evidence.push_back({"insert_select_generated_index_precompute",
                                  "counter_lexicographic"});
+    } else if (precompute_simple_indexes_during_stage) {
+      result.evidence.push_back({"direct_index_key_precompute_route",
+                                 "row_stage_shared_simple_scalar"});
     } else {
 		      const bool shared_typed_input_rows =
 		          !request.shared_row_field_order.empty() &&
