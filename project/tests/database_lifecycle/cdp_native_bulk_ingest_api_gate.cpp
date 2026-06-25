@@ -1078,6 +1078,28 @@ void TestNullAndCharacterRowPageStorage() {
   Require(SelectCount(fixture, context) == 1,
           "CDP-040 null/character row was not visible in writer transaction");
   Commit(context);
+
+  const auto page = ReadPhysicalPage(fixture, 1024);
+  Require(page.visible_rows.size() == 1,
+          "CDP-040 null/character physical row-page visible count drifted");
+  api::EngineApiU64 null_cells = 0;
+  api::EngineApiU64 character_cells = 0;
+  for (const auto& row : page.visible_rows) {
+    for (const auto& cell : row.cells) {
+      if (cell.value.is_null &&
+          cell.value.type_id == dt::CanonicalTypeId::null_type) {
+        ++null_cells;
+      }
+      if (!cell.value.is_null &&
+          cell.value.type_id == dt::CanonicalTypeId::character) {
+        ++character_cells;
+      }
+    }
+  }
+  Require(null_cells == 1,
+          "CDP-040 recovered null row-page cell was not typed null");
+  Require(character_cells == 1,
+          "CDP-040 recovered character row-page cell was not typed");
 }
 
 void TestTypedInt64IndexKeysUseBinaryOrder() {
@@ -1321,18 +1343,38 @@ void TestTypedScalarRowPageStorage() {
       }
     }
   }
-  Require(recovered_counts[dt::CanonicalTypeId::int64] == 2,
-          "CDP-040 recovered int64 row-page cells were not typed");
-  Require(recovered_counts[dt::CanonicalTypeId::int128] == 2,
-          "CDP-040 recovered int128 row-page cells were not typed");
-  Require(recovered_counts[dt::CanonicalTypeId::uint128] == 2,
-          "CDP-040 recovered uint128 row-page cells were not typed");
-  Require(recovered_counts[dt::CanonicalTypeId::real128] == 2,
-          "CDP-040 recovered real128 row-page cells were not typed");
-  Require(recovered_counts[dt::CanonicalTypeId::uuid] == 2,
-          "CDP-040 recovered UUID row-page cells were not typed");
-  Require(recovered_counts[dt::CanonicalTypeId::binary] == 2,
-          "CDP-040 recovered binary row-page cells were not typed");
+  const std::vector<dt::CanonicalTypeId> expected_recovered_types = {
+      dt::CanonicalTypeId::int64,
+      dt::CanonicalTypeId::boolean,
+      dt::CanonicalTypeId::int8,
+      dt::CanonicalTypeId::int16,
+      dt::CanonicalTypeId::int32,
+      dt::CanonicalTypeId::int128,
+      dt::CanonicalTypeId::uint8,
+      dt::CanonicalTypeId::uint16,
+      dt::CanonicalTypeId::uint32,
+      dt::CanonicalTypeId::uint64,
+      dt::CanonicalTypeId::uint128,
+      dt::CanonicalTypeId::bfloat16,
+      dt::CanonicalTypeId::real16,
+      dt::CanonicalTypeId::real32,
+      dt::CanonicalTypeId::real64,
+      dt::CanonicalTypeId::real128,
+      dt::CanonicalTypeId::uuid,
+      dt::CanonicalTypeId::ip_address,
+      dt::CanonicalTypeId::network_prefix,
+      dt::CanonicalTypeId::mac_address,
+      dt::CanonicalTypeId::enum_value,
+      dt::CanonicalTypeId::date,
+      dt::CanonicalTypeId::time,
+      dt::CanonicalTypeId::timestamp,
+      dt::CanonicalTypeId::interval,
+      dt::CanonicalTypeId::binary,
+  };
+  for (const auto type_id : expected_recovered_types) {
+    Require(recovered_counts[type_id] == 2,
+            "CDP-040 recovered typed scalar row-page cell was not typed");
+  }
 }
 
 void TestMalformedInlineFixedTypedValueRefuses() {
@@ -1488,6 +1530,21 @@ void TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow() {
     Require(SelectCount(fixture, context) == 1,
             "CDP-040 explicit opaque payload row was not visible in writer transaction");
     Commit(context);
+
+    const auto page = ReadPhysicalPage(fixture, 1024);
+    Require(page.visible_rows.size() == 1,
+            "CDP-040 explicit opaque physical row-page visible count drifted");
+    api::EngineApiU64 recovered_opaque_cells = 0;
+    for (const auto& row : page.visible_rows) {
+      for (const auto& cell : row.cells) {
+        if (!cell.value.is_null &&
+            cell.value.type_id == dt::CanonicalTypeId::opaque_extension) {
+          ++recovered_opaque_cells;
+        }
+      }
+    }
+    Require(recovered_opaque_cells == 1,
+            "CDP-040 recovered explicit opaque row-page cell was not typed");
     salt += 100;
   }
 }
