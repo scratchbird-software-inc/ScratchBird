@@ -522,19 +522,38 @@ EngineTypedValue RejectBoolValue(bool value) {
   return typed;
 }
 
+EngineApiDiagnostic NormalizeImportRejectDiagnostic(EngineApiDiagnostic diagnostic) {
+  const bool unique_conflict =
+      diagnostic.detail.find("unique_index_duplicate") != std::string::npos ||
+      diagnostic.detail.find("bulk_unique_proof_persisted_conflict") != std::string::npos ||
+      diagnostic.code.rfind("SB-BULK-CONSTRAINT-UNIQUE-", 0) == 0;
+  if (unique_conflict) {
+    diagnostic.code = "CLI.CONSTRAINT_UNIQUE_VIOLATION";
+    diagnostic.message_key = "constraint.unique.violation";
+    if (diagnostic.detail.find("duplicate_key") == std::string::npos &&
+        diagnostic.detail.find("unique_index_duplicate") == std::string::npos) {
+      diagnostic.detail = "constraint.unique.violation:duplicate_key:" + diagnostic.detail;
+    } else if (diagnostic.detail.rfind("constraint.unique.violation:", 0) != 0) {
+      diagnostic.detail = "constraint.unique.violation:" + diagnostic.detail;
+    }
+  }
+  return diagnostic;
+}
+
 EngineRowValue MakeRejectDiagnosticRow(const EngineExecuteImportRowsRequest& request,
                                        EngineApiU64 source_row_number,
                                        const EngineApiDiagnostic& diagnostic,
                                        bool include_payload_reference_columns) {
+  const EngineApiDiagnostic stable_diagnostic = NormalizeImportRejectDiagnostic(diagnostic);
   EngineRowValue row;
   row.requested_row_uuid.canonical = "import-reject-" + std::to_string(source_row_number);
   row.fields.push_back({"source_row_number", RejectU64Value(source_row_number)});
   row.fields.push_back({"source_position", RejectTextValue(request.source.source_position, request.source.source_position.empty())});
   row.fields.push_back({"target_table_uuid", RejectTextValue(request.target_table.uuid.canonical)});
   row.fields.push_back({"target_column", RejectTextValue({}, true)});
-  row.fields.push_back({"diagnostic_code", RejectTextValue(diagnostic.code)});
-  row.fields.push_back({"message_key", RejectTextValue(diagnostic.message_key)});
-  row.fields.push_back({"diagnostic_detail", RejectTextValue(diagnostic.detail, diagnostic.detail.empty())});
+  row.fields.push_back({"diagnostic_code", RejectTextValue(stable_diagnostic.code)});
+  row.fields.push_back({"message_key", RejectTextValue(stable_diagnostic.message_key)});
+  row.fields.push_back({"diagnostic_detail", RejectTextValue(stable_diagnostic.detail, stable_diagnostic.detail.empty())});
   row.fields.push_back({"rejected_value_digest", RejectTextValue({}, true)});
   row.fields.push_back({"value_redacted", RejectBoolValue(true)});
   row.fields.push_back({"policy_name", RejectTextValue(request.import_policy.reject_mode)});

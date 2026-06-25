@@ -136,6 +136,35 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
+api::EngineTypedValue ScalarValue(std::string canonical_type_name,
+                                  std::string value) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = canonical_type_name;
+  typed.descriptor.encoded_descriptor = "canonical=" + canonical_type_name;
+  typed.encoded_value = std::move(value);
+  return typed;
+}
+
+api::EngineTypedValue BinaryScalarValue(std::string canonical_type_name,
+                                        std::vector<std::uint8_t> value) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = canonical_type_name;
+  typed.descriptor.encoded_descriptor = "canonical=" + canonical_type_name;
+  typed.binary_value = std::move(value);
+  return typed;
+}
+
+api::EngineTypedValue NullValue(std::string canonical_type_name) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = canonical_type_name;
+  typed.descriptor.encoded_descriptor = "canonical=" + canonical_type_name;
+  typed.is_null = true;
+  return typed;
+}
+
 api::EngineRowValue Row(std::string id, std::string payload) {
   api::EngineRowValue row;
   row.requested_row_uuid.canonical = NewUuidText(platform::UuidKind::object, 900);
@@ -238,7 +267,43 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "cdp_native_bulk_ingest";
-  table.columns.push_back({"id", "canonical=character"});
+  table.columns.push_back({"id", "canonical=int64"});
+  table.columns.push_back({"payload", "canonical=character"});
+  return table;
+}
+
+api::CrudTableRecord TypedScalarTable(const Fixture& fixture,
+                                      const api::EngineRequestContext& context) {
+  api::CrudTableRecord table;
+  table.creator_tx = context.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "cdp_native_bulk_ingest_typed_scalar";
+  table.columns.push_back({"id", "canonical=int64"});
+  table.columns.push_back({"flag_value", "canonical=boolean"});
+  table.columns.push_back({"tiny_i", "canonical=int8"});
+  table.columns.push_back({"short_i", "canonical=int16"});
+  table.columns.push_back({"int_i", "canonical=int32"});
+  table.columns.push_back({"huge_i", "canonical=int128"});
+  table.columns.push_back({"tiny_u", "canonical=uint8"});
+  table.columns.push_back({"short_u", "canonical=uint16"});
+  table.columns.push_back({"int_u", "canonical=uint32"});
+  table.columns.push_back({"big_u", "canonical=uint64"});
+  table.columns.push_back({"huge_u", "canonical=uint128"});
+  table.columns.push_back({"bfloat_16", "canonical=bfloat16"});
+  table.columns.push_back({"real_16", "canonical=real16"});
+  table.columns.push_back({"real_32", "canonical=real32"});
+  table.columns.push_back({"real_64", "canonical=real64"});
+  table.columns.push_back({"real_128", "canonical=real128"});
+  table.columns.push_back({"uuid_value", "canonical=uuid"});
+  table.columns.push_back({"ip_value", "canonical=ip_address"});
+  table.columns.push_back({"prefix_value", "canonical=network_prefix"});
+  table.columns.push_back({"mac_value", "canonical=mac_address"});
+  table.columns.push_back({"enum_value", "canonical=enum_value"});
+  table.columns.push_back({"date_value", "canonical=date"});
+  table.columns.push_back({"time_value", "canonical=time"});
+  table.columns.push_back({"timestamp_value", "canonical=timestamp"});
+  table.columns.push_back({"interval_value", "canonical=interval"});
+  table.columns.push_back({"binary_value", "canonical=binary"});
   table.columns.push_back({"payload", "canonical=character"});
   return table;
 }
@@ -252,6 +317,65 @@ api::CrudIndexRecord Index(const Fixture& fixture,
   index.column_name = "payload";
   index.family = api::kCrudIndexFamilyBtree;
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  return index;
+}
+
+api::CrudIndexRecord IdIndex(const Fixture& fixture,
+                             const api::EngineRequestContext& context) {
+  api::CrudIndexRecord index;
+  index.creator_tx = context.local_transaction_id;
+  index.index_uuid = fixture.index_uuid;
+  index.table_uuid = fixture.table_uuid;
+  index.column_name = "id";
+  index.family = api::kCrudIndexFamilyBtree;
+  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  return index;
+}
+
+const std::vector<std::string>& TypedScalarIndexedColumns() {
+  static const std::vector<std::string> columns = {
+      "id",
+      "flag_value",
+      "tiny_i",
+      "short_i",
+      "int_i",
+      "huge_i",
+      "tiny_u",
+      "short_u",
+      "int_u",
+      "big_u",
+      "huge_u",
+      "bfloat_16",
+      "real_16",
+      "real_32",
+      "real_64",
+      "uuid_value",
+      "ip_value",
+      "prefix_value",
+      "mac_value",
+      "enum_value",
+      "date_value",
+      "time_value",
+      "timestamp_value",
+      "interval_value",
+      "binary_value",
+      "payload"};
+  return columns;
+}
+
+api::CrudIndexRecord TypedScalarUniqueIndex(
+    const Fixture& fixture,
+    const api::EngineRequestContext& context,
+    const std::string& column_name,
+    platform::u64 salt) {
+  api::CrudIndexRecord index;
+  index.creator_tx = context.local_transaction_id;
+  index.index_uuid = NewUuidText(platform::UuidKind::object, salt);
+  index.table_uuid = fixture.table_uuid;
+  index.column_name = column_name;
+  index.family = api::kCrudIndexFamilyBtree;
+  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  index.unique = true;
   return index;
 }
 
@@ -291,13 +415,316 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   return fixture;
 }
 
+Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
+  Fixture fixture;
+  fixture.salt = salt;
+  fixture.dir = std::filesystem::temp_directory_path() /
+                ("scratchbird_cdp040_" + name + "_" +
+                 std::to_string(UniqueMillis()));
+  std::filesystem::create_directories(fixture.dir);
+  fixture.database_path = fixture.dir / "cdp040.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
+  create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
+  create.creation_unix_epoch_millis = UniqueMillis();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "CDP-040 int64 index database create failed");
+
+  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+  fixture.index_uuid = NewUuidText(platform::UuidKind::object, salt + 11);
+
+  auto metadata = Begin(fixture, "cdp040-int64-index-metadata");
+  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
+  Require(!table.error, "CDP-040 int64 index table metadata append failed");
+  const auto index = api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata));
+  Require(!index.error, "CDP-040 int64 index metadata append failed");
+  Commit(metadata);
+  return fixture;
+}
+
+Fixture MakeTypedScalarFixture(std::string name,
+                               platform::u64 salt,
+                               bool with_typed_scalar_indexes = false) {
+  Fixture fixture;
+  fixture.salt = salt;
+  fixture.dir = std::filesystem::temp_directory_path() /
+                ("scratchbird_cdp040_" + name + "_" + std::to_string(UniqueMillis()));
+  std::filesystem::create_directories(fixture.dir);
+  fixture.database_path = fixture.dir / "cdp040.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
+  create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
+  create.creation_unix_epoch_millis = UniqueMillis();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "CDP-040 typed scalar database create failed");
+
+  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+
+  auto metadata = Begin(fixture, "cdp040-typed-scalar-metadata");
+  const auto table = api::AppendMgaTableMetadata(
+      metadata, TypedScalarTable(fixture, metadata));
+  Require(!table.error, "CDP-040 typed scalar table metadata append failed");
+  if (with_typed_scalar_indexes) {
+    platform::u64 index_salt = salt + 200;
+    for (const auto& column : TypedScalarIndexedColumns()) {
+      const auto index = api::AppendMgaIndexMetadata(
+          metadata, TypedScalarUniqueIndex(fixture, metadata, column, index_salt++));
+      Require(!index.error,
+              "CDP-040 typed scalar index metadata append failed");
+    }
+  }
+  Commit(metadata);
+  return fixture;
+}
+
 std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
   std::vector<api::EngineRowValue> rows;
   rows.reserve(static_cast<std::size_t>(count));
   for (int index = 0; index < count; ++index) {
-    rows.push_back(Row(prefix + "-id-" + std::to_string(index + 1),
+    rows.push_back(Row(std::to_string(index + 1),
                        prefix + "-payload-" + std::to_string(index + 1)));
   }
+  return rows;
+}
+
+api::EngineRowValue Int64IndexedRow(int value) {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1180 + value);
+  row.fields.push_back({"id", ScalarValue("int64", std::to_string(value))});
+  row.fields.push_back({"payload",
+                        TextValue("int64-index-payload-" +
+                                  std::to_string(value))});
+  return row;
+}
+
+api::EngineRowValue NullInt64IndexedRow() {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1179);
+  row.fields.push_back({"id", NullValue("int64")});
+  row.fields.push_back({"payload", TextValue("int64-index-payload-null")});
+  return row;
+}
+
+api::EngineRowValue NullCharacterRow() {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1199);
+  row.fields.push_back({"id", NullValue("int64")});
+  row.fields.push_back({"payload", TextValue("null-character-payload")});
+  return row;
+}
+
+api::EngineRowValue TypedScalarRow(int index) {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1200 + index);
+  row.fields.push_back({"id", ScalarValue("int64", std::to_string(index))});
+  row.fields.push_back({"flag_value", ScalarValue("boolean", index % 2 == 0 ? "true" : "false")});
+  row.fields.push_back({"tiny_i", ScalarValue("int8", index % 2 == 0 ? "12" : "-12")});
+  row.fields.push_back({"short_i", ScalarValue("int16", index % 2 == 0 ? "1024" : "-1024")});
+  row.fields.push_back({"int_i", ScalarValue("int32", index % 2 == 0 ? "65536" : "-65536")});
+  row.fields.push_back({"huge_i", ScalarValue("int128", index % 2 == 0 ? "170141183460469231731687303715884105727" : "-170141183460469231731687303715884105728")});
+  row.fields.push_back({"tiny_u", ScalarValue("uint8", "250")});
+  row.fields.push_back({"short_u", ScalarValue("uint16", "65000")});
+  row.fields.push_back({"int_u", ScalarValue("uint32", "4000000000")});
+  row.fields.push_back({"big_u", ScalarValue("uint64", "18446744073709551615")});
+  row.fields.push_back({"huge_u", ScalarValue("uint128", "340282366920938463463374607431768211455")});
+  row.fields.push_back({"bfloat_16", ScalarValue("bfloat16", index % 2 == 0 ? "3.5" : "-3.5")});
+  row.fields.push_back({"real_16", ScalarValue("real16", index % 2 == 0 ? "4.5" : "-4.5")});
+  row.fields.push_back({"real_32", ScalarValue("real32", index % 2 == 0 ? "1.25" : "-1.25")});
+  row.fields.push_back({"real_64", ScalarValue("real64", index % 2 == 0 ? "2.5" : "-2.5")});
+  row.fields.push_back({"real_128", BinaryScalarValue("real128", std::vector<std::uint8_t>{
+      static_cast<std::uint8_t>(index), 1, 2, 3, 4, 5, 6, 7,
+      8, 9, 10, 11, 12, 13, 14, 15})});
+  row.fields.push_back({"uuid_value", ScalarValue("uuid", NewUuidText(platform::UuidKind::object, 1300 + index))});
+  row.fields.push_back({"ip_value", BinaryScalarValue("ip_address", std::vector<std::uint8_t>{
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 2,
+      static_cast<std::uint8_t>(index)})});
+  row.fields.push_back({"prefix_value", BinaryScalarValue("network_prefix", std::vector<std::uint8_t>{
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 198, 51, 100,
+      static_cast<std::uint8_t>(index), 24, 4})});
+  row.fields.push_back({"mac_value", BinaryScalarValue("mac_address", std::vector<std::uint8_t>{
+      0, 0, 2, 0, 0, 0, 0, static_cast<std::uint8_t>(index)})});
+  row.fields.push_back({"enum_value", ScalarValue("enum_value", NewUuidText(platform::UuidKind::object, 1400 + index))});
+  row.fields.push_back({"date_value", ScalarValue("date", index % 2 == 0 ? "2026-06-25" : "1970-01-01")});
+  row.fields.push_back({"time_value", ScalarValue("time", index % 2 == 0 ? "23:59:58.123456789" : "00:00:01")});
+  row.fields.push_back({"timestamp_value", ScalarValue("timestamp", index % 2 == 0 ? "2026-06-25T12:34:56.123456789Z" : "1970-01-01T00:00:01")});
+  row.fields.push_back({"interval_value", ScalarValue("interval", index % 2 == 0 ? "P1DT2H3M4S" : "3600")});
+  row.fields.push_back({"binary_value", ScalarValue("binary", "binary-payload-" + std::to_string(index))});
+  row.fields.push_back({"payload", TextValue("typed-scalar-payload-" + std::to_string(index))});
+  return row;
+}
+
+std::vector<api::EngineRowValue> TypedScalarRows() {
+  std::vector<api::EngineRowValue> rows;
+  rows.push_back(TypedScalarRow(1));
+  rows.push_back(TypedScalarRow(2));
+  return rows;
+}
+
+const std::vector<std::string>& DescriptorPayloadTypeNames() {
+  static const std::vector<std::string> types = {
+      "decimal",
+      "decimal_float",
+      "bit_string",
+      "blob",
+      "document",
+      "json_document",
+      "binary_json_document",
+      "bson_document",
+      "xml_document",
+      "hstore_document",
+      "object_document",
+      "flattened_object_document",
+      "set_value",
+      "array",
+      "list",
+      "map",
+      "row",
+      "composite",
+      "variant",
+      "range",
+      "multirange",
+      "token_stream",
+      "search_query",
+      "search_rank_feature",
+      "search_completion",
+      "search_percolator",
+      "geometry",
+      "geography",
+      "point",
+      "shape",
+      "raster",
+      "vector",
+      "dense_vector",
+      "sparse_vector",
+      "binary_vector",
+      "quantized_vector",
+      "graph_node",
+      "graph_edge",
+      "graph_path",
+      "time_series_value",
+      "columnar_segment",
+      "aggregate_state",
+      "hll_sketch",
+      "bloom_filter",
+      "quantile_sketch",
+      "histogram_sketch",
+      "ranking_summary",
+      "vector_summary",
+      "lob_locator",
+      "external_file_locator",
+      "remote_object_locator",
+      "bridge_handle",
+      "cursor_handle",
+      "system_reference",
+      "cursor",
+      "result_set",
+      "table_value"};
+  return types;
+}
+
+const std::vector<std::string>& OpaqueRenderOnlyPayloadTypeNames() {
+  static const std::vector<std::string> types = {
+      "opaque_extension"};
+  return types;
+}
+
+std::string DescriptorPayloadColumnName(std::size_t index) {
+  return "descriptor_payload_" + std::to_string(index);
+}
+
+std::vector<std::uint8_t> DescriptorPayloadForType(const std::string& type,
+                                                   int row_index,
+                                                   std::size_t type_index) {
+  std::size_t size = 16;
+  if (type == "blob") {
+    size = 24;
+  }
+  std::vector<std::uint8_t> payload(size);
+  for (std::size_t index = 0; index < payload.size(); ++index) {
+    payload[index] = static_cast<std::uint8_t>(
+        (row_index * 17 + static_cast<int>(type_index) + static_cast<int>(index)) & 0xff);
+  }
+  return payload;
+}
+
+api::CrudTableRecord DescriptorPayloadTable(const Fixture& fixture,
+                                            const api::EngineRequestContext& context) {
+  api::CrudTableRecord table;
+  table.creator_tx = context.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "cdp_native_bulk_ingest_descriptor_payload";
+  const auto& types = DescriptorPayloadTypeNames();
+  for (std::size_t index = 0; index < types.size(); ++index) {
+    table.columns.push_back(
+        {DescriptorPayloadColumnName(index), "canonical=" + types[index]});
+  }
+  return table;
+}
+
+Fixture MakeDescriptorPayloadFixture(std::string name, platform::u64 salt) {
+  Fixture fixture;
+  fixture.salt = salt;
+  fixture.dir = std::filesystem::temp_directory_path() /
+                ("scratchbird_cdp040_" + name + "_" + std::to_string(UniqueMillis()));
+  std::filesystem::create_directories(fixture.dir);
+  fixture.database_path = fixture.dir / "cdp040.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
+  create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
+  create.creation_unix_epoch_millis = UniqueMillis();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "CDP-040 descriptor payload database create failed");
+
+  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+
+  auto metadata = Begin(fixture, "cdp040-descriptor-payload-metadata");
+  const auto table = api::AppendMgaTableMetadata(
+      metadata, DescriptorPayloadTable(fixture, metadata));
+  Require(!table.error, "CDP-040 descriptor payload table metadata append failed");
+  Commit(metadata);
+  return fixture;
+}
+
+api::EngineRowValue DescriptorPayloadRow(int row_index) {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1700 + row_index);
+  const auto& types = DescriptorPayloadTypeNames();
+  for (std::size_t index = 0; index < types.size(); ++index) {
+    row.fields.push_back(
+        {DescriptorPayloadColumnName(index),
+         BinaryScalarValue(types[index],
+                           DescriptorPayloadForType(types[index], row_index, index))});
+  }
+  return row;
+}
+
+std::vector<api::EngineRowValue> DescriptorPayloadRows() {
+  std::vector<api::EngineRowValue> rows;
+  rows.push_back(DescriptorPayloadRow(1));
+  rows.push_back(DescriptorPayloadRow(2));
   return rows;
 }
 
@@ -548,6 +975,12 @@ void TestApiAndSblrAcceptedRoutes() {
   Require(HasEvidence(api_result.evidence, "native_bulk_ingest_delegate", "none"),
           "CDP-040 native ingest delegated instead of using direct lane");
   Require(EvidenceU64(api_result.evidence,
+                      "direct_physical_bulk_row_page_int64_cells") == 3,
+          "CDP-040 native ingest did not write id values as int64 row-page cells");
+  Require(EvidenceU64(api_result.evidence,
+                      "direct_physical_bulk_row_page_character_cells") == 3,
+          "CDP-040 native ingest did not write payload values as character row-page cells");
+  Require(EvidenceU64(api_result.evidence,
                       "mga_hot_append_index_materialization_jobs_queued") >= 1,
           "CDP-040 native ingest did not queue index materialization work");
   Require(EvidenceU64(api_result.evidence,
@@ -599,6 +1032,364 @@ void TestApiAndSblrAcceptedRoutes() {
   Require(SelectCount(fixture, sblr_context) == 5,
           "CDP-040 SBLR native ingest rows not visible in writer transaction");
   Rollback(sblr_context);
+}
+
+void TestNullAndCharacterRowPageStorage() {
+  auto fixture = MakeFixture("null_character", 1450);
+  auto context = Begin(fixture, "cdp040-null-character-storage");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {NullCharacterRow()}));
+  RequireOk(result, "CDP-040 null/character native bulk ingest failed");
+  Require(result.accepted_rows == 1 && result.inserted_rows == 1,
+          "CDP-040 null/character row counts drifted");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_null_cells") == 1,
+          "CDP-040 null cell was not stored as typed null");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_character_cells") == 1,
+          "CDP-040 character cell did not remain typed character");
+  Require(SelectCount(fixture, context) == 1,
+          "CDP-040 null/character row was not visible in writer transaction");
+  Commit(context);
+}
+
+void TestTypedInt64IndexKeysUseBinaryOrder() {
+  auto fixture = MakeInt64IndexFixture("typed_int64_index", 1475);
+  auto context = Begin(fixture, "cdp040-typed-int64-index-key");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {Int64IndexedRow(10), Int64IndexedRow(2)}));
+  RequireOk(result, "CDP-040 typed int64 index native bulk ingest failed");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_candidates") == 2,
+          "CDP-040 typed int64 index did not inspect both typed keys");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_encoded") == 2,
+          "CDP-040 typed int64 index did not encode both keys");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_fallback") == 0,
+          "CDP-040 typed int64 index fell back to display text");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_sbkohex_keys") == 2,
+          "CDP-040 typed int64 index did not emit store-safe SBKOHEX keys");
+
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  if (!loaded.ok && !loaded.diagnostic.code.empty()) {
+    std::cerr << loaded.diagnostic.code << ':'
+              << loaded.diagnostic.detail << '\n';
+  }
+  Require(loaded.ok, "CDP-040 typed int64 index state reload failed");
+  std::string key_two;
+  std::string key_ten;
+  for (const auto& entry : loaded.state.index_entries) {
+    if (entry.index_uuid != fixture.index_uuid) {
+      continue;
+    }
+    if (entry.payload_value == "2") {
+      key_two = entry.key_value;
+    } else if (entry.payload_value == "10") {
+      key_ten = entry.key_value;
+    }
+  }
+  Require(key_two.rfind("SBKOHEX:", 0) == 0,
+          "CDP-040 int64 value 2 index key was not SBKOHEX");
+  Require(key_ten.rfind("SBKOHEX:", 0) == 0,
+          "CDP-040 int64 value 10 index key was not SBKOHEX");
+  Require(key_two < key_ten,
+          "CDP-040 typed int64 index key sorted as display text");
+  Commit(context);
+}
+
+void TestTypedNullIndexKeyUsesNullOrder() {
+  auto fixture = MakeInt64IndexFixture("typed_null_index", 1485);
+  auto context = Begin(fixture, "cdp040-typed-null-index-key");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {NullInt64IndexedRow(), Int64IndexedRow(0)}));
+  RequireOk(result, "CDP-040 typed null index native bulk ingest failed");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_candidates") == 2,
+          "CDP-040 typed null index did not inspect both typed keys");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_encoded") == 2,
+          "CDP-040 typed null index did not encode both keys");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_fallback") == 0,
+          "CDP-040 typed null index fell back to display text");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_sbkohex_keys") == 2,
+          "CDP-040 typed null index did not emit SBKOHEX keys");
+
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok, "CDP-040 typed null index state reload failed");
+  std::string key_null;
+  std::string key_zero;
+  for (const auto& entry : loaded.state.index_entries) {
+    if (entry.index_uuid != fixture.index_uuid) {
+      continue;
+    }
+    if (entry.payload_value == "<NULL>") {
+      key_null = entry.key_value;
+    } else if (entry.payload_value == "0") {
+      key_zero = entry.key_value;
+    }
+  }
+  Require(key_null.rfind("SBKOHEX:", 0) == 0,
+          "CDP-040 null index key was not SBKOHEX");
+  Require(key_zero.rfind("SBKOHEX:", 0) == 0,
+          "CDP-040 value index key beside null was not SBKOHEX");
+  Require(key_null < key_zero,
+          "CDP-040 typed null index key did not sort before non-null value");
+  Commit(context);
+}
+
+void TestTypedScalarIndexKeysUseBinaryPayloads() {
+  auto fixture =
+      MakeTypedScalarFixture("typed_scalar_index_keys", 1575, true);
+  auto context = Begin(fixture, "cdp040-typed-scalar-index-keys");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {TypedScalarRow(1)}));
+  RequireOk(result, "CDP-040 typed scalar index native bulk ingest failed");
+  const auto expected =
+      static_cast<api::EngineApiU64>(TypedScalarIndexedColumns().size());
+  const auto candidates =
+      EvidenceU64(result.evidence, "direct_index_key_typed_candidates");
+  const auto encoded =
+      EvidenceU64(result.evidence, "direct_index_key_typed_encoded");
+  const auto fallback =
+      EvidenceU64(result.evidence, "direct_index_key_typed_fallback");
+  const auto sbkohex =
+      EvidenceU64(result.evidence, "direct_index_key_sbkohex_keys");
+  Require(candidates == expected,
+          "CDP-040 typed scalar indexes did not inspect every typed key: expected " +
+              std::to_string(expected) + " got " +
+              std::to_string(candidates));
+  Require(encoded == expected,
+          "CDP-040 typed scalar indexes did not encode every typed key: expected " +
+              std::to_string(expected) + " got " + std::to_string(encoded));
+  Require(fallback == 0,
+          "CDP-040 typed scalar indexes fell back to display text: " +
+              std::to_string(fallback));
+  Require(sbkohex == expected,
+          "CDP-040 typed scalar indexes did not emit SBKOHEX keys: expected " +
+              std::to_string(expected) + " got " + std::to_string(sbkohex));
+
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok, "CDP-040 typed scalar index state reload failed");
+  api::EngineApiU64 sbkohex_count = 0;
+  for (const auto& entry : loaded.state.index_entries) {
+    if (entry.table_uuid == fixture.table_uuid &&
+        entry.key_value.rfind("SBKOHEX:", 0) == 0) {
+      ++sbkohex_count;
+    }
+  }
+  Require(sbkohex_count == expected,
+          "CDP-040 typed scalar persisted index keys were not all SBKOHEX");
+  Commit(context);
+}
+
+void TestTypedScalarRowPageStorage() {
+  auto fixture = MakeTypedScalarFixture("typed_scalar", 1500);
+  auto context = Begin(fixture, "cdp040-typed-scalar-storage");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, TypedScalarRows()));
+  RequireOk(result, "CDP-040 typed scalar native bulk ingest failed");
+  Require(result.accepted_rows == 2 && result.inserted_rows == 2,
+          "CDP-040 typed scalar row counts drifted");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_binary_cells") == 52,
+          "CDP-040 typed scalar row-page cells fell back to text");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.boolean") == 2,
+          "CDP-040 boolean cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.int8") == 2,
+          "CDP-040 int8 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.int16") == 2,
+          "CDP-040 int16 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.int32") == 2,
+          "CDP-040 int32 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.int64") == 2,
+          "CDP-040 int64 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.int128") == 2,
+          "CDP-040 int128 cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uint8") == 2,
+          "CDP-040 uint8 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uint16") == 2,
+          "CDP-040 uint16 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uint32") == 2,
+          "CDP-040 uint32 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uint64") == 2,
+          "CDP-040 uint64 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uint128") == 2,
+          "CDP-040 uint128 cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.bfloat16") == 2,
+          "CDP-040 bfloat16 cells were not stored as 2-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.real16") == 2,
+          "CDP-040 real16 cells were not stored as 2-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.real32") == 2,
+          "CDP-040 real32 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.real64") == 2,
+          "CDP-040 real64 cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.real128") == 2,
+          "CDP-040 real128 cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.uuid") == 2,
+          "CDP-040 UUID cells were not stored as binary16");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.ip_address") == 2,
+          "CDP-040 IP address cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.network_prefix") == 2,
+          "CDP-040 network prefix cells were not stored as 18-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.mac_address") == 2,
+          "CDP-040 MAC address cells were not stored as 8-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.enum_value") == 2,
+          "CDP-040 enum cells were not stored as binary16");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.date") == 2,
+          "CDP-040 date cells were not stored as 4-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.time") == 2,
+          "CDP-040 time cells were not stored as 8-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.timestamp") == 2,
+          "CDP-040 timestamp cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.interval") == 2,
+          "CDP-040 interval cells were not stored as 16-byte binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_cells.binary") == 2,
+          "CDP-040 binary cells were not stored as typed binary");
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_character_cells") == 2,
+          "CDP-040 character cells did not remain typed character");
+  Require(SelectCount(fixture, context) == 2,
+          "CDP-040 typed scalar rows were not visible in writer transaction");
+  Commit(context);
+}
+
+void TestMalformedInlineFixedTypedValueRefuses() {
+  auto fixture = MakeTypedScalarFixture("malformed_inline_fixed", 1600);
+  auto context = Begin(fixture, "cdp040-malformed-inline-fixed");
+  auto bad_row = TypedScalarRow(1);
+  bad_row.fields.front().second.encoded_value = "not-an-int64";
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {std::move(bad_row)}));
+  Require(!result.ok, "CDP-040 malformed fixed-width value was accepted");
+  Require(!result.diagnostics.empty(),
+          "CDP-040 malformed fixed-width refusal did not return diagnostics");
+  Rollback(context);
+}
+
+void TestDescriptorPayloadRowPageStorage() {
+  auto fixture = MakeDescriptorPayloadFixture("descriptor_payload", 1800);
+  auto context = Begin(fixture, "cdp040-descriptor-payload-storage");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, DescriptorPayloadRows()));
+  RequireOk(result, "CDP-040 descriptor payload native bulk ingest failed");
+  Require(result.accepted_rows == 2 && result.inserted_rows == 2,
+          "CDP-040 descriptor payload row counts drifted");
+  const auto& types = DescriptorPayloadTypeNames();
+  Require(EvidenceU64(result.evidence,
+                      "direct_physical_bulk_row_page_typed_binary_cells") ==
+              static_cast<api::EngineApiU64>(types.size() * 2),
+          "CDP-040 descriptor payload cells fell back to text");
+  for (const auto& type : types) {
+    Require(EvidenceU64(result.evidence,
+                        std::string("direct_physical_bulk_row_page_typed_cells.") + type) == 2,
+            "CDP-040 descriptor payload type did not remain typed on row page");
+  }
+  Require(SelectCount(fixture, context) == 2,
+          "CDP-040 descriptor payload rows were not visible in writer transaction");
+  Commit(context);
+}
+
+api::CrudTableRecord OpaqueRenderOnlyPayloadTable(
+    const Fixture& fixture,
+    const api::EngineRequestContext& context,
+    const std::string& type_name) {
+  api::CrudTableRecord table;
+  table.creator_tx = context.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "cdp_native_bulk_ingest_opaque_refusal";
+  table.columns.push_back({"opaque_payload", "canonical=" + type_name});
+  return table;
+}
+
+Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
+                                           platform::u64 salt,
+                                           const std::string& type_name) {
+  Fixture fixture;
+  fixture.salt = salt;
+  fixture.dir = std::filesystem::temp_directory_path() /
+                ("scratchbird_cdp040_" + name + "_" +
+                 std::to_string(UniqueMillis()));
+  std::filesystem::create_directories(fixture.dir);
+  fixture.database_path = fixture.dir / "cdp040.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
+  create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
+  create.creation_unix_epoch_millis = UniqueMillis();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "CDP-040 opaque payload database create failed");
+
+  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.table_uuid = NewUuidText(platform::UuidKind::object, salt + 10);
+
+  auto metadata = Begin(fixture, "cdp040-opaque-payload-metadata");
+  const auto table = api::AppendMgaTableMetadata(
+      metadata, OpaqueRenderOnlyPayloadTable(fixture, metadata, type_name));
+  Require(!table.error, "CDP-040 opaque payload table metadata append failed");
+  Commit(metadata);
+  return fixture;
+}
+
+api::EngineRowValue OpaqueRenderOnlyPayloadRow(const std::string& type_name) {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, 1811);
+  row.fields.push_back(
+      {"opaque_payload",
+       BinaryScalarValue(type_name,
+                         DescriptorPayloadForType(type_name, 1, 0))});
+  return row;
+}
+
+void TestOpaqueRenderOnlyDescriptorPayloadRefusals() {
+  platform::u64 salt = 1900;
+  for (const auto& type : OpaqueRenderOnlyPayloadTypeNames()) {
+    auto fixture =
+        MakeOpaqueRenderOnlyPayloadFixture("opaque_payload_" + type, salt, type);
+    auto context = Begin(fixture, "cdp040-opaque-payload-refusal");
+    const auto result = api::EngineExecuteNativeBulkIngest(
+        NativeRequest(fixture, context, {OpaqueRenderOnlyPayloadRow(type)}));
+    RequireDiagnostic(result,
+                      "SB_ENGINE_API_UNSUPPORTED_PROFILE",
+                      "opaque_column_mutation_denied",
+                      "CDP-040 opaque render-only payload mutation was accepted");
+    Rollback(context);
+    salt += 100;
+  }
 }
 
 void TestDisabledAndInvalidRefusals() {
@@ -809,6 +1600,14 @@ int main() {
   ConfigureMemoryFixture();
   TestSblrRegistryEntry();
   TestApiAndSblrAcceptedRoutes();
+  TestNullAndCharacterRowPageStorage();
+  TestTypedInt64IndexKeysUseBinaryOrder();
+  TestTypedNullIndexKeyUsesNullOrder();
+  TestTypedScalarIndexKeysUseBinaryPayloads();
+  TestTypedScalarRowPageStorage();
+  TestMalformedInlineFixedTypedValueRefuses();
+  TestDescriptorPayloadRowPageStorage();
+  TestOpaqueRenderOnlyDescriptorPayloadRefusals();
   TestDisabledAndInvalidRefusals();
   TestServerPublicAbiRoute();
   TestRollbackInvisibilityAndCommittedReopenVisibility();

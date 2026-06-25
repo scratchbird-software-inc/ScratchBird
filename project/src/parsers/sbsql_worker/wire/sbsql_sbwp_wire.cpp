@@ -216,7 +216,7 @@ constexpr std::uint64_t kFeatureTraceContext = FeatureBit(24);
 constexpr std::uint8_t kCopyFormatCanonicalRowFieldsText = 0x00;
 constexpr std::uint8_t kCopyFormatBinaryRowsetV1 = 0x01;
 constexpr std::uint32_t kCopyDefaultWindowBytes = 1024u * 1024u;
-constexpr std::uint32_t kCopyBinaryWindowBytes = 4u * 1024u * 1024u;
+constexpr std::uint32_t kCopyBinaryWindowBytes = 32u * 1024u * 1024u;
 constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
 constexpr std::size_t kScriptInsertGroupFlushRows = kCopyExecuteRowsPerSblrEnvelope;
 constexpr std::uint64_t kAutoCursorFetchRows = 1024;
@@ -299,6 +299,12 @@ struct CopyImportRow {
   std::vector<std::pair<std::string, std::optional<std::string>>> fields;
 };
 
+struct NativeCopyPacket {
+  std::vector<std::uint8_t> payload;
+  std::vector<std::string> columns;
+  std::uint64_t row_count{0};
+};
+
 struct CopyImportState {
   bool active{false};
   bool native_bulk_ingest{false};
@@ -313,6 +319,7 @@ struct CopyImportState {
   std::uint64_t preallocation_factor_percent{82};
   std::string target_name;
   std::vector<CopyImportRow> rows;
+  std::vector<NativeCopyPacket> native_packets;
 };
 
 struct QueryPayload {
@@ -2376,8 +2383,165 @@ std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
   return out;
 }
 
+std::optional<NativeCopyPacket> ParseNativeRowCopyPacketHeader(
+    const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 20 ||
+      payload[0] != 'S' || payload[1] != 'B' || payload[2] != 'N' || payload[3] != 'R') {
+    return std::nullopt;
+  }
+  std::size_t off = 4;
+  const std::uint16_t version = ReadU16(payload, off);
+  off += 2;
+  if (version != 2) return std::nullopt;
+  off += 2;  // flags
+  NativeCopyPacket packet;
+  packet.row_count = ReadU64(payload, off);
+  off += 8;
+  const std::uint32_t column_count = ReadU32(payload, off);
+  off += 4;
+  if (packet.row_count == 0 || column_count == 0 || off + column_count > payload.size()) {
+    return std::nullopt;
+  }
+  std::vector<NativeRowColumnType> column_types;
+  column_types.reserve(column_count);
+  for (std::uint32_t i = 0; i < column_count; ++i) {
+    const auto type = static_cast<NativeRowColumnType>(payload[off++]);
+    if (type != NativeRowColumnType::kText && type != NativeRowColumnType::kInt64) {
+      return std::nullopt;
+    }
+    column_types.push_back(type);
+  }
+  packet.columns.reserve(column_count);
+  for (std::uint32_t i = 0; i < column_count; ++i) {
+    if (off + 4 > payload.size()) return std::nullopt;
+    const std::uint32_t name_size = ReadU32(payload, off);
+    off += 4;
+    if (name_size == 0 || off + name_size > payload.size()) return std::nullopt;
+    packet.columns.emplace_back(reinterpret_cast<const char*>(payload.data() + off), name_size);
+    off += name_size;
+  }
+  const std::size_t null_bitmap_bytes = (static_cast<std::size_t>(column_count) + 7u) / 8u;
+  for (std::uint64_t row_index = 0; row_index < packet.row_count; ++row_index) {
+    if (off + null_bitmap_bytes > payload.size()) return std::nullopt;
+    const std::size_t null_bitmap_offset = off;
+    off += null_bitmap_bytes;
+    for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
+      const bool is_null =
+          (payload[null_bitmap_offset + column_index / 8u] &
+           static_cast<std::uint8_t>(1u << (column_index % 8u))) != 0;
+      if (is_null) continue;
+      switch (column_types[column_index]) {
+        case NativeRowColumnType::kInt64:
+          if (off + 8 > payload.size()) return std::nullopt;
+          off += 8;
+          break;
+        case NativeRowColumnType::kText:
+        default: {
+          if (off + 4 > payload.size()) return std::nullopt;
+          const std::uint32_t value_size = ReadU32(payload, off);
+          off += 4;
+          if (off + value_size > payload.size()) return std::nullopt;
+          off += value_size;
+          break;
+        }
+      }
+    }
+  }
+  if (off != payload.size()) return std::nullopt;
+  packet.payload = payload;
+  return packet;
+}
+
+std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
+    const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 20 ||
+      payload[0] != 'S' || payload[1] != 'B' || payload[2] != 'N' || payload[3] != 'R') {
+    return std::nullopt;
+  }
+  std::size_t off = 4;
+  const std::uint16_t version = ReadU16(payload, off);
+  off += 2;
+  if (version != 2) return std::nullopt;
+  off += 2;  // flags
+  const std::uint64_t row_count_u64 = ReadU64(payload, off);
+  off += 8;
+  if (row_count_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    return std::nullopt;
+  }
+  const std::uint32_t column_count = ReadU32(payload, off);
+  off += 4;
+  if (column_count == 0 || off + column_count > payload.size()) return std::nullopt;
+  std::vector<NativeRowColumnType> column_types;
+  column_types.reserve(column_count);
+  for (std::uint32_t i = 0; i < column_count; ++i) {
+    const auto type = static_cast<NativeRowColumnType>(payload[off++]);
+    if (type != NativeRowColumnType::kText && type != NativeRowColumnType::kInt64) {
+      return std::nullopt;
+    }
+    column_types.push_back(type);
+  }
+  std::vector<std::string> names;
+  names.reserve(column_count);
+  for (std::uint32_t i = 0; i < column_count; ++i) {
+    if (off + 4 > payload.size()) return std::nullopt;
+    const std::uint32_t name_size = ReadU32(payload, off);
+    off += 4;
+    if (name_size == 0 || off + name_size > payload.size()) return std::nullopt;
+    names.emplace_back(reinterpret_cast<const char*>(payload.data() + off), name_size);
+    off += name_size;
+  }
+  const std::size_t row_count = static_cast<std::size_t>(row_count_u64);
+  const std::size_t null_bitmap_bytes = (static_cast<std::size_t>(column_count) + 7u) / 8u;
+  std::vector<CopyImportRow> rows;
+  rows.reserve(row_count);
+  for (std::size_t row_index = 0; row_index < row_count; ++row_index) {
+    if (off + null_bitmap_bytes > payload.size()) return std::nullopt;
+    const std::size_t null_bitmap_offset = off;
+    off += null_bitmap_bytes;
+    CopyImportRow row;
+    row.fields.reserve(column_count);
+    for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
+      const bool is_null =
+          (payload[null_bitmap_offset + column_index / 8u] &
+           static_cast<std::uint8_t>(1u << (column_index % 8u))) != 0;
+      std::optional<std::string> value;
+      if (!is_null) {
+        switch (column_types[column_index]) {
+          case NativeRowColumnType::kInt64: {
+            if (off + 8 > payload.size()) return std::nullopt;
+            std::uint64_t bits = ReadU64(payload, off);
+            off += 8;
+            std::int64_t parsed = 0;
+            std::memcpy(&parsed, &bits, sizeof(parsed));
+            value = std::to_string(parsed);
+            break;
+          }
+          case NativeRowColumnType::kText:
+          default: {
+            if (off + 4 > payload.size()) return std::nullopt;
+            const std::uint32_t value_size = ReadU32(payload, off);
+            off += 4;
+            if (off + value_size > payload.size()) return std::nullopt;
+            value.emplace(reinterpret_cast<const char*>(payload.data() + off), value_size);
+            off += value_size;
+            break;
+          }
+        }
+      }
+      row.fields.emplace_back(names[column_index], std::move(value));
+    }
+    rows.push_back(std::move(row));
+  }
+  if (off != payload.size()) return std::nullopt;
+  return rows;
+}
+
 std::optional<std::vector<CopyImportRow>> ParseBinaryCopyRows(
     const std::vector<std::uint8_t>& payload) {
+  if (payload.size() >= 4 &&
+      payload[0] == 'S' && payload[1] == 'B' && payload[2] == 'N' && payload[3] == 'R') {
+    return ParseNativeRowCopyRows(payload);
+  }
   if (payload.size() < 12 ||
       payload[0] != 'S' || payload[1] != 'B' || payload[2] != 'C' || payload[3] != 'P' ||
       payload[4] != 1) {
@@ -2626,6 +2790,76 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   return out;
 }
 
+std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
+    const CopyImportState& copy,
+    const NativeCopyPacket& packet) {
+  std::string out;
+  out += "operation_id=dml.execute_native_bulk_ingest\n";
+  out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
+  out += "sblr_operation_family=sblr.dml.operation.v3\n";
+  out += "result_shape=engine.api.result.v1\n";
+  out += "diagnostic_shape=engine.diagnostic.v1\n";
+  out += "trace_key=cdp041-sb_isql-native-bulk-ingest\n";
+  out += "contains_sql_text=false\n";
+  out += "parser_resolved_names_to_uuids=true\n";
+  out += "requires_security_context=true\n";
+  out += "requires_transaction_context=true\n";
+  out += "requires_cluster_authority=false\n";
+  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
+  out += "target_object_kind=table\n";
+  out += "dml_surface_variant=sb_isql_native_bulk_ingest\n";
+  out += "source_kind=binary_typed_rows\n";
+  out += "format_family=binary_typed_rows\n";
+  out += "source_fingerprint=sb-isql-native-bulk-ingest-native-row-packet\n";
+  out += "source_position=row:0\n";
+  out += "estimated_row_count=" + std::to_string(packet.row_count) + "\n";
+  out += "native_bulk_ingest=true\n";
+  out += std::string("native_bulk_ingest_enabled=") +
+         (copy.native_bulk_ingest_enabled ? "true\n" : "false\n");
+  out += "reject_mode=fail_fast\n";
+  out += "reject_limit_rows=0\n";
+  out += "reject_payload_policy=diagnostic_only\n";
+  out += "result_payload_policy=summary_only\n";
+  out += "resume_policy=fail_closed\n";
+  out += "checkpoint_mode=disabled\n";
+  out += "duplicate_mode=error\n";
+  out += "require_generated_row_uuid=true\n";
+  if (copy.source_size_bytes != 0) {
+    out += "operand=text\tcopy.source_size_bytes\t";
+    out += std::to_string(copy.source_size_bytes);
+    out += "\n";
+  }
+  if (copy.preallocation_bytes != 0) {
+    out += "operand=text\tcopy.preallocation_bytes\t";
+    out += std::to_string(copy.preallocation_bytes);
+    out += "\n";
+  }
+  if (copy.preallocation_factor_percent != 0) {
+    out += "operand=text\tcopy.preallocation_factor_percent\t";
+    out += std::to_string(copy.preallocation_factor_percent);
+    out += "\n";
+  }
+  out += "operand=text\tinsert_values_row_count\t";
+  out += std::to_string(packet.row_count);
+  out += "\n";
+  out += "operand=text\tinsert_values_column_count\t";
+  out += std::to_string(packet.columns.size());
+  out += "\n";
+  out += "operand=text\tinsert_values_column_list_present\tfalse\n";
+  out += "operand=text\tnative_row_packet_required\ttrue\n";
+  out += "operand=text\tnative_row_packet_format\tscratchbird.native_rows.v2\n";
+  out += "operand=text\tinsert_values_parser_executes_sql\tfalse\n";
+  for (std::size_t column_index = 0; column_index < packet.columns.size(); ++column_index) {
+    out += "operand=text\tinsert_values_descriptor_column_";
+    out += std::to_string(column_index);
+    out += "\t";
+    out += EscapeOperationOperandField(packet.columns[column_index]);
+    out += "\n";
+  }
+  out += "operand=text\tsblr.canonical_rowset_shared_shape\ttrue\n";
+  return out;
+}
+
 std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint8_t format) {
   const std::uint32_t base =
       format == kCopyFormatBinaryRowsetV1 ? kCopyBinaryWindowBytes : kCopyDefaultWindowBytes;
@@ -2633,7 +2867,7 @@ std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint
       found != state.session_parameters.end()) {
     try {
       const auto parsed = static_cast<std::uint64_t>(std::stoull(found->second));
-      if (parsed >= 16u * 1024u && parsed <= 16u * 1024u * 1024u) {
+      if (parsed >= 16u * 1024u && parsed <= 64u * 1024u * 1024u) {
         return static_cast<std::uint32_t>(parsed);
       }
     } catch (...) {
@@ -4906,6 +5140,35 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                      "COPY_DATA arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
+  if (state->copy_import.native_bulk_ingest &&
+      state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1 &&
+      frame.payload.size() >= 4 &&
+      frame.payload[0] == 'S' && frame.payload[1] == 'B' &&
+      frame.payload[2] == 'N' && frame.payload[3] == 'R') {
+    auto packet = ParseNativeRowCopyPacketHeader(frame.payload);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_data",
+                                   "validate_native_packet",
+                                   parse_started,
+                                   frame.payload.size(),
+                                   1,
+                                   packet.has_value() ? packet->row_count : 0,
+                                   "native_row_packet_passthrough");
+    if (!packet.has_value()) {
+      state->copy_import = CopyImportState{};
+      if (session != nullptr) {
+        RefreshWireTransactionStateFromSession(*session, state);
+      }
+      return SendError(io,
+                       state,
+                       "22000",
+                       "SBSQL.COPY.DATA_ROW_INVALID",
+                       "CopyData native row packet is malformed") &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    state->copy_import.native_packets.push_back(std::move(*packet));
+    return true;
+  }
   const auto rows = state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1
                         ? ParseBinaryCopyRows(frame.payload)
                         : ParseTextCopyRows(frame.payload);
@@ -4953,7 +5216,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                      "COPY_DONE arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
-  if (state->copy_import.rows.empty()) {
+  if (state->copy_import.rows.empty() && state->copy_import.native_packets.empty()) {
     state->copy_import = CopyImportState{};
     return SendError(io,
                      state,
@@ -4972,6 +5235,62 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   result.server_operation_id =
       copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
   std::size_t chunk_count = 0;
+  for (const auto& packet : copy.native_packets) {
+    const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const std::string envelope = BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, packet);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_done",
+                                   "build_execute_envelope",
+                                   envelope_started,
+                                   envelope.size(),
+                                   chunk_count + 1,
+                                   packet.row_count,
+                                   "native_row_packet_passthrough");
+    const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+    auto chunk_result =
+        session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_done",
+                                   "run_sblr_with_data_packet",
+                                   execute_started,
+                                   envelope.size() + packet.payload.size(),
+                                   chunk_count + 1,
+                                   packet.row_count,
+                                   chunk_result.accepted ? "accepted" : "rejected");
+    if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+      const std::string diagnostic_code = FirstDiagnosticCode(
+          chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+      const std::string diagnostic_detail =
+          DiagnosticFieldValue(chunk_result.messages, "detail");
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     FirstDiagnosticText(chunk_result.messages),
+                     diagnostic_detail.empty() ? diagnostic_code
+                                               : diagnostic_code + ";" + diagnostic_detail)) {
+        return false;
+      }
+      return SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    ++chunk_count;
+    result.statement_family = chunk_result.statement_family;
+    result.operation_family = chunk_result.operation_family;
+    result.server_operation_id = chunk_result.server_operation_id;
+    result.server_row_count += chunk_result.server_row_count == 0 ? packet.row_count
+                                                                  : chunk_result.server_row_count;
+    result.server_affected_rows += chunk_result.server_affected_rows_present
+                                       ? chunk_result.server_affected_rows
+                                       : (chunk_result.server_row_count == 0
+                                              ? packet.row_count
+                                              : chunk_result.server_row_count);
+    result.server_affected_rows_present = true;
+    if (!chunk_result.server_result_payload.empty()) {
+      if (!result.server_result_payload.empty() && result.server_result_payload.back() != '\n') {
+        result.server_result_payload.push_back('\n');
+      }
+      result.server_result_payload += chunk_result.server_result_payload;
+    }
+  }
   for (std::size_t first_row = 0; first_row < copy.rows.size();
        first_row += kCopyExecuteRowsPerSblrEnvelope) {
     const std::size_t row_count =

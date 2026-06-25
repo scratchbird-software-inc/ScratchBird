@@ -2811,7 +2811,8 @@ bool handleMetaCommand(const std::string& cmd) {
                 g_connection->setCopyPreallocationFactorPercent(82);
                 g_connection->setCopyInputStream(&infile);
                 core::Status status = g_connection->executeQuery(
-                    "COPY " + table_or_query + " FROM STDIN",
+                    "COPY " + table_or_query +
+                        " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=TRUE)",
                     &results,
                     &ctx);
                 g_connection->setCopyInputStream(nullptr);
@@ -2824,106 +2825,25 @@ bool handleMetaCommand(const std::string& cmd) {
                 return true;
             }
 
-            // Read header line to get column names
-            std::string header_line;
-            if (!std::getline(infile, header_line)) {
-                std::cerr << "Error: Empty file.\n";
-                return true;
+            infile.clear();
+            infile.seekg(0, std::ios::beg);
+            ResultSet results;
+            core::ErrorContext ctx;
+            g_connection->setCopyInputSizeHintBytes(regularFileSizeHint(filename));
+            g_connection->setCopyPreallocationFactorPercent(82);
+            g_connection->setCopyInputStream(&infile);
+            core::Status status = g_connection->executeQuery(
+                "COPY " + table_or_query +
+                    " FROM STDIN WITH (NATIVE_BULK_INGEST, NATIVE_BULK_INGEST_ENABLED=TRUE, FORMAT CSV, HEADER TRUE)",
+                &results,
+                &ctx);
+            g_connection->setCopyInputStream(nullptr);
+            g_connection->setCopyInputSizeHintBytes(0);
+            if (status != core::Status::OK) {
+                std::cerr << "Error: " << ctx.message << "\n";
+                return false;
             }
-
-            // Parse CSV header
-            std::vector<std::string> columns;
-            std::string field;
-            bool in_quote = false;
-            for (size_t i = 0; i <= header_line.size(); ++i) {
-                char c = (i < header_line.size()) ? header_line[i] : ',';
-                if (c == '"') {
-                    in_quote = !in_quote;
-                } else if (c == ',' && !in_quote) {
-                    columns.push_back(field);
-                    field.clear();
-                } else {
-                    field += c;
-                }
-            }
-            if (!field.empty() || columns.empty()) {
-                columns.push_back(field);
-            }
-
-            // Build INSERT statement
-            std::string insert_base = "INSERT INTO " + table_or_query + " (";
-            for (size_t i = 0; i < columns.size(); ++i) {
-                if (i > 0) insert_base += ", ";
-                insert_base += columns[i];
-            }
-            insert_base += ") VALUES (";
-
-            // Read and insert data rows
-            size_t row_count = 0;
-            size_t error_count = 0;
-            std::string data_line;
-            while (std::getline(infile, data_line)) {
-                // Parse CSV row
-                std::vector<std::string> values;
-                field.clear();
-                in_quote = false;
-                for (size_t i = 0; i <= data_line.size(); ++i) {
-                    char c = (i < data_line.size()) ? data_line[i] : ',';
-                    if (c == '"') {
-                        if (in_quote && i + 1 < data_line.size() && data_line[i + 1] == '"') {
-                            field += '"';
-                            i++;  // Skip escaped quote
-                        } else {
-                            in_quote = !in_quote;
-                        }
-                    } else if (c == ',' && !in_quote) {
-                        values.push_back(field);
-                        field.clear();
-                    } else {
-                        field += c;
-                    }
-                }
-                if (!field.empty() || values.empty()) {
-                    values.push_back(field);
-                }
-
-                // Build and execute INSERT
-                std::string insert_sql = insert_base;
-                for (size_t i = 0; i < values.size(); ++i) {
-                    if (i > 0) insert_sql += ", ";
-                    // Quote strings, detect NULLs
-                    if (values[i].empty()) {
-                        insert_sql += "NULL";
-                    } else {
-                        // Escape single quotes
-                        std::string escaped;
-                        for (char ch : values[i]) {
-                            if (ch == '\'') escaped += "''";
-                            else escaped += ch;
-                        }
-                        insert_sql += "'" + escaped + "'";
-                    }
-                }
-                insert_sql += ")";
-
-                core::ErrorContext insert_ctx;
-                core::Status insert_status = g_connection->execute(insert_sql, nullptr, &insert_ctx);
-                if (insert_status == core::Status::OK) {
-                    row_count++;
-                } else {
-                    error_count++;
-                    if (g_config.verbose) {
-                        std::cerr << "Error inserting row: " << insert_ctx.message << "\n";
-                    }
-                }
-            }
-
-            infile.close();
-            std::cout << "COPY " << row_count << " rows from '" << filename << "'";
-            if (error_count > 0) {
-                std::cout << " (" << error_count << " errors)";
-            }
-            std::cout << "\n";
+            std::cout << "COPY " << results.getRowsAffected() << " rows from '" << filename << "'\n";
         }
         return true;
     }

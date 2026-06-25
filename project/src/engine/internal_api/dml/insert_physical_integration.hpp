@@ -132,6 +132,8 @@ struct DirectPhysicalBulkAppendRequest {
   EngineRequestContext context;
   EngineObjectReference target_table;
   std::span<const EngineRowValue> borrowed_input_rows;
+  std::vector<std::string> owned_shared_row_field_order;
+  std::span<const std::string> shared_row_field_order;
   std::vector<std::string> option_envelopes;
   std::vector<std::string> diagnostic_options;
   EngineApiU64 estimated_row_count = 0;

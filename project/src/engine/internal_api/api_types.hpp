@@ -146,8 +146,19 @@ constexpr bool EngineValueStateHasPayload(EngineValueState state) noexcept {
 struct EngineTypedValue {
   EngineDescriptor descriptor;
   std::string encoded_value;
+  std::vector<std::uint8_t> binary_value;
   bool is_null = false;
   EngineValueState state = EngineValueState::value;
+
+  EngineTypedValue() = default;
+
+  EngineTypedValue(EngineDescriptor descriptor,
+                   std::string encoded_value,
+                   bool is_null = false)
+      : descriptor(std::move(descriptor)),
+        encoded_value(std::move(encoded_value)),
+        is_null(is_null),
+        state(is_null ? EngineValueState::sql_null : EngineValueState::value) {}
 
   bool isSqlNull() const noexcept {
     return EngineValueStateIsSqlNull(state) ||
@@ -367,6 +378,7 @@ struct EngineApiRequest {
   std::vector<EngineConstraintDefinition> constraints;
   std::vector<EngineIndexDefinition> indexes;
   std::vector<EngineRowValue> rows;
+  std::vector<std::string> shared_row_field_order;
   std::vector<std::pair<std::string, EngineTypedValue>> assignments;
   EnginePredicateEnvelope predicate;
   EngineProjectionEnvelope projection;

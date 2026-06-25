@@ -7631,6 +7631,7 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
   if (info == nullptr || info->surface_variant != "merge") return;
   const auto tokens = MeaningfulTokenPtrs(cst);
   bool saw_on_clause = false;
+  bool saw_descriptor_bound_update = false;
   for (std::size_t index = 0; index < tokens.size();) {
     const std::string word = ToUpperAscii(tokens[index]->text);
     if (word == "WHEN") {
@@ -7643,9 +7644,9 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
         if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "UPDATE") {
           ++index;
           if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SET") {
-            info->unsupported_query_family = true;
-            info->unsupported_feature = "merge_update_set_clause_required";
-            return;
+            saw_descriptor_bound_update = true;
+            info->assignment_plan = "descriptor_bound_update";
+            continue;
           }
           ++index;
           if (!ConsumeDmlUpdateAssignments(
@@ -7694,7 +7695,7 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
     saw_on_clause = true;
     continue;
   }
-  if (saw_on_clause) return;
+  if (saw_on_clause || saw_descriptor_bound_update) return;
   info->unsupported_query_family = true;
   info->unsupported_feature = "merge_on_clause_required";
 }

@@ -3900,29 +3900,37 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesBinaryCopyRowset) {
         {scratchbird::protocol::MessageType::CopyData,
          {},
          [](const scratchbird::protocol::ProtocolMessage& msg, std::string& error) {
-             if (msg.body.size() < 12 ||
-                 msg.body[0] != 'S' || msg.body[1] != 'B' ||
-                 msg.body[2] != 'C' || msg.body[3] != 'P' ||
-                 msg.body[4] != 1) {
+             if (msg.body.size() < 4 ||
+                 msg.body[0] != 'S' || msg.body[1] != 'B') {
                  error = "binary COPY frame header mismatch";
                  return false;
              }
-             size_t offset = 8;
-             const uint32_t row_count = readU32Le(msg.body.data() + offset);
-             offset += 4;
-             if (row_count != 2) {
-                 error = "binary COPY row count mismatch";
-                 return false;
-             }
              std::vector<std::vector<std::pair<std::string, std::string>>> rows;
-             for (uint32_t row_index = 0; row_index < row_count; ++row_index) {
-                 if (offset + 4 > msg.body.size()) {
-                     error = "binary COPY field count truncated";
+             if (msg.body[2] == 'N' && msg.body[3] == 'R') {
+                 if (msg.body.size() < 20 || readU16Le(msg.body.data() + 4) != 2) {
+                     error = "compact binary COPY frame header mismatch";
                      return false;
                  }
+                 size_t offset = 8;
+                 const uint64_t row_count = readU64Le(msg.body.data() + offset);
+                 offset += 8;
                  const uint32_t field_count = readU32Le(msg.body.data() + offset);
                  offset += 4;
-                 std::vector<std::pair<std::string, std::string>> fields;
+                 if (row_count != 2 || field_count != 2) {
+                     error = "compact binary COPY shape mismatch";
+                     return false;
+                 }
+                 if (offset + field_count > msg.body.size()) {
+                     error = "compact binary COPY type vector truncated";
+                     return false;
+                 }
+                 std::vector<uint8_t> types;
+                 types.reserve(field_count);
+                 for (uint32_t field_index = 0; field_index < field_count; ++field_index) {
+                     types.push_back(msg.body[offset++]);
+                 }
+                 std::vector<std::string> names;
+                 names.reserve(field_count);
                  for (uint32_t field_index = 0; field_index < field_count; ++field_index) {
                      if (offset + 4 > msg.body.size()) {
                          error = "binary COPY field name length truncated";
@@ -3930,32 +3938,122 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesBinaryCopyRowset) {
                      }
                      const uint32_t name_size = readU32Le(msg.body.data() + offset);
                      offset += 4;
-                     if (offset + name_size + 1 + 4 > msg.body.size()) {
-                         error = "binary COPY field header truncated";
+                     if (offset + name_size > msg.body.size()) {
+                         error = "binary COPY field name truncated";
                          return false;
                      }
-                     const std::string name(
+                     names.emplace_back(
                          reinterpret_cast<const char*>(msg.body.data() + offset), name_size);
                      offset += name_size;
-                     const bool is_null = msg.body[offset++] != 0;
-                     const uint32_t value_size = readU32Le(msg.body.data() + offset);
-                     offset += 4;
-                     if (offset + value_size > msg.body.size()) {
-                         error = "binary COPY field value truncated";
+                 }
+                 const size_t null_bytes = (field_count + 7u) / 8u;
+                 for (uint64_t row_index = 0; row_index < row_count; ++row_index) {
+                     if (offset + null_bytes > msg.body.size()) {
+                         error = "compact binary COPY null bitmap truncated";
                          return false;
                      }
-                     std::string value;
-                     if (!is_null) {
-                         value.assign(reinterpret_cast<const char*>(msg.body.data() + offset),
-                                      value_size);
+                     const size_t null_offset = offset;
+                     offset += null_bytes;
+                     std::vector<std::pair<std::string, std::string>> fields;
+                     for (uint32_t field_index = 0; field_index < field_count; ++field_index) {
+                         const bool is_null =
+                             (msg.body[null_offset + field_index / 8u] &
+                              static_cast<uint8_t>(1u << (field_index % 8u))) != 0;
+                         std::string value;
+                         if (!is_null) {
+                             if (types[field_index] == 2) {
+                                 if (offset + 8 > msg.body.size()) {
+                                     error = "compact binary COPY int64 truncated";
+                                     return false;
+                                 }
+                                 uint64_t bits = readU64Le(msg.body.data() + offset);
+                                 offset += 8;
+                                 int64_t parsed = 0;
+                                 std::memcpy(&parsed, &bits, sizeof(parsed));
+                                 value = std::to_string(parsed);
+                             } else if (types[field_index] == 1) {
+                                 if (offset + 4 > msg.body.size()) {
+                                     error = "compact binary COPY text length truncated";
+                                     return false;
+                                 }
+                                 const uint32_t value_size =
+                                     readU32Le(msg.body.data() + offset);
+                                 offset += 4;
+                                 if (offset + value_size > msg.body.size()) {
+                                     error = "compact binary COPY text value truncated";
+                                     return false;
+                                 }
+                                 value.assign(
+                                     reinterpret_cast<const char*>(msg.body.data() + offset),
+                                     value_size);
+                                 offset += value_size;
+                             } else {
+                                 error = "compact binary COPY unknown type";
+                                 return false;
+                             }
+                         }
+                         fields.push_back({names[field_index], value});
                      }
-                     offset += value_size;
-                     fields.push_back({name, value});
+                     rows.push_back(std::move(fields));
                  }
-                 rows.push_back(std::move(fields));
-             }
-             if (offset != msg.body.size()) {
-                 error = "binary COPY frame trailing bytes";
+                 if (offset != msg.body.size()) {
+                     error = "compact binary COPY frame trailing bytes";
+                     return false;
+                 }
+             } else if (msg.body[2] == 'C' && msg.body[3] == 'P' && msg.body.size() >= 12 &&
+                        msg.body[4] == 1) {
+                 size_t offset = 8;
+                 const uint32_t row_count = readU32Le(msg.body.data() + offset);
+                 offset += 4;
+                 if (row_count != 2) {
+                     error = "binary COPY row count mismatch";
+                     return false;
+                 }
+                 for (uint32_t row_index = 0; row_index < row_count; ++row_index) {
+                     if (offset + 4 > msg.body.size()) {
+                         error = "binary COPY field count truncated";
+                         return false;
+                     }
+                     const uint32_t field_count = readU32Le(msg.body.data() + offset);
+                     offset += 4;
+                     std::vector<std::pair<std::string, std::string>> fields;
+                     for (uint32_t field_index = 0; field_index < field_count; ++field_index) {
+                         if (offset + 4 > msg.body.size()) {
+                             error = "binary COPY field name length truncated";
+                             return false;
+                         }
+                         const uint32_t name_size = readU32Le(msg.body.data() + offset);
+                         offset += 4;
+                         if (offset + name_size + 1 + 4 > msg.body.size()) {
+                             error = "binary COPY field header truncated";
+                             return false;
+                         }
+                         const std::string name(
+                             reinterpret_cast<const char*>(msg.body.data() + offset), name_size);
+                         offset += name_size;
+                         const bool is_null = msg.body[offset++] != 0;
+                         const uint32_t value_size = readU32Le(msg.body.data() + offset);
+                         offset += 4;
+                         if (offset + value_size > msg.body.size()) {
+                             error = "binary COPY field value truncated";
+                             return false;
+                         }
+                         std::string value;
+                         if (!is_null) {
+                             value.assign(reinterpret_cast<const char*>(msg.body.data() + offset),
+                                          value_size);
+                         }
+                         offset += value_size;
+                         fields.push_back({name, value});
+                     }
+                     rows.push_back(std::move(fields));
+                 }
+                 if (offset != msg.body.size()) {
+                     error = "binary COPY frame trailing bytes";
+                     return false;
+                 }
+             } else {
+                 error = "binary COPY frame header mismatch";
                  return false;
              }
              const std::vector<std::vector<std::pair<std::string, std::string>>> expected = {

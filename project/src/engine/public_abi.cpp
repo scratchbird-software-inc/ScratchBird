@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -29,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -449,6 +451,15 @@ std::int64_t read_native_i64(const std::uint8_t* data, std::size_t offset) {
   return value;
 }
 
+std::string native_i64_to_string(std::int64_t value) {
+  char buffer[32] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer), std::end(buffer), value);
+  if (ec != std::errc{}) {
+    return std::to_string(value);
+  }
+  return std::string(buffer, ptr);
+}
+
 NativeRowPacketDecode decode_native_row_packet_v1(const std::uint8_t* data,
                                                   std::size_t packet_size) {
   static const scratchbird::engine::internal_api::EngineDescriptor
@@ -579,6 +590,7 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
     columns.emplace_back(reinterpret_cast<const char*>(data + offset), name_size);
     offset += name_size;
   }
+  decoded.request.shared_row_field_order = std::move(columns);
   decoded.request.rows.reserve(static_cast<std::size_t>(row_count));
   for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
     if (offset + null_bitmap_bytes > packet_size) {
@@ -604,7 +616,8 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
           return decoded;
         }
         value.descriptor = kInt64Descriptor;
-        value.encoded_value = std::to_string(read_native_i64(data, offset));
+        value.binary_value.assign(data + offset, data + offset + 8);
+        value.encoded_value = native_i64_to_string(read_native_i64(data, offset));
         offset += 8;
       } else {
         if (offset + 4 > packet_size) {
@@ -622,7 +635,7 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
                                    value_size);
         offset += value_size;
       }
-      row.fields.push_back({columns[column_index], std::move(value)});
+      row.fields.push_back({std::string{}, std::move(value)});
     }
     decoded.request.rows.push_back(std::move(row));
   }
@@ -632,6 +645,7 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
   }
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_materialized=true");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_format:scratchbird.native_rows.v2");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_shared_field_order=true");
   decoded.request.option_envelopes.push_back(
       "sblr.native_row_packet_row_count:" + std::to_string(row_count));
   decoded.request.option_envelopes.push_back(
