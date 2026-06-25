@@ -7023,6 +7023,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       !has_check_validators;
   const bool can_stage_shared_values_externally =
       can_use_shared_row_stage_fast_path;
+  const bool rowset_default_markers_absent =
+      DirectOptionTruthy(request, "sblr.rowset_default_markers_absent");
+  const bool compact_typed_null_state_authoritative =
+      DirectOptionTruthy(request, "sblr.compact_insert_rowset_materialized") ||
+      DirectOptionTruthy(request, "sblr.compact_native_rowset_materialized");
+  const bool row_stage_needs_encoded_bytes =
+      preallocation_enqueue_enabled ||
+      !batch_context.memory_policy.spill_allowed ||
+      force_large_values_for_insert;
   if (can_use_shared_row_stage_fast_path && can_use_direct_not_null_validation &&
       !request.borrowed_input_rows.empty()) {
     not_null_ordinal_mask.assign(request.borrowed_input_rows.front().fields.size(), 0);
@@ -7329,13 +7338,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
         const auto& typed = input_row.fields[field_index].second;
         const std::string& field = DirectInputFieldName(request, input_row, field_index);
-        if (!typed.is_null && typed.encoded_value == "<DEFAULT>") {
+        if (!rowset_default_markers_absent &&
+            !typed.is_null &&
+            typed.encoded_value == "<DEFAULT>") {
           saw_default_marker = true;
           break;
         }
         if (field_index < not_null_ordinal_mask.size() &&
             not_null_ordinal_mask[field_index] &&
-            (typed.is_null || DirectNullValue(typed.encoded_value))) {
+            (typed.is_null ||
+             (!compact_typed_null_state_authoritative &&
+              DirectNullValue(typed.encoded_value)))) {
           not_null_failure =
               field_index < batch_context.row_encoder_plan.columns.size()
                   ? batch_context.row_encoder_plan.columns[field_index].column_name
@@ -7344,10 +7357,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         }
         if (typed.is_null) {
           staged_value_target.emplace_back(field, kDirectNullMarker);
-          encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+          if (row_stage_needs_encoded_bytes) {
+            encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+          }
         } else {
           staged_value_target.emplace_back(field, typed.encoded_value);
-          encoded_bytes += field.size() + typed.encoded_value.size();
+          if (row_stage_needs_encoded_bytes) {
+            encoded_bytes += field.size() + typed.encoded_value.size();
+          }
         }
       }
       add_row_stage_elapsed(row_stage_convert_us, convert_start);
@@ -7360,20 +7377,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                            "not_null_validation_refused"),
               "not_null_validation_refused:" + not_null_failure);
         }
-        const bool toast_required =
-            encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
-            force_large_values_for_insert;
-        const std::uint64_t projected_memory_bytes =
-            toast_required ? batch_context.row_template.max_inline_encoded_bytes
-                           : encoded_bytes;
-        if (!batch_context.memory_policy.spill_allowed &&
-            projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
-          const auto memory_validation = ValidateInsertBatchMemoryBudget(
-              batch_context,
-              projected_memory_bytes);
-          return DirectBulkFailure(request,
-                                   memory_validation,
-                                   "insert_batch_memory_budget_refused");
+        if (row_stage_needs_encoded_bytes) {
+          const bool toast_required =
+              encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
+              force_large_values_for_insert;
+          const std::uint64_t projected_memory_bytes =
+              toast_required ? batch_context.row_template.max_inline_encoded_bytes
+                             : encoded_bytes;
+          if (!batch_context.memory_policy.spill_allowed &&
+              projected_memory_bytes > batch_context.memory_policy.context_budget_bytes) {
+            const auto memory_validation = ValidateInsertBatchMemoryBudget(
+                batch_context,
+                projected_memory_bytes);
+            return DirectBulkFailure(request,
+                                     memory_validation,
+                                     "insert_batch_memory_budget_refused");
+          }
         }
         add_row_stage_elapsed(row_stage_validation_us, validation_start);
         if (store_row_trace) {

@@ -2712,6 +2712,7 @@ std::string BuildFastInsertNativeBulkEnvelope(
   out += "require_generated_row_uuid=true\n";
   AppendRouteTextOperand(&out, "physical_mga_cow", "false");
   AppendRouteTextOperand(&out, "insert_trace.rows", "false");
+  AppendRouteTextOperand(&out, "sblr.rowset_default_markers_absent", "true");
   AppendRouteTextOperand(&out, "insert_values_row_count", std::to_string(plan.rows.size()));
   AppendRouteTextOperand(&out, "insert_values_column_count", std::to_string(plan.column_count));
   AppendRouteTextOperand(&out, "insert_values_column_list_present", "true");
