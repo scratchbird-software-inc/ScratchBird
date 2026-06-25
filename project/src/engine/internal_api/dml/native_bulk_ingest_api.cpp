@@ -163,6 +163,10 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
                         "sblr.canonical_rowset_shared_shape")) {
     direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
   }
+  if (first_row == 0 && row_count >= request.canonical_rows.size() &&
+      !OptionKeyPresent(direct.option_envelopes, "native_bulk.single_window")) {
+    direct.option_envelopes.push_back("native_bulk.single_window=true");
+  }
   direct.diagnostic_options = request.diagnostic_options;
   direct.estimated_row_count = static_cast<EngineApiU64>(row_count);
   direct.lane_operation = "native_bulk";

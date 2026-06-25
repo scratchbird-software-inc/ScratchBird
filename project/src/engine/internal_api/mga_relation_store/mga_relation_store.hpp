@@ -240,8 +240,10 @@ class MgaRelationHotAppendContext {
   EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnly(
       const std::vector<CrudRowVersionRecord>& rows,
       const std::vector<std::vector<std::pair<std::string, std::string>>>*
-          value_batch);
+          value_batch,
+      bool shared_key_order_known = false);
   EngineApiDiagnostic FlushRowVersions();
+  void SetDecodedRowCacheAutoWarm(bool enabled);
 
   EngineApiDiagnostic AppendIndexEntryBatches(
       const std::vector<MgaIndexEntryAppendBatch>& batches);

@@ -8483,6 +8483,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 		          ? &logical_value_batch
 		          : nullptr;
   MgaRelationHotAppendContext hot_append(request.context);
+  const std::uint64_t decoded_cache_autowarm_max_rows =
+      DirectOptionU64(request, "mga.row_cache.autowarm_max_rows", 4096);
+  const bool decoded_cache_autowarm_enabled =
+      !(request.lane_operation == "native_bulk" &&
+        decoded_cache_autowarm_max_rows != 0 &&
+        staged_rows.size() > decoded_cache_autowarm_max_rows);
+  hot_append.SetDecodedRowCacheAutoWarm(decoded_cache_autowarm_enabled);
+  result.evidence.push_back(
+      {"mga_row_append_decoded_cache_autowarm",
+       decoded_cache_autowarm_enabled ? "enabled" : "disabled"});
+  result.evidence.push_back(
+      {"mga_row_append_decoded_cache_autowarm_max_rows",
+       std::to_string(decoded_cache_autowarm_max_rows)});
   std::vector<std::uint64_t> written_event_sequences;
   EngineApiU64 row_stream_append_us = 0;
   EngineApiU64 row_stream_flush_us = 0;
@@ -8517,6 +8530,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       request.lane_operation == "native_bulk" &&
       !table->temporary &&
       !batch_context.strict_bulk_load_selected;
+  const bool row_stream_shared_key_order_known =
+      external_write_value_batch != nullptr &&
+      (generated_counter_direct_input || can_stage_shared_values_externally);
   result.evidence.push_back({"mga_row_append_storage_scope",
                              native_bulk_scoped_only_row_stream
                                  ? "scoped_only"
@@ -8540,7 +8556,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                   ? (native_bulk_scoped_only_row_stream
 	                          ? hot_append.AppendRowVersionsReadOnlyScopedOnly(
 	                                staged_rows,
-	                                external_write_value_batch)
+	                                external_write_value_batch,
+	                                row_stream_shared_key_order_known)
 	                          : hot_append.AppendRowVersionsReadOnly(
 	                                staged_rows,
 	                                external_write_value_batch))

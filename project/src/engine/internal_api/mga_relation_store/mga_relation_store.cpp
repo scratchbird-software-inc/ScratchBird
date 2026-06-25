@@ -526,6 +526,8 @@ void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   out->reserve(grown);
 }
 
+constexpr std::size_t kRowVersionStoreLineReserveSlackBytes = 384;
+
 void AppendRowVersionStoreLine(std::string* out,
                                const CrudRowVersionRecord& row,
                                std::uint64_t event_sequence_override,
@@ -534,14 +536,17 @@ void AppendRowVersionStoreLine(std::string* out,
                                const std::vector<std::string>* encoded_keys =
                                    nullptr) {
   if (out == nullptr) { return; }
-  const std::size_t encoded_values_size = EncodedCrudPairsSize(values);
-  ReserveAmortizedAppendCapacity(out,
-                                 128 + row.table_uuid.size() +
-                                     row.row_uuid.size() +
-                                     row.version_uuid.size() +
-                                     row.previous_version_uuid.size() +
-                                     encoded_values_size +
-                                     row.temporary_session_uuid.size());
+  const std::size_t fixed_size_floor =
+      128 + row.table_uuid.size() + row.row_uuid.size() +
+      row.version_uuid.size() + row.previous_version_uuid.size() +
+      row.temporary_session_uuid.size();
+  const std::size_t available =
+      out->capacity() > out->size() ? out->capacity() - out->size() : 0;
+  if (available < fixed_size_floor + kRowVersionStoreLineReserveSlackBytes) {
+    ReserveAmortizedAppendCapacity(out,
+                                   fixed_size_floor +
+                                       EncodedCrudPairsSize(values));
+  }
   bool first = true;
   AppendLineField(out, &first, kRowStoreMagic);
   AppendLineField(out, &first, "ROW_VERSION");
@@ -4086,6 +4091,7 @@ struct MgaRelationHotAppendContext::Impl {
   std::vector<PreparedIndexAppendJob> pending_prepared_index_jobs;
   std::vector<std::future<PreparedIndexAppendJob>> pending_index_materialization_jobs;
   std::map<std::string, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
+  bool decoded_row_cache_auto_warm = true;
   bool row_dirty = false;
   bool index_dirty = false;
   MgaRelationHotAppendCounters counters;
@@ -4105,6 +4111,10 @@ MgaRelationHotAppendContext& MgaRelationHotAppendContext::operator=(
 
 const MgaRelationHotAppendCounters& MgaRelationHotAppendContext::counters() const {
   return impl_->counters;
+}
+
+void MgaRelationHotAppendContext::SetDecodedRowCacheAutoWarm(bool enabled) {
+  impl_->decoded_row_cache_auto_warm = enabled;
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
@@ -4156,7 +4166,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     single_scoped_buffer->reserve(
         single_scoped_buffer->size() +
         rows->size() * kHotAppendRowLineReserveBytes);
-    if (rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+    if (impl_->decoded_row_cache_auto_warm &&
+        rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
       single_decoded_appends =
           &impl_->scoped_decoded_row_appends[single_scoped_path];
       single_decoded_appends->reserve(single_decoded_appends->size() +
@@ -4182,7 +4193,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
       scoped_buffer.reserve(scoped_buffer.size() +
                             row_count * kHotAppendRowLineReserveBytes);
       scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      if (impl_->decoded_row_cache_auto_warm &&
+          row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
         auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
         decoded_appends.reserve(decoded_appends.size() + row_count);
       }
@@ -4304,7 +4316,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     single_scoped_buffer->reserve(
         single_scoped_buffer->size() +
         rows->size() * kHotAppendRowLineReserveBytes);
-    if (rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+    if (impl_->decoded_row_cache_auto_warm &&
+        rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
       single_decoded_appends =
           &impl_->scoped_decoded_row_appends[single_scoped_path];
       single_decoded_appends->reserve(single_decoded_appends->size() +
@@ -4330,7 +4343,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
       scoped_buffer.reserve(scoped_buffer.size() +
                             row_count * kHotAppendRowLineReserveBytes);
       scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      if (impl_->decoded_row_cache_auto_warm &&
+          row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
         auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
         decoded_appends.reserve(decoded_appends.size() + row_count);
       }
@@ -4464,7 +4478,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     single_scoped_buffer->reserve(
         single_scoped_buffer->size() +
         rows.size() * kHotAppendRowLineReserveBytes);
-    if (rows.size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+    if (impl_->decoded_row_cache_auto_warm &&
+        rows.size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
       single_decoded_appends =
           &impl_->scoped_decoded_row_appends[single_scoped_path];
       single_decoded_appends->reserve(single_decoded_appends->size() +
@@ -4490,7 +4505,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
       scoped_buffer.reserve(scoped_buffer.size() +
                             row_count * kHotAppendRowLineReserveBytes);
       scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      if (impl_->decoded_row_cache_auto_warm &&
+          row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
         auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
         decoded_appends.reserve(decoded_appends.size() + row_count);
       }
@@ -4566,7 +4582,8 @@ EngineApiDiagnostic
 MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     const std::vector<CrudRowVersionRecord>& rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>*
-        value_batch) {
+        value_batch,
+    bool shared_key_order_known) {
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -4595,18 +4612,21 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   if (!rows.empty()) {
     const auto& first_values = row_values(0);
     bool shared_key_order = !first_values.empty();
-    for (std::size_t row_index = 1; shared_key_order && row_index < rows.size();
-         ++row_index) {
-      const auto& values = row_values(row_index);
-      if (values.size() != first_values.size()) {
-        shared_key_order = false;
-        break;
-      }
-      for (std::size_t field_index = 0; field_index < values.size();
-           ++field_index) {
-        if (values[field_index].first != first_values[field_index].first) {
+    if (!shared_key_order_known) {
+      for (std::size_t row_index = 1;
+           shared_key_order && row_index < rows.size();
+           ++row_index) {
+        const auto& values = row_values(row_index);
+        if (values.size() != first_values.size()) {
           shared_key_order = false;
           break;
+        }
+        for (std::size_t field_index = 0; field_index < values.size();
+             ++field_index) {
+          if (values[field_index].first != first_values[field_index].first) {
+            shared_key_order = false;
+            break;
+          }
         }
       }
     }
@@ -4640,7 +4660,8 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     single_scoped_buffer->reserve(
         single_scoped_buffer->size() +
         rows.size() * kHotAppendRowLineReserveBytes);
-    if (rows.size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+    if (impl_->decoded_row_cache_auto_warm &&
+        rows.size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
       single_decoded_appends =
           &impl_->scoped_decoded_row_appends[single_scoped_path];
       single_decoded_appends->reserve(single_decoded_appends->size() +
@@ -4666,7 +4687,8 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
       scoped_buffer.reserve(scoped_buffer.size() +
                             row_count * kHotAppendRowLineReserveBytes);
       scoped_row_path_by_table.emplace(table_uuid, scoped_path);
-      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      if (impl_->decoded_row_cache_auto_warm &&
+          row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
         auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
         decoded_appends.reserve(decoded_appends.size() + row_count);
       }
