@@ -10,9 +10,10 @@
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 PROTOCOL_MAGIC_BYTES = b"SBWP"
 PROTOCOL_VERSION_MAJOR = 1
@@ -134,6 +135,14 @@ FEATURE_SAVEPOINTS = 1 << 9
 # COPY format codes
 COPY_FORMAT_TEXT = 0
 COPY_FORMAT_BINARY = 1
+
+NATIVE_ROWSET_TYPE_TEXT = 1
+NATIVE_ROWSET_TYPE_INT64 = 2
+NATIVE_ROWSET_TYPE_BOOLEAN = 3
+NATIVE_ROWSET_TYPE_INT32 = 4
+NATIVE_ROWSET_TYPE_UINT64 = 5
+NATIVE_ROWSET_TYPE_REAL64 = 6
+NATIVE_ROWSET_TYPE_BINARY = 7
 FEATURE_2PC = 1 << 10
 FEATURE_CHECKSUMS = 1 << 11
 
@@ -816,6 +825,174 @@ def parse_sblr_compiled(payload: bytes) -> Tuple[int, int, bytes]:
 def build_copy_data_payload(data: bytes) -> bytes:
     """Build a CopyData message payload."""
     return data
+
+
+def _normalize_native_rowset_type(value) -> int:
+    if isinstance(value, int):
+        return value
+    normalized = str(value).strip().lower().replace("-", "_")
+    mapping = {
+        "text": NATIVE_ROWSET_TYPE_TEXT,
+        "character": NATIVE_ROWSET_TYPE_TEXT,
+        "varchar": NATIVE_ROWSET_TYPE_TEXT,
+        "string": NATIVE_ROWSET_TYPE_TEXT,
+        "int64": NATIVE_ROWSET_TYPE_INT64,
+        "bigint": NATIVE_ROWSET_TYPE_INT64,
+        "integer64": NATIVE_ROWSET_TYPE_INT64,
+        "boolean": NATIVE_ROWSET_TYPE_BOOLEAN,
+        "bool": NATIVE_ROWSET_TYPE_BOOLEAN,
+        "int32": NATIVE_ROWSET_TYPE_INT32,
+        "integer": NATIVE_ROWSET_TYPE_INT32,
+        "int": NATIVE_ROWSET_TYPE_INT32,
+        "uint64": NATIVE_ROWSET_TYPE_UINT64,
+        "unsigned_bigint": NATIVE_ROWSET_TYPE_UINT64,
+        "real64": NATIVE_ROWSET_TYPE_REAL64,
+        "double": NATIVE_ROWSET_TYPE_REAL64,
+        "float64": NATIVE_ROWSET_TYPE_REAL64,
+        "binary": NATIVE_ROWSET_TYPE_BINARY,
+        "bytes": NATIVE_ROWSET_TYPE_BINARY,
+    }
+    if normalized not in mapping:
+        raise ValueError(f"unsupported native rowset type {value!r}")
+    return mapping[normalized]
+
+
+def _lossless_int(value: str, minimum: int, maximum: int) -> Optional[int]:
+    if value == "":
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None
+    if parsed < minimum or parsed > maximum:
+        return None
+    if str(parsed) != value:
+        return None
+    return parsed
+
+
+def _lossless_uint(value: str, maximum: int) -> Optional[int]:
+    if value == "":
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None
+    if parsed < 0 or parsed > maximum:
+        return None
+    if str(parsed) != value:
+        return None
+    return parsed
+
+
+def _lossless_real64(value: str) -> Optional[float]:
+    text = value.strip()
+    if not text or text.lower() in {"nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"}:
+        return None
+    try:
+        parsed = float(text)
+    except ValueError:
+        return None
+    if not math.isfinite(parsed):
+        return None
+    if any(ch in text for ch in ".eE"):
+        return parsed
+    return None
+
+
+def infer_native_rowset_column_types(rows: Sequence[Sequence[Optional[object]]]) -> List[int]:
+    if not rows:
+        return []
+    column_count = len(rows[0])
+    types = [NATIVE_ROWSET_TYPE_TEXT] * column_count
+    for column in range(column_count):
+        values = [row[column] for row in rows if row[column] is not None]
+        if not values:
+            continue
+        if all(isinstance(value, (bytes, bytearray, memoryview)) for value in values):
+            types[column] = NATIVE_ROWSET_TYPE_BINARY
+            continue
+        text_values = [str(value) for value in values]
+        lower_values = [value.strip().lower() for value in text_values]
+        if all(value in {"true", "false"} for value in lower_values):
+            types[column] = NATIVE_ROWSET_TYPE_BOOLEAN
+            continue
+        if all(_lossless_int(value, -(2**31), 2**31 - 1) is not None for value in text_values):
+            types[column] = NATIVE_ROWSET_TYPE_INT32
+            continue
+        if all(_lossless_int(value, -(2**63), 2**63 - 1) is not None for value in text_values):
+            types[column] = NATIVE_ROWSET_TYPE_INT64
+            continue
+        if all(_lossless_uint(value, 2**64 - 1) is not None for value in text_values):
+            types[column] = NATIVE_ROWSET_TYPE_UINT64
+            continue
+        if all(_lossless_real64(value) is not None for value in text_values):
+            types[column] = NATIVE_ROWSET_TYPE_REAL64
+            continue
+    return types
+
+
+def build_native_rowset_payload(
+    columns: Sequence[str],
+    rows: Sequence[Sequence[Optional[object]]],
+    column_types: Optional[Sequence[int | str]] = None,
+) -> bytes:
+    """Build a fixed-shape ScratchBird native rowset frame (SBNR v2)."""
+    if not rows:
+        raise ValueError("native rowset requires at least one row")
+    column_count = len(columns)
+    if column_count == 0:
+        raise ValueError("native rowset requires at least one column")
+    for column in columns:
+        if not column:
+            raise ValueError("native rowset column names must be non-empty")
+    for row in rows:
+        if len(row) != column_count:
+            raise ValueError("native rowset row shape mismatch")
+    if column_types is None:
+        normalized_types = infer_native_rowset_column_types(rows)
+    else:
+        if len(column_types) != column_count:
+            raise ValueError("native rowset column/type shape mismatch")
+        normalized_types = [_normalize_native_rowset_type(value) for value in column_types]
+    null_bitmap_bytes = (column_count + 7) // 8
+    payload = bytearray(b"SBNR")
+    payload += struct.pack("<HHQI", 2, 0, len(rows), column_count)
+    payload += bytes(normalized_types)
+    for column in columns:
+        encoded = column.encode("utf-8")
+        payload += struct.pack("<I", len(encoded)) + encoded
+    for row in rows:
+        null_bitmap = bytearray(null_bitmap_bytes)
+        values = bytearray()
+        for index, value in enumerate(row):
+            if value is None:
+                null_bitmap[index // 8] |= 1 << (index % 8)
+                continue
+            column_type = normalized_types[index]
+            if column_type == NATIVE_ROWSET_TYPE_INT64:
+                values += struct.pack("<q", int(value))
+            elif column_type == NATIVE_ROWSET_TYPE_BOOLEAN:
+                if isinstance(value, str):
+                    values.append(1 if value.strip().lower() in {"true", "1"} else 0)
+                else:
+                    values.append(1 if bool(value) else 0)
+            elif column_type == NATIVE_ROWSET_TYPE_INT32:
+                values += struct.pack("<i", int(value))
+            elif column_type == NATIVE_ROWSET_TYPE_UINT64:
+                values += struct.pack("<Q", int(value))
+            elif column_type == NATIVE_ROWSET_TYPE_REAL64:
+                values += struct.pack("<d", float(value))
+            elif column_type == NATIVE_ROWSET_TYPE_BINARY:
+                raw = value.encode("utf-8") if isinstance(value, str) else bytes(value)
+                values += struct.pack("<I", len(raw)) + raw
+            elif column_type == NATIVE_ROWSET_TYPE_TEXT:
+                encoded = str(value).encode("utf-8")
+                values += struct.pack("<I", len(encoded)) + encoded
+            else:
+                raise ValueError(f"unsupported native rowset type {column_type}")
+        payload += null_bitmap + values
+    return bytes(payload)
 
 
 def build_copy_done_payload() -> bytes:

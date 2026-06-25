@@ -752,6 +752,7 @@ struct DirectTypedIndexKeyStats {
 };
 
 struct DirectStageSimpleIndexPrecomputePlan {
+  CrudIndexRecord index;
   std::string index_uuid;
   std::string column_name;
   std::size_t ordinal = 0;
@@ -1839,7 +1840,7 @@ DirectBuildStageSimpleIndexPrecomputePlan(
       plans.clear();
       return plans;
     }
-    plans.push_back({index.index_uuid, std::move(column_name), *ordinal});
+    plans.push_back({index, index.index_uuid, std::move(column_name), *ordinal});
   }
   return plans;
 }
@@ -1860,7 +1861,10 @@ void DirectAppendStageSimpleIndexEntries(
     const std::vector<DirectStageSimpleIndexPrecomputePlan>& plans,
     const std::vector<std::pair<std::string, std::string>>& values,
     const CrudRowVersionRecord& row,
+    const EngineRowValue* typed_input_row,
+    const InsertRowEncoderPlan* row_encoder_plan,
     std::uint64_t source_ordinal,
+    DirectTypedIndexKeyStats* typed_key_stats,
     DirectPrecomputedIndexEntryMap* entries_by_index) {
   if (entries_by_index == nullptr || plans.empty()) {
     return;
@@ -1870,10 +1874,23 @@ void DirectAppendStageSimpleIndexEntries(
       continue;
     }
     const auto& field_value = values[plan.ordinal];
-    if (field_value.first != plan.column_name || field_value.second.empty()) {
+    if (field_value.first != plan.column_name) {
       continue;
     }
-    (*entries_by_index)[plan.index_uuid].push_back({field_value.second,
+    std::string encoded_key = field_value.second;
+    bool typed_key_built = false;
+    if (typed_input_row != nullptr && row_encoder_plan != nullptr) {
+      typed_key_built = DirectBuildTypedSimpleIndexKey(plan.index,
+                                                       plan.column_name,
+                                                       *typed_input_row,
+                                                       *row_encoder_plan,
+                                                       &encoded_key,
+                                                       typed_key_stats);
+    }
+    if (field_value.second.empty() && !typed_key_built) {
+      continue;
+    }
+    (*entries_by_index)[plan.index_uuid].push_back({encoded_key,
                                                     field_value.second,
                                                     row.row_uuid,
                                                     row.version_uuid,
@@ -7908,7 +7925,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
               stage_simple_index_precompute_plans,
               logical_value_batch.back(),
               row_record,
+              &input_row,
+              &batch_context.row_encoder_plan,
               static_cast<std::uint64_t>(row_ordinal),
+              &direct_typed_index_key_stats,
               &direct_precomputed_index_entries);
         }
         add_row_stage_elapsed(row_stage_logical_batch_us, logical_batch_start);
@@ -8779,7 +8799,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     result.evidence.push_back({"direct_physical_bulk_row_page_fallback_reason",
                                row_page_write.diagnostic.detail});
   }
-  mark_phase("physical_cow_write");
+  mark_phase("ingestion_write_drain");
 
   auto strict_lifecycle = RunDirectStrictBulkLifecycle(
       request,
@@ -9111,13 +9131,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           sorted_bulk_index_requested);
     }
   }
+  mark_phase("append_index_cache_update");
 
-  result = PublishDirectStrictBulkAfterPhysicalSuccess(request,
-                                                       &strict_lifecycle,
-                                                       std::move(result));
-  if (!result.ok) {
-    return result;
+  if (strict_lifecycle.active) {
+    result = PublishDirectStrictBulkAfterPhysicalSuccess(request,
+                                                         &strict_lifecycle,
+                                                         std::move(result));
+    if (!result.ok) {
+      return result;
+    }
   }
+  mark_phase("strict_bulk_publish");
   if (index_entries_authoritative &&
       !bypass_single_window_native_bulk_cache &&
       !DirectTableDeclaresForeignKey(*table)) {
@@ -9145,7 +9169,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         {"direct_physical_bulk_append_context_cache_publish",
          advanced_context_cache ? "advance_row_count" : "store_snapshot"});
   }
-  mark_phase("strict_publish");
+  mark_phase("bulk_append_context_cache_publish");
 
   const auto hot_counters = hot_append.counters();
   if (hot_counters.row_versions_appended != 0) {

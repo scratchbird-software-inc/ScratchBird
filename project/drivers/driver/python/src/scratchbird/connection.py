@@ -102,6 +102,7 @@ from .protocol import (
     build_copy_data_payload,
     build_copy_done_payload,
     build_copy_fail_payload,
+    build_native_rowset_payload,
     parse_auth_continue,
     parse_auth_ok,
     parse_auth_request,
@@ -205,6 +206,80 @@ def canonical_read_committed_mode_label(read_committed_mode: int) -> str:
     except (TypeError, ValueError):
         return f"UNKNOWN({read_committed_mode!r})"
     return mapping.get(normalized, f"UNKNOWN({normalized})")
+
+
+def _split_copy_csv_line(line: str) -> List[str]:
+    fields: List[str] = []
+    field = []
+    in_quote = False
+    i = 0
+    while i <= len(line):
+        ch = line[i] if i < len(line) else ","
+        if ch == '"':
+            if in_quote and i + 1 < len(line) and line[i + 1] == '"':
+                field.append('"')
+                i += 2
+                continue
+            in_quote = not in_quote
+            i += 1
+            continue
+        if ch == "," and not in_quote:
+            fields.append("".join(field))
+            field.clear()
+            i += 1
+            continue
+        field.append(ch)
+        i += 1
+    if in_quote:
+        raise errors.ProgrammingError("malformed CSV COPY input")
+    return fields
+
+
+def _copy_text_rows_to_native_frame(data: bytes, column_types: Optional[Sequence[int | str]] = None) -> bytes:
+    if data.startswith(b"SBNR"):
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise errors.ProgrammingError("binary COPY input is not a native rowset frame or UTF-8 COPY text") from exc
+    lines = [line.rstrip("\r") for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise errors.ProgrammingError("COPY input contains no rows")
+
+    first = lines[0]
+    if ";" in first and "=" in first:
+        columns: List[str] = []
+        rows: List[List[Optional[object]]] = []
+        for line in lines:
+            fields = []
+            for item in line.split(";"):
+                if not item:
+                    continue
+                name, sep, value = item.partition("=")
+                if not sep or not name:
+                    raise errors.ProgrammingError("malformed canonical COPY field")
+                fields.append((name, None if value.upper() == "NULL" else value))
+            if not fields:
+                continue
+            if not columns:
+                columns = [name for name, _ in fields]
+            elif [name for name, _ in fields] != columns:
+                raise errors.ProgrammingError("COPY input changed row shape mid-stream")
+            rows.append([value for _, value in fields])
+        return build_native_rowset_payload(columns, rows, column_types)
+
+    columns = [column.strip() for column in _split_copy_csv_line(first)]
+    if not columns or any(not column for column in columns):
+        raise errors.ProgrammingError("CSV COPY input requires a non-empty header row")
+    rows = []
+    for line in lines[1:]:
+        values = _split_copy_csv_line(line)
+        if len(values) != len(columns):
+            raise errors.ProgrammingError("CSV COPY row shape mismatch")
+        rows.append([None if value == "" or value.upper() == "NULL" else value for value in values])
+    if not rows:
+        raise errors.ProgrammingError("CSV COPY input contains no data rows")
+    return build_native_rowset_payload(columns, rows, column_types)
 
 
 @dataclass
@@ -2461,13 +2536,20 @@ class Connection:
         self._drain_error_ready_boundary()
         raise exc
 
-    def copy_in(self, sql: str, data: bytes, format: int = COPY_FORMAT_TEXT) -> int:
+    def copy_in(
+        self,
+        sql: str,
+        data: bytes,
+        format: int = COPY_FORMAT_TEXT,
+        column_types: Optional[Sequence[int | str]] = None,
+    ) -> int:
         """Execute a COPY FROM operation, sending data to the server.
         
         Args:
             sql: The COPY SQL statement (e.g., "COPY table FROM STDIN")
             data: The data to copy in bytes
             format: COPY_FORMAT_TEXT or COPY_FORMAT_BINARY
+            column_types: Optional fixed-shape native rowset type vector for binary COPY
             
         Returns:
             Number of rows copied
@@ -2492,12 +2574,13 @@ class Connection:
                 self._raise_protocol_error_and_sync(payload)
             if header.msg_type == MessageType.COPY_IN_RESPONSE:
                 response = parse_copy_in_response(payload)
-                # Use response.window_bytes if needed for flow control
-                _ = response
                 break
             if header.msg_type == MessageType.READY:
                 self._end_operation(span, False)
                 raise errors.OperationalError("expected COPY IN response")
+
+        if format == COPY_FORMAT_BINARY or response.format == COPY_FORMAT_BINARY:
+            data = _copy_text_rows_to_native_frame(data, column_types)
         
         # Send data in chunks
         offset = 0

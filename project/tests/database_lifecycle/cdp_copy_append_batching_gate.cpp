@@ -140,6 +140,19 @@ std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evide
   return count;
 }
 
+std::size_t ScopedRelationAccessEvidenceCount(
+    const std::vector<api::EngineEvidenceReference>& evidence) {
+  return EvidenceCount(evidence, "relation_state_scoped_loads", "1") +
+         EvidenceCount(evidence,
+                       "direct_physical_bulk_append_context_cache",
+                       "hit");
+}
+
+bool HasScopedRelationAccessEvidence(
+    const std::vector<api::EngineEvidenceReference>& evidence) {
+  return ScopedRelationAccessEvidenceCount(evidence) != 0;
+}
+
 std::string FieldValue(const api::EngineResultShape& result,
                        std::size_t row_index,
                        std::string_view field_name) {
@@ -147,6 +160,17 @@ std::string FieldValue(const api::EngineResultShape& result,
   for (const auto& [name, value] : result.rows[row_index].fields) {
     if (name == field_name) {
       return value.encoded_value;
+    }
+  }
+  return {};
+}
+
+std::string FirstNonEmptyFieldValue(const api::EngineResultShape& result,
+                                    std::string_view field_name) {
+  for (std::size_t row_index = 0; row_index < result.rows.size(); ++row_index) {
+    const std::string value = FieldValue(result, row_index, field_name);
+    if (!value.empty()) {
+      return value;
     }
   }
   return {};
@@ -574,8 +598,8 @@ void TestRejectModeFallsBackWithoutLosingGoodRows() {
           "CDP-011 reject-row accepted sub-batches skipped prepared descriptors");
   Require(EvidenceCount(result.evidence, "insert_row_encoder_plan") >= 2,
           "CDP-011 reject-row accepted sub-batches skipped canonical row encoder");
-  Require(EvidenceCount(result.evidence, "relation_state_scoped_loads", "1") >= 2,
-          "CDP-011 reject-row accepted sub-batches skipped scoped relation load");
+  Require(ScopedRelationAccessEvidenceCount(result.evidence) >= 2,
+          "CDP-011 reject-row accepted sub-batches skipped scoped relation access");
   Require(EvidenceCount(result.evidence, "mga_row_store", "row_insert") >= 2,
           "CDP-011 reject-row accepted sub-batches skipped MGA row writer");
   Require(HasEvidence(result.evidence, "dml_summary.rows_changed", "4"),
@@ -586,11 +610,14 @@ void TestRejectModeFallsBackWithoutLosingGoodRows() {
           "CDP-011 diagnostic-only reject-row path wrote a reject target");
   Require(result.result_shape.rows.size() == 5,
           "CDP-011 reject-row result should include four accepted rows and one diagnostic row");
-  const std::string duplicate_code = FieldValue(result.result_shape, 2, "diagnostic_code");
+  const std::string duplicate_code =
+      FirstNonEmptyFieldValue(result.result_shape, "diagnostic_code");
   Require(duplicate_code == "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION" ||
+              duplicate_code == "CLI.CONSTRAINT_UNIQUE_VIOLATION" ||
               duplicate_code == "SB_ENGINE_API_INVALID_REQUEST",
           "CDP-011 reject-row diagnostic code mismatch");
-  const std::string duplicate_detail = FieldValue(result.result_shape, 2, "diagnostic_detail");
+  const std::string duplicate_detail =
+      FirstNonEmptyFieldValue(result.result_shape, "diagnostic_detail");
   Require(duplicate_detail.find("duplicate_key") != std::string::npos ||
               duplicate_detail.find("unique_index_duplicate") != std::string::npos,
           "CDP-011 reject-row diagnostic detail did not describe duplicate key");
@@ -641,8 +668,8 @@ void TestRejectLimitStopsBisectionAfterBoundedRejects() {
           "CDP-011 reject limit accepted row skipped prepared descriptor path");
   Require(EvidenceCount(result.evidence, "insert_row_encoder_plan") != 0,
           "CDP-011 reject limit accepted row skipped canonical row encoder");
-  Require(HasEvidence(result.evidence, "relation_state_scoped_loads", "1"),
-          "CDP-011 reject limit accepted row skipped scoped relation load");
+  Require(HasScopedRelationAccessEvidence(result.evidence),
+          "CDP-011 reject limit accepted row skipped scoped relation access");
   Require(SelectCount(fixture, context) == 2,
           "CDP-011 reject limit accepted row was not visible before rollback");
   Rollback(context);

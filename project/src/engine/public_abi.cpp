@@ -433,6 +433,11 @@ struct NativeRowPacketDecode {
 enum class NativeRowPacketColumnType : std::uint8_t {
   kText = 1,
   kInt64 = 2,
+  kBoolean = 3,
+  kInt32 = 4,
+  kUInt64 = 5,
+  kReal64 = 6,
+  kBinary = 7,
 };
 
 scratchbird::engine::internal_api::EngineDescriptor native_row_descriptor(
@@ -451,6 +456,20 @@ std::int64_t read_native_i64(const std::uint8_t* data, std::size_t offset) {
   return value;
 }
 
+std::int32_t read_native_i32(const std::uint8_t* data, std::size_t offset) {
+  const std::uint32_t bits = read_native_u32(data, offset);
+  std::int32_t value = 0;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+double read_native_real64(const std::uint8_t* data, std::size_t offset) {
+  const std::uint64_t bits = read_native_u64(data, offset);
+  double value = 0.0;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
 std::string native_i64_to_string(std::int64_t value) {
   char buffer[32] = {};
   const auto [ptr, ec] = std::to_chars(std::begin(buffer), std::end(buffer), value);
@@ -458,6 +477,38 @@ std::string native_i64_to_string(std::int64_t value) {
     return std::to_string(value);
   }
   return std::string(buffer, ptr);
+}
+
+std::string native_u64_to_string(std::uint64_t value) {
+  char buffer[32] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer), std::end(buffer), value);
+  if (ec != std::errc{}) {
+    return std::to_string(value);
+  }
+  return std::string(buffer, ptr);
+}
+
+std::string native_real64_to_string(double value) {
+  char buffer[64] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer), std::end(buffer), value);
+  if (ec != std::errc{}) {
+    return std::to_string(value);
+  }
+  return std::string(buffer, ptr);
+}
+
+bool native_row_packet_column_type_supported(NativeRowPacketColumnType type) {
+  switch (type) {
+    case NativeRowPacketColumnType::kText:
+    case NativeRowPacketColumnType::kInt64:
+    case NativeRowPacketColumnType::kBoolean:
+    case NativeRowPacketColumnType::kInt32:
+    case NativeRowPacketColumnType::kUInt64:
+    case NativeRowPacketColumnType::kReal64:
+    case NativeRowPacketColumnType::kBinary:
+      return true;
+  }
+  return false;
 }
 
 NativeRowPacketDecode decode_native_row_packet_v1(const std::uint8_t* data,
@@ -542,7 +593,17 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
   static const scratchbird::engine::internal_api::EngineDescriptor
       kTextDescriptor = native_row_descriptor("text");
   static const scratchbird::engine::internal_api::EngineDescriptor
+      kBooleanDescriptor = native_row_descriptor("boolean");
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kInt32Descriptor = native_row_descriptor("int32");
+  static const scratchbird::engine::internal_api::EngineDescriptor
       kInt64Descriptor = native_row_descriptor("int64");
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kUInt64Descriptor = native_row_descriptor("uint64");
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kReal64Descriptor = native_row_descriptor("real64");
+  static const scratchbird::engine::internal_api::EngineDescriptor
+      kBinaryDescriptor = native_row_descriptor("binary");
   static const scratchbird::engine::internal_api::EngineDescriptor
       kNullDescriptor = native_row_descriptor("null");
   NativeRowPacketDecode decoded;
@@ -567,8 +628,7 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
   column_types.reserve(column_count);
   for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
     const auto type = static_cast<NativeRowPacketColumnType>(data[offset++]);
-    if (type != NativeRowPacketColumnType::kText &&
-        type != NativeRowPacketColumnType::kInt64) {
+    if (!native_row_packet_column_type_supported(type)) {
       decoded.detail = "native_row_packet_type_unsupported";
       return decoded;
     }
@@ -610,6 +670,24 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
         value.descriptor = kNullDescriptor;
         value.is_null = true;
         value.setState(scratchbird::engine::internal_api::EngineValueState::sql_null);
+      } else if (column_types[column_index] == NativeRowPacketColumnType::kBoolean) {
+        if (offset + 1 > packet_size) {
+          decoded.detail = "native_row_packet_boolean_truncated";
+          return decoded;
+        }
+        value.descriptor = kBooleanDescriptor;
+        value.binary_value.assign(data + offset, data + offset + 1);
+        value.encoded_value = data[offset] == 0 ? "false" : "true";
+        offset += 1;
+      } else if (column_types[column_index] == NativeRowPacketColumnType::kInt32) {
+        if (offset + 4 > packet_size) {
+          decoded.detail = "native_row_packet_int32_truncated";
+          return decoded;
+        }
+        value.descriptor = kInt32Descriptor;
+        value.binary_value.assign(data + offset, data + offset + 4);
+        value.encoded_value = std::to_string(read_native_i32(data, offset));
+        offset += 4;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kInt64) {
         if (offset + 8 > packet_size) {
           decoded.detail = "native_row_packet_int64_truncated";
@@ -618,6 +696,24 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
         value.descriptor = kInt64Descriptor;
         value.binary_value.assign(data + offset, data + offset + 8);
         value.encoded_value = native_i64_to_string(read_native_i64(data, offset));
+        offset += 8;
+      } else if (column_types[column_index] == NativeRowPacketColumnType::kUInt64) {
+        if (offset + 8 > packet_size) {
+          decoded.detail = "native_row_packet_uint64_truncated";
+          return decoded;
+        }
+        value.descriptor = kUInt64Descriptor;
+        value.binary_value.assign(data + offset, data + offset + 8);
+        value.encoded_value = native_u64_to_string(read_native_u64(data, offset));
+        offset += 8;
+      } else if (column_types[column_index] == NativeRowPacketColumnType::kReal64) {
+        if (offset + 8 > packet_size) {
+          decoded.detail = "native_row_packet_real64_truncated";
+          return decoded;
+        }
+        value.descriptor = kReal64Descriptor;
+        value.binary_value.assign(data + offset, data + offset + 8);
+        value.encoded_value = native_real64_to_string(read_native_real64(data, offset));
         offset += 8;
       } else {
         if (offset + 4 > packet_size) {
@@ -630,9 +726,14 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
           decoded.detail = "native_row_packet_value_truncated";
           return decoded;
         }
-        value.descriptor = kTextDescriptor;
+        value.descriptor = column_types[column_index] == NativeRowPacketColumnType::kBinary
+                               ? kBinaryDescriptor
+                               : kTextDescriptor;
         value.encoded_value.assign(reinterpret_cast<const char*>(data + offset),
                                    value_size);
+        if (column_types[column_index] == NativeRowPacketColumnType::kBinary) {
+          value.binary_value.assign(data + offset, data + offset + value_size);
+        }
         offset += value_size;
       }
       row.fields.push_back({std::string{}, std::move(value)});

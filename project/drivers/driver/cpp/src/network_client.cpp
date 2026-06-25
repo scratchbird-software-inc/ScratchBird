@@ -18,6 +18,7 @@
 #include <charconv>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -714,6 +715,11 @@ using BinaryCopyRow = std::vector<BinaryCopyField>;
 enum class CompactCopyColumnType : uint8_t {
     Text = 1,
     Int64 = 2,
+    Boolean = 3,
+    Int32 = 4,
+    UInt64 = 5,
+    Real64 = 6,
+    Binary = 7,
 };
 
 bool equalsIgnoreAsciiCase(std::string_view left, std::string_view right) {
@@ -814,9 +820,9 @@ bool csvValuesToBinaryCopyRow(const std::vector<std::string>& columns,
 }
 
 size_t estimatedBinaryCopyRowBytes(const BinaryCopyRow& row) {
-    size_t row_bytes = 4;
+    size_t row_bytes = 1;
     for (const auto& field : row) {
-        row_bytes += 4 + field.name.size() + 1 + 4 + field.value.size();
+        row_bytes += field.is_null ? 0 : 4 + field.value.size();
     }
     return row_bytes;
 }
@@ -833,6 +839,58 @@ std::optional<int64_t> parseLosslessCopyInt64(std::string_view value) {
         return std::nullopt;
     }
     if (std::to_string(parsed) != value) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<int32_t> parseLosslessCopyInt32(std::string_view value) {
+    const auto parsed = parseLosslessCopyInt64(value);
+    if (!parsed.has_value() ||
+        *parsed < std::numeric_limits<int32_t>::min() ||
+        *parsed > std::numeric_limits<int32_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<int32_t>(*parsed);
+}
+
+std::optional<uint64_t> parseLosslessCopyUInt64(std::string_view value) {
+    if (value.empty() || value.front() == '-') {
+        return std::nullopt;
+    }
+    uint64_t parsed = 0;
+    const char* begin = value.data();
+    const char* end = begin + value.size();
+    const auto result = std::from_chars(begin, end, parsed, 10);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    if (std::to_string(parsed) != value) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<bool> parseLosslessCopyBool(std::string_view value) {
+    if (equalsIgnoreAsciiCase(value, "true")) {
+        return true;
+    }
+    if (equalsIgnoreAsciiCase(value, "false")) {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> parseLosslessCopyReal64(std::string_view value) {
+    if (value.empty() ||
+        value.find_first_of(".eE") == std::string_view::npos) {
+        return std::nullopt;
+    }
+    double parsed = 0.0;
+    const char* begin = value.data();
+    const char* end = begin + value.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(parsed)) {
         return std::nullopt;
     }
     return parsed;
@@ -857,6 +915,18 @@ void appendLe64(std::vector<uint8_t>& out, uint64_t value) {
 }
 
 void appendLeI64(std::vector<uint8_t>& out, int64_t value) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(value));
+    appendLe64(out, bits);
+}
+
+void appendLeI32(std::vector<uint8_t>& out, int32_t value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(value));
+    appendLe32(out, bits);
+}
+
+void appendLeDouble(std::vector<uint8_t>& out, double value) {
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(value));
     appendLe64(out, bits);
@@ -889,20 +959,46 @@ std::vector<CompactCopyColumnType> inferCompactCopyColumnTypes(
     types.assign(rows.front().size(), CompactCopyColumnType::Text);
     for (size_t column = 0; column < rows.front().size(); ++column) {
         bool saw_non_null = false;
+        bool all_bool = true;
+        bool all_int32 = true;
         bool all_int64 = true;
+        bool all_uint64 = true;
+        bool all_real64 = true;
         for (const auto& row : rows) {
             const auto& field = row[column];
             if (field.is_null) {
                 continue;
             }
             saw_non_null = true;
+            if (!parseLosslessCopyBool(field.value).has_value()) {
+                all_bool = false;
+            }
+            if (!parseLosslessCopyInt32(field.value).has_value()) {
+                all_int32 = false;
+            }
             if (!parseLosslessCopyInt64(field.value).has_value()) {
                 all_int64 = false;
-                break;
+            }
+            if (!parseLosslessCopyUInt64(field.value).has_value()) {
+                all_uint64 = false;
+            }
+            if (!parseLosslessCopyReal64(field.value).has_value()) {
+                all_real64 = false;
             }
         }
-        if (saw_non_null && all_int64) {
+        if (!saw_non_null) {
+            continue;
+        }
+        if (all_bool) {
+            types[column] = CompactCopyColumnType::Boolean;
+        } else if (all_int32) {
+            types[column] = CompactCopyColumnType::Int32;
+        } else if (all_int64) {
             types[column] = CompactCopyColumnType::Int64;
+        } else if (all_uint64) {
+            types[column] = CompactCopyColumnType::UInt64;
+        } else if (all_real64) {
+            types[column] = CompactCopyColumnType::Real64;
         }
     }
     return types;
@@ -948,15 +1044,43 @@ std::vector<uint8_t> buildCompactBinaryCopyFrame(const std::vector<BinaryCopyRow
             if (field.is_null) {
                 continue;
             }
-            if (types[column] == CompactCopyColumnType::Int64) {
-                const auto parsed = parseLosslessCopyInt64(field.value);
-                if (!parsed.has_value()) {
-                    return {};
+            switch (types[column]) {
+                case CompactCopyColumnType::Boolean: {
+                    const auto parsed = parseLosslessCopyBool(field.value);
+                    if (!parsed.has_value()) return {};
+                    out.push_back(*parsed ? 1u : 0u);
+                    break;
                 }
-                appendLeI64(out, *parsed);
-            } else {
-                appendLe32(out, static_cast<uint32_t>(field.value.size()));
-                out.insert(out.end(), field.value.begin(), field.value.end());
+                case CompactCopyColumnType::Int32: {
+                    const auto parsed = parseLosslessCopyInt32(field.value);
+                    if (!parsed.has_value()) return {};
+                    appendLeI32(out, *parsed);
+                    break;
+                }
+                case CompactCopyColumnType::Int64: {
+                    const auto parsed = parseLosslessCopyInt64(field.value);
+                    if (!parsed.has_value()) return {};
+                    appendLeI64(out, *parsed);
+                    break;
+                }
+                case CompactCopyColumnType::UInt64: {
+                    const auto parsed = parseLosslessCopyUInt64(field.value);
+                    if (!parsed.has_value()) return {};
+                    appendLe64(out, *parsed);
+                    break;
+                }
+                case CompactCopyColumnType::Real64: {
+                    const auto parsed = parseLosslessCopyReal64(field.value);
+                    if (!parsed.has_value()) return {};
+                    appendLeDouble(out, *parsed);
+                    break;
+                }
+                case CompactCopyColumnType::Binary:
+                case CompactCopyColumnType::Text:
+                default:
+                    appendLe32(out, static_cast<uint32_t>(field.value.size()));
+                    out.insert(out.end(), field.value.begin(), field.value.end());
+                    break;
             }
         }
     }
@@ -964,31 +1088,7 @@ std::vector<uint8_t> buildCompactBinaryCopyFrame(const std::vector<BinaryCopyRow
 }
 
 std::vector<uint8_t> buildBinaryCopyFrame(const std::vector<BinaryCopyRow>& rows) {
-    if (const auto compact = buildCompactBinaryCopyFrame(rows); !compact.empty()) {
-        return compact;
-    }
-    std::vector<uint8_t> out;
-    out.reserve(12 + rows.size() * 32);
-    out.push_back('S');
-    out.push_back('B');
-    out.push_back('C');
-    out.push_back('P');
-    out.push_back(1);
-    out.push_back(0);
-    out.push_back(0);
-    out.push_back(0);
-    appendLe32(out, static_cast<uint32_t>(rows.size()));
-    for (const auto& row : rows) {
-        appendLe32(out, static_cast<uint32_t>(row.size()));
-        for (const auto& field : row) {
-            appendLe32(out, static_cast<uint32_t>(field.name.size()));
-            out.insert(out.end(), field.name.begin(), field.name.end());
-            out.push_back(field.is_null ? 1 : 0);
-            appendLe32(out, static_cast<uint32_t>(field.value.size()));
-            out.insert(out.end(), field.value.begin(), field.value.end());
-        }
-    }
-    return out;
+    return buildCompactBinaryCopyFrame(rows);
 }
 
 std::string authMethodName(protocol::AuthMethod method) {
@@ -4134,6 +4234,10 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
             return core::Status::OK;
         }
         const auto payload = buildBinaryCopyFrame(binary_rows);
+        if (payload.empty()) {
+            return send_copy_fail("COPY binary rowset conversion failed for fixed-shape payload",
+                                  core::Status::INVALID_ARGUMENT);
+        }
         auto status = send_payload(payload.data(), payload.size());
         if (status != core::Status::OK) {
             return status;
