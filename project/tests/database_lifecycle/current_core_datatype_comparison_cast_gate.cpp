@@ -9,6 +9,7 @@
 #include "datatype_operations.hpp"
 
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -35,15 +36,42 @@ dt::DatatypeOperationValue Value(dt::CanonicalTypeId type,
   return {type, std::move(encoded), false};
 }
 
-dt::DatatypeTextSeedAuthority TextSeed() {
+std::string Utf8Bytes(std::initializer_list<unsigned char> bytes) {
+  std::string out;
+  out.reserve(bytes.size());
+  for (const unsigned char byte : bytes) {
+    out.push_back(static_cast<char>(byte));
+  }
+  return out;
+}
+
+dt::DatatypeTextSeedAuthority TextSeed(
+    std::string collation_name = "UNICODE_CI",
+    bool case_insensitive = true,
+    bool accent_insensitive = false,
+    std::string charset_name = "UTF8") {
   dt::DatatypeTextSeedAuthority seed;
   seed.active = true;
   seed.seed_pack_name = "initial-resource-pack";
   seed.seed_pack_version = "1";
-  seed.charset_name = "UTF-8";
-  seed.collation_name = "unicode_ci";
-  seed.collation_case_insensitive = true;
+  seed.charset_name = std::move(charset_name);
+  seed.collation_name = std::move(collation_name);
+  seed.collation_case_insensitive = case_insensitive;
+  seed.collation_accent_insensitive = accent_insensitive;
   return seed;
+}
+
+void RequireCompareEqual(const dt::DatatypeTextSeedAuthority& seed,
+                         const std::string& left,
+                         const std::string& right,
+                         std::string_view message) {
+  dt::DatatypeComparisonRequest compare;
+  compare.left = Value(dt::CanonicalTypeId::character, left);
+  compare.right = Value(dt::CanonicalTypeId::character, right);
+  compare.case_insensitive_character_compare = seed.collation_case_insensitive;
+  compare.text_seed = seed;
+  const auto result = dt::CompareDatatypeValues(compare);
+  Require(result.ok() && result.comparison == 0, message);
 }
 
 void TestOrderedKeysAndResourceBoundComparison() {
@@ -133,9 +161,69 @@ void TestOrderedKeysAndResourceBoundComparison() {
   text_key.text_seed = TextSeed();
   const auto sort_key = dt::MakeDatatypeSortKey(text_key);
   Require(sort_key.ok() &&
-              sort_key.sort_key.find("initial-resource-pack:1:unicode_ci") !=
+              sort_key.sort_key.find("initial-resource-pack:1:UNICODE_CI") !=
                   std::string::npos,
           "MDF-014 text sort key did not bind resource identity");
+}
+
+void TestLocaleSpecificCharacterCollationProof() {
+  const auto unicode_ci = TextSeed("UNICODE_CI", true, false);
+  RequireCompareEqual(unicode_ci,
+                      Utf8Bytes({0xc3, 0x89}) + "cole",
+                      Utf8Bytes({0xc3, 0xa9}) + "cole",
+                      "MDF-014 Unicode CI did not fold accented case");
+
+  dt::DatatypeComparisonRequest accent_sensitive;
+  accent_sensitive.left =
+      Value(dt::CanonicalTypeId::character, Utf8Bytes({0xc3, 0x89}) + "cole");
+  accent_sensitive.right = Value(dt::CanonicalTypeId::character, "Ecole");
+  accent_sensitive.case_insensitive_character_compare = true;
+  accent_sensitive.text_seed = unicode_ci;
+  const auto accent_sensitive_result =
+      dt::CompareDatatypeValues(accent_sensitive);
+  Require(accent_sensitive_result.ok() &&
+              accent_sensitive_result.comparison != 0,
+          "MDF-014 Unicode CI incorrectly folded accents");
+
+  const auto unicode_ci_ai = TextSeed("UNICODE_CI_AI", true, true);
+  RequireCompareEqual(unicode_ci_ai,
+                      Utf8Bytes({0xc3, 0x89}) + "cole",
+                      "ECOLE",
+                      "MDF-014 Unicode CI_AI did not fold French accents");
+  RequireCompareEqual(unicode_ci_ai,
+                      "Stra" + Utf8Bytes({0xc3, 0x9f}) + "e",
+                      "STRASSE",
+                      "MDF-014 Unicode CI_AI did not fold German sharp-s");
+  RequireCompareEqual(TextSeed("ES_ES_CI_AI", true, true, "ISO8859_1"),
+                      "ca" + Utf8Bytes({0xc3, 0xb1}) + Utf8Bytes({0xc3, 0xb3}) + "n",
+                      "CANON",
+                      "MDF-014 Spanish CI_AI did not fold tilde/accent");
+
+  dt::DatatypeSortKeyRequest accent_key_a;
+  accent_key_a.value =
+      Value(dt::CanonicalTypeId::character, Utf8Bytes({0xc3, 0x89}) + "cole");
+  accent_key_a.case_insensitive_character_compare = true;
+  accent_key_a.text_seed = unicode_ci_ai;
+  dt::DatatypeSortKeyRequest accent_key_b = accent_key_a;
+  accent_key_b.value = Value(dt::CanonicalTypeId::character, "ECOLE");
+  const auto sort_a = dt::MakeDatatypeSortKey(accent_key_a);
+  const auto sort_b = dt::MakeDatatypeSortKey(accent_key_b);
+  Require(sort_a.ok() && sort_b.ok() && sort_a.sort_key == sort_b.sort_key,
+          "MDF-014 accent-insensitive sort key mismatch");
+  Require(sort_a.sort_key.find("initial-resource-pack:1:UNICODE_CI_AI:UTF8:ci:ai") !=
+              std::string::npos,
+          "MDF-014 accent-insensitive sort key did not bind seed flags");
+
+  dt::DatatypeComparisonRequest mode_mismatch;
+  mode_mismatch.left = Value(dt::CanonicalTypeId::character, "Alpha");
+  mode_mismatch.right = Value(dt::CanonicalTypeId::character, "alpha");
+  mode_mismatch.case_insensitive_character_compare = true;
+  mode_mismatch.text_seed = TextSeed("BINARY", false, false);
+  const auto mismatch = dt::CompareDatatypeValues(mode_mismatch);
+  Require(!mismatch.ok() &&
+              mismatch.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_COMPARISON_REJECTED",
+          "MDF-014 accepted case-insensitive compare with binary collation");
 }
 
 void TestNumericOperationsUseTypedSemantics() {
@@ -265,7 +353,9 @@ int main() {
   // CURRENT-CORE-DATATYPE-COMPARISON-KEYS
   // CURRENT-CORE-DATATYPE-CAST-STORAGE
   // CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY
+  // CURRENT-CORE-DATATYPE-LOCALE-COLLATION
   TestOrderedKeysAndResourceBoundComparison();
+  TestLocaleSpecificCharacterCollationProof();
   TestNumericOperationsUseTypedSemantics();
   TestCastPersistenceAndSilentDowngradeRefusal();
   TestStableHashAndDeserializationRefusals();

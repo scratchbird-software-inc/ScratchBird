@@ -74,6 +74,7 @@ struct DatatypeTextSeedAuthority {
   std::string charset_name;
   std::string collation_name;
   bool collation_case_insensitive = false;
+  bool collation_accent_insensitive = false;
 };
 
 struct DatatypeCastRequest {
