@@ -419,6 +419,18 @@ api::EngineIndexDefinition UniqueIdIndex() {
 }
 
 void SeedSchemaAndTable(const api::EngineRequestContext& context) {
+  api::EngineApiRequest schema_request;
+  schema_request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  schema_request.target_object.object_kind = "schema";
+  schema_request.localized_names.push_back(Name("sbsfc067"));
+  auto schema = Dispatch(context,
+                         Envelope("ddl.create_schema",
+                                  "SBLR_DDL_CREATE_SCHEMA",
+                                  "trace.sbsfc067.create_schema"),
+                         schema_request);
+  Require(schema.api_result.primary_object.uuid.canonical == kSchemaUuid,
+          "SBSFC-067 schema create did not preserve UUID");
+
   api::EngineApiRequest table_request;
   table_request.target_schema.uuid.canonical = std::string(kSchemaUuid);
   table_request.target_schema.object_kind = "schema";

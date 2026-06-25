@@ -41,6 +41,8 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000076001";
+constexpr std::string_view kSourceUuid = "019f0000-0000-7000-8000-000000076002";
+constexpr std::string_view kSeedSchemaUuid = "019f0000-0000-7000-8000-000000076501";
 constexpr std::string_view kFamily = "sblr.dml.operation.v3";
 
 struct CaseRow {
@@ -175,7 +177,7 @@ PipelineArtifacts RunPipeline(const CaseRow& row) {
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            {std::string(kTargetUuid)});
+                            {std::string(kTargetUuid), std::string(kSourceUuid)});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -367,8 +369,26 @@ void PrintDispatchDiagnostics(const sblr::SblrDispatchResult& result) {
 }
 
 void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
+  api::EngineApiRequest schema_request;
+  schema_request.target_object.uuid.canonical = std::string(kSeedSchemaUuid);
+  schema_request.target_object.object_kind = "schema";
+  schema_request.localized_names.push_back(Name("sbsfc076"));
+  auto create_schema = sblr::MakeSblrEnvelope("ddl.create_schema",
+                                              "SBLR_DDL_CREATE_SCHEMA",
+                                              "trace.sbsfc076.seed_schema");
+  create_schema.requires_security_context = true;
+  create_schema.requires_transaction_context = true;
+  create_schema.contains_sql_text = false;
+  const auto schema_result =
+      sblr::DispatchSblrOperation({context, create_schema, schema_request});
+  PrintDispatchDiagnostics(schema_result);
+  Require(schema_result.envelope_validated, "SBSFC-076 seed schema envelope rejected");
+  Require(schema_result.accepted, "SBSFC-076 seed schema dispatch rejected");
+  Require(schema_result.dispatched_to_api, "SBSFC-076 seed schema did not dispatch");
+  Require(schema_result.api_result.ok, "SBSFC-076 seed schema create failed");
+
   api::EngineApiRequest table_request;
-  table_request.target_schema.uuid.canonical = "019f0000-0000-7000-8000-000000076501";
+  table_request.target_schema.uuid.canonical = std::string(kSeedSchemaUuid);
   table_request.target_schema.object_kind = "schema";
   table_request.target_object.uuid.canonical = std::string(kTargetUuid);
   table_request.target_object.object_kind = "table";

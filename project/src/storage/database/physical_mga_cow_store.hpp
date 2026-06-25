@@ -55,6 +55,7 @@ struct PhysicalMgaCowMutationRequest {
 struct PhysicalMgaCowMutationBatchRequest {
   std::vector<PhysicalMgaCowMutationRequest> mutations;
   bool sync_after_batch = true;
+  bool engine_generated_unique_insert_rows = false;
 };
 
 struct PhysicalMgaCowFinalizeRequest {

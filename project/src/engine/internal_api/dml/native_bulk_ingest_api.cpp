@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -75,6 +76,47 @@ EngineApiU64 EstimateRowsetBytes(std::span<const EngineRowValue> rows) {
   return bytes;
 }
 
+bool OptionKeyPresent(const std::vector<std::string>& options,
+                      std::string_view key) {
+  for (const auto& option : options) {
+    if (option.rfind(std::string(key) + "=", 0) == 0 ||
+        option.rfind(std::string(key) + ":", 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> SharedFieldOrderFromRows(
+    std::span<const EngineRowValue> rows) {
+  std::vector<std::string> order;
+  if (rows.empty() || rows.front().fields.empty()) {
+    return order;
+  }
+  order.reserve(rows.front().fields.size());
+  for (const auto& field : rows.front().fields) {
+    if (field.first.empty()) {
+      order.clear();
+      return order;
+    }
+    order.push_back(field.first);
+  }
+  for (std::size_t row_index = 1; row_index < rows.size(); ++row_index) {
+    const auto& row = rows[row_index];
+    if (row.fields.size() != order.size()) {
+      order.clear();
+      return order;
+    }
+    for (std::size_t field_index = 0; field_index < order.size(); ++field_index) {
+      if (row.fields[field_index].first != order[field_index]) {
+        order.clear();
+        return order;
+      }
+    }
+  }
+  return order;
+}
+
 std::size_t AdaptiveWindowRows(const EngineExecuteNativeBulkIngestRequest& request) {
   if (request.canonical_rows.size() <= 1) {
     return request.canonical_rows.size();
@@ -102,7 +144,25 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
   direct.borrowed_input_rows = std::span<const EngineRowValue>(
       request.canonical_rows.data() + first_row,
       row_count);
+  if (!request.shared_row_field_order.empty()) {
+    direct.shared_row_field_order = std::span<const std::string>(
+        request.shared_row_field_order.data(),
+        request.shared_row_field_order.size());
+  } else {
+    direct.owned_shared_row_field_order =
+        SharedFieldOrderFromRows(direct.borrowed_input_rows);
+    if (!direct.owned_shared_row_field_order.empty()) {
+      direct.shared_row_field_order = std::span<const std::string>(
+          direct.owned_shared_row_field_order.data(),
+          direct.owned_shared_row_field_order.size());
+    }
+  }
   direct.option_envelopes = request.option_envelopes;
+  if (!direct.shared_row_field_order.empty() &&
+      !OptionKeyPresent(direct.option_envelopes,
+                        "sblr.canonical_rowset_shared_shape")) {
+    direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
+  }
   direct.diagnostic_options = request.diagnostic_options;
   direct.estimated_row_count = static_cast<EngineApiU64>(row_count);
   direct.lane_operation = "native_bulk";

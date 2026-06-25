@@ -644,6 +644,28 @@ def write_csv_file(path: Path, columns: list[str], rows: Iterable[list[Any]]) ->
     }
 
 
+def write_csv_copy_file(path: Path, columns: list[str], rows: Iterable[list[Any]]) -> dict[str, Any]:
+    started = time.perf_counter()
+    count = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        for row in rows:
+            writer.writerow(row)
+            count += 1
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "path": str(path),
+        "columns": columns,
+        "row_count": count,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "generation_duration_ms": duration_ms,
+        "format": "csv_with_header",
+    }
+
+
 def copy_field_value(value: Any) -> str:
     if value is None:
         return "NULL"
@@ -694,8 +716,8 @@ def generate_copy_files(run_root: Path, scale: Scale) -> dict[str, Any]:
     copy_dir = run_root / "copy-data"
     result = {}
     for table, rows in table_generators(scale).items():
-        result[table] = write_canonical_copy_file(
-            copy_dir / f"{table}.sbcopy",
+        result[table] = write_csv_copy_file(
+            copy_dir / f"{table}.csv",
             TABLE_COLUMNS[table],
             rows,
         )

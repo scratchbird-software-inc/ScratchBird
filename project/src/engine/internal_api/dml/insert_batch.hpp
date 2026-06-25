@@ -98,6 +98,7 @@ struct BoundInsertRowTemplate {
 
 struct InsertRowEncoderColumnPlan {
   std::string column_name;
+  std::string canonical_type_name;
   std::string descriptor_digest;
   std::size_t ordinal = 0;
   bool default_bound = false;

@@ -291,6 +291,8 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
     InsertRowEncoderColumnPlan column_plan;
     column_plan.column_name = column.first;
     column_plan.ordinal = ordinal++;
+    column_plan.canonical_type_name =
+        DescriptorField(fields, {"canonical", "type", "base_type"});
     column_plan.descriptor_digest = HashSignature("descriptor", column.second);
 
     const std::string default_envelope =
@@ -344,6 +346,7 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
 
     AppendKeyPart(&shape, "column", std::to_string(column_plan.ordinal) + "|" +
                                      column.first + "|" +
+                                     column_plan.canonical_type_name + "|" +
                                      column_plan.descriptor_digest + "|" +
                                      column.second);
     AppendKeyPart(&validators, "column_validator",

@@ -1237,7 +1237,6 @@ std::string ReconciledExplicitServerFamily(std::string family,
                                            std::string_view operation_id,
                                            bool prefer_primary_family,
                                            bool preserve_query_plan_route_family) {
-  (void)preserve_query_plan_route_family;
   if (family == "sblr.dml.operation.v3") {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
@@ -1266,7 +1265,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
   if (operation_id == "query.plan_operation" &&
       (family == "sblr.query.relational.v3" ||
        family == "sblr.query.multimodel_or_ddl.v3")) {
-    return family;
+    return preserve_query_plan_route_family ? family : "sblr.optimizer.plan.v3";
   }
   if (prefer_primary_family &&
       (family == "sblr.management.runtime_operation.v3" ||

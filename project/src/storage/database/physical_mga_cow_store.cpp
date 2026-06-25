@@ -941,11 +941,14 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     if (page_started_empty &&
         mutation_request.kind == PhysicalMgaCowMutationKind::insert &&
         mutation_request.stable_slot_id != 0) {
-      auto& inserted_rows = page_insert_row_uuids[mutation_request.page_number];
-      if (!inserted_rows.insert(mutation_request.row_uuid.value.bytes).second) {
-        return ErrorResult<PhysicalMgaCowMutationBatchResult>(
-            "SB-PHYSICAL-MGA-COW-DUPLICATE-VISIBLE-ROW",
-            "storage.physical_mga_cow.duplicate_visible_row");
+      if (!request.engine_generated_unique_insert_rows) {
+        auto& inserted_rows =
+            page_insert_row_uuids[mutation_request.page_number];
+        if (!inserted_rows.insert(mutation_request.row_uuid.value.bytes).second) {
+          return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+              "SB-PHYSICAL-MGA-COW-DUPLICATE-VISIBLE-ROW",
+              "storage.physical_mga_cow.duplicate_visible_row");
+        }
       }
 
       RowDataRecord new_row;
@@ -1068,6 +1071,10 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
   result.evidence.push_back("physical_mga_cow.batch=true");
   result.evidence.push_back("physical_mga_cow.batch_database_open_once=true");
   result.evidence.push_back("physical_mga_cow.batch_inventory_loaded_once=true");
+  result.evidence.push_back(
+      request.engine_generated_unique_insert_rows
+          ? "physical_mga_cow.engine_generated_unique_insert_rows=true"
+          : "physical_mga_cow.engine_generated_unique_insert_rows=false");
   result.evidence.push_back("physical_mga_cow.existing_active_transaction_verified=true");
   result.evidence.push_back(std::string("physical_mga_cow.batch_sync_after_pages=") +
                             (request.sync_after_batch ? "true" : "false"));
