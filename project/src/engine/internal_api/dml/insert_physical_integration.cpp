@@ -1606,7 +1606,8 @@ bool DirectSortableTypedIndexPayload(
     case dt::CanonicalTypeId::bfloat16:
     case dt::CanonicalTypeId::real16:
     case dt::CanonicalTypeId::real32:
-    case dt::CanonicalTypeId::real64: {
+    case dt::CanonicalTypeId::real64:
+    case dt::CanonicalTypeId::real128: {
       auto sortable = DirectBigEndianBytes(raw);
       if (sortable.empty()) {
         return false;
