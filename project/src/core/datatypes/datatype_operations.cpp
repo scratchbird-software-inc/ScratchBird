@@ -2009,6 +2009,57 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
   return result;
 }
 
+DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
+    const DatatypeDisplayRenderRequest& request) {
+  DatatypeDisplayRenderResult result;
+  result.status = OkStatus();
+  result.diagnostic =
+      MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  result.explicit_display_boundary = true;
+  if (request.value.type_id == CanonicalTypeId::unknown) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "unknown_type");
+    return result;
+  }
+  result.canonical_type_name = CanonicalTypeName(request.value.type_id);
+  if (request.value.is_null) {
+    result.display_value = "NULL";
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::binary ||
+      request.value.type_id == CanonicalTypeId::bit_string) {
+    result.display_value = "0x" + HexEncodeLower(request.value.encoded_value);
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::opaque_extension &&
+      request.redact_opaque_payload) {
+    result.payload_redacted = true;
+    result.display_value = std::string("<opaque:") + result.canonical_type_name +
+                           ":" + std::to_string(request.value.encoded_value.size()) +
+                           " bytes>";
+    return result;
+  }
+  if (request.export_literal && request.value.type_id == CanonicalTypeId::character) {
+    std::string quoted = "'";
+    for (char ch : request.value.encoded_value) {
+      if (ch == '\'') {
+        quoted += "''";
+      } else {
+        quoted.push_back(ch);
+      }
+    }
+    quoted.push_back('\'');
+    result.display_value = std::move(quoted);
+    return result;
+  }
+  result.display_value = request.value.encoded_value;
+  return result;
+}
+
 CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name) {
   const std::string lower = LowerAscii(stable_name);
   if (lower == "string" || lower == "varchar" || lower == "char" || lower == "text") { return CanonicalTypeId::character; }
