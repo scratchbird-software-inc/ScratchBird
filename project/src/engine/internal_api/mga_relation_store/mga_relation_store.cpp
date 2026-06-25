@@ -4587,8 +4587,6 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   if (!reservation.ok) { return reservation.diagnostic; }
   ++impl_->counters.row_range_reservations;
   std::uint64_t event_sequence = reservation.first;
-  std::string row_buffer;
-  row_buffer.reserve(rows.size() * kHotAppendRowLineReserveBytes);
   std::vector<std::string> encoded_key_cache;
   const auto row_values = [&](std::size_t index)
       -> const std::vector<std::pair<std::string, std::string>>& {
@@ -4688,13 +4686,6 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     const auto& row = rows[index];
     const auto& values = row_values(index);
     const std::uint64_t row_event_sequence = event_sequence++;
-    const std::size_t line_start = row_buffer.size();
-    AppendRowVersionStoreLine(&row_buffer,
-                              row,
-                              row_event_sequence,
-                              values,
-                              encoded_key_cache_ptr);
-    row_buffer.push_back('\n');
     const std::string& scoped_path =
         single_table_batch
             ? single_scoped_path
@@ -4702,8 +4693,12 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     std::string& scoped_buffer =
         single_table_batch ? *single_scoped_buffer
                            : impl_->scoped_row_lines[scoped_path];
-    scoped_buffer.append(row_buffer.data() + line_start,
-                         row_buffer.size() - line_start);
+    AppendRowVersionStoreLine(&scoped_buffer,
+                              row,
+                              row_event_sequence,
+                              values,
+                              encoded_key_cache_ptr);
+    scoped_buffer.push_back('\n');
     std::vector<CrudRowVersionRecord>* decoded_appends = nullptr;
     if (single_table_batch) {
       decoded_appends = single_decoded_appends;
