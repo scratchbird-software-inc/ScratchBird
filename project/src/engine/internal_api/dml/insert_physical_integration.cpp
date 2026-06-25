@@ -4130,6 +4130,133 @@ bool DirectParseI64Text(std::string_view text, std::int64_t* out) {
   return parse.ec == std::errc{} && parse.ptr == end;
 }
 
+bool DirectReadBinarySignedI64(const EngineTypedValue& typed, std::int64_t* out) {
+  if (out == nullptr || typed.binary_value.size() != sizeof(std::int64_t)) {
+    return false;
+  }
+  std::uint64_t bits = 0;
+  for (std::size_t index = 0; index < sizeof(std::int64_t); ++index) {
+    bits |= static_cast<std::uint64_t>(typed.binary_value[index]) << (index * 8u);
+  }
+  std::memcpy(out, &bits, sizeof(bits));
+  return true;
+}
+
+bool DirectSignedI64FitsBytes(std::int64_t value, std::size_t bytes) {
+  switch (bytes) {
+    case 1:
+      return value >= std::numeric_limits<std::int8_t>::min() &&
+             value <= std::numeric_limits<std::int8_t>::max();
+    case 2:
+      return value >= std::numeric_limits<std::int16_t>::min() &&
+             value <= std::numeric_limits<std::int16_t>::max();
+    case 4:
+      return value >= std::numeric_limits<std::int32_t>::min() &&
+             value <= std::numeric_limits<std::int32_t>::max();
+    case 8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectUnsignedI64FitsBytes(std::int64_t value, std::size_t bytes) {
+  if (value < 0) {
+    return false;
+  }
+  const auto unsigned_value = static_cast<std::uint64_t>(value);
+  switch (bytes) {
+    case 1:
+      return unsigned_value <= std::numeric_limits<std::uint8_t>::max();
+    case 2:
+      return unsigned_value <= std::numeric_limits<std::uint16_t>::max();
+    case 4:
+      return unsigned_value <= std::numeric_limits<std::uint32_t>::max();
+    case 8:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectTargetIsSignedInteger(dt::CanonicalTypeId target_type) {
+  switch (target_type) {
+    case dt::CanonicalTypeId::int8:
+    case dt::CanonicalTypeId::int16:
+    case dt::CanonicalTypeId::int32:
+    case dt::CanonicalTypeId::int64:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectTargetIsUnsignedInteger(dt::CanonicalTypeId target_type) {
+  switch (target_type) {
+    case dt::CanonicalTypeId::uint8:
+    case dt::CanonicalTypeId::uint16:
+    case dt::CanonicalTypeId::uint32:
+    case dt::CanonicalTypeId::uint64:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DirectBinaryIntegerPayloadCompatible(dt::CanonicalTypeId target_type,
+                                          const EngineTypedValue& typed,
+                                          std::size_t inline_bytes) {
+  if (typed.binary_value.empty()) {
+    return false;
+  }
+  if (inline_bytes != 0 && typed.binary_value.size() == inline_bytes) {
+    return true;
+  }
+  std::int64_t parsed = 0;
+  if (!DirectReadBinarySignedI64(typed, &parsed)) {
+    return false;
+  }
+  if (DirectTargetIsSignedInteger(target_type)) {
+    return DirectSignedI64FitsBytes(parsed, inline_bytes);
+  }
+  if (DirectTargetIsUnsignedInteger(target_type)) {
+    return DirectUnsignedI64FitsBytes(parsed, inline_bytes);
+  }
+  return false;
+}
+
+bool DirectPackBinaryIntegerPayload(dt::CanonicalTypeId target_type,
+                                    const EngineTypedValue& typed,
+                                    std::size_t inline_bytes,
+                                    std::vector<scratchbird::core::platform::byte>* out) {
+  if (out == nullptr || !DirectBinaryIntegerPayloadCompatible(target_type,
+                                                              typed,
+                                                              inline_bytes)) {
+    return false;
+  }
+  if (inline_bytes != 0 && typed.binary_value.size() == inline_bytes) {
+    *out = typed.binary_value;
+    return true;
+  }
+  std::int64_t parsed = 0;
+  if (!DirectReadBinarySignedI64(typed, &parsed)) {
+    return false;
+  }
+  if (DirectTargetIsSignedInteger(target_type)) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &parsed, sizeof(parsed));
+    DirectAppendLittleUnsigned(out, bits, inline_bytes);
+    return true;
+  }
+  if (DirectTargetIsUnsignedInteger(target_type)) {
+    DirectAppendLittleUnsigned(out,
+                               static_cast<std::uint64_t>(parsed),
+                               inline_bytes);
+    return true;
+  }
+  return false;
+}
+
 bool DirectParseIntervalPayload(std::string_view text,
                                 std::vector<scratchbird::core::platform::byte>* out) {
   std::int64_t seconds = 0;
@@ -4403,6 +4530,9 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
     *out = typed.binary_value;
     return true;
   }
+  if (DirectPackBinaryIntegerPayload(target_type, typed, inline_bytes, out)) {
+    return true;
+  }
   switch (target_type) {
     case dt::CanonicalTypeId::character:
       out->assign(typed.encoded_value.begin(), typed.encoded_value.end());
@@ -4573,6 +4703,15 @@ std::string DirectFixedWidthTypedPayloadFailure(
     const auto layout = dt::LookupDatatypeStorageLayout(target_type);
     if (!layout.ok() ||
         layout.layout.storage_class != dt::DatatypeStorageClass::inline_fixed) {
+      continue;
+    }
+    const std::size_t inline_bytes =
+        static_cast<std::size_t>(layout.layout.inline_bytes);
+    if (DirectBinaryIntegerPayloadCompatible(target_type, typed, inline_bytes)) {
+      continue;
+    }
+    if (!typed.binary_value.empty() &&
+        (inline_bytes == 0 || typed.binary_value.size() == inline_bytes)) {
       continue;
     }
     std::vector<scratchbird::core::platform::byte> payload;
@@ -6593,7 +6732,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto phase_start = DirectSteadyClock::now();
   auto phase_last = phase_start;
   std::vector<std::pair<std::string, EngineApiU64>> phase_micros;
-  phase_micros.reserve(26);
+  phase_micros.reserve(32);
   std::vector<EngineEvidenceReference> descriptor_trace;
   descriptor_trace.reserve(8);
   const auto mark_phase = [&](std::string phase) {
@@ -7068,6 +7207,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       }
     }
   }
+  mark_phase("native_bulk_payload_validate");
   if (!suppress_payload_rows) {
     returning_rows.reserve(direct_row_count);
   }
