@@ -500,6 +500,55 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
           LoadDescriptorColumnNamesForCompactInsert(*request, column_count);
     }
   }
+  std::vector<std::string> shared_field_order;
+  if (!explicit_column_list) {
+    shared_field_order = descriptor_columns;
+  } else {
+    shared_field_order.reserve(static_cast<std::size_t>(
+        std::min<std::uint64_t>(column_count, 1024)));
+    for (std::uint64_t column_index = 0; column_index < column_count;
+         ++column_index) {
+      const auto& cell = cells[static_cast<std::size_t>(column_index)];
+      if (cell.name.empty() || LooksLikeOrdinalInsertFieldName(cell.name)) {
+        shared_field_order.clear();
+        break;
+      }
+      shared_field_order.push_back(cell.name);
+    }
+    if (!shared_field_order.empty()) {
+      const auto descriptor_order =
+          LoadDescriptorColumnNamesForCompactInsert(*request, column_count);
+      if (descriptor_order.size() < shared_field_order.size() ||
+          !std::equal(shared_field_order.begin(),
+                      shared_field_order.end(),
+                      descriptor_order.begin())) {
+        shared_field_order.clear();
+      }
+    }
+  }
+  if (!shared_field_order.empty()) {
+    bool complete_shared_order = shared_field_order.size() >= column_count;
+    for (const auto& column : shared_field_order) {
+      if (column.empty()) {
+        complete_shared_order = false;
+        break;
+      }
+    }
+    if (complete_shared_order) {
+      request->shared_row_field_order = shared_field_order;
+      const bool already_marked = std::any_of(
+          request->option_envelopes.begin(),
+          request->option_envelopes.end(),
+          [](const std::string& option) {
+            return option == "sblr.canonical_rowset_shared_shape=true" ||
+                   option.rfind("sblr.canonical_rowset_shared_shape:", 0) == 0;
+          });
+      if (!already_marked) {
+        request->option_envelopes.push_back(
+            "sblr.canonical_rowset_shared_shape=true");
+      }
+    }
+  }
   request->rows.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
       row_count,
       static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))));
@@ -537,6 +586,10 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
   }
   request->option_envelopes.push_back(
       "sblr.compact_insert_rowset_materialized=true");
+  if (!request->shared_row_field_order.empty()) {
+    request->option_envelopes.push_back(
+        "sblr.compact_insert_shared_field_order=true");
+  }
   if (envelope.operation_id != "dml.insert_rows") {
     request->option_envelopes.push_back(
         "sblr.compact_native_rowset_materialized=true");

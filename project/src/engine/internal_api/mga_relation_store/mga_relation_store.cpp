@@ -4248,6 +4248,164 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
   return OkDiagnostic();
 }
 
+EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
+    std::vector<CrudRowVersionRecord>* rows,
+    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+        value_batch,
+    std::vector<std::uint64_t>* written_event_sequences) {
+  if (value_batch == nullptr) {
+    return AppendRowVersions(rows, written_event_sequences);
+  }
+  if (impl_->context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+  }
+  if (rows == nullptr || rows->empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
+  }
+  if (value_batch->size() != rows->size()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "row_value_batch_shape_invalid");
+  }
+  if (!impl_->row_out.is_open()) {
+    impl_->row_out.open(RowStorePath(impl_->context),
+                        std::ios::app | std::ios::binary);
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "row_version_append_failed");
+    }
+    ++impl_->counters.row_stream_opens;
+  }
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context,
+      "row_versions",
+      RowStorePath(impl_->context),
+      static_cast<std::uint64_t>(rows->size()),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) { return reservation.diagnostic; }
+  ++impl_->counters.row_range_reservations;
+  std::uint64_t event_sequence = reservation.first;
+  std::string row_buffer;
+  row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
+  const std::string single_table_uuid = rows->front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(rows->begin()), rows->end(), [&](const auto& row) {
+        return row.table_uuid == single_table_uuid;
+      });
+  std::string single_scoped_path;
+  std::string* single_scoped_buffer = nullptr;
+  std::vector<CrudRowVersionRecord>* single_decoded_appends = nullptr;
+  ScopedRelationSummaryDelta* single_summary_delta = nullptr;
+  std::map<std::string, std::size_t> rows_per_table;
+  std::map<std::string, std::string> scoped_row_path_by_table;
+  if (single_table_batch) {
+    single_scoped_path = ScopedRowStorePath(impl_->context, single_table_uuid);
+    single_scoped_buffer = &impl_->scoped_row_lines[single_scoped_path];
+    single_scoped_buffer->reserve(
+        single_scoped_buffer->size() +
+        rows->size() * kHotAppendRowLineReserveBytes);
+    if (rows->size() <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+      single_decoded_appends =
+          &impl_->scoped_decoded_row_appends[single_scoped_path];
+      single_decoded_appends->reserve(single_decoded_appends->size() +
+                                      rows->size());
+    }
+    single_summary_delta = &impl_->scoped_row_summary_deltas[single_table_uuid];
+    auto& summary_delta = *single_summary_delta;
+    if (summary_delta.row_version_count == 0 &&
+        summary_delta.tombstone_count == 0 &&
+        summary_delta.update_count == 0) {
+      summary_delta.first_scoped_write =
+          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                        single_table_uuid));
+    }
+  } else {
+    for (const auto& row : *rows) {
+      ++rows_per_table[row.table_uuid];
+    }
+    for (const auto& [table_uuid, row_count] : rows_per_table) {
+      const std::string scoped_path = ScopedRowStorePath(impl_->context, table_uuid);
+      std::string& scoped_buffer = impl_->scoped_row_lines[scoped_path];
+      scoped_buffer.reserve(scoped_buffer.size() +
+                            row_count * kHotAppendRowLineReserveBytes);
+      scoped_row_path_by_table.emplace(table_uuid, scoped_path);
+      if (row_count <= kScopedDecodedRowCacheMaxAutoWarmRows) {
+        auto& decoded_appends = impl_->scoped_decoded_row_appends[scoped_path];
+        decoded_appends.reserve(decoded_appends.size() + row_count);
+      }
+      auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+      if (summary_delta.row_version_count == 0 &&
+          summary_delta.tombstone_count == 0 &&
+          summary_delta.update_count == 0) {
+        summary_delta.first_scoped_write =
+            !FileExistsAndNotEmpty(scoped_path) &&
+            !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                          table_uuid));
+      }
+    }
+  }
+  for (std::size_t index = 0; index < rows->size(); ++index) {
+    auto& writable = (*rows)[index];
+    const auto& values = (*value_batch)[index];
+    writable.event_sequence = event_sequence++;
+    writable.sequence = writable.event_sequence;
+    const std::size_t line_start = row_buffer.size();
+    AppendRowVersionStoreLine(&row_buffer,
+                              writable,
+                              writable.event_sequence,
+                              values);
+    row_buffer.push_back('\n');
+    const std::string& scoped_path =
+        single_table_batch
+            ? single_scoped_path
+            : scoped_row_path_by_table.find(writable.table_uuid)->second;
+    std::string& scoped_buffer =
+        single_table_batch ? *single_scoped_buffer
+                           : impl_->scoped_row_lines[scoped_path];
+    scoped_buffer.append(row_buffer.data() + line_start,
+                         row_buffer.size() - line_start);
+    std::vector<CrudRowVersionRecord>* decoded_appends = nullptr;
+    if (single_table_batch) {
+      decoded_appends = single_decoded_appends;
+    } else {
+      auto decoded = impl_->scoped_decoded_row_appends.find(scoped_path);
+      if (decoded != impl_->scoped_decoded_row_appends.end()) {
+        decoded_appends = &decoded->second;
+      }
+    }
+    if (decoded_appends != nullptr) {
+      CrudRowVersionRecord cache_row = writable;
+      cache_row.values = values;
+      decoded_appends->push_back(std::move(cache_row));
+    }
+    auto& summary_delta = single_table_batch
+                              ? *single_summary_delta
+                              : impl_->scoped_row_summary_deltas[writable.table_uuid];
+    ++summary_delta.row_version_count;
+    if (writable.deleted) {
+      ++summary_delta.tombstone_count;
+    }
+    if (!writable.previous_version_uuid.empty()) {
+      ++summary_delta.update_count;
+    }
+    impl_->row_dirty = true;
+    ++impl_->counters.row_versions_appended;
+    if (written_event_sequences != nullptr) {
+      written_event_sequences->push_back(writable.event_sequence);
+    }
+  }
+  if (!row_buffer.empty()) {
+    impl_->row_out.write(row_buffer.data(),
+                         static_cast<std::streamsize>(row_buffer.size()));
+    if (!impl_->row_out) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "row_version_append_failed");
+    }
+  }
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows) {
   return AppendRowVersionsReadOnly(
