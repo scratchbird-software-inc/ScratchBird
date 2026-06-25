@@ -1626,8 +1626,16 @@ bool DirectSortableTypedIndexPayload(
       return true;
     }
     default:
-      return false;
+      break;
   }
+  const auto layout = dt::LookupDatatypeStorageLayout(target_type);
+  if (layout.ok() &&
+      layout.layout.storage_class != dt::DatatypeStorageClass::inline_fixed &&
+      !raw.empty()) {
+    *out = std::move(raw);
+    return true;
+  }
+  return false;
 }
 
 const EngineTypedValue* DirectTypedValueForColumn(

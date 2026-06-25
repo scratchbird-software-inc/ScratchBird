@@ -681,7 +681,25 @@ api::CrudTableRecord DescriptorPayloadTable(const Fixture& fixture,
   return table;
 }
 
-Fixture MakeDescriptorPayloadFixture(std::string name, platform::u64 salt) {
+api::CrudIndexRecord DescriptorPayloadUniqueIndex(
+    const Fixture& fixture,
+    const api::EngineRequestContext& context,
+    const std::string& column_name,
+    platform::u64 salt) {
+  api::CrudIndexRecord index;
+  index.creator_tx = context.local_transaction_id;
+  index.index_uuid = NewUuidText(platform::UuidKind::object, salt);
+  index.table_uuid = fixture.table_uuid;
+  index.column_name = column_name;
+  index.family = api::kCrudIndexFamilyBtree;
+  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  index.unique = true;
+  return index;
+}
+
+Fixture MakeDescriptorPayloadFixture(std::string name,
+                                     platform::u64 salt,
+                                     bool with_descriptor_indexes = false) {
   Fixture fixture;
   fixture.salt = salt;
   fixture.dir = std::filesystem::temp_directory_path() /
@@ -707,6 +725,20 @@ Fixture MakeDescriptorPayloadFixture(std::string name, platform::u64 salt) {
   const auto table = api::AppendMgaTableMetadata(
       metadata, DescriptorPayloadTable(fixture, metadata));
   Require(!table.error, "CDP-040 descriptor payload table metadata append failed");
+  if (with_descriptor_indexes) {
+    platform::u64 index_salt = salt + 200;
+    const auto& types = DescriptorPayloadTypeNames();
+    for (std::size_t index = 0; index < types.size(); ++index) {
+      const auto created_index = api::AppendMgaIndexMetadata(
+          metadata,
+          DescriptorPayloadUniqueIndex(fixture,
+                                       metadata,
+                                       DescriptorPayloadColumnName(index),
+                                       index_salt++));
+      Require(!created_index.error,
+              "CDP-040 descriptor payload index metadata append failed");
+    }
+  }
   Commit(metadata);
   return fixture;
 }
@@ -1432,6 +1464,48 @@ void TestDescriptorPayloadRowPageStorage() {
   }
 }
 
+void TestDescriptorPayloadIndexKeysUseBinaryPayloads() {
+  auto fixture =
+      MakeDescriptorPayloadFixture("descriptor_payload_index_keys",
+                                   1875,
+                                   true);
+  auto context = Begin(fixture, "cdp040-descriptor-payload-index-keys");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {DescriptorPayloadRow(1)}));
+  RequireOk(result, "CDP-040 descriptor payload index native bulk ingest failed");
+  const auto expected =
+      static_cast<api::EngineApiU64>(DescriptorPayloadTypeNames().size());
+  const auto candidates =
+      EvidenceU64(result.evidence, "direct_index_key_typed_candidates");
+  const auto encoded =
+      EvidenceU64(result.evidence, "direct_index_key_typed_encoded");
+  const auto fallback =
+      EvidenceU64(result.evidence, "direct_index_key_typed_fallback");
+  const auto sbkohex =
+      EvidenceU64(result.evidence, "direct_index_key_sbkohex_keys");
+  Require(candidates == expected,
+          "CDP-040 descriptor payload indexes did not inspect every typed key");
+  Require(encoded == expected,
+          "CDP-040 descriptor payload indexes did not encode every typed key");
+  Require(fallback == 0,
+          "CDP-040 descriptor payload indexes fell back to display text");
+  Require(sbkohex == expected,
+          "CDP-040 descriptor payload indexes did not emit SBKOHEX keys");
+
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok, "CDP-040 descriptor payload index state reload failed");
+  api::EngineApiU64 sbkohex_count = 0;
+  for (const auto& entry : loaded.state.index_entries) {
+    if (entry.table_uuid == fixture.table_uuid &&
+        entry.key_value.rfind("SBKOHEX:", 0) == 0) {
+      ++sbkohex_count;
+    }
+  }
+  Require(sbkohex_count == expected,
+          "CDP-040 descriptor payload persisted index keys were not SBKOHEX");
+  Commit(context);
+}
+
 api::CrudTableRecord OpaqueRenderOnlyPayloadTable(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
@@ -1764,6 +1838,7 @@ int main() {
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();
   TestDescriptorPayloadRowPageStorage();
+  TestDescriptorPayloadIndexKeysUseBinaryPayloads();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
   TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
   TestDisabledAndInvalidRefusals();
