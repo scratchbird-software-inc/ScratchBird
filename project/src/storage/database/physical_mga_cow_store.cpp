@@ -17,7 +17,10 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <set>
@@ -75,6 +78,39 @@ using scratchbird::transaction::mga::VisibilitySnapshot;
 
 Status CowStoreOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_page};
+}
+
+using PhysicalCowSteadyClock = std::chrono::steady_clock;
+
+u64 PhysicalCowElapsedMicros(PhysicalCowSteadyClock::time_point start,
+                             PhysicalCowSteadyClock::time_point finish) {
+  return static_cast<u64>(
+      std::chrono::duration_cast<std::chrono::microseconds>(finish - start)
+          .count());
+}
+
+void WritePhysicalCowBatchPhaseTrace(
+    u64 row_count,
+    u64 pages_written,
+    const std::vector<std::pair<std::string, u64>>& phase_micros) {
+  const char* trace_path =
+      std::getenv("SCRATCHBIRD_PHYSICAL_MGA_COW_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') {
+    return;
+  }
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) {
+    return;
+  }
+  out << "operation=storage.physical_mga_cow.batch"
+      << "\trows=" << row_count
+      << "\tpages_written=" << pages_written;
+  u64 total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << "\ttotal_us=" << total << '\n';
 }
 
 Status CowStoreErrorStatus() {
@@ -807,6 +843,17 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
 
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     PhysicalMgaCowMutationBatchRequest request) {
+  const auto trace_start = PhysicalCowSteadyClock::now();
+  auto trace_last = trace_start;
+  std::vector<std::pair<std::string, u64>> phase_micros;
+  phase_micros.reserve(10);
+  const auto mark_phase = [&](std::string phase) {
+    const auto now = PhysicalCowSteadyClock::now();
+    phase_micros.push_back(
+        {std::move(phase), PhysicalCowElapsedMicros(trace_last, now)});
+    trace_last = now;
+  };
+
   if (request.mutations.empty()) {
     return ErrorResult<PhysicalMgaCowMutationBatchResult>(
         "SB-PHYSICAL-MGA-COW-BATCH-EMPTY",
@@ -825,6 +872,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
         "SB-PHYSICAL-MGA-COW-BATCH-EXISTING-TRANSACTION-REQUIRED",
         "storage.physical_mga_cow.batch_existing_transaction_required");
   }
+  mark_phase("validate_first");
 
   FileDevice device;
   const auto open = device.Open(first.database_path, FileOpenMode::open_existing);
@@ -832,11 +880,13 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     return Propagate<PhysicalMgaCowMutationBatchResult>(open.status,
                                                         open.diagnostic);
   }
+  mark_phase("open_device");
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowMutationBatchResult>(context.status,
                                                         context.diagnostic);
   }
+  mark_phase("load_database_context");
   const auto loaded_inventory =
       LoadLocalTransactionInventoryFromOpenDevice(&device, context.page_size);
   if (!loaded_inventory.ok()) {
@@ -844,6 +894,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
         loaded_inventory.status,
         loaded_inventory.diagnostic);
   }
+  mark_phase("load_transaction_inventory");
 
   LocalTransactionInventory active_inventory = loaded_inventory.inventory;
   const auto existing =
@@ -867,12 +918,14 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
         "storage.physical_mga_cow.transaction_not_active");
   }
   const TransactionInventoryEntry active_entry = existing.entry;
+  mark_phase("lookup_transaction");
   const auto initial_device_size = device.Size();
   if (!initial_device_size.ok()) {
     return Propagate<PhysicalMgaCowMutationBatchResult>(
         initial_device_size.status,
         initial_device_size.diagnostic);
   }
+  mark_phase("initial_device_size");
 
   std::map<u64, RowDataPageBody> page_cache;
   std::map<u64, bool> page_empty_on_load;
@@ -1045,6 +1098,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     }
     row_page.rows.push_back(std::move(new_row));
   }
+  mark_phase("stage_page_mutations");
 
   PhysicalMgaCowMutationBatchResult result;
   result.status = CowStoreOkStatus();
@@ -1060,6 +1114,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     }
     ++result.pages_written;
   }
+  mark_phase("write_pages");
   if (request.sync_after_batch) {
     const auto sync = device.Sync();
     if (!sync.ok()) {
@@ -1067,6 +1122,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
                                                           sync.diagnostic);
     }
   }
+  mark_phase("sync");
   result.written_rows = static_cast<u64>(request.mutations.size());
   result.evidence.push_back("physical_mga_cow.batch=true");
   result.evidence.push_back("physical_mga_cow.batch_database_open_once=true");
@@ -1088,6 +1144,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
                             std::to_string(result.written_rows));
   result.evidence.push_back("physical_mga_cow.batch_pages_written=" +
                             std::to_string(result.pages_written));
+  WritePhysicalCowBatchPhaseTrace(result.written_rows,
+                                  result.pages_written,
+                                  phase_micros);
   return result;
 }
 

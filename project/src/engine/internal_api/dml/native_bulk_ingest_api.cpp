@@ -170,9 +170,6 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
   direct.require_generated_row_uuid = request.require_generated_row_uuid;
   direct.strict_bulk_load_requested = request.import_policy.strict_bulk_load_requested;
   direct.direct_lane_enabled = NativeDirectPhysicalLaneEnabled(request);
-  if (row_count == request.canonical_rows.size()) {
-    direct.option_envelopes.push_back("native_bulk.single_window=true");
-  }
   return direct;
 }
 
