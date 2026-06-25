@@ -3089,12 +3089,12 @@ if(TARGET sb_core_datatypes)
   )
 
   add_test(
-    NAME database_lifecycle_current_core_datatype_comparison_cast_gate
-    COMMAND database_lifecycle_current_core_datatype_comparison_cast_gate
-  )
-  set_tests_properties(database_lifecycle_current_core_datatype_comparison_cast_gate PROPERTIES
-    LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;DEFER-DPE-COMPARISON-KEYS;DEFER-DPE-CAST-STORAGE;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
-  )
+  NAME database_lifecycle_current_core_datatype_comparison_cast_gate
+  COMMAND database_lifecycle_current_core_datatype_comparison_cast_gate
+)
+set_tests_properties(database_lifecycle_current_core_datatype_comparison_cast_gate PROPERTIES
+  LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;CURRENT-CORE-DATATYPE-COMPARISON-KEYS;CURRENT-CORE-DATATYPE-CAST-STORAGE;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
 
   add_executable(database_lifecycle_current_core_datatype_metrics_redaction_gate
     current_core_datatype_metrics_redaction_gate.cpp
