@@ -226,6 +226,11 @@ class MgaRelationHotAppendContext {
   EngineApiDiagnostic AppendRowVersions(
       std::vector<CrudRowVersionRecord>* rows,
       std::vector<std::uint64_t>* written_event_sequences);
+  EngineApiDiagnostic AppendRowVersions(
+      std::vector<CrudRowVersionRecord>* rows,
+      const std::vector<std::vector<std::pair<std::string, std::string>>>*
+          value_batch,
+      std::vector<std::uint64_t>* written_event_sequences);
   EngineApiDiagnostic AppendRowVersionsReadOnly(
       const std::vector<CrudRowVersionRecord>& rows);
   EngineApiDiagnostic AppendRowVersionsReadOnly(

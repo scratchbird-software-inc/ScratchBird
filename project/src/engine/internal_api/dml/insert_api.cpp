@@ -1554,8 +1554,14 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
   direct.context = request.context;
   direct.target_table = request.target_table;
   direct.borrowed_input_rows = input_rows;
+  if (!request.shared_row_field_order.empty()) {
+    direct.shared_row_field_order = std::span<const std::string>(
+        request.shared_row_field_order.data(),
+        request.shared_row_field_order.size());
+  }
   direct.option_envelopes = request.option_envelopes;
-  if (InsertRowsShareFieldOrder(input_rows) &&
+  if ((!direct.shared_row_field_order.empty() ||
+       InsertRowsShareFieldOrder(input_rows)) &&
       !InsertOptionKeyPresent(direct.option_envelopes,
                               "sblr.canonical_rowset_shared_shape")) {
     direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");

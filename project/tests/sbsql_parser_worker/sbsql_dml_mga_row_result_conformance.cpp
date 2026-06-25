@@ -2838,6 +2838,10 @@ api::EngineApiResult InsertBulkRowsIntoTable(const std::filesystem::path& databa
           "bulk insert direct physical row count evidence missing");
   Require(HasEvidence(inserted.api_result, "direct_mga_append", "row_version_batch"),
           "bulk insert direct MGA append evidence missing");
+  Require(HasEvidence(inserted.api_result,
+                      "shared_rowset_value_batch_ownership",
+                      "external_logical_batch"),
+          "bulk insert shared-rowset external value batch evidence missing");
   return inserted.api_result;
 }
 

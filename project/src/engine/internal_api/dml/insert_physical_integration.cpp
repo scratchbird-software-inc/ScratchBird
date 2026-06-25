@@ -4630,11 +4630,12 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
   const std::uint64_t row_offset =
       DirectOptionU64(request, "physical_mga_cow.row_offset", 0);
   const bool use_typed_input_rows =
-      request.lane_operation == "native_bulk" &&
       request.borrowed_input_rows.size() == staged_rows.size() &&
       !request.shared_row_field_order.empty() &&
       row_encoder_plan != nullptr &&
-      row_encoder_plan->columns.size() == request.shared_row_field_order.size();
+      row_encoder_plan->columns.size() == request.shared_row_field_order.size() &&
+      DirectSharedFieldOrderMatchesEncoderOrder(request.shared_row_field_order,
+                                                *row_encoder_plan);
   std::uint64_t typed_int64_cells = 0;
   std::uint64_t typed_binary_cells = 0;
   std::uint64_t typed_null_cells = 0;
@@ -7014,6 +7015,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       !has_default_validators &&
       !has_domain_validators &&
       !has_check_validators;
+  const bool can_stage_shared_values_externally =
+      can_use_shared_row_stage_fast_path;
   if (can_use_shared_row_stage_fast_path && can_use_direct_not_null_validation &&
       !request.borrowed_input_rows.empty()) {
     not_null_ordinal_mask.assign(request.borrowed_input_rows.front().fields.size(), 0);
@@ -7287,8 +7290,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
     if (can_use_shared_row_stage_fast_path) {
       const auto convert_start = row_stage_timer_start();
-      const bool stage_values_externally_for_native_bulk =
-          request.lane_operation == "native_bulk";
+      const bool stage_values_externally_for_shared_rowset =
+          can_stage_shared_values_externally;
       CrudRowVersionRecord row_record;
       row_record.creator_tx = request.context.local_transaction_id;
       row_record.table_uuid = request.target_table.uuid.canonical;
@@ -7299,8 +7302,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       row_record.deleted = false;
       std::vector<std::pair<std::string, std::string>> external_row_values;
       auto& staged_value_target =
-          stage_values_externally_for_native_bulk ? external_row_values
-                                                  : row_record.values;
+          stage_values_externally_for_shared_rowset ? external_row_values
+                                                    : row_record.values;
       staged_value_target.reserve(input_row.fields.size());
 
       std::uint64_t encoded_bytes = 0;
@@ -7396,7 +7399,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                 security_recheck_start);
         }
         const auto logical_batch_start = row_stage_timer_start();
-        if (stage_values_externally_for_native_bulk) {
+        if (stage_values_externally_for_shared_rowset) {
           logical_value_batch.push_back(std::move(external_row_values));
         } else {
           logical_value_batch.push_back(row_record.values);
@@ -7655,8 +7658,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                             row_stage_preallocation_enqueue_us});
     phase_micros.push_back({"row_stage.row_push", row_stage_row_push_us});
   }
+  if (can_stage_shared_values_externally) {
+    result.evidence.push_back({"shared_rowset_value_batch_ownership",
+                               "external_logical_batch"});
+  }
   if (request.lane_operation == "native_bulk" &&
-      can_use_shared_row_stage_fast_path) {
+      can_stage_shared_values_externally) {
     result.evidence.push_back({"native_bulk_value_batch_ownership",
                                "external_logical_batch"});
   }
@@ -7692,17 +7699,23 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       result.evidence.push_back({"insert_select_generated_index_precompute",
                                  "counter_lexicographic"});
     } else {
-      direct_precomputed_index_entries =
-          DirectPrecomputeIndexEntries(synchronous_indexes,
-                                       staged_rows,
-                                       logical_value_batch,
-                                       request.lane_operation == "native_bulk"
-                                           ? request.borrowed_input_rows
-                                           : std::span<const EngineRowValue>{},
-                                       request.lane_operation == "native_bulk"
-                                           ? &batch_context.row_encoder_plan
-                                           : nullptr,
-                                       &direct_typed_index_key_stats);
+		      const bool shared_typed_input_rows =
+		          !request.shared_row_field_order.empty() &&
+		          request.borrowed_input_rows.size() == staged_rows.size() &&
+		          DirectSharedFieldOrderMatchesEncoderOrder(
+		              request.shared_row_field_order,
+		              batch_context.row_encoder_plan);
+		      direct_precomputed_index_entries =
+		          DirectPrecomputeIndexEntries(synchronous_indexes,
+		                                       staged_rows,
+		                                       logical_value_batch,
+		                                       shared_typed_input_rows
+		                                           ? request.borrowed_input_rows
+		                                           : std::span<const EngineRowValue>{},
+		                                       shared_typed_input_rows
+		                                           ? &batch_context.row_encoder_plan
+		                                           : nullptr,
+		                                       &direct_typed_index_key_stats);
     }
     if (direct_typed_index_key_stats.typed_key_candidates != 0) {
       result.evidence.push_back(
@@ -8067,11 +8080,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   mark_phase("large_value_persist");
 
 	  DirectPhysicalMgaCowWriteResult row_page_write;
-	  const auto* external_write_value_batch =
-	      (generated_counter_direct_input || request.lane_operation == "native_bulk") &&
-	              !large_value_persistence_required
-	          ? &logical_value_batch
-	          : nullptr;
+		  const auto* external_write_value_batch =
+          (generated_counter_direct_input || can_stage_shared_values_externally) &&
+		              !large_value_persistence_required
+		          ? &logical_value_batch
+		          : nullptr;
   MgaRelationHotAppendContext hot_append(request.context);
   std::vector<std::uint64_t> written_event_sequences;
   EngineApiU64 row_stream_append_us = 0;
@@ -8134,8 +8147,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                          : hot_append.AppendRowVersionsReadOnly(
 	                                staged_rows,
 	                                external_write_value_batch))
-	                   : hot_append.AppendRowVersions(&staged_rows,
-	                                                  &written_event_sequences);
+                   : hot_append.AppendRowVersions(&staged_rows,
+                                                  external_write_value_batch,
+                                                  &written_event_sequences);
            row_stream_append_us =
                DirectElapsedMicros(append_start, DirectSteadyClock::now());
            if (appended.error) {
