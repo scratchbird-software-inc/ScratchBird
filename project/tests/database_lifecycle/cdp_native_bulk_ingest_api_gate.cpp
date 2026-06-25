@@ -9,6 +9,7 @@
 #include "database_dirty_manifest.hpp"
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_operations.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
 #include "memory.hpp"
@@ -1368,6 +1369,25 @@ void TestDescriptorPayloadRowPageStorage() {
   Require(SelectCount(fixture, context) == 2,
           "CDP-040 descriptor payload rows were not visible in writer transaction");
   Commit(context);
+
+  const auto page = ReadPhysicalPage(fixture, 1024);
+  Require(page.visible_rows.size() == 2,
+          "CDP-040 descriptor physical row-page visible count drifted");
+  std::map<dt::CanonicalTypeId, api::EngineApiU64> recovered_counts;
+  for (const auto& row : page.visible_rows) {
+    for (const auto& cell : row.cells) {
+      if (!cell.value.is_null) {
+        ++recovered_counts[cell.value.type_id];
+      }
+    }
+  }
+  for (const auto& type : types) {
+    const auto type_id = dt::CanonicalTypeIdFromStableName(type);
+    Require(type_id != dt::CanonicalTypeId::unknown,
+            "CDP-040 descriptor payload fixture used an unknown canonical type");
+    Require(recovered_counts[type_id] == 2,
+            "CDP-040 recovered descriptor row-page cell was not typed");
+  }
 }
 
 api::CrudTableRecord OpaqueRenderOnlyPayloadTable(
