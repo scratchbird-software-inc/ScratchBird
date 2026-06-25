@@ -311,6 +311,15 @@ struct CopyImportState {
   bool native_bulk_ingest_enabled{true};
   std::string sql;
   std::string target_object_uuid;
+  std::string prepared_statement_uuid;
+  std::string prepared_operation_id;
+  std::uint64_t prepared_catalog_epoch{0};
+  std::uint64_t prepared_security_policy_epoch{0};
+  std::uint64_t prepared_grant_epoch{0};
+  std::uint64_t prepared_descriptor_epoch{0};
+  std::uint64_t prepared_localized_name_epoch{0};
+  std::uint64_t prepared_language_resource_epoch{0};
+  std::uint64_t prepared_message_resource_epoch{0};
   std::string format_family{"canonical_row_fields"};
   std::uint8_t copy_data_format{kCopyFormatCanonicalRowFieldsText};
   std::uint32_t window_bytes{kCopyDefaultWindowBytes};
@@ -318,6 +327,9 @@ struct CopyImportState {
   std::uint64_t preallocation_bytes{0};
   std::uint64_t preallocation_factor_percent{82};
   std::string target_name;
+  bool aggregate_result_active{false};
+  PipelineResult aggregate_result;
+  std::size_t aggregate_chunk_count{0};
   std::vector<CopyImportRow> rows;
   std::vector<NativeCopyPacket> native_packets;
 };
@@ -1130,6 +1142,32 @@ void CaptureSimpleInsertRowsetAuthorityEpochs(
   entry->localized_name_epoch = context.localized_name_epoch;
   entry->language_resource_epoch = context.language_resource_epoch;
   entry->message_resource_epoch = context.message_resource_epoch;
+}
+
+bool CopyPreparedHandleCurrent(const CopyImportState& copy,
+                               const SessionContext& context) {
+  return !copy.prepared_statement_uuid.empty() &&
+         !copy.target_object_uuid.empty() &&
+         copy.prepared_catalog_epoch == context.catalog_epoch &&
+         copy.prepared_security_policy_epoch == context.security_policy_epoch &&
+         copy.prepared_grant_epoch == context.grant_epoch &&
+         copy.prepared_descriptor_epoch == context.descriptor_epoch &&
+         copy.prepared_localized_name_epoch == context.localized_name_epoch &&
+         copy.prepared_language_resource_epoch == context.language_resource_epoch &&
+         copy.prepared_message_resource_epoch == context.message_resource_epoch;
+}
+
+void CaptureCopyPreparedAuthorityEpochs(const SbsqlTestWireSession& session,
+                                        CopyImportState* copy) {
+  if (copy == nullptr) return;
+  const auto& context = session.session();
+  copy->prepared_catalog_epoch = context.catalog_epoch;
+  copy->prepared_security_policy_epoch = context.security_policy_epoch;
+  copy->prepared_grant_epoch = context.grant_epoch;
+  copy->prepared_descriptor_epoch = context.descriptor_epoch;
+  copy->prepared_localized_name_epoch = context.localized_name_epoch;
+  copy->prepared_language_resource_epoch = context.language_resource_epoch;
+  copy->prepared_message_resource_epoch = context.message_resource_epoch;
 }
 
 bool SbwpOperationInvalidatesSimpleInsertPreparedCache(std::string_view operation_id) {
@@ -2305,6 +2343,11 @@ bool CopyRowsHaveSharedShape(const CopyImportState& copy,
 enum class NativeRowColumnType : std::uint8_t {
   kText = 1,
   kInt64 = 2,
+  kBoolean = 3,
+  kInt32 = 4,
+  kUInt64 = 5,
+  kReal64 = 6,
+  kBinary = 7,
 };
 
 std::optional<std::int64_t> ParseLosslessNativeInt64(std::string_view value) {
@@ -2318,6 +2361,58 @@ std::optional<std::int64_t> ParseLosslessNativeInt64(std::string_view value) {
   return parsed;
 }
 
+std::optional<std::int32_t> ParseLosslessNativeInt32(std::string_view value) {
+  const auto parsed = ParseLosslessNativeInt64(value);
+  if (!parsed.has_value() ||
+      *parsed < std::numeric_limits<std::int32_t>::min() ||
+      *parsed > std::numeric_limits<std::int32_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::int32_t>(*parsed);
+}
+
+std::optional<std::uint64_t> ParseLosslessNativeUInt64(std::string_view value) {
+  if (value.empty() || value.front() == '-') return std::nullopt;
+  std::uint64_t parsed = 0;
+  const auto* begin = value.data();
+  const auto* end = begin + value.size();
+  const auto result = std::from_chars(begin, end, parsed, 10);
+  if (result.ec != std::errc{} || result.ptr != end) return std::nullopt;
+  if (std::to_string(parsed) != value) return std::nullopt;
+  return parsed;
+}
+
+bool NativeAsciiEqualIgnoreCase(std::string_view left, std::string_view right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (std::tolower(static_cast<unsigned char>(left[index])) !=
+        std::tolower(static_cast<unsigned char>(right[index]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<bool> ParseLosslessNativeBool(std::string_view value) {
+  if (NativeAsciiEqualIgnoreCase(value, "true")) return true;
+  if (NativeAsciiEqualIgnoreCase(value, "false")) return false;
+  return std::nullopt;
+}
+
+std::optional<double> ParseLosslessNativeReal64(std::string_view value) {
+  if (value.empty() || value.find_first_of(".eE") == std::string_view::npos) {
+    return std::nullopt;
+  }
+  double parsed = 0.0;
+  const auto* begin = value.data();
+  const auto* end = begin + value.size();
+  const auto result = std::from_chars(begin, end, parsed);
+  if (result.ec != std::errc{} || result.ptr != end || !std::isfinite(parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
 std::vector<NativeRowColumnType> InferNativeRowColumnTypes(const CopyImportState& copy,
                                                           std::size_t first_row,
                                                           std::size_t end_row) {
@@ -2327,18 +2422,36 @@ std::vector<NativeRowColumnType> InferNativeRowColumnTypes(const CopyImportState
   types.assign(column_count, NativeRowColumnType::kText);
   for (std::size_t column_index = 0; column_index < column_count; ++column_index) {
     bool saw_non_null = false;
+    bool all_bool = true;
+    bool all_int32 = true;
     bool all_lossless_int64 = true;
+    bool all_uint64 = true;
+    bool all_real64 = true;
     for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
       const auto& value = copy.rows[row_index].fields[column_index].second;
       if (!value.has_value()) continue;
       saw_non_null = true;
+      if (!ParseLosslessNativeBool(*value).has_value()) all_bool = false;
+      if (!ParseLosslessNativeInt32(*value).has_value()) all_int32 = false;
       if (!ParseLosslessNativeInt64(*value).has_value()) {
         all_lossless_int64 = false;
-        break;
       }
+      if (!ParseLosslessNativeUInt64(*value).has_value()) all_uint64 = false;
+      if (!ParseLosslessNativeReal64(*value).has_value()) all_real64 = false;
     }
-    if (saw_non_null && all_lossless_int64) {
+    if (!saw_non_null) {
+      continue;
+    }
+    if (all_bool) {
+      types[column_index] = NativeRowColumnType::kBoolean;
+    } else if (all_int32) {
+      types[column_index] = NativeRowColumnType::kInt32;
+    } else if (all_lossless_int64) {
       types[column_index] = NativeRowColumnType::kInt64;
+    } else if (all_uint64) {
+      types[column_index] = NativeRowColumnType::kUInt64;
+    } else if (all_real64) {
+      types[column_index] = NativeRowColumnType::kReal64;
     }
   }
   return types;
@@ -2348,6 +2461,26 @@ void PutI64(std::vector<std::uint8_t>* out, std::int64_t value) {
   std::uint64_t bits = 0;
   std::memcpy(&bits, &value, sizeof(value));
   PutU64(out, bits);
+}
+
+void PutDouble(std::vector<std::uint8_t>* out, double value) {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(value));
+  PutU64(out, bits);
+}
+
+bool NativeRowTypeSupported(NativeRowColumnType type) {
+  switch (type) {
+    case NativeRowColumnType::kText:
+    case NativeRowColumnType::kInt64:
+    case NativeRowColumnType::kBoolean:
+    case NativeRowColumnType::kInt32:
+    case NativeRowColumnType::kUInt64:
+    case NativeRowColumnType::kReal64:
+    case NativeRowColumnType::kBinary:
+      return true;
+  }
+  return false;
 }
 
 std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
@@ -2391,12 +2524,37 @@ std::vector<std::uint8_t> BuildNativeRowPacket(const CopyImportState& copy,
       const auto& value = row.fields[column_index].second;
       if (!value.has_value()) continue;
       switch (column_types[column_index]) {
+        case NativeRowColumnType::kBoolean: {
+          const auto parsed = ParseLosslessNativeBool(*value);
+          if (!parsed.has_value()) return {};
+          out.push_back(*parsed ? 1u : 0u);
+          break;
+        }
+        case NativeRowColumnType::kInt32: {
+          const auto parsed = ParseLosslessNativeInt32(*value);
+          if (!parsed.has_value()) return {};
+          PutI32(&out, *parsed);
+          break;
+        }
         case NativeRowColumnType::kInt64: {
           const auto parsed = ParseLosslessNativeInt64(*value);
           if (!parsed.has_value()) return {};
           PutI64(&out, *parsed);
           break;
         }
+        case NativeRowColumnType::kUInt64: {
+          const auto parsed = ParseLosslessNativeUInt64(*value);
+          if (!parsed.has_value()) return {};
+          PutU64(&out, *parsed);
+          break;
+        }
+        case NativeRowColumnType::kReal64: {
+          const auto parsed = ParseLosslessNativeReal64(*value);
+          if (!parsed.has_value()) return {};
+          PutDouble(&out, *parsed);
+          break;
+        }
+        case NativeRowColumnType::kBinary:
         case NativeRowColumnType::kText:
         default:
           PutU32(&out, static_cast<std::uint32_t>(value->size()));
@@ -2431,7 +2589,7 @@ std::optional<NativeCopyPacket> ParseNativeRowCopyPacketHeader(
   column_types.reserve(column_count);
   for (std::uint32_t i = 0; i < column_count; ++i) {
     const auto type = static_cast<NativeRowColumnType>(payload[off++]);
-    if (type != NativeRowColumnType::kText && type != NativeRowColumnType::kInt64) {
+    if (!NativeRowTypeSupported(type)) {
       return std::nullopt;
     }
     column_types.push_back(type);
@@ -2456,10 +2614,24 @@ std::optional<NativeCopyPacket> ParseNativeRowCopyPacketHeader(
            static_cast<std::uint8_t>(1u << (column_index % 8u))) != 0;
       if (is_null) continue;
       switch (column_types[column_index]) {
+        case NativeRowColumnType::kBoolean:
+          if (off + 1 > payload.size()) return std::nullopt;
+          off += 1;
+          break;
+        case NativeRowColumnType::kInt32:
+          if (off + 4 > payload.size()) return std::nullopt;
+          off += 4;
+          break;
         case NativeRowColumnType::kInt64:
           if (off + 8 > payload.size()) return std::nullopt;
           off += 8;
           break;
+        case NativeRowColumnType::kUInt64:
+        case NativeRowColumnType::kReal64:
+          if (off + 8 > payload.size()) return std::nullopt;
+          off += 8;
+          break;
+        case NativeRowColumnType::kBinary:
         case NativeRowColumnType::kText:
         default: {
           if (off + 4 > payload.size()) return std::nullopt;
@@ -2500,7 +2672,7 @@ std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
   column_types.reserve(column_count);
   for (std::uint32_t i = 0; i < column_count; ++i) {
     const auto type = static_cast<NativeRowColumnType>(payload[off++]);
-    if (type != NativeRowColumnType::kText && type != NativeRowColumnType::kInt64) {
+    if (!NativeRowTypeSupported(type)) {
       return std::nullopt;
     }
     column_types.push_back(type);
@@ -2532,6 +2704,20 @@ std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
       std::optional<std::string> value;
       if (!is_null) {
         switch (column_types[column_index]) {
+          case NativeRowColumnType::kBoolean: {
+            if (off + 1 > payload.size()) return std::nullopt;
+            value = payload[off++] == 0 ? "false" : "true";
+            break;
+          }
+          case NativeRowColumnType::kInt32: {
+            if (off + 4 > payload.size()) return std::nullopt;
+            const std::uint32_t bits = ReadU32(payload, off);
+            off += 4;
+            std::int32_t parsed = 0;
+            std::memcpy(&parsed, &bits, sizeof(parsed));
+            value = std::to_string(parsed);
+            break;
+          }
           case NativeRowColumnType::kInt64: {
             if (off + 8 > payload.size()) return std::nullopt;
             std::uint64_t bits = ReadU64(payload, off);
@@ -2541,6 +2727,22 @@ std::optional<std::vector<CopyImportRow>> ParseNativeRowCopyRows(
             value = std::to_string(parsed);
             break;
           }
+          case NativeRowColumnType::kUInt64: {
+            if (off + 8 > payload.size()) return std::nullopt;
+            value = std::to_string(ReadU64(payload, off));
+            off += 8;
+            break;
+          }
+          case NativeRowColumnType::kReal64: {
+            if (off + 8 > payload.size()) return std::nullopt;
+            const std::uint64_t bits = ReadU64(payload, off);
+            off += 8;
+            double parsed = 0.0;
+            std::memcpy(&parsed, &bits, sizeof(parsed));
+            value = std::to_string(parsed);
+            break;
+          }
+          case NativeRowColumnType::kBinary:
           case NativeRowColumnType::kText:
           default: {
             if (off + 4 > payload.size()) return std::nullopt;
@@ -2888,6 +3090,59 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
   }
   out += "operand=text\tsblr.canonical_rowset_shared_shape\ttrue\n";
   return out;
+}
+
+bool PrepareCopyNativeBulkHandle(SbsqlTestWireSession* session,
+                                 SbwpSessionState* state,
+                                 CopyImportState* copy,
+                                 std::string* diagnostic_code,
+                                 std::string* diagnostic_detail) {
+  if (diagnostic_code != nullptr) diagnostic_code->clear();
+  if (diagnostic_detail != nullptr) diagnostic_detail->clear();
+  if (session == nullptr || state == nullptr || copy == nullptr) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.PREPARED_HANDLE_CONTEXT_MISSING";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = "COPY native bulk prepare requires parser session state";
+    }
+    return false;
+  }
+  if (!copy->native_bulk_ingest) {
+    return true;
+  }
+  RefreshWireAuthorityEpochsFromSession(*session, state);
+  CopyImportState prepare_template;
+  prepare_template.native_bulk_ingest = true;
+  prepare_template.native_bulk_ingest_enabled = copy->native_bulk_ingest_enabled;
+  prepare_template.sql = copy->sql;
+  prepare_template.target_object_uuid = copy->target_object_uuid;
+  prepare_template.source_size_bytes = copy->source_size_bytes;
+  prepare_template.preallocation_bytes = copy->preallocation_bytes;
+  prepare_template.preallocation_factor_percent =
+      copy->preallocation_factor_percent;
+  const auto prepared = session->PrepareSblrForWire(
+      BuildNativeBulkIngestExecuteEnvelope(prepare_template, 0, 0));
+  RefreshWireAuthorityEpochsFromSession(*session, state);
+  if (prepared.accepted && !prepared.prepared_statement_uuid.empty()) {
+    copy->prepared_statement_uuid = prepared.prepared_statement_uuid;
+    copy->prepared_operation_id = prepared.operation_id;
+    CaptureCopyPreparedAuthorityEpochs(*session, copy);
+    return true;
+  }
+  if (diagnostic_code != nullptr) {
+    *diagnostic_code =
+        FirstDiagnosticCode(prepared.messages,
+                            "SBSQL.COPY.PREPARED_HANDLE_REFUSED");
+  }
+  if (diagnostic_detail != nullptr) {
+    *diagnostic_detail = DiagnosticFieldValue(prepared.messages, "detail");
+    if (diagnostic_detail->empty()) {
+      *diagnostic_detail =
+          "COPY native bulk path requires a server-owned prepared SBLR handle";
+    }
+  }
+  return false;
 }
 
 std::uint32_t CopyWindowBytesForSession(const SbwpSessionState& state, std::uint8_t format) {
@@ -4963,7 +5218,28 @@ bool ExecuteSql(SbsqlTestWireSession* session,
         native_bulk_ingest_enabled || native_bulk_ingest_requested;
     state->copy_import.sql = sql;
     state->copy_import.target_object_uuid = *target_uuid;
-    if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload(state))) return false;
+    const auto copy_in_response = CopyInResponsePayload(state);
+    std::string prepare_code;
+    std::string prepare_detail;
+    if (!PrepareCopyNativeBulkHandle(session,
+                                     state,
+                                     &state->copy_import,
+                                     &prepare_code,
+                                     &prepare_detail)) {
+      state->copy_import = CopyImportState{};
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     prepare_code.empty() ? "SBSQL.COPY.PREPARED_HANDLE_REFUSED"
+                                          : prepare_code,
+                     prepare_detail.empty()
+                         ? "COPY native bulk path requires a server-owned prepared SBLR handle"
+                         : prepare_detail)) {
+        return false;
+      }
+      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    if (!SendFrame(io, state, kCopyInResponse, copy_in_response)) return false;
     return true;
   }
   if (!SendPipelineResult(io, session, state, sql, result)) return false;
@@ -5165,6 +5441,118 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   return !send_ready || SendReady(io, state);
 }
 
+void EnsureNativeCopyAggregate(CopyImportState* copy) {
+  if (copy == nullptr || copy->aggregate_result_active) return;
+  copy->aggregate_result = PipelineResult{};
+  copy->aggregate_result.accepted = true;
+  copy->aggregate_result.statement_family = "dml";
+  copy->aggregate_result.operation_family = "sblr.dml.operation.v3";
+  copy->aggregate_result.server_operation_id = "dml.execute_native_bulk_ingest";
+  copy->aggregate_result_active = true;
+}
+
+void FoldNativeCopyChunkResult(CopyImportState* copy,
+                               const PipelineResult& chunk_result,
+                               std::uint64_t fallback_row_count) {
+  if (copy == nullptr) return;
+  EnsureNativeCopyAggregate(copy);
+  auto& aggregate = copy->aggregate_result;
+  aggregate.statement_family = chunk_result.statement_family;
+  aggregate.operation_family = chunk_result.operation_family;
+  aggregate.server_operation_id = chunk_result.server_operation_id;
+  aggregate.server_row_count += chunk_result.server_row_count == 0
+                                    ? fallback_row_count
+                                    : chunk_result.server_row_count;
+  aggregate.server_affected_rows +=
+      chunk_result.server_affected_rows_present
+          ? chunk_result.server_affected_rows
+          : (chunk_result.server_row_count == 0 ? fallback_row_count
+                                                : chunk_result.server_row_count);
+  aggregate.server_affected_rows_present = true;
+  if (!chunk_result.server_result_payload.empty()) {
+    if (!aggregate.server_result_payload.empty() &&
+        aggregate.server_result_payload.back() != '\n') {
+      aggregate.server_result_payload.push_back('\n');
+    }
+    aggregate.server_result_payload += chunk_result.server_result_payload;
+  }
+  ++copy->aggregate_chunk_count;
+}
+
+bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
+                                     SbwpSessionState* state,
+                                     CopyImportState* copy,
+                                     const NativeCopyPacket& packet,
+                                     bool phase_trace,
+                                     std::string* diagnostic_code,
+                                     std::string* diagnostic_detail) {
+  if (diagnostic_code != nullptr) diagnostic_code->clear();
+  if (diagnostic_detail != nullptr) diagnostic_detail->clear();
+  if (session == nullptr || state == nullptr || copy == nullptr) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.PREPARED_HANDLE_CONTEXT_MISSING";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          "COPY native packet execution requires parser session state";
+    }
+    return false;
+  }
+  RefreshWireAuthorityEpochsFromSession(*session, state);
+  if (!CopyPreparedHandleCurrent(*copy, session->session())) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.PREPARED_HANDLE_STALE";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          "COPY prepared bulk handle is missing or stale for the current session epochs";
+    }
+    return false;
+  }
+
+  const std::size_t chunk_index = copy->aggregate_chunk_count + 1;
+  const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
+  const std::string envelope = BuildNativeBulkIngestExecuteEnvelopeForPacket(*copy, packet);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "copy_data",
+                                 "build_execute_envelope",
+                                 envelope_started,
+                                 envelope.size(),
+                                 chunk_index,
+                                 packet.row_count,
+                                 "native_row_packet_passthrough");
+  const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+  auto chunk_result =
+      session->RunPreparedSblrEnvelopeForWire(copy->prepared_statement_uuid,
+                                              envelope,
+                                              packet.payload,
+                                              false);
+  WriteParserPhaseTraceIfEnabled(phase_trace,
+                                 "copy_data",
+                                 "run_prepared_sblr_with_data_packet",
+                                 execute_started,
+                                 envelope.size() + packet.payload.size(),
+                                 chunk_index,
+                                 packet.row_count,
+                                 chunk_result.accepted ? "accepted" : "rejected");
+  if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          FirstDiagnosticCode(chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = DiagnosticFieldValue(chunk_result.messages, "detail");
+      if (diagnostic_detail->empty()) {
+        *diagnostic_detail = FirstDiagnosticText(chunk_result.messages);
+      }
+    }
+    return false;
+  }
+  RefreshWireTransactionStateFromSession(*session, state);
+  FoldNativeCopyChunkResult(copy, chunk_result, packet.row_count);
+  return true;
+}
+
 bool HandleCopyData(SbsqlTestWireSession* session,
                     ClientIo* io,
                     SbwpSessionState* state,
@@ -5205,7 +5593,24 @@ bool HandleCopyData(SbsqlTestWireSession* session,
                        "CopyData native row packet is malformed") &&
              SendReady(io, state, ReadyReason::kErrorRecovered);
     }
-    state->copy_import.native_packets.push_back(std::move(*packet));
+    std::string diagnostic_code;
+    std::string diagnostic_detail;
+    if (!ExecutePreparedNativeCopyPacket(session,
+                                         state,
+                                         &state->copy_import,
+                                         *packet,
+                                         phase_trace,
+                                         &diagnostic_code,
+                                         &diagnostic_detail)) {
+      state->copy_import = CopyImportState{};
+      return SendError(io,
+                       state,
+                       "42000",
+                       diagnostic_code.empty() ? "SBSQL.COPY.EXECUTION_REJECTED"
+                                               : diagnostic_code,
+                       diagnostic_detail) &&
+             SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
     return true;
   }
   const auto rows = state->copy_import.copy_data_format == kCopyFormatBinaryRowsetV1
@@ -5255,7 +5660,8 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                      "COPY_DONE arrived without a prior accepted COPY initiation") &&
            SendReady(io, state, ReadyReason::kErrorRecovered);
   }
-  if (state->copy_import.rows.empty() && state->copy_import.native_packets.empty()) {
+  if (state->copy_import.rows.empty() && state->copy_import.native_packets.empty() &&
+      !state->copy_import.aggregate_result_active) {
     state->copy_import = CopyImportState{};
     return SendError(io,
                      state,
@@ -5268,12 +5674,26 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   CopyImportState copy = std::move(state->copy_import);
   state->copy_import = CopyImportState{};
   PipelineResult result;
-  result.accepted = true;
-  result.statement_family = "dml";
-  result.operation_family = "sblr.dml.operation.v3";
-  result.server_operation_id =
-      copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
-  std::size_t chunk_count = 0;
+  if (copy.aggregate_result_active) {
+    result = copy.aggregate_result;
+  } else {
+    result.accepted = true;
+    result.statement_family = "dml";
+    result.operation_family = "sblr.dml.operation.v3";
+    result.server_operation_id =
+        copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
+  }
+  RefreshWireAuthorityEpochsFromSession(*session, state);
+  if (copy.native_bulk_ingest &&
+      !CopyPreparedHandleCurrent(copy, session->session())) {
+    return SendError(io,
+                     state,
+                     "42000",
+                     "SBSQL.COPY.PREPARED_HANDLE_STALE",
+                     "COPY prepared bulk handle is missing or stale for the current session epochs") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  std::size_t chunk_count = copy.aggregate_chunk_count;
   for (const auto& packet : copy.native_packets) {
     const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
     const std::string envelope = BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, packet);
@@ -5286,11 +5706,17 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                                    packet.row_count,
                                    "native_row_packet_passthrough");
     const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const bool use_prepared =
+        CopyPreparedHandleCurrent(copy, session->session());
     auto chunk_result =
-        session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
+        use_prepared
+            ? session->RunPreparedSblrEnvelopeForWire(
+                  copy.prepared_statement_uuid, envelope, packet.payload, false)
+            : session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "copy_done",
-                                   "run_sblr_with_data_packet",
+                                   use_prepared ? "run_prepared_sblr_with_data_packet"
+                                                : "run_sblr_with_data_packet",
                                    execute_started,
                                    envelope.size() + packet.payload.size(),
                                    chunk_count + 1,
@@ -5365,14 +5791,22 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
                                    row_count,
                                    use_native_row_packet ? "scratchbird.native_rows.v2" : "not_used");
     const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+    const bool use_prepared =
+        !data_packet.empty() && CopyPreparedHandleCurrent(copy, session->session());
     auto chunk_result =
         data_packet.empty()
             ? session->RunSblrEnvelope(envelope, false)
-            : session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false);
+            : (use_prepared
+                   ? session->RunPreparedSblrEnvelopeForWire(
+                         copy.prepared_statement_uuid, envelope, data_packet, false)
+                   : session->RunSblrEnvelopeWithDataPacket(envelope, data_packet, false));
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "copy_done",
-                                   data_packet.empty() ? "run_sblr_envelope"
-                                                       : "run_sblr_with_data_packet",
+                                   data_packet.empty()
+                                       ? "run_sblr_envelope"
+                                       : (use_prepared
+                                              ? "run_prepared_sblr_with_data_packet"
+                                              : "run_sblr_with_data_packet"),
                                    execute_started,
                                    envelope.size() + data_packet.size(),
                                    chunk_count + 1,

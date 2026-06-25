@@ -61,6 +61,7 @@ SBWP_VERSION_P1 = 0x0101
 FEATURE_STREAMING = 1 << 1
 FEATURE_BINARY_COPY = 1 << 8
 FEATURE_BULK_REJECTS = 1 << 17
+FEATURE_UNKNOWN_REQUIRED_PROBE = 1 << 62
 
 
 class RouteError(RuntimeError):
@@ -158,19 +159,22 @@ def run_plaintext_required_refusal(port: int, timeout: float = 6.0) -> None:
     raise RouteError(f"plaintext refusal probe could not connect: {last_error}")
 
 
-def run_binary_copy_required_refusal(port: int) -> None:
+def run_unknown_required_feature_refusal(port: int) -> None:
     with connect_tls(port) as sock:
         send_frame(
             sock,
             MSG_STARTUP,
             0,
-            p1_startup_payload("benchmark_user", "default", FEATURE_BINARY_COPY),
+            p1_startup_payload("benchmark_user", "default", FEATURE_UNKNOWN_REQUIRED_PROBE),
         )
         msg_type, payload, _, _ = recv_frame(sock)
         if msg_type != MSG_ERROR:
-            raise RouteError(f"required binary COPY feature was not refused, got 0x{msg_type:02x}")
-        if b"SBWP.FEATURE.REQUIRED_UNSUPPORTED" not in payload:
-            raise RouteError(f"binary COPY refusal did not carry feature diagnostic: {payload!r}")
+            raise RouteError(f"unknown required feature was not refused, got 0x{msg_type:02x}")
+        if (
+            b"SBWP.FEATURE.REQUIRED_UNSUPPORTED" not in payload
+            and b"SBWP.FEATURE.UNKNOWN_REQUIRED" not in payload
+        ):
+            raise RouteError(f"unknown feature refusal did not carry feature diagnostic: {payload!r}")
 
 
 def recvall(sock: ssl.SSLSocket, size: int) -> bytes:
@@ -259,6 +263,57 @@ def p1_startup_payload(user: str, database: str, client_features: int) -> bytes:
 
 def query_payload(sql: str) -> bytes:
     return struct.pack("<III", 0, 0, 0) + sql.encode("utf-8") + b"\x00"
+
+
+def native_rowset_v2_payload(
+    columns: tuple[str, ...],
+    column_types: tuple[int, ...],
+    rows: tuple[tuple[int | float | bool | bytes | str | None, ...], ...],
+) -> bytes:
+    if not rows:
+        raise RouteError("native rowset proof requires at least one row")
+    if len(columns) != len(column_types):
+        raise RouteError("native rowset column/type shape mismatch")
+    column_count = len(columns)
+    null_bitmap_bytes = (column_count + 7) // 8
+    payload = bytearray(b"SBNR")
+    payload += struct.pack("<HHQI", 2, 0, len(rows), column_count)
+    payload += bytes(column_types)
+    for column in columns:
+        encoded = column.encode("utf-8")
+        payload += struct.pack("<I", len(encoded)) + encoded
+    for row in rows:
+        if len(row) != column_count:
+            raise RouteError("native rowset row shape mismatch")
+        null_bitmap = bytearray(null_bitmap_bytes)
+        values = bytearray()
+        for index, value in enumerate(row):
+            if value is None:
+                null_bitmap[index // 8] |= 1 << (index % 8)
+                continue
+            if column_types[index] == 2:
+                values += struct.pack("<q", int(value))
+            elif column_types[index] == 3:
+                if isinstance(value, str):
+                    values.append(1 if value.strip().lower() in {"true", "1"} else 0)
+                else:
+                    values.append(1 if bool(value) else 0)
+            elif column_types[index] == 4:
+                values += struct.pack("<i", int(value))
+            elif column_types[index] == 5:
+                values += struct.pack("<Q", int(value))
+            elif column_types[index] == 6:
+                values += struct.pack("<d", float(value))
+            elif column_types[index] == 7:
+                raw = bytes(value)
+                values += struct.pack("<I", len(raw)) + raw
+            elif column_types[index] == 1:
+                encoded = str(value).encode("utf-8")
+                values += struct.pack("<I", len(encoded)) + encoded
+            else:
+                raise RouteError(f"unsupported native rowset type {column_types[index]}")
+        payload += null_bitmap + values
+    return bytes(payload)
 
 
 def decode_ready(payload: bytes) -> tuple[int, int]:
@@ -619,6 +674,73 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
+def run_binary_copy_positive_route(port: int, copy_fixture_seeded: bool) -> None:
+    if not copy_fixture_seeded:
+        return
+    with connect_tls(port) as sock:
+        attachment, sequence, txn_id = authenticate(
+            sock,
+            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            p1_features=FEATURE_STREAMING | FEATURE_BINARY_COPY | FEATURE_BULK_REJECTS,
+        )
+        send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
+        sequence += 1
+        ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_BEGIN before binary COPY")
+        status, txn_id = decode_ready(ready_payload)
+        if status == 0 or txn_id == 0 or frame_txn == 0:
+            raise RouteError("engine transaction begin before binary COPY did not return active state")
+
+        copy_sql = "COPY users.public.sbsfc021_stream_table FROM STDIN"
+        send_frame(sock, MSG_QUERY, sequence, query_payload(copy_sql), attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        copy_in_payload, _, _ = expect_frame(sock, MSG_COPY_IN_RESPONSE)
+        if len(copy_in_payload) != 5:
+            raise RouteError("binary COPY_IN_RESPONSE payload was malformed")
+        if copy_in_payload[0] != 1:
+            raise RouteError(f"COPY_IN_RESPONSE did not advertise native binary rowset profile: {copy_in_payload!r}")
+        if struct.unpack_from("<I", copy_in_payload, 1)[0] == 0:
+            raise RouteError("binary COPY_IN_RESPONSE advertised a zero-byte copy window")
+
+        copy_payload = native_rowset_v2_payload(
+            ("id", "payload"),
+            (2, 1),
+            (
+                (11, "sbwp-copy-binary-native"),
+                (12, "sbwp-copy-binary-second"),
+            ),
+        )
+        send_frame(sock, MSG_COPY_DATA, sequence, copy_payload, attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        send_frame(sock, MSG_COPY_DONE, sequence, b"", attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        ready_payload, frame_txn = expect_ready_after_copy(sock)
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn == 0 or frame_txn == 0:
+            raise RouteError("binary COPY completion did not leave the engine transaction active")
+        if ready_txn != txn_id:
+            raise RouteError(
+                f"binary COPY completion changed explicit transaction from {txn_id} to {ready_txn}"
+            )
+        txn_id = ready_txn
+
+        send_frame(sock, MSG_TXN_COMMIT, sequence, b"\x00\x00\x00\x00", attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        ready_payload, frame_txn = expect_ready_after_command(sock, "TXN_COMMIT after binary COPY")
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn == 0 or frame_txn == 0:
+            raise RouteError("engine transaction commit after binary COPY did not return active replacement")
+
+        sequence = execute_row_query(
+            sock,
+            sequence,
+            attachment,
+            ready_txn,
+            "SELECT * FROM users.public.sbsfc021_stream_table",
+            expected_rows=((b"11", b"sbwp-copy-binary-native"),),
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
 def run_nested_schema_parent_route(port: int) -> None:
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
@@ -938,8 +1060,9 @@ def main() -> int:
           )
 
           run_plaintext_required_refusal(port)
-          run_binary_copy_required_refusal(port)
+          run_unknown_required_feature_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
+          run_binary_copy_positive_route(port, args.example_db_seeder is not None)
           run_nested_schema_parent_route(port)
           run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, args.example_db_seeder is not None)

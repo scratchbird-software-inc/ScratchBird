@@ -913,6 +913,56 @@ def test_native_callable_sql_maps_callable_syntax_errors():
         conn.native_callable_sql("{call ()}")
 
 
+def test_copy_in_binary_normalizes_text_stream_to_fixed_shape_native_rowset(monkeypatch):
+    conn = _new_connection(txn_id=77, active=True)
+    messages = [
+        (_Header(MessageType.COPY_IN_RESPONSE), bytes([1]) + struct.pack("<I", 1024 * 1024)),
+        (_Header(MessageType.COMMAND_COMPLETE), struct.pack("<B3xQQ", 1, 2, 0) + b"COPY 2\x00"),
+        (_Header(MessageType.READY), struct.pack("<B3xQQ", 1, 77, 0)),
+    ]
+    sent = []
+
+    monkeypatch.setattr(conn, "_send_simple_query", lambda sql: sent.append(("query", sql)))
+    monkeypatch.setattr(conn, "_send_message", lambda msg_type, payload: sent.append((msg_type, payload)))
+    monkeypatch.setattr(conn, "_recv_message", lambda: messages.pop(0))
+
+    rows = conn.copy_in(
+        "COPY users.public.driver_copy FROM STDIN",
+        b"id,payload,active,amount\n1,alpha,true,4.5\n2,beta,false,5.75\n",
+    )
+
+    assert rows == 2
+    copy_payloads = [payload for msg_type, payload in sent if msg_type == MessageType.COPY_DATA]
+    assert len(copy_payloads) == 1
+    payload = copy_payloads[0]
+    assert payload[:4] == b"SBNR"
+    assert struct.unpack_from("<H", payload, 4)[0] == 2
+    assert struct.unpack_from("<Q", payload, 8)[0] == 2
+    assert struct.unpack_from("<I", payload, 16)[0] == 4
+    assert payload[20:24] == bytes([4, 1, 3, 6])
+    assert b"id=" not in payload
+    assert b"payload=" not in payload
+
+
+def test_copy_in_binary_refuses_mid_stream_shape_change(monkeypatch):
+    conn = _new_connection(txn_id=77, active=True)
+    messages = [
+        (_Header(MessageType.COPY_IN_RESPONSE), bytes([1]) + struct.pack("<I", 1024 * 1024)),
+    ]
+    sent = []
+
+    monkeypatch.setattr(conn, "_send_simple_query", lambda sql: sent.append(("query", sql)))
+    monkeypatch.setattr(conn, "_send_message", lambda msg_type, payload: sent.append((msg_type, payload)))
+    monkeypatch.setattr(conn, "_recv_message", lambda: messages.pop(0))
+
+    with pytest.raises(errors.ProgrammingError, match="row shape mismatch|changed row shape"):
+        conn.copy_in(
+            "COPY users.public.driver_copy FROM STDIN",
+            b"id,payload\n1,alpha\n2,beta,extra\n",
+        )
+    assert not any(msg_type == MessageType.COPY_DATA for msg_type, _ in sent)
+
+
 def test_connection_call_executes_normalized_callable_sql(monkeypatch):
     conn = _new_connection()
     calls = []

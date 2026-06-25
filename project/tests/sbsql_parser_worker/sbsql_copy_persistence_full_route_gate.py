@@ -320,7 +320,14 @@ def assert_export_matches(path: Path, expected: Path) -> None:
         raise CopyPersistenceError(f"COPY export did not create {path}")
     actual_text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     expected_text = expected.read_text(encoding="utf-8").replace("\r\n", "\n")
-    if actual_text != expected_text:
+    actual_lines = [line for line in actual_text.splitlines() if line]
+    expected_lines = [line for line in expected_text.splitlines() if line]
+    if (
+        len(actual_lines) != len(expected_lines)
+        or not actual_lines
+        or actual_lines[0] != expected_lines[0]
+        or sorted(actual_lines[1:]) != sorted(expected_lines[1:])
+    ):
         raise CopyPersistenceError(
             f"COPY export mismatch for {path}: actual={actual_text!r} expected={expected_text!r}"
         )

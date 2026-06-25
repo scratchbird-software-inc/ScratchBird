@@ -2934,6 +2934,7 @@ api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
   out.descriptor.encoded_descriptor = "type=" + out.descriptor.canonical_type_name;
   out.is_null = value.is_null;
   if (value.payload_kind == SblrValuePayloadKind::binary) {
+    out.binary_value = value.binary_value;
     out.encoded_value = HexEncodeBytes(value.binary_value);
     return out;
   }
