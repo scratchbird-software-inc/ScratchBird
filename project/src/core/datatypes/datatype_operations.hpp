@@ -238,6 +238,25 @@ struct DatatypeDeserializationResult {
   }
 };
 
+struct DatatypeDisplayRenderRequest {
+  DatatypeOperationValue value;
+  bool export_literal = false;
+  bool redact_opaque_payload = true;
+};
+
+struct DatatypeDisplayRenderResult {
+  Status status;
+  std::string canonical_type_name;
+  std::string display_value;
+  bool explicit_display_boundary = false;
+  bool payload_redacted = false;
+  DiagnosticRecord diagnostic;
+
+  bool ok() const {
+    return status.ok();
+  }
+};
+
 const char* DatatypeCastCategoryName(DatatypeCastCategory category);
 const char* DatatypeSetOperationKindName(DatatypeSetOperationKind operation);
 const char* DatatypeNumericOperationKindName(DatatypeNumericOperationKind operation);
@@ -257,6 +276,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
 DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request);
 DatatypeSerializationResult SerializeDatatypeValue(const DatatypeSerializationRequest& request);
 DatatypeDeserializationResult DeserializeDatatypeValue(const DatatypeDeserializationRequest& request);
+DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
+    const DatatypeDisplayRenderRequest& request);
 CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name);
 bool IsUuidText(const std::string& value);
 DiagnosticRecord MakeDatatypeOperationDiagnostic(Status status,

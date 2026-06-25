@@ -222,16 +222,54 @@ void TestStableHashAndDeserializationRefusals() {
           "MDF-014 mismatched deserialization diagnostic mismatch");
 }
 
+void TestExplicitDisplayBoundaryRendering() {
+  dt::DatatypeOperationValue null_value;
+  null_value.type_id = dt::CanonicalTypeId::int64;
+  null_value.is_null = true;
+  const auto rendered_null = dt::RenderDatatypeValueForDisplay({null_value});
+  Require(rendered_null.ok() && rendered_null.explicit_display_boundary &&
+              rendered_null.display_value == "NULL",
+          "MDF-014 null display boundary drifted");
+
+  const auto rendered_binary = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::binary, std::string("A\0B", 3))});
+  Require(rendered_binary.ok() &&
+              rendered_binary.canonical_type_name == "binary" &&
+              rendered_binary.display_value == "0x410042",
+          "MDF-014 binary display boundary did not render hex");
+
+  auto rendered_character = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::character, "O'Brien"), true});
+  Require(rendered_character.ok() &&
+              rendered_character.display_value == "'O''Brien'",
+          "MDF-014 character export literal escaping drifted");
+
+  const auto rendered_opaque = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::opaque_extension, "secret")});
+  Require(rendered_opaque.ok() && rendered_opaque.payload_redacted &&
+              rendered_opaque.display_value.find("secret") == std::string::npos,
+          "MDF-014 opaque display boundary leaked payload");
+
+  const auto unknown = dt::RenderDatatypeValueForDisplay(
+      {Value(dt::CanonicalTypeId::unknown, "payload")});
+  Require(!unknown.ok() &&
+              unknown.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+          "MDF-014 unknown display boundary did not fail closed");
+}
+
 }  // namespace
 
 int main() {
   // MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS
   // CURRENT-CORE-DATATYPE-COMPARISON-KEYS
   // CURRENT-CORE-DATATYPE-CAST-STORAGE
+  // CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY
   TestOrderedKeysAndResourceBoundComparison();
   TestNumericOperationsUseTypedSemantics();
   TestCastPersistenceAndSilentDowngradeRefusal();
   TestStableHashAndDeserializationRefusals();
+  TestExplicitDisplayBoundaryRendering();
   std::cout << "current_core_datatype_comparison_cast_gate=passed\n";
   return EXIT_SUCCESS;
 }
