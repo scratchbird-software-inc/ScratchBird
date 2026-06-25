@@ -855,6 +855,30 @@ std::optional<std::size_t> PlaceholderIndexForValue(std::string_view token,
   return std::nullopt;
 }
 
+std::string StripLeadingSqlComments(std::string sql) {
+  std::size_t pos = 0;
+  while (pos < sql.size()) {
+    while (pos < sql.size() &&
+           std::isspace(static_cast<unsigned char>(sql[pos]))) {
+      ++pos;
+    }
+    if (pos + 1 < sql.size() && sql[pos] == '-' && sql[pos + 1] == '-') {
+      const std::size_t newline = sql.find('\n', pos + 2);
+      if (newline == std::string::npos) return {};
+      pos = newline + 1;
+      continue;
+    }
+    if (pos + 1 < sql.size() && sql[pos] == '/' && sql[pos + 1] == '*') {
+      const std::size_t close = sql.find("*/", pos + 2);
+      if (close == std::string::npos) return {};
+      pos = close + 2;
+      continue;
+    }
+    break;
+  }
+  return pos == 0 ? std::move(sql) : sql.substr(pos);
+}
+
 std::optional<PreparedStatement::InsertRowsetPlan> AnalyzePreparedInsertRowset(std::string_view raw_sql) {
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   const std::string upper = Upper(sql);
@@ -962,7 +986,8 @@ bool ParseSimpleInsertLiteralValue(std::string_view raw,
 
 std::optional<CopyImportState> AnalyzeSimpleLiteralInsertRowset(std::string_view raw_sql,
                                                                 bool allow_single_row = false) {
-  const std::string sql = StripSqlTerminator(std::string(raw_sql));
+  const std::string sql = StripLeadingSqlComments(
+      StripSqlTerminator(std::string(raw_sql)));
   const std::string upper = Upper(sql);
   if (!StartsWithWord(upper, "INSERT")) return std::nullopt;
   const std::size_t into_pos = FindKeywordOutsideSql(sql, "INTO");
@@ -5099,6 +5124,15 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
           }
           continue;
         }
+        if (!flush_pending()) return false;
+        pending.rowset = std::move(*rowset);
+        pending.fallback_statements.push_back(statement);
+        pending.active = true;
+        if (pending.rowset.rows.size() >= kScriptInsertGroupFlushRows &&
+            !flush_pending()) {
+          return false;
+        }
+        continue;
       }
     }
 

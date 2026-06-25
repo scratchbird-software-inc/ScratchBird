@@ -78,6 +78,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <optional>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -1515,6 +1516,162 @@ static bool dmlCanUseExecuteOnlyPath(const std::string& sql) {
            trimmed.rfind("COPY ", 0) == 0;
 }
 
+static bool isSqlIdentifierChar(char ch) {
+    const auto uch = static_cast<unsigned char>(ch);
+    return std::isalnum(uch) || ch == '_';
+}
+
+static size_t findKeywordOutsideSql(const std::string& sql, const std::string& keyword) {
+    bool in_single = false;
+    bool in_double = false;
+    for (size_t i = 0; i + keyword.size() <= sql.size(); ++i) {
+        const char ch = sql[i];
+        const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+        if (in_single) {
+            if (ch == '\'' && next == '\'') {
+                ++i;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (ch == '"' && next == '"') {
+                ++i;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        bool matches = true;
+        for (size_t j = 0; j < keyword.size(); ++j) {
+            if (std::toupper(static_cast<unsigned char>(sql[i + j])) != keyword[j]) {
+                matches = false;
+                break;
+            }
+        }
+        if (!matches) {
+            continue;
+        }
+        const bool left_ok = i == 0 || !isSqlIdentifierChar(sql[i - 1]);
+        const bool right_ok =
+            i + keyword.size() >= sql.size() || !isSqlIdentifierChar(sql[i + keyword.size()]);
+        if (left_ok && right_ok) {
+            return i;
+        }
+    }
+    return std::string::npos;
+}
+
+static size_t findMatchingSqlParen(const std::string& sql, size_t open_pos) {
+    bool in_single = false;
+    bool in_double = false;
+    int depth = 0;
+    for (size_t i = open_pos; i < sql.size(); ++i) {
+        const char ch = sql[i];
+        const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+        if (in_single) {
+            if (ch == '\'' && next == '\'') {
+                ++i;
+                continue;
+            }
+            if (ch == '\'') in_single = false;
+            continue;
+        }
+        if (in_double) {
+            if (ch == '"' && next == '"') {
+                ++i;
+                continue;
+            }
+            if (ch == '"') in_double = false;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')') {
+            --depth;
+            if (depth == 0) return i;
+            if (depth < 0) return std::string::npos;
+        }
+    }
+    return std::string::npos;
+}
+
+static std::optional<int64_t> scriptInsertValuesRowCount(const std::string& sql) {
+    if (!dmlCanUseExecuteOnlyPath(sql)) {
+        return std::nullopt;
+    }
+    std::string upper = sql;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    const size_t pos = upper.find_first_not_of(" \t\n\r");
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    if (upper.compare(pos, 7, "INSERT ") != 0) {
+        return std::nullopt;
+    }
+    const size_t values_pos = findKeywordOutsideSql(sql, "VALUES");
+    if (values_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    size_t cursor = values_pos + 6;
+    int64_t row_count = 0;
+    while (cursor < sql.size()) {
+        while (cursor < sql.size() &&
+               std::isspace(static_cast<unsigned char>(sql[cursor]))) {
+            ++cursor;
+        }
+        if (cursor < sql.size() && sql[cursor] == ';') {
+            ++cursor;
+            continue;
+        }
+        if (cursor >= sql.size()) {
+            break;
+        }
+        if (sql[cursor] != '(') {
+            return std::nullopt;
+        }
+        const size_t close = findMatchingSqlParen(sql, cursor);
+        if (close == std::string::npos) {
+            return std::nullopt;
+        }
+        ++row_count;
+        cursor = close + 1;
+        while (cursor < sql.size() &&
+               std::isspace(static_cast<unsigned char>(sql[cursor]))) {
+            ++cursor;
+        }
+        if (cursor < sql.size() && sql[cursor] == ',') {
+            ++cursor;
+            continue;
+        }
+        if (cursor < sql.size() && sql[cursor] == ';') {
+            ++cursor;
+            continue;
+        }
+        if (cursor < sql.size()) {
+            return std::nullopt;
+        }
+    }
+    return row_count > 0 ? std::optional<int64_t>(row_count) : std::nullopt;
+}
+
 static void displayRowsAffected(int64_t rows_affected,
                                 bool show_timing,
                                 std::chrono::microseconds exec_time) {
@@ -1564,7 +1721,8 @@ static bool displayQueryPlan(const std::string& sql) {
     return true;
 }
 
-bool executeSQL(const std::string& sql) {
+bool executeSQL(const std::string& sql,
+                std::optional<int64_t> rows_affected_override = std::nullopt) {
     // Check for client-side SET commands first
     if (handleSetCommand(sql)) {
         return true;  // Handled locally
@@ -1984,7 +2142,9 @@ bool executeSQL(const std::string& sql) {
     traceTxnState("after_execute", processed_sql);
 
     if (execute_only) {
-        displayRowsAffected(rows_affected, g_config.timing, duration);
+        displayRowsAffected(rows_affected_override.value_or(rows_affected),
+                            g_config.timing,
+                            duration);
     } else {
         displayResultSet(results, g_config.timing, duration);
     }
@@ -2104,8 +2264,28 @@ Variable substitution and concatenation:
 bool executeScriptStream(std::istream& input, const std::string& source_name) {
     std::string line;
     std::string sql;
+    std::string pending_insert_batch;
+    int64_t pending_insert_batch_rows = 0;
     bool had_error = false;
     bool needs_commit = false;
+    const auto flush_pending_insert_batch = [&]() -> bool {
+        if (pending_insert_batch.empty()) {
+            return true;
+        }
+        traceScriptStatement("execute_insert_batch", pending_insert_batch);
+        const bool success = executeSQL(pending_insert_batch,
+                                        pending_insert_batch_rows > 0
+                                            ? std::optional<int64_t>(pending_insert_batch_rows)
+                                            : std::nullopt);
+        pending_insert_batch.clear();
+        pending_insert_batch_rows = 0;
+        if (!success) {
+            had_error = true;
+            return false;
+        }
+        needs_commit = true;
+        return true;
+    };
     while (std::getline(input, line)) {
         const std::string trimmed_line = trimWhitespace(line);
         // Skip comments
@@ -2113,6 +2293,10 @@ bool executeScriptStream(std::istream& input, const std::string& source_name) {
             continue;
         }
         if (sql.empty() && trimmed_line[0] == '\\') {
+            if (!flush_pending_insert_batch() && g_config.bail) {
+                std::cerr << "Stopping due to error (SET BAIL is ON)\n";
+                break;
+            }
             traceScriptStatement("meta", trimmed_line);
             const bool meta_needs_commit = metaCommandLikelyNeedsCommit(trimmed_line);
             if (!handleMetaCommand(trimmed_line)) {
@@ -2139,6 +2323,18 @@ bool executeScriptStream(std::istream& input, const std::string& source_name) {
             const bool statement_needs_commit = statementLikelyNeedsCommit(sql_to_exec);
             const bool statement_is_ddl = statementIsDdlLike(sql_to_exec);
             const bool statement_controls_txn = statementControlsTransaction(sql_to_exec);
+            if (const auto insert_rows = scriptInsertValuesRowCount(sql_to_exec)) {
+                pending_insert_batch += sql_to_exec;
+                pending_insert_batch += ";\n";
+                pending_insert_batch_rows += *insert_rows;
+                needs_commit = needs_commit || statement_needs_commit;
+                sql.clear();
+                continue;
+            }
+            if (!flush_pending_insert_batch() && g_config.bail) {
+                std::cerr << "Stopping due to error (SET BAIL is ON)\n";
+                break;
+            }
             needs_commit = needs_commit || statement_needs_commit;
             traceScriptStatement("execute", sql_to_exec);
             bool success = executeSQL(sql_to_exec);
@@ -2171,6 +2367,17 @@ bool executeScriptStream(std::istream& input, const std::string& source_name) {
         const bool statement_needs_commit = statementLikelyNeedsCommit(sql);
         const bool statement_is_ddl = statementIsDdlLike(sql);
         const bool statement_controls_txn = statementControlsTransaction(sql);
+        if (const auto insert_rows = scriptInsertValuesRowCount(sql)) {
+            pending_insert_batch += sql;
+            pending_insert_batch += ";\n";
+            pending_insert_batch_rows += *insert_rows;
+            needs_commit = needs_commit || statement_needs_commit;
+            sql.clear();
+        } else {
+            if (!flush_pending_insert_batch() && g_config.bail) {
+                std::cerr << "Stopping due to error (SET BAIL is ON)\n";
+            }
+            if (!(had_error && g_config.bail)) {
         needs_commit = needs_commit || statement_needs_commit;
         traceScriptStatement("execute_tail", sql);
         bool success = executeSQL(sql);
@@ -2185,6 +2392,11 @@ bool executeScriptStream(std::istream& input, const std::string& source_name) {
                 needs_commit = false;
             }
         }
+            }
+        }
+    }
+    if (!(had_error && g_config.bail) && !flush_pending_insert_batch()) {
+        had_error = true;
     }
     if (input.bad()) {
         std::cerr << "Error: Failed while reading " << source_name << "\n";
