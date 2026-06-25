@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <vector>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,15 +47,68 @@ dt::DatatypeTextSeedAuthority TextSeed() {
 }
 
 void TestOrderedKeysAndResourceBoundComparison() {
-  dt::DatatypeSortKeyRequest left_key;
-  left_key.value = Value(dt::CanonicalTypeId::int32, "2");
-  dt::DatatypeSortKeyRequest right_key;
-  right_key.value = Value(dt::CanonicalTypeId::int32, "10");
-  const auto left = dt::MakeDatatypeSortKey(left_key);
-  const auto right = dt::MakeDatatypeSortKey(right_key);
-  Require(left.ok() && right.ok(), "MDF-014 ordered integer keys failed");
-  Require(left.sort_key < right.sort_key,
-          "MDF-014 integer sort key order is unstable");
+  const std::vector<dt::DatatypeOperationValue> signed_values = {
+      Value(dt::CanonicalTypeId::int64, "-257"),
+      Value(dt::CanonicalTypeId::int64, "-1"),
+      Value(dt::CanonicalTypeId::int64, "0"),
+      Value(dt::CanonicalTypeId::int64, "2"),
+      Value(dt::CanonicalTypeId::int64, "256")};
+  for (std::size_t index = 1; index < signed_values.size(); ++index) {
+    const auto compare = dt::CompareDatatypeValues(
+        {signed_values[index - 1], signed_values[index]});
+    Require(compare.ok() && compare.comparison < 0,
+            "MDF-014 signed integer comparison order drifted");
+    const auto left = dt::MakeDatatypeSortKey({signed_values[index - 1]});
+    const auto right = dt::MakeDatatypeSortKey({signed_values[index]});
+    Require(left.ok() && right.ok() && left.sort_key < right.sort_key,
+            "MDF-014 signed integer sort key order drifted");
+  }
+
+  const std::vector<dt::DatatypeOperationValue> unsigned_values = {
+      Value(dt::CanonicalTypeId::uint64, "2"),
+      Value(dt::CanonicalTypeId::uint64, "256"),
+      Value(dt::CanonicalTypeId::uint64, "18446744073709551615")};
+  for (std::size_t index = 1; index < unsigned_values.size(); ++index) {
+    const auto compare = dt::CompareDatatypeValues(
+        {unsigned_values[index - 1], unsigned_values[index]});
+    Require(compare.ok() && compare.comparison < 0,
+            "MDF-014 unsigned integer comparison order drifted");
+    const auto left = dt::MakeDatatypeSortKey({unsigned_values[index - 1]});
+    const auto right = dt::MakeDatatypeSortKey({unsigned_values[index]});
+    Require(left.ok() && right.ok() && left.sort_key < right.sort_key,
+            "MDF-014 unsigned integer sort key order drifted");
+  }
+
+  const std::vector<dt::DatatypeOperationValue> decimal_values = {
+      Value(dt::CanonicalTypeId::decimal, "-1.20"),
+      Value(dt::CanonicalTypeId::decimal, "-1.10"),
+      Value(dt::CanonicalTypeId::decimal, "0"),
+      Value(dt::CanonicalTypeId::decimal, "2.10"),
+      Value(dt::CanonicalTypeId::decimal, "10.01")};
+  for (std::size_t index = 1; index < decimal_values.size(); ++index) {
+    const auto compare = dt::CompareDatatypeValues(
+        {decimal_values[index - 1], decimal_values[index]});
+    Require(compare.ok() && compare.comparison < 0,
+            "MDF-014 decimal comparison order drifted");
+    const auto left = dt::MakeDatatypeSortKey({decimal_values[index - 1]});
+    const auto right = dt::MakeDatatypeSortKey({decimal_values[index]});
+    Require(left.ok() && right.ok() && left.sort_key < right.sort_key,
+            "MDF-014 decimal sort key order drifted");
+  }
+
+  dt::DatatypeOperationValue null_value;
+  null_value.type_id = dt::CanonicalTypeId::int64;
+  null_value.is_null = true;
+  const auto nulls_first = dt::CompareDatatypeValues(
+      {null_value, Value(dt::CanonicalTypeId::int64, "0"),
+       dt::DatatypeNullOrdering::nulls_first});
+  Require(nulls_first.ok() && nulls_first.comparison < 0,
+          "MDF-014 nulls-first comparison order drifted");
+  const auto nulls_last = dt::CompareDatatypeValues(
+      {null_value, Value(dt::CanonicalTypeId::int64, "0"),
+       dt::DatatypeNullOrdering::nulls_last});
+  Require(nulls_last.ok() && nulls_last.comparison > 0,
+          "MDF-014 nulls-last comparison order drifted");
 
   dt::DatatypeComparisonRequest compare;
   compare.left = Value(dt::CanonicalTypeId::character, "Alpha");
@@ -82,6 +136,29 @@ void TestOrderedKeysAndResourceBoundComparison() {
               sort_key.sort_key.find("initial-resource-pack:1:unicode_ci") !=
                   std::string::npos,
           "MDF-014 text sort key did not bind resource identity");
+}
+
+void TestNumericOperationsUseTypedSemantics() {
+  dt::DatatypeNumericOperationRequest add;
+  add.operation = dt::DatatypeNumericOperationKind::add;
+  add.type_id = dt::CanonicalTypeId::int128;
+  add.left = Value(dt::CanonicalTypeId::int128,
+                   "170141183460469231731687303715884105726");
+  add.right = Value(dt::CanonicalTypeId::int128, "1");
+  const auto added = dt::ApplyNumericOperation(add);
+  Require(added.ok() &&
+              added.value.encoded_value ==
+                  "170141183460469231731687303715884105727",
+          "MDF-014 int128 numeric add drifted");
+
+  dt::DatatypeNumericOperationRequest compare;
+  compare.operation = dt::DatatypeNumericOperationKind::compare;
+  compare.type_id = dt::CanonicalTypeId::uint128;
+  compare.left = Value(dt::CanonicalTypeId::uint128, "255");
+  compare.right = Value(dt::CanonicalTypeId::uint128, "256");
+  const auto compared = dt::ApplyNumericOperation(compare);
+  Require(compared.ok() && compared.comparison < 0,
+          "MDF-014 uint128 numeric compare drifted");
 }
 
 void TestCastPersistenceAndSilentDowngradeRefusal() {
@@ -149,9 +226,10 @@ void TestStableHashAndDeserializationRefusals() {
 
 int main() {
   // MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS
-  // DEFER-DPE-COMPARISON-KEYS
-  // DEFER-DPE-CAST-STORAGE
+  // CURRENT-CORE-DATATYPE-COMPARISON-KEYS
+  // CURRENT-CORE-DATATYPE-CAST-STORAGE
   TestOrderedKeysAndResourceBoundComparison();
+  TestNumericOperationsUseTypedSemantics();
   TestCastPersistenceAndSilentDowngradeRefusal();
   TestStableHashAndDeserializationRefusals();
   std::cout << "current_core_datatype_comparison_cast_gate=passed\n";
