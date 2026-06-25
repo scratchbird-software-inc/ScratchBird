@@ -2727,6 +2727,7 @@ std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
   out += "require_generated_row_uuid=true\n";
   out += "operand=text\tphysical_mga_cow\tfalse\n";
   out += "operand=text\tinsert_trace.rows\tfalse\n";
+  out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
   if (copy.source_size_bytes != 0) {
     out += "operand=text\tcopy.source_size_bytes\t";
     out += std::to_string(copy.source_size_bytes);
