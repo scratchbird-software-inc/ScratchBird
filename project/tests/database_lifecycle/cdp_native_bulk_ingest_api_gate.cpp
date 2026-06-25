@@ -349,6 +349,7 @@ const std::vector<std::string>& TypedScalarIndexedColumns() {
       "real_16",
       "real_32",
       "real_64",
+      "real_128",
       "uuid_value",
       "ip_value",
       "prefix_value",
@@ -1392,6 +1393,35 @@ void TestOpaqueRenderOnlyDescriptorPayloadRefusals() {
   }
 }
 
+void TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow() {
+  platform::u64 salt = 1950;
+  for (const auto& type : OpaqueRenderOnlyPayloadTypeNames()) {
+    auto fixture =
+        MakeOpaqueRenderOnlyPayloadFixture("opaque_payload_allow_" + type,
+                                           salt,
+                                           type);
+    auto context = Begin(fixture, "cdp040-opaque-payload-explicit-allow");
+    auto request = NativeRequest(fixture,
+                                 context,
+                                 {OpaqueRenderOnlyPayloadRow(type)});
+    request.option_envelopes.push_back("bulk.allow_opaque_columns=true");
+    const auto result = api::EngineExecuteNativeBulkIngest(request);
+    RequireOk(result, "CDP-040 explicit opaque payload allow failed");
+    Require(result.accepted_rows == 1 && result.inserted_rows == 1,
+            "CDP-040 explicit opaque payload row counts drifted");
+    Require(EvidenceU64(result.evidence,
+                        "direct_physical_bulk_row_page_typed_binary_cells") == 1,
+            "CDP-040 explicit opaque payload fell back to text");
+    Require(EvidenceU64(result.evidence,
+                        "direct_physical_bulk_row_page_typed_cells." + type) == 1,
+            "CDP-040 explicit opaque payload did not remain typed on row page");
+    Require(SelectCount(fixture, context) == 1,
+            "CDP-040 explicit opaque payload row was not visible in writer transaction");
+    Commit(context);
+    salt += 100;
+  }
+}
+
 void TestDisabledAndInvalidRefusals() {
   auto fixture = MakeFixture("refusals", 2000);
   auto context = Begin(fixture, "cdp040-refusals");
@@ -1608,6 +1638,7 @@ int main() {
   TestMalformedInlineFixedTypedValueRefuses();
   TestDescriptorPayloadRowPageStorage();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
+  TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
   TestDisabledAndInvalidRefusals();
   TestServerPublicAbiRoute();
   TestRollbackInvisibilityAndCommittedReopenVisibility();
