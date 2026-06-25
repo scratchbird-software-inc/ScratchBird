@@ -45,6 +45,207 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+std::string EncodeUtf8Codepoint(std::uint32_t codepoint) {
+  std::string out;
+  if (codepoint <= 0x7f) {
+    out.push_back(static_cast<char>(codepoint));
+  } else if (codepoint <= 0x7ff) {
+    out.push_back(static_cast<char>(0xc0 | ((codepoint >> 6) & 0x1f)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+  } else if (codepoint <= 0xffff) {
+    out.push_back(static_cast<char>(0xe0 | ((codepoint >> 12) & 0x0f)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+  } else {
+    out.push_back(static_cast<char>(0xf0 | ((codepoint >> 18) & 0x07)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+  }
+  return out;
+}
+
+bool DecodeNextUtf8Codepoint(const std::string& value,
+                             std::size_t* offset,
+                             std::uint32_t* codepoint) {
+  const auto byte = static_cast<unsigned char>(value[*offset]);
+  if (byte < 0x80) {
+    *codepoint = byte;
+    ++(*offset);
+    return true;
+  }
+  const auto continuation = [&value](std::size_t pos, unsigned char* out) {
+    if (pos >= value.size()) { return false; }
+    const auto next = static_cast<unsigned char>(value[pos]);
+    if ((next & 0xc0) != 0x80) { return false; }
+    *out = next;
+    return true;
+  };
+  unsigned char b1 = 0;
+  unsigned char b2 = 0;
+  unsigned char b3 = 0;
+  if ((byte & 0xe0) == 0xc0) {
+    if (!continuation(*offset + 1, &b1)) { return false; }
+    *codepoint = ((byte & 0x1f) << 6) | (b1 & 0x3f);
+    *offset += 2;
+    return true;
+  }
+  if ((byte & 0xf0) == 0xe0) {
+    if (!continuation(*offset + 1, &b1) ||
+        !continuation(*offset + 2, &b2)) {
+      return false;
+    }
+    *codepoint = ((byte & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+    *offset += 3;
+    return true;
+  }
+  if ((byte & 0xf8) == 0xf0) {
+    if (!continuation(*offset + 1, &b1) ||
+        !continuation(*offset + 2, &b2) ||
+        !continuation(*offset + 3, &b3)) {
+      return false;
+    }
+    *codepoint = ((byte & 0x07) << 18) | ((b1 & 0x3f) << 12) |
+                 ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+    *offset += 4;
+    return true;
+  }
+  return false;
+}
+
+bool IsUpperLatinCodepoint(std::uint32_t codepoint) {
+  return (codepoint >= 'A' && codepoint <= 'Z') ||
+         (codepoint >= 0x00c0 && codepoint <= 0x00d6) ||
+         (codepoint >= 0x00d8 && codepoint <= 0x00de) ||
+         codepoint == 0x0152 || codepoint == 0x0178 || codepoint == 0x1e9e;
+}
+
+std::uint32_t LowerLatinCodepoint(std::uint32_t codepoint) {
+  if (codepoint >= 'A' && codepoint <= 'Z') { return codepoint + 0x20; }
+  if ((codepoint >= 0x00c0 && codepoint <= 0x00d6) ||
+      (codepoint >= 0x00d8 && codepoint <= 0x00de)) {
+    return codepoint + 0x20;
+  }
+  if (codepoint == 0x0152) { return 0x0153; }
+  if (codepoint == 0x0178) { return 0x00ff; }
+  if (codepoint == 0x1e9e) { return 0x00df; }
+  return codepoint;
+}
+
+bool AppendAccentFoldedLatin(std::uint32_t codepoint,
+                             bool case_insensitive,
+                             std::string* out) {
+  const bool upper = IsUpperLatinCodepoint(codepoint);
+  const auto append_char = [&](char lower, char upper_char) {
+    out->push_back(case_insensitive || !upper ? lower : upper_char);
+  };
+  const auto append_text = [&](std::string_view lower, std::string_view upper_text) {
+    out->append(case_insensitive || !upper ? lower : upper_text);
+  };
+  switch (codepoint) {
+    case 0x00c0: case 0x00c1: case 0x00c2: case 0x00c3:
+    case 0x00c4: case 0x00c5: case 0x00e0: case 0x00e1:
+    case 0x00e2: case 0x00e3: case 0x00e4: case 0x00e5:
+      append_char('a', 'A');
+      return true;
+    case 0x00c6: case 0x00e6:
+      append_text("ae", "AE");
+      return true;
+    case 0x00c7: case 0x00e7:
+      append_char('c', 'C');
+      return true;
+    case 0x00d0: case 0x00f0:
+      append_char('d', 'D');
+      return true;
+    case 0x00c8: case 0x00c9: case 0x00ca: case 0x00cb:
+    case 0x00e8: case 0x00e9: case 0x00ea: case 0x00eb:
+      append_char('e', 'E');
+      return true;
+    case 0x00cc: case 0x00cd: case 0x00ce: case 0x00cf:
+    case 0x00ec: case 0x00ed: case 0x00ee: case 0x00ef:
+      append_char('i', 'I');
+      return true;
+    case 0x00d1: case 0x00f1:
+      append_char('n', 'N');
+      return true;
+    case 0x00d2: case 0x00d3: case 0x00d4: case 0x00d5:
+    case 0x00d6: case 0x00d8: case 0x00f2: case 0x00f3:
+    case 0x00f4: case 0x00f5: case 0x00f6: case 0x00f8:
+      append_char('o', 'O');
+      return true;
+    case 0x0152: case 0x0153:
+      append_text("oe", "OE");
+      return true;
+    case 0x00de: case 0x00fe:
+      append_text("th", "TH");
+      return true;
+    case 0x00d9: case 0x00da: case 0x00db: case 0x00dc:
+    case 0x00f9: case 0x00fa: case 0x00fb: case 0x00fc:
+      append_char('u', 'U');
+      return true;
+    case 0x00dd: case 0x0178: case 0x00fd: case 0x00ff:
+      append_char('y', 'Y');
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string NormalizeLatinTextForCollation(const std::string& value,
+                                           bool case_insensitive,
+                                           bool accent_insensitive) {
+  std::string out;
+  out.reserve(value.size());
+  std::size_t offset = 0;
+  while (offset < value.size()) {
+    const std::size_t start = offset;
+    std::uint32_t codepoint = 0;
+    if (!DecodeNextUtf8Codepoint(value, &offset, &codepoint)) {
+      out.push_back(value[start]);
+      offset = start + 1;
+      continue;
+    }
+    if (codepoint == 0x00df && case_insensitive) {
+      out.append("ss");
+      continue;
+    }
+    if (accent_insensitive &&
+        AppendAccentFoldedLatin(codepoint, case_insensitive, &out)) {
+      continue;
+    }
+    if (case_insensitive) { codepoint = LowerLatinCodepoint(codepoint); }
+    out.append(EncodeUtf8Codepoint(codepoint));
+  }
+  return out;
+}
+
+bool TextSeedRequested(const DatatypeTextSeedAuthority& seed,
+                       bool case_insensitive_character_compare) {
+  return case_insensitive_character_compare ||
+         seed.active ||
+         !seed.seed_pack_name.empty() ||
+         !seed.seed_pack_version.empty() ||
+         !seed.charset_name.empty() ||
+         !seed.collation_name.empty() ||
+         seed.collation_case_insensitive ||
+         seed.collation_accent_insensitive;
+}
+
+bool TextSeedReady(const DatatypeTextSeedAuthority& seed) {
+  return seed.active &&
+         !seed.seed_pack_name.empty() &&
+         !seed.seed_pack_version.empty() &&
+         !seed.charset_name.empty() &&
+         !seed.collation_name.empty();
+}
+
+std::string TextSeedDetail(const DatatypeTextSeedAuthority& seed) {
+  return "seed_pack=" + seed.seed_pack_name +
+         ";seed_version=" + seed.seed_pack_version +
+         ";charset=" + seed.charset_name +
+         ";collation=" + seed.collation_name;
+}
+
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.substr(0, prefix.size()) == prefix;
 }
@@ -1623,8 +1824,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   std::string left = request.left.encoded_value;
   std::string right = request.right.encoded_value;
   if (request.left.type_id == CanonicalTypeId::character &&
-      request.case_insensitive_character_compare) {
-    if (!request.text_seed.active || request.text_seed.collation_name.empty()) {
+      TextSeedRequested(request.text_seed, request.case_insensitive_character_compare)) {
+    if (!TextSeedReady(request.text_seed)) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(
           result.status,
@@ -1633,8 +1834,22 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
           "collation_resource_missing");
       return result;
     }
-    left = LowerAscii(std::move(left));
-    right = LowerAscii(std::move(right));
+    if (request.case_insensitive_character_compare &&
+        !request.text_seed.collation_case_insensitive) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected",
+          "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
+      return result;
+    }
+    left = NormalizeLatinTextForCollation(left,
+                                          request.text_seed.collation_case_insensitive,
+                                          request.text_seed.collation_accent_insensitive);
+    right = NormalizeLatinTextForCollation(right,
+                                           request.text_seed.collation_case_insensitive,
+                                           request.text_seed.collation_accent_insensitive);
   }
   if (IsInteger(request.left.type_id)) {
     const bool left_negative = !left.empty() && left.front() == '-';
@@ -1853,8 +2068,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   }
   std::string value = request.value.encoded_value;
   if (request.value.type_id == CanonicalTypeId::character) {
-    if (request.case_insensitive_character_compare) {
-      if (!request.text_seed.active || request.text_seed.collation_name.empty()) {
+    if (TextSeedRequested(request.text_seed, request.case_insensitive_character_compare)) {
+      if (!TextSeedReady(request.text_seed)) {
         result.status = ErrorStatus();
         result.diagnostic = MakeDatatypeOperationDiagnostic(
             result.status,
@@ -1863,11 +2078,27 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             "collation_resource_missing");
         return result;
       }
-      value = LowerAscii(std::move(value));
+      if (request.case_insensitive_character_compare &&
+          !request.text_seed.collation_case_insensitive) {
+        result.status = ErrorStatus();
+        result.diagnostic = MakeDatatypeOperationDiagnostic(
+            result.status,
+            "SB_DATATYPE_SORT_KEY_REJECTED",
+            "datatype.sort_key.rejected",
+            "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
+        return result;
+      }
+      value = NormalizeLatinTextForCollation(value,
+                                             request.text_seed.collation_case_insensitive,
+                                             request.text_seed.collation_accent_insensitive);
     }
     result.sort_key = "20:" + request.text_seed.seed_pack_name + ":" +
                       request.text_seed.seed_pack_version + ":" +
-                      request.text_seed.collation_name + ":" + HexEncodeLower(value);
+                      request.text_seed.collation_name + ":" +
+                      request.text_seed.charset_name + ":" +
+                      (request.text_seed.collation_case_insensitive ? "ci" : "cs") + ":" +
+                      (request.text_seed.collation_accent_insensitive ? "ai" : "as") + ":" +
+                      HexEncodeLower(value);
     return result;
   }
   if (IsInteger(request.value.type_id)) {

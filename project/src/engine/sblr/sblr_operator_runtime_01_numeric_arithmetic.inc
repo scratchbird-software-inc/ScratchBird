@@ -85,6 +85,11 @@ bool CollationIsCaseInsensitive(std::string_view collation_name) {
          collation_name.find("nocase") != std::string_view::npos;
 }
 
+bool CollationIsAccentInsensitive(std::string_view collation_name) {
+  return collation_name.find("_ai") != std::string_view::npos ||
+         collation_name.find("accent_insensitive") != std::string_view::npos;
+}
+
 datatypes::DatatypeTextSeedAuthority TextSeedFromValues(const SblrValue& left, const SblrValue& right) {
   datatypes::DatatypeTextSeedAuthority seed;
   seed.active = HasTextSeedMetadata(left) || HasTextSeedMetadata(right);
@@ -93,6 +98,7 @@ datatypes::DatatypeTextSeedAuthority TextSeedFromValues(const SblrValue& left, c
   seed.charset_name = !left.charset_name.empty() ? left.charset_name : right.charset_name;
   seed.collation_name = !left.collation_name.empty() ? left.collation_name : right.collation_name;
   seed.collation_case_insensitive = CollationIsCaseInsensitive(seed.collation_name);
+  seed.collation_accent_insensitive = CollationIsAccentInsensitive(seed.collation_name);
   return seed;
 }
 
