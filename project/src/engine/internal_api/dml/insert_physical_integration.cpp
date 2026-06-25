@@ -8530,6 +8530,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       request.lane_operation == "native_bulk" &&
       !table->temporary &&
       !batch_context.strict_bulk_load_selected;
+  const bool row_stream_shared_key_order_known =
+      external_write_value_batch != nullptr &&
+      (generated_counter_direct_input || can_stage_shared_values_externally);
   result.evidence.push_back({"mga_row_append_storage_scope",
                              native_bulk_scoped_only_row_stream
                                  ? "scoped_only"
@@ -8553,7 +8556,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                   ? (native_bulk_scoped_only_row_stream
 	                          ? hot_append.AppendRowVersionsReadOnlyScopedOnly(
 	                                staged_rows,
-	                                external_write_value_batch)
+	                                external_write_value_batch,
+	                                row_stream_shared_key_order_known)
 	                          : hot_append.AppendRowVersionsReadOnly(
 	                                staged_rows,
 	                                external_write_value_batch))
