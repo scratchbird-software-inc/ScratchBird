@@ -503,15 +503,19 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
   return rows;
 }
 
-api::EngineRowValue Int64IndexedRow(int value) {
+api::EngineRowValue Int64IndexedRow(int value, platform::u64 salt) {
   api::EngineRowValue row;
   row.requested_row_uuid.canonical =
-      NewUuidText(platform::UuidKind::object, 1180 + value);
+      NewUuidText(platform::UuidKind::object, salt);
   row.fields.push_back({"id", ScalarValue("int64", std::to_string(value))});
   row.fields.push_back({"payload",
                         TextValue("int64-index-payload-" +
                                   std::to_string(value))});
   return row;
+}
+
+api::EngineRowValue Int64IndexedRow(int value) {
+  return Int64IndexedRow(value, static_cast<platform::u64>(1180 + value));
 }
 
 api::EngineRowValue NullInt64IndexedRow() {
@@ -1180,6 +1184,51 @@ void TestTypedInt64IndexKeysUseBinaryOrder() {
   Commit(context);
 }
 
+void TestTypedInt64IndexKeysUseFullSignedSortOrder() {
+  auto fixture = MakeInt64IndexFixture("typed_int64_signed_sort", 1480);
+  auto context = Begin(fixture, "cdp040-typed-int64-signed-sort-key");
+  const auto result = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture,
+                    context,
+                    {Int64IndexedRow(-257, 11801),
+                     Int64IndexedRow(-1, 11802),
+                     Int64IndexedRow(0, 11803),
+                     Int64IndexedRow(2, 11804),
+                     Int64IndexedRow(256, 11805)}));
+  RequireOk(result, "CDP-040 typed int64 signed sort native bulk ingest failed");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_candidates") == 5,
+          "CDP-040 typed int64 signed sort did not inspect every key");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_encoded") == 5,
+          "CDP-040 typed int64 signed sort did not encode every key");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_typed_fallback") == 0,
+          "CDP-040 typed int64 signed sort fell back to display text");
+  Require(EvidenceU64(result.evidence,
+                      "direct_index_key_sbkohex_keys") == 5,
+          "CDP-040 typed int64 signed sort did not emit SBKOHEX keys");
+
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok, "CDP-040 typed int64 signed sort state reload failed");
+  std::map<std::string, std::string> keys_by_value;
+  for (const auto& entry : loaded.state.index_entries) {
+    if (entry.index_uuid == fixture.index_uuid) {
+      keys_by_value[entry.payload_value] = entry.key_value;
+    }
+  }
+  const std::vector<std::string> order = {"-257", "-1", "0", "2", "256"};
+  for (const auto& value : order) {
+    Require(keys_by_value[value].rfind("SBKOHEX:", 0) == 0,
+            "CDP-040 signed int64 sort key was not SBKOHEX");
+  }
+  for (std::size_t index = 1; index < order.size(); ++index) {
+    Require(keys_by_value[order[index - 1]] < keys_by_value[order[index]],
+            "CDP-040 signed int64 persisted key order was not numeric");
+  }
+  Commit(context);
+}
+
 void TestTypedNullIndexKeyUsesNullOrder() {
   auto fixture = MakeInt64IndexFixture("typed_null_index", 1485);
   auto context = Begin(fixture, "cdp040-typed-null-index-key");
@@ -1833,6 +1882,7 @@ int main() {
   TestApiAndSblrAcceptedRoutes();
   TestNullAndCharacterRowPageStorage();
   TestTypedInt64IndexKeysUseBinaryOrder();
+  TestTypedInt64IndexKeysUseFullSignedSortOrder();
   TestTypedNullIndexKeyUsesNullOrder();
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
