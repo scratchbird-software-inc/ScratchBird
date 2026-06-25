@@ -1893,6 +1893,12 @@ bool DirectOptionTruthy(const DirectPhysicalBulkAppendRequest& request,
   return !value.empty() && IsDirectTruthyValue(value);
 }
 
+bool DirectOptionFalsy(const DirectPhysicalBulkAppendRequest& request,
+                       const std::string& key) {
+  const std::string value = DirectOptionValue(request, key);
+  return !value.empty() && IsDirectFalsyValue(value);
+}
+
 bool DirectBypassPostAppendCacheForSingleWindowNativeBulk(
     const DirectPhysicalBulkAppendRequest& request) {
   if (request.lane_operation == "native_bulk") {
@@ -7053,13 +7059,24 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       }
     }
   }
-	  if (!suppress_payload_rows) {
-	    returning_rows.reserve(direct_row_count);
-	  }
-	  logical_value_batch.reserve(direct_row_count);
+  if (!suppress_payload_rows) {
+    returning_rows.reserve(direct_row_count);
+  }
+  logical_value_batch.reserve(direct_row_count);
   constexpr std::size_t kDirectBulkMaxStoredInsertTraceEvents = 128;
-  constexpr std::size_t kDirectBulkTraceRowsToStore =
-      kDirectBulkMaxStoredInsertTraceEvents / 2;
+  const bool compact_insert_trace =
+      DirectOptionFalsy(request, "insert_trace.rows") ||
+      DirectOptionTruthy(request, "insert_trace.compact");
+  const std::size_t direct_bulk_trace_rows_to_store =
+      compact_insert_trace
+          ? 0
+          : static_cast<std::size_t>(
+                DirectOptionU64(request,
+                                "insert_trace.max_rows",
+                                kDirectBulkMaxStoredInsertTraceEvents / 2));
+  result.evidence.push_back(
+      {"direct_physical_bulk_trace.insert_trace_rows_to_store",
+       std::to_string(direct_bulk_trace_rows_to_store)});
   EngineApiU64 row_stage_prepare_us = 0;
   EngineApiU64 row_stage_convert_us = 0;
   EngineApiU64 row_stage_validation_us = 0;
@@ -7143,7 +7160,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
          counter <= generated_counter_plan.limit;
          counter += generated_counter_plan.step) {
       const bool store_row_trace =
-          row_ordinal < kDirectBulkTraceRowsToStore;
+          row_ordinal < direct_bulk_trace_rows_to_store;
       if (store_row_trace) {
         AddInsertTrace(&batch_context,
                        "direct_physical_bulk.row.convert",
@@ -7280,7 +7297,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	  } else {
   for (const auto& input_row : request.borrowed_input_rows) {
     const bool store_row_trace =
-        row_ordinal < kDirectBulkTraceRowsToStore;
+        row_ordinal < direct_bulk_trace_rows_to_store;
     if (store_row_trace) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.convert",
@@ -7636,10 +7653,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (!flush_preallocation_items()) {
     return preallocation_failure();
   }
-  if (direct_row_count > kDirectBulkTraceRowsToStore) {
+  if (direct_row_count > direct_bulk_trace_rows_to_store) {
     const std::uint64_t omitted =
         static_cast<std::uint64_t>(
-            direct_row_count - kDirectBulkTraceRowsToStore) *
+            direct_row_count - direct_bulk_trace_rows_to_store) *
         2u;
     batch_context.trace_event_count += omitted;
     batch_context.trace_event_compacted_count += omitted;
@@ -8329,7 +8346,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	  std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
 	  for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     const auto& row = staged_rows[index];
-    if (index < kDirectBulkTraceRowsToStore) {
+    if (index < direct_bulk_trace_rows_to_store) {
       AddInsertTrace(&batch_context,
                      "direct_physical_bulk.row.write",
                      "write",
@@ -8352,10 +8369,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                            std::make_move_iterator(row_delta_entries.end()));
     }
   }
-  if (staged_rows.size() > kDirectBulkTraceRowsToStore) {
+  if (staged_rows.size() > direct_bulk_trace_rows_to_store) {
     const std::uint64_t omitted =
         static_cast<std::uint64_t>(
-            staged_rows.size() - kDirectBulkTraceRowsToStore) *
+            staged_rows.size() - direct_bulk_trace_rows_to_store) *
         2u;
     batch_context.trace_event_count += omitted;
     batch_context.trace_event_compacted_count += omitted;
