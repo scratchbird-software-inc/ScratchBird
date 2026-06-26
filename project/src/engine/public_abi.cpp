@@ -582,6 +582,7 @@ NativeRowPacketDecode decode_native_row_packet_v1(const std::uint8_t* data,
   }
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_materialized=true");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_format:scratchbird.native_rows.v1");
+  decoded.request.option_envelopes.push_back("sblr.rowset_default_markers_absent=true");
   decoded.request.option_envelopes.push_back(
       "sblr.native_row_packet_row_count:" + std::to_string(row_count));
   decoded.ok = true;
@@ -590,22 +591,6 @@ NativeRowPacketDecode decode_native_row_packet_v1(const std::uint8_t* data,
 
 NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
                                                   std::size_t packet_size) {
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kTextDescriptor = native_row_descriptor("text");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kBooleanDescriptor = native_row_descriptor("boolean");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kInt32Descriptor = native_row_descriptor("int32");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kInt64Descriptor = native_row_descriptor("int64");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kUInt64Descriptor = native_row_descriptor("uint64");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kReal64Descriptor = native_row_descriptor("real64");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kBinaryDescriptor = native_row_descriptor("binary");
-  static const scratchbird::engine::internal_api::EngineDescriptor
-      kNullDescriptor = native_row_descriptor("null");
   NativeRowPacketDecode decoded;
   const std::uint64_t row_count = read_native_u64(data, 8);
   const std::uint32_t column_count = read_native_u32(data, 16);
@@ -633,6 +618,8 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
       return decoded;
     }
     column_types.push_back(type);
+    decoded.request.native_row_packet.column_type_tags.push_back(
+        static_cast<std::uint8_t>(type));
   }
   std::vector<std::string> columns;
   columns.reserve(column_count);
@@ -650,70 +637,55 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
     columns.emplace_back(reinterpret_cast<const char*>(data + offset), name_size);
     offset += name_size;
   }
+  decoded.request.native_row_packet.field_order = columns;
   decoded.request.shared_row_field_order = std::move(columns);
-  decoded.request.rows.reserve(static_cast<std::size_t>(row_count));
+  decoded.request.native_row_packet.row_offsets.reserve(
+      static_cast<std::size_t>(row_count));
+  decoded.request.native_row_packet.row_sizes.reserve(
+      static_cast<std::size_t>(row_count));
   for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
     if (offset + null_bitmap_bytes > packet_size) {
       decoded.detail = "native_row_packet_null_bitmap_truncated";
       return decoded;
     }
     const std::size_t null_bitmap_offset = offset;
+    const std::size_t row_start_offset = offset;
     offset += null_bitmap_bytes;
-    scratchbird::engine::internal_api::EngineRowValue row;
-    row.fields.reserve(column_count);
     for (std::uint32_t column_index = 0; column_index < column_count; ++column_index) {
       const bool is_null =
           (data[null_bitmap_offset + column_index / 8u] &
            static_cast<std::uint8_t>(1u << (column_index % 8u))) != 0;
-      scratchbird::engine::internal_api::EngineTypedValue value;
       if (is_null) {
-        value.descriptor = kNullDescriptor;
-        value.is_null = true;
-        value.setState(scratchbird::engine::internal_api::EngineValueState::sql_null);
+        continue;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kBoolean) {
         if (offset + 1 > packet_size) {
           decoded.detail = "native_row_packet_boolean_truncated";
           return decoded;
         }
-        value.descriptor = kBooleanDescriptor;
-        value.binary_value.assign(data + offset, data + offset + 1);
-        value.encoded_value = data[offset] == 0 ? "false" : "true";
         offset += 1;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kInt32) {
         if (offset + 4 > packet_size) {
           decoded.detail = "native_row_packet_int32_truncated";
           return decoded;
         }
-        value.descriptor = kInt32Descriptor;
-        value.binary_value.assign(data + offset, data + offset + 4);
-        value.encoded_value = std::to_string(read_native_i32(data, offset));
         offset += 4;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kInt64) {
         if (offset + 8 > packet_size) {
           decoded.detail = "native_row_packet_int64_truncated";
           return decoded;
         }
-        value.descriptor = kInt64Descriptor;
-        value.binary_value.assign(data + offset, data + offset + 8);
-        value.encoded_value = native_i64_to_string(read_native_i64(data, offset));
         offset += 8;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kUInt64) {
         if (offset + 8 > packet_size) {
           decoded.detail = "native_row_packet_uint64_truncated";
           return decoded;
         }
-        value.descriptor = kUInt64Descriptor;
-        value.binary_value.assign(data + offset, data + offset + 8);
-        value.encoded_value = native_u64_to_string(read_native_u64(data, offset));
         offset += 8;
       } else if (column_types[column_index] == NativeRowPacketColumnType::kReal64) {
         if (offset + 8 > packet_size) {
           decoded.detail = "native_row_packet_real64_truncated";
           return decoded;
         }
-        value.descriptor = kReal64Descriptor;
-        value.binary_value.assign(data + offset, data + offset + 8);
-        value.encoded_value = native_real64_to_string(read_native_real64(data, offset));
         offset += 8;
       } else {
         if (offset + 4 > packet_size) {
@@ -726,31 +698,44 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
           decoded.detail = "native_row_packet_value_truncated";
           return decoded;
         }
-        value.descriptor = column_types[column_index] == NativeRowPacketColumnType::kBinary
-                               ? kBinaryDescriptor
-                               : kTextDescriptor;
-        value.encoded_value.assign(reinterpret_cast<const char*>(data + offset),
-                                   value_size);
-        if (column_types[column_index] == NativeRowPacketColumnType::kBinary) {
-          value.binary_value.assign(data + offset, data + offset + value_size);
-        }
         offset += value_size;
       }
-      row.fields.push_back({std::string{}, std::move(value)});
     }
-    decoded.request.rows.push_back(std::move(row));
+    if (row_start_offset > std::numeric_limits<std::uint32_t>::max() ||
+        offset > std::numeric_limits<std::uint32_t>::max()) {
+      decoded.detail = "native_row_packet_row_offset_overflow";
+      return decoded;
+    }
+    decoded.request.native_row_packet.row_offsets.push_back(
+        static_cast<std::uint32_t>(row_start_offset));
+    decoded.request.native_row_packet.row_sizes.push_back(
+        static_cast<std::uint32_t>(offset - row_start_offset));
   }
   if (offset != packet_size) {
     decoded.detail = "native_row_packet_trailing_bytes";
     return decoded;
   }
-  decoded.request.option_envelopes.push_back("sblr.native_row_packet_materialized=true");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_materialized=false");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_frame_only=true");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_format:scratchbird.native_rows.v2");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_shared_field_order=true");
+  decoded.request.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
+  decoded.request.option_envelopes.push_back("sblr.rowset_default_markers_absent=true");
+  decoded.request.option_envelopes.push_back("sblr.compact_native_rowset_materialized=false");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_type_vector_validated=true");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_value_body_validated=true");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_fixed_shape_validated=true");
+  decoded.request.option_envelopes.push_back("sblr.native_row_packet_binary_scalar_values=true");
   decoded.request.option_envelopes.push_back(
       "sblr.native_row_packet_row_count:" + std::to_string(row_count));
   decoded.request.option_envelopes.push_back(
       "sblr.native_row_packet_null_bitmap_bytes:" + std::to_string(null_bitmap_bytes));
+  decoded.request.native_row_packet.present = true;
+  decoded.request.native_row_packet.version = 2;
+  decoded.request.native_row_packet.row_count = row_count;
+  decoded.request.native_row_packet.column_count = column_count;
+  decoded.request.native_row_packet.packet_bytes.assign(data,
+                                                        data + packet_size);
   decoded.ok = true;
   return decoded;
 }

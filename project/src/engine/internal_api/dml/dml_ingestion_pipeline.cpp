@@ -513,10 +513,46 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
                                   0,
                                   source_hint_pages,
                                   elapsed});
+    if (stats_.allocations.back().allocation.active &&
+        config_.input_row_count != 0) {
+      stats_.row_prework_rows =
+          std::max(stats_.row_prework_rows, config_.input_row_count);
+    }
     stats_.source_preallocation_bytes =
         std::max(stats_.source_preallocation_bytes, source_hint_bytes);
     stats_.source_preallocation_pages =
         std::max(stats_.source_preallocation_pages, source_hint_pages);
+  }
+
+  if (source_hint_pages != 0 &&
+      config_.state != nullptr &&
+      config_.input_row_count != 0) {
+    const auto index_start = PipelineClock::now();
+    auto index_allocation = ReserveDmlIndexPageAllocationRuntimeForRowCount(
+        config_.context,
+        config_.option_envelopes,
+        *config_.state,
+        config_.target_table_uuid,
+        config_.input_row_count,
+        config_.lane_operation + ".source_size_preallocation.index");
+    const EngineApiU64 index_elapsed =
+        ElapsedMicros(index_start, PipelineClock::now());
+    if (!index_allocation.ok()) {
+      SetFailure(index_allocation.diagnostic);
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    stats_.allocations.push_back({std::move(index_allocation),
+                                  "index_source_size_hint",
+                                  config_.input_row_count,
+                                  0,
+                                  index_elapsed});
+    if (stats_.allocations.back().allocation.active ||
+        !DmlIngestionOptionTruthy(config_.option_envelopes,
+                                  "page_allocation.runtime")) {
+      stats_.index_prework_rows =
+          std::max(stats_.index_prework_rows, config_.input_row_count);
+    }
   }
 
   if (row_count == 0) {

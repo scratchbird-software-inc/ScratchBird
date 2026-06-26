@@ -626,8 +626,11 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   api_request.rows.reserve(api_request.rows.size() +
                            request.envelope.operands.size() / 4);
   for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
-    row_index_by_uuid.emplace(api_request.rows[index].requested_row_uuid.canonical,
-                              index);
+    const std::string& row_uuid =
+        api_request.rows[index].requested_row_uuid.canonical;
+    if (!row_uuid.empty()) {
+      row_index_by_uuid.emplace(row_uuid, index);
+    }
   }
 
   for (const auto& operand : request.envelope.operands) {

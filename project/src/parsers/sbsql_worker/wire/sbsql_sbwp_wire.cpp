@@ -302,6 +302,7 @@ struct CopyImportRow {
 struct NativeCopyPacket {
   std::vector<std::uint8_t> payload;
   std::vector<std::string> columns;
+  std::vector<std::uint8_t> column_type_tags;
   std::uint64_t row_count{0};
 };
 
@@ -327,6 +328,9 @@ struct CopyImportState {
   std::uint64_t preallocation_bytes{0};
   std::uint64_t preallocation_factor_percent{82};
   std::string target_name;
+  bool native_packet_descriptor_bound{false};
+  std::string native_packet_descriptor_fingerprint;
+  std::uint32_t native_packet_descriptor_column_count{0};
   bool aggregate_result_active{false};
   PipelineResult aggregate_result;
   std::size_t aggregate_chunk_count{0};
@@ -2427,18 +2431,34 @@ std::vector<NativeRowColumnType> InferNativeRowColumnTypes(const CopyImportState
     bool all_lossless_int64 = true;
     bool all_uint64 = true;
     bool all_real64 = true;
-    for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
-      const auto& value = copy.rows[row_index].fields[column_index].second;
-      if (!value.has_value()) continue;
-      saw_non_null = true;
-      if (!ParseLosslessNativeBool(*value).has_value()) all_bool = false;
-      if (!ParseLosslessNativeInt32(*value).has_value()) all_int32 = false;
-      if (!ParseLosslessNativeInt64(*value).has_value()) {
-        all_lossless_int64 = false;
-      }
-      if (!ParseLosslessNativeUInt64(*value).has_value()) all_uint64 = false;
-      if (!ParseLosslessNativeReal64(*value).has_value()) all_real64 = false;
-    }
+	    for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+	      const auto& value = copy.rows[row_index].fields[column_index].second;
+	      if (!value.has_value()) continue;
+	      saw_non_null = true;
+	      if (all_bool && !ParseLosslessNativeBool(*value).has_value()) {
+	        all_bool = false;
+	      }
+	      if (all_int32 || all_lossless_int64) {
+	        const auto parsed_i64 = ParseLosslessNativeInt64(*value);
+	        if (!parsed_i64.has_value()) {
+	          all_int32 = false;
+	          all_lossless_int64 = false;
+	        } else if (*parsed_i64 < std::numeric_limits<std::int32_t>::min() ||
+	                   *parsed_i64 > std::numeric_limits<std::int32_t>::max()) {
+	          all_int32 = false;
+	        }
+	      }
+	      if (all_uint64 && !ParseLosslessNativeUInt64(*value).has_value()) {
+	        all_uint64 = false;
+	      }
+	      if (all_real64 && !ParseLosslessNativeReal64(*value).has_value()) {
+	        all_real64 = false;
+	      }
+	      if (!all_bool && !all_int32 && !all_lossless_int64 &&
+	          !all_uint64 && !all_real64) {
+	        break;
+	      }
+	    }
     if (!saw_non_null) {
       continue;
     }
@@ -2587,12 +2607,14 @@ std::optional<NativeCopyPacket> ParseNativeRowCopyPacketHeader(
   }
   std::vector<NativeRowColumnType> column_types;
   column_types.reserve(column_count);
+  packet.column_type_tags.reserve(column_count);
   for (std::uint32_t i = 0; i < column_count; ++i) {
     const auto type = static_cast<NativeRowColumnType>(payload[off++]);
     if (!NativeRowTypeSupported(type)) {
       return std::nullopt;
     }
     column_types.push_back(type);
+    packet.column_type_tags.push_back(static_cast<std::uint8_t>(type));
   }
   packet.columns.reserve(column_count);
   for (std::uint32_t i = 0; i < column_count; ++i) {
@@ -3089,7 +3111,74 @@ std::string BuildNativeBulkIngestExecuteEnvelopeForPacket(
     out += "\n";
   }
   out += "operand=text\tsblr.canonical_rowset_shared_shape\ttrue\n";
+  out += "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
   return out;
+}
+
+std::string NativeCopyPacketDescriptorFingerprint(const NativeCopyPacket& packet) {
+  std::string out;
+  out.reserve(packet.columns.size() * 24u);
+  out += "sbnr.v2:";
+  out += std::to_string(packet.columns.size());
+  for (std::size_t index = 0; index < packet.columns.size(); ++index) {
+    out.push_back('|');
+    out += std::to_string(index);
+    out.push_back(':');
+    out += index < packet.column_type_tags.size()
+               ? std::to_string(static_cast<unsigned>(packet.column_type_tags[index]))
+               : "missing_type";
+    out.push_back(':');
+    out += std::to_string(packet.columns[index].size());
+    out.push_back(':');
+    out += packet.columns[index];
+  }
+  return out;
+}
+
+bool BindOrValidateNativeCopyDescriptor(CopyImportState* copy,
+                                        const NativeCopyPacket& packet,
+                                        std::string* diagnostic_code,
+                                        std::string* diagnostic_detail) {
+  if (copy == nullptr) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.DESCRIPTOR_CONTEXT_MISSING";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = "COPY native descriptor validation requires parser COPY state";
+    }
+    return false;
+  }
+  if (packet.columns.empty() ||
+      packet.column_type_tags.size() != packet.columns.size()) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.DESCRIPTOR_INVALID";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = "COPY native row packet descriptor is missing columns or type tags";
+    }
+    return false;
+  }
+  const std::string fingerprint = NativeCopyPacketDescriptorFingerprint(packet);
+  if (!copy->native_packet_descriptor_bound) {
+    copy->native_packet_descriptor_bound = true;
+    copy->native_packet_descriptor_fingerprint = fingerprint;
+    copy->native_packet_descriptor_column_count =
+        static_cast<std::uint32_t>(packet.columns.size());
+    return true;
+  }
+  if (copy->native_packet_descriptor_fingerprint != fingerprint ||
+      copy->native_packet_descriptor_column_count !=
+          static_cast<std::uint32_t>(packet.columns.size())) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "SBSQL.COPY.DESCRIPTOR_MISMATCH";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          "COPY native row packet descriptor changed after the prepared bulk stream was bound";
+    }
+    return false;
+  }
+  return true;
 }
 
 bool PrepareCopyNativeBulkHandle(SbsqlTestWireSession* session,
@@ -5219,25 +5308,27 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     state->copy_import.sql = sql;
     state->copy_import.target_object_uuid = *target_uuid;
     const auto copy_in_response = CopyInResponsePayload(state);
-    std::string prepare_code;
-    std::string prepare_detail;
-    if (!PrepareCopyNativeBulkHandle(session,
+  std::string prepare_code;
+  std::string prepare_detail;
+  if (!PrepareCopyNativeBulkHandle(session,
                                      state,
                                      &state->copy_import,
                                      &prepare_code,
                                      &prepare_detail)) {
-      state->copy_import = CopyImportState{};
-      if (!SendError(io,
-                     state,
-                     "42000",
-                     prepare_code.empty() ? "SBSQL.COPY.PREPARED_HANDLE_REFUSED"
-                                          : prepare_code,
-                     prepare_detail.empty()
-                         ? "COPY native bulk path requires a server-owned prepared SBLR handle"
-                         : prepare_detail)) {
-        return false;
+      if (prepare_code != "SBSQL.PREPARE.UNAVAILABLE") {
+        state->copy_import = CopyImportState{};
+        if (!SendError(io,
+                       state,
+                       "42000",
+                       prepare_code.empty() ? "SBSQL.COPY.PREPARED_HANDLE_REFUSED"
+                                            : prepare_code,
+                       prepare_detail.empty()
+                           ? "COPY native bulk path requires a server-owned prepared SBLR handle"
+                           : prepare_detail)) {
+          return false;
+        }
+        return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
-      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
     }
     if (!SendFrame(io, state, kCopyInResponse, copy_in_response)) return false;
     return true;
@@ -5499,7 +5590,8 @@ bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
     return false;
   }
   RefreshWireAuthorityEpochsFromSession(*session, state);
-  if (!CopyPreparedHandleCurrent(*copy, session->session())) {
+  const bool use_prepared = CopyPreparedHandleCurrent(*copy, session->session());
+  if (!copy->prepared_statement_uuid.empty() && !use_prepared) {
     if (diagnostic_code != nullptr) {
       *diagnostic_code = "SBSQL.COPY.PREPARED_HANDLE_STALE";
     }
@@ -5511,25 +5603,47 @@ bool ExecutePreparedNativeCopyPacket(SbsqlTestWireSession* session,
   }
 
   const std::size_t chunk_index = copy->aggregate_chunk_count + 1;
-  const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const std::string envelope = BuildNativeBulkIngestExecuteEnvelopeForPacket(*copy, packet);
+  const std::int64_t descriptor_started = phase_trace ? ParserPhaseNowNs() : 0;
+  const bool descriptor_already_bound = copy->native_packet_descriptor_bound;
+  if (!BindOrValidateNativeCopyDescriptor(copy,
+                                          packet,
+                                          diagnostic_code,
+                                          diagnostic_detail)) {
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "copy_data",
+                                   "validate_prepared_native_descriptor",
+                                   descriptor_started,
+                                   packet.payload.size(),
+                                   chunk_index,
+                                   packet.row_count,
+                                   diagnostic_code == nullptr || diagnostic_code->empty()
+                                       ? "descriptor_rejected"
+                                       : *diagnostic_code);
+    return false;
+  }
   WriteParserPhaseTraceIfEnabled(phase_trace,
                                  "copy_data",
-                                 "build_execute_envelope",
-                                 envelope_started,
-                                 envelope.size(),
+                                 "validate_prepared_native_descriptor",
+                                 descriptor_started,
+                                 packet.payload.size(),
                                  chunk_index,
                                  packet.row_count,
-                                 "native_row_packet_passthrough");
+                                 descriptor_already_bound ? "descriptor_current"
+                                                          : "descriptor_bound");
   const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
+  const std::string envelope =
+      use_prepared ? std::string{} : BuildNativeBulkIngestExecuteEnvelopeForPacket(*copy, packet);
   auto chunk_result =
-      session->RunPreparedSblrEnvelopeForWire(copy->prepared_statement_uuid,
-                                              envelope,
-                                              packet.payload,
-                                              false);
+      use_prepared
+          ? session->RunPreparedSblrEnvelopeForWire(copy->prepared_statement_uuid,
+                                                    {},
+                                                    packet.payload,
+                                                    false)
+          : session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
   WriteParserPhaseTraceIfEnabled(phase_trace,
                                  "copy_data",
-                                 "run_prepared_sblr_with_data_packet",
+                                 use_prepared ? "run_prepared_native_bulk_data_packet"
+                                              : "run_native_bulk_data_packet",
                                  execute_started,
                                  envelope.size() + packet.payload.size(),
                                  chunk_index,
@@ -5685,6 +5799,7 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   }
   RefreshWireAuthorityEpochsFromSession(*session, state);
   if (copy.native_bulk_ingest &&
+      !copy.prepared_statement_uuid.empty() &&
       !CopyPreparedHandleCurrent(copy, session->session())) {
     return SendError(io,
                      state,
@@ -5695,23 +5810,31 @@ bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionStat
   }
   std::size_t chunk_count = copy.aggregate_chunk_count;
   for (const auto& packet : copy.native_packets) {
-    const std::int64_t envelope_started = phase_trace ? ParserPhaseNowNs() : 0;
-    const std::string envelope = BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, packet);
-    WriteParserPhaseTraceIfEnabled(phase_trace,
-                                   "copy_done",
-                                   "build_execute_envelope",
-                                   envelope_started,
-                                   envelope.size(),
-                                   chunk_count + 1,
-                                   packet.row_count,
-                                   "native_row_packet_passthrough");
+    std::string diagnostic_code;
+    std::string diagnostic_detail;
+    if (!BindOrValidateNativeCopyDescriptor(&copy,
+                                            packet,
+                                            &diagnostic_code,
+                                            &diagnostic_detail)) {
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     diagnostic_code.empty() ? "SBSQL.COPY.DESCRIPTOR_MISMATCH"
+                                             : diagnostic_code,
+                     diagnostic_detail)) {
+        return false;
+      }
+      return SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
     const std::int64_t execute_started = phase_trace ? ParserPhaseNowNs() : 0;
     const bool use_prepared =
         CopyPreparedHandleCurrent(copy, session->session());
+    const std::string envelope =
+        use_prepared ? std::string{} : BuildNativeBulkIngestExecuteEnvelopeForPacket(copy, packet);
     auto chunk_result =
         use_prepared
             ? session->RunPreparedSblrEnvelopeForWire(
-                  copy.prepared_statement_uuid, envelope, packet.payload, false)
+                  copy.prepared_statement_uuid, {}, packet.payload, false)
             : session->RunSblrEnvelopeWithDataPacket(envelope, packet.payload, false);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "copy_done",

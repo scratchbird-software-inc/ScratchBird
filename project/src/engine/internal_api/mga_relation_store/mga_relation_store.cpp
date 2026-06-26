@@ -21,6 +21,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -48,6 +50,7 @@ namespace idx = scratchbird::core::index;
 constexpr const char* kRowStoreMagic = "SBMGA1";
 constexpr const char* kDescriptorMagic = "SBMGADESC1";
 constexpr const char* kEventSequenceAllocatorMagic = "SBMGAEVSEQ1";
+constexpr std::string_view kLineHexFieldPrefix = "SBHEX:";
 constexpr std::size_t kMgaLargeValueChunkBytes = 2048;
 
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
@@ -90,10 +93,22 @@ std::string ScopedRowStorePath(const EngineRequestContext& context,
          ScopedRelationSegmentName(table_uuid) + ".rows";
 }
 
+std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
+                                     const std::string& table_uuid) {
+  return ScopedRelationStoreRoot(context) + "/" +
+         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+}
+
 std::string ScopedIndexStorePath(const EngineRequestContext& context,
                                  const std::string& table_uuid) {
   return ScopedRelationStoreRoot(context) + "/" +
          ScopedRelationSegmentName(table_uuid) + ".indexes";
+}
+
+std::string ScopedIndexBinaryStorePath(const EngineRequestContext& context,
+                                       const std::string& table_uuid) {
+  return ScopedRelationStoreRoot(context) + "/" +
+         ScopedRelationSegmentName(table_uuid) + ".indexes.sbnx";
 }
 
 std::string ScopedSummaryStorePath(const EngineRequestContext& context,
@@ -407,6 +422,1011 @@ std::vector<idx::byte> ReadBinaryFile(const std::string& path) {
   return bytes;
 }
 
+struct ScopedRelationSummary {
+  bool trusted = false;
+  bool malformed = false;
+  std::uint64_t row_version_count = 0;
+  std::uint64_t tombstone_count = 0;
+  std::uint64_t update_count = 0;
+};
+
+void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra);
+
+constexpr std::string_view kScopedRowBinaryBatchMagic = "SBMRBIN1";
+constexpr std::uint16_t kScopedRowBinaryVersion = 3;
+constexpr std::uint16_t kScopedRowBinaryLegacyTypedVersion = 2;
+constexpr std::uint16_t kScopedRowBinaryNativePacketVersion = 4;
+constexpr std::string_view kScopedIndexBinaryBatchMagic = "SBMIBIN1";
+constexpr std::uint16_t kScopedIndexBinaryVersion = 1;
+
+void AppendBinaryU8(std::string* out, std::uint8_t value) {
+  if (out == nullptr) { return; }
+  out->push_back(static_cast<char>(value));
+}
+
+void AppendBinaryU16(std::string* out, std::uint16_t value) {
+  if (out == nullptr) { return; }
+  out->push_back(static_cast<char>(value & 0xffu));
+  out->push_back(static_cast<char>((value >> 8u) & 0xffu));
+}
+
+void AppendBinaryU32(std::string* out, std::uint32_t value) {
+  if (out == nullptr) { return; }
+  for (std::size_t index = 0; index < 4; ++index) {
+    out->push_back(static_cast<char>((value >> (index * 8u)) & 0xffu));
+  }
+}
+
+void AppendBinaryU64(std::string* out, std::uint64_t value) {
+  if (out == nullptr) { return; }
+  for (std::size_t index = 0; index < 8; ++index) {
+    out->push_back(static_cast<char>((value >> (index * 8u)) & 0xffu));
+  }
+}
+
+bool AppendBinaryString(std::string* out, std::string_view value) {
+  if (out == nullptr ||
+      value.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  AppendBinaryU32(out, static_cast<std::uint32_t>(value.size()));
+  out->append(value.data(), value.size());
+  return true;
+}
+
+const std::array<std::int8_t, 256>& BinaryUuidHexTable() {
+  static const std::array<std::int8_t, 256> table = [] {
+    std::array<std::int8_t, 256> values{};
+    values.fill(-1);
+    for (int index = 0; index < 10; ++index) {
+      values[static_cast<unsigned char>('0' + index)] =
+          static_cast<std::int8_t>(index);
+    }
+    for (int index = 0; index < 6; ++index) {
+      values[static_cast<unsigned char>('a' + index)] =
+          static_cast<std::int8_t>(10 + index);
+      values[static_cast<unsigned char>('A' + index)] =
+          static_cast<std::int8_t>(10 + index);
+    }
+    return values;
+  }();
+  return table;
+}
+
+bool AppendBinaryUuidText(std::string* out, const std::string& text) {
+  if (out == nullptr) { return false; }
+  if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+      text[18] != '-' || text[23] != '-') {
+    return false;
+  }
+  static constexpr std::array<std::uint8_t, 32> kHexPositions = {
+      0, 1, 2, 3, 4, 5, 6, 7,
+      9, 10, 11, 12,
+      14, 15, 16, 17,
+      19, 20, 21, 22,
+      24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
+  const auto& table = BinaryUuidHexTable();
+  std::array<char, 16> bytes{};
+  for (std::size_t byte_index = 0; byte_index < bytes.size(); ++byte_index) {
+    const int hi =
+        table[static_cast<unsigned char>(text[kHexPositions[byte_index * 2]])];
+    const int lo =
+        table[static_cast<unsigned char>(text[kHexPositions[byte_index * 2 + 1]])];
+    if (hi < 0 || lo < 0) { return false; }
+    bytes[byte_index] = static_cast<char>((hi << 4) | lo);
+  }
+  out->append(bytes.data(), bytes.size());
+  return true;
+}
+
+bool ReadBinaryU8(const std::vector<idx::byte>& bytes,
+                  std::size_t* offset,
+                  std::uint8_t* out) {
+  if (offset == nullptr || out == nullptr || *offset + 1 > bytes.size()) {
+    return false;
+  }
+  *out = static_cast<std::uint8_t>(bytes[*offset]);
+  ++(*offset);
+  return true;
+}
+
+bool ReadBinaryU16(const std::vector<idx::byte>& bytes,
+                   std::size_t* offset,
+                   std::uint16_t* out) {
+  if (offset == nullptr || out == nullptr || *offset + 2 > bytes.size()) {
+    return false;
+  }
+  std::uint16_t value = 0;
+  for (std::size_t index = 0; index < 2; ++index) {
+    value |= static_cast<std::uint16_t>(bytes[*offset + index])
+             << (index * 8u);
+  }
+  *offset += 2;
+  *out = value;
+  return true;
+}
+
+bool ReadBinaryU32(const std::vector<idx::byte>& bytes,
+                   std::size_t* offset,
+                   std::uint32_t* out) {
+  if (offset == nullptr || out == nullptr || *offset + 4 > bytes.size()) {
+    return false;
+  }
+  std::uint32_t value = 0;
+  for (std::size_t index = 0; index < 4; ++index) {
+    value |= static_cast<std::uint32_t>(bytes[*offset + index])
+             << (index * 8u);
+  }
+  *offset += 4;
+  *out = value;
+  return true;
+}
+
+bool ReadBinaryU64(const std::vector<idx::byte>& bytes,
+                   std::size_t* offset,
+                   std::uint64_t* out) {
+  if (offset == nullptr || out == nullptr || *offset + 8 > bytes.size()) {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    value |= static_cast<std::uint64_t>(bytes[*offset + index])
+             << (index * 8u);
+  }
+  *offset += 8;
+  *out = value;
+  return true;
+}
+
+bool ReadBinaryString(const std::vector<idx::byte>& bytes,
+                      std::size_t* offset,
+                      std::string* out) {
+  if (offset == nullptr || out == nullptr) { return false; }
+  std::uint32_t size = 0;
+  if (!ReadBinaryU32(bytes, offset, &size) || *offset + size > bytes.size()) {
+    return false;
+  }
+  out->assign(reinterpret_cast<const char*>(bytes.data() + *offset), size);
+  *offset += size;
+  return true;
+}
+
+bool ReadBinaryUuidText(const std::vector<idx::byte>& bytes,
+                        std::size_t* offset,
+                        std::string* out) {
+  if (offset == nullptr || out == nullptr || *offset + 16 > bytes.size()) {
+    return false;
+  }
+  scratchbird::core::platform::Uuid uuid;
+  std::copy_n(bytes.data() + *offset, uuid.bytes.size(), uuid.bytes.begin());
+  *offset += uuid.bytes.size();
+  *out = scratchbird::core::uuid::UuidToString(uuid);
+  return true;
+}
+
+std::uint64_t ReadLittleEndianU64(std::string_view payload) {
+  std::uint64_t value = 0;
+  const std::size_t bytes = std::min<std::size_t>(payload.size(), 8);
+  for (std::size_t index = 0; index < bytes; ++index) {
+    value |= static_cast<std::uint64_t>(
+                 static_cast<unsigned char>(payload[index]))
+             << (index * 8u);
+  }
+  return value;
+}
+
+std::uint32_t ReadLittleEndianU32(std::string_view payload) {
+  std::uint32_t value = 0;
+  const std::size_t bytes = std::min<std::size_t>(payload.size(), 4);
+  for (std::size_t index = 0; index < bytes; ++index) {
+    value |= static_cast<std::uint32_t>(
+                 static_cast<unsigned char>(payload[index]))
+             << (index * 8u);
+  }
+  return value;
+}
+
+std::string Int64ToStringFast(std::int64_t value) {
+  char buffer[32] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
+                                       std::end(buffer),
+                                       value);
+  if (ec != std::errc()) { return std::to_string(value); }
+  return std::string(buffer, ptr);
+}
+
+std::string UInt64ToStringFast(std::uint64_t value) {
+  char buffer[32] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
+                                       std::end(buffer),
+                                       value);
+  if (ec != std::errc()) { return std::to_string(value); }
+  return std::string(buffer, ptr);
+}
+
+std::string Real64ToStringFast(double value) {
+  char buffer[64] = {};
+  const auto [ptr, ec] = std::to_chars(std::begin(buffer),
+                                       std::end(buffer),
+                                       value);
+  if (ec != std::errc()) { return std::to_string(value); }
+  return std::string(buffer, ptr);
+}
+
+std::string ScopedRowBinaryMaterializeValue(std::string_view type_name,
+                                            std::string_view payload) {
+  if (type_name == "boolean" && payload.size() == 1) {
+    return payload[0] == 0 ? "false" : "true";
+  }
+  if (type_name == "int32" && payload.size() == 4) {
+    const std::uint32_t bits = ReadLittleEndianU32(payload);
+    std::int32_t value = 0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return Int64ToStringFast(value);
+  }
+  if (type_name == "int64" && payload.size() == 8) {
+    const std::uint64_t bits = ReadLittleEndianU64(payload);
+    std::int64_t value = 0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return Int64ToStringFast(value);
+  }
+  if (type_name == "uint64" && payload.size() == 8) {
+    return UInt64ToStringFast(ReadLittleEndianU64(payload));
+  }
+  if (type_name == "real64" && payload.size() == 8) {
+    const std::uint64_t bits = ReadLittleEndianU64(payload);
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return Real64ToStringFast(value);
+  }
+  return std::string(payload);
+}
+
+std::string_view ScopedRowNativePacketTypeName(std::uint8_t tag) {
+  switch (tag) {
+    case 1: return "text";
+    case 2: return "int64";
+    case 3: return "boolean";
+    case 4: return "int32";
+    case 5: return "uint64";
+    case 6: return "real64";
+    case 7: return "binary";
+    default: return {};
+  }
+}
+
+std::string ScopedRowBinaryTypeName(const EngineTypedValue& typed) {
+  if (!typed.descriptor.canonical_type_name.empty()) {
+    return typed.descriptor.canonical_type_name;
+  }
+  if (!typed.descriptor.encoded_descriptor.empty()) {
+    const std::string_view encoded = typed.descriptor.encoded_descriptor;
+    constexpr std::string_view prefix = "type=";
+    if (encoded.rfind(prefix, 0) == 0) {
+      return std::string(encoded.substr(prefix.size()));
+    }
+  }
+  return "text";
+}
+
+std::string_view ScopedRowBinaryPayloadView(const EngineTypedValue& typed) {
+  if (!typed.binary_value.empty()) {
+    return std::string_view(
+        reinterpret_cast<const char*>(typed.binary_value.data()),
+        typed.binary_value.size());
+  }
+  return std::string_view(typed.encoded_value);
+}
+
+std::size_t ScopedRowBinaryBatchEstimateBytes(
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const std::string> field_order,
+    bool compact_batch) {
+  std::size_t bytes = kScopedRowBinaryBatchMagic.size() + 2 + 2 + 4 + 8;
+  for (const auto& field : field_order) {
+    bytes += 4 + field.size();
+  }
+  if (!typed_rows.empty()) {
+    for (const auto& [_, typed] : typed_rows.front().fields) {
+      const std::string type_name = ScopedRowBinaryTypeName(typed);
+      bytes += 4 + type_name.size();
+    }
+  }
+  if (compact_batch) {
+    bytes += 8 + 8 + 4 + rows.front().table_uuid.size() + 4 +
+             rows.front().temporary_session_uuid.size() + 1;
+  }
+  const std::size_t null_bitmap_bytes = (field_order.size() + 7u) / 8u;
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    const auto& row = rows[index];
+    if (compact_batch) {
+      bytes += 16 + 16;
+    } else {
+      bytes += 8 + 8 + 8 + 1;
+      bytes += 4 + row.table_uuid.size();
+      bytes += 4 + row.row_uuid.size();
+      bytes += 4 + row.version_uuid.size();
+      bytes += 4 + row.previous_version_uuid.size();
+      bytes += 4 + row.temporary_session_uuid.size();
+    }
+    bytes += null_bitmap_bytes;
+    const auto& typed_row = typed_rows[index];
+    for (const auto& [_, typed] : typed_row.fields) {
+      if (typed.isSqlNull()) { continue; }
+      bytes += 4 + ScopedRowBinaryPayloadView(typed).size();
+    }
+  }
+  return bytes;
+}
+
+bool ScopedRowBinaryCompactBatchEligible(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  (void)rows;
+  return false;
+}
+
+bool AppendScopedRowBinaryBatch(std::string* out,
+                                const std::vector<CrudRowVersionRecord>& rows,
+                                std::span<const EngineRowValue> typed_rows,
+                                std::span<const std::string> field_order,
+                                std::uint64_t first_event_sequence) {
+  if (out == nullptr || rows.empty() || typed_rows.size() != rows.size() ||
+      field_order.empty() ||
+      rows.size() > std::numeric_limits<std::uint64_t>::max() ||
+      field_order.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  const bool compact_batch = ScopedRowBinaryCompactBatchEligible(rows);
+  ReserveAmortizedAppendCapacity(
+      out,
+      ScopedRowBinaryBatchEstimateBytes(rows,
+                                        typed_rows,
+                                        field_order,
+                                        compact_batch));
+  out->append(kScopedRowBinaryBatchMagic.data(),
+              kScopedRowBinaryBatchMagic.size());
+  AppendBinaryU16(out,
+                  compact_batch ? kScopedRowBinaryVersion
+                                : kScopedRowBinaryLegacyTypedVersion);
+  AppendBinaryU16(out, 0);
+  AppendBinaryU32(out, static_cast<std::uint32_t>(field_order.size()));
+  AppendBinaryU64(out, static_cast<std::uint64_t>(rows.size()));
+  for (const auto& field : field_order) {
+    if (!AppendBinaryString(out, field)) { return false; }
+  }
+  if (typed_rows.empty() || typed_rows.front().fields.size() != field_order.size()) {
+    return false;
+  }
+  for (const auto& [_, typed] : typed_rows.front().fields) {
+    if (!AppendBinaryString(out, ScopedRowBinaryTypeName(typed))) {
+      return false;
+    }
+  }
+  if (compact_batch) {
+    AppendBinaryU64(out, first_event_sequence);
+    AppendBinaryU64(out, rows.front().creator_tx);
+    if (!AppendBinaryString(out, rows.front().table_uuid) ||
+        !AppendBinaryString(out, rows.front().temporary_session_uuid)) {
+      return false;
+    }
+    AppendBinaryU8(out, 0);
+  }
+  const std::size_t null_bitmap_bytes = (field_order.size() + 7u) / 8u;
+  std::vector<std::uint8_t> null_bitmap(null_bitmap_bytes);
+  std::uint64_t event_sequence = first_event_sequence;
+  for (std::size_t row_index = 0; row_index < rows.size(); ++row_index) {
+    const auto& row = rows[row_index];
+    const auto& typed_row = typed_rows[row_index];
+    if (typed_row.fields.size() != field_order.size()) { return false; }
+    if (compact_batch) {
+      if (!AppendBinaryUuidText(out, row.row_uuid) ||
+          !AppendBinaryUuidText(out, row.version_uuid)) {
+        return false;
+      }
+      ++event_sequence;
+    } else {
+      AppendBinaryU64(out, row.creator_tx);
+      AppendBinaryU64(out, event_sequence++);
+      AppendBinaryU64(out, row.previous_sequence);
+      AppendBinaryU8(out, row.deleted ? 1u : 0u);
+      if (!AppendBinaryString(out, row.table_uuid) ||
+          !AppendBinaryString(out, row.row_uuid) ||
+          !AppendBinaryString(out, row.version_uuid) ||
+          !AppendBinaryString(out, row.previous_version_uuid) ||
+          !AppendBinaryString(out, row.temporary_session_uuid)) {
+        return false;
+      }
+    }
+    std::fill(null_bitmap.begin(), null_bitmap.end(), 0);
+    for (std::size_t field_index = 0; field_index < typed_row.fields.size();
+         ++field_index) {
+      if (typed_row.fields[field_index].second.isSqlNull()) {
+        null_bitmap[field_index / 8u] |=
+            static_cast<std::uint8_t>(1u << (field_index % 8u));
+      }
+    }
+    for (const std::uint8_t byte : null_bitmap) {
+      AppendBinaryU8(out, byte);
+    }
+    for (const auto& [_, typed] : typed_row.fields) {
+      if (typed.isSqlNull()) { continue; }
+      if (!AppendBinaryString(out, ScopedRowBinaryPayloadView(typed))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::size_t ScopedRowBinaryIdentityBatchEstimateBytes(
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const std::string> field_order,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid) {
+  std::size_t bytes = kScopedRowBinaryBatchMagic.size() + 2 + 2 + 4 + 8;
+  for (const auto& field : field_order) {
+    bytes += 4 + field.size();
+  }
+  if (!typed_rows.empty()) {
+    for (const auto& [_, typed] : typed_rows.front().fields) {
+      const std::string type_name = ScopedRowBinaryTypeName(typed);
+      bytes += 4 + type_name.size();
+    }
+  }
+  bytes += 8 + 8 + 4 + table_uuid.size() + 4 +
+           temporary_session_uuid.size() + 1;
+  const std::size_t null_bitmap_bytes = (field_order.size() + 7u) / 8u;
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    bytes += 16 + 16;
+    bytes += null_bitmap_bytes;
+    const auto& typed_row = typed_rows[index];
+    for (const auto& [_, typed] : typed_row.fields) {
+      if (typed.isSqlNull()) { continue; }
+      bytes += 4 + ScopedRowBinaryPayloadView(typed).size();
+    }
+  }
+  return bytes;
+}
+
+bool AppendScopedRowIdentityBinaryBatch(
+    std::string* out,
+    const std::vector<CrudRowVersionRecord>& row_identities,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const std::string> field_order,
+    std::uint64_t creator_tx,
+    std::uint64_t first_event_sequence) {
+  if (out == nullptr || row_identities.empty() ||
+      typed_rows.size() != row_identities.size() ||
+      table_uuid.empty() || field_order.empty() ||
+      row_identities.size() > std::numeric_limits<std::uint64_t>::max() ||
+      field_order.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  ReserveAmortizedAppendCapacity(
+      out,
+      ScopedRowBinaryIdentityBatchEstimateBytes(row_identities,
+                                                typed_rows,
+                                                field_order,
+                                                table_uuid,
+                                                temporary_session_uuid));
+  out->append(kScopedRowBinaryBatchMagic.data(),
+              kScopedRowBinaryBatchMagic.size());
+  AppendBinaryU16(out, kScopedRowBinaryVersion);
+  AppendBinaryU16(out, 0);
+  AppendBinaryU32(out, static_cast<std::uint32_t>(field_order.size()));
+  AppendBinaryU64(out, static_cast<std::uint64_t>(row_identities.size()));
+  for (const auto& field : field_order) {
+    if (!AppendBinaryString(out, field)) { return false; }
+  }
+  if (typed_rows.empty() ||
+      typed_rows.front().fields.size() != field_order.size()) {
+    return false;
+  }
+  for (const auto& [_, typed] : typed_rows.front().fields) {
+    if (!AppendBinaryString(out, ScopedRowBinaryTypeName(typed))) {
+      return false;
+    }
+  }
+  AppendBinaryU64(out, first_event_sequence);
+  AppendBinaryU64(out, creator_tx);
+  if (!AppendBinaryString(out, table_uuid) ||
+      !AppendBinaryString(out, temporary_session_uuid)) {
+    return false;
+  }
+  AppendBinaryU8(out, 0);
+  const std::size_t null_bitmap_bytes = (field_order.size() + 7u) / 8u;
+  std::vector<std::uint8_t> null_bitmap(null_bitmap_bytes);
+  for (std::size_t row_index = 0; row_index < row_identities.size();
+       ++row_index) {
+    const auto& row = row_identities[row_index];
+    const auto& typed_row = typed_rows[row_index];
+    if (row.row_uuid.empty() || row.version_uuid.empty() ||
+        typed_row.fields.size() != field_order.size()) {
+      return false;
+    }
+    if (!AppendBinaryUuidText(out, row.row_uuid) ||
+        !AppendBinaryUuidText(out, row.version_uuid)) {
+      return false;
+    }
+    std::fill(null_bitmap.begin(), null_bitmap.end(), 0);
+    for (std::size_t field_index = 0; field_index < typed_row.fields.size();
+         ++field_index) {
+      if (typed_row.fields[field_index].second.isSqlNull()) {
+        null_bitmap[field_index / 8u] |=
+            static_cast<std::uint8_t>(1u << (field_index % 8u));
+      }
+    }
+    for (const std::uint8_t byte : null_bitmap) {
+      AppendBinaryU8(out, byte);
+    }
+    for (const auto& [_, typed] : typed_row.fields) {
+      if (typed.isSqlNull()) { continue; }
+      if (!AppendBinaryString(out, ScopedRowBinaryPayloadView(typed))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::size_t ScopedRowNativePacketIdentityBatchEstimateBytes(
+    const std::vector<CrudRowVersionRecord>& row_identities,
+    const EngineNativeRowPacketFrame& frame,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid) {
+  std::size_t bytes = kScopedRowBinaryBatchMagic.size() + 2 + 2 + 4 + 8;
+  for (const auto& field : frame.field_order) {
+    bytes += 4 + field.size();
+  }
+  bytes += frame.column_type_tags.size();
+  bytes += 8 + 8 + 4 + table_uuid.size() + 4 +
+           temporary_session_uuid.size() + 1;
+  for (std::size_t index = 0; index < row_identities.size() &&
+                              index < frame.row_sizes.size();
+       ++index) {
+    bytes += 16 + 16;
+    bytes += frame.row_sizes[index];
+  }
+  return bytes;
+}
+
+bool AppendScopedRowIdentityNativePacketBatch(
+    std::string* out,
+    const std::vector<CrudRowVersionRecord>& row_identities,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid,
+    const EngineNativeRowPacketFrame& frame,
+    std::uint64_t creator_tx,
+    std::uint64_t first_event_sequence) {
+  if (out == nullptr || row_identities.empty() || !frame.present ||
+      frame.version != 2 ||
+      table_uuid.empty() || table_uuid == "unknown" ||
+      frame.row_count != row_identities.size() ||
+      frame.column_count == 0 ||
+      frame.field_order.size() != frame.column_count ||
+      frame.column_type_tags.size() != frame.column_count ||
+      frame.row_offsets.size() != row_identities.size() ||
+      frame.row_sizes.size() != row_identities.size() ||
+      frame.packet_bytes.empty() ||
+      row_identities.size() > std::numeric_limits<std::uint64_t>::max() ||
+      frame.field_order.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  ReserveAmortizedAppendCapacity(
+      out,
+      ScopedRowNativePacketIdentityBatchEstimateBytes(row_identities,
+                                                      frame,
+                                                      table_uuid,
+                                                      temporary_session_uuid));
+  out->append(kScopedRowBinaryBatchMagic.data(),
+              kScopedRowBinaryBatchMagic.size());
+  AppendBinaryU16(out, kScopedRowBinaryNativePacketVersion);
+  AppendBinaryU16(out, 0);
+  AppendBinaryU32(out, static_cast<std::uint32_t>(frame.field_order.size()));
+  AppendBinaryU64(out, static_cast<std::uint64_t>(row_identities.size()));
+  for (const auto& field : frame.field_order) {
+    if (!AppendBinaryString(out, field)) { return false; }
+  }
+  for (const std::uint8_t tag : frame.column_type_tags) {
+    AppendBinaryU8(out, tag);
+  }
+  AppendBinaryU64(out, first_event_sequence);
+  AppendBinaryU64(out, creator_tx);
+  if (!AppendBinaryString(out, table_uuid) ||
+      !AppendBinaryString(out, temporary_session_uuid)) {
+    return false;
+  }
+  AppendBinaryU8(out, 0);
+  for (std::size_t row_index = 0; row_index < row_identities.size();
+       ++row_index) {
+    const auto& row = row_identities[row_index];
+    if (row.row_uuid.empty() || row.version_uuid.empty()) {
+      return false;
+    }
+    const std::size_t row_offset = frame.row_offsets[row_index];
+    const std::size_t row_size = frame.row_sizes[row_index];
+    if (row_size == 0 || row_offset > frame.packet_bytes.size() ||
+        row_size > frame.packet_bytes.size() - row_offset) {
+      return false;
+    }
+    if (!AppendBinaryUuidText(out, row.row_uuid) ||
+        !AppendBinaryUuidText(out, row.version_uuid)) {
+      return false;
+    }
+    out->append(reinterpret_cast<const char*>(frame.packet_bytes.data() +
+                                             row_offset),
+                row_size);
+  }
+  return true;
+}
+
+bool DecodeScopedRowBinaryStore(
+    const std::string& path,
+    std::vector<CrudRowVersionRecord>* rows,
+    ScopedRelationSummary* summary) {
+  if (rows == nullptr || summary == nullptr) { return false; }
+  if (!FileExistsAndNotEmpty(path)) {
+    summary->trusted = true;
+    return true;
+  }
+  const std::vector<idx::byte> bytes = ReadBinaryFile(path);
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    if (offset + kScopedRowBinaryBatchMagic.size() > bytes.size() ||
+        std::string_view(reinterpret_cast<const char*>(bytes.data() + offset),
+                         kScopedRowBinaryBatchMagic.size()) !=
+            kScopedRowBinaryBatchMagic) {
+      summary->malformed = true;
+      summary->trusted = false;
+      return false;
+    }
+    offset += kScopedRowBinaryBatchMagic.size();
+    std::uint16_t version = 0;
+    std::uint16_t flags = 0;
+    std::uint32_t column_count = 0;
+    std::uint64_t row_count = 0;
+    if (!ReadBinaryU16(bytes, &offset, &version) ||
+        !ReadBinaryU16(bytes, &offset, &flags) ||
+        !ReadBinaryU32(bytes, &offset, &column_count) ||
+        !ReadBinaryU64(bytes, &offset, &row_count) ||
+        (version != 1 && version != kScopedRowBinaryLegacyTypedVersion &&
+         version != kScopedRowBinaryVersion &&
+         version != kScopedRowBinaryNativePacketVersion) ||
+        flags != 0 ||
+        column_count == 0 || column_count > 4096) {
+      summary->malformed = true;
+      summary->trusted = false;
+      return false;
+    }
+    if (row_count >
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() /
+                                   column_count)) {
+      summary->malformed = true;
+      summary->trusted = false;
+      return false;
+    }
+    std::vector<std::string> field_order;
+    field_order.reserve(column_count);
+    for (std::uint32_t index = 0; index < column_count; ++index) {
+      std::string field;
+      if (!ReadBinaryString(bytes, &offset, &field) || field.empty()) {
+        summary->malformed = true;
+        summary->trusted = false;
+        return false;
+      }
+      field_order.push_back(std::move(field));
+    }
+    std::vector<std::string> field_types;
+    field_types.reserve(column_count);
+    std::vector<std::uint8_t> native_field_type_tags;
+    native_field_type_tags.reserve(column_count);
+    if (version == kScopedRowBinaryNativePacketVersion) {
+      for (std::uint32_t index = 0; index < column_count; ++index) {
+        std::uint8_t tag = 0;
+        if (!ReadBinaryU8(bytes, &offset, &tag) ||
+            ScopedRowNativePacketTypeName(tag).empty()) {
+          summary->malformed = true;
+          summary->trusted = false;
+          return false;
+        }
+        native_field_type_tags.push_back(tag);
+        field_types.emplace_back(ScopedRowNativePacketTypeName(tag));
+      }
+    } else if (version >= kScopedRowBinaryLegacyTypedVersion) {
+      for (std::uint32_t index = 0; index < column_count; ++index) {
+        std::string type_name;
+        if (!ReadBinaryString(bytes, &offset, &type_name) ||
+            type_name.empty()) {
+          summary->malformed = true;
+          summary->trusted = false;
+          return false;
+        }
+        field_types.push_back(std::move(type_name));
+      }
+    } else {
+      field_types.assign(column_count, "text");
+    }
+    std::uint64_t compact_first_event_sequence = 0;
+    std::uint64_t compact_creator_tx = 0;
+    std::string compact_table_uuid;
+    std::string compact_temporary_session_uuid;
+    std::uint8_t compact_flags = 0;
+    const bool compact_batch = version >= kScopedRowBinaryVersion;
+    if (compact_batch) {
+      if (!ReadBinaryU64(bytes, &offset, &compact_first_event_sequence) ||
+          !ReadBinaryU64(bytes, &offset, &compact_creator_tx) ||
+          !ReadBinaryString(bytes, &offset, &compact_table_uuid) ||
+          !ReadBinaryString(bytes, &offset, &compact_temporary_session_uuid) ||
+          !ReadBinaryU8(bytes, &offset, &compact_flags) ||
+          compact_table_uuid.empty() || compact_flags != 0) {
+        summary->malformed = true;
+        summary->trusted = false;
+        return false;
+      }
+    }
+    const std::size_t null_bitmap_bytes =
+        (static_cast<std::size_t>(column_count) + 7u) / 8u;
+    rows->reserve(rows->size() + static_cast<std::size_t>(row_count));
+    for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+      CrudRowVersionRecord row;
+      std::uint8_t deleted = 0;
+      if (compact_batch) {
+        row.creator_tx = compact_creator_tx;
+        row.event_sequence = compact_first_event_sequence + row_index;
+        row.previous_sequence = 0;
+        row.table_uuid = compact_table_uuid;
+        row.temporary_session_uuid = compact_temporary_session_uuid;
+        if (!ReadBinaryUuidText(bytes, &offset, &row.row_uuid) ||
+            !ReadBinaryUuidText(bytes, &offset, &row.version_uuid) ||
+            offset + null_bitmap_bytes > bytes.size()) {
+          summary->malformed = true;
+          summary->trusted = false;
+          return false;
+        }
+      } else {
+        if (!ReadBinaryU64(bytes, &offset, &row.creator_tx) ||
+            !ReadBinaryU64(bytes, &offset, &row.event_sequence) ||
+            !ReadBinaryU64(bytes, &offset, &row.previous_sequence) ||
+            !ReadBinaryU8(bytes, &offset, &deleted) ||
+            !ReadBinaryString(bytes, &offset, &row.table_uuid) ||
+            !ReadBinaryString(bytes, &offset, &row.row_uuid) ||
+            !ReadBinaryString(bytes, &offset, &row.version_uuid) ||
+            !ReadBinaryString(bytes, &offset, &row.previous_version_uuid) ||
+            !ReadBinaryString(bytes, &offset, &row.temporary_session_uuid) ||
+            offset + null_bitmap_bytes > bytes.size()) {
+          summary->malformed = true;
+          summary->trusted = false;
+          return false;
+        }
+        row.deleted = deleted != 0;
+      }
+      row.sequence = row.event_sequence;
+      if (compact_batch) {
+        row.deleted = false;
+      }
+      const std::size_t null_bitmap_offset = offset;
+      offset += null_bitmap_bytes;
+      row.values.reserve(column_count);
+      for (std::uint32_t column_index = 0; column_index < column_count;
+           ++column_index) {
+        const bool is_null =
+            (bytes[null_bitmap_offset + column_index / 8u] &
+             static_cast<idx::byte>(1u << (column_index % 8u))) != 0;
+        if (is_null) {
+          row.values.push_back({field_order[column_index], "<NULL>"});
+          continue;
+        }
+        if (version == kScopedRowBinaryNativePacketVersion) {
+          const std::uint8_t tag = native_field_type_tags[column_index];
+          std::string_view payload;
+          switch (tag) {
+            case 3:
+              if (offset + 1 > bytes.size()) {
+                summary->malformed = true;
+                summary->trusted = false;
+                return false;
+              }
+              payload = std::string_view(
+                  reinterpret_cast<const char*>(bytes.data() + offset), 1);
+              offset += 1;
+              break;
+            case 4:
+              if (offset + 4 > bytes.size()) {
+                summary->malformed = true;
+                summary->trusted = false;
+                return false;
+              }
+              payload = std::string_view(
+                  reinterpret_cast<const char*>(bytes.data() + offset), 4);
+              offset += 4;
+              break;
+            case 2:
+            case 5:
+            case 6:
+              if (offset + 8 > bytes.size()) {
+                summary->malformed = true;
+                summary->trusted = false;
+                return false;
+              }
+              payload = std::string_view(
+                  reinterpret_cast<const char*>(bytes.data() + offset), 8);
+              offset += 8;
+              break;
+            case 1:
+            case 7: {
+              std::string value;
+              if (!ReadBinaryString(bytes, &offset, &value)) {
+                summary->malformed = true;
+                summary->trusted = false;
+                return false;
+              }
+              row.values.push_back(
+                  {field_order[column_index],
+                   ScopedRowBinaryMaterializeValue(field_types[column_index],
+                                                   value)});
+              continue;
+            }
+            default:
+              summary->malformed = true;
+              summary->trusted = false;
+              return false;
+          }
+          row.values.push_back(
+              {field_order[column_index],
+               ScopedRowBinaryMaterializeValue(field_types[column_index],
+                                               payload)});
+        } else {
+          std::string value;
+          if (!ReadBinaryString(bytes, &offset, &value)) {
+            summary->malformed = true;
+            summary->trusted = false;
+            return false;
+          }
+          row.values.push_back(
+              {field_order[column_index],
+               ScopedRowBinaryMaterializeValue(field_types[column_index],
+                                               value)});
+        }
+      }
+      ++summary->row_version_count;
+      if (row.deleted) { ++summary->tombstone_count; }
+      if (!row.previous_version_uuid.empty()) { ++summary->update_count; }
+      rows->push_back(std::move(row));
+    }
+  }
+  summary->trusted = true;
+  return true;
+}
+
+bool AppendScopedExactIndexBinaryBatch(
+    std::string* out,
+    const MgaExactIndexEntryAppendBatch& batch,
+    std::uint64_t creator_tx,
+    std::uint64_t first_event_sequence) {
+  if (out == nullptr || batch.entries.empty()) {
+    return false;
+  }
+  const std::string table_uuid =
+      batch.index.table_uuid.empty() ? batch.table_uuid : batch.index.table_uuid;
+  if (table_uuid.empty() || batch.index.index_uuid.empty()) {
+    return false;
+  }
+  std::size_t estimate = kScopedIndexBinaryBatchMagic.size() + 2 + 2 + 8 + 8 +
+                         8 + 24 + table_uuid.size() +
+                         batch.index.index_uuid.size() +
+                         batch.index.column_name.size() +
+                         batch.index.family.size();
+  for (const auto& entry : batch.entries) {
+    estimate += 16 + entry.encoded_key.size() + entry.payload_value.size() +
+                entry.row_uuid.size() + entry.version_uuid.size();
+  }
+  ReserveAmortizedAppendCapacity(out, estimate);
+  out->append(kScopedIndexBinaryBatchMagic.data(),
+              kScopedIndexBinaryBatchMagic.size());
+  AppendBinaryU16(out, kScopedIndexBinaryVersion);
+  AppendBinaryU16(out, 0);
+  AppendBinaryU64(out, static_cast<std::uint64_t>(batch.entries.size()));
+  AppendBinaryU64(out, creator_tx);
+  AppendBinaryU64(out, first_event_sequence);
+  if (!AppendBinaryString(out, table_uuid) ||
+      !AppendBinaryString(out, batch.index.index_uuid) ||
+      !AppendBinaryString(out, batch.index.column_name) ||
+      !AppendBinaryString(out, batch.index.family) ||
+      !AppendBinaryString(out, "exact")) {
+    return false;
+  }
+  for (const auto& entry : batch.entries) {
+    if (entry.encoded_key.empty() || entry.row_uuid.empty() ||
+        entry.version_uuid.empty()) {
+      return false;
+    }
+    if (!AppendBinaryString(out, entry.encoded_key) ||
+        !AppendBinaryString(out, entry.payload_value) ||
+        !AppendBinaryString(out, entry.row_uuid) ||
+        !AppendBinaryString(out, entry.version_uuid)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool DecodeScopedIndexBinaryStore(
+    const std::string& path,
+    std::vector<CrudIndexEntryRecord>* entries) {
+  if (entries == nullptr) {
+    return false;
+  }
+  if (!FileExistsAndNotEmpty(path)) {
+    return true;
+  }
+  const std::vector<idx::byte> bytes = ReadBinaryFile(path);
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    if (offset + kScopedIndexBinaryBatchMagic.size() > bytes.size() ||
+        std::string_view(reinterpret_cast<const char*>(bytes.data() + offset),
+                         kScopedIndexBinaryBatchMagic.size()) !=
+            kScopedIndexBinaryBatchMagic) {
+      return false;
+    }
+    offset += kScopedIndexBinaryBatchMagic.size();
+    std::uint16_t version = 0;
+    std::uint16_t flags = 0;
+    std::uint64_t entry_count = 0;
+    std::uint64_t creator_tx = 0;
+    std::uint64_t first_event_sequence = 0;
+    if (!ReadBinaryU16(bytes, &offset, &version) ||
+        !ReadBinaryU16(bytes, &offset, &flags) ||
+        !ReadBinaryU64(bytes, &offset, &entry_count) ||
+        !ReadBinaryU64(bytes, &offset, &creator_tx) ||
+        !ReadBinaryU64(bytes, &offset, &first_event_sequence) ||
+        version != kScopedIndexBinaryVersion ||
+        flags != 0 ||
+        entry_count >
+            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+      return false;
+    }
+    std::string table_uuid;
+    std::string index_uuid;
+    std::string column_name;
+    std::string family;
+    std::string entry_kind;
+    if (!ReadBinaryString(bytes, &offset, &table_uuid) ||
+        !ReadBinaryString(bytes, &offset, &index_uuid) ||
+        !ReadBinaryString(bytes, &offset, &column_name) ||
+        !ReadBinaryString(bytes, &offset, &family) ||
+        !ReadBinaryString(bytes, &offset, &entry_kind) ||
+        table_uuid.empty() || index_uuid.empty() || entry_kind.empty()) {
+      return false;
+    }
+    entries->reserve(entries->size() + static_cast<std::size_t>(entry_count));
+    for (std::uint64_t index = 0; index < entry_count; ++index) {
+      CrudIndexEntryRecord entry;
+      entry.creator_tx = creator_tx;
+      entry.event_sequence = first_event_sequence + index;
+      entry.sequence = entry.event_sequence;
+      entry.table_uuid = table_uuid;
+      entry.index_uuid = index_uuid;
+      entry.column_name = column_name;
+      entry.family = family;
+      entry.entry_kind = entry_kind;
+      if (!ReadBinaryString(bytes, &offset, &entry.key_value) ||
+          !ReadBinaryString(bytes, &offset, &entry.payload_value) ||
+          !ReadBinaryString(bytes, &offset, &entry.row_uuid) ||
+          !ReadBinaryString(bytes, &offset, &entry.version_uuid) ||
+          entry.key_value.empty() || entry.row_uuid.empty() ||
+          entry.version_uuid.empty()) {
+        return false;
+      }
+      entries->push_back(std::move(entry));
+    }
+  }
+  return true;
+}
+
 std::string JoinLine(const std::vector<std::string>& fields) {
   std::string line;
   for (std::size_t i = 0; i < fields.size(); ++i) {
@@ -452,6 +1472,40 @@ void AppendHexEncoded(std::string* out, std::string_view value) {
   for (const unsigned char c : value) {
     *cursor++ = kHex[(c >> 4) & 0x0f];
     *cursor++ = kHex[c & 0x0f];
+  }
+}
+
+void AppendLineHexField(std::string* line,
+                        bool* first,
+                        std::string_view field) {
+  if (line == nullptr || first == nullptr) { return; }
+  if (!*first) {
+    line->push_back('\t');
+  }
+  *first = false;
+  line->append(kLineHexFieldPrefix.data(), kLineHexFieldPrefix.size());
+  AppendHexEncoded(line, field);
+}
+
+bool LineFieldRequiresHex(std::string_view field) {
+  if (field.rfind(kLineHexFieldPrefix, 0) == 0) {
+    return true;
+  }
+  for (const char ch : field) {
+    if (ch == '\t' || ch == '\n' || ch == '\r' || ch == '\0') {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AppendLineSafeOrHexField(std::string* line,
+                              bool* first,
+                              std::string_view field) {
+  if (LineFieldRequiresHex(field)) {
+    AppendLineHexField(line, first, field);
+  } else {
+    AppendLineField(line, first, field);
   }
 }
 
@@ -510,6 +1564,33 @@ void AppendEncodedCrudPairsFieldWithEncodedKeys(
   }
 }
 
+void AppendEncodedTypedFieldsFieldWithEncodedKeys(
+    std::string* line,
+    bool* first,
+    const EngineRowValue& row,
+    std::span<const std::string> field_order,
+    const std::vector<std::string>& encoded_keys) {
+  if (line == nullptr || first == nullptr ||
+      field_order.size() != row.fields.size() ||
+      encoded_keys.size() != field_order.size()) {
+    return;
+  }
+  if (!*first) {
+    line->push_back('\t');
+  }
+  *first = false;
+  for (std::size_t index = 0; index < row.fields.size(); ++index) {
+    if (index != 0) {
+      line->push_back('|');
+    }
+    line->append(encoded_keys[index]);
+    line->push_back('=');
+    const auto& typed = row.fields[index].second;
+    AppendHexEncoded(line, typed.isSqlNull() ? std::string_view("<NULL>")
+                                             : std::string_view(typed.encoded_value));
+  }
+}
+
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   if (out == nullptr) { return; }
   const std::size_t required = out->size() + extra;
@@ -562,6 +1643,50 @@ void AppendRowVersionStoreLine(std::string* out,
   AppendLineField(out, &first, row.temporary_session_uuid);
 }
 
+void AppendTypedRowVersionStoreLine(
+    std::string* out,
+    const CrudRowVersionRecord& row,
+    std::uint64_t event_sequence_override,
+    const EngineRowValue& typed_row,
+    std::span<const std::string> field_order,
+    const std::vector<std::string>& encoded_keys) {
+  if (out == nullptr) { return; }
+  std::size_t encoded_value_bytes = 0;
+  for (const auto& [_, typed] : typed_row.fields) {
+    encoded_value_bytes += typed.isSqlNull() ? sizeof("<NULL>") - 1
+                                             : typed.encoded_value.size();
+  }
+  const std::size_t fixed_size_floor =
+      128 + row.table_uuid.size() + row.row_uuid.size() +
+      row.version_uuid.size() + row.previous_version_uuid.size() +
+      row.temporary_session_uuid.size();
+  const std::size_t available =
+      out->capacity() > out->size() ? out->capacity() - out->size() : 0;
+  if (available < fixed_size_floor + kRowVersionStoreLineReserveSlackBytes) {
+    ReserveAmortizedAppendCapacity(
+        out,
+        fixed_size_floor + encoded_value_bytes +
+            field_order.size() * 8);
+  }
+  bool first = true;
+  AppendLineField(out, &first, kRowStoreMagic);
+  AppendLineField(out, &first, "ROW_VERSION");
+  AppendLineU64Field(out, &first, row.creator_tx);
+  AppendLineU64Field(out, &first, event_sequence_override);
+  AppendLineField(out, &first, row.table_uuid);
+  AppendLineField(out, &first, row.row_uuid);
+  AppendLineField(out, &first, row.version_uuid);
+  AppendLineField(out, &first, row.deleted ? "1" : "0");
+  AppendLineField(out, &first, row.previous_version_uuid);
+  AppendLineU64Field(out, &first, row.previous_sequence);
+  AppendEncodedTypedFieldsFieldWithEncodedKeys(out,
+                                               &first,
+                                               typed_row,
+                                               field_order,
+                                               encoded_keys);
+  AppendLineField(out, &first, row.temporary_session_uuid);
+}
+
 void AppendRowVersionStoreLine(std::string* out,
                                const CrudRowVersionRecord& row,
                                std::uint64_t event_sequence_override) {
@@ -595,21 +1720,24 @@ std::string BuildIndexEntryStoreLine(std::uint64_t creator_tx,
   std::string line;
   line.reserve(96 + creator_text.size() + event_text.size() +
                index_uuid.size() + table_uuid.size() + column_name.size() +
-               family.size() + entry_kind.size() + key.size() +
-               payload.size() + row_uuid.size() + version_uuid.size());
-  AppendTabField(&line, kRowStoreMagic);
-  AppendTabField(&line, "INDEX_ENTRY");
-  AppendTabField(&line, creator_text);
-  AppendTabField(&line, event_text);
-  AppendTabField(&line, index_uuid);
-  AppendTabField(&line, table_uuid);
-  AppendTabField(&line, column_name);
-  AppendTabField(&line, family);
-  AppendTabField(&line, entry_kind);
-  AppendTabField(&line, key);
-  AppendTabField(&line, payload);
-  AppendTabField(&line, row_uuid);
-  AppendTabField(&line, version_uuid);
+               family.size() + entry_kind.size() +
+               kLineHexFieldPrefix.size() + key.size() * 2 +
+               kLineHexFieldPrefix.size() + payload.size() * 2 +
+               row_uuid.size() + version_uuid.size());
+  bool first = true;
+  AppendLineField(&line, &first, kRowStoreMagic);
+  AppendLineField(&line, &first, "INDEX_ENTRY");
+  AppendLineField(&line, &first, creator_text);
+  AppendLineField(&line, &first, event_text);
+  AppendLineField(&line, &first, index_uuid);
+  AppendLineField(&line, &first, table_uuid);
+  AppendLineField(&line, &first, column_name);
+  AppendLineField(&line, &first, family);
+  AppendLineField(&line, &first, entry_kind);
+  AppendLineSafeOrHexField(&line, &first, key);
+  AppendLineSafeOrHexField(&line, &first, payload);
+  AppendLineField(&line, &first, row_uuid);
+  AppendLineField(&line, &first, version_uuid);
   return line;
 }
 
@@ -629,8 +1757,10 @@ void AppendIndexEntryStoreLine(std::string* out,
   ReserveAmortizedAppendCapacity(out,
                                  128 + index_uuid.size() + table_uuid.size() +
                                      column_name.size() + family.size() +
-                                     entry_kind.size() + key.size() +
-                                     payload.size() + row_uuid.size() +
+                                     entry_kind.size() +
+                                     kLineHexFieldPrefix.size() + key.size() * 2 +
+                                     kLineHexFieldPrefix.size() + payload.size() * 2 +
+                                     row_uuid.size() +
                                      version_uuid.size());
   bool first = true;
   AppendLineField(out, &first, kRowStoreMagic);
@@ -642,8 +1772,8 @@ void AppendIndexEntryStoreLine(std::string* out,
   AppendLineField(out, &first, column_name);
   AppendLineField(out, &first, family);
   AppendLineField(out, &first, entry_kind);
-  AppendLineField(out, &first, key);
-  AppendLineField(out, &first, payload);
+  AppendLineSafeOrHexField(out, &first, key);
+  AppendLineSafeOrHexField(out, &first, payload);
   AppendLineField(out, &first, row_uuid);
   AppendLineField(out, &first, version_uuid);
   out->push_back('\n');
@@ -963,14 +2093,6 @@ std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
   }
 }
 
-struct ScopedRelationSummary {
-  bool trusted = false;
-  bool malformed = false;
-  std::uint64_t row_version_count = 0;
-  std::uint64_t tombstone_count = 0;
-  std::uint64_t update_count = 0;
-};
-
 struct ScopedRelationSummaryDelta {
   std::uint64_t row_version_count = 0;
   std::uint64_t tombstone_count = 0;
@@ -1005,18 +2127,63 @@ ScopedRelationSummary RebuildScopedRelationSummaryFromRows(
   return summary;
 }
 
+void MergeScopedRelationSummary(ScopedRelationSummary* target,
+                                const ScopedRelationSummary& source) {
+  if (target == nullptr) { return; }
+  if (source.malformed || !source.trusted) {
+    target->malformed = true;
+    target->trusted = false;
+    return;
+  }
+  target->row_version_count += source.row_version_count;
+  target->tombstone_count += source.tombstone_count;
+  target->update_count += source.update_count;
+  target->trusted = true;
+}
+
+ScopedRelationSummary RebuildScopedRelationSummaryFromStores(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  ScopedRelationSummary summary;
+  summary.trusted = true;
+  MergeScopedRelationSummary(
+      &summary,
+      RebuildScopedRelationSummaryFromRows(ScopedRowStorePath(context,
+                                                              table_uuid)));
+  ScopedRelationSummary binary_summary;
+  std::vector<CrudRowVersionRecord> ignored_rows;
+  if (!DecodeScopedRowBinaryStore(ScopedRowBinaryStorePath(context,
+                                                          table_uuid),
+                                  &ignored_rows,
+                                  &binary_summary)) {
+    binary_summary.malformed = true;
+    binary_summary.trusted = false;
+  }
+  MergeScopedRelationSummary(&summary, binary_summary);
+  return summary;
+}
+
+bool ScopedRelationAnyRowStoreExists(const EngineRequestContext& context,
+                                     const std::string& table_uuid) {
+  return FileExistsAndNotEmpty(ScopedRowStorePath(context, table_uuid)) ||
+         FileExistsAndNotEmpty(ScopedRowBinaryStorePath(context, table_uuid));
+}
+
 ScopedRelationSummary LoadScopedRelationSummary(
     const EngineRequestContext& context,
     const std::string& table_uuid) {
   const std::string summary_path = ScopedSummaryStorePath(context, table_uuid);
   const std::string row_path = ScopedRowStorePath(context, table_uuid);
+  const std::string binary_row_path = ScopedRowBinaryStorePath(context,
+                                                              table_uuid);
   if (!FileExistsAndNotEmpty(summary_path)) {
-    if (!FileExistsAndNotEmpty(row_path)) {
+    if (!FileExistsAndNotEmpty(row_path) &&
+        !FileExistsAndNotEmpty(binary_row_path)) {
       ScopedRelationSummary empty;
       empty.trusted = true;
       return empty;
     }
-    return RebuildScopedRelationSummaryFromRows(row_path);
+    return RebuildScopedRelationSummaryFromStores(context, table_uuid);
   }
 
   ScopedRelationSummary summary;
@@ -1039,8 +2206,10 @@ ScopedRelationSummary LoadScopedRelationSummary(
     }
     summary.trusted = true;
   }
-  if (!summary.trusted && FileExistsAndNotEmpty(row_path)) {
-    return RebuildScopedRelationSummaryFromRows(row_path);
+  if (!summary.trusted &&
+      (FileExistsAndNotEmpty(row_path) ||
+       FileExistsAndNotEmpty(binary_row_path))) {
+    return RebuildScopedRelationSummaryFromStores(context, table_uuid);
   }
   summary.trusted = true;
   return summary;
@@ -1117,8 +2286,8 @@ bool UpdateScopedRelationSummaries(
         return false;
       }
     } else {
-      ScopedRelationSummary summary = RebuildScopedRelationSummaryFromRows(
-          ScopedRowStorePath(context, table_uuid));
+      ScopedRelationSummary summary =
+          RebuildScopedRelationSummaryFromStores(context, table_uuid);
       if (!summary.trusted || summary.malformed) {
         return false;
       }
@@ -2034,6 +3203,41 @@ std::string DecodeCrudTextLocal(const std::string& encoded) {
   return decoded;
 }
 
+std::string DecodeLineHexFieldOrRaw(const std::string& field) {
+  if (field.rfind(kLineHexFieldPrefix, 0) != 0) {
+    return field;
+  }
+  const std::string encoded =
+      field.substr(kLineHexFieldPrefix.size());
+  return DecodeCrudTextLocal(encoded);
+}
+
+bool LoadScopedBinaryIndexEntriesForTables(
+    const EngineRequestContext& context,
+    const std::set<std::string>& table_uuids,
+    std::vector<CrudIndexEntryRecord>* entries,
+    bool* used_segment) {
+  if (entries == nullptr) {
+    return false;
+  }
+  if (used_segment != nullptr) {
+    *used_segment = false;
+  }
+  for (const auto& table_uuid : table_uuids) {
+    const std::string path = ScopedIndexBinaryStorePath(context, table_uuid);
+    if (!FileExistsAndNotEmpty(path)) {
+      continue;
+    }
+    if (used_segment != nullptr) {
+      *used_segment = true;
+    }
+    if (!DecodeScopedIndexBinaryStore(path, entries)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
     const std::string& encoded,
     std::unordered_map<std::string, std::string>* decoded_key_cache) {
@@ -2147,13 +3351,31 @@ bool LoadDecodedScopedRowsForTable(
   rows->clear();
   if (used_segment != nullptr) { *used_segment = false; }
   const std::string path = ScopedRowStorePath(context, table_uuid);
-  if (!FileExistsAndNotEmpty(path)) {
+  const std::string binary_path = ScopedRowBinaryStorePath(context, table_uuid);
+  const bool text_exists = FileExistsAndNotEmpty(path);
+  const bool binary_exists = FileExistsAndNotEmpty(binary_path);
+  if (!text_exists && !binary_exists) {
     return true;
   }
   if (used_segment != nullptr) { *used_segment = true; }
   std::error_code ignored;
-  const auto file_size = std::filesystem::file_size(path, ignored);
-  if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
+  std::uintmax_t file_size = 0;
+  if (text_exists) {
+    const auto text_size = std::filesystem::file_size(path, ignored);
+    if (ignored || text_size == static_cast<std::uintmax_t>(-1)) {
+      return false;
+    }
+    file_size += text_size;
+  }
+  if (binary_exists) {
+    ignored.clear();
+    const auto binary_size = std::filesystem::file_size(binary_path, ignored);
+    if (ignored || binary_size == static_cast<std::uintmax_t>(-1)) {
+      return false;
+    }
+    file_size += binary_size;
+  }
+  if (file_size == 0) {
     return false;
   }
   {
@@ -2169,27 +3391,38 @@ bool LoadDecodedScopedRowsForTable(
   std::vector<CrudRowVersionRecord> decoded_rows;
   std::unordered_map<std::string, std::string> row_value_key_cache;
   row_value_key_cache.reserve(64);
-  for (const auto& line : ReadLines(path)) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-        fields[1] != "ROW_VERSION") {
-      continue;
+  if (text_exists) {
+    for (const auto& line : ReadLines(path)) {
+      const auto fields = SplitTabs(line);
+      if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+          fields[1] != "ROW_VERSION") {
+        continue;
+      }
+      CrudRowVersionRecord row;
+      row.creator_tx = ParseU64(fields[2]);
+      row.event_sequence = ParseU64(fields[3]);
+      row.sequence = row.event_sequence;
+      row.table_uuid = fields[4];
+      row.row_uuid = fields[5];
+      row.version_uuid = fields[6];
+      row.deleted = fields[7] == "1";
+      row.previous_version_uuid = fields[8];
+      row.previous_sequence = ParseU64(fields[9]);
+      row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
+      if (fields.size() >= 12) {
+        row.temporary_session_uuid = fields[11];
+      }
+      decoded_rows.push_back(std::move(row));
     }
-    CrudRowVersionRecord row;
-    row.creator_tx = ParseU64(fields[2]);
-    row.event_sequence = ParseU64(fields[3]);
-    row.sequence = row.event_sequence;
-    row.table_uuid = fields[4];
-    row.row_uuid = fields[5];
-    row.version_uuid = fields[6];
-    row.deleted = fields[7] == "1";
-    row.previous_version_uuid = fields[8];
-    row.previous_sequence = ParseU64(fields[9]);
-    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
-    if (fields.size() >= 12) {
-      row.temporary_session_uuid = fields[11];
+  }
+  if (binary_exists) {
+    ScopedRelationSummary binary_summary;
+    if (!DecodeScopedRowBinaryStore(binary_path,
+                                    &decoded_rows,
+                                    &binary_summary) ||
+        binary_summary.malformed) {
+      return false;
     }
-    decoded_rows.push_back(std::move(row));
   }
   {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
@@ -3147,18 +4380,31 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     ++result.row_versions_retained;
   }
   bool scoped_index_segments_used = false;
+  bool scoped_binary_index_segments_used = false;
+  std::vector<CrudIndexEntryRecord> binary_index_entries;
+  if (!LoadScopedBinaryIndexEntriesForTables(context,
+                                             all_table_uuids,
+                                             &binary_index_entries,
+                                             &scoped_binary_index_segments_used)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.index_store",
+        "scoped_index_binary_segment_decode_failed");
+    return result;
+  }
   std::vector<std::string> index_lines =
       ReadScopedRelationLinesForTables(context,
                                        all_table_uuids,
                                        false,
                                        &scoped_index_segments_used);
-  if (!scoped_index_segments_used) {
+  if (!scoped_index_segments_used && !scoped_binary_index_segments_used) {
     index_lines = ReadLines(IndexStorePath(context));
   }
   result.scoped_physical_segments_used =
-      !scoped_row_tables_used.empty() || scoped_index_segments_used;
+      !scoped_row_tables_used.empty() || scoped_index_segments_used ||
+      scoped_binary_index_segments_used;
   result.scoped_physical_segments_fallback =
-      scoped_row_tables_used.empty() && !scoped_index_segments_used;
+      scoped_row_tables_used.empty() && !scoped_index_segments_used &&
+      !scoped_binary_index_segments_used;
 
   for (const auto& line : index_lines) {
     const auto fields = SplitTabs(line);
@@ -3173,8 +4419,8 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     entry.column_name = fields[6];
     entry.family = fields[7];
     entry.entry_kind = fields[8];
-    entry.key_value = fields[9];
-    entry.payload_value = fields[10];
+    entry.key_value = DecodeLineHexFieldOrRaw(fields[9]);
+    entry.payload_value = DecodeLineHexFieldOrRaw(fields[10]);
     entry.row_uuid = fields[11];
     entry.version_uuid = fields[12];
     if (IndexEventRolledBackBySavepoint(savepoints,
@@ -3183,6 +4429,18 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       continue;
     }
     result.state.max_index_event_sequence = std::max(result.state.max_index_event_sequence, entry.event_sequence);
+    result.state.index_entries.push_back(std::move(entry));
+    ++result.index_entries_retained;
+  }
+  for (auto& entry : binary_index_entries) {
+    ++result.index_entries_scanned;
+    if (IndexEventRolledBackBySavepoint(savepoints,
+                                        entry.creator_tx,
+                                        entry.event_sequence)) {
+      continue;
+    }
+    result.state.max_index_event_sequence =
+        std::max(result.state.max_index_event_sequence, entry.event_sequence);
     result.state.index_entries.push_back(std::move(entry));
     ++result.index_entries_retained;
   }
@@ -3270,8 +4528,19 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
 
   bool row_segments_used = false;
   bool index_segments_used = false;
+  bool binary_index_segments_used = false;
+  std::vector<CrudIndexEntryRecord> binary_index_entries;
   std::vector<std::string> index_lines;
   if (include_index_entries) {
+    if (!LoadScopedBinaryIndexEntriesForTables(context,
+                                               table_scope,
+                                               &binary_index_entries,
+                                               &binary_index_segments_used)) {
+      result.diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.index_store",
+          "scoped_index_binary_segment_decode_failed");
+      return result;
+    }
     index_lines = ReadScopedRelationLinesForTables(context,
                                                    table_scope,
                                                    false,
@@ -3311,7 +4580,8 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       }
     }
   }
-  result.scoped_physical_segments_used = row_segments_used || index_segments_used;
+  result.scoped_physical_segments_used =
+      row_segments_used || index_segments_used || binary_index_segments_used;
   result.scoped_physical_segments_fallback = false;
 
   for (const auto& line : index_lines) {
@@ -3330,10 +4600,26 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     entry.column_name = fields[6];
     entry.family = fields[7];
     entry.entry_kind = fields[8];
-    entry.key_value = fields[9];
-    entry.payload_value = fields[10];
+    entry.key_value = DecodeLineHexFieldOrRaw(fields[9]);
+    entry.payload_value = DecodeLineHexFieldOrRaw(fields[10]);
     entry.row_uuid = fields[11];
     entry.version_uuid = fields[12];
+    if (IndexEventRolledBackBySavepoint(savepoints,
+                                        entry.creator_tx,
+                                        entry.event_sequence)) {
+      continue;
+    }
+    result.state.max_index_event_sequence =
+        std::max(result.state.max_index_event_sequence, entry.event_sequence);
+    result.state.index_entries.push_back(std::move(entry));
+    ++result.index_entries_retained;
+  }
+  for (auto& entry : binary_index_entries) {
+    ++result.index_entries_scanned;
+    if (table_scope.count(entry.table_uuid) == 0 ||
+        retired_tables.count(entry.table_uuid) != 0) {
+      continue;
+    }
     if (IndexEventRolledBackBySavepoint(savepoints,
                                         entry.creator_tx,
                                         entry.event_sequence)) {
@@ -4085,7 +5371,9 @@ struct MgaRelationHotAppendContext::Impl {
   std::ofstream index_out;
   std::vector<std::string> allocator_lines;
   std::map<std::string, std::string> scoped_row_lines;
+  std::map<std::string, std::string> scoped_row_binary_buffers;
   std::map<std::string, std::string> scoped_index_lines;
+  std::map<std::string, std::string> scoped_index_binary_buffers;
   std::map<std::string, std::vector<CrudRowVersionRecord>>
       scoped_decoded_row_appends;
   std::vector<PreparedIndexAppendJob> pending_prepared_index_jobs;
@@ -4179,7 +5467,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
-          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !ScopedRelationAnyRowStoreExists(impl_->context,
+                                           single_table_uuid) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                         single_table_uuid));
     }
@@ -4203,7 +5492,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
           summary_delta.tombstone_count == 0 &&
           summary_delta.update_count == 0) {
         summary_delta.first_scoped_write =
-            !FileExistsAndNotEmpty(scoped_path) &&
+            !ScopedRelationAnyRowStoreExists(impl_->context, table_uuid) &&
             !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                           table_uuid));
       }
@@ -4329,7 +5618,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
-          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !ScopedRelationAnyRowStoreExists(impl_->context,
+                                           single_table_uuid) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                         single_table_uuid));
     }
@@ -4353,7 +5643,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
           summary_delta.tombstone_count == 0 &&
           summary_delta.update_count == 0) {
         summary_delta.first_scoped_write =
-            !FileExistsAndNotEmpty(scoped_path) &&
+            !ScopedRelationAnyRowStoreExists(impl_->context, table_uuid) &&
             !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                           table_uuid));
       }
@@ -4491,7 +5781,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
-          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !ScopedRelationAnyRowStoreExists(impl_->context,
+                                           single_table_uuid) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                         single_table_uuid));
     }
@@ -4515,7 +5806,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
           summary_delta.tombstone_count == 0 &&
           summary_delta.update_count == 0) {
         summary_delta.first_scoped_write =
-            !FileExistsAndNotEmpty(scoped_path) &&
+            !ScopedRelationAnyRowStoreExists(impl_->context, table_uuid) &&
             !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                           table_uuid));
       }
@@ -4673,7 +5964,8 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
         summary_delta.tombstone_count == 0 &&
         summary_delta.update_count == 0) {
       summary_delta.first_scoped_write =
-          !FileExistsAndNotEmpty(single_scoped_path) &&
+          !ScopedRelationAnyRowStoreExists(impl_->context,
+                                           single_table_uuid) &&
           !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                         single_table_uuid));
     }
@@ -4697,7 +5989,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
           summary_delta.tombstone_count == 0 &&
           summary_delta.update_count == 0) {
         summary_delta.first_scoped_write =
-            !FileExistsAndNotEmpty(scoped_path) &&
+            !ScopedRelationAnyRowStoreExists(impl_->context, table_uuid) &&
             !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
                                                           table_uuid));
       }
@@ -4752,6 +6044,269 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   return OkDiagnostic();
 }
 
+EngineApiDiagnostic
+MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
+    const std::vector<CrudRowVersionRecord>& rows,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const std::string> shared_field_order) {
+  if (impl_->context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+  }
+  if (rows.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
+  }
+  if (typed_rows.size() != rows.size()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_value_batch_shape_invalid");
+  }
+  if (shared_field_order.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_field_order_required");
+  }
+
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context,
+      "row_versions",
+      RowStorePath(impl_->context),
+      static_cast<std::uint64_t>(rows.size()),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) { return reservation.diagnostic; }
+  ++impl_->counters.row_range_reservations;
+
+  const std::string single_table_uuid = rows.front().table_uuid;
+  const bool single_table_batch =
+      std::all_of(std::next(rows.begin()), rows.end(), [&](const auto& row) {
+        return row.table_uuid == single_table_uuid;
+      });
+  if (!single_table_batch) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_single_table_required");
+  }
+
+  for (const auto& typed_row : typed_rows) {
+    if (typed_row.fields.size() != shared_field_order.size()) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "typed_row_field_order_mismatch");
+    }
+  }
+
+  const std::string scoped_text_path = ScopedRowStorePath(impl_->context,
+                                                         single_table_uuid);
+  const std::string scoped_binary_path = ScopedRowBinaryStorePath(
+      impl_->context,
+      single_table_uuid);
+  std::string& scoped_buffer =
+      impl_->scoped_row_binary_buffers[scoped_binary_path];
+  auto& summary_delta = impl_->scoped_row_summary_deltas[single_table_uuid];
+  if (summary_delta.row_version_count == 0 &&
+      summary_delta.tombstone_count == 0 &&
+      summary_delta.update_count == 0) {
+    summary_delta.first_scoped_write =
+        !FileExistsAndNotEmpty(scoped_text_path) &&
+        !FileExistsAndNotEmpty(scoped_binary_path) &&
+        !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                      single_table_uuid));
+  }
+
+  const std::size_t binary_buffer_start = scoped_buffer.size();
+  if (!AppendScopedRowBinaryBatch(&scoped_buffer,
+                                  rows,
+                                  typed_rows,
+                                  shared_field_order,
+                                  reservation.first)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_binary_batch_encode_failed");
+  }
+  ++impl_->counters.scoped_row_binary_batches;
+  impl_->counters.scoped_row_binary_rows +=
+      static_cast<std::uint64_t>(rows.size());
+  impl_->counters.scoped_row_binary_bytes +=
+      static_cast<std::uint64_t>(scoped_buffer.size() - binary_buffer_start);
+
+  for (const auto& row : rows) {
+    ++summary_delta.row_version_count;
+    if (row.deleted) {
+      ++summary_delta.tombstone_count;
+    }
+    if (!row.previous_version_uuid.empty()) {
+      ++summary_delta.update_count;
+    }
+    ++impl_->counters.row_versions_appended;
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic
+MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
+    const std::vector<CrudRowVersionRecord>& row_identities,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid,
+    std::span<const EngineRowValue> typed_rows,
+    std::span<const std::string> shared_field_order) {
+  if (impl_->context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+  }
+  if (row_identities.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
+  }
+  if (table_uuid.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "target_table_uuid_required");
+  }
+  if (table_uuid == "unknown") {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "target_table_uuid_unresolved");
+  }
+  if (typed_rows.size() != row_identities.size()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_value_batch_shape_invalid");
+  }
+  if (shared_field_order.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_field_order_required");
+  }
+  for (const auto& typed_row : typed_rows) {
+    if (typed_row.fields.size() != shared_field_order.size()) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "typed_row_field_order_mismatch");
+    }
+  }
+  for (const auto& row : row_identities) {
+    if (!row.table_uuid.empty() && row.table_uuid != table_uuid) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "typed_row_table_uuid_mismatch");
+    }
+  }
+
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context,
+      "row_versions",
+      RowStorePath(impl_->context),
+      static_cast<std::uint64_t>(row_identities.size()),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) { return reservation.diagnostic; }
+  ++impl_->counters.row_range_reservations;
+
+  const std::string scoped_text_path = ScopedRowStorePath(impl_->context,
+                                                         table_uuid);
+  const std::string scoped_binary_path = ScopedRowBinaryStorePath(impl_->context,
+                                                                 table_uuid);
+  std::string& scoped_buffer =
+      impl_->scoped_row_binary_buffers[scoped_binary_path];
+  auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+  if (summary_delta.row_version_count == 0 &&
+      summary_delta.tombstone_count == 0 &&
+      summary_delta.update_count == 0) {
+    summary_delta.first_scoped_write =
+        !FileExistsAndNotEmpty(scoped_text_path) &&
+        !FileExistsAndNotEmpty(scoped_binary_path) &&
+        !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                      table_uuid));
+  }
+
+  const std::size_t binary_buffer_start = scoped_buffer.size();
+  if (!AppendScopedRowIdentityBinaryBatch(&scoped_buffer,
+                                          row_identities,
+                                          table_uuid,
+                                          temporary_session_uuid,
+                                          typed_rows,
+                                          shared_field_order,
+                                          impl_->context.local_transaction_id,
+                                          reservation.first)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "typed_row_binary_batch_encode_failed");
+  }
+  ++impl_->counters.scoped_row_binary_batches;
+  impl_->counters.scoped_row_binary_rows +=
+      static_cast<std::uint64_t>(row_identities.size());
+  impl_->counters.scoped_row_binary_bytes +=
+      static_cast<std::uint64_t>(scoped_buffer.size() - binary_buffer_start);
+  summary_delta.row_version_count +=
+      static_cast<std::uint64_t>(row_identities.size());
+  impl_->counters.row_versions_appended +=
+      static_cast<std::uint64_t>(row_identities.size());
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic
+MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativePacket(
+    const std::vector<CrudRowVersionRecord>& row_identities,
+    const std::string& table_uuid,
+    const std::string& temporary_session_uuid,
+    const EngineNativeRowPacketFrame& frame) {
+  if (impl_->context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+  }
+  if (row_identities.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_versions_required");
+  }
+  if (table_uuid.empty() || table_uuid == "unknown") {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "target_table_uuid_unresolved");
+  }
+  if (!frame.present || frame.row_count != row_identities.size() ||
+      frame.field_order.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "native_row_packet_shape_invalid");
+  }
+  for (const auto& row : row_identities) {
+    if (!row.table_uuid.empty() && row.table_uuid != table_uuid) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "native_row_packet_table_uuid_mismatch");
+    }
+  }
+
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context,
+      "row_versions",
+      RowStorePath(impl_->context),
+      static_cast<std::uint64_t>(row_identities.size()),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) { return reservation.diagnostic; }
+  ++impl_->counters.row_range_reservations;
+
+  const std::string scoped_text_path = ScopedRowStorePath(impl_->context,
+                                                         table_uuid);
+  const std::string scoped_binary_path = ScopedRowBinaryStorePath(impl_->context,
+                                                                 table_uuid);
+  std::string& scoped_buffer =
+      impl_->scoped_row_binary_buffers[scoped_binary_path];
+  auto& summary_delta = impl_->scoped_row_summary_deltas[table_uuid];
+  if (summary_delta.row_version_count == 0 &&
+      summary_delta.tombstone_count == 0 &&
+      summary_delta.update_count == 0) {
+    summary_delta.first_scoped_write =
+        !FileExistsAndNotEmpty(scoped_text_path) &&
+        !FileExistsAndNotEmpty(scoped_binary_path) &&
+        !FileExistsAndNotEmpty(ScopedSummaryStorePath(impl_->context,
+                                                      table_uuid));
+  }
+
+  const std::size_t binary_buffer_start = scoped_buffer.size();
+  if (!AppendScopedRowIdentityNativePacketBatch(&scoped_buffer,
+                                                row_identities,
+                                                table_uuid,
+                                                temporary_session_uuid,
+                                                frame,
+                                                impl_->context.local_transaction_id,
+                                                reservation.first)) {
+    return MakeInvalidRequestDiagnostic("mga.row_store",
+                                        "native_row_packet_binary_batch_encode_failed");
+  }
+  ++impl_->counters.scoped_row_binary_batches;
+  impl_->counters.scoped_row_binary_rows +=
+      static_cast<std::uint64_t>(row_identities.size());
+  impl_->counters.scoped_row_binary_bytes +=
+      static_cast<std::uint64_t>(scoped_buffer.size() - binary_buffer_start);
+  summary_delta.row_version_count +=
+      static_cast<std::uint64_t>(row_identities.size());
+  impl_->counters.row_versions_appended +=
+      static_cast<std::uint64_t>(row_identities.size());
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
   if (!AppendDeferredEventSequenceAllocatorLines(impl_->context,
                                                  &impl_->allocator_lines,
@@ -4759,14 +6314,27 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "event_sequence_allocator_batch_append_failed");
   }
-  const bool has_scoped_rows = !impl_->scoped_row_lines.empty();
+  const bool has_scoped_rows =
+      !impl_->scoped_row_lines.empty() ||
+      !impl_->scoped_row_binary_buffers.empty();
+  std::map<std::string, std::string> scoped_row_write_buffers =
+      std::move(impl_->scoped_row_lines);
+  for (auto& [path, buffer] : impl_->scoped_row_binary_buffers) {
+    auto found = scoped_row_write_buffers.find(path);
+    if (found != scoped_row_write_buffers.end()) {
+      found->second.append(buffer);
+    } else {
+      scoped_row_write_buffers.emplace(std::move(path), std::move(buffer));
+    }
+  }
+  impl_->scoped_row_binary_buffers.clear();
   const bool can_overlap_scoped_rows =
       has_scoped_rows && impl_->row_out.is_open() && impl_->row_dirty;
   std::future<ScopedRelationAppendResult> scoped_row_future;
   if (can_overlap_scoped_rows) {
     scoped_row_future = std::async(
         std::launch::async,
-        [pending = &impl_->scoped_row_lines]() {
+        [pending = &scoped_row_write_buffers]() {
           return AppendScopedRelationLinesWithCounters(*pending);
         });
   }
@@ -4794,7 +6362,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
         &impl_->counters.scoped_row_write_worker_count);
   } else if (has_scoped_rows) {
     scoped_row_result = AppendScopedRelationLinesWithCounters(
-        impl_->scoped_row_lines);
+        scoped_row_write_buffers);
     AddScopedRelationAppendCounters(
         scoped_row_result,
         &impl_->counters.scoped_row_stream_opens,
@@ -4817,9 +6385,15 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "scoped_relation_summary_update_failed");
   }
-  UpdateScopedDecodedRowCacheAfterAppend(impl_->scoped_decoded_row_appends,
-                                         impl_->scoped_row_lines);
+  if (!impl_->scoped_row_binary_buffers.empty()) {
+    const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
+    ScopedDecodedRowCache().clear();
+  } else {
+    UpdateScopedDecodedRowCacheAfterAppend(impl_->scoped_decoded_row_appends,
+                                           impl_->scoped_row_lines);
+  }
   impl_->scoped_row_lines.clear();
+  impl_->scoped_row_binary_buffers.clear();
   impl_->scoped_decoded_row_appends.clear();
   impl_->scoped_row_summary_deltas.clear();
   return OkDiagnostic();
@@ -4903,25 +6477,16 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
     if (!reservation.ok) { return reservation.diagnostic; }
     ++impl_->counters.index_range_reservations;
 
-    const std::string scoped_path = ScopedIndexStorePath(impl_->context,
-                                                        table_uuid);
-    std::string& scoped_buffer = impl_->scoped_index_lines[scoped_path];
-    scoped_buffer.reserve(scoped_buffer.size() +
-                          batch.entries.size() * kHotAppendIndexLineReserveBytes);
-    std::uint64_t event_sequence = reservation.first;
-    for (const auto& entry : batch.entries) {
-      AppendIndexEntryStoreLine(&scoped_buffer,
-                                impl_->context.local_transaction_id,
-                                event_sequence++,
-                                batch.index.index_uuid,
-                                table_uuid,
-                                batch.index.column_name,
-                                batch.index.family,
-                                "exact",
-                                entry.encoded_key,
-                                entry.payload_value,
-                                entry.row_uuid,
-                                entry.version_uuid);
+    const std::string scoped_path = ScopedIndexBinaryStorePath(impl_->context,
+                                                              table_uuid);
+    std::string& scoped_buffer =
+        impl_->scoped_index_binary_buffers[scoped_path];
+    if (!AppendScopedExactIndexBinaryBatch(&scoped_buffer,
+                                           batch,
+                                           impl_->context.local_transaction_id,
+                                           reservation.first)) {
+      return MakeInvalidRequestDiagnostic("mga.index_store",
+                                          "exact_index_binary_batch_encode_failed");
     }
 
     ++impl_->counters.index_materialization_jobs_queued;
@@ -5126,9 +6691,23 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
   }
   ScopedRelationAppendResult scoped_index_result;
   scoped_index_result.ok = true;
-  if (!impl_->scoped_index_lines.empty()) {
+  const bool has_scoped_indexes =
+      !impl_->scoped_index_lines.empty() ||
+      !impl_->scoped_index_binary_buffers.empty();
+  std::map<std::string, std::string> scoped_index_write_buffers =
+      std::move(impl_->scoped_index_lines);
+  for (auto& [path, buffer] : impl_->scoped_index_binary_buffers) {
+    auto found = scoped_index_write_buffers.find(path);
+    if (found != scoped_index_write_buffers.end()) {
+      found->second.append(buffer);
+    } else {
+      scoped_index_write_buffers.emplace(std::move(path), std::move(buffer));
+    }
+  }
+  impl_->scoped_index_binary_buffers.clear();
+  if (has_scoped_indexes) {
     scoped_index_result = AppendScopedRelationLinesWithCounters(
-        impl_->scoped_index_lines);
+        scoped_index_write_buffers);
     AddScopedRelationAppendCounters(
         scoped_index_result,
         &impl_->counters.scoped_index_stream_opens,
@@ -5147,6 +6726,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
                                         "scoped_index_entry_append_failed");
   }
   impl_->scoped_index_lines.clear();
+  impl_->scoped_index_binary_buffers.clear();
   return OkDiagnostic();
 }
 

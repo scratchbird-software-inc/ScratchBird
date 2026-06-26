@@ -704,6 +704,15 @@ std::string trimWhitespace(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+std::string_view trimWhitespaceView(std::string_view value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
 struct BinaryCopyField {
     std::string name;
     bool is_null{false};
@@ -720,6 +729,35 @@ enum class CompactCopyColumnType : uint8_t {
     UInt64 = 5,
     Real64 = 6,
     Binary = 7,
+};
+
+enum FastCsvCellMask : uint8_t {
+    kFastCsvBool = 1u << 0u,
+    kFastCsvInt32 = 1u << 1u,
+    kFastCsvInt64 = 1u << 2u,
+    kFastCsvUInt64 = 1u << 3u,
+    kFastCsvReal64 = 1u << 4u,
+};
+
+struct FastCsvCell {
+    std::string value;
+    bool is_null{false};
+    uint8_t type_mask{0};
+    bool bool_value{false};
+    int64_t int64_value{0};
+    uint64_t uint64_value{0};
+    double real64_value{0.0};
+};
+
+using FastCsvRow = std::vector<FastCsvCell>;
+
+struct FastCsvColumnInference {
+    bool saw_non_null{false};
+    bool all_bool{true};
+    bool all_int32{true};
+    bool all_int64{true};
+    bool all_uint64{true};
+    bool all_real64{true};
 };
 
 bool equalsIgnoreAsciiCase(std::string_view left, std::string_view right) {
@@ -896,6 +934,96 @@ std::optional<double> parseLosslessCopyReal64(std::string_view value) {
     return parsed;
 }
 
+bool analyzeFastCsvCell(std::string value,
+                        FastCsvCell& cell,
+                        FastCsvColumnInference& inference) {
+    cell = FastCsvCell{};
+    cell.is_null = value.empty() || equalsIgnoreAsciiCase(value, "NULL");
+    if (cell.is_null) {
+        return true;
+    }
+    cell.value = std::move(value);
+    inference.saw_non_null = true;
+
+    if (const auto parsed = parseLosslessCopyBool(cell.value); parsed.has_value()) {
+        cell.type_mask |= kFastCsvBool;
+        cell.bool_value = *parsed;
+    } else {
+        inference.all_bool = false;
+    }
+
+    if (const auto parsed = parseLosslessCopyInt64(cell.value); parsed.has_value()) {
+        cell.type_mask |= kFastCsvInt64;
+        cell.int64_value = *parsed;
+        if (*parsed >= std::numeric_limits<int32_t>::min() &&
+            *parsed <= std::numeric_limits<int32_t>::max()) {
+            cell.type_mask |= kFastCsvInt32;
+        } else {
+            inference.all_int32 = false;
+        }
+    } else {
+        inference.all_int32 = false;
+        inference.all_int64 = false;
+    }
+
+    if (const auto parsed = parseLosslessCopyUInt64(cell.value); parsed.has_value()) {
+        cell.type_mask |= kFastCsvUInt64;
+        cell.uint64_value = *parsed;
+    } else {
+        inference.all_uint64 = false;
+    }
+
+    if (const auto parsed = parseLosslessCopyReal64(cell.value); parsed.has_value()) {
+        cell.type_mask |= kFastCsvReal64;
+        cell.real64_value = *parsed;
+    } else {
+        inference.all_real64 = false;
+    }
+
+    return true;
+}
+
+CompactCopyColumnType chooseFastCsvColumnType(const FastCsvColumnInference& inference) {
+    if (!inference.saw_non_null) {
+        return CompactCopyColumnType::Text;
+    }
+    if (inference.all_bool) {
+        return CompactCopyColumnType::Boolean;
+    }
+    if (inference.all_int32) {
+        return CompactCopyColumnType::Int32;
+    }
+    if (inference.all_int64) {
+        return CompactCopyColumnType::Int64;
+    }
+    if (inference.all_uint64) {
+        return CompactCopyColumnType::UInt64;
+    }
+    if (inference.all_real64) {
+        return CompactCopyColumnType::Real64;
+    }
+    return CompactCopyColumnType::Text;
+}
+
+CompactCopyColumnType chooseStreamingCsvColumnType(const FastCsvColumnInference& inference) {
+    if (!inference.saw_non_null) {
+        return CompactCopyColumnType::Text;
+    }
+    if (inference.all_bool) {
+        return CompactCopyColumnType::Boolean;
+    }
+    if (inference.all_int64) {
+        return CompactCopyColumnType::Int64;
+    }
+    if (inference.all_uint64) {
+        return CompactCopyColumnType::UInt64;
+    }
+    if (inference.all_real64) {
+        return CompactCopyColumnType::Real64;
+    }
+    return CompactCopyColumnType::Text;
+}
+
 void appendLe32(std::vector<uint8_t>& out, uint32_t value) {
     out.push_back(static_cast<uint8_t>(value & 0xffu));
     out.push_back(static_cast<uint8_t>((value >> 8u) & 0xffu));
@@ -911,6 +1039,16 @@ void appendLe16(std::vector<uint8_t>& out, uint16_t value) {
 void appendLe64(std::vector<uint8_t>& out, uint64_t value) {
     for (unsigned shift = 0; shift < 64; shift += 8) {
         out.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
+    }
+}
+
+void patchLe64(std::vector<uint8_t>& out, size_t offset, uint64_t value) {
+    if (offset + 8 > out.size()) {
+        return;
+    }
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+        out[offset + (shift / 8)] =
+            static_cast<uint8_t>((value >> shift) & 0xffu);
     }
 }
 
@@ -1085,6 +1223,196 @@ std::vector<uint8_t> buildCompactBinaryCopyFrame(const std::vector<BinaryCopyRow
         }
     }
     return out;
+}
+
+std::vector<uint8_t> buildFastCsvBinaryCopyFrame(
+    const std::vector<std::string>& columns,
+    const std::vector<FastCsvColumnInference>& inference,
+    const std::vector<FastCsvRow>& rows) {
+    if (columns.empty() || inference.size() != columns.size() || rows.empty()) {
+        return {};
+    }
+    std::vector<CompactCopyColumnType> types;
+    types.reserve(columns.size());
+    for (const auto& column : inference) {
+        types.push_back(chooseFastCsvColumnType(column));
+    }
+
+    const size_t column_count = columns.size();
+    const size_t null_bitmap_bytes = (column_count + 7u) / 8u;
+    std::vector<uint8_t> out;
+    out.reserve(20 + column_count * 18 + rows.size() * (null_bitmap_bytes + column_count * 8));
+    out.push_back('S');
+    out.push_back('B');
+    out.push_back('N');
+    out.push_back('R');
+    appendLe16(out, 2);
+    appendLe16(out, 0);
+    appendLe64(out, static_cast<uint64_t>(rows.size()));
+    appendLe32(out, static_cast<uint32_t>(column_count));
+    for (const auto type : types) {
+        out.push_back(static_cast<uint8_t>(type));
+    }
+    for (const auto& column : columns) {
+        if (column.empty()) {
+            return {};
+        }
+        appendLe32(out, static_cast<uint32_t>(column.size()));
+        out.insert(out.end(), column.begin(), column.end());
+    }
+    for (const auto& row : rows) {
+        if (row.size() != column_count) {
+            return {};
+        }
+        std::vector<uint8_t> null_bitmap(null_bitmap_bytes, 0);
+        for (size_t column = 0; column < row.size(); ++column) {
+            if (row[column].is_null) {
+                null_bitmap[column / 8u] |= static_cast<uint8_t>(1u << (column % 8u));
+            }
+        }
+        out.insert(out.end(), null_bitmap.begin(), null_bitmap.end());
+        for (size_t column = 0; column < row.size(); ++column) {
+            const auto& cell = row[column];
+            if (cell.is_null) {
+                continue;
+            }
+            switch (types[column]) {
+                case CompactCopyColumnType::Boolean:
+                    if ((cell.type_mask & kFastCsvBool) == 0) return {};
+                    out.push_back(cell.bool_value ? 1u : 0u);
+                    break;
+                case CompactCopyColumnType::Int32:
+                    if ((cell.type_mask & kFastCsvInt32) == 0) return {};
+                    appendLeI32(out, static_cast<int32_t>(cell.int64_value));
+                    break;
+                case CompactCopyColumnType::Int64:
+                    if ((cell.type_mask & kFastCsvInt64) == 0) return {};
+                    appendLeI64(out, cell.int64_value);
+                    break;
+                case CompactCopyColumnType::UInt64:
+                    if ((cell.type_mask & kFastCsvUInt64) == 0) return {};
+                    appendLe64(out, cell.uint64_value);
+                    break;
+                case CompactCopyColumnType::Real64:
+                    if ((cell.type_mask & kFastCsvReal64) == 0) return {};
+                    appendLeDouble(out, cell.real64_value);
+                    break;
+                case CompactCopyColumnType::Binary:
+                case CompactCopyColumnType::Text:
+                default:
+                    appendLe32(out, static_cast<uint32_t>(cell.value.size()));
+                    out.insert(out.end(), cell.value.begin(), cell.value.end());
+                    break;
+            }
+        }
+    }
+    return out;
+}
+
+struct StreamingCsvBinaryCopyFrame {
+    std::vector<std::string> columns;
+    std::vector<CompactCopyColumnType> types;
+    std::vector<uint8_t> payload;
+    uint64_t row_count{0};
+    size_t null_bitmap_bytes{0};
+
+    void start(const std::vector<std::string>& input_columns,
+               const std::vector<CompactCopyColumnType>& input_types) {
+        columns = input_columns;
+        types = input_types;
+        row_count = 0;
+        null_bitmap_bytes = (columns.size() + 7u) / 8u;
+        payload.clear();
+        payload.reserve(20 + columns.size() * 18);
+        payload.push_back('S');
+        payload.push_back('B');
+        payload.push_back('N');
+        payload.push_back('R');
+        appendLe16(payload, 2);
+        appendLe16(payload, 0);
+        appendLe64(payload, 0);
+        appendLe32(payload, static_cast<uint32_t>(columns.size()));
+        for (const auto type : types) {
+            payload.push_back(static_cast<uint8_t>(type));
+        }
+        for (const auto& column : columns) {
+            appendLe32(payload, static_cast<uint32_t>(column.size()));
+            payload.insert(payload.end(), column.begin(), column.end());
+        }
+    }
+
+    bool active() const {
+        return !columns.empty() && columns.size() == types.size() && !payload.empty();
+    }
+
+    void resetRows() {
+        payload.clear();
+        row_count = 0;
+        if (!columns.empty() && columns.size() == types.size()) {
+            start(columns, types);
+        }
+    }
+};
+
+bool appendStreamingCsvBinaryCopyRow(StreamingCsvBinaryCopyFrame& frame,
+                                     const std::vector<std::string>& values) {
+    if (!frame.active() || values.size() != frame.columns.size()) {
+        return false;
+    }
+    std::vector<uint8_t> null_bitmap(frame.null_bitmap_bytes, 0);
+    for (size_t column = 0; column < values.size(); ++column) {
+        if (values[column].empty() || equalsIgnoreAsciiCase(values[column], "NULL")) {
+            null_bitmap[column / 8u] |= static_cast<uint8_t>(1u << (column % 8u));
+        }
+    }
+    frame.payload.insert(frame.payload.end(), null_bitmap.begin(), null_bitmap.end());
+    for (size_t column = 0; column < values.size(); ++column) {
+        const auto& value = values[column];
+        const bool is_null = value.empty() || equalsIgnoreAsciiCase(value, "NULL");
+        if (is_null) {
+            continue;
+        }
+        switch (frame.types[column]) {
+            case CompactCopyColumnType::Boolean: {
+                const auto parsed = parseLosslessCopyBool(value);
+                if (!parsed.has_value()) return false;
+                frame.payload.push_back(*parsed ? 1u : 0u);
+                break;
+            }
+            case CompactCopyColumnType::Int32: {
+                const auto parsed = parseLosslessCopyInt32(value);
+                if (!parsed.has_value()) return false;
+                appendLeI32(frame.payload, *parsed);
+                break;
+            }
+            case CompactCopyColumnType::Int64: {
+                const auto parsed = parseLosslessCopyInt64(value);
+                if (!parsed.has_value()) return false;
+                appendLeI64(frame.payload, *parsed);
+                break;
+            }
+            case CompactCopyColumnType::UInt64: {
+                const auto parsed = parseLosslessCopyUInt64(value);
+                if (!parsed.has_value()) return false;
+                appendLe64(frame.payload, *parsed);
+                break;
+            }
+            case CompactCopyColumnType::Real64: {
+                const auto parsed = parseLosslessCopyReal64(value);
+                if (!parsed.has_value()) return false;
+                appendLeDouble(frame.payload, *parsed);
+                break;
+            }
+            case CompactCopyColumnType::Binary:
+            case CompactCopyColumnType::Text:
+            default:
+                appendLe32(frame.payload, static_cast<uint32_t>(value.size()));
+                frame.payload.insert(frame.payload.end(), value.begin(), value.end());
+                break;
+        }
+    }
+    ++frame.row_count;
+    return true;
 }
 
 std::vector<uint8_t> buildBinaryCopyFrame(const std::vector<BinaryCopyRow>& rows) {
@@ -4163,6 +4491,8 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
     const bool phase_trace = driverPhaseTraceEnabled();
     const int64_t total_started = phase_trace ? driverPhaseNowNs() : 0;
     int64_t read_elapsed_ns = 0;
+    int64_t encode_elapsed_ns = 0;
+    int64_t build_frame_elapsed_ns = 0;
     int64_t send_data_elapsed_ns = 0;
     size_t total_read = 0;
     size_t total_sent = 0;
@@ -4218,6 +4548,12 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
     };
     std::vector<BinaryCopyRow> binary_rows;
     size_t binary_payload_bytes = 12;
+    std::vector<FastCsvColumnInference> fast_csv_inference;
+    std::vector<std::vector<std::string>> fast_csv_sample_rows;
+    StreamingCsvBinaryCopyFrame streaming_csv_frame;
+    bool streaming_csv_locked = false;
+    size_t fast_csv_payload_bytes = 12;
+    constexpr size_t kStreamingCsvSampleRows = 1024;
     enum class CopyInputShape {
         Unknown,
         CanonicalRows,
@@ -4233,7 +4569,11 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
         if (!force && binary_payload_bytes < chunk_size) {
             return core::Status::OK;
         }
+        const int64_t build_started = phase_trace ? driverPhaseNowNs() : 0;
         const auto payload = buildBinaryCopyFrame(binary_rows);
+        if (phase_trace) {
+            build_frame_elapsed_ns += driverPhaseNowNs() - build_started;
+        }
         if (payload.empty()) {
             return send_copy_fail("COPY binary rowset conversion failed for fixed-shape payload",
                                   core::Status::INVALID_ARGUMENT);
@@ -4246,11 +4586,86 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
         binary_payload_bytes = 12;
         return core::Status::OK;
     };
+    auto reset_fast_csv_batch = [&]() {
+        fast_csv_sample_rows.clear();
+        streaming_csv_frame = StreamingCsvBinaryCopyFrame{};
+        streaming_csv_locked = false;
+        fast_csv_inference.assign(csv_columns.size(), FastCsvColumnInference{});
+        fast_csv_payload_bytes = 12;
+    };
+    auto flush_streaming_csv_frame = [&](bool force) -> core::Status {
+        if (!streaming_csv_frame.active() || streaming_csv_frame.row_count == 0) {
+            return core::Status::OK;
+        }
+        if (!force && streaming_csv_frame.payload.size() < chunk_size) {
+            return core::Status::OK;
+        }
+        patchLe64(streaming_csv_frame.payload, 8, streaming_csv_frame.row_count);
+        auto status = send_payload(streaming_csv_frame.payload.data(),
+                                   streaming_csv_frame.payload.size());
+        if (status != core::Status::OK) {
+            return status;
+        }
+        streaming_csv_frame.resetRows();
+        fast_csv_payload_bytes = 12;
+        return core::Status::OK;
+    };
+    auto lock_streaming_csv_shape = [&]() -> core::Status {
+        if (streaming_csv_locked) {
+            return core::Status::OK;
+        }
+        if (csv_columns.empty() || fast_csv_inference.size() != csv_columns.size()) {
+            return send_copy_fail("COPY binary rowset conversion failed for CSV descriptor",
+                                  core::Status::INVALID_ARGUMENT);
+        }
+        std::vector<CompactCopyColumnType> types;
+        types.reserve(fast_csv_inference.size());
+        for (const auto& inference : fast_csv_inference) {
+            types.push_back(chooseStreamingCsvColumnType(inference));
+        }
+        streaming_csv_frame.start(csv_columns, types);
+        streaming_csv_locked = true;
+        for (const auto& sample_row : fast_csv_sample_rows) {
+            if (!appendStreamingCsvBinaryCopyRow(streaming_csv_frame, sample_row)) {
+                return send_copy_fail("COPY binary rowset conversion failed for CSV sampled value",
+                                      core::Status::INVALID_ARGUMENT);
+            }
+            auto status = flush_streaming_csv_frame(false);
+            if (status != core::Status::OK) {
+                return status;
+            }
+        }
+        fast_csv_sample_rows.clear();
+        return core::Status::OK;
+    };
+    auto flush_fast_csv_rows = [&](bool force) -> core::Status {
+        if (streaming_csv_locked) {
+            return flush_streaming_csv_frame(force);
+        }
+        if (fast_csv_sample_rows.empty()) {
+            return core::Status::OK;
+        }
+        if (!force &&
+            fast_csv_sample_rows.size() < kStreamingCsvSampleRows &&
+            fast_csv_payload_bytes < (chunk_size / 4u)) {
+            return core::Status::OK;
+        }
+        const int64_t build_started = phase_trace ? driverPhaseNowNs() : 0;
+        auto status = lock_streaming_csv_shape();
+        if (status == core::Status::OK) {
+            status = flush_streaming_csv_frame(force);
+        }
+        if (phase_trace) {
+            build_frame_elapsed_ns += driverPhaseNowNs() - build_started;
+        }
+        return status;
+    };
     auto append_binary_line = [&](std::string_view line) -> core::Status {
-        const std::string trimmed = trimWhitespace(std::string(line));
+        const std::string_view trimmed = trimWhitespaceView(line);
         if (trimmed.empty()) {
             return core::Status::OK;
         }
+        const int64_t encode_started = phase_trace ? driverPhaseNowNs() : 0;
         if (input_shape == CopyInputShape::Unknown) {
             if (trimmed.find('=') != std::string::npos && trimmed.find(',') == std::string::npos) {
                 input_shape = CopyInputShape::CanonicalRows;
@@ -4260,28 +4675,66 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
                                           core::Status::INVALID_ARGUMENT);
                 }
                 input_shape = CopyInputShape::CsvWithHeader;
+                reset_fast_csv_batch();
+                if (phase_trace) {
+                    encode_elapsed_ns += driverPhaseNowNs() - encode_started;
+                }
                 return core::Status::OK;
             }
         }
-        BinaryCopyRow row;
         if (input_shape == CopyInputShape::CanonicalRows) {
+            BinaryCopyRow row;
             if (!parseCanonicalCopyLine(trimmed, row)) {
                 return send_copy_fail("COPY binary rowset conversion failed for canonical input row",
                                       core::Status::INVALID_ARGUMENT);
             }
+            if (row.empty()) {
+                if (phase_trace) {
+                    encode_elapsed_ns += driverPhaseNowNs() - encode_started;
+                }
+                return core::Status::OK;
+            }
+            binary_payload_bytes += estimatedBinaryCopyRowBytes(row);
+            binary_rows.push_back(std::move(row));
+            if (phase_trace) {
+                encode_elapsed_ns += driverPhaseNowNs() - encode_started;
+            }
+            return flush_binary_rows(false);
         } else {
-            if (!parseCsvCopyLine(trimmed, csv_fields) ||
-                !csvValuesToBinaryCopyRow(csv_columns, csv_fields, row)) {
+            if (!parseCsvCopyLine(trimmed, csv_fields) || csv_fields.size() != csv_columns.size()) {
                 return send_copy_fail("COPY binary rowset conversion failed for CSV input row",
                                       core::Status::INVALID_ARGUMENT);
             }
+            if (!streaming_csv_locked) {
+                size_t row_payload_bytes = 1;
+                for (size_t column = 0; column < csv_fields.size(); ++column) {
+                    FastCsvCell cell;
+                    if (!analyzeFastCsvCell(csv_fields[column],
+                                            cell,
+                                            fast_csv_inference[column])) {
+                        return send_copy_fail("COPY binary rowset conversion failed for CSV value",
+                                              core::Status::INVALID_ARGUMENT);
+                    }
+                    if (!cell.is_null) {
+                        row_payload_bytes += 4 + cell.value.size();
+                    }
+                }
+                fast_csv_payload_bytes += row_payload_bytes;
+                fast_csv_sample_rows.push_back(csv_fields);
+                if (phase_trace) {
+                    encode_elapsed_ns += driverPhaseNowNs() - encode_started;
+                }
+                return flush_fast_csv_rows(false);
+            }
+            if (!appendStreamingCsvBinaryCopyRow(streaming_csv_frame, csv_fields)) {
+                return send_copy_fail("COPY binary rowset conversion failed for CSV typed value",
+                                      core::Status::INVALID_ARGUMENT);
+            }
+            if (phase_trace) {
+                encode_elapsed_ns += driverPhaseNowNs() - encode_started;
+            }
+            return flush_streaming_csv_frame(false);
         }
-        if (row.empty()) {
-            return core::Status::OK;
-        }
-        binary_payload_bytes += estimatedBinaryCopyRowBytes(row);
-        binary_rows.push_back(std::move(row));
-        return flush_binary_rows(false);
     };
     auto flush_ready_rows = [&]() -> core::Status {
         while (pending.size() >= chunk_size) {
@@ -4374,6 +4827,10 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
         if (status != core::Status::OK) {
             return status;
         }
+        status = flush_fast_csv_rows(true);
+        if (status != core::Status::OK) {
+            return status;
+        }
     }
     const auto done_payload = protocol::buildCopyDonePayload();
     const int64_t done_started = phase_trace ? driverPhaseNowNs() : 0;
@@ -4392,6 +4849,22 @@ core::Status NetworkClient::sendCopyInputStream(const protocol::CopyInResponse& 
         writeDriverPhaseTrace("copy_input_stream",
                               "send_copy_data_total",
                               send_data_elapsed_ns,
+                              total_sent,
+                              chunk_count,
+                              protocol::MessageType::CopyData,
+                              0,
+                              tls_active_);
+        writeDriverPhaseTrace("copy_input_stream",
+                              "encode_binary_total",
+                              encode_elapsed_ns,
+                              total_read,
+                              1,
+                              protocol::MessageType::CopyData,
+                              0,
+                              tls_active_);
+        writeDriverPhaseTrace("copy_input_stream",
+                              "build_binary_frame_total",
+                              build_frame_elapsed_ns,
                               total_sent,
                               chunk_count,
                               protocol::MessageType::CopyData,

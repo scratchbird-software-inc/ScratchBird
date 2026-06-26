@@ -1037,6 +1037,16 @@ void TestApiAndSblrAcceptedRoutes() {
           "CDP-040 direct physical lane evidence missing");
   Require(HasEvidence(api_result.evidence, "native_bulk_ingest_delegate", "none"),
           "CDP-040 native ingest delegated instead of using direct lane");
+  Require(HasEvidence(api_result.evidence, "direct_physical_bulk_operation", "native_bulk"),
+          "CDP-040 native ingest direct physical operation was not native_bulk");
+  Require(HasEvidence(api_result.evidence,
+                      "direct_physical_append_index_cache_bypass",
+                      "native_bulk_single_window"),
+          "CDP-040 native ingest did not use the native_bulk single-window path");
+  Require(HasEvidence(api_result.evidence,
+                      "bulk_constraint_proof_route_selected",
+                      "direct_physical_bulk.native_empty_target"),
+          "CDP-040 native ingest did not use the native empty-target constraint proof");
   Require(EvidenceU64(api_result.evidence,
                       "direct_physical_bulk_row_page_int64_cells") == 3,
           "CDP-040 native ingest did not write id values as int64 row-page cells");
@@ -1692,7 +1702,7 @@ void TestDisabledAndInvalidRefusals() {
   const auto invalid_result = api::EngineExecuteNativeBulkIngest(invalid);
   RequireDiagnostic(invalid_result,
                     "SB_ENGINE_API_INVALID_REQUEST",
-                    "canonical_rows_required",
+                    "native_rowset_required",
                     "CDP-040 invalid native ingest diagnostic drifted");
   Require(HasEvidence(invalid_result.evidence, "native_bulk_ingest_source", "binary_typed_rows"),
           "CDP-040 invalid path lost native source evidence");

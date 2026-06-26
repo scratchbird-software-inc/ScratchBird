@@ -14,6 +14,7 @@
 #include "security/security_model.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -76,6 +77,21 @@ EngineApiU64 EstimateRowsetBytes(std::span<const EngineRowValue> rows) {
   return bytes;
 }
 
+std::size_t NativeBulkRequestRowCount(
+    const EngineExecuteNativeBulkIngestRequest& request) {
+  if (!request.canonical_rows.empty()) {
+    return request.canonical_rows.size();
+  }
+  if (!request.native_row_packet.present || request.native_row_packet.row_count == 0) {
+    return 0;
+  }
+  if (request.native_row_packet.row_count >
+      static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    return 0;
+  }
+  return static_cast<std::size_t>(request.native_row_packet.row_count);
+}
+
 bool OptionKeyPresent(const std::vector<std::string>& options,
                       std::string_view key) {
   for (const auto& option : options) {
@@ -118,12 +134,19 @@ std::vector<std::string> SharedFieldOrderFromRows(
 }
 
 std::size_t AdaptiveWindowRows(const EngineExecuteNativeBulkIngestRequest& request) {
-  if (request.canonical_rows.size() <= 1) {
-    return request.canonical_rows.size();
+  const std::size_t row_count = NativeBulkRequestRowCount(request);
+  if (row_count <= 1) {
+    return row_count;
   }
-  constexpr EngineApiU64 kDefaultTargetBytes = 4u * 1024u * 1024u;
+  if (request.canonical_rows.empty() && request.native_row_packet.present) {
+    return row_count;
+  }
+  // Native row packets are already materialized before this stage.  Keep
+  // fixed-shape COPY frames in large physical append windows so the direct
+  // lane does not pay descriptor and index-cache setup repeatedly.
+  constexpr EngineApiU64 kDefaultTargetBytes = 32u * 1024u * 1024u;
   constexpr std::size_t kMinRows = 1024;
-  constexpr std::size_t kMaxRows = 50000;
+  constexpr std::size_t kMaxRows = 250000;
   const std::size_t sample_rows = std::min<std::size_t>(request.canonical_rows.size(), 256);
   const EngineApiU64 sample_bytes = EstimateRowsetBytes(
       std::span<const EngineRowValue>(request.canonical_rows.data(), sample_rows));
@@ -131,7 +154,7 @@ std::size_t AdaptiveWindowRows(const EngineExecuteNativeBulkIngestRequest& reque
       std::max<EngineApiU64>(1, sample_bytes / static_cast<EngineApiU64>(sample_rows));
   std::size_t rows = static_cast<std::size_t>(kDefaultTargetBytes / average_bytes);
   rows = std::clamp(rows, kMinRows, kMaxRows);
-  return std::min(rows, request.canonical_rows.size());
+  return std::min(rows, row_count);
 }
 
 scratchbird::engine::internal_api::dml::DirectPhysicalBulkAppendRequest
@@ -141,13 +164,26 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
   scratchbird::engine::internal_api::dml::DirectPhysicalBulkAppendRequest direct;
   direct.context = request.context;
   direct.target_table = request.target_table;
-  direct.borrowed_input_rows = std::span<const EngineRowValue>(
-      request.canonical_rows.data() + first_row,
-      row_count);
+  if (!request.canonical_rows.empty()) {
+    direct.borrowed_input_rows = std::span<const EngineRowValue>(
+        request.canonical_rows.data() + first_row,
+        row_count);
+  }
+  if (request.native_row_packet.present &&
+      first_row == 0 &&
+      row_count == NativeBulkRequestRowCount(request) &&
+      request.native_row_packet.row_count == NativeBulkRequestRowCount(request)) {
+    direct.native_row_packet = &request.native_row_packet;
+  }
   if (!request.shared_row_field_order.empty()) {
     direct.shared_row_field_order = std::span<const std::string>(
         request.shared_row_field_order.data(),
         request.shared_row_field_order.size());
+  } else if (request.native_row_packet.present &&
+             !request.native_row_packet.field_order.empty()) {
+    direct.shared_row_field_order = std::span<const std::string>(
+        request.native_row_packet.field_order.data(),
+        request.native_row_packet.field_order.size());
   } else {
     direct.owned_shared_row_field_order =
         SharedFieldOrderFromRows(direct.borrowed_input_rows);
@@ -179,7 +215,7 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
 
 scratchbird::engine::internal_api::dml::DirectPhysicalBulkAppendRequest
 MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request) {
-  return MakeDirectPhysicalRequest(request, 0, request.canonical_rows.size());
+  return MakeDirectPhysicalRequest(request, 0, NativeBulkRequestRowCount(request));
 }
 
 EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
@@ -253,22 +289,23 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         MakeInvalidRequestDiagnostic(kOperationId, "target_table_uuid_required"),
         true);
   }
-  if (request.canonical_rows.empty()) {
+  const std::size_t row_count = NativeBulkRequestRowCount(request);
+  if (row_count == 0) {
     return NativeFailure(
         request,
-        MakeInvalidRequestDiagnostic(kOperationId, "canonical_rows_required"),
+        MakeInvalidRequestDiagnostic(kOperationId, "native_rowset_required"),
         true);
   }
 
   const std::size_t window_rows = AdaptiveWindowRows(request);
-  if (window_rows == 0 || window_rows >= request.canonical_rows.size()) {
+  if (window_rows == 0 || window_rows >= row_count) {
     auto result = WrapDirectPhysicalResult(
         request,
         scratchbird::engine::internal_api::dml::ExecuteDirectPhysicalBulkAppend(
             MakeDirectPhysicalRequest(request)));
     result.evidence.push_back({"native_bulk_adaptive_windowing", "single_window"});
     result.evidence.push_back({"native_bulk_adaptive_window_rows",
-                               std::to_string(request.canonical_rows.size())});
+                               std::to_string(row_count)});
     result.evidence.push_back({"native_bulk_adaptive_window_count", "1"});
     return result;
   }
@@ -289,12 +326,12 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
   result.evidence.push_back({"native_bulk_adaptive_window_rows",
                              std::to_string(window_rows)});
   result.evidence.push_back({"native_bulk_adaptive_window_count",
-                             std::to_string((request.canonical_rows.size() + window_rows - 1) /
+                             std::to_string((row_count + window_rows - 1) /
                                             window_rows)});
 
-  for (std::size_t first = 0; first < request.canonical_rows.size(); first += window_rows) {
+  for (std::size_t first = 0; first < row_count; first += window_rows) {
     const std::size_t count =
-        std::min(window_rows, request.canonical_rows.size() - first);
+        std::min(window_rows, row_count - first);
     auto direct = scratchbird::engine::internal_api::dml::ExecuteDirectPhysicalBulkAppend(
         MakeDirectPhysicalRequest(request, first, count));
     if (!direct.ok) {
@@ -319,7 +356,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
     if (result.primary_object.uuid.canonical.empty()) {
       result.primary_object = direct.primary_object;
     }
-    if (request.canonical_rows.size() <= 10000) {
+    if (row_count <= 10000) {
       result.row_uuids.insert(result.row_uuids.end(),
                               direct.row_uuids.begin(),
                               direct.row_uuids.end());
