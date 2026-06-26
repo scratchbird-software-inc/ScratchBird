@@ -132,6 +132,7 @@ struct DirectPhysicalBulkAppendRequest {
   EngineRequestContext context;
   EngineObjectReference target_table;
   std::span<const EngineRowValue> borrowed_input_rows;
+  const EngineNativeRowPacketFrame* native_row_packet = nullptr;
   std::vector<std::string> owned_shared_row_field_order;
   std::span<const std::string> shared_row_field_order;
   std::vector<std::string> option_envelopes;

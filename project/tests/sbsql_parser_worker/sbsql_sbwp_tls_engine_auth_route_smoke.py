@@ -741,6 +741,61 @@ def run_binary_copy_positive_route(port: int, copy_fixture_seeded: bool) -> None
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
+def run_binary_copy_descriptor_mismatch_route(port: int, copy_fixture_seeded: bool) -> None:
+    if not copy_fixture_seeded:
+        return
+    with connect_tls(port) as sock:
+        attachment, sequence, txn_id = authenticate(
+            sock,
+            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+            p1_features=FEATURE_STREAMING | FEATURE_BINARY_COPY | FEATURE_BULK_REJECTS,
+        )
+        send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
+        sequence += 1
+        ready_payload, frame_txn = expect_ready_after_command(
+            sock, "TXN_BEGIN before binary COPY descriptor mismatch"
+        )
+        status, txn_id = decode_ready(ready_payload)
+        if status == 0 or txn_id == 0 or frame_txn == 0:
+            raise RouteError("descriptor-mismatch COPY did not obtain an active transaction")
+
+        copy_sql = "COPY users.public.sbsfc021_stream_table FROM STDIN"
+        send_frame(sock, MSG_QUERY, sequence, query_payload(copy_sql), attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        expect_frame(sock, MSG_COPY_IN_RESPONSE)
+        first_payload = native_rowset_v2_payload(
+            ("id", "payload"),
+            (2, 1),
+            ((21, "sbwp-copy-descriptor-first"),),
+        )
+        send_frame(sock, MSG_COPY_DATA, sequence, first_payload, attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        changed_payload = native_rowset_v2_payload(
+            ("payload", "id"),
+            (1, 2),
+            (("sbwp-copy-descriptor-mismatch", 22),),
+        )
+        send_frame(sock, MSG_COPY_DATA, sequence, changed_payload, attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(sock, b"SBSQL.COPY.DESCRIPTOR_MISMATCH")
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn == 0 or frame_txn == 0:
+            raise RouteError("descriptor-mismatch COPY recovery did not preserve active transaction state")
+        if ready_txn != txn_id:
+            raise RouteError(
+                f"descriptor-mismatch COPY recovery changed explicit transaction from {txn_id} to {ready_txn}"
+            )
+        send_frame(sock, MSG_TXN_ROLLBACK, sequence, attachment=attachment, txn_id=txn_id)
+        sequence += 1
+        ready_payload, frame_txn = expect_ready_after_command(
+            sock, "TXN_ROLLBACK after binary COPY descriptor mismatch"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn == 0 or frame_txn == 0:
+            raise RouteError("descriptor-mismatch rollback did not publish an active replacement transaction")
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
 def run_nested_schema_parent_route(port: int) -> None:
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
@@ -962,6 +1017,19 @@ def preserve_failure_database(database: Path) -> None:
     print(f"preserved_failure_database={out}", file=sys.stderr)
 
 
+def assert_native_copy_phase_trace(work: Path) -> None:
+    trace = work / "sbsql_worker_phase.tsv"
+    if not trace.exists():
+        raise RouteError("native COPY phase trace was not produced")
+    lines = trace.read_text(encoding="utf-8", errors="replace").splitlines()
+    if any('"event":"copy_data"' in line and '"phase":"build_execute_envelope"' in line for line in lines):
+        raise RouteError("native COPY data hot path rebuilt a per-chunk execute envelope")
+    if not any('"event":"copy_data"' in line and '"phase":"run_prepared_native_bulk_data_packet"' in line for line in lines):
+        raise RouteError("native COPY data did not use the prepared native bulk data-packet route")
+    if not any('"event":"copy_data"' in line and '"phase":"validate_prepared_native_descriptor"' in line for line in lines):
+        raise RouteError("native COPY data did not validate the prepared descriptor")
+
+
 def write_local_password_auth_store(database: Path) -> None:
     write_local_password_auth_fixture(
         database,
@@ -1012,6 +1080,9 @@ def main() -> int:
       server = None
       listener = None
       try:
+          os.environ["SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE"] = str(
+              work / "sbsql_worker_phase.tsv"
+          )
           server = subprocess.Popen(
               [
                   args.server,
@@ -1063,6 +1134,9 @@ def main() -> int:
           run_unknown_required_feature_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
           run_binary_copy_positive_route(port, args.example_db_seeder is not None)
+          run_binary_copy_descriptor_mismatch_route(port, args.example_db_seeder is not None)
+          if args.example_db_seeder is not None:
+              assert_native_copy_phase_trace(work)
           run_nested_schema_parent_route(port)
           run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, args.example_db_seeder is not None)

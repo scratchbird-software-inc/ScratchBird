@@ -1570,15 +1570,36 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
   direct.estimated_row_count = request.estimated_row_count == 0
                                    ? static_cast<EngineApiU64>(input_rows.size())
                                    : request.estimated_row_count;
-  direct.lane_operation =
+  const bool native_bulk_mode =
+      request.insert_mode == "native_bulk" ||
+      InsertBatchOptionEnabled(request, "insert_mode=native_bulk") ||
+      InsertBatchOptionEnabled(request, "native_bulk_ingest=true");
+  const bool copy_import_mode =
+      request.insert_mode == "copy_import" ||
+      InsertBatchOptionEnabled(request, "insert_mode=copy_import");
+  const bool insert_select_mode =
       request.insert_mode == "insert_select" ||
-              InsertBatchOptionEnabled(request, "insert_mode=insert_select")
-          ? "insert_select"
-          : "insert_rows";
+      InsertBatchOptionEnabled(request, "insert_mode=insert_select");
+  if (native_bulk_mode) {
+    direct.lane_operation = "native_bulk";
+  } else if (copy_import_mode) {
+    direct.lane_operation = "copy_import";
+  } else if (insert_select_mode) {
+    direct.lane_operation = "insert_select";
+  } else {
+    direct.lane_operation = "insert_rows";
+  }
   if (direct.lane_operation == "insert_select" &&
       !InsertOptionKeyPresent(direct.option_envelopes,
                               "insert_select.single_window")) {
     direct.option_envelopes.push_back("insert_select.single_window=true");
+  }
+  if (direct.lane_operation == "native_bulk" &&
+      !InsertOptionKeyPresent(direct.option_envelopes,
+                              "native_bulk.single_window") &&
+      (!direct.shared_row_field_order.empty() ||
+       InsertRowsShareFieldOrder(input_rows))) {
+    direct.option_envelopes.push_back("native_bulk.single_window=true");
   }
   direct.duplicate_mode = request.duplicate_mode;
   direct.require_generated_row_uuid = request.require_generated_row_uuid;

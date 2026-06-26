@@ -1302,6 +1302,34 @@ std::uint64_t IndexPagesForValueRefs(
   return pages;
 }
 
+std::uint64_t IndexPagesForRowCount(
+    const CrudState& state,
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    std::uint64_t row_count,
+    std::string* first_index_uuid) {
+  if (row_count == 0) {
+    return 0;
+  }
+  const auto indexes =
+      VisibleCrudIndexesForTable(state, table_uuid, context.local_transaction_id);
+  std::uint64_t index_count = 0;
+  for (const auto& index : indexes) {
+    if (index.index_uuid.empty()) {
+      continue;
+    }
+    if (first_index_uuid != nullptr && first_index_uuid->empty()) {
+      *first_index_uuid = index.index_uuid;
+    }
+    ++index_count;
+  }
+  if (index_count == 0 ||
+      row_count > std::numeric_limits<std::uint64_t>::max() / index_count) {
+    return 0;
+  }
+  return row_count * index_count;
+}
+
 }  // namespace
 
 DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
@@ -1466,6 +1494,27 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     std::string mutation_phase) {
   std::string index_uuid;
   const auto pages = IndexPagesForValueRefs(state, context, table_uuid, row_values, &index_uuid);
+  if (pages == 0 || index_uuid.empty()) {
+    return {};
+  }
+  return ReserveDmlPageAllocationRuntime(context,
+                                         option_envelopes,
+                                         index_uuid,
+                                         DmlPageAllocationRuntimeFamily::index,
+                                         pages,
+                                         std::move(mutation_phase));
+}
+
+DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& option_envelopes,
+    const CrudState& state,
+    const std::string& table_uuid,
+    std::uint64_t row_count,
+    std::string mutation_phase) {
+  std::string index_uuid;
+  const auto pages =
+      IndexPagesForRowCount(state, context, table_uuid, row_count, &index_uuid);
   if (pages == 0 || index_uuid.empty()) {
     return {};
   }

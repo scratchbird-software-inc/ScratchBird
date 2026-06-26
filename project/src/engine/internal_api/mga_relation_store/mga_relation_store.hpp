@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -176,6 +177,9 @@ struct MgaRelationHotAppendCounters {
   std::uint64_t scoped_row_write_tickets_issued = 0;
   std::uint64_t scoped_row_write_tickets_completed = 0;
   std::uint64_t scoped_row_write_worker_count = 0;
+  std::uint64_t scoped_row_binary_batches = 0;
+  std::uint64_t scoped_row_binary_rows = 0;
+  std::uint64_t scoped_row_binary_bytes = 0;
   std::uint64_t index_stream_opens = 0;
   std::uint64_t index_stream_flushes = 0;
   std::uint64_t index_range_reservations = 0;
@@ -242,6 +246,21 @@ class MgaRelationHotAppendContext {
       const std::vector<std::vector<std::pair<std::string, std::string>>>*
           value_batch,
       bool shared_key_order_known = false);
+  EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnlyTyped(
+      const std::vector<CrudRowVersionRecord>& rows,
+      std::span<const EngineRowValue> typed_rows,
+      std::span<const std::string> shared_field_order);
+  EngineApiDiagnostic AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
+      const std::vector<CrudRowVersionRecord>& row_identities,
+      const std::string& table_uuid,
+      const std::string& temporary_session_uuid,
+      std::span<const EngineRowValue> typed_rows,
+      std::span<const std::string> shared_field_order);
+  EngineApiDiagnostic AppendRowVersionIdentitiesReadOnlyScopedOnlyNativePacket(
+      const std::vector<CrudRowVersionRecord>& row_identities,
+      const std::string& table_uuid,
+      const std::string& temporary_session_uuid,
+      const EngineNativeRowPacketFrame& frame);
   EngineApiDiagnostic FlushRowVersions();
   void SetDecodedRowCacheAutoWarm(bool enabled);
 

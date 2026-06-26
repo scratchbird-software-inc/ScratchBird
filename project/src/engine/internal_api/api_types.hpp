@@ -227,6 +227,18 @@ struct EngineRowValue {
   std::vector<std::pair<std::string, EngineTypedValue>> fields;
 };
 
+struct EngineNativeRowPacketFrame {
+  bool present = false;
+  std::uint16_t version = 0;
+  std::uint64_t row_count = 0;
+  std::uint32_t column_count = 0;
+  std::vector<std::string> field_order;
+  std::vector<std::uint8_t> column_type_tags;
+  std::vector<std::uint8_t> packet_bytes;
+  std::vector<std::uint32_t> row_offsets;
+  std::vector<std::uint32_t> row_sizes;
+};
+
 struct EngineResultShape {
   std::string result_kind;
   std::vector<EngineDescriptor> columns;
@@ -377,6 +389,7 @@ struct EngineApiRequest {
   std::vector<EngineColumnDefinition> columns;
   std::vector<EngineConstraintDefinition> constraints;
   std::vector<EngineIndexDefinition> indexes;
+  EngineNativeRowPacketFrame native_row_packet;
   std::vector<EngineRowValue> rows;
   std::vector<std::string> shared_row_field_order;
   std::vector<std::pair<std::string, EngineTypedValue>> assignments;
