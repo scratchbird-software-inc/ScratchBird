@@ -14,41 +14,82 @@
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "security/security_model.hpp"
+
+#include <algorithm>
+#include <cctype>
 
 namespace scratchbird::engine::internal_api {
+namespace {
+
+std::string DropApiLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+bool DropApiConstraintNameMatches(const EngineCatalogNameRecord& name,
+                                  const std::string& requested_name,
+                                  const std::string& requested_key) {
+  return name.display_name == requested_name ||
+         name.raw_name_text == requested_name ||
+         name.normalized_lookup_key == requested_key ||
+         DropApiLower(name.display_name) == requested_key ||
+         DropApiLower(name.raw_name_text) == requested_key;
+}
+
+bool DropApiObjectIsActiveConstraint(const EngineCatalogObjectLifecycleState& state,
+                                     const std::string& object_uuid) {
+  return std::find_if(state.objects.begin(),
+                      state.objects.end(),
+                      [&](const auto& object) {
+                        return !object.deleted &&
+                               object.lifecycle_state == "active" &&
+                               object.object_uuid == object_uuid &&
+                               object.object_kind == "constraint";
+                      }) != state.objects.end();
+}
+
+EngineDropObjectResult DropCatalogBackedObject(const EngineDropObjectRequest& request,
+                                               const std::string& kind) {
+  EngineCatalogDropObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = "ddl.drop_object";
+  catalog_request.target_object.object_kind = kind;
+  const auto dropped = EngineCatalogDropObject(catalog_request);
+  EngineDropObjectResult result;
+  result.ok = dropped.ok;
+  result.operation_id = "ddl.drop_object";
+  result.diagnostics = dropped.diagnostics;
+  result.unsupported_features = dropped.unsupported_features;
+  result.evidence = dropped.evidence;
+  result.result_shape = dropped.result_shape;
+  result.primary_object = dropped.primary_object;
+  result.catalog_row_uuid = dropped.catalog_row_uuid;
+  result.transaction_uuid = dropped.transaction_uuid;
+  result.local_transaction_id = dropped.local_transaction_id;
+  result.embedded_trust_mode_observed = dropped.embedded_trust_mode_observed;
+  result.cluster_authority_required = dropped.cluster_authority_required;
+  if (result.ok) {
+    result.evidence.push_back({"ddl_catalog_route", "sys.catalog." + kind});
+    AddDdlPublicationResult(&result,
+                            "ddl.drop_object",
+                            kind,
+                            result.primary_object.uuid.canonical,
+                            result.catalog_row_uuid.canonical,
+                            "catalog." + kind);
+  }
+  return result;
+}
+
+}  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_DROP_API_BEHAVIOR
 EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) {
   const std::string kind = request.target_object.object_kind.empty() ? "object" : request.target_object.object_kind;
   if (kind == "synonym") {
-    EngineCatalogDropObjectRequest catalog_request;
-    static_cast<EngineApiRequest&>(catalog_request) = request;
-    catalog_request.operation_id = "ddl.drop_object";
-    catalog_request.target_object.object_kind = "synonym";
-    const auto dropped = EngineCatalogDropObject(catalog_request);
-    EngineDropObjectResult result;
-    result.ok = dropped.ok;
-    result.operation_id = "ddl.drop_object";
-    result.diagnostics = dropped.diagnostics;
-    result.unsupported_features = dropped.unsupported_features;
-    result.evidence = dropped.evidence;
-    result.result_shape = dropped.result_shape;
-    result.primary_object = dropped.primary_object;
-    result.catalog_row_uuid = dropped.catalog_row_uuid;
-    result.transaction_uuid = dropped.transaction_uuid;
-    result.local_transaction_id = dropped.local_transaction_id;
-    result.embedded_trust_mode_observed = dropped.embedded_trust_mode_observed;
-    result.cluster_authority_required = dropped.cluster_authority_required;
-    if (result.ok) {
-      result.evidence.push_back({"ddl_catalog_route", "sys.catalog.synonym"});
-      AddDdlPublicationResult(&result,
-                              "ddl.drop_object",
-                              "synonym",
-                              result.primary_object.uuid.canonical,
-                              result.catalog_row_uuid.canonical,
-                              "catalog.synonym");
-    }
-    return result;
+    return DropCatalogBackedObject(request, kind);
   }
   if (kind == "domain") {
     if (request.context.local_transaction_id == 0) {
@@ -169,6 +210,54 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
   EngineCatalogDropObjectRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = kOperation;
+  std::string constraint_uuid = request.target_object.uuid.canonical;
+  const std::string constraint_name = SecurityOptionValue(request, "constraint_name:");
+  const std::string target_kind = request.target_object.object_kind;
+  if (!constraint_name.empty() && target_kind != "constraint") {
+    std::string owner_uuid = SecurityOptionValue(request, "owner_object_uuid:");
+    if (owner_uuid.empty()) owner_uuid = request.target_object.uuid.canonical;
+    if (owner_uuid.empty()) {
+      return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
+          request.context,
+          kOperation,
+          MakeInvalidRequestDiagnostic(kOperation, "constraint_owner_uuid_required"));
+    }
+    const auto loaded = LoadCatalogObjectLifecycleState(request.context);
+    if (!loaded.ok) {
+      return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
+          request.context,
+          kOperation,
+          loaded.diagnostic);
+    }
+    const std::string requested_key = DropApiLower(constraint_name);
+    constraint_uuid.clear();
+    for (const auto& name : loaded.state.names) {
+      if (name.deleted || name.object_kind != "constraint" ||
+          name.schema_uuid != owner_uuid) {
+        continue;
+      }
+      if (!DropApiConstraintNameMatches(name, constraint_name, requested_key)) {
+        continue;
+      }
+      if (!DropApiObjectIsActiveConstraint(loaded.state, name.object_uuid)) {
+        continue;
+      }
+      constraint_uuid = name.object_uuid;
+      break;
+    }
+    if (constraint_uuid.empty()) {
+      return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
+          request.context,
+          kOperation,
+          MakeEngineApiDiagnostic(kCatalogObjectDiagnosticNameNotFound,
+                                  "catalog.object.name_not_found",
+                                  constraint_name,
+                                  true));
+    }
+  }
+  if (!constraint_uuid.empty()) {
+    catalog_request.target_object.uuid.canonical = constraint_uuid;
+  }
   catalog_request.target_object.object_kind = "constraint";
   const auto dropped = EngineCatalogDropObject(catalog_request);
 

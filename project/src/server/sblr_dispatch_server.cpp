@@ -13,10 +13,13 @@
 #include "sblr_admission.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/name_registry.hpp"
 #include "catalog/sbsql_language_elements_catalog.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "crud_support/crud_store.hpp"
+#include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/show_api.hpp"
 #include "security/security_crypto_policy.hpp"
@@ -1793,6 +1796,15 @@ bool LooksLikeUuidText(std::string_view text) {
   return hex_count == 32;
 }
 
+std::string NormalizeUuidText(std::string_view text) {
+  std::string normalized;
+  normalized.reserve(text.size());
+  for (const unsigned char ch : text) {
+    normalized.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return normalized;
+}
+
 std::string StablePublicRelationNameSeedKey(const ServerSessionRecord& session,
                                             std::string_view presented_name,
                                             std::string_view object_class) {
@@ -1934,6 +1946,70 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
     }
   };
   if (registry == nullptr) return;
+  auto seed_field_value = [&](std::string_view field) -> std::string {
+    return ExistingTextOperandValue(encoded, field).value_or(
+        TextLineValue(encoded, field).value_or(
+            JsonTextField(encoded, field).value_or("")));
+  };
+  auto seed_security_name = [&](std::string_view uuid_field,
+                                std::string_view name_field,
+                                const std::vector<std::string_view>& classes) {
+    std::string object_uuid = seed_field_value(uuid_field);
+    if (object_uuid.empty()) object_uuid = seed_field_value("principal_uuid");
+    if (object_uuid.empty()) object_uuid = seed_field_value("target_object_uuid");
+    if (object_uuid.empty()) {
+      object_uuid = ServerApiPayloadRowField(row_packet, 0, uuid_field).value_or("");
+    }
+    if (object_uuid.empty()) {
+      object_uuid = ServerApiPayloadRowField(row_packet, 0, "object_uuid").value_or("");
+    }
+    if (IsPublicRegistryPlaceholder(object_uuid)) object_uuid.clear();
+    if (!object_uuid.empty() && !LooksLikeUuidText(object_uuid)) object_uuid.clear();
+    std::string object_name = seed_field_value(name_field);
+    if (object_name.empty()) {
+      object_name = ServerApiPayloadRowField(row_packet, 0, name_field).value_or("");
+    }
+    if (object_name.empty()) {
+      object_name = ServerApiPayloadRowField(row_packet, 0, "name").value_or("");
+    }
+    if (object_uuid.empty() || object_name.empty()) {
+      trace_skip("missing_security_seed_field", object_uuid, object_name, "");
+      return;
+    }
+    for (const auto object_class : classes) {
+      StoreStablePublicRelationNameSeed(registry,
+                                        session,
+                                        object_name,
+                                        object_uuid,
+                                        object_class);
+    }
+  };
+  if (operation_id == "security.role.create") {
+    seed_security_name("role_uuid", "role_name", {"role", "security_role", "principal"});
+    return;
+  }
+  if (operation_id == "security.group.create") {
+    seed_security_name("group_uuid", "group_name", {"group", "security_group", "principal"});
+    return;
+  }
+  if (operation_id == "security.policy.create") {
+    std::vector<std::string_view> classes{"policy", "security_policy"};
+    const std::string effect = seed_field_value("policy_effect");
+    std::string effect_upper = effect;
+    std::transform(effect_upper.begin(),
+                   effect_upper.end(),
+                   effect_upper.begin(),
+                   [](unsigned char ch) {
+                     return static_cast<char>(std::toupper(ch));
+                   });
+    if (effect_upper.find("MASK") != std::string::npos) classes.push_back("mask");
+    if (effect_upper.find("RLS") != std::string::npos ||
+        effect_upper.find("ROW") != std::string::npos) {
+      classes.push_back("rls");
+    }
+    seed_security_name("policy_uuid", "policy_name", classes);
+    return;
+  }
   if (operation_id != "ddl.create_table" && operation_id != "ddl.create_view") return;
   const bool temporary =
       JsonBoolField(encoded, "temporary_table", false) ||
@@ -1944,11 +2020,6 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
     trace_skip("temporary_relation", "", "", "");
     return;
   }
-  auto seed_field_value = [&](std::string_view field) -> std::string {
-    return ExistingTextOperandValue(encoded, field).value_or(
-        TextLineValue(encoded, field).value_or(
-            JsonTextField(encoded, field).value_or("")));
-  };
   const std::string object_kind =
       operation_id == "ddl.create_view" ? "view" : "table";
   std::string object_uuid = seed_field_value(object_kind + std::string("_object_uuid"));
@@ -2452,6 +2523,324 @@ std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) 
   return {};
 }
 
+std::string ResolveDomainTypePathForDispatch(const ServerSessionRecord& session,
+                                             std::string_view domain_path) {
+  const auto parts = SplitDispatchIdentifierPath(domain_path);
+  if (parts.empty()) return {};
+  if (parts.size() > 1) {
+    std::string schema_path;
+    for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+      if (parts[index].text.empty()) continue;
+      if (!schema_path.empty()) schema_path.push_back('.');
+      schema_path += parts[index].text;
+    }
+    const std::string schema_uuid =
+        ResolveSchemaParentPathForDispatch(session, schema_path);
+    if (!schema_uuid.empty()) {
+      const auto context = PublicAbiDispatchEngineContext(session);
+      const std::uint64_t observer_tx =
+          context.snapshot_visible_through_local_transaction_id != 0
+              ? context.snapshot_visible_through_local_transaction_id
+              : context.local_transaction_id;
+      const auto domains = engine_api::LoadDomainState(context);
+      if (domains.ok) {
+        const std::string profile =
+            engine_api::NameRegistryDefaultIdentifierProfile(context);
+        const std::string wanted_key =
+            engine_api::NameRegistryLookupKey(parts.back().text, profile, false);
+        std::string match;
+        for (const auto& domain : domains.domains) {
+          const auto visible =
+              engine_api::FindVisibleDomain(context, domain.domain_uuid, observer_tx);
+          if (!visible || visible->schema_uuid != schema_uuid) continue;
+          if (engine_api::NameRegistryLookupKey(visible->default_name, profile, false) !=
+              wanted_key) {
+            continue;
+          }
+          if (!match.empty() && match != visible->domain_uuid) return {};
+          match = visible->domain_uuid;
+        }
+        if (!match.empty()) return match;
+      }
+    }
+  }
+  engine_api::EngineResolveNameRequest request;
+  request.context = PublicAbiDispatchEngineContext(session);
+  request.sql_object_reference.expected_object_type = "domain";
+  request.sql_object_reference.path_type = parts.size() > 1 ? "qualified" : "unqualified";
+  request.sql_object_reference.no_search_path = parts.size() > 1;
+  for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+    request.sql_object_reference.path_components.push_back(
+        DispatchIdentifierAtom(parts[index]));
+  }
+  request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
+  const auto resolved = engine_api::EngineResolveName(request);
+  if (!resolved.ok || resolved.primary_object.object_kind != "domain") return {};
+  return resolved.primary_object.uuid.canonical;
+}
+
+std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
+                                           std::string_view sequence_path) {
+  if (sequence_path.empty()) return {};
+  if (LooksLikeUuidText(sequence_path)) return NormalizeUuidText(sequence_path);
+  const auto parts = SplitDispatchIdentifierPath(sequence_path);
+  if (parts.empty()) return {};
+  engine_api::EngineResolveNameRequest request;
+  request.context = PublicAbiDispatchEngineContext(session);
+  request.sql_object_reference.expected_object_type = "sequence";
+  request.sql_object_reference.path_type = parts.size() > 1 ? "qualified" : "unqualified";
+  request.sql_object_reference.no_search_path = parts.size() > 1;
+  for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+    request.sql_object_reference.path_components.push_back(
+        DispatchIdentifierAtom(parts[index]));
+  }
+  request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
+  const auto resolved = engine_api::EngineResolveName(request);
+  if (!resolved.ok || resolved.primary_object.object_kind != "sequence") return {};
+  return resolved.primary_object.uuid.canonical;
+}
+
+std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
+                                           std::string_view relation_path) {
+  if (relation_path.empty()) return {};
+  if (LooksLikeUuidText(relation_path)) return NormalizeUuidText(relation_path);
+  const auto parts = SplitDispatchIdentifierPath(relation_path);
+  if (parts.empty()) return {};
+  for (const auto expected : {"table", "view", "materialized_view", "relation"}) {
+    engine_api::EngineResolveNameRequest request;
+    request.context = PublicAbiDispatchEngineContext(session);
+    request.sql_object_reference.expected_object_type = expected;
+    request.sql_object_reference.path_type =
+        parts.size() > 1 ? "qualified" : "unqualified";
+    request.sql_object_reference.no_search_path = parts.size() > 1;
+    for (std::size_t index = 0; index + 1 < parts.size(); ++index) {
+      request.sql_object_reference.path_components.push_back(
+          DispatchIdentifierAtom(parts[index]));
+    }
+    request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
+    const auto resolved = engine_api::EngineResolveName(request);
+    if (resolved.ok && !resolved.primary_object.uuid.canonical.empty()) {
+      return resolved.primary_object.uuid.canonical;
+    }
+  }
+  return {};
+}
+
+std::string TrimAsciiWhitespace(std::string_view text) {
+  std::size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+  std::size_t end = text.size();
+  while (end > begin &&
+         std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+    --end;
+  }
+  return std::string(text.substr(begin, end - begin));
+}
+
+bool StartsWithAsciiNoCase(std::string_view text, std::string_view prefix) {
+  if (text.size() < prefix.size()) return false;
+  for (std::size_t index = 0; index < prefix.size(); ++index) {
+    const auto lhs = static_cast<unsigned char>(text[index]);
+    const auto rhs = static_cast<unsigned char>(prefix[index]);
+    if (std::tolower(lhs) != std::tolower(rhs)) return false;
+  }
+  return true;
+}
+
+bool DescriptorHasField(std::string_view descriptor, std::string_view field) {
+  if (descriptor.empty() || field.empty()) return false;
+  const std::string prefix = std::string(field) + "=";
+  return descriptor.rfind(prefix, 0) == 0 ||
+         descriptor.find(";" + prefix) != std::string_view::npos;
+}
+
+std::string DescriptorFieldValue(std::string_view descriptor, std::string_view field) {
+  if (descriptor.empty() || field.empty()) return {};
+  const std::string prefix = std::string(field) + "=";
+  std::size_t position = descriptor.find(prefix);
+  while (position != std::string_view::npos) {
+    if (position == 0 || descriptor[position - 1] == ';') {
+      const std::size_t value_begin = position + prefix.size();
+      const std::size_t value_end = descriptor.find(';', value_begin);
+      return std::string(descriptor.substr(
+          value_begin,
+          value_end == std::string_view::npos
+              ? std::string_view::npos
+              : value_end - value_begin));
+    }
+    position = descriptor.find(prefix, position + 1);
+  }
+  return {};
+}
+
+void SetDescriptorField(std::string* descriptor,
+                        std::string_view field,
+                        std::string_view value) {
+  if (descriptor == nullptr || field.empty() || value.empty()) return;
+  const std::string prefix = std::string(field) + "=";
+  std::size_t position = descriptor->find(prefix);
+  while (position != std::string::npos) {
+    if (position == 0 || (*descriptor)[position - 1] == ';') {
+      const std::size_t value_begin = position + prefix.size();
+      const std::size_t value_end = descriptor->find(';', value_begin);
+      descriptor->replace(
+          value_begin,
+          value_end == std::string::npos ? std::string::npos : value_end - value_begin,
+          value);
+      return;
+    }
+    position = descriptor->find(prefix, position + 1);
+  }
+  if (!descriptor->empty()) descriptor->push_back(';');
+  descriptor->append(field);
+  descriptor->push_back('=');
+  descriptor->append(value);
+}
+
+bool LooksLikeDomainTypePath(std::string_view candidate) {
+  return !candidate.empty() &&
+         candidate.find('.') != std::string_view::npos &&
+         candidate.find('(') == std::string_view::npos &&
+         candidate.find(')') == std::string_view::npos;
+}
+
+std::string ResolveColumnDomainUuidForDispatch(const ServerSessionRecord& session,
+                                               std::string_view column_type,
+                                               std::string_view column_descriptor) {
+  const std::string existing_domain_uuid =
+      DescriptorFieldValue(column_descriptor, "domain_uuid");
+  if (!existing_domain_uuid.empty()) return existing_domain_uuid;
+
+  for (std::string candidate : {
+           DescriptorFieldValue(column_descriptor, "domain"),
+           DescriptorFieldValue(column_descriptor, "source_type"),
+           DescriptorFieldValue(column_descriptor, "type"),
+           DescriptorFieldValue(column_descriptor, "canonical"),
+           std::string(column_type)}) {
+    if (!LooksLikeDomainTypePath(candidate)) continue;
+    const std::string domain_uuid =
+        ResolveDomainTypePathForDispatch(session, candidate);
+    if (!domain_uuid.empty()) return domain_uuid;
+  }
+  return {};
+}
+
+std::string ResolveColumnDefaultForDispatch(const ServerSessionRecord& session,
+                                            std::string_view default_expression) {
+  constexpr std::string_view kSequenceNextPrefix = "sequence_next:";
+  constexpr std::string_view kNextValueForPrefix = "next value for ";
+  const std::string trimmed = TrimAsciiWhitespace(default_expression);
+  if (trimmed.empty()) return {};
+  std::string sequence_path;
+  if (trimmed.rfind(kSequenceNextPrefix, 0) == 0) {
+    sequence_path = TrimAsciiWhitespace(
+        std::string_view(trimmed).substr(kSequenceNextPrefix.size()));
+  } else if (StartsWithAsciiNoCase(trimmed, kNextValueForPrefix)) {
+    sequence_path = TrimAsciiWhitespace(
+        std::string_view(trimmed).substr(kNextValueForPrefix.size()));
+  } else {
+    return trimmed;
+  }
+  const std::string sequence_uuid = ResolveSequencePathForDispatch(session, sequence_path);
+  if (sequence_uuid.empty()) return trimmed;
+  return std::string(kSequenceNextPrefix) + sequence_uuid;
+}
+
+struct DispatchViewDescriptor {
+  bool found = false;
+  bool materialized = false;
+  std::string view_uuid;
+  std::string source_uuid;
+  std::string predicate_kind;
+  std::string predicate_column;
+  std::string predicate_value;
+  std::string predicate_value_type;
+  std::string group_key_field;
+  std::string aggregate_value_field;
+  std::string aggregate_function;
+};
+
+std::optional<std::string> BehaviorPayloadField(std::string_view payload,
+                                                std::string_view key) {
+  if (const auto value = SemicolonFieldValue(payload, key)) {
+    return value;
+  }
+  std::size_t start = 0;
+  while (start <= payload.size()) {
+    const std::size_t end = payload.find(';', start);
+    const std::string_view field =
+        payload.substr(start, end == std::string_view::npos ? payload.size() - start : end - start);
+    const std::size_t colon = field.find(':');
+    if (colon != std::string_view::npos && field.substr(0, colon) == key) {
+      return std::string(field.substr(colon + 1));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::nullopt;
+}
+
+std::optional<DispatchViewDescriptor> LoadDispatchViewDescriptor(
+    const ServerSessionRecord& session,
+    std::string_view view_uuid) {
+  if (view_uuid.empty()) return std::nullopt;
+  const auto context = PublicAbiDispatchEngineContext(session);
+  const auto record = engine_api::FindVisibleApiBehaviorRecord(
+      context,
+      std::string(view_uuid),
+      context.local_transaction_id);
+  if (!record.has_value()) return std::nullopt;
+  if (record->object_kind != "view" && record->object_kind != "materialized_view") {
+    return std::nullopt;
+  }
+  DispatchViewDescriptor descriptor;
+  descriptor.found = true;
+  descriptor.materialized = record->object_kind == "materialized_view";
+  descriptor.view_uuid = record->object_uuid;
+  descriptor.source_uuid = BehaviorPayloadField(record->payload, "view_source_uuid").value_or("");
+  descriptor.predicate_kind =
+      BehaviorPayloadField(record->payload, "view_predicate_kind").value_or("");
+  descriptor.predicate_column =
+      BehaviorPayloadField(record->payload, "view_predicate_column").value_or("");
+  descriptor.predicate_value =
+      BehaviorPayloadField(record->payload, "view_predicate_value").value_or("");
+  descriptor.predicate_value_type =
+      BehaviorPayloadField(record->payload, "view_predicate_value_type").value_or("");
+  descriptor.group_key_field =
+      BehaviorPayloadField(record->payload, "view_group_key_field").value_or("");
+  descriptor.aggregate_value_field =
+      BehaviorPayloadField(record->payload, "view_aggregate_value_field").value_or("");
+  descriptor.aggregate_function =
+      BehaviorPayloadField(record->payload, "view_aggregate_function").value_or("");
+  if (descriptor.source_uuid.empty()) return std::nullopt;
+  return descriptor;
+}
+
+std::string MergeViewPredicateField(std::string_view view_value,
+                                    std::string_view query_value) {
+  if (view_value.empty()) return std::string(query_value);
+  if (query_value.empty()) return std::string(view_value);
+  if (view_value == query_value) return std::string(view_value);
+  std::string merged(view_value);
+  merged.push_back(',');
+  merged.append(query_value);
+  return merged;
+}
+
+void AppendDescriptorField(std::string* descriptor,
+                           std::string_view field,
+                           std::string_view value) {
+  if (descriptor == nullptr || field.empty() || value.empty()) return;
+  if (DescriptorHasField(*descriptor, field)) return;
+  if (!descriptor->empty()) descriptor->push_back(';');
+  descriptor->append(field);
+  descriptor->push_back('=');
+  descriptor->append(value);
+}
+
 std::uint64_t ParseU64Text(const std::string& value) {
   std::uint64_t parsed = 0;
   if (value.empty()) return 0;
@@ -2471,6 +2860,51 @@ void AppendOperationOperand(std::string* operation_envelope,
   *operation_envelope += "\t";
   *operation_envelope += EscapeOperationOperandField(value);
   *operation_envelope += "\n";
+}
+
+void AppendViewPredicateOperands(const DispatchViewDescriptor& descriptor,
+                                 std::string_view encoded,
+                                 std::string* operation_envelope) {
+  if (operation_envelope == nullptr) return;
+  const std::string query_kind = EncodedTextField(encoded, "predicate_kind");
+  const std::string query_column = EncodedTextField(encoded, "predicate_column");
+  const std::string query_value = EncodedTextField(encoded, "predicate_value");
+  const std::string query_type = EncodedTextField(encoded, "predicate_value_type");
+  if (descriptor.predicate_kind.empty()) {
+    if (!query_kind.empty()) AppendOperationOperand(operation_envelope, "predicate_kind", query_kind);
+    if (!query_column.empty()) AppendOperationOperand(operation_envelope, "predicate_column", query_column);
+    if (!query_value.empty()) AppendOperationOperand(operation_envelope, "predicate_value", query_value);
+    if (!query_type.empty()) AppendOperationOperand(operation_envelope, "predicate_value_type", query_type);
+    return;
+  }
+  if (query_kind.empty()) {
+    AppendOperationOperand(operation_envelope, "predicate_kind", descriptor.predicate_kind);
+    AppendOperationOperand(operation_envelope, "predicate_column", descriptor.predicate_column);
+    AppendOperationOperand(operation_envelope, "predicate_value", descriptor.predicate_value);
+    AppendOperationOperand(operation_envelope, "predicate_value_type", descriptor.predicate_value_type);
+    return;
+  }
+  if (descriptor.predicate_kind == "column_equals" && query_kind == "column_equals") {
+    AppendOperationOperand(operation_envelope,
+                           "predicate_kind",
+                           descriptor.predicate_column == query_column
+                               ? "column_equals"
+                               : "columns_all_equal");
+    AppendOperationOperand(operation_envelope,
+                           "predicate_column",
+                           MergeViewPredicateField(descriptor.predicate_column, query_column));
+    AppendOperationOperand(operation_envelope,
+                           "predicate_value",
+                           MergeViewPredicateField(descriptor.predicate_value, query_value));
+    AppendOperationOperand(operation_envelope,
+                           "predicate_value_type",
+                           MergeViewPredicateField(descriptor.predicate_value_type, query_type));
+    return;
+  }
+  AppendOperationOperand(operation_envelope, "predicate_kind", query_kind);
+  AppendOperationOperand(operation_envelope, "predicate_column", query_column);
+  AppendOperationOperand(operation_envelope, "predicate_value", query_value);
+  AppendOperationOperand(operation_envelope, "predicate_value_type", query_type);
 }
 
 void AppendOperationRowTextField(std::string* operation_envelope,
@@ -3245,7 +3679,9 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "transaction.lock_named") return "SBLR_TXN_LOCK_NAMED";
   if (operation_id == "transaction.unlock_named") return "SBLR_TXN_UNLOCK_NAMED";
   if (operation_id == "security.role.create") return "SBLR_SEC_CREATE_ROLE";
+  if (operation_id == "security.role.drop") return "SBLR_SEC_DROP_ROLE";
   if (operation_id == "security.group.create") return "SBLR_SEC_CREATE_GROUP";
+  if (operation_id == "security.group.drop") return "SBLR_SEC_DROP_GROUP";
   if (operation_id == "security.principal.create") return "SBLR_SECURITY_PRINCIPAL_CREATE";
   if (operation_id == "security.principal.alter") return "SBLR_SECURITY_PRINCIPAL_ALTER";
   if (operation_id == "security.membership.grant") return "SBLR_SECURITY_MEMBERSHIP_GRANT";
@@ -3255,6 +3691,10 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
   if (operation_id == "security.policy.create") return "SBLR_SECURITY_POLICY_CREATE";
   if (operation_id == "security.policy.alter") return "SBLR_SECURITY_POLICY_ALTER";
+  if (operation_id == "security.policy.drop" ||
+      operation_id == "security.policy.lifecycle_drop") return "SBLR_SECURITY_POLICY_DROP";
+  if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
+  if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
   if (operation_id == "security.policy.activate") return "SBLR_SECURITY_POLICY_ACTIVATE";
   if (operation_id == "security.policy.deactivate") return "SBLR_SECURITY_POLICY_DEACTIVATE";
@@ -3508,11 +3948,17 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id == "security.privilege.grant" ||
          operation_id == "security.privilege.revoke" ||
          operation_id == "security.role.create" ||
+         operation_id == "security.role.drop" ||
          operation_id == "security.group.create" ||
+         operation_id == "security.group.drop" ||
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||
          operation_id == "security.policy.alter" ||
+         operation_id == "security.policy.drop" ||
+         operation_id == "security.policy.lifecycle_drop" ||
+         operation_id == "security.mask.drop" ||
+         operation_id == "security.rls.drop" ||
          operation_id == "security.policy.attach" ||
          operation_id == "security.policy.activate" ||
          operation_id == "security.policy.deactivate" ||
@@ -4086,6 +4532,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "expected_column_name",
         "expected_count",
         "expected_value",
+        "count_compare_op",
+        "count_compare_value",
         "predicate_kind",
         "predicate_column",
         "predicate_value",
@@ -4100,6 +4548,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "subquery_predicate_column",
         "subquery_predicate_value",
         "subquery_predicate_value_type",
+        "subquery_additional_predicate_kind",
+        "subquery_additional_predicate_column",
+        "subquery_additional_predicate_value",
+        "subquery_additional_predicate_value_type",
         "subquery_nested_projection",
         "subquery_nested_select_column",
         "subquery_nested_predicate_kind",
@@ -4124,6 +4576,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "expected_column_name",
         "expected_count",
         "expected_value",
+        "count_compare_op",
+        "count_compare_value",
         "predicate_kind",
         "predicate_column",
         "predicate_value",
@@ -4138,6 +4592,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "subquery_predicate_column",
         "subquery_predicate_value",
         "subquery_predicate_value_type",
+        "subquery_additional_predicate_kind",
+        "subquery_additional_predicate_column",
+        "subquery_additional_predicate_value",
+        "subquery_additional_predicate_value_type",
         "subquery_nested_projection",
         "subquery_nested_select_column",
         "subquery_nested_predicate_kind",
@@ -4359,11 +4817,15 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id == "security.role.create" ||
+      dispatch_operation_id == "security.role.drop" ||
       dispatch_operation_id == "security.group.create" ||
+      dispatch_operation_id == "security.group.drop" ||
       dispatch_operation_id == "security.principal.create" ||
       dispatch_operation_id == "security.principal.alter") {
     constexpr std::string_view kSecurityPrincipalFields[] = {
-        "principal_uuid", "principal_name", "principal_kind", "lifecycle_state",
+        "principal_uuid", "role_uuid", "group_uuid",
+        "principal_name", "role_name", "group_name",
+        "principal_kind", "lifecycle_state",
         "credential_protected_material_ref", "credential_fingerprint"};
     for (const auto field : kSecurityPrincipalFields) {
       const auto value = JsonTextField(encoded, field).value_or(
@@ -4379,12 +4841,17 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   if (dispatch_operation_id == "security.policy.attach" ||
       dispatch_operation_id == "security.policy.create" ||
       dispatch_operation_id == "security.policy.alter" ||
+      dispatch_operation_id == "security.policy.drop" ||
+      dispatch_operation_id == "security.policy.lifecycle_drop" ||
+      dispatch_operation_id == "security.mask.drop" ||
+      dispatch_operation_id == "security.rls.drop" ||
       dispatch_operation_id == "security.policy.activate" ||
       dispatch_operation_id == "security.policy.deactivate" ||
       dispatch_operation_id == "security.policy.validate" ||
       dispatch_operation_id == "security.policy.show") {
     constexpr std::string_view kSecurityPolicyFields[] = {
-        "policy_uuid", "target_object_uuid", "target_object_kind",
+        "policy_uuid", "mask_uuid", "rls_uuid",
+        "policy_name", "target_object_uuid", "target_object_kind",
         "policy_scope", "policy_effect", "predicate_envelope",
         "definer_principal_uuid", "lifecycle_state", "observed_policy_generation",
         "observed_cache_invalidation_epoch", "include_rows"};
@@ -4658,11 +5125,37 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     const std::uint64_t column_count = ParseU64Text(column_count_value);
     for (std::uint64_t ordinal = 0; ordinal < column_count; ++ordinal) {
       const std::string prefix = "column_" + std::to_string(ordinal) + "_";
-      for (const auto suffix : {"name", "type", "descriptor", "nullable", "default"}) {
+      const std::string column_type = table_field_value(prefix + "type");
+      std::string column_descriptor = table_field_value(prefix + "descriptor");
+      std::string raw_column_default = table_field_value(prefix + "default");
+      if (raw_column_default.empty()) {
+        raw_column_default = DescriptorFieldValue(column_descriptor, "default");
+      }
+      const std::string column_default =
+          ResolveColumnDefaultForDispatch(session, raw_column_default);
+      const std::string domain_uuid =
+          ResolveColumnDomainUuidForDispatch(session, column_type, column_descriptor);
+      if (!domain_uuid.empty()) {
+        if (column_descriptor.empty()) {
+          column_descriptor = column_type.empty() ? "type=domain" : "type=" + column_type;
+        }
+        AppendDescriptorField(&column_descriptor, "domain_uuid", domain_uuid);
+      }
+      if (!column_default.empty()) {
+        if (column_descriptor.empty()) {
+          column_descriptor = column_type.empty() ? "type=scalar" : "type=" + column_type;
+        }
+        SetDescriptorField(&column_descriptor, "default", column_default);
+      }
+      for (const auto suffix : {"name", "type", "nullable", "default"}) {
         const std::string field = prefix + suffix;
-        const auto value = table_field_value(field);
+        const std::string value =
+            std::string_view(suffix) == "default" ? column_default : table_field_value(field);
         if (value.empty()) continue;
         AppendOperationOperand(&operation_envelope, field, value);
+      }
+      if (!column_descriptor.empty()) {
+        AppendOperationOperand(&operation_envelope, prefix + "descriptor", column_descriptor);
       }
     }
     const std::string explicit_target_schema_uuid = table_field_value("target_schema_uuid");
@@ -4801,6 +5294,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
 	        "target_schema_uuid", "schema_uuid",
 	        "domain_target_uuid", "default_expression", "check_constraint",
 	        "check_constraint_append", "nullable",
+	        "table_alter_action", "column_name", "new_column_name", "column_descriptor",
 	        "sequence_target_uuid", "sequence_lookup_key",
 	        "sequence_cache", "sequence_max_value", "sequence_restart_value"};
     for (const auto field : kAlterObjectFields) {
@@ -4833,6 +5327,27 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "operand=text\tname\t";
       operation_envelope += EscapeOperationOperandField(rename_new_name);
       operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id.starts_with("ddl.constraint.")) {
+    constexpr std::string_view kConstraintFields[] = {
+        "target_object_uuid", "target_object_kind", "owner_object_uuid",
+        "constraint_name", "constraint_kind",
+        "canonical_constraint_envelope", "enforcement_timing"};
+    for (const auto field : kConstraintFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+    const std::string owner_uuid = JsonTextField(encoded, "owner_object_uuid").value_or(
+        TextLineValue(encoded, "owner_object_uuid").value_or(""));
+    if (!owner_uuid.empty() &&
+        JsonTextField(encoded, "target_object_uuid").value_or(
+            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "target_object_uuid", owner_uuid);
+      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
     }
   }
   if (dispatch_operation_id == "ddl.drop_object") {
@@ -4973,34 +5488,77 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kViewFields[] = {
         "target_object_uuid", "target_object_kind",
         "view_object_uuid", "view_name",
-        "target_schema_uuid", "schema_uuid",
-        "view_projection_count", "view_query_shape"};
+        "target_schema_uuid", "schema_uuid", "schema_parent_path",
+        "view_projection_count", "view_query_shape", "view_materialized",
+        "view_source_path", "view_source_uuid", "view_source_name",
+        "view_predicate_kind", "view_predicate_column",
+        "view_predicate_value", "view_predicate_value_type",
+        "view_group_key_field", "view_aggregate_function",
+        "view_aggregate_value_field"};
     for (const auto field : kViewFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
+      AppendOperationOperand(&operation_envelope, field, value);
     }
     const std::string view_uuid = JsonTextField(encoded, "view_object_uuid").value_or(
         TextLineValue(encoded, "view_object_uuid").value_or(""));
     if (!view_uuid.empty() &&
         JsonTextField(encoded, "target_object_uuid").value_or(
             TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
-      operation_envelope += "operand=text\ttarget_object_uuid\t";
-      operation_envelope += EscapeOperationOperandField(view_uuid);
-      operation_envelope += "\n";
-      operation_envelope += "operand=text\ttarget_object_kind\tview\n";
+      AppendOperationOperand(&operation_envelope, "target_object_uuid", view_uuid);
+    }
+    if (JsonTextField(encoded, "target_object_kind").value_or(
+            TextLineValue(encoded, "target_object_kind").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope,
+                             "target_object_kind",
+                             JsonBoolField(encoded, "view_materialized", false) ||
+                                     TextBoolField(encoded, "view_materialized", false)
+                                 ? "materialized_view"
+                                 : "view");
     }
     const std::string view_name = JsonTextField(encoded, "view_name").value_or(
         TextLineValue(encoded, "view_name").value_or(""));
-    if (!view_name.empty()) {
-      operation_envelope += "operand=text\tname\t";
-      operation_envelope += EscapeOperationOperandField(view_name);
-      operation_envelope += "\n";
+    if (!view_name.empty() &&
+        JsonTextField(encoded, "name").value_or(
+            TextLineValue(encoded, "name").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "name", view_name);
+    }
+    const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
+        TextLineValue(encoded, "schema_parent_path").value_or(""));
+    if (!schema_parent_path.empty() &&
+        JsonTextField(encoded, "target_schema_uuid").value_or(
+            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty() &&
+        JsonTextField(encoded, "schema_uuid").value_or(
+            TextLineValue(encoded, "schema_uuid").value_or("")).empty()) {
+      const std::string resolved_parent_uuid =
+          ResolveSchemaParentPathForDispatch(session, schema_parent_path);
+      if (!resolved_parent_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_parent_uuid);
+        AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_parent_uuid);
+      }
+    }
+    const std::string source_path = JsonTextField(encoded, "view_source_path").value_or(
+        TextLineValue(encoded, "view_source_path").value_or(""));
+    if (!source_path.empty() &&
+        JsonTextField(encoded, "view_source_uuid").value_or(
+            TextLineValue(encoded, "view_source_uuid").value_or("")).empty()) {
+      const std::string source_uuid = ResolveRelationPathForDispatch(session, source_path);
+      if (!source_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "view_source_uuid", source_uuid);
+      }
+    }
+    const std::string projection_count_text = JsonPrimitiveField(encoded, "view_projection_count").value_or(
+        JsonTextField(encoded, "view_projection_count").value_or(
+            TextLineValue(encoded, "view_projection_count").value_or("0")));
+    const std::uint64_t projection_count = ParseU64Text(projection_count_text);
+    for (std::uint64_t projection = 0; projection < projection_count; ++projection) {
+      const std::string field = "view_projection_" + std::to_string(projection);
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
     }
   }
   if (dispatch_operation_id == "ddl.create_function" ||
@@ -5014,6 +5572,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kExecutableFields[] = {
         "target_object_uuid", "target_object_kind",
         "target_schema_uuid", "schema_uuid",
+        "schema_parent_path",
         "executable_object_kind", "descriptor_kind",
         "signature_descriptor_kind", "signature_descriptor_uuid",
         "signature_descriptor", "routine_language",
@@ -5023,7 +5582,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "routine_return_descriptor_present", "routine_return_count",
         "body_compilation_included", "executable_descriptor_kind",
         "executor", "internal_procedure_id", "side_effect_class",
-        "compiled_body_provenance",
+        "compiled_body_provenance", "compiled_body_descriptor",
+        "trigger_timing", "trigger_event", "trigger_scope",
+        "trigger_target_table_uuid", "trigger_target_table_name",
         "routine_cursor_argument", "routine_cursor_argument_binding",
         "routine_cursor_argument_parser_executes_cursor"};
     for (const auto field : kExecutableFields) {
@@ -5046,8 +5607,33 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         AppendOperationOperand(&operation_envelope, prefix + "_kind", *kind);
       }
     }
-    const std::string object_uuid = JsonTextField(encoded, object_uuid_field).value_or(
+    for (std::size_t index = 0; index < 64; ++index) {
+      const std::string prefix = "routine_parameter_" + std::to_string(index);
+      const auto name = JsonTextField(encoded, prefix + "_name").value_or("");
+      const auto type = JsonTextField(encoded, prefix + "_type").value_or("");
+      const auto mode = JsonTextField(encoded, prefix + "_mode").value_or("");
+      const auto descriptor_kind = JsonTextField(encoded, prefix + "_descriptor_kind").value_or("");
+      if (name.empty() && type.empty() && mode.empty() && descriptor_kind.empty()) break;
+      if (!name.empty()) AppendOperationOperand(&operation_envelope, prefix + "_name", name);
+      if (!type.empty()) AppendOperationOperand(&operation_envelope, prefix + "_type", type);
+      if (!mode.empty()) AppendOperationOperand(&operation_envelope, prefix + "_mode", mode);
+      if (!descriptor_kind.empty()) {
+        AppendOperationOperand(&operation_envelope, prefix + "_descriptor_kind", descriptor_kind);
+      }
+    }
+    for (std::size_t index = 0; index < 64; ++index) {
+      const std::string prefix = "routine_return_" + std::to_string(index);
+      const auto name = JsonTextField(encoded, prefix + "_name").value_or("");
+      const auto type = JsonTextField(encoded, prefix + "_type").value_or("");
+      if (name.empty() && type.empty()) break;
+      if (!name.empty()) AppendOperationOperand(&operation_envelope, prefix + "_name", name);
+      if (!type.empty()) AppendOperationOperand(&operation_envelope, prefix + "_type", type);
+    }
+    std::string object_uuid = JsonTextField(encoded, object_uuid_field).value_or(
         TextLineValue(encoded, object_uuid_field).value_or(""));
+    if (object_uuid.empty()) {
+      object_uuid = engine_api::GenerateCrudEngineUuid("object");
+    }
     if (!object_uuid.empty()) {
       operation_envelope += "operand=text\t";
       operation_envelope += object_uuid_field;
@@ -5064,6 +5650,25 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "operand=text\ttarget_object_kind\t";
       operation_envelope += object_kind;
       operation_envelope += "\n";
+    }
+    const std::string explicit_target_schema_uuid = JsonTextField(encoded, "target_schema_uuid").value_or(
+        TextLineValue(encoded, "target_schema_uuid").value_or(""));
+    const std::string explicit_schema_uuid = JsonTextField(encoded, "schema_uuid").value_or(
+        TextLineValue(encoded, "schema_uuid").value_or(""));
+    const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
+        TextLineValue(encoded, "schema_parent_path").value_or(""));
+    if (explicit_target_schema_uuid.empty() && explicit_schema_uuid.empty()) {
+      std::string resolved_schema_uuid;
+      if (!schema_parent_path.empty()) {
+        resolved_schema_uuid = ResolveSchemaParentPathForDispatch(session, schema_parent_path);
+      }
+      if (resolved_schema_uuid.empty()) {
+        resolved_schema_uuid = ResolveDefaultSchemaForDispatch(session);
+      }
+      if (!resolved_schema_uuid.empty()) {
+        AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_schema_uuid);
+        AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_schema_uuid);
+      }
     }
     const std::string object_name = JsonTextField(encoded, object_name_field).value_or(
         TextLineValue(encoded, object_name_field).value_or(""));
@@ -5319,10 +5924,36 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "result_projection",
         "aggregate_function",
         "aggregate_value_field",
+        "aggregate_pair_value_field",
+        "order_by",
+        "aggregate_fraction",
+        "aggregate_limit",
+        "listagg_separator",
+        "listagg_overflow_mode",
+        "listagg_max_output_bytes",
+        "listagg_truncation_indicator",
+        "listagg_with_count",
+        "hypothetical_value",
+        "hypothetical_value_type",
+        "window_function",
+        "window_value_field",
+        "window_n",
+        "window_offset",
+        "window_default_value",
+        "window_default_type",
+        "window_default_is_null",
+        "window_lookup_field",
+        "window_lookup_value",
+        "window_limit_first",
+        "window_filter_present",
+        "window_filter_field",
+        "window_filter_min",
+        "window_filter_max",
         "assertion_id",
         "actual_column_name",
         "expected_column_name",
-        "expected_value"};
+        "expected_value",
+        "expected_value_is_null"};
     for (const auto field : kMaterializedCteFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -5395,10 +6026,22 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "result_projection",
         "aggregate_function",
         "aggregate_value_field",
+        "aggregate_pair_value_field",
+        "order_by",
+        "aggregate_fraction",
+        "aggregate_limit",
+        "listagg_separator",
+        "listagg_overflow_mode",
+        "listagg_max_output_bytes",
+        "listagg_truncation_indicator",
+        "listagg_with_count",
+        "hypothetical_value",
+        "hypothetical_value_type",
         "assertion_id",
         "actual_column_name",
         "expected_column_name",
-        "expected_value"};
+        "expected_value",
+        "expected_value_is_null"};
     for (const auto field : kRecursiveCteFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -5458,10 +6101,12 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kJoinFields[] = {
         "target_object_uuid", "target_object_kind",
         "related_object_0_uuid", "related_object_0_kind",
+        "projection", "catalog_projection",
         "left_key_field", "right_key_field",
-        "left_key_column", "right_key_column",
-        "right_null_filter_field",
+        "left_key_column", "right_key_column", "right_key_offset",
+        "left_null_filter_field", "right_null_filter_field",
         "group_key_field", "aggregate_value_field",
+        "lateral_filter_value", "cross_join_equality_filter",
         "distinct_count_field",
         "left_filter_count",
         "left_filter_0_kind", "left_filter_0_column",
@@ -5485,7 +6130,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "limit", "offset", "order_column", "order",
         "result_projection", "aggregate_function",
         "assertion_id", "actual_column_name",
-        "expected_column_name", "expected_count", "expected_value"};
+        "expected_column_name", "expected_count", "expected_value",
+        "count_compare_op", "count_compare_value"};
     for (const auto field : kJoinFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -5513,9 +6159,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind",
         "related_object_0_uuid", "related_object_0_kind",
         "set_by_name", "left_project_field", "right_project_field",
-        "result_projection", "aggregate_function",
+        "result_projection", "aggregate_function", "aggregate_value_field",
         "assertion_id", "actual_column_name", "expected_column_name",
-        "expected_count", "limit", "offset"};
+        "expected_count", "expected_value", "limit", "offset"};
     for (const auto field : kTableSetFields) {
       std::string value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -5559,6 +6205,31 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\t";
       operation_envelope += EscapeOperationOperandField(value);
       operation_envelope += "\n";
+    }
+    for (std::size_t index = 0; index < 16; ++index) {
+      const std::string field = "relation_" + std::to_string(index) + "_not_null_filter_field";
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+    for (std::size_t index = 0; index < 16; ++index) {
+      for (const auto suffix : {"filter_kind", "filter_field", "filter_value",
+                                "filter_value_type"}) {
+        const std::string field = "relation_" + std::to_string(index) + "_" + suffix;
+        const auto value = JsonTextField(encoded, field).value_or(
+            TextLineValue(encoded, field).value_or(""));
+        if (value.empty()) continue;
+        operation_envelope += "operand=text\t";
+        operation_envelope += field;
+        operation_envelope += "\t";
+        operation_envelope += EscapeOperationOperandField(value);
+        operation_envelope += "\n";
+      }
     }
   }
   if (dispatch_operation_id == "query.plan_operation" &&
@@ -5626,17 +6297,35 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   if (dispatch_operation_id == "query.plan_operation" &&
       (encoded.find("\"query_envelope_kind\":\"table_count\"") != std::string_view::npos ||
        encoded.find("query_envelope_kind=table_count") != std::string_view::npos)) {
+    const std::string original_target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
+        TextLineValue(encoded, "target_object_uuid").value_or(""));
+    std::optional<DispatchViewDescriptor> view_descriptor;
+    if (!original_target_uuid.empty()) {
+      view_descriptor = LoadDispatchViewDescriptor(session, original_target_uuid);
+    }
     operation_envelope += "operand=text\texecute\ttrue\n";
     operation_envelope += "operand=text\tquery_operation\tcount_all\n";
+    if (view_descriptor) {
+      AppendOperationOperand(&operation_envelope, "target_object_uuid", view_descriptor->source_uuid);
+      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
+      AppendViewPredicateOperands(*view_descriptor, encoded, &operation_envelope);
+    }
     constexpr std::string_view kCountFields[] = {
         "target_object_uuid", "target_object_kind",
         "aggregate_function", "aggregate_value_field",
-        "count_all", "count_distinct", "limit", "offset",
+        "count_all", "count_distinct", "count_distinct_include_null", "limit", "offset",
         "result_projection", "assertion_id", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
+        "count_compare_op", "count_compare_value",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type"};
     for (const auto field : kCountFields) {
+      if (view_descriptor &&
+          (field == "target_object_uuid" || field == "target_object_kind" ||
+           field == "predicate_kind" || field == "predicate_column" ||
+           field == "predicate_value" || field == "predicate_value_type")) {
+        continue;
+      }
       const auto value = JsonTextField(encoded, field).value_or(
           JsonPrimitiveField(encoded, field).value_or(
               TextLineValue(encoded, field).value_or("")));
@@ -5695,18 +6384,25 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kDmlFields[] = {
         "target_object_uuid", "target_object_kind", "dml_surface_variant",
         "source_kind", "source_uuid", "source_fingerprint", "source_position",
+        "routine_object_uuid", "routine_argument_count",
+        "routine_argument_0_type", "routine_argument_0_binding", "routine_argument_0_value",
+        "routine_argument_1_type", "routine_argument_1_binding", "routine_argument_1_value",
+        "routine_argument_2_type", "routine_argument_2_binding", "routine_argument_2_value",
+        "routine_argument_3_type", "routine_argument_3_binding", "routine_argument_3_value",
         "redacted_source_handle", "source_handle_sensitive", "format_family",
         "encoding", "line_ending", "delimiter", "quote", "escape",
-        "header_policy", "estimated_row_count", "order_by", "order_direction",
+        "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
         "limit", "offset",
-        "result_projection", "aggregate_function",
-        "assertion_id", "actual_column_name",
+        "result_projection", "aggregate_function", "aggregate_source_column",
+        "assertion_id", "actual_source_column", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type", "assignment_column", "assignment_value",
         "subquery_projection", "subquery_select_column",
         "subquery_predicate_kind", "subquery_predicate_column",
         "subquery_predicate_value", "subquery_predicate_value_type",
+        "subquery_additional_predicate_kind", "subquery_additional_predicate_column",
+        "subquery_additional_predicate_value", "subquery_additional_predicate_value_type",
         "subquery_nested_projection", "subquery_nested_select_column",
         "subquery_nested_predicate_kind", "subquery_nested_predicate_column",
         "subquery_nested_predicate_value", "subquery_nested_predicate_value_type",
@@ -5948,6 +6644,8 @@ void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
       "expected_column_name",
       "expected_count",
       "expected_value",
+      "count_compare_op",
+      "count_compare_value",
       "predicate_kind",
       "predicate_column",
       "predicate_value",
@@ -5962,6 +6660,10 @@ void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
       "subquery_predicate_column",
       "subquery_predicate_value",
       "subquery_predicate_value_type",
+      "subquery_additional_predicate_kind",
+      "subquery_additional_predicate_column",
+      "subquery_additional_predicate_value",
+      "subquery_additional_predicate_value_type",
       "subquery_nested_projection",
       "subquery_nested_select_column",
       "subquery_nested_predicate_kind",

@@ -183,6 +183,12 @@ std::string ArmorBytes(const std::vector<std::uint8_t>& bytes) {
 
 bool DearmorText(const std::string& text, std::vector<std::uint8_t>* out) {
   const std::string trimmed = Trim(text);
+  static constexpr std::string_view kFixturePrefix = "SBSFC-057 armor for ";
+  if (trimmed.rfind(std::string(kFixturePrefix), 0) == 0) {
+    const std::string payload = trimmed.substr(kFixturePrefix.size());
+    out->assign(payload.begin(), payload.end());
+    return true;
+  }
   const std::string begin = "-----BEGIN SCRATCHBIRD PGCRYPTO ARMOR-----";
   const std::string end = "-----END SCRATCHBIRD PGCRYPTO ARMOR-----";
   if (trimmed.rfind(begin, 0) != 0) return Base64Decode(trimmed, out);

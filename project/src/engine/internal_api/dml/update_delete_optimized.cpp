@@ -11,6 +11,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
 #include "dml/delete_batch.hpp"
+#include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
@@ -2732,6 +2733,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         MakeInvalidRequestDiagnostic("dml.update_rows",
                                      "temporary_table_requires_session_uuid"));
   }
+  const bool executable_trigger_descriptors_present =
+      dml_trigger_runtime::HasActiveTableTriggerDescriptors(
+          request.context,
+          request.target_table.uuid.canonical);
   EngineUpdateRowsRequest effective_request = request;
   const auto resolved_projection_predicate =
       ResolveColumnInProjectionPredicate(request, state);
@@ -3145,7 +3150,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                      hot_plus_decision_name);
     }
     const bool retain_stage_logical_values =
-        !suppress_payload_rows || update_toast_required ||
+        !suppress_payload_rows || executable_trigger_descriptors_present ||
+        update_toast_required ||
         UpdatePlanHasMaintainableIndexWork(batch_context);
     std::vector<std::pair<std::string, std::string>> stage_logical_values;
     if (retain_stage_logical_values) {
@@ -3397,7 +3403,30 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
-  result.evidence.push_back({"trigger_udr_hooks", "inactive_checked"});
+  std::vector<dml_trigger_runtime::DmlTriggerUpdateRowImage> trigger_update_rows;
+  trigger_update_rows.reserve(staged_update_rows.size());
+  for (const auto& staged : staged_update_rows) {
+    trigger_update_rows.push_back({staged.original_row.values, staged.logical_values});
+  }
+  const auto trigger_result =
+      dml_trigger_runtime::FireAfterUpdateTableTriggers(request.context,
+                                                        state,
+                                                        request.target_table.uuid.canonical,
+                                                        trigger_update_rows,
+                                                        request.option_envelopes);
+  if (!trigger_result.ok) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        trigger_result.diagnostic);
+  }
+  result.evidence.insert(result.evidence.end(),
+                         trigger_result.evidence.begin(),
+                         trigger_result.evidence.end());
+  result.evidence.push_back({"trigger_udr_hooks",
+                             trigger_result.fired_count == 0
+                                 ? "descriptor_checked"
+                                 : "descriptor_executed"});
   AddHotUpdateIndexDisciplineEvidence(hot_update_shape_enabled, hot_update_counters, &result);
   AddUpdateBatchEvidenceToResult(batch_context, &result);
   if (!batch_context.fallback_reason.empty()) {
@@ -3683,7 +3712,30 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   result.evidence.push_back({"mga_row_version", "row_delete_tombstone"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
-  result.evidence.push_back({"trigger_udr_hooks", "inactive_checked"});
+  std::vector<CrudRowVersionRecord> trigger_delete_rows;
+  trigger_delete_rows.reserve(staged_delete_rows.size());
+  for (const auto& staged : staged_delete_rows) {
+    trigger_delete_rows.push_back(staged.original_row);
+  }
+  const auto trigger_result =
+      dml_trigger_runtime::FireAfterDeleteTableTriggers(request.context,
+                                                        state,
+                                                        request.target_table.uuid.canonical,
+                                                        trigger_delete_rows,
+                                                        request.option_envelopes);
+  if (!trigger_result.ok) {
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        trigger_result.diagnostic);
+  }
+  result.evidence.insert(result.evidence.end(),
+                         trigger_result.evidence.begin(),
+                         trigger_result.evidence.end());
+  result.evidence.push_back({"trigger_udr_hooks",
+                             trigger_result.fired_count == 0
+                                 ? "descriptor_checked"
+                                 : "descriptor_executed"});
   AddDeleteBatchEvidenceToResult(batch_context, &result);
   if (!batch_context.fallback_reason.empty()) {
     AddDmlSummaryFallbackReason(&result.dml_summary, batch_context.fallback_reason);

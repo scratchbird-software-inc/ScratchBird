@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <map>
 #include <set>
 #include <string_view>
@@ -91,6 +92,62 @@ std::string UpperAscii(std::string value) {
   }
   return value;
 }
+
+bool ParseUnsignedU64(std::string_view value, std::uint64_t* out) {
+  if (out == nullptr || value.empty()) return false;
+  std::uint64_t parsed = 0;
+  for (const char ch : value) {
+    if (!std::isdigit(static_cast<unsigned char>(ch))) return false;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10u) {
+      return false;
+    }
+    parsed = parsed * 10u + digit;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool EvaluateCountComparison(std::uint64_t actual,
+                             std::string compare_op,
+                             std::uint64_t expected,
+                             bool* result) {
+  if (result == nullptr) return false;
+  compare_op = LowerAscii(std::move(compare_op));
+  if (compare_op == ">" || compare_op == "gt") {
+    *result = actual > expected;
+  } else if (compare_op == ">=" || compare_op == "gte" || compare_op == "ge") {
+    *result = actual >= expected;
+  } else if (compare_op == "<" || compare_op == "lt") {
+    *result = actual < expected;
+  } else if (compare_op == "<=" || compare_op == "lte" || compare_op == "le") {
+    *result = actual <= expected;
+  } else if (compare_op == "=" || compare_op == "==" || compare_op == "eq") {
+    *result = actual == expected;
+  } else if (compare_op == "!=" || compare_op == "<>" || compare_op == "ne" ||
+             compare_op == "neq") {
+    *result = actual != expected;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool ParseBoolText(std::string value, bool* out) {
+  if (out == nullptr) return false;
+  value = LowerAscii(std::move(value));
+  if (value == "true" || value == "1") {
+    *out = true;
+    return true;
+  }
+  if (value == "false" || value == "0") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+std::string BoolText(bool value) { return value ? "true" : "false"; }
 
 bool SqlLikePatternMatches(std::string_view value, std::string_view pattern) {
   std::vector<unsigned char> previous(pattern.size() + 1, 0);
@@ -199,7 +256,13 @@ bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
   const auto values = SplitCommaList(predicate_values);
   if (columns.empty() || values.size() < columns.size()) { return false; }
   for (std::size_t index = 0; index < columns.size(); ++index) {
-    if (RowFieldTextValue(row, columns[index]) != values[index]) { return false; }
+    const std::string candidate = RowFieldTextValue(row, columns[index]);
+    if (candidate == values[index]) { continue; }
+    if (columns[index] == "schema_name" &&
+        RowFieldTextValue(row, "schema_path") == values[index]) {
+      continue;
+    }
+    return false;
   }
   return true;
 }
@@ -249,6 +312,12 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
     const std::string subquery_predicate_kind = OptionValue(request, "subquery_predicate_kind:");
     const std::string subquery_predicate_column = OptionValue(request, "subquery_predicate_column:");
     const std::string subquery_predicate_value = OptionValue(request, "subquery_predicate_value:");
+    const std::string subquery_additional_predicate_kind =
+        OptionValue(request, "subquery_additional_predicate_kind:");
+    const std::string subquery_additional_predicate_column =
+        OptionValue(request, "subquery_additional_predicate_column:");
+    const std::string subquery_additional_predicate_value =
+        OptionValue(request, "subquery_additional_predicate_value:");
     if (subquery_projection.empty() || subquery_select_column.empty() ||
         subquery_predicate_kind.empty() || subquery_predicate_column.empty()) {
       return {};
@@ -348,6 +417,13 @@ std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
                                                subquery_predicate_value)) {
           continue;
         }
+      }
+      if (!subquery_additional_predicate_kind.empty() &&
+          !CatalogProjectionPredicateMatches(row,
+                                             subquery_additional_predicate_kind,
+                                             subquery_additional_predicate_column,
+                                             subquery_additional_predicate_value)) {
+        continue;
       }
       const std::string admitted = RowFieldTextValue(row, subquery_select_column);
       if (!admitted.empty()) { admitted_values.insert(admitted); }
@@ -639,7 +715,7 @@ void AddNameRegistryResolverNames(
                     entry.language_tag,
                     entry.name_class,
                     DisplayTextForNameEntry(entry),
-                    entry.catalog_generation_id == 0 ? entry.creator_tx : entry.catalog_generation_id);
+                    std::max(entry.catalog_generation_id, entry.creator_tx));
   }
 }
 
@@ -922,10 +998,16 @@ void AddSecurityPrincipalNavigatorObjects(
 
   for (const auto& policy : security.row_policies) {
     if (policy.deleted || policy.policy_uuid.empty()) { continue; }
+    const std::string effect = LowerAscii(policy.policy_effect);
+    const std::string object_class = effect.find("mask") != std::string::npos
+                                         ? "mask"
+                                         : effect.find("rls") != std::string::npos
+                                               ? "rls"
+                                               : "security_policy";
     AddSecurityNavigatorObject(objects,
                                resolver_names,
                                policy.policy_uuid,
-                               "security_policy",
+                               object_class,
                                "",
                                policy.target_object_uuid,
                                policy.target_object_kind,
@@ -1001,10 +1083,24 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     }
   }
 
+  const CrudState readable_crud = LoadReadableCatalogCrudState(catalog_read_context);
+  std::set<std::string> crud_table_uuids;
+  for (const auto& table : readable_crud.tables) {
+    if (table.table_uuid.empty() ||
+        !CrudCreatorVisible(readable_crud, table.creator_tx, table.event_sequence, observer_tx)) {
+      continue;
+    }
+    crud_table_uuids.insert(table.table_uuid);
+  }
+
   const auto lifecycle = LoadCatalogObjectLifecycleState(request.context);
   if (lifecycle.ok) {
     for (const auto& record : lifecycle.state.objects) {
       if (record.deleted || record.object_uuid.empty()) { continue; }
+      if (record.object_kind == "table" &&
+          crud_table_uuids.count(record.object_uuid) != 0) {
+        continue;
+      }
       SysInformationCatalogObjectSource object;
       object.object_uuid = record.object_uuid;
       object.object_class = record.object_kind.empty() ? "object" : record.object_kind;
@@ -1030,6 +1126,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     }
     for (const auto& column : lifecycle.state.columns) {
       if (column.deleted || column.owner_object_uuid.empty()) { continue; }
+      if (crud_table_uuids.count(column.owner_object_uuid) != 0) { continue; }
       SysInformationColumnSource source;
       source.relation_object_uuid = column.owner_object_uuid;
       source.column_name = column.column_uuid;
@@ -1066,7 +1163,6 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     }
   }
 
-  const CrudState readable_crud = LoadReadableCatalogCrudState(catalog_read_context);
   std::map<std::string, std::string> table_schema_by_uuid;
   for (const auto& table : readable_crud.tables) {
     if (table.table_uuid.empty() ||
@@ -1355,9 +1451,48 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     if (!assertion_id.empty()) {
       fields.push_back({"assertion_id", assertion_id});
     }
-    fields.emplace_back(actual_column_name, std::to_string(filtered_rows.size()));
-    if (!expected_value.empty()) {
-      fields.emplace_back(expected_column_name, expected_value);
+    const std::string compare_op = OptionValue(request, "count_compare_op:");
+    if (!compare_op.empty()) {
+      std::uint64_t compare_value = 0;
+      if (!ParseUnsignedU64(OptionValue(request, "count_compare_value:"), &compare_value)) {
+        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+            request.context,
+            "observability.show_catalog",
+            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_COMPARE_VALUE",
+                                    "observability.show_catalog.count_assertion",
+                                    "count_compare_value must be a non-negative integer",
+                                    true));
+      }
+      bool actual_bool = false;
+      if (!EvaluateCountComparison(static_cast<std::uint64_t>(filtered_rows.size()),
+                                   compare_op,
+                                   compare_value,
+                                   &actual_bool)) {
+        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+            request.context,
+            "observability.show_catalog",
+            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_COMPARE_OPERATOR",
+                                    "observability.show_catalog.count_assertion",
+                                    "count_compare_op is not supported",
+                                    true));
+      }
+      bool expected_bool = false;
+      if (!ParseBoolText(expected_value, &expected_bool)) {
+        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+            request.context,
+            "observability.show_catalog",
+            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_EXPECTED_BOOL",
+                                    "observability.show_catalog.count_assertion",
+                                    "expected_value must be a boolean when count_compare_op is present",
+                                    true));
+      }
+      fields.emplace_back(actual_column_name, BoolText(actual_bool));
+      fields.emplace_back(expected_column_name, BoolText(expected_bool));
+    } else {
+      fields.emplace_back(actual_column_name, std::to_string(filtered_rows.size()));
+      if (!expected_value.empty()) {
+        fields.emplace_back(expected_column_name, expected_value);
+      }
     }
     AddApiBehaviorRow(&result, std::move(fields));
   } else {

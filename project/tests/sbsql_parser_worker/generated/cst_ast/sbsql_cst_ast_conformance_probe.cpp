@@ -140,6 +140,38 @@ bool ValidateStatementFamilies() {
   return ok;
 }
 
+bool ValidateCanonicalFunctionNameResolutionBoundary() {
+  bool ok = true;
+  const auto canonical = sbsql::BuildAst(
+      sbsql::BuildCst("SELECT sb.json.array_length('[1,2]')"));
+  ok &= Require(!canonical.messages.has_errors(),
+                "canonical built-in AST produced errors");
+  ok &= Require(canonical.family == sbsql::StatementFamily::kQuery,
+                "canonical built-in AST family mismatch");
+  ok &= Require(!canonical.requires_name_resolution,
+                "canonical built-in function required public name resolution");
+
+  const auto commented_canonical = sbsql::BuildAst(
+      sbsql::BuildCst("-- fixture_id: SBSFC013-json-array-length-domain-error expected_diagnostic: SBSQL.FUNCTION.INVALID_INPUT\n"
+                      "SELECT sb.json.array_length('{\"a\":1}') AS rejected_value"));
+  ok &= Require(!commented_canonical.messages.has_errors(),
+                "comment-led canonical built-in AST produced errors");
+  ok &= Require(commented_canonical.family == sbsql::StatementFamily::kQuery,
+                "comment-led canonical built-in AST family mismatch");
+  ok &= Require(!commented_canonical.requires_name_resolution,
+                "comment-led canonical built-in function required public name resolution");
+
+  const auto routine = sbsql::BuildAst(
+      sbsql::BuildCst("SELECT users.public.some_function(1)"));
+  ok &= Require(!routine.messages.has_errors(),
+                "user routine AST produced errors");
+  ok &= Require(routine.family == sbsql::StatementFamily::kQuery,
+                "user routine AST family mismatch");
+  ok &= Require(routine.requires_name_resolution,
+                "qualified user routine did not require public name resolution");
+  return ok;
+}
+
 bool ValidateRecoveryArtifacts() {
   bool ok = true;
   const auto empty = sbsql::BuildAst(sbsql::BuildCst("  -- only trivia\n"));
@@ -161,6 +193,7 @@ int main() {
   bool ok = true;
   ok &= ValidateLosslessCstAstArtifacts();
   ok &= ValidateStatementFamilies();
+  ok &= ValidateCanonicalFunctionNameResolutionBoundary();
   ok &= ValidateRecoveryArtifacts();
   if (!ok) return 1;
   std::cout << "SBSQL CST/AST conformance passed\n";

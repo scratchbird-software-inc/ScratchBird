@@ -230,6 +230,17 @@ struct EngineSecurityCreateRoleResult : EngineApiResult {
 EngineSecurityCreateRoleResult EngineSecurityCreateRole(
     const EngineSecurityCreateRoleRequest& request);
 
+struct EngineSecurityDropRoleRequest : EngineApiRequest {
+  std::string role_uuid;
+};
+struct EngineSecurityDropRoleResult : EngineApiResult {
+  bool role_dropped = false;
+  std::uint64_t security_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityDropRoleResult EngineSecurityDropRole(
+    const EngineSecurityDropRoleRequest& request);
+
 struct EngineSecurityCreateGroupRequest : EngineApiRequest {
   std::string group_uuid;
   std::string group_name;
@@ -242,6 +253,17 @@ struct EngineSecurityCreateGroupResult : EngineApiResult {
 };
 EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
     const EngineSecurityCreateGroupRequest& request);
+
+struct EngineSecurityDropGroupRequest : EngineApiRequest {
+  std::string group_uuid;
+};
+struct EngineSecurityDropGroupResult : EngineApiResult {
+  bool group_dropped = false;
+  std::uint64_t security_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityDropGroupResult EngineSecurityDropGroup(
+    const EngineSecurityDropGroupRequest& request);
 
 struct EngineSecurityGrantMembershipRequest : EngineApiRequest {
   std::string membership_uuid;
@@ -331,6 +353,7 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
 
 struct EngineSecurityCreatePolicyRequest : EngineApiRequest {
   std::string policy_uuid;
+  std::string policy_name;
   std::string target_object_uuid;
   std::string target_object_kind = "object";
   std::string policy_effect = "row_filter";
@@ -361,6 +384,39 @@ struct EngineSecurityAlterPolicyResult : EngineApiResult {
 };
 EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
     const EngineSecurityAlterPolicyRequest& request);
+
+struct EngineSecurityDropPolicyRequest : EngineApiRequest {
+  std::string policy_uuid;
+};
+struct EngineSecurityDropPolicyResult : EngineApiResult {
+  bool policy_dropped = false;
+  std::uint64_t policy_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityDropPolicyResult EngineSecurityDropPolicy(
+    const EngineSecurityDropPolicyRequest& request);
+
+struct EngineSecurityDropMaskRequest : EngineApiRequest {
+  std::string mask_uuid;
+};
+struct EngineSecurityDropMaskResult : EngineApiResult {
+  bool mask_dropped = false;
+  std::uint64_t policy_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityDropMaskResult EngineSecurityDropMask(
+    const EngineSecurityDropMaskRequest& request);
+
+struct EngineSecurityDropRlsRequest : EngineApiRequest {
+  std::string rls_uuid;
+};
+struct EngineSecurityDropRlsResult : EngineApiResult {
+  bool rls_dropped = false;
+  std::uint64_t policy_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+};
+EngineSecurityDropRlsResult EngineSecurityDropRls(
+    const EngineSecurityDropRlsRequest& request);
 
 struct EngineSecurityActivatePolicyRequest : EngineApiRequest {
   std::string policy_uuid;

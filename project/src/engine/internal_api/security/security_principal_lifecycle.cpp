@@ -9,6 +9,7 @@
 #include "security/security_principal_lifecycle.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/name_registry.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_model.hpp"
 
@@ -410,6 +411,27 @@ std::string PrimaryName(const EngineApiRequest& request, const std::string& expl
   const std::string option_name = OptionValue(request, "name:");
   if (!option_name.empty()) { return option_name; }
   return {};
+}
+
+EngineApiDiagnostic PersistSecurityNameAliases(
+    const EngineRequestContext& context,
+    const std::string& operation_id,
+    const std::string& object_uuid,
+    const std::vector<std::string>& object_classes,
+    const std::vector<EngineLocalizedName>& names,
+    const std::string& fallback_name) {
+  for (const auto& object_class : object_classes) {
+    const auto persisted = PersistNameRegistryEntriesForObject(
+        context,
+        operation_id,
+        object_uuid,
+        object_class,
+        {},
+        names,
+        fallback_name);
+    if (persisted.error) { return persisted; }
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 std::string NormalizePrivilege(std::string privilege) {
@@ -1031,6 +1053,18 @@ EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
                                                                 kOperation,
                                                                 appended);
   }
+  const auto resolver = PersistSecurityNameAliases(
+      request.context,
+      kOperation,
+      principal_uuid,
+      {"principal", "user", "security_principal"},
+      request.localized_names,
+      principal_name);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityCreatePrincipalResult>(request.context,
+                                                                kOperation,
+                                                                resolver);
+  }
 
   auto result = SuccessResult<EngineSecurityCreatePrincipalResult>(request.context, kOperation);
   result.principal_created = true;
@@ -1204,6 +1238,16 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
   if (appended.error) {
     return DiagnosticResult<EngineSecurityCreateRoleResult>(request.context, kOperation, appended);
   }
+  const auto resolver = PersistSecurityNameAliases(
+      request.context,
+      kOperation,
+      role_uuid,
+      {"role", "principal", "security_role"},
+      request.localized_names,
+      role_name);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityCreateRoleResult>(request.context, kOperation, resolver);
+  }
 
   auto result = SuccessResult<EngineSecurityCreateRoleResult>(request.context, kOperation);
   result.role_created = true;
@@ -1269,6 +1313,16 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
   if (appended.error) {
     return DiagnosticResult<EngineSecurityCreateGroupResult>(request.context, kOperation, appended);
   }
+  const auto resolver = PersistSecurityNameAliases(
+      request.context,
+      kOperation,
+      group_uuid,
+      {"group", "principal", "security_group"},
+      request.localized_names,
+      group_name);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityCreateGroupResult>(request.context, kOperation, resolver);
+  }
 
   auto result = SuccessResult<EngineSecurityCreateGroupResult>(request.context, kOperation);
   result.group_created = true;
@@ -1281,6 +1335,160 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
          {{"group_uuid", group_uuid},
           {"group_name", group_name},
           {"external_authority_ref", record.external_authority_ref},
+          {"security_generation", std::to_string(generation)}});
+  return result;
+}
+
+EngineSecurityDropRoleResult EngineSecurityDropRole(
+    const EngineSecurityDropRoleRequest& request) {
+  constexpr const char* kOperation = "security.role.drop";
+  auto preflight =
+      MutatingSetupFailure<EngineSecurityDropRoleResult>(request,
+                                                         kOperation,
+                                                         "SEC_IDENTITY_ADMIN");
+  if (!preflight.ok) { return preflight; }
+  const std::string role_uuid = !request.role_uuid.empty()
+      ? request.role_uuid
+      : request.target_object.uuid.canonical;
+  if (role_uuid.empty()) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, "role_uuid_required"));
+  }
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(request.context,
+                                                         kOperation,
+                                                         loaded.diagnostic);
+  }
+  const auto* existing = FindRole(loaded.state, role_uuid);
+  if (existing == nullptr) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, role_uuid));
+  }
+
+  const std::uint64_t generation = NextGeneration(loaded.state);
+  EngineSecurityRoleRecord record = *existing;
+  record.creator_tx = request.context.local_transaction_id;
+  record.lifecycle_state = "dropped";
+  record.security_generation = generation;
+  record.deleted = true;
+  const auto audit = MakeAudit(request.context,
+                              kOperation,
+                              role_uuid,
+                              generation,
+                              "role=" + existing->role_name + ";lifecycle_state=dropped");
+  const auto appended = AppendEvents(
+      request.context,
+      {RoleEvent(record),
+       AuditEvent(audit),
+       CacheInvalidationEvent(request.context, kOperation, role_uuid, generation)});
+  if (appended.error) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(request.context,
+                                                         kOperation,
+                                                         appended);
+  }
+  const auto resolver = RetireNameRegistryEntriesForObject(request.context,
+                                                           kOperation,
+                                                           role_uuid);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(request.context,
+                                                         kOperation,
+                                                         resolver);
+  }
+
+  auto result = SuccessResult<EngineSecurityDropRoleResult>(request.context, kOperation);
+  result.role_dropped = true;
+  result.security_generation = generation;
+  result.cache_invalidation_epoch = generation;
+  result.primary_object.uuid.canonical = role_uuid;
+  result.primary_object.object_kind = "security_role";
+  FillMutationEvidence(&result, kOperation, role_uuid, generation);
+  AddRow(&result,
+         {{"role_uuid", role_uuid},
+          {"role_name", existing->role_name},
+          {"lifecycle_state", "dropped"},
+          {"deleted", "true"},
+          {"security_generation", std::to_string(generation)}});
+  return result;
+}
+
+EngineSecurityDropGroupResult EngineSecurityDropGroup(
+    const EngineSecurityDropGroupRequest& request) {
+  constexpr const char* kOperation = "security.group.drop";
+  auto preflight =
+      MutatingSetupFailure<EngineSecurityDropGroupResult>(request,
+                                                          kOperation,
+                                                          "SEC_MEMBERSHIP_ADMIN");
+  if (!preflight.ok) { return preflight; }
+  const std::string group_uuid = !request.group_uuid.empty()
+      ? request.group_uuid
+      : request.target_object.uuid.canonical;
+  if (group_uuid.empty()) {
+    return DiagnosticResult<EngineSecurityDropGroupResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticGroupInvalid, "group_uuid_required"));
+  }
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<EngineSecurityDropGroupResult>(request.context,
+                                                          kOperation,
+                                                          loaded.diagnostic);
+  }
+  const auto* existing = FindGroup(loaded.state, group_uuid);
+  if (existing == nullptr) {
+    return DiagnosticResult<EngineSecurityDropGroupResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticGroupInvalid, group_uuid));
+  }
+
+  const std::uint64_t generation = NextGeneration(loaded.state);
+  EngineSecurityGroupRecord record = *existing;
+  record.creator_tx = request.context.local_transaction_id;
+  record.lifecycle_state = "dropped";
+  record.security_generation = generation;
+  record.deleted = true;
+  const auto audit = MakeAudit(request.context,
+                              kOperation,
+                              group_uuid,
+                              generation,
+                              "group=" + existing->group_name + ";lifecycle_state=dropped");
+  const auto appended = AppendEvents(
+      request.context,
+      {GroupEvent(record),
+       AuditEvent(audit),
+       CacheInvalidationEvent(request.context, kOperation, group_uuid, generation)});
+  if (appended.error) {
+    return DiagnosticResult<EngineSecurityDropGroupResult>(request.context,
+                                                          kOperation,
+                                                          appended);
+  }
+  const auto resolver = RetireNameRegistryEntriesForObject(request.context,
+                                                           kOperation,
+                                                           group_uuid);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityDropGroupResult>(request.context,
+                                                          kOperation,
+                                                          resolver);
+  }
+
+  auto result = SuccessResult<EngineSecurityDropGroupResult>(request.context, kOperation);
+  result.group_dropped = true;
+  result.security_generation = generation;
+  result.cache_invalidation_epoch = generation;
+  result.primary_object.uuid.canonical = group_uuid;
+  result.primary_object.object_kind = "security_group";
+  FillMutationEvidence(&result, kOperation, group_uuid, generation);
+  AddRow(&result,
+         {{"group_uuid", group_uuid},
+          {"group_name", existing->group_name},
+          {"lifecycle_state", "dropped"},
+          {"deleted", "true"},
           {"security_generation", std::to_string(generation)}});
   return result;
 }
@@ -1761,6 +1969,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   const std::string target_uuid = request.target_object_uuid.empty()
       ? request.target_schema.uuid.canonical
       : request.target_object_uuid;
+  const std::string policy_name = PrimaryName(request, request.policy_name);
   if (policy_uuid.empty() || target_uuid.empty()) {
     return DiagnosticResult<EngineSecurityCreatePolicyResult>(
         request.context,
@@ -1814,6 +2023,26 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
                                                              kOperation,
                                                              appended);
   }
+  std::vector<std::string> policy_classes = {"policy", "security_policy"};
+  const std::string effect = LowerAscii(record.policy_effect);
+  if (effect.find("mask") != std::string::npos) {
+    policy_classes.push_back("mask");
+  }
+  if (effect.find("rls") != std::string::npos) {
+    policy_classes.push_back("rls");
+  }
+  const auto resolver = PersistSecurityNameAliases(
+      request.context,
+      kOperation,
+      policy_uuid,
+      policy_classes,
+      request.localized_names,
+      policy_name.empty() ? policy_uuid : policy_name);
+  if (resolver.error) {
+    return DiagnosticResult<EngineSecurityCreatePolicyResult>(request.context,
+                                                             kOperation,
+                                                             resolver);
+  }
 
   auto result = SuccessResult<EngineSecurityCreatePolicyResult>(request.context, kOperation);
   result.policy_created = true;
@@ -1824,6 +2053,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
          {{"policy_uuid", policy_uuid},
+          {"policy_name", policy_name},
           {"target_object_uuid", target_uuid},
           {"target_object_kind", record.target_object_kind},
           {"policy_effect", record.policy_effect},
@@ -1928,6 +2158,126 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
           {"lifecycle_state", lifecycle},
           {"policy_generation", std::to_string(generation)}});
   return result;
+}
+
+namespace {
+
+template <typename TResult, typename MarkDropped>
+TResult DropPolicyLike(const EngineApiRequest& request,
+                       std::string policy_uuid,
+                       const char* operation_id,
+                       std::string object_kind,
+                       std::string uuid_field_name,
+                       MarkDropped mark_dropped) {
+  auto preflight =
+      MutatingSetupFailure<TResult>(request, operation_id, "POLICY_ADMIN");
+  if (!preflight.ok) { return preflight; }
+  if (policy_uuid.empty()) {
+    policy_uuid = request.target_object.uuid.canonical;
+  }
+  if (policy_uuid.empty()) {
+    return DiagnosticResult<TResult>(
+        request.context,
+        operation_id,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyMissing, "policy_uuid_required"));
+  }
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<TResult>(request.context,
+                                     operation_id,
+                                     loaded.diagnostic);
+  }
+  const auto* existing = FindRowPolicy(loaded.state, policy_uuid);
+  if (existing == nullptr) {
+    return DiagnosticResult<TResult>(
+        request.context,
+        operation_id,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyMissing, policy_uuid));
+  }
+
+  const std::uint64_t generation = NextGeneration(loaded.state);
+  EngineSecurityRowPolicyRecord record = *existing;
+  record.creator_tx = request.context.local_transaction_id;
+  record.lifecycle_state = "dropped";
+  record.policy_generation = generation;
+  record.deleted = true;
+  const std::string cache_target = record.target_object_uuid.empty()
+      ? policy_uuid
+      : record.target_object_uuid;
+  const auto audit = MakeAudit(request.context,
+                              operation_id,
+                              policy_uuid,
+                              generation,
+                              "target=" + record.target_object_uuid +
+                                  ";target_kind=" + record.target_object_kind +
+                                  ";effect=" + record.policy_effect +
+                                  ";lifecycle_state=dropped");
+  const auto appended = AppendEvents(
+      request.context,
+      {RowPolicyEvent(record),
+       AuditEvent(audit),
+       CacheInvalidationEvent(request.context, operation_id, cache_target, generation)});
+  if (appended.error) {
+    return DiagnosticResult<TResult>(request.context, operation_id, appended);
+  }
+  const auto resolver = RetireNameRegistryEntriesForObject(request.context,
+                                                           operation_id,
+                                                           policy_uuid);
+  if (resolver.error) {
+    return DiagnosticResult<TResult>(request.context, operation_id, resolver);
+  }
+
+  auto result = SuccessResult<TResult>(request.context, operation_id);
+  mark_dropped(&result);
+  result.policy_generation = generation;
+  result.cache_invalidation_epoch = generation;
+  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.object_kind = std::move(object_kind);
+  FillMutationEvidence(&result, operation_id, policy_uuid, generation);
+  AddRow(&result,
+         {{std::move(uuid_field_name), policy_uuid},
+          {"target_object_uuid", record.target_object_uuid},
+          {"target_object_kind", record.target_object_kind},
+          {"policy_effect", record.policy_effect},
+          {"lifecycle_state", "dropped"},
+          {"deleted", "true"},
+          {"policy_generation", std::to_string(generation)}});
+  return result;
+}
+
+}  // namespace
+
+EngineSecurityDropPolicyResult EngineSecurityDropPolicy(
+    const EngineSecurityDropPolicyRequest& request) {
+  return DropPolicyLike<EngineSecurityDropPolicyResult>(
+      request,
+      request.policy_uuid,
+      "security.policy.drop",
+      "security_policy",
+      "policy_uuid",
+      [](EngineSecurityDropPolicyResult* result) { result->policy_dropped = true; });
+}
+
+EngineSecurityDropMaskResult EngineSecurityDropMask(
+    const EngineSecurityDropMaskRequest& request) {
+  return DropPolicyLike<EngineSecurityDropMaskResult>(
+      request,
+      request.mask_uuid,
+      "security.mask.drop",
+      "security_mask",
+      "mask_uuid",
+      [](EngineSecurityDropMaskResult* result) { result->mask_dropped = true; });
+}
+
+EngineSecurityDropRlsResult EngineSecurityDropRls(
+    const EngineSecurityDropRlsRequest& request) {
+  return DropPolicyLike<EngineSecurityDropRlsResult>(
+      request,
+      request.rls_uuid,
+      "security.rls.drop",
+      "security_rls",
+      "rls_uuid",
+      [](EngineSecurityDropRlsResult* result) { result->rls_dropped = true; });
 }
 
 EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(

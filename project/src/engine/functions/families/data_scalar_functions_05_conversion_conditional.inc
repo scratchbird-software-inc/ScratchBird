@@ -336,9 +336,7 @@
     std::int64_t extracted = 0;
     const std::string field = ValueAsText(request.arguments[0].value);
     const auto& temporal_value = request.arguments[1].value;
-    if (LowerAscii(temporal_value.descriptor_id) == "interval") {
-      const std::string interval_text = ValueAsText(temporal_value);
-      const auto parse_interval_field = [](std::string requested_field,
+    const auto parse_interval_field = [](std::string requested_field,
                                            const std::string& text,
                                            std::int64_t* out) -> bool {
         requested_field = LowerAscii(std::move(requested_field));
@@ -400,13 +398,27 @@
         }
         return true;
       };
+    if (LowerAscii(temporal_value.descriptor_id) == "interval") {
+      const std::string interval_text = ValueAsText(temporal_value);
       if (!parse_interval_field(field, interval_text, &extracted)) {
         return RefuseFunctionInvalidInput(request, "date_part interval text must match ISO-8601 duration grammar P[nY][nM][nD][T[nH][nM][nS]]");
       }
       return MakeFunctionSuccess(request, {MakeInt64Value("int64", extracted)});
     }
+    const std::string temporal_text = ValueAsText(temporal_value);
+    std::string interval_probe = temporal_text;
+    if (!interval_probe.empty() &&
+        (interval_probe.front() == '+' || interval_probe.front() == '-')) {
+      interval_probe.erase(interval_probe.begin());
+    }
+    if (!interval_probe.empty() && interval_probe.front() == 'P') {
+      if (!parse_interval_field(field, temporal_text, &extracted)) {
+        return RefuseFunctionInvalidInput(request, "date_part interval text must match ISO-8601 duration grammar P[nY][nM][nD][T[nH][nM][nS]]");
+      }
+      return MakeFunctionSuccess(request, {MakeInt64Value("int64", extracted)});
+    }
     if (!ExtractTimestampField(ValueAsText(request.arguments[0].value),
-                               ValueAsText(request.arguments[1].value),
+                               temporal_text,
                                &extracted)) {
       return RefuseFunctionInvalidInput(request, "extract field is unsupported or temporal value is not ISO-like text");
     }
@@ -595,7 +607,7 @@
     if (request.arguments.size() == 1 && !IsSqlNull(request.arguments[0].value)) {
       double input = 0.0;
       if (!ValueAsReal64(request.arguments[0].value, &input)) return RefuseFunctionInvalidInput(request, "sqrt requires a numeric value");
-      if (input < 0.0) return RefuseFunctionInvalidInput(request, "sqrt input must be non-negative");
+      if (input < 0.0) return RefuseFunctionNumericDomain(request, "sqrt input must be non-negative");
     }
     return UnaryReal(request, std::sqrt, "sqrt");
   }
@@ -954,6 +966,7 @@
 
   if (IdIs(id, {"data.scalar.bit_and", "sb.fn.numeric.bit_and", "sb.scalar.bit_and"})) {
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "bit_and expects two integer arguments");
+    if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t left = 0;
     std::int64_t right = 0;
     if (!ValueAsInt64Strict(request.arguments[0].value, &left) || !ValueAsInt64Strict(request.arguments[1].value, &right)) {
@@ -963,6 +976,7 @@
   }
   if (IdIs(id, {"data.scalar.bit_or", "sb.fn.numeric.bit_or", "sb.scalar.bit_or"})) {
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "bit_or expects two integer arguments");
+    if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t left = 0;
     std::int64_t right = 0;
     if (!ValueAsInt64Strict(request.arguments[0].value, &left) || !ValueAsInt64Strict(request.arguments[1].value, &right)) {
@@ -972,6 +986,7 @@
   }
   if (IdIs(id, {"data.scalar.bit_xor", "sb.fn.numeric.bit_xor", "sb.scalar.bit_xor"})) {
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "bit_xor expects two integer arguments");
+    if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
     std::int64_t left = 0;
     std::int64_t right = 0;
     if (!ValueAsInt64Strict(request.arguments[0].value, &left) || !ValueAsInt64Strict(request.arguments[1].value, &right)) {

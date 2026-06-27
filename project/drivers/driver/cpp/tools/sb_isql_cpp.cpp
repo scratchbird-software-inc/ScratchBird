@@ -164,6 +164,208 @@ std::string firstTokenLower(const std::string& sql) {
     return first;
 }
 
+std::string lowerAscii(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+bool skipSqlTrivia(const std::string& text, std::size_t* pos) {
+    bool advanced = false;
+    while (*pos < text.size()) {
+        while (*pos < text.size() && std::isspace(static_cast<unsigned char>(text[*pos]))) {
+            ++(*pos);
+            advanced = true;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '-' && text[*pos + 1] == '-') {
+            const std::size_t newline = text.find('\n', *pos + 2);
+            *pos = newline == std::string::npos ? text.size() : newline + 1;
+            advanced = true;
+            continue;
+        }
+        if (*pos + 1 < text.size() && text[*pos] == '/' && text[*pos + 1] == '*') {
+            const std::size_t close = text.find("*/", *pos + 2);
+            *pos = close == std::string::npos ? text.size() : close + 2;
+            advanced = true;
+            continue;
+        }
+        break;
+    }
+    return advanced;
+}
+
+void skipSqlStringLiteral(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '\'') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '\'') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+void skipSqlQuotedIdentifier(const std::string& text, std::size_t* pos) {
+    if (*pos >= text.size() || text[*pos] != '"') {
+        return;
+    }
+    ++(*pos);
+    while (*pos < text.size()) {
+        if (text[*pos] == '"') {
+            ++(*pos);
+            if (*pos < text.size() && text[*pos] == '"') {
+                ++(*pos);
+                continue;
+            }
+            return;
+        }
+        ++(*pos);
+    }
+}
+
+std::string readSqlTokenLower(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size()) {
+        return "";
+    }
+    if (text[*pos] == '"') {
+        std::string token;
+        ++(*pos);
+        while (*pos < text.size()) {
+            if (text[*pos] == '"') {
+                ++(*pos);
+                if (*pos < text.size() && text[*pos] == '"') {
+                    token.push_back('"');
+                    ++(*pos);
+                    continue;
+                }
+                break;
+            }
+            token.push_back(text[*pos]);
+            ++(*pos);
+        }
+        return lowerAscii(token);
+    }
+    const std::size_t begin = *pos;
+    while (*pos < text.size()) {
+        const char ch = text[*pos];
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(' || ch == ')' ||
+            ch == ',' || ch == ';') {
+            break;
+        }
+        if (ch == '-' && *pos + 1 < text.size() && text[*pos + 1] == '-') {
+            break;
+        }
+        if (ch == '/' && *pos + 1 < text.size() && text[*pos + 1] == '*') {
+            break;
+        }
+        ++(*pos);
+    }
+    return lowerAscii(text.substr(begin, *pos - begin));
+}
+
+bool skipSqlParenthesized(const std::string& text, std::size_t* pos) {
+    skipSqlTrivia(text, pos);
+    if (*pos >= text.size() || text[*pos] != '(') {
+        return false;
+    }
+    int depth = 0;
+    while (*pos < text.size()) {
+        if (text[*pos] == '\'') {
+            skipSqlStringLiteral(text, pos);
+            continue;
+        }
+        if (text[*pos] == '"') {
+            skipSqlQuotedIdentifier(text, pos);
+            continue;
+        }
+        if (*pos + 1 < text.size() &&
+            ((text[*pos] == '-' && text[*pos + 1] == '-') ||
+             (text[*pos] == '/' && text[*pos + 1] == '*'))) {
+            skipSqlTrivia(text, pos);
+            continue;
+        }
+        if (text[*pos] == '(') {
+            ++depth;
+            ++(*pos);
+            continue;
+        }
+        if (text[*pos] == ')') {
+            --depth;
+            ++(*pos);
+            if (depth == 0) {
+                return true;
+            }
+            continue;
+        }
+        ++(*pos);
+    }
+    return false;
+}
+
+std::string mainStatementTokenLower(const std::string& sql) {
+    const std::string text = stripLeadingTrivia(sql);
+    std::size_t pos = 0;
+    std::string token = readSqlTokenLower(text, &pos);
+    if (token != "with") {
+        return token;
+    }
+    token = readSqlTokenLower(text, &pos);
+    if (token == "recursive") {
+        token = readSqlTokenLower(text, &pos);
+    }
+    while (!token.empty()) {
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == '(' && !skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        bool sawAs = false;
+        for (int guard = 0; guard < 32; ++guard) {
+            const std::string word = readSqlTokenLower(text, &pos);
+            if (word.empty()) {
+                return "with";
+            }
+            if (word == "as") {
+                sawAs = true;
+                break;
+            }
+        }
+        if (!sawAs) {
+            return "with";
+        }
+        std::size_t beforeOptional = pos;
+        std::string optional = readSqlTokenLower(text, &pos);
+        if (optional == "not") {
+            std::size_t afterNot = pos;
+            if (readSqlTokenLower(text, &pos) != "materialized") {
+                pos = afterNot;
+            }
+        } else if (optional != "materialized") {
+            pos = beforeOptional;
+        }
+        if (!skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            token = readSqlTokenLower(text, &pos);
+            continue;
+        }
+        const std::string main = readSqlTokenLower(text, &pos);
+        return main.empty() ? "with" : main;
+    }
+    return "with";
+}
+
 std::string copyInputForStatement(const std::string& sql) {
     static const std::string kMarker = "-- SB_COPY_INPUT ";
     std::istringstream lines(sql);
@@ -188,7 +390,7 @@ std::string copyInputForStatement(const std::string& sql) {
 }
 
 std::string classify(const std::string& sql) {
-    const auto first = firstTokenLower(sql);
+    const auto first = mainStatementTokenLower(sql);
     if (first == "graph" || first == "document" || first == "kv" || first == "timeseries" ||
         first == "fulltext" || first == "opensearch" || first == "search" || first == "reindex") {
         return "multimodel";
@@ -211,8 +413,8 @@ std::string classify(const std::string& sql) {
 }
 
 bool statementReturnsRows(const std::string& sql) {
-    const auto first = firstTokenLower(sql);
-    if (first == "select" || first == "with" || first == "values" || first == "show" || first == "explain") {
+    const auto first = mainStatementTokenLower(sql);
+    if (first == "select" || first == "values" || first == "show" || first == "explain") {
         return true;
     }
     std::string lowered = sql;

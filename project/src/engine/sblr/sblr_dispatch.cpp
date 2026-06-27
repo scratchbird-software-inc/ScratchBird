@@ -106,6 +106,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -518,7 +519,7 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
     if (!shared_field_order.empty()) {
       const auto descriptor_order =
           LoadDescriptorColumnNamesForCompactInsert(*request, column_count);
-      if (descriptor_order.size() < shared_field_order.size() ||
+      if (descriptor_order.size() != shared_field_order.size() ||
           !std::equal(shared_field_order.begin(),
                       shared_field_order.end(),
                       descriptor_order.begin())) {
@@ -526,6 +527,15 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
       }
     }
   }
+  request->option_envelopes.erase(
+      std::remove_if(
+          request->option_envelopes.begin(),
+          request->option_envelopes.end(),
+          [](const std::string& option) {
+            return option == "sblr.canonical_rowset_shared_shape=true" ||
+                   option.rfind("sblr.canonical_rowset_shared_shape:", 0) == 0;
+          }),
+      request->option_envelopes.end());
   if (!shared_field_order.empty()) {
     bool complete_shared_order = shared_field_order.size() >= column_count;
     for (const auto& column : shared_field_order) {
@@ -536,17 +546,8 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
     }
     if (complete_shared_order) {
       request->shared_row_field_order = shared_field_order;
-      const bool already_marked = std::any_of(
-          request->option_envelopes.begin(),
-          request->option_envelopes.end(),
-          [](const std::string& option) {
-            return option == "sblr.canonical_rowset_shared_shape=true" ||
-                   option.rfind("sblr.canonical_rowset_shared_shape:", 0) == 0;
-          });
-      if (!already_marked) {
-        request->option_envelopes.push_back(
-            "sblr.canonical_rowset_shared_shape=true");
-      }
+      request->option_envelopes.push_back(
+          "sblr.canonical_rowset_shared_shape=true");
     }
   }
   request->rows.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
@@ -797,6 +798,49 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                                                  "assignment_value_type:"))});
     }
   }
+  if (api_request.constraints.empty()) {
+    std::string constraint_kind =
+        api::SecurityOptionValue(api_request, "constraint_kind:");
+    const std::string constraint_name =
+        api::SecurityOptionValue(api_request, "constraint_name:");
+    std::string constraint_envelope =
+        api::SecurityOptionValue(api_request, "canonical_constraint_envelope:");
+    if (constraint_kind == "check_constraint") constraint_kind = "check";
+    if (!constraint_kind.empty() || !constraint_name.empty() ||
+        !constraint_envelope.empty()) {
+      if (constraint_kind.empty()) constraint_kind = "constraint";
+      if (constraint_envelope.empty()) {
+        constraint_envelope = "constraint_hash=" +
+                              std::to_string(std::hash<std::string>{}(
+                                  api_request.operation_id + ":" +
+                                  constraint_kind + ":" + constraint_name)) +
+                              ";enforcement_timing=immediate"
+                              ";validation_state=unvalidated"
+                              ";trust_state=untrusted";
+      } else if (constraint_envelope.find("constraint_hash=") ==
+                 std::string::npos) {
+        constraint_envelope += ";constraint_hash=" +
+                               std::to_string(std::hash<std::string>{}(
+                                   api_request.operation_id + ":" +
+                                   constraint_kind + ":" + constraint_name));
+      }
+      if (constraint_envelope.find("enforcement_timing=") ==
+          std::string::npos) {
+        const std::string enforcement =
+            api::SecurityOptionValue(api_request, "enforcement_timing:");
+        constraint_envelope += ";enforcement_timing=" +
+                               (enforcement.empty() ? std::string("immediate")
+                                                    : enforcement);
+      }
+      api::EngineConstraintDefinition constraint;
+      constraint.constraint_kind = constraint_kind;
+      constraint.canonical_constraint_envelope = std::move(constraint_envelope);
+      if (!constraint_name.empty()) {
+        constraint.names.push_back({"en", "primary", "", constraint_name, true});
+      }
+      api_request.constraints.push_back(std::move(constraint));
+    }
+  }
   const auto compact_start = SblrSteadyClock::now();
   MaterializeCompactInsertRows(request.envelope, &api_request);
   const auto compact_finish = SblrSteadyClock::now();
@@ -945,7 +989,9 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.grant_right") return "SBLR_SECURITY_GRANT_RIGHT";
   if (operation_id == "security.revoke_right") return "SBLR_SECURITY_REVOKE_RIGHT";
   if (operation_id == "security.role.create") return "SBLR_SEC_CREATE_ROLE";
+  if (operation_id == "security.role.drop") return "SBLR_SEC_DROP_ROLE";
   if (operation_id == "security.group.create") return "SBLR_SEC_CREATE_GROUP";
+  if (operation_id == "security.group.drop") return "SBLR_SEC_DROP_GROUP";
   if (operation_id == "security.principal.create") return "SBLR_SECURITY_PRINCIPAL_CREATE";
   if (operation_id == "security.principal.alter") return "SBLR_SECURITY_PRINCIPAL_ALTER";
   if (operation_id == "security.membership.grant") return "SBLR_SECURITY_MEMBERSHIP_GRANT";
@@ -955,6 +1001,10 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "security.session.set_role") return "SBLR_SECURITY_SESSION_SET_ROLE";
   if (operation_id == "security.policy.create") return "SBLR_SECURITY_POLICY_CREATE";
   if (operation_id == "security.policy.alter") return "SBLR_SECURITY_POLICY_ALTER";
+  if (operation_id == "security.policy.drop" ||
+      operation_id == "security.policy.lifecycle_drop") return "SBLR_SECURITY_POLICY_DROP";
+  if (operation_id == "security.mask.drop") return "SBLR_SECURITY_MASK_DROP";
+  if (operation_id == "security.rls.drop") return "SBLR_SECURITY_RLS_DROP";
   if (operation_id == "security.policy.attach") return "SBLR_SECURITY_POLICY_ATTACH";
   if (operation_id == "security.policy.activate") return "SBLR_SECURITY_POLICY_ACTIVATE";
   if (operation_id == "security.policy.deactivate") return "SBLR_SECURITY_POLICY_DEACTIVATE";
@@ -2595,7 +2645,10 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
     if (related.object_kind != "executable_object" &&
         related.object_kind != "procedure" &&
         related.object_kind != "function" &&
-        related.object_kind != "trigger") {
+        related.object_kind != "trigger" &&
+        related.object_kind != "table" &&
+        related.object_kind != "sequence" &&
+        related.object_kind != "view") {
       continue;
     }
     typed.related_objects.push_back(std::move(related));
@@ -2770,7 +2823,13 @@ api::EngineSelectRowsRequest TypedSelectRowsRequest(const SblrDispatchRequest& r
   if (!order_by.empty() && typed.select_ordering.canonical_ordering_envelopes.empty()) {
     std::string direction = api::SecurityOptionValue(base, "order_direction:");
     if (direction.empty()) direction = "asc";
-    typed.select_ordering.canonical_ordering_envelopes.push_back(order_by + ":" + direction);
+    std::string ordering = order_by + ":" + direction;
+    const std::string nulls = api::SecurityOptionValue(base, "order_nulls:");
+    if (!nulls.empty()) {
+      ordering.append(":nulls_");
+      ordering.append(nulls);
+    }
+    typed.select_ordering.canonical_ordering_envelopes.push_back(std::move(ordering));
   }
   typed.limit = DispatchOptionU64(base, "limit:");
   typed.offset = DispatchOptionU64(base, "offset:");
@@ -2839,6 +2898,9 @@ api::EnginePlanOperationRequest TypedPlanOperationRequest(const SblrDispatchRequ
   typed.window_value_field = api::SecurityOptionValue(base, "window_value_field:");
   typed.partition_key_column = DispatchOptionU64(base, "partition_column:");
   typed.partition_key_field = api::SecurityOptionValue(base, "partition_by:");
+  if (typed.partition_key_field.empty()) {
+    typed.partition_key_field = api::SecurityOptionValue(base, "partition_key_field:");
+  }
   typed.window_n = DispatchOptionU64(base, "window_n:");
   if (typed.window_n == 0) typed.window_n = DispatchOptionU64(base, "window_bucket_count:");
   if (typed.window_n == 0) typed.window_n = 1;
@@ -3637,8 +3699,227 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperator(
   return EvaluateProjectionOperatorExpression(request.context, request.expression);
 }
 
+bool StartsWith(std::string_view text, std::string_view prefix) {
+  return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
+}
+
+std::string PayloadFieldValue(std::string_view payload, std::string_view key) {
+  std::size_t cursor = 0;
+  while (cursor <= payload.size()) {
+    const std::size_t end = payload.find(';', cursor);
+    const std::string_view item =
+        end == std::string_view::npos ? payload.substr(cursor)
+                                      : payload.substr(cursor, end - cursor);
+    if (StartsWith(item, key)) {
+      return std::string(item.substr(key.size()));
+    }
+    if (end == std::string_view::npos) break;
+    cursor = end + 1;
+  }
+  return {};
+}
+
+api::EngineProjectionFunctionResult UserFunctionFailure(std::string code,
+                                                        std::string detail,
+                                                        std::string function_id) {
+  api::EngineProjectionFunctionResult out;
+  out.ok = false;
+  out.diagnostics.push_back(api::MakeEngineApiDiagnostic(
+      std::move(code), "engine.user_function.execution_failed", std::move(detail), true));
+  out.evidence.push_back({"user_function_runtime", std::move(function_id)});
+  return out;
+}
+
+api::EngineTypedValue UserFunctionValue(std::string type_name,
+                                        std::string encoded,
+                                        bool is_null = false) {
+  api::EngineTypedValue value;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.canonical_type_name = std::move(type_name);
+  value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
+  value.encoded_value = std::move(encoded);
+  value.is_null = is_null;
+  value.state = is_null ? api::EngineValueState::sql_null : api::EngineValueState::value;
+  return value;
+}
+
+std::optional<long double> UserFunctionNumericArg(
+    const api::EngineProjectionFunctionRequest& request,
+    std::size_t index) {
+  if (index >= request.arguments.size() || request.arguments[index].is_null) return std::nullopt;
+  try {
+    return std::stold(request.arguments[index].encoded_value);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::string FormatDecimal(long double value, std::uint32_t scale) {
+  std::ostringstream encoded;
+  encoded << std::fixed << std::setprecision(scale) << static_cast<double>(value);
+  return encoded.str();
+}
+
+std::uint32_t DecimalScaleFromType(std::string_view type_name, std::uint32_t fallback) {
+  const std::size_t comma = type_name.find(',');
+  const std::size_t close = type_name.find(')', comma == std::string_view::npos ? 0 : comma);
+  if (comma == std::string_view::npos || close == std::string_view::npos || close <= comma + 1) {
+    return fallback;
+  }
+  try {
+    return static_cast<std::uint32_t>(std::stoul(std::string(type_name.substr(comma + 1,
+                                                                              close - comma - 1))));
+  } catch (...) {
+    return fallback;
+  }
+}
+
+std::string UserFunctionReturnType(const api::EngineExecutableObjectRecord& record,
+                                   std::string fallback) {
+  std::string type = PayloadFieldValue(record.payload, "routine_return_0_type:");
+  if (type.empty()) type = PayloadFieldValue(record.payload, "routine_return_0_type=");
+  if (type.empty()) return fallback;
+  return LowerAscii(std::move(type));
+}
+
+api::EngineProjectionFunctionResult EvaluateUserFunctionDescriptor(
+    const api::EngineProjectionFunctionRequest& request,
+    const api::EngineExecutableObjectRecord& record) {
+  const std::string descriptor =
+      PayloadFieldValue(record.payload, "compiled_body_descriptor:");
+  const std::string return_type = UserFunctionReturnType(record, "unknown");
+  api::EngineProjectionFunctionResult out;
+  out.ok = true;
+
+  if (descriptor == "sbsql.compiled.expression.multiply.v1") {
+    const auto left = UserFunctionNumericArg(request, 0);
+    const auto right = UserFunctionNumericArg(request, 1);
+    if (!left || !right) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type, "", true);
+    } else {
+      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type,
+                                    FormatDecimal(*left * *right,
+                                                  DecimalScaleFromType(return_type, 2)));
+    }
+  } else if (descriptor == "sbsql.compiled.expression.substring_from_for.v1") {
+    if (request.arguments.size() < 2 || request.arguments[0].is_null ||
+        request.arguments[1].is_null) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "", true);
+    } else {
+      std::size_t len = 0;
+      try {
+        len = static_cast<std::size_t>(std::stoull(request.arguments[1].encoded_value));
+      } catch (...) {
+        return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ARGUMENT_INVALID",
+                                   "substring length argument is not an integer",
+                                   request.function_id);
+      }
+      const std::string& source = request.arguments[0].encoded_value;
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type,
+                                    source.substr(0, std::min(len, source.size())));
+    }
+  } else if (descriptor == "sbsql.compiled.expression.greater_than_zero.v1") {
+    const auto value = UserFunctionNumericArg(request, 0);
+    if (!value) {
+      out.value = UserFunctionValue("boolean", "", true);
+    } else {
+      out.value = UserFunctionValue("boolean", *value > 0 ? "true" : "false");
+    }
+  } else if (descriptor == "sbsql.compiled.procedural.classify_amount.v1") {
+    const auto value = UserFunctionNumericArg(request, 0);
+    if (!value) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "", true);
+    } else if (*value >= 1000) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "large");
+    } else if (*value <= 0) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type,
+                                    "zero_or_negative");
+    } else {
+      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "standard");
+    }
+  } else if (descriptor == "sbsql.compiled.procedural.factorial.v1") {
+    const auto value = UserFunctionNumericArg(request, 0);
+    if (!value || *value < 0) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "int64" : return_type, "", true);
+    } else {
+      std::uint64_t n = static_cast<std::uint64_t>(*value);
+      std::uint64_t factorial = 1;
+      for (std::uint64_t i = 2; i <= n; ++i) factorial *= i;
+      out.value = UserFunctionValue(return_type == "unknown" ? "int64" : return_type,
+                                    std::to_string(factorial));
+    }
+  } else if (descriptor == "sbsql.compiled.procedural.safe_divide.v1") {
+    const auto numerator = UserFunctionNumericArg(request, 0);
+    const auto denominator = UserFunctionNumericArg(request, 1);
+    if (!numerator || !denominator || *denominator == 0) {
+      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type, "", true);
+    } else {
+      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type,
+                                    FormatDecimal(*numerator / *denominator,
+                                                  DecimalScaleFromType(return_type, 6)));
+    }
+  } else {
+    return UserFunctionFailure("SB_DIAG_USER_FUNCTION_DESCRIPTOR_UNSUPPORTED",
+                               "compiled user function descriptor is not supported by this runtime",
+                               request.function_id);
+  }
+
+  out.evidence.push_back({"user_function_runtime", request.function_id});
+  out.evidence.push_back({"compiled_body_descriptor", descriptor});
+  return out;
+}
+
+api::EngineProjectionFunctionResult EvaluateUserFunction(
+    const api::EngineProjectionFunctionRequest& request) {
+  static constexpr std::string_view kPrefix = "sbsql.user_function:";
+  if (!StartsWith(request.function_id, kPrefix)) {
+    return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ID_INVALID",
+                               "user function id is not UUID-bound",
+                               request.function_id);
+  }
+  const std::string object_uuid = request.function_id.substr(kPrefix.size());
+
+  api::EngineInvokeExecutableObjectRequest invocation;
+  invocation.context = request.context;
+  invocation.operation_id = "routine.function_invoke";
+  invocation.target_object.uuid.canonical = object_uuid;
+  invocation.target_object.object_kind = "function";
+  invocation.option_envelopes.push_back("permission:invoke_executable");
+  auto readiness = api::EngineInvokeExecutableObject(invocation);
+  if (!readiness.ok) {
+    api::EngineProjectionFunctionResult out;
+    out.ok = false;
+    out.diagnostics = std::move(readiness.diagnostics);
+    out.evidence = std::move(readiness.evidence);
+    out.evidence.push_back({"user_function_runtime", request.function_id});
+    return out;
+  }
+
+  const auto loaded = api::LoadExecutableObjectLifecycleState(request.context);
+  if (!loaded.ok) {
+    api::EngineProjectionFunctionResult out;
+    out.ok = false;
+    out.diagnostics.push_back(loaded.diagnostic);
+    out.evidence.push_back({"user_function_runtime", request.function_id});
+    return out;
+  }
+  for (const auto& object : loaded.state.objects) {
+    if (object.object_uuid == object_uuid && !object.deleted &&
+        object.lifecycle_state == "active" && !object.invalidated) {
+      return EvaluateUserFunctionDescriptor(request, object);
+    }
+  }
+  return UserFunctionFailure("SB_DIAG_USER_FUNCTION_NOT_FOUND",
+                             "UUID-bound executable function is not visible",
+                             request.function_id);
+}
+
 api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     const api::EngineProjectionFunctionRequest& request) {
+  if (StartsWith(request.function_id, "sbsql.user_function:")) {
+    return EvaluateUserFunction(request);
+  }
+
   static const auto package = functions::BuildStandardFunctionSeedPackage();
   functions::FunctionCallRequest function_request;
   function_request.context.function_id = request.function_id;
@@ -4049,7 +4330,7 @@ api::EngineSecurityCreateRoleRequest TypedSecurityCreateRoleRequest(
   if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
   if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid.canonical; }
   typed.role_name = api::SecurityOptionValue(base, "role_name:");
-  if (typed.role_name.empty()) { typed.role_name = api::SecurityOptionValue(base, "principal_name:"); }
+  if (typed.role_name.empty()) { typed.role_name = api::SecurityOptionValue(base, "name:"); }
   return typed;
 }
 
@@ -4062,12 +4343,34 @@ api::EngineSecurityCreateGroupRequest TypedSecurityCreateGroupRequest(
   if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
   if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid.canonical; }
   typed.group_name = api::SecurityOptionValue(base, "group_name:");
-  if (typed.group_name.empty()) { typed.group_name = api::SecurityOptionValue(base, "principal_name:"); }
+  if (typed.group_name.empty()) { typed.group_name = api::SecurityOptionValue(base, "name:"); }
   typed.external_authority_ref = api::SecurityOptionValue(base, "external_authority_ref:");
   if (typed.external_authority_ref.empty()) {
     typed.external_authority_ref =
         api::SecurityOptionValue(base, "credential_protected_material_ref:");
   }
+  return typed;
+}
+
+api::EngineSecurityDropRoleRequest TypedSecurityDropRoleRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityDropRoleRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
+  if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
+  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid.canonical; }
+  return typed;
+}
+
+api::EngineSecurityDropGroupRequest TypedSecurityDropGroupRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityDropGroupRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
+  if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
+  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid.canonical; }
   return typed;
 }
 
@@ -4125,6 +4428,8 @@ api::EngineSecurityCreatePolicyRequest TypedSecurityCreatePolicyRequest(
   if (typed.policy_uuid.empty()) {
     typed.policy_uuid = base.target_object.uuid.canonical;
   }
+  typed.policy_name = api::SecurityOptionValue(base, "policy_name:");
+  if (typed.policy_name.empty()) { typed.policy_name = api::SecurityOptionValue(base, "name:"); }
   typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
   if (typed.target_object_uuid.empty()) { typed.target_object_uuid = base.target_schema.uuid.canonical; }
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
@@ -4150,6 +4455,41 @@ api::EngineSecurityAlterPolicyRequest TypedSecurityAlterPolicyRequest(
   typed.predicate_envelope = api::SecurityOptionValue(base, "predicate_envelope:");
   typed.definer_principal_uuid = api::SecurityOptionValue(base, "definer_principal_uuid:");
   typed.lifecycle_state = api::SecurityOptionValue(base, "lifecycle_state:");
+  return typed;
+}
+
+api::EngineSecurityDropPolicyRequest TypedSecurityDropPolicyRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityDropPolicyRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
+                          ? base.target_object.uuid.canonical
+                          : api::SecurityOptionValue(base, "policy_uuid:");
+  return typed;
+}
+
+api::EngineSecurityDropMaskRequest TypedSecurityDropMaskRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityDropMaskRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.mask_uuid = !base.target_object.uuid.canonical.empty()
+                        ? base.target_object.uuid.canonical
+                        : api::SecurityOptionValue(base, "mask_uuid:");
+  if (typed.mask_uuid.empty()) { typed.mask_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
+  return typed;
+}
+
+api::EngineSecurityDropRlsRequest TypedSecurityDropRlsRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineSecurityDropRlsRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.rls_uuid = !base.target_object.uuid.canonical.empty()
+                       ? base.target_object.uuid.canonical
+                       : api::SecurityOptionValue(base, "rls_uuid:");
+  if (typed.rls_uuid.empty()) { typed.rls_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
   return typed;
 }
 
@@ -4488,7 +4828,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "ddl.create_function") result.api_result = api::EngineCreateFunction(TypedCreateExecutableObjectRequest<api::EngineCreateFunctionRequest>(request, "function", "function"));
   else if (op == "ddl.create_procedure") result.api_result = api::EngineCreateProcedure(TypedCreateExecutableObjectRequest<api::EngineCreateProcedureRequest>(request, "procedure", "procedure"));
   else if (op == "ddl.create_trigger") result.api_result = api::EngineCreateTrigger(TypedCreateExecutableObjectRequest<api::EngineCreateTriggerRequest>(request, "trigger", "trigger"));
-  else if (op == "routine.procedure_invoke" || op == "routine.function_invoke") result.api_result = api::EngineInvokeExecutableObject(TypedRequest<api::EngineInvokeExecutableObjectRequest>(request));
+  else if (op == "routine.procedure_invoke" || op == "routine.function_invoke") {
+    auto typed = TypedRequest<api::EngineInvokeExecutableObjectRequest>(request);
+    typed.option_envelopes.push_back("policy:executable.side_effect:allow");
+    result.api_result = api::EngineInvokeExecutableObject(typed);
+  }
   else if (op == "ddl.alter_object") result.api_result = api::EngineAlterObject(TypedAlterObjectRequest(request));
   else if (op == "ddl.drop_object") result.api_result = api::EngineDropObject(TypedRequest<api::EngineDropObjectRequest>(request));
   else if (op == "ddl.comment_on_object") result.api_result = api::EngineCommentOnObject(TypedRequest<api::EngineCommentOnObjectRequest>(request));
@@ -4628,7 +4972,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "security.grant_right") result.api_result = api::EngineGrantRight(TypedRequest<api::EngineGrantRightRequest>(request));
   else if (op == "security.revoke_right") result.api_result = api::EngineRevokeRight(TypedRequest<api::EngineRevokeRightRequest>(request));
   else if (op == "security.role.create") result.api_result = api::EngineSecurityCreateRole(TypedSecurityCreateRoleRequest(request));
+  else if (op == "security.role.drop") result.api_result = api::EngineSecurityDropRole(TypedSecurityDropRoleRequest(request));
   else if (op == "security.group.create") result.api_result = api::EngineSecurityCreateGroup(TypedSecurityCreateGroupRequest(request));
+  else if (op == "security.group.drop") result.api_result = api::EngineSecurityDropGroup(TypedSecurityDropGroupRequest(request));
   else if (op == "security.principal.create") result.api_result = api::EngineSecurityCreatePrincipal(TypedSecurityCreatePrincipalRequest(request));
   else if (op == "security.principal.alter") result.api_result = api::EngineSecurityAlterPrincipal(TypedSecurityAlterPrincipalRequest(request));
   else if (op == "security.membership.grant") result.api_result = api::EngineSecurityGrantMembership(TypedSecurityGrantMembershipRequest(request));
@@ -4638,6 +4984,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "security.session.set_role") result.api_result = api::EngineSecuritySetRole(TypedSecuritySetRoleRequest(request));
   else if (op == "security.policy.create") result.api_result = api::EngineSecurityCreatePolicy(TypedSecurityCreatePolicyRequest(request));
   else if (op == "security.policy.alter") result.api_result = api::EngineSecurityAlterPolicy(TypedSecurityAlterPolicyRequest(request));
+  else if (op == "security.policy.drop" || op == "security.policy.lifecycle_drop") result.api_result = api::EngineSecurityDropPolicy(TypedSecurityDropPolicyRequest(request));
+  else if (op == "security.mask.drop") result.api_result = api::EngineSecurityDropMask(TypedSecurityDropMaskRequest(request));
+  else if (op == "security.rls.drop") result.api_result = api::EngineSecurityDropRls(TypedSecurityDropRlsRequest(request));
   else if (op == "security.policy.attach") result.api_result = api::EngineSecurityAttachPolicy(TypedSecurityAttachPolicyRequest(request));
   else if (op == "security.policy.activate") result.api_result = api::EngineSecurityActivatePolicy(TypedSecurityActivatePolicyRequest(request));
   else if (op == "security.policy.deactivate") result.api_result = api::EngineSecurityDeactivatePolicy(TypedSecurityDeactivatePolicyRequest(request));

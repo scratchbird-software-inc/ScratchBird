@@ -14,9 +14,11 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "sblr_sequence_runtime.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <optional>
 #include <string_view>
@@ -103,6 +105,111 @@ std::optional<std::uint64_t> ParseU64(std::string_view text) {
   const auto [ptr, ec] = std::from_chars(first, last, value);
   if (ec != std::errc{} || ptr != last) return std::nullopt;
   return value;
+}
+
+std::string UpsertDescriptorField(std::string descriptor,
+                                  const std::string& key,
+                                  const std::string& value) {
+  std::vector<std::string> parts;
+  std::size_t start = 0;
+  bool replaced = false;
+  while (start <= descriptor.size()) {
+    const std::size_t end = descriptor.find(';', start);
+    const std::string part = descriptor.substr(
+        start,
+        end == std::string::npos ? std::string::npos : end - start);
+    if (part.rfind(key + "=", 0) == 0) {
+      parts.push_back(key + "=" + value);
+      replaced = true;
+    } else if (!part.empty()) {
+      parts.push_back(part);
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  if (!replaced) parts.push_back(key + "=" + value);
+  std::string out;
+  for (const auto& part : parts) {
+    if (!out.empty()) out.push_back(';');
+    out.append(part);
+  }
+  return out;
+}
+
+bool HasColumnValue(const std::vector<std::pair<std::string, std::string>>& values,
+                    const std::string& column_name) {
+  return std::any_of(values.begin(),
+                     values.end(),
+                     [&](const auto& value) { return value.first == column_name; });
+}
+
+void RemoveColumnValue(std::vector<std::pair<std::string, std::string>>* values,
+                       const std::string& column_name) {
+  if (values == nullptr) return;
+  values->erase(std::remove_if(values->begin(),
+                               values->end(),
+                               [&](const auto& value) {
+                                 return value.first == column_name;
+                               }),
+                values->end());
+}
+
+bool RenameColumnValue(std::vector<std::pair<std::string, std::string>>* values,
+                       const std::string& column_name,
+                       const std::string& new_column_name) {
+  if (values == nullptr) return false;
+  bool renamed = false;
+  for (auto& value : *values) {
+    if (value.first == column_name) {
+      value.first = new_column_name;
+      renamed = true;
+      break;
+    }
+  }
+  return renamed;
+}
+
+std::vector<CrudRowVersionRecord> BuildAlteredColumnRowVersions(
+    const CrudState& state,
+    const EngineRequestContext& context,
+    const CrudTableRecord& table,
+    const std::string& action,
+    const std::string& column_name,
+    const std::string& new_column_name) {
+  std::vector<CrudRowVersionRecord> altered_rows;
+  if (action != "add_column" && action != "drop_column" &&
+      action != "rename_column") {
+    return altered_rows;
+  }
+  for (const auto& row :
+       VisibleCrudRowsForContext(state, table.table_uuid, context)) {
+    CrudRowVersionRecord updated = row;
+    updated.creator_tx = context.local_transaction_id;
+    updated.version_uuid = GenerateCrudEngineUuid("row");
+    updated.previous_version_uuid = row.version_uuid;
+    updated.previous_sequence = row.sequence;
+    updated.deleted = false;
+    bool changed = false;
+    if (action == "add_column") {
+      if (!HasColumnValue(updated.values, column_name)) {
+        updated.values.push_back({column_name, "<NULL>"});
+        changed = true;
+      }
+    } else if (action == "drop_column") {
+      if (HasColumnValue(updated.values, column_name)) {
+        RemoveColumnValue(&updated.values, column_name);
+        changed = true;
+      }
+    } else if (action == "rename_column") {
+      changed = RenameColumnValue(&updated.values, column_name, new_column_name);
+      if (!changed && !HasColumnValue(updated.values, new_column_name)) {
+        updated.values.push_back({new_column_name, "<NULL>"});
+        changed = true;
+      }
+    }
+    if (changed) altered_rows.push_back(std::move(updated));
+  }
+  return altered_rows;
 }
 
 scratchbird::engine::sblr::SblrExecutionContext AlterSblrContext(
@@ -602,6 +709,247 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
                             result.catalog_row_uuid.canonical,
                             "domain_event");
     return result;
+  }
+  if (request.target_object.object_kind == "table") {
+    if (request.context.local_transaction_id == 0) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
+    }
+    if (request.target_object.uuid.canonical.empty()) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_table_uuid_required"));
+    }
+    const std::string action = SecurityOptionValue(request, "table_alter_action:");
+    if (action == "add_column" || action == "drop_column" ||
+        action == "rename_column" || action == "alter_column_default") {
+      const auto loaded = LoadMgaRelationStoreState(request.context);
+      if (!loaded.ok) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            loaded.diagnostic);
+      }
+      const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+      auto visible = FindVisibleCrudTable(state,
+                                          request.target_object.uuid.canonical,
+                                          request.context.local_transaction_id);
+      if (!visible) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "target_table_not_visible"));
+      }
+      CrudTableRecord updated = *visible;
+      updated.creator_tx = request.context.local_transaction_id;
+      const std::string column_name = SecurityOptionValue(request, "column_name:");
+      const std::string new_column_name = SecurityOptionValue(request, "new_column_name:");
+      if (action == "add_column") {
+        if (column_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_name_required"));
+        }
+        for (const auto& column : updated.columns) {
+          if (column.first == column_name) {
+            return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+                request.context,
+                "ddl.alter_object",
+                MakeInvalidRequestDiagnostic("ddl.alter_object", "column_already_exists"));
+          }
+        }
+        std::string descriptor = SecurityOptionValue(request, "column_descriptor:");
+        if (descriptor.empty()) descriptor = "type=text;nullable=true";
+        updated.columns.push_back({column_name, descriptor});
+      } else if (action == "drop_column") {
+        const auto before = updated.columns.size();
+        updated.columns.erase(std::remove_if(updated.columns.begin(),
+                                             updated.columns.end(),
+                                             [&](const auto& column) {
+                                               return column.first == column_name;
+                                             }),
+                              updated.columns.end());
+        if (updated.columns.size() == before) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+        }
+      } else if (action == "rename_column") {
+        bool renamed = false;
+        for (auto& column : updated.columns) {
+          if (column.first == new_column_name) {
+            return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+                request.context,
+                "ddl.alter_object",
+                MakeInvalidRequestDiagnostic("ddl.alter_object", "new_column_already_exists"));
+          }
+        }
+        for (auto& column : updated.columns) {
+          if (column.first == column_name) {
+            column.first = new_column_name;
+            renamed = true;
+            break;
+          }
+        }
+        if (!renamed) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+        }
+      } else if (action == "alter_column_default") {
+        bool altered = false;
+        const std::string default_expression = SecurityOptionValue(request, "default_expression:");
+        for (auto& column : updated.columns) {
+          if (column.first == column_name) {
+            column.second = UpsertDescriptorField(column.second, "default", default_expression);
+            altered = true;
+            break;
+          }
+        }
+        if (!altered) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+        }
+      }
+      std::vector<CrudRowVersionRecord> row_versions = BuildAlteredColumnRowVersions(
+          state,
+          request.context,
+          *visible,
+          action,
+          column_name,
+          new_column_name);
+      const auto appended = AppendMgaTableMetadata(request.context, updated);
+      if (appended.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            appended);
+      }
+      if (!row_versions.empty()) {
+        const auto rows_appended =
+            AppendMgaRowVersions(request.context, &row_versions, nullptr);
+        if (rows_appended.error) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              rows_appended);
+        }
+      }
+      auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(request.context, "ddl.alter_object");
+      result.primary_object = request.target_object;
+      result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+      AddApiBehaviorEvidence(&result, "table_alter_action", action);
+      if (!row_versions.empty()) {
+        AddApiBehaviorEvidence(&result,
+                               "table_alter_row_versions",
+                               std::to_string(row_versions.size()));
+      }
+      AddDdlPublicationResult(&result,
+                              "ddl.alter_object",
+                              "table",
+                              request.target_object.uuid.canonical,
+                              result.catalog_row_uuid.canonical,
+                              "mga_relation_metadata");
+      return result;
+    }
+    if (!request.localized_names.empty()) {
+      const auto loaded = LoadMgaRelationStoreState(request.context);
+      if (!loaded.ok) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            loaded.diagnostic);
+      }
+      const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+      auto visible = FindVisibleCrudTable(state,
+                                          request.target_object.uuid.canonical,
+                                          request.context.local_transaction_id);
+      if (!visible) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "target_table_not_visible"));
+      }
+
+      CrudTableRecord updated = *visible;
+      updated.creator_tx = request.context.local_transaction_id;
+      updated.default_name = DefaultLocalizedName(request.localized_names, updated.default_name);
+      const auto appended = AppendMgaTableMetadata(request.context, updated);
+      if (appended.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            appended);
+      }
+
+      EngineApiRequest name_lookup_request;
+      name_lookup_request.context = request.context;
+      const auto existing_name = MapNameRegistryUuidToNamePublic(
+          name_lookup_request,
+          request.target_object.uuid.canonical,
+          "table");
+      const std::string existing_scope_uuid =
+          existing_name.ok ? existing_name.entry.scope_uuid : std::string{};
+
+      const auto retired = RetireNameRegistryEntriesForObject(request.context,
+                                                             "ddl.alter_object",
+                                                             request.target_object.uuid.canonical);
+      if (retired.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            retired);
+      }
+      std::string scope_uuid = request.target_schema.uuid.canonical;
+      if (scope_uuid.empty()) scope_uuid = existing_scope_uuid;
+      if (scope_uuid.empty()) scope_uuid = request.context.current_schema_uuid.canonical;
+      if (scope_uuid.empty()) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "target_table_schema_required"));
+      }
+      const auto names_appended = PersistNameRegistryEntriesForObject(
+          request.context,
+          "ddl.alter_object",
+          request.target_object.uuid.canonical,
+          "table",
+          scope_uuid,
+          request.localized_names,
+          updated.default_name);
+      if (names_appended.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            names_appended);
+      }
+
+      auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object");
+      result.primary_object = request.target_object;
+      result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+      AddApiBehaviorEvidence(&result, "table_alter_action", "rename_table");
+      AddApiBehaviorEvidence(&result,
+                             "table_identity_preserved",
+                             request.target_object.uuid.canonical);
+      AddApiBehaviorEvidence(&result, "table_default_name", updated.default_name);
+      AddDdlPublicationResult(&result,
+                              "ddl.alter_object",
+                              "table",
+                              request.target_object.uuid.canonical,
+                              result.catalog_row_uuid.canonical,
+                              "mga_relation_metadata");
+      return result;
+    }
   }
   auto result = PersistedRecordResult<EngineAlterObjectResult>(request, "ddl.alter_object", "object_alteration", true, "altered");
   if (!result.ok || request.localized_names.empty() || request.target_object.uuid.canonical.empty()) { return result; }

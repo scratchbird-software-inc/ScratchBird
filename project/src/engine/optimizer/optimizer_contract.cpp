@@ -751,7 +751,22 @@ bool ComposeSetOperationNode(OptimizedPlan* optimized,
                              const planner::LogicalPlanNode& logical_node,
                              const std::vector<LeafSelection>& leaves,
                              std::optional<PhysicalPlanNode>* current) {
-  if (leaves.size() < 2) {
+  std::vector<std::string> ordered_relation_uuids = logical_node.required_object_uuids;
+  if (ordered_relation_uuids.empty()) {
+    ordered_relation_uuids.reserve(leaves.size());
+    for (const auto& leaf : leaves) ordered_relation_uuids.push_back(leaf.key);
+  }
+  std::vector<const LeafSelection*> ordered_leaves;
+  ordered_leaves.reserve(ordered_relation_uuids.size());
+  for (const auto& relation_uuid : ordered_relation_uuids) {
+    const auto* leaf = FindLeaf(leaves, relation_uuid);
+    if (leaf == nullptr) {
+      optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_SET_OPERATION_LEAF_MISSING:" + relation_uuid);
+      return false;
+    }
+    ordered_leaves.push_back(leaf);
+  }
+  if (ordered_leaves.size() < 2) {
     optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_SET_OPERATION_INPUTS_MISSING");
     return false;
   }
@@ -769,12 +784,12 @@ bool ComposeSetOperationNode(OptimizedPlan* optimized,
   set_node.preserves_order = false;
   set_node.preserves_visibility = true;
   set_node.runtime_evidence.push_back("physical_role=set_operation");
-  set_node.runtime_evidence.push_back("input_count=" + std::to_string(leaves.size()));
-  for (const auto& leaf : leaves) {
+  set_node.runtime_evidence.push_back("input_count=" + std::to_string(ordered_leaves.size()));
+  for (const auto* leaf : ordered_leaves) {
     set_node.preserves_visibility = set_node.preserves_visibility &&
-                                    leaf.node.preserves_visibility;
-    AddCost(&set_node.cost, leaf.node.cost);
-    set_node.children.push_back(leaf.node);
+                                    leaf->node.preserves_visibility;
+    AddCost(&set_node.cost, leaf->node.cost);
+    set_node.children.push_back(leaf->node);
   }
   *current = std::move(set_node);
   return true;

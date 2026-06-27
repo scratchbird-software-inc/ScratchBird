@@ -9,6 +9,8 @@
 #include "dml/native_bulk_ingest_api.hpp"
 
 #include "api_diagnostics.hpp"
+#include "dml/dml_executable_trigger_runtime.hpp"
+#include "dml/insert_api.hpp"
 #include "dml/insert_physical_integration.hpp"
 #include "observability/dml_summary_counters.hpp"
 #include "security/security_model.hpp"
@@ -194,11 +196,6 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
     }
   }
   direct.option_envelopes = request.option_envelopes;
-  if (!direct.shared_row_field_order.empty() &&
-      !OptionKeyPresent(direct.option_envelopes,
-                        "sblr.canonical_rowset_shared_shape")) {
-    direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
-  }
   if (first_row == 0 && row_count >= request.canonical_rows.size() &&
       !OptionKeyPresent(direct.option_envelopes, "native_bulk.single_window")) {
     direct.option_envelopes.push_back("native_bulk.single_window=true");
@@ -257,6 +254,78 @@ EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
   return result;
 }
 
+EngineInsertRowsRequest MakeTriggerAwareInsertRequest(
+    const EngineExecuteNativeBulkIngestRequest& request,
+    std::span<const EngineRowValue> rows) {
+  EngineInsertRowsRequest insert;
+  insert.context = request.context;
+  insert.operation_id = "dml.insert_rows";
+  insert.target_table = request.target_table;
+  insert.borrowed_input_rows = rows;
+  insert.require_generated_row_uuid = request.require_generated_row_uuid;
+  insert.estimated_row_count = static_cast<EngineApiU64>(rows.size());
+  insert.insert_mode = "native_bulk_trigger_aware";
+  insert.duplicate_mode = request.duplicate_mode;
+  insert.strict_bulk_load_requested =
+      request.import_policy.strict_bulk_load_requested;
+  insert.option_envelopes = request.option_envelopes;
+  insert.diagnostic_options = request.diagnostic_options;
+  return insert;
+}
+
+EngineExecuteNativeBulkIngestResult WrapTriggerAwareInsertResult(
+    const EngineExecuteNativeBulkIngestRequest& request,
+    EngineInsertRowsResult insert,
+    std::size_t input_row_count) {
+  EngineExecuteNativeBulkIngestResult result;
+  result.ok = insert.ok;
+  result.operation_id = kOperationId;
+  result.diagnostics = std::move(insert.diagnostics);
+  result.unsupported_features = std::move(insert.unsupported_features);
+  result.evidence = std::move(insert.evidence);
+  result.result_shape = std::move(insert.result_shape);
+  result.primary_object = insert.primary_object;
+  result.catalog_row_uuid = insert.catalog_row_uuid;
+  result.transaction_uuid = insert.transaction_uuid;
+  result.local_transaction_id = insert.local_transaction_id;
+  result.embedded_trust_mode_observed = insert.embedded_trust_mode_observed;
+  result.cluster_authority_required = false;
+  result.accepted_rows = insert.ok
+                             ? insert.inserted_count + insert.updated_count +
+                                   insert.skipped_count
+                             : 0;
+  result.inserted_rows = insert.inserted_count;
+  result.rejected_rows =
+      insert.ok ? 0 : static_cast<EngineApiU64>(input_row_count);
+  result.row_uuids = std::move(insert.row_uuids);
+  result.delegated_to_import_execution = false;
+  result.dml_summary = std::move(insert.dml_summary);
+  AddNativeBulkIngestEvidence(&result, true);
+  result.evidence.push_back({"native_bulk_ingest_lane", "trigger_aware_insert"});
+  result.evidence.push_back({"native_bulk_ingest_delegate", "dml.insert_rows"});
+  result.evidence.push_back({"native_bulk_ingest_import_source_kind", "none"});
+  result.evidence.push_back({"native_bulk_ingest_import_format_family", "none"});
+  result.evidence.push_back({"native_bulk_ingest_trigger_aware_fallback",
+                             result.ok ? "executed" : "refused"});
+  result.evidence.push_back({"orh_210_native_direct_bulk_ingest",
+                             result.ok ? "trigger_aware_insert_path"
+                                       : "trigger_aware_insert_refused"});
+  if (!result.ok) {
+    result.evidence.push_back({"native_bulk_ingest_refused_by",
+                               "dml.insert_rows"});
+  }
+  if (result.primary_object.uuid.canonical.empty()) {
+    result.primary_object = request.target_table;
+  }
+  if (result.transaction_uuid.canonical.empty()) {
+    result.transaction_uuid = request.context.transaction_uuid;
+  }
+  if (result.local_transaction_id == 0) {
+    result.local_transaction_id = request.context.local_transaction_id;
+  }
+  return result;
+}
+
 }  // namespace
 
 EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
@@ -294,6 +363,36 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
     return NativeFailure(
         request,
         MakeInvalidRequestDiagnostic(kOperationId, "native_rowset_required"),
+        true);
+  }
+  if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
+          request.context,
+          request.target_table.uuid.canonical)) {
+    if (request.canonical_rows.empty()) {
+      return NativeFailure(
+          request,
+          MakeEngineApiDiagnostic(
+              "DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_CANONICAL_ROWS_REQUIRED",
+              "dml.native_bulk_ingest.trigger_aware_canonical_rows_required",
+              "native row packet trigger fallback requires canonical rows so "
+              "the trigger-aware insert path can validate and fire executable "
+              "trigger descriptors",
+              true),
+          true);
+    }
+    const auto rows = std::span<const EngineRowValue>(
+        request.canonical_rows.data(),
+        request.canonical_rows.size());
+    return WrapTriggerAwareInsertResult(
+        request,
+        EngineInsertRows(MakeTriggerAwareInsertRequest(request, rows)),
+        rows.size());
+  }
+  if (request.canonical_rows.empty() && request.native_row_packet.present &&
+      request.native_row_packet.row_count != row_count) {
+    return NativeFailure(
+        request,
+        MakeInvalidRequestDiagnostic(kOperationId, "native_row_packet_row_count_mismatch"),
         true);
   }
 

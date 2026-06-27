@@ -1,22 +1,14 @@
 {
-  "schema_version": 1,
-  "statement_ids": [
-    "011_domains.sbsql:13",
-    "080_metadata_security_authorization.sbsql:6",
-    "099_cluster_gated_refusals.sbsql:2",
-    "099_cluster_gated_refusals.sbsql:3",
-    "099_cluster_gated_refusals.sbsql:4"
-  ],
   "expected_diagnostics": {
-    "080_metadata_security_authorization.sbsql:6": [
-      "SB_AUTH_OBJECT_NOT_VISIBLE",
-      "SECURITY.AUTHORIZATION.DENIED",
-      "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE"
-    ],
     "011_domains.sbsql:13": [
       "SBSQL_DOMAIN_CHECK_VIOLATION",
       "SBSQL_CONSTRAINT_VIOLATION",
       "denied"
+    ],
+    "080_metadata_security_authorization.sbsql:6": [
+      "SB_AUTH_OBJECT_NOT_VISIBLE",
+      "SECURITY.AUTHORIZATION.DENIED",
+      "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE"
     ],
     "099_cluster_gated_refusals.sbsql:2": [
       "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
@@ -35,6 +27,662 @@
       "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
       "cluster_routing_not_admitted",
       "unsupported"
+    ],
+    "160_builtin_function_invocations.sbsql:4": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:7": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:12": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:31": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:34": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:37": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:41": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:42": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:48": [
+      "SBSQL.NUMERIC.DIVISION_BY_ZERO"
+    ],
+    "160_builtin_function_invocations.sbsql:65": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:69": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:74": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:77": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:90": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:93": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:96": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:107": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:110": [
+      "SBSQL.FUNCTION.NUMERIC_DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:135": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:139": [
+      "SBSQL.NUMERIC.DIVISION_BY_ZERO"
+    ],
+    "160_builtin_function_invocations.sbsql:140": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:144": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:145": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:149": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:153": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:157": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:158": [
+      "SBSQL.NUMERIC.DOMAIN"
+    ],
+    "160_builtin_function_invocations.sbsql:196": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:242": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:246": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:247": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:248": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:249": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:250": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:261": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:266": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:270": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:271": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:287": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:288": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:327": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:328": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:336": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:343": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:344": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:345": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:346": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:349": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:350": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:351": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:352": [
+      "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:385": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:475": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:477": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:484": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:486": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:488": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:496": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:544": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:545": [
+      "SBSQL.NUMERIC.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:572": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:578": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:646": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:647": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:662": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:666": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:676": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:680": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:684": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:688": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:698": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:702": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:706": [
+      "SBSQL.FUNCTION.INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:713": [
+      "SBSQL.NUMERIC.OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:737": [
+      "SB_DIAG_WINDOW_NTILE_BUCKET_INVALID"
+    ],
+    "160_builtin_function_invocations.sbsql:747": [
+      "SB_DIAG_WINDOW_NTH_VALUE_INVALID"
+    ],
+    "160_builtin_function_invocations.sbsql:777": [
+      "SB_DIAG_AGGREGATE_LISTAGG_OVERFLOW"
+    ],
+    "160_builtin_function_invocations.sbsql:790": [
+      "SBSQL.QUERY.GROUP_ROUTE_UNSUPPORTED"
+    ],
+    "160_builtin_function_invocations.sbsql:870": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:871": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:872": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1074": [
+      "SB_DIAG_PROCEDURAL_SIGNAL"
+    ],
+    "160_builtin_function_invocations.sbsql:1075": [
+      "SB_DIAG_PROCEDURAL_RAISE"
+    ],
+    "160_builtin_function_invocations.sbsql:1076": [
+      "SB_DIAG_PROCEDURAL_RESIGNAL"
+    ],
+    "160_builtin_function_invocations.sbsql:1080": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1084": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1088": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1092": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1096": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1100": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1104": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1108": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1112": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1116": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1120": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1124": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1128": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1132": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1136": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1140": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1144": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1148": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1152": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1156": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1158": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1161": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1163": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1166": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1168": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1173": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1177": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1178": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1179": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1180": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1182": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1183": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1186": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1188": [
+      "SB_DIAG_SEQUENCE_INCREMENT_ZERO"
+    ],
+    "160_builtin_function_invocations.sbsql:1190": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1193": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1195": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1197": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1199": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1201": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1203": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1205": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1208": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1213": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1236": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1238": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1242": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1244": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1246": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1248": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1272": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1284": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1340": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1362": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1406": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1424": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1485": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1500": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1525": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1526": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1527": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1557": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1558": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1559": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1584": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1585": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1586": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1624": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1625": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1626": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1627": [
+      "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:1630": [
+      "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:1632": [
+      "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:1633": [
+      "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:1634": [
+      "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE"
+    ],
+    "160_builtin_function_invocations.sbsql:1654": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1655": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
+    ],
+    "160_builtin_function_invocations.sbsql:1656": [
+      "SB_DIAG_FUNCTION_INVALID_INPUT"
     ]
-  }
+  },
+  "schema_version": 1,
+  "statement_ids": [
+    "011_domains.sbsql:13",
+    "080_metadata_security_authorization.sbsql:6",
+    "099_cluster_gated_refusals.sbsql:2",
+    "099_cluster_gated_refusals.sbsql:3",
+    "099_cluster_gated_refusals.sbsql:4",
+    "160_builtin_function_invocations.sbsql:4",
+    "160_builtin_function_invocations.sbsql:7",
+    "160_builtin_function_invocations.sbsql:12",
+    "160_builtin_function_invocations.sbsql:31",
+    "160_builtin_function_invocations.sbsql:34",
+    "160_builtin_function_invocations.sbsql:37",
+    "160_builtin_function_invocations.sbsql:41",
+    "160_builtin_function_invocations.sbsql:42",
+    "160_builtin_function_invocations.sbsql:48",
+    "160_builtin_function_invocations.sbsql:65",
+    "160_builtin_function_invocations.sbsql:69",
+    "160_builtin_function_invocations.sbsql:74",
+    "160_builtin_function_invocations.sbsql:77",
+    "160_builtin_function_invocations.sbsql:90",
+    "160_builtin_function_invocations.sbsql:93",
+    "160_builtin_function_invocations.sbsql:96",
+    "160_builtin_function_invocations.sbsql:107",
+    "160_builtin_function_invocations.sbsql:110",
+    "160_builtin_function_invocations.sbsql:135",
+    "160_builtin_function_invocations.sbsql:139",
+    "160_builtin_function_invocations.sbsql:140",
+    "160_builtin_function_invocations.sbsql:144",
+    "160_builtin_function_invocations.sbsql:145",
+    "160_builtin_function_invocations.sbsql:149",
+    "160_builtin_function_invocations.sbsql:153",
+    "160_builtin_function_invocations.sbsql:157",
+    "160_builtin_function_invocations.sbsql:158",
+    "160_builtin_function_invocations.sbsql:196",
+    "160_builtin_function_invocations.sbsql:242",
+    "160_builtin_function_invocations.sbsql:246",
+    "160_builtin_function_invocations.sbsql:247",
+    "160_builtin_function_invocations.sbsql:248",
+    "160_builtin_function_invocations.sbsql:249",
+    "160_builtin_function_invocations.sbsql:250",
+    "160_builtin_function_invocations.sbsql:261",
+    "160_builtin_function_invocations.sbsql:266",
+    "160_builtin_function_invocations.sbsql:270",
+    "160_builtin_function_invocations.sbsql:271",
+    "160_builtin_function_invocations.sbsql:287",
+    "160_builtin_function_invocations.sbsql:288",
+    "160_builtin_function_invocations.sbsql:327",
+    "160_builtin_function_invocations.sbsql:328",
+    "160_builtin_function_invocations.sbsql:336",
+    "160_builtin_function_invocations.sbsql:343",
+    "160_builtin_function_invocations.sbsql:344",
+    "160_builtin_function_invocations.sbsql:345",
+    "160_builtin_function_invocations.sbsql:346",
+    "160_builtin_function_invocations.sbsql:349",
+    "160_builtin_function_invocations.sbsql:350",
+    "160_builtin_function_invocations.sbsql:351",
+    "160_builtin_function_invocations.sbsql:352",
+    "160_builtin_function_invocations.sbsql:385",
+    "160_builtin_function_invocations.sbsql:475",
+    "160_builtin_function_invocations.sbsql:477",
+    "160_builtin_function_invocations.sbsql:484",
+    "160_builtin_function_invocations.sbsql:486",
+    "160_builtin_function_invocations.sbsql:488",
+    "160_builtin_function_invocations.sbsql:496",
+    "160_builtin_function_invocations.sbsql:544",
+    "160_builtin_function_invocations.sbsql:545",
+    "160_builtin_function_invocations.sbsql:572",
+    "160_builtin_function_invocations.sbsql:578",
+    "160_builtin_function_invocations.sbsql:646",
+    "160_builtin_function_invocations.sbsql:647",
+    "160_builtin_function_invocations.sbsql:662",
+    "160_builtin_function_invocations.sbsql:666",
+    "160_builtin_function_invocations.sbsql:676",
+    "160_builtin_function_invocations.sbsql:680",
+    "160_builtin_function_invocations.sbsql:684",
+    "160_builtin_function_invocations.sbsql:688",
+    "160_builtin_function_invocations.sbsql:698",
+    "160_builtin_function_invocations.sbsql:702",
+    "160_builtin_function_invocations.sbsql:706",
+    "160_builtin_function_invocations.sbsql:713",
+    "160_builtin_function_invocations.sbsql:737",
+    "160_builtin_function_invocations.sbsql:747",
+    "160_builtin_function_invocations.sbsql:777",
+    "160_builtin_function_invocations.sbsql:790",
+    "160_builtin_function_invocations.sbsql:870",
+    "160_builtin_function_invocations.sbsql:871",
+    "160_builtin_function_invocations.sbsql:872",
+    "160_builtin_function_invocations.sbsql:1074",
+    "160_builtin_function_invocations.sbsql:1075",
+    "160_builtin_function_invocations.sbsql:1076",
+    "160_builtin_function_invocations.sbsql:1080",
+    "160_builtin_function_invocations.sbsql:1084",
+    "160_builtin_function_invocations.sbsql:1088",
+    "160_builtin_function_invocations.sbsql:1092",
+    "160_builtin_function_invocations.sbsql:1096",
+    "160_builtin_function_invocations.sbsql:1100",
+    "160_builtin_function_invocations.sbsql:1104",
+    "160_builtin_function_invocations.sbsql:1108",
+    "160_builtin_function_invocations.sbsql:1112",
+    "160_builtin_function_invocations.sbsql:1116",
+    "160_builtin_function_invocations.sbsql:1120",
+    "160_builtin_function_invocations.sbsql:1124",
+    "160_builtin_function_invocations.sbsql:1128",
+    "160_builtin_function_invocations.sbsql:1132",
+    "160_builtin_function_invocations.sbsql:1136",
+    "160_builtin_function_invocations.sbsql:1140",
+    "160_builtin_function_invocations.sbsql:1144",
+    "160_builtin_function_invocations.sbsql:1148",
+    "160_builtin_function_invocations.sbsql:1152",
+    "160_builtin_function_invocations.sbsql:1156",
+    "160_builtin_function_invocations.sbsql:1158",
+    "160_builtin_function_invocations.sbsql:1161",
+    "160_builtin_function_invocations.sbsql:1163",
+    "160_builtin_function_invocations.sbsql:1166",
+    "160_builtin_function_invocations.sbsql:1168",
+    "160_builtin_function_invocations.sbsql:1173",
+    "160_builtin_function_invocations.sbsql:1177",
+    "160_builtin_function_invocations.sbsql:1178",
+    "160_builtin_function_invocations.sbsql:1179",
+    "160_builtin_function_invocations.sbsql:1180",
+    "160_builtin_function_invocations.sbsql:1182",
+    "160_builtin_function_invocations.sbsql:1183",
+    "160_builtin_function_invocations.sbsql:1186",
+    "160_builtin_function_invocations.sbsql:1188",
+    "160_builtin_function_invocations.sbsql:1190",
+    "160_builtin_function_invocations.sbsql:1193",
+    "160_builtin_function_invocations.sbsql:1195",
+    "160_builtin_function_invocations.sbsql:1197",
+    "160_builtin_function_invocations.sbsql:1199",
+    "160_builtin_function_invocations.sbsql:1201",
+    "160_builtin_function_invocations.sbsql:1203",
+    "160_builtin_function_invocations.sbsql:1205",
+    "160_builtin_function_invocations.sbsql:1208",
+    "160_builtin_function_invocations.sbsql:1213",
+    "160_builtin_function_invocations.sbsql:1236",
+    "160_builtin_function_invocations.sbsql:1238",
+    "160_builtin_function_invocations.sbsql:1242",
+    "160_builtin_function_invocations.sbsql:1244",
+    "160_builtin_function_invocations.sbsql:1246",
+    "160_builtin_function_invocations.sbsql:1248",
+    "160_builtin_function_invocations.sbsql:1272",
+    "160_builtin_function_invocations.sbsql:1284",
+    "160_builtin_function_invocations.sbsql:1340",
+    "160_builtin_function_invocations.sbsql:1362",
+    "160_builtin_function_invocations.sbsql:1406",
+    "160_builtin_function_invocations.sbsql:1424",
+    "160_builtin_function_invocations.sbsql:1485",
+    "160_builtin_function_invocations.sbsql:1500",
+    "160_builtin_function_invocations.sbsql:1525",
+    "160_builtin_function_invocations.sbsql:1526",
+    "160_builtin_function_invocations.sbsql:1527",
+    "160_builtin_function_invocations.sbsql:1557",
+    "160_builtin_function_invocations.sbsql:1558",
+    "160_builtin_function_invocations.sbsql:1559",
+    "160_builtin_function_invocations.sbsql:1584",
+    "160_builtin_function_invocations.sbsql:1585",
+    "160_builtin_function_invocations.sbsql:1586",
+    "160_builtin_function_invocations.sbsql:1624",
+    "160_builtin_function_invocations.sbsql:1625",
+    "160_builtin_function_invocations.sbsql:1626",
+    "160_builtin_function_invocations.sbsql:1627",
+    "160_builtin_function_invocations.sbsql:1630",
+    "160_builtin_function_invocations.sbsql:1632",
+    "160_builtin_function_invocations.sbsql:1633",
+    "160_builtin_function_invocations.sbsql:1634",
+    "160_builtin_function_invocations.sbsql:1654",
+    "160_builtin_function_invocations.sbsql:1655",
+    "160_builtin_function_invocations.sbsql:1656"
+  ]
 }

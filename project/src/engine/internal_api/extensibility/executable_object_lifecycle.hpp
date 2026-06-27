@@ -186,5 +186,7 @@ EngineInspectExecutableObjectResult EngineInspectExecutableObjects(
 
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context);
+EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
+    const EngineRequestContext& context);
 
 }  // namespace scratchbird::engine::internal_api

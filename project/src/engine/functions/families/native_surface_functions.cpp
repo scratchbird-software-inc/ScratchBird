@@ -159,8 +159,7 @@ FunctionCallResult AtTimeZone(const FunctionCallRequest& request) {
 }
 
 FunctionCallResult BitString(const FunctionCallRequest& request) {
-  if (request.arguments.empty()) return MakeFunctionSuccess(request, {MakeTextValue("bit_string", "")});
-  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "bit_string expects zero or one argument");
+  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "bit_string expects one argument");
   if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("bit_string")});
   std::string text = Trim(ValueAsText(request.arguments[0].value));
   if ((text.rfind("B'", 0) == 0 || text.rfind("b'", 0) == 0) && text.size() >= 3 && text.back() == '\'') {

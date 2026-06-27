@@ -126,6 +126,26 @@ def sql_string(value: str | None) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def append_batched_values_insert(
+    lines: list[str],
+    table_name: str,
+    rows: list[str],
+    *,
+    batch_size: int = 256,
+) -> int:
+    if not rows:
+        return 0
+    statement_count = 0
+    for offset in range(0, len(rows), batch_size):
+        batch = rows[offset:offset + batch_size]
+        lines.append(f"INSERT INTO {table_name} VALUES")
+        for index, row in enumerate(batch):
+            suffix = ";" if index + 1 == len(batch) else ","
+            lines.append(f"    {row}{suffix}")
+        statement_count += 1
+    return statement_count
+
+
 def read_builtin_fixture_rows(repo_root: Path) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     fixture_root = repo_root / BUILTIN_FIXTURE_ROOT_REL
     rows: list[dict[str, str]] = []
@@ -200,6 +220,7 @@ def build_generated_builtin_fixture_script(
         ");",
         "",
     ]
+    manifest_rows: list[str] = []
     for row in rows:
         values = [
             sql_string(row["fixture_id"]),
@@ -213,9 +234,12 @@ def build_generated_builtin_fixture_script(
             sql_string(row["expected_diagnostic_code"]),
             sql_string(row["source_file"]),
         ]
-        lines.append(
-            f"INSERT INTO {namespace}.builtin_fixture_manifest VALUES ({', '.join(values)});"
-        )
+        manifest_rows.append(f"({', '.join(values)})")
+    append_batched_values_insert(
+        lines,
+        f"{namespace}.builtin_fixture_manifest",
+        manifest_rows,
+    )
     lines.extend(
         [
             "",

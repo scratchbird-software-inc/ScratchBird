@@ -2783,7 +2783,7 @@ void RequireTableJoinLowering() {
           "server admission did not require public ABI dispatch for table join");
   Require(admission.operation_id == "query.plan_operation",
           "server admission table join operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission table join family mismatch");
 
   const auto count_assertion = RunPipeline(
@@ -2883,7 +2883,7 @@ void RequireTableSetOperationLowering() {
             "server admission did not require public ABI dispatch for table set operation");
     Require(admission.operation_id == "query.plan_operation",
             "server admission table set operation id mismatch");
-    Require(admission.operation_family == "sblr.query.relational.v3",
+    Require(admission.operation_family == "sblr.optimizer.plan.v3",
             "server admission table set operation family mismatch");
   }
 
@@ -3017,7 +3017,7 @@ void RequireRowNumberWindowLowering() {
           "server admission did not require public ABI dispatch for row_number window");
   Require(admission.operation_id == "query.plan_operation",
           "server admission row_number window operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission row_number window family mismatch");
 
   const auto count_partition = RunPipeline(
@@ -3100,7 +3100,7 @@ void RequireRowNumberWindowLowering() {
           "server admission did not require public ABI dispatch for count partition window");
   Require(count_partition_admission.operation_id == "query.plan_operation",
           "server admission count partition window operation id mismatch");
-  Require(count_partition_admission.operation_family == "sblr.query.relational.v3",
+  Require(count_partition_admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission count partition window family mismatch");
 
   const auto qualified_row_number = RunPipeline(
@@ -3273,7 +3273,7 @@ void RequireGroupByAggregateLowering() {
           "server admission did not require public ABI dispatch for grouped aggregate");
   Require(admission.operation_id == "query.plan_operation",
           "server admission grouped aggregate operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission grouped aggregate family mismatch");
 
   const auto field_artifacts = RunPipeline(
@@ -4242,7 +4242,7 @@ void RequireMaterializedCteLowering() {
           "server admission did not require public ABI dispatch for materialized CTE");
   Require(admission.operation_id == "query.plan_operation",
           "server admission materialized CTE operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission materialized CTE family mismatch");
 
   for (const auto& row : kBoundedMaterializedCteGrammarRows) {
@@ -4380,7 +4380,7 @@ void RequireRecursiveCteLowering() {
           "server admission did not require public ABI dispatch for recursive CTE");
   Require(admission.operation_id == "query.plan_operation",
           "server admission recursive CTE operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission recursive CTE family mismatch");
 
   const auto duplicate_preserving = RunPipeline(
@@ -4576,7 +4576,7 @@ void RequireScalarSubqueryLowering() {
           "server admission did not require public ABI dispatch for scalar subquery");
   Require(admission.operation_id == "query.plan_operation",
           "server admission scalar subquery operation id mismatch");
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission scalar subquery family mismatch");
 }
 
@@ -4651,7 +4651,7 @@ void RequireHavingClauseLowering() {
           HavingClauseEvidenceMessage(row, "server_admission", "HAVING did not require public ABI dispatch"));
   Require(admission.operation_id == "query.plan_operation",
           HavingClauseEvidenceMessage(row, "server_admission", "HAVING operation id mismatch"));
-  Require(admission.operation_family == "sblr.query.relational.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           HavingClauseEvidenceMessage(row, "server_admission", "HAVING operation family mismatch"));
 }
 

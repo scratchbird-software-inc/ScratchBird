@@ -3178,10 +3178,12 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   }
   const auto unsafe_gap = UnsafeFinalityGap(loaded_state, end_tx);
   if (!unsafe_gap.empty()) {
-    return MakeApiBehaviorDiagnostic<EnginePackageDeltaStreamResult>(
-        request.context,
-        kOperation,
-        BackupInvalid(kOperation, "BACKUP_DELTA_FINALITY_GAP:" + unsafe_gap));
+    if (OptionValue(request, "allow_inspect_only_archive:") != "true") {
+      return MakeApiBehaviorDiagnostic<EnginePackageDeltaStreamResult>(
+          request.context,
+          kOperation,
+          BackupInvalid(kOperation, "BACKUP_DELTA_FINALITY_GAP:" + unsafe_gap));
+    }
   }
   std::vector<CrudTableRecord> tables;
   std::vector<CrudIndexRecord> indexes;
@@ -3237,7 +3239,15 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   result.delta_manifest_uri = path;
   AddApiBehaviorEvidence(&result, "delta_manifest", path);
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
-  AddApiBehaviorEvidence(&result, "contains_committed_final_states_only", "true");
+  AddApiBehaviorEvidence(&result,
+                         "contains_committed_final_states_only",
+                         unsafe_gap.empty() ? "true" : "false");
+  AddApiBehaviorEvidence(&result,
+                         "inspect_only_archive",
+                         unsafe_gap.empty() ? "false" : "true");
+  if (!unsafe_gap.empty()) {
+    AddApiBehaviorEvidence(&result, "inspect_only_finality_gap", unsafe_gap);
+  }
   AddApiBehaviorEvidence(&result, "finality_interval", std::to_string(start_tx) + ".." + std::to_string(end_tx));
   AddApiBehaviorEvidence(&result, "delta_source", "mga_row_version_lineage");
   AddApiBehaviorEvidence(&result, "archive_slice_bytes", std::to_string(delta_payload.size()));
@@ -3254,6 +3264,8 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
                               {"temporary_tables_excluded", std::to_string(temporary_exclusions.table_count)},
                               {"temporary_rows_excluded", std::to_string(temporary_exclusions.row_count)},
                               {"temporary_indexes_excluded", std::to_string(temporary_exclusions.index_count)},
+                              {"contains_committed_final_states_only", unsafe_gap.empty() ? "true" : "false"},
+                              {"inspect_only_archive", unsafe_gap.empty() ? "false" : "true"},
                               {"authoritative_wal", "false"}});
   return result;
 }

@@ -30,6 +30,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -136,6 +137,125 @@ std::vector<std::string> SplitQualifiedIdentifierLocal(const std::string& path) 
   return parts;
 }
 
+bool NameMatchesIdentifierSegmentLocal(const EngineRequestContext& context,
+                                       const std::string& candidate,
+                                       const std::string& segment) {
+  if (candidate.empty() || segment.empty()) { return false; }
+  const std::string profile = NameRegistryDefaultIdentifierProfile(context);
+  return NameRegistryLookupKey(candidate, profile, false) ==
+         NameRegistryLookupKey(segment, profile, false);
+}
+
+bool SchemaRecordMatchesSegmentLocal(const EngineRequestContext& context,
+                                     const EngineSchemaTreeRecord& schema,
+                                     const std::string& segment) {
+  if (NameMatchesIdentifierSegmentLocal(context, schema.default_name, segment)) {
+    return true;
+  }
+  for (const auto& localized : schema.localized_names) {
+    if (NameMatchesIdentifierSegmentLocal(context, localized.name, segment) ||
+        NameMatchesIdentifierSegmentLocal(context, localized.raw_name_text, segment) ||
+        NameMatchesIdentifierSegmentLocal(context, localized.display_name, segment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& schema_parts,
+    std::uint64_t observer_tx) {
+  if (schema_parts.empty()) { return std::nullopt; }
+  const auto schemas = VisibleSchemaTreeRecords(context, observer_tx);
+  std::vector<std::string> current_matches;
+  auto push_unique = [](std::vector<std::string>* values, const std::string& value) {
+    if (value.empty()) { return; }
+    if (std::find(values->begin(), values->end(), value) == values->end()) {
+      values->push_back(value);
+    }
+  };
+
+  for (const auto& schema : schemas) {
+    if (SchemaRecordMatchesSegmentLocal(context, schema, schema_parts.front())) {
+      push_unique(&current_matches, schema.schema_uuid);
+    }
+  }
+  for (std::size_t index = 1; index < schema_parts.size(); ++index) {
+    std::vector<std::string> next_matches;
+    for (const auto& parent_uuid : current_matches) {
+      for (const auto& schema : schemas) {
+        if (schema.parent_schema_uuid == parent_uuid &&
+            SchemaRecordMatchesSegmentLocal(context, schema, schema_parts[index])) {
+          push_unique(&next_matches, schema.schema_uuid);
+        }
+      }
+    }
+    current_matches = std::move(next_matches);
+    if (current_matches.empty()) { return std::nullopt; }
+  }
+  if (current_matches.size() != 1) { return std::nullopt; }
+  return current_matches.front();
+}
+
+std::string ResolveDomainTypeUuidWithSchemaTreeFallback(
+    const EngineApiRequest& request,
+    const std::vector<std::string>& parts) {
+  if (parts.size() < 2) { return {}; }
+  std::vector<std::string> schema_parts(parts.begin(), parts.end() - 1);
+  const auto schema_uuid =
+      ResolveVisibleSchemaPathUuidLocal(request.context,
+                                        schema_parts,
+                                        request.context.local_transaction_id);
+  if (!schema_uuid) { return {}; }
+
+  EngineApiRequest scoped_request = request;
+  scoped_request.localized_names.clear();
+  scoped_request.option_envelopes.clear();
+  scoped_request.target_schema.uuid.canonical = *schema_uuid;
+  scoped_request.sql_object_reference = {};
+  scoped_request.sql_object_reference.expected_object_type = "domain";
+  scoped_request.sql_object_reference.path_type = "unqualified";
+  scoped_request.sql_object_reference.no_search_path = true;
+  scoped_request.sql_object_reference.object_name.raw_text = parts.back();
+
+  const auto resolved = ResolveNameRegistryPublic(scoped_request, "domain");
+  if (!resolved.ok || resolved.matches.size() != 1) { return {}; }
+  return resolved.matches.front().object_uuid;
+}
+
+std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
+    const EngineApiRequest& request,
+    const std::vector<std::string>& parts) {
+  if (parts.size() < 2) { return {}; }
+  std::vector<std::string> schema_parts(parts.begin(), parts.end() - 1);
+  const auto schema_uuid =
+      ResolveVisibleSchemaPathUuidLocal(request.context,
+                                        schema_parts,
+                                        request.context.local_transaction_id);
+  if (!schema_uuid) { return {}; }
+
+  const auto domains = LoadDomainState(request.context);
+  if (!domains.ok) { return {}; }
+  std::vector<std::string> matches;
+  for (const auto& domain : domains.domains) {
+    const auto visible =
+        FindVisibleDomain(request.context,
+                          domain.domain_uuid,
+                          request.context.local_transaction_id);
+    if (!visible || visible->schema_uuid != *schema_uuid) { continue; }
+    if (!NameMatchesIdentifierSegmentLocal(request.context,
+                                           visible->default_name,
+                                           parts.back())) {
+      continue;
+    }
+    if (std::find(matches.begin(), matches.end(), visible->domain_uuid) == matches.end()) {
+      matches.push_back(visible->domain_uuid);
+    }
+  }
+  return matches.size() == 1 ? matches.front() : std::string{};
+}
+
 std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& request,
                                                       const std::string& column_descriptor,
                                                       bool* lookup_required,
@@ -144,7 +264,7 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
   if (requested_type_name != nullptr) { requested_type_name->clear(); }
   const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
   const std::string type_name =
-      DescriptorFieldLocal(descriptor_fields, {"domain_uuid", "domain", "type", "canonical"});
+      DescriptorFieldLocal(descriptor_fields, {"domain_uuid", "domain", "source_type", "type", "canonical"});
   if (type_name.empty() || type_name.find('.') == std::string::npos) { return {}; }
   if (type_name.find('(') != std::string::npos ||
       type_name.find(')') != std::string::npos) {
@@ -171,7 +291,13 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
   resolve_request.sql_object_reference.object_name.raw_text = parts.back();
 
   const auto resolved = ResolveNameRegistryPublic(resolve_request, "domain");
-  if (!resolved.ok || resolved.matches.size() != 1) { return {}; }
+  if (!resolved.ok || resolved.matches.size() != 1) {
+    std::string domain_uuid = ResolveDomainTypeUuidWithSchemaTreeFallback(request, parts);
+    if (domain_uuid.empty()) {
+      domain_uuid = ResolveDomainTypeUuidWithVisibleDomainFallback(request, parts);
+    }
+    return domain_uuid;
+  }
   return resolved.matches.front().object_uuid;
 }
 

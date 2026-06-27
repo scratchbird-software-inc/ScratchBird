@@ -347,6 +347,9 @@ std::string_view ExpectedAdmissionFamily(const CaseRow& row) {
   if (row.family == "sblr.cluster.private_operation.v3") {
     return "sblr.cluster.control.v3";
   }
+  if (row.operation_id == "query.plan_operation") {
+    return "sblr.optimizer.plan.v3";
+  }
   return row.family;
 }
 
@@ -429,7 +432,12 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
   if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
-  if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
+  if (!artifacts.verifier.admitted) {
+    std::cerr << "SBSFC-077 verifier rejected " << row.surface_id << ' '
+              << row.canonical_name << " operation " << row.operation_id << '\n'
+              << artifacts.envelope.payload << '\n'
+              << RenderMessageVectorSet(artifacts.verifier.messages);
+  }
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-077 CST failed");
   Require(!artifacts.ast.messages.has_errors(), "SBSFC-077 AST failed");
   Require(artifacts.bound.bound, "SBSFC-077 bind failed");

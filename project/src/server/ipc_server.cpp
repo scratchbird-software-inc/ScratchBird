@@ -1015,6 +1015,22 @@ bool PsNameObjectClassMatches(std::string_view requested, std::string_view actua
     return actual == "table" || actual == "view" || actual == "materialized_view" ||
            actual == "external_table" || actual == "foreign_table";
   }
+  if (requested == "role") {
+    return actual == "security_role" || actual == "principal";
+  }
+  if (requested == "group") {
+    return actual == "security_group" || actual == "principal";
+  }
+  if (requested == "principal") {
+    return actual == "user" || actual == "security_role" ||
+           actual == "security_group" || actual == "role" || actual == "group";
+  }
+  if (requested == "policy") {
+    return actual == "security_policy";
+  }
+  if (requested == "mask" || requested == "rls") {
+    return actual == "security_policy";
+  }
   return false;
 }
 

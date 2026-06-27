@@ -286,15 +286,17 @@ scratchbird::engine::sblr::SblrSequenceDefinition BuildSequenceDefinition(
 
 EngineApiDiagnostic RegisterSequenceDefinitionAlias(
     const EngineCreateSequenceRequest& request,
-    scratchbird::engine::sblr::SblrSequenceDefinition definition,
+    std::string canonical_sequence_uuid,
     std::string sequence_key) {
   if (sequence_key.empty()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
-  definition.sequence_uuid = LowerAsciiLocal(std::move(sequence_key));
-  const auto registered = scratchbird::engine::sblr::RegisterSblrSequence(
+  canonical_sequence_uuid = LowerAsciiLocal(std::move(canonical_sequence_uuid));
+  sequence_key = LowerAsciiLocal(std::move(sequence_key));
+  const auto registered = scratchbird::engine::sblr::RegisterSblrSequenceAlias(
       &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
-      definition,
+      std::move(canonical_sequence_uuid),
+      std::move(sequence_key),
       SequenceSblrContext(request.context));
   if (registered.ok()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -313,21 +315,29 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
   if (!result.ok) { return result; }
 
   auto definition = BuildSequenceDefinition(request, result.primary_object.uuid.canonical);
-  auto diagnostic = RegisterSequenceDefinitionAlias(
-      request, definition, result.primary_object.uuid.canonical);
-  if (diagnostic.error) {
+  const auto registered = scratchbird::engine::sblr::RegisterSblrSequence(
+      &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
+      definition,
+      SequenceSblrContext(request.context));
+  if (!registered.ok()) {
+    const std::string detail = registered.diagnostics.empty()
+                                   ? "sequence_definition_registration_failed"
+                                   : registered.diagnostics.front().detail;
     return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
-        request.context, "ddl.create_sequence", diagnostic);
+        request.context, "ddl.create_sequence", MakeInvalidRequestDiagnostic("ddl.create_sequence", detail));
   }
+  auto diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   const std::string lookup_key = CreateSequenceOptionValue(request, "sequence_lookup_key:");
-  diagnostic = RegisterSequenceDefinitionAlias(request, definition, lookup_key);
+  diagnostic = RegisterSequenceDefinitionAlias(
+      request, result.primary_object.uuid.canonical, lookup_key);
   if (diagnostic.error) {
     return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
         request.context, "ddl.create_sequence", diagnostic);
   }
   const std::string name = ApiBehaviorPrimaryName(request, "sequence");
   if (!name.empty() && LowerAsciiLocal(name) != LowerAsciiLocal(lookup_key)) {
-    diagnostic = RegisterSequenceDefinitionAlias(request, definition, name);
+    diagnostic = RegisterSequenceDefinitionAlias(
+        request, result.primary_object.uuid.canonical, name);
     if (diagnostic.error) {
       return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
           request.context, "ddl.create_sequence", diagnostic);
@@ -341,7 +351,10 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
 }
 
 EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) {
-  return PersistedCreateWithNameRegistry<EngineCreateViewResult>(request, "ddl.create_view", "view", true, "created");
+  const std::string object_kind =
+      request.target_object.object_kind.empty() ? "view" : request.target_object.object_kind;
+  return PersistedCreateWithNameRegistry<EngineCreateViewResult>(
+      request, "ddl.create_view", object_kind, true, "created");
 }
 
 EngineCreateIndexTemplateResult EngineCreateIndexTemplate(const EngineCreateIndexTemplateRequest& request) {

@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
@@ -52,6 +53,7 @@ struct SblrSequenceEvidenceRecord {
 struct SblrSequenceRegistry {
   std::mutex mutex;
   std::vector<SblrSequenceState> states;
+  std::vector<std::pair<std::string, std::string>> aliases;
   std::vector<SblrSequenceEvidenceRecord> evidence;
   std::uint64_t next_evidence_sequence = 1;
 };
@@ -90,6 +92,10 @@ SblrSequenceRegistry& ProcessSblrSequenceRegistry();
 SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
                                 const SblrSequenceDefinition& definition,
                                 const SblrExecutionContext& context);
+SblrResult RegisterSblrSequenceAlias(SblrSequenceRegistry* registry,
+                                     std::string canonical_sequence_uuid,
+                                     std::string alias_key,
+                                     const SblrExecutionContext& context);
 SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                              const SblrSequenceAlteration& alteration,
                              const SblrExecutionContext& context);
