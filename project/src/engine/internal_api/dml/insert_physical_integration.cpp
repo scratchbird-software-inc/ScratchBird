@@ -6887,6 +6887,20 @@ DirectPhysicalBulkAppendResult DirectBulkFailure(
     std::string reason,
     EngineDmlSummaryCounters summary = {}) {
   const std::string fallback_reason = reason;
+  if (const char* trace_path = std::getenv("SCRATCHBIRD_DML_PHASE_TRACE_FILE");
+      trace_path != nullptr && *trace_path != '\0') {
+    if (std::ofstream out(trace_path, std::ios::app | std::ios::binary); out) {
+      out << "operation=dml.direct_physical_bulk_append"
+          << "\ttable=" << request.target_table.uuid.canonical
+          << "\trows=0"
+          << "\taccepted=0"
+          << "\ttx=" << request.context.local_transaction_id
+          << "\trefused=" << fallback_reason
+          << "\tdiagnostic_code=" << diagnostic.code
+          << "\tdiagnostic_detail=" << diagnostic.detail
+          << '\n';
+    }
+  }
   DirectPhysicalBulkAppendResult result;
   result.ok = false;
   result.operation_id = "dml.direct_physical_bulk_append";
@@ -9022,7 +9036,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   bool native_bulk_typed_logical_batch_bypass =
       request.lane_operation == "native_bulk" &&
       can_use_shared_row_stage_fast_path &&
-      suppress_payload_rows &&
+      (suppress_payload_rows || native_row_packet_input) &&
       rowset_default_markers_absent &&
       compact_typed_null_state_authoritative &&
       !force_large_values_for_insert &&
@@ -9069,28 +9083,31 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   staged_rows.reserve(direct_row_count);
   std::vector<DirectFixedWidthPayloadValidationColumnPlan> fixed_width_payload_plan;
-  const bool native_bulk_engine_validated_payload =
-      request.lane_operation == "native_bulk" &&
-      DirectOptionTruthy(request, "sblr.native_row_packet_type_vector_validated") &&
-      DirectOptionTruthy(request, "sblr.native_row_packet_value_body_validated") &&
-      DirectOptionTruthy(request, "sblr.native_row_packet_fixed_shape_validated") &&
-      DirectOptionTruthy(request, "sblr.native_row_packet_shared_field_order") &&
-      rowset_shared_shape;
-  const bool native_bulk_payload_validation_in_row_stage =
+	  const bool native_bulk_engine_validated_payload =
+	      request.lane_operation == "native_bulk" &&
+	      DirectOptionTruthy(request, "sblr.native_row_packet_type_vector_validated") &&
+	      DirectOptionTruthy(request, "sblr.native_row_packet_value_body_validated") &&
+	      DirectOptionTruthy(request, "sblr.native_row_packet_fixed_shape_validated") &&
+	      DirectOptionTruthy(request, "sblr.native_row_packet_shared_field_order") &&
+	      rowset_shared_shape;
+  const bool fixed_width_payload_validation_applicable =
       request.lane_operation == "native_bulk" &&
       !request.borrowed_input_rows.empty() &&
       !batch_context.row_encoder_plan.columns.empty() &&
-      can_use_shared_row_stage_fast_path &&
-      !native_bulk_engine_validated_payload;
+      DirectInputMatchesEncoderOrder(request,
+                                     request.borrowed_input_rows.front(),
+                                     batch_context.row_encoder_plan);
+	  const bool native_bulk_payload_validation_in_row_stage =
+	      fixed_width_payload_validation_applicable &&
+	      can_use_shared_row_stage_fast_path &&
+	      !native_bulk_engine_validated_payload;
   const bool collect_fixed_width_payload_stats =
       std::getenv("SCRATCHBIRD_DML_PHASE_TRACE_FILE") != nullptr;
   DirectFixedWidthPayloadValidationStats fixed_width_payload_stats_storage;
   DirectFixedWidthPayloadValidationStats* fixed_width_payload_stats =
       collect_fixed_width_payload_stats ? &fixed_width_payload_stats_storage
                                         : nullptr;
-  if (request.lane_operation == "native_bulk" &&
-      !request.borrowed_input_rows.empty() &&
-      !batch_context.row_encoder_plan.columns.empty()) {
+  if (fixed_width_payload_validation_applicable) {
     fixed_width_payload_plan =
         BuildDirectFixedWidthPayloadValidationPlan(batch_context.row_encoder_plan,
                                                   &request.borrowed_input_rows.front());
@@ -9217,12 +9234,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
 
   const bool native_bulk_native_packet_row_stage =
-      native_bulk_typed_logical_batch_bypass &&
+      request.lane_operation == "native_bulk" &&
+      native_row_packet_matches_encoder_order &&
       request.native_row_packet != nullptr &&
       request.native_row_packet->present &&
       request.native_row_packet->row_count == direct_row_count &&
       request.native_row_packet->field_order.size() ==
           request.shared_row_field_order.size() &&
+      rowset_default_markers_absent &&
+      compact_typed_null_state_authoritative &&
+      !has_default_validators &&
+      !has_domain_validators &&
+      !has_check_validators &&
+      batch_context.row_encoder_plan.runtime_policy_recheck_count == 0 &&
       std::equal(request.native_row_packet->field_order.begin(),
                  request.native_row_packet->field_order.end(),
                  request.shared_row_field_order.begin());
@@ -9410,6 +9434,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       }
 
       CrudRowVersionRecord row_record;
+      row_record.creator_tx = request.context.local_transaction_id;
+      row_record.table_uuid = request.target_table.uuid.canonical;
       if (async_native_packet_index_precompute) {
         row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
         row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
@@ -9417,6 +9443,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         row_record.row_uuid = std::move(uuid_batch.row_uuids[row_ordinal]);
         row_record.version_uuid = std::move(uuid_batch.version_uuids[row_ordinal]);
       }
+      row_record.temporary_session_uuid =
+          table->temporary ? request.context.session_uuid.canonical : "";
+      row_record.deleted = false;
 
       std::string not_null_failure;
       for (const std::size_t ordinal : not_null_ordinals) {
@@ -9477,8 +9506,34 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             &direct_precomputed_index_entries,
             &direct_precomputed_index_order_states);
       }
+      if (!native_bulk_typed_logical_batch_bypass) {
+        std::vector<std::pair<std::string, std::string>> row_values;
+        row_values.reserve(native_frame.field_order.size());
+        for (std::size_t field_index = 0;
+             field_index < native_frame.field_order.size();
+             ++field_index) {
+          DirectNativePacketValueRef value_ref;
+          if (!DirectNativePacketValueRefAt(native_frame,
+                                            native_row_index,
+                                            field_index,
+                                            &value_ref)) {
+            return DirectBulkFailure(
+                request,
+                MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                             "native_row_packet_value_decode_failed"),
+                "native_row_packet_value_decode_failed");
+          }
+          row_values.emplace_back(native_frame.field_order[field_index],
+                                  DirectNativePacketPayloadText(native_frame,
+                                                                value_ref));
+        }
+        logical_value_batch.push_back(std::move(row_values));
+      }
       DmlIngestionPreallocationItem preallocation_item;
       preallocation_item.encoded_bytes = encoded_bytes;
+      if (!native_bulk_typed_logical_batch_bypass) {
+        preallocation_item.borrowed_logical_values = &logical_value_batch.back();
+      }
       if (!queue_preallocation_item(std::move(preallocation_item))) {
         return preallocation_failure();
       }
@@ -10106,37 +10161,75 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                    ? "typed_input_no_logical_batch"
                                    : "external_logical_batch"});
   }
-  auto materialize_native_bulk_logical_batch_for_fallback =
-      [&](std::string reason) {
-        if (!logical_value_batch.empty()) {
-          return true;
-        }
-        if (request.borrowed_input_rows.size() != staged_rows.size()) {
-          return false;
-        }
-        logical_value_batch.reserve(staged_rows.size());
-        for (const auto& input_row : request.borrowed_input_rows) {
-          std::vector<std::pair<std::string, std::string>> values;
-          values.reserve(input_row.fields.size());
-          for (std::size_t field_index = 0;
-               field_index < input_row.fields.size();
-               ++field_index) {
-            const auto& typed = input_row.fields[field_index].second;
-            const std::string& field =
-                DirectInputFieldName(request, input_row, field_index);
-            values.emplace_back(field,
-                                typed.is_null ? std::string(kDirectNullMarker)
-                                              : DirectTypedValueTextPayload(typed));
-          }
-          logical_value_batch.push_back(std::move(values));
-        }
-        native_bulk_typed_logical_batch_bypass = false;
-        result.evidence.push_back({"native_bulk_typed_logical_batch_bypass",
-                                   "fallback_materialized"});
-        result.evidence.push_back({"native_bulk_typed_logical_batch_fallback_reason",
-                                   std::move(reason)});
-        return true;
-      };
+	  auto materialize_native_bulk_logical_batch_for_fallback =
+	      [&](std::string reason) {
+	        if (!logical_value_batch.empty()) {
+	          return true;
+	        }
+	        logical_value_batch.reserve(staged_rows.size());
+	        if (request.borrowed_input_rows.size() == staged_rows.size()) {
+	          for (const auto& input_row : request.borrowed_input_rows) {
+	            std::vector<std::pair<std::string, std::string>> values;
+	            values.reserve(input_row.fields.size());
+	            for (std::size_t field_index = 0;
+	                 field_index < input_row.fields.size();
+	                 ++field_index) {
+	              const auto& typed = input_row.fields[field_index].second;
+	              const std::string& field =
+	                  DirectInputFieldName(request, input_row, field_index);
+	              values.emplace_back(field,
+	                                  typed.is_null ? std::string(kDirectNullMarker)
+	                                                : DirectTypedValueTextPayload(typed));
+	            }
+	            logical_value_batch.push_back(std::move(values));
+	          }
+	        } else if (request.native_row_packet != nullptr &&
+	                   request.native_row_packet->present &&
+	                   request.native_row_packet->row_count == staged_rows.size() &&
+	                   request.native_row_packet->field_order.size() ==
+	                       request.native_row_packet->column_count) {
+	          const auto& native_frame = *request.native_row_packet;
+	          for (std::size_t row_index = 0; row_index < staged_rows.size();
+	               ++row_index) {
+	            std::vector<std::pair<std::string, std::string>> values;
+	            values.reserve(native_frame.field_order.size());
+	            for (std::size_t field_index = 0;
+	                 field_index < native_frame.field_order.size();
+	                 ++field_index) {
+	              DirectNativePacketValueRef value_ref;
+	              if (!DirectNativePacketValueRefAt(native_frame,
+	                                                row_index,
+	                                                field_index,
+	                                                &value_ref)) {
+	                logical_value_batch.clear();
+	                return false;
+	              }
+	              values.emplace_back(native_frame.field_order[field_index],
+	                                  DirectNativePacketPayloadText(native_frame,
+	                                                                value_ref));
+	            }
+	            logical_value_batch.push_back(std::move(values));
+	          }
+	        } else {
+	          return false;
+	        }
+	        native_bulk_typed_logical_batch_bypass = false;
+	        result.evidence.push_back({"native_bulk_typed_logical_batch_bypass",
+	                                   "fallback_materialized"});
+	        result.evidence.push_back({"native_bulk_typed_logical_batch_fallback_reason",
+	                                   std::move(reason)});
+	        return true;
+	      };
+	  if (native_bulk_typed_logical_batch_bypass &&
+	      DirectPhysicalMgaCowRequested(request) &&
+	      !materialize_native_bulk_logical_batch_for_fallback(
+	          "physical_mga_cow_requires_value_batch")) {
+	    return DirectBulkFailure(
+	        request,
+	        MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+	                                     "native_bulk_logical_batch_fallback_failed"),
+	        "native_bulk_logical_batch_fallback_failed");
+	  }
   if (native_packet_index_precompute_future.valid()) {
     DirectNativePacketIndexPrecomputeResult precompute =
         native_packet_index_precompute_future.get();
@@ -10685,19 +10778,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool row_stream_shared_key_order_known =
       external_write_value_batch != nullptr &&
       (generated_counter_direct_input || can_stage_shared_values_externally);
-  const bool native_bulk_typed_scoped_row_stream =
+  const bool native_bulk_native_packet_scoped_row_stream =
       native_bulk_scoped_only_row_stream &&
       can_stage_shared_values_externally &&
       !large_value_persistence_required &&
-      ((!request.borrowed_input_rows.empty() &&
-        request.borrowed_input_rows.size() == staged_rows.size()) ||
-       (request.native_row_packet != nullptr &&
-        request.native_row_packet->present &&
-        request.native_row_packet->row_count == staged_rows.size())) &&
-      !request.shared_row_field_order.empty();
-  const bool native_bulk_native_packet_scoped_row_stream =
-      native_bulk_typed_scoped_row_stream &&
       native_bulk_typed_logical_batch_bypass &&
+      native_bulk_native_packet_row_stage &&
       request.native_row_packet != nullptr &&
       request.native_row_packet->present &&
       request.native_row_packet->row_count == staged_rows.size() &&
@@ -10706,6 +10792,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       std::equal(request.native_row_packet->field_order.begin(),
                  request.native_row_packet->field_order.end(),
                  request.shared_row_field_order.begin());
+  const bool native_bulk_typed_scoped_row_stream =
+      native_bulk_scoped_only_row_stream &&
+      can_stage_shared_values_externally &&
+      !large_value_persistence_required &&
+      ((!request.borrowed_input_rows.empty() &&
+        request.borrowed_input_rows.size() == staged_rows.size()) ||
+       native_bulk_native_packet_scoped_row_stream) &&
+      !request.shared_row_field_order.empty();
   std::string native_bulk_typed_scoped_table_uuid =
       request.target_table.uuid.canonical;
   if ((native_bulk_typed_scoped_table_uuid.empty() ||

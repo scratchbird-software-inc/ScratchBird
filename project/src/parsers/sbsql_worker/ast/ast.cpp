@@ -133,6 +133,99 @@ bool IsArraySelectPolicyRefusalProjection(const CstDocument& cst) {
          words[3] == "SELECT";
 }
 
+bool IsCanonicalBuiltinRoutinePath(const std::vector<std::string>& parts) {
+  if (parts.size() < 2) return false;
+  if (parts.size() == 2 && parts[0] == "SQL" && parts[1] == "BULK_EXCEPTIONS") {
+    return true;
+  }
+  if (parts.size() == 2 && parts[0] == "XML" &&
+      (parts[1] == "ATTRS" || parts[1] == "NS")) {
+    return true;
+  }
+  if (parts.size() == 3 && parts[0] == "SB" && parts[1] == "FUNC" &&
+      parts[2] == "REGEXP_LIKE") {
+    return true;
+  }
+  if (parts.front() != "SB") return false;
+  const std::string& family = parts[1];
+  return family == "SCALAR" ||
+         family == "UUID" ||
+         family == "TEMPORAL" ||
+         family == "REGEX" ||
+         family == "JSON" ||
+         family == "XML" ||
+         family == "VECTOR" ||
+         family == "CRYPTO" ||
+         family == "CURSOR" ||
+         family == "STREAM" ||
+         family == "ROWSET" ||
+         family == "TABLE_VALUE" ||
+         family == "SETOF" ||
+         family == "MULTISET" ||
+         family == "LOB" ||
+         family == "LOCATOR" ||
+         family == "HANDLE" ||
+         family == "TYPE" ||
+         family == "OPERATOR" ||
+         family == "SPECIAL" ||
+         family == "SPECIAL_FORM" ||
+         family == "SESSION";
+}
+
+bool ContainsQualifiedRoutineCall(const CstDocument& cst) {
+  for (std::size_t index = 0; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (IsTriviaToken(token)) continue;
+    if (token.kind != TokenKind::kIdentifier && token.kind != TokenKind::kKeyword) continue;
+    bool has_previous_non_trivia = false;
+    bool previous_is_dot = false;
+    std::size_t previous = index;
+    while (previous > 0) {
+      --previous;
+      if (IsTriviaToken(cst.tokens[previous])) continue;
+      has_previous_non_trivia = true;
+      previous_is_dot = cst.tokens[previous].kind == TokenKind::kSymbol &&
+                        cst.tokens[previous].text == ".";
+      break;
+    }
+    if (!has_previous_non_trivia || previous_is_dot) continue;
+
+    std::size_t cursor = index;
+    bool saw_dot = false;
+    bool expect_name = true;
+    std::vector<std::string> parts;
+    while (cursor < cst.tokens.size()) {
+      while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+      if (cursor >= cst.tokens.size()) break;
+      const auto& current = cst.tokens[cursor];
+      if (current.kind == TokenKind::kIdentifier || current.kind == TokenKind::kKeyword) {
+        if (!expect_name) break;
+        parts.push_back(ToUpperAscii(current.text));
+        expect_name = false;
+        ++cursor;
+        continue;
+      }
+      if (current.kind == TokenKind::kSymbol && current.text == ".") {
+        if (expect_name) break;
+        saw_dot = true;
+        expect_name = true;
+        ++cursor;
+        continue;
+      }
+      break;
+    }
+    while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+    if (saw_dot && !expect_name && cursor < cst.tokens.size() &&
+        cst.tokens[cursor].kind == TokenKind::kSymbol &&
+        cst.tokens[cursor].text == "(") {
+      if (IsCanonicalBuiltinRoutinePath(parts)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<std::string> AllMeaningfulTokenWords(const CstDocument& cst) {
   if (!cst.canonical_element_stream.elements.empty()) {
     std::vector<std::string> words;
@@ -640,6 +733,9 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "CREATE" && second == "EVENT") canonical_name = "create_event_stmt";
   else if (keyword == "CREATE" && second == "PRINCIPAL") canonical_name = "create_principal_stmt";
   else if (keyword == "CREATE" && second == "POLICY") canonical_name = "create_policy_stmt";
+  else if (keyword == "CREATE" && second == "FUNCTION") canonical_name = "create_function_stmt";
+  else if (keyword == "CREATE" && second == "PROCEDURE") canonical_name = "create_procedure_stmt";
+  else if (keyword == "CREATE" && second == "TRIGGER") canonical_name = "create_trigger_stmt";
   else if (keyword == "CREATE" && second == "VECTOR" && third == "COLLECTION") {
     canonical_name = "create_vector_collection";
   } else if (keyword == "CREATE") canonical_name = "create_object";
@@ -1665,6 +1761,25 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.family = StatementFamily::kInsert;
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
+  } else if (raw_keyword == "CREATE" &&
+             (raw_second == "FUNCTION" || raw_second == "PROCEDURE" ||
+              raw_second == "TRIGGER")) {
+    ast.family = StatementFamily::kCatalog;
+    ast.registry_family = "sbsql.catalog.mutation.v3";
+    ast.operation_family = "sblr.catalog.mutation.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "CREATE" &&
+             (raw_second == "ROLE" || raw_second == "GROUP" ||
+              raw_second == "POLICY" ||
+              raw_second == "MASK" || raw_second == "RLS")) {
+    ast.family = StatementFamily::kSecurity;
+    ast.registry_family = "sbsql.security.v3";
+    ast.operation_family = (raw_second == "ROLE" || raw_second == "GROUP")
+                               ? "sblr.security.mutation.v3"
+                               : "sblr.policy.operation.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
   } else if ((raw_keyword == "CYPHER" &&
               (raw_second == "DELETE" || raw_second == "MERGE" || raw_second == "LOAD")) ||
              (raw_keyword == "GRAPH" && raw_second == "DELETE") ||
@@ -1896,6 +2011,7 @@ AstDocument BuildAst(const CstDocument& cst) {
             ? false
             : (keyword == "WITH" ||
                ContainsTopLevelKeyword(cst, "FROM") ||
+               ContainsQualifiedRoutineCall(cst) ||
                (ContainsNestedKeyword(cst, "SELECT") &&
                 !array_select_policy_refusal));
     ast.produces_sblr = true;
@@ -2064,8 +2180,15 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.management.runtime_operation.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
-  } else if ((keyword == "CREATE" && (second == "PRINCIPAL" || second == "POLICY")) ||
+  } else if ((keyword == "CREATE" &&
+              (second == "PRINCIPAL" || second == "USER" ||
+               second == "ROLE" || second == "GROUP" ||
+               second == "POLICY" || second == "MASK" || second == "RLS")) ||
              (keyword == "ALTER" && (second == "PRINCIPAL" || second == "POLICY")) ||
+             (keyword == "DROP" &&
+              (second == "PRINCIPAL" || second == "USER" ||
+               second == "ROLE" || second == "GROUP" ||
+               second == "POLICY" || second == "MASK" || second == "RLS")) ||
              (keyword == "ATTACH" && second == "POLICY") ||
              (keyword == "ACTIVATE" && second == "POLICY") ||
              (keyword == "DEACTIVATE" && second == "POLICY") ||
@@ -2074,8 +2197,10 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.family = StatementFamily::kSecurity;
     ast.registry_family = "sbsql.security.v3";
     ast.operation_family =
-        second == "PRINCIPAL" ? "sblr.security.mutation.v3"
-                              : "sblr.policy.operation.v3";
+        (second == "PRINCIPAL" || second == "USER" ||
+         second == "ROLE" || second == "GROUP")
+            ? "sblr.security.mutation.v3"
+            : "sblr.policy.operation.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
   } else if (IsDatabaseLifecycleStatement(cst)) {
@@ -2128,7 +2253,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.family = StatementFamily::kObservability;
     ast.registry_family = "sbsql.observability.inspect.v3";
     ast.operation_family = "sblr.observability.inspect.v3";
-    ast.requires_name_resolution = keyword == "DESCRIBE";
+    ast.requires_name_resolution =
+        keyword == "DESCRIBE" || ContainsTopLevelKeyword(cst, "FROM");
     ast.produces_sblr = true;
   } else if (keyword == "SET") {
     if (second == "ROLE") {

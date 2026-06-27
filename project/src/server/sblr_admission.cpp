@@ -608,11 +608,17 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "security.privilege.revoke" ||
          operation_id == "security.session.set_role" ||
          operation_id == "security.role.create" ||
+         operation_id == "security.role.drop" ||
          operation_id == "security.group.create" ||
+         operation_id == "security.group.drop" ||
          operation_id == "security.principal.create" ||
          operation_id == "security.principal.alter" ||
          operation_id == "security.policy.create" ||
          operation_id == "security.policy.alter" ||
+         operation_id == "security.policy.drop" ||
+         operation_id == "security.policy.lifecycle_drop" ||
+         operation_id == "security.mask.drop" ||
+         operation_id == "security.rls.drop" ||
          operation_id == "security.policy.attach" ||
          operation_id == "security.policy.activate" ||
          operation_id == "security.policy.deactivate" ||

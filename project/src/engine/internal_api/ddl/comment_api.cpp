@@ -14,7 +14,28 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_COMMENT_API_BEHAVIOR
 EngineCommentOnObjectResult EngineCommentOnObject(const EngineCommentOnObjectRequest& request) {
-  return PersistedRecordResult<EngineCommentOnObjectResult>(request, "ddl.comment_on_object", "object_comment", true, "active");
+  auto comment_request = request;
+  const std::string comment_target_uuid = request.target_object.uuid.canonical;
+  const std::string comment_target_kind =
+      request.target_object.object_kind.empty() ? "object" : request.target_object.object_kind;
+
+  // COMMENT records describe a catalog object; they must not replace the
+  // object's descriptor row in the behavior stream.
+  comment_request.target_object.uuid.canonical.clear();
+  comment_request.target_object.object_kind.clear();
+
+  auto result = PersistedRecordResult<EngineCommentOnObjectResult>(
+      comment_request, "ddl.comment_on_object", "object_comment", true, "active");
+  if (!result.ok) return result;
+
+  AddApiBehaviorEvidence(&result, "comment_target", comment_target_uuid);
+  AddApiBehaviorEvidence(&result, "comment_target_kind", comment_target_kind);
+  AddApiBehaviorRow(&result,
+                    {{"comment_target_uuid", comment_target_uuid},
+                     {"comment_target_kind", comment_target_kind},
+                     {"descriptor_replaced", "false"},
+                     {"parser_executes_sql", "false"}});
+  return result;
 }
 
 }  // namespace scratchbird::engine::internal_api

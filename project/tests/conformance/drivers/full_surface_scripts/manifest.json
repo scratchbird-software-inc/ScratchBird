@@ -1,7 +1,11 @@
 {
-  "schema_version": 1,
-  "suite_id": "scratchbird.driver.full_surface.v1",
-  "namespace_placeholder": "__SB_NAMESPACE__",
+  "builtin_fixture_minimums": {
+    "diagnostic_rows": 163,
+    "fixture_files": 37,
+    "fixture_rows": 1713,
+    "fixture_surface_ids": 1214,
+    "release_function_operator_fixture_surface_ids": 1101
+  },
   "compile_placeholders": [
     "__SB_NAMESPACE__",
     "__SB_DRIVER__",
@@ -11,33 +15,7 @@
     "__SB_PAGE_SIZE__",
     "__SB_ARTIFACT_ROOT__"
   ],
-  "minimum_language_catalog_counts": {
-    "surface_function": 1317,
-    "surface_operator": 18
-  },
-  "builtin_fixture_minimums": {
-    "fixture_files": 37,
-    "fixture_rows": 1713,
-    "fixture_surface_ids": 1214,
-    "release_function_operator_fixture_surface_ids": 1101,
-    "diagnostic_rows": 163
-  },
-  "exhaustive_source_minimums": {
-    "replay_rows": 2617,
-    "full_route_replay_rows": 2560,
-    "e2e_scopes": 10,
-    "datatype_count": 86,
-    "page_size_count": 11,
-    "index_family_count": 28,
-    "builtin_fixture_rows": 1713,
-    "sblr_round_trip_files": 2617,
-    "authenticated_route_files": 2617,
-    "generated_script_count": 10,
-    "generated_case_count": 63000,
-    "generated_datatype_rows": 5504,
-    "generated_index_cases": 14448,
-    "generated_cast_cases": 7396
-  },
+  "exhaustive_generated_assertion_count": 0,
   "exhaustive_generated_script_ids": [
     "SBDFS-100",
     "SBDFS-101",
@@ -50,7 +28,27 @@
     "SBDFS-170",
     "SBDFS-180"
   ],
-  "exhaustive_generated_assertion_count": 0,
+  "exhaustive_source_minimums": {
+    "authenticated_route_files": 2617,
+    "builtin_fixture_rows": 1713,
+    "datatype_count": 86,
+    "e2e_scopes": 10,
+    "full_route_replay_rows": 2560,
+    "generated_case_count": 63000,
+    "generated_cast_cases": 7396,
+    "generated_datatype_rows": 5504,
+    "generated_index_cases": 14448,
+    "generated_script_count": 10,
+    "index_family_count": 28,
+    "page_size_count": 11,
+    "replay_rows": 2617,
+    "sblr_round_trip_files": 2617
+  },
+  "minimum_language_catalog_counts": {
+    "surface_function": 1317,
+    "surface_operator": 18
+  },
+  "namespace_placeholder": "__SB_NAMESPACE__",
   "required_coverage": [
     "aggregate_functions",
     "agent_management",
@@ -261,34 +259,42 @@
     "trigger_referencing_old_new",
     "trigger_side_effect_audit"
   ],
+  "schema_version": 1,
   "scripts": [
     {
-      "script_id": "SBDFS-000",
-      "path": "scripts/000_bootstrap_context.sbsql",
-      "coverage": [
-        "schema_bootstrap"
-      ],
       "assertions": [
         "SBDFS-000-001",
         "SBDFS-000-002"
-      ]
+      ],
+      "coverage": [
+        "schema_bootstrap"
+      ],
+      "path": "scripts/000_bootstrap_context.sbsql",
+      "script_id": "SBDFS-000"
     },
     {
-      "script_id": "SBDFS-010",
-      "path": "scripts/010_datatypes_boundaries.sbsql",
-      "coverage": [
-        "all_table_column_type_families",
-        "type_boundaries"
-      ],
       "assertions": [
         "SBDFS-010-001",
         "SBDFS-010-002",
         "SBDFS-010-003"
-      ]
+      ],
+      "coverage": [
+        "all_table_column_type_families",
+        "type_boundaries"
+      ],
+      "path": "scripts/010_datatypes_boundaries.sbsql",
+      "script_id": "SBDFS-010"
     },
     {
-      "script_id": "SBDFS-011",
-      "path": "scripts/011_domains.sbsql",
+      "assertions": [
+        "SBDFS-011-001",
+        "SBDFS-011-002",
+        "SBDFS-011-003",
+        "SBDFS-011-004",
+        "SBDFS-011-005",
+        "SBDFS-011-006",
+        "SBDFS-011-007"
+      ],
       "coverage": [
         "domain_create",
         "domain_check_constraint",
@@ -302,22 +308,24 @@
         "drop_domain_restrict",
         "catalog_introspection_domain_descriptor"
       ],
-      "assertions": [
-        "SBDFS-011-001",
-        "SBDFS-011-002",
-        "SBDFS-011-003",
-        "SBDFS-011-004",
-        "SBDFS-011-005",
-        "SBDFS-011-006",
-        "SBDFS-011-007"
-      ],
       "expected_refusals": [
         "011_domains.sbsql:13"
-      ]
+      ],
+      "path": "scripts/011_domains.sbsql",
+      "script_id": "SBDFS-011"
     },
     {
-      "script_id": "SBDFS-012",
-      "path": "scripts/012_sequences.sbsql",
+      "assertions": [
+        "SBDFS-012-001",
+        "SBDFS-012-002",
+        "SBDFS-012-003",
+        "SBDFS-012-004",
+        "SBDFS-012-005",
+        "SBDFS-012-006",
+        "SBDFS-012-007",
+        "SBDFS-012-008",
+        "SBDFS-012-009"
+      ],
       "coverage": [
         "sequence_create",
         "sequence_as_bigint",
@@ -336,21 +344,19 @@
         "comment_on_sequence",
         "drop_sequence_restrict"
       ],
-      "assertions": [
-        "SBDFS-012-001",
-        "SBDFS-012-002",
-        "SBDFS-012-003",
-        "SBDFS-012-004",
-        "SBDFS-012-005",
-        "SBDFS-012-006",
-        "SBDFS-012-007",
-        "SBDFS-012-008",
-        "SBDFS-012-009"
-      ]
+      "path": "scripts/012_sequences.sbsql",
+      "script_id": "SBDFS-012"
     },
     {
-      "script_id": "SBDFS-013",
-      "path": "scripts/013_views.sbsql",
+      "assertions": [
+        "SBDFS-013-001",
+        "SBDFS-013-002",
+        "SBDFS-013-003",
+        "SBDFS-013-004",
+        "SBDFS-013-005",
+        "SBDFS-013-006",
+        "SBDFS-013-007"
+      ],
       "coverage": [
         "view_create",
         "view_predicate_filter",
@@ -363,19 +369,20 @@
         "drop_materialized_view_restrict",
         "catalog_introspection_sys_tables"
       ],
-      "assertions": [
-        "SBDFS-013-001",
-        "SBDFS-013-002",
-        "SBDFS-013-003",
-        "SBDFS-013-004",
-        "SBDFS-013-005",
-        "SBDFS-013-006",
-        "SBDFS-013-007"
-      ]
+      "path": "scripts/013_views.sbsql",
+      "script_id": "SBDFS-013"
     },
     {
-      "script_id": "SBDFS-014",
-      "path": "scripts/014_schema_tree.sbsql",
+      "assertions": [
+        "SBDFS-014-001",
+        "SBDFS-014-002",
+        "SBDFS-014-003",
+        "SBDFS-014-004",
+        "SBDFS-014-005",
+        "SBDFS-014-006",
+        "SBDFS-014-007",
+        "SBDFS-014-008"
+      ],
       "coverage": [
         "schema_create_nested",
         "schema_qualified_name_resolution",
@@ -387,34 +394,10 @@
         "catalog_introspection_sys_schemas",
         "catalog_introspection_sys_tables"
       ],
-      "assertions": [
-        "SBDFS-014-001",
-        "SBDFS-014-002",
-        "SBDFS-014-003",
-        "SBDFS-014-004",
-        "SBDFS-014-005",
-        "SBDFS-014-006",
-        "SBDFS-014-007",
-        "SBDFS-014-008"
-      ]
+      "path": "scripts/014_schema_tree.sbsql",
+      "script_id": "SBDFS-014"
     },
     {
-      "script_id": "SBDFS-015",
-      "path": "scripts/015_ddl_alter_lifecycle.sbsql",
-      "coverage": [
-        "alter_table_add_column",
-        "alter_table_drop_column",
-        "alter_table_alter_column_set_default",
-        "alter_table_add_constraint_check",
-        "alter_table_drop_constraint",
-        "alter_table_rename_column",
-        "rename_table",
-        "comment_on_table",
-        "comment_on_column",
-        "drop_table_restrict",
-        "catalog_introspection_sys_tables",
-        "catalog_introspection_sys_columns"
-      ],
       "assertions": [
         "SBDFS-015-001",
         "SBDFS-015-002",
@@ -429,11 +412,31 @@
         "SBDFS-015-011",
         "SBDFS-015-012",
         "SBDFS-015-013"
-      ]
+      ],
+      "coverage": [
+        "alter_table_add_column",
+        "alter_table_drop_column",
+        "alter_table_alter_column_set_default",
+        "alter_table_add_constraint_check",
+        "alter_table_drop_constraint",
+        "alter_table_rename_column",
+        "rename_table",
+        "comment_on_table",
+        "comment_on_column",
+        "drop_table_restrict",
+        "catalog_introspection_sys_tables",
+        "catalog_introspection_sys_columns"
+      ],
+      "path": "scripts/015_ddl_alter_lifecycle.sbsql",
+      "script_id": "SBDFS-015"
     },
     {
-      "script_id": "SBDFS-020",
-      "path": "scripts/020_dml_mutation_returning.sbsql",
+      "assertions": [
+        "SBDFS-020-001",
+        "SBDFS-020-002",
+        "SBDFS-020-003",
+        "SBDFS-020-004"
+      ],
       "coverage": [
         "insert",
         "update",
@@ -442,16 +445,15 @@
         "upsert",
         "on_conflict"
       ],
-      "assertions": [
-        "SBDFS-020-001",
-        "SBDFS-020-002",
-        "SBDFS-020-003",
-        "SBDFS-020-004"
-      ]
+      "path": "scripts/020_dml_mutation_returning.sbsql",
+      "script_id": "SBDFS-020"
     },
     {
-      "script_id": "SBDFS-030",
-      "path": "scripts/030_index_families_variations.sbsql",
+      "assertions": [
+        "SBDFS-030-001",
+        "SBDFS-030-002",
+        "SBDFS-030-003"
+      ],
       "coverage": [
         "primary_key",
         "btree_index",
@@ -466,15 +468,19 @@
         "vector_hnsw_index",
         "fulltext_index"
       ],
-      "assertions": [
-        "SBDFS-030-001",
-        "SBDFS-030-002",
-        "SBDFS-030-003"
-      ]
+      "path": "scripts/030_index_families_variations.sbsql",
+      "script_id": "SBDFS-030"
     },
     {
-      "script_id": "SBDFS-040",
-      "path": "scripts/040_query_joins_window_cte.sbsql",
+      "assertions": [
+        "SBDFS-040-001",
+        "SBDFS-040-002",
+        "SBDFS-040-003",
+        "SBDFS-040-004",
+        "SBDFS-040-005",
+        "SBDFS-040-006",
+        "SBDFS-040-007"
+      ],
       "coverage": [
         "inner_join",
         "left_join",
@@ -484,38 +490,10 @@
         "recursive_cte",
         "set_operation"
       ],
-      "assertions": [
-        "SBDFS-040-001",
-        "SBDFS-040-002",
-        "SBDFS-040-003",
-        "SBDFS-040-004",
-        "SBDFS-040-005",
-        "SBDFS-040-006",
-        "SBDFS-040-007"
-      ]
+      "path": "scripts/040_query_joins_window_cte.sbsql",
+      "script_id": "SBDFS-040"
     },
     {
-      "script_id": "SBDFS-045",
-      "path": "scripts/045_query_completeness.sbsql",
-      "coverage": [
-        "right_join",
-        "full_outer_join",
-        "cross_join",
-        "lateral_join",
-        "join_using",
-        "grouping_sets",
-        "rollup",
-        "cube",
-        "union_all",
-        "intersect",
-        "except",
-        "select_distinct",
-        "order_by_nulls_first",
-        "order_by_nulls_last",
-        "limit_offset",
-        "fetch_first_rows_only",
-        "limit_zero"
-      ],
       "assertions": [
         "SBDFS-045-001",
         "SBDFS-045-002",
@@ -544,23 +522,30 @@
         "SBDFS-045-025",
         "SBDFS-045-026",
         "SBDFS-045-027"
-      ]
+      ],
+      "coverage": [
+        "right_join",
+        "full_outer_join",
+        "cross_join",
+        "lateral_join",
+        "join_using",
+        "grouping_sets",
+        "rollup",
+        "cube",
+        "union_all",
+        "intersect",
+        "except",
+        "select_distinct",
+        "order_by_nulls_first",
+        "order_by_nulls_last",
+        "limit_offset",
+        "fetch_first_rows_only",
+        "limit_zero"
+      ],
+      "path": "scripts/045_query_completeness.sbsql",
+      "script_id": "SBDFS-045"
     },
     {
-      "script_id": "SBDFS-050",
-      "path": "scripts/050_functions_operators.sbsql",
-      "coverage": [
-        "scalar_functions",
-        "aggregate_functions",
-        "json_functions",
-        "uuid_functions",
-        "vector_functions",
-        "arithmetic_operators",
-        "logical_operators",
-        "comparison_operators",
-        "pattern_operators",
-        "membership_operators"
-      ],
       "assertions": [
         "SBDFS-050-001",
         "SBDFS-050-002",
@@ -584,11 +569,34 @@
         "SBDFS-050-020",
         "SBDFS-050-021",
         "SBDFS-050-022"
-      ]
+      ],
+      "coverage": [
+        "scalar_functions",
+        "aggregate_functions",
+        "json_functions",
+        "uuid_functions",
+        "vector_functions",
+        "arithmetic_operators",
+        "logical_operators",
+        "comparison_operators",
+        "pattern_operators",
+        "membership_operators"
+      ],
+      "path": "scripts/050_functions_operators.sbsql",
+      "script_id": "SBDFS-050"
     },
     {
-      "script_id": "SBDFS-052",
-      "path": "scripts/052_functions_expression_body.sbsql",
+      "assertions": [
+        "SBDFS-052-001",
+        "SBDFS-052-002",
+        "SBDFS-052-003",
+        "SBDFS-052-004",
+        "SBDFS-052-005",
+        "SBDFS-052-006",
+        "SBDFS-052-007",
+        "SBDFS-052-008",
+        "SBDFS-052-009"
+      ],
       "coverage": [
         "expression_body_function",
         "function_ddl_lifecycle",
@@ -600,21 +608,21 @@
         "returns_null_on_null_input",
         "called_on_null_input"
       ],
-      "assertions": [
-        "SBDFS-052-001",
-        "SBDFS-052-002",
-        "SBDFS-052-003",
-        "SBDFS-052-004",
-        "SBDFS-052-005",
-        "SBDFS-052-006",
-        "SBDFS-052-007",
-        "SBDFS-052-008",
-        "SBDFS-052-009"
-      ]
+      "path": "scripts/052_functions_expression_body.sbsql",
+      "script_id": "SBDFS-052"
     },
     {
-      "script_id": "SBDFS-053",
-      "path": "scripts/053_triggers.sbsql",
+      "assertions": [
+        "SBDFS-053-001",
+        "SBDFS-053-002",
+        "SBDFS-053-003",
+        "SBDFS-053-004",
+        "SBDFS-053-005",
+        "SBDFS-053-006",
+        "SBDFS-053-007",
+        "SBDFS-053-008",
+        "SBDFS-053-009"
+      ],
       "coverage": [
         "trigger_after_insert_row",
         "trigger_after_update_row",
@@ -627,33 +635,10 @@
         "drop_trigger",
         "set_term_procedural_body"
       ],
-      "assertions": [
-        "SBDFS-053-001",
-        "SBDFS-053-002",
-        "SBDFS-053-003",
-        "SBDFS-053-004",
-        "SBDFS-053-005",
-        "SBDFS-053-006",
-        "SBDFS-053-007",
-        "SBDFS-053-008",
-        "SBDFS-053-009"
-      ]
+      "path": "scripts/053_triggers.sbsql",
+      "script_id": "SBDFS-053"
     },
     {
-      "script_id": "SBDFS-054",
-      "path": "scripts/054_functions_procedural.sbsql",
-      "coverage": [
-        "function_procedural_body",
-        "function_returns_null_on_null_input",
-        "function_if_branching",
-        "function_while_loop",
-        "function_local_variables",
-        "function_decimal_arithmetic",
-        "function_return_value",
-        "function_invocation_assertion",
-        "drop_function",
-        "set_term_procedural_body"
-      ],
       "assertions": [
         "SBDFS-054-001",
         "SBDFS-054-002",
@@ -667,11 +652,32 @@
         "SBDFS-054-010",
         "SBDFS-054-011",
         "SBDFS-054-012"
-      ]
+      ],
+      "coverage": [
+        "function_procedural_body",
+        "function_returns_null_on_null_input",
+        "function_if_branching",
+        "function_while_loop",
+        "function_local_variables",
+        "function_decimal_arithmetic",
+        "function_return_value",
+        "function_invocation_assertion",
+        "drop_function",
+        "set_term_procedural_body"
+      ],
+      "path": "scripts/054_functions_procedural.sbsql",
+      "script_id": "SBDFS-054"
     },
     {
-      "script_id": "SBDFS-056",
-      "path": "scripts/056_procedures.sbsql",
+      "assertions": [
+        "SBDFS-056-001",
+        "SBDFS-056-002",
+        "SBDFS-056-003",
+        "SBDFS-056-004",
+        "SBDFS-056-005",
+        "SBDFS-056-006",
+        "SBDFS-056-007"
+      ],
       "coverage": [
         "procedure_non_selectable",
         "procedure_for_select_cursor",
@@ -683,30 +689,10 @@
         "drop_procedure",
         "set_term_procedural_body"
       ],
-      "assertions": [
-        "SBDFS-056-001",
-        "SBDFS-056-002",
-        "SBDFS-056-003",
-        "SBDFS-056-004",
-        "SBDFS-056-005",
-        "SBDFS-056-006",
-        "SBDFS-056-007"
-      ]
+      "path": "scripts/056_procedures.sbsql",
+      "script_id": "SBDFS-056"
     },
     {
-      "script_id": "SBDFS-057",
-      "path": "scripts/057_selectable_procedures.sbsql",
-      "coverage": [
-        "selectable_procedure_returns",
-        "selectable_procedure_suspend",
-        "selectable_procedure_while_loop",
-        "selectable_procedure_select_invocation",
-        "selectable_procedure_step_param",
-        "selectable_procedure_empty_result",
-        "selectable_procedure_guard_branch",
-        "drop_procedure",
-        "set_term_procedural_body"
-      ],
       "assertions": [
         "SBDFS-057-001",
         "SBDFS-057-002",
@@ -719,11 +705,29 @@
         "SBDFS-057-009",
         "SBDFS-057-010",
         "SBDFS-057-011"
-      ]
+      ],
+      "coverage": [
+        "selectable_procedure_returns",
+        "selectable_procedure_suspend",
+        "selectable_procedure_while_loop",
+        "selectable_procedure_select_invocation",
+        "selectable_procedure_step_param",
+        "selectable_procedure_empty_result",
+        "selectable_procedure_guard_branch",
+        "drop_procedure",
+        "set_term_procedural_body"
+      ],
+      "path": "scripts/057_selectable_procedures.sbsql",
+      "script_id": "SBDFS-057"
     },
     {
-      "script_id": "SBDFS-058",
-      "path": "scripts/058_dynamic_resultset_procedures.sbsql",
+      "assertions": [
+        "SBDFS-058-001",
+        "SBDFS-058-002",
+        "SBDFS-058-003",
+        "SBDFS-058-004",
+        "SBDFS-058-005"
+      ],
       "coverage": [
         "dynamic_execute_statement_into",
         "dynamic_resultset_suspend",
@@ -732,76 +736,65 @@
         "drop_procedure",
         "set_term_procedural_body"
       ],
-      "assertions": [
-        "SBDFS-058-001",
-        "SBDFS-058-002",
-        "SBDFS-058-003",
-        "SBDFS-058-004",
-        "SBDFS-058-005"
-      ]
+      "path": "scripts/058_dynamic_resultset_procedures.sbsql",
+      "script_id": "SBDFS-058"
     },
     {
-      "script_id": "SBDFS-059",
-      "path": "scripts/059_copy_in_band_copy.sbsql",
-      "coverage": [
-        "copy"
-      ],
       "assertions": [
         "SBDFS-059-001",
         "SBDFS-059-002",
         "SBDFS-059-003",
         "SBDFS-059-004"
-      ]
+      ],
+      "coverage": [
+        "copy"
+      ],
+      "path": "scripts/059_copy_in_band_copy.sbsql",
+      "script_id": "SBDFS-059"
     },
     {
-      "script_id": "SBDFS-055",
-      "path": "generated/scripts/055_builtin_fixture_manifest.sbsql",
-      "generated_from": "project/tests/sbsql_parser_worker/generated/full_surface/*.csv",
-      "coverage": [
-        "function_expected_output_fixture_pack",
-        "operator_expected_output_fixture_pack",
-        "function_operator_semantic_oracle_coverage"
-      ],
       "assertions": [
         "SBDFS-055-001",
         "SBDFS-055-002",
         "SBDFS-055-003",
         "SBDFS-055-004"
-      ]
+      ],
+      "coverage": [
+        "function_expected_output_fixture_pack",
+        "operator_expected_output_fixture_pack",
+        "function_operator_semantic_oracle_coverage"
+      ],
+      "generated_from": "project/tests/sbsql_parser_worker/generated/full_surface/*.csv",
+      "path": "generated/scripts/055_builtin_fixture_manifest.sbsql",
+      "script_id": "SBDFS-055"
     },
     {
-      "script_id": "SBDFS-060",
-      "path": "scripts/060_transaction_mga_visibility.sbsql",
+      "assertions": [
+        "SBDFS-060-001",
+        "SBDFS-060-002",
+        "SBDFS-060-003"
+      ],
       "coverage": [
         "mga_begin_commit",
         "mga_rollback",
         "mga_savepoint"
       ],
-      "assertions": [
-        "SBDFS-060-001",
-        "SBDFS-060-002",
-        "SBDFS-060-003"
-      ]
+      "path": "scripts/060_transaction_mga_visibility.sbsql",
+      "script_id": "SBDFS-060"
     },
     {
-      "script_id": "SBDFS-070",
-      "path": "scripts/070_large_dataset_load.sbsql",
-      "coverage": [
-        "large_dataset_load"
-      ],
       "assertions": [
         "SBDFS-070-001",
         "SBDFS-070-002",
         "SBDFS-070-003"
-      ]
+      ],
+      "coverage": [
+        "large_dataset_load"
+      ],
+      "path": "scripts/070_large_dataset_load.sbsql",
+      "script_id": "SBDFS-070"
     },
     {
-      "script_id": "SBDFS-080",
-      "path": "scripts/080_metadata_security_authorization.sbsql",
-      "coverage": [
-        "metadata_visibility",
-        "authorization_refusal"
-      ],
       "assertions": [
         "SBDFS-080-001",
         "SBDFS-080-002",
@@ -809,20 +802,17 @@
         "SBDFS-080-004",
         "SBDFS-080-005"
       ],
+      "coverage": [
+        "metadata_visibility",
+        "authorization_refusal"
+      ],
       "expected_refusals": [
         "080_metadata_security_authorization.sbsql:6"
-      ]
+      ],
+      "path": "scripts/080_metadata_security_authorization.sbsql",
+      "script_id": "SBDFS-080"
     },
     {
-      "script_id": "SBDFS-085",
-      "path": "scripts/085_security_authority_group_regression.sbsql",
-      "coverage": [
-        "authorization_refusal",
-        "recursive_group_authorization",
-        "security_grant_matrix",
-        "cross_user_sblr_replay_refusal",
-        "authorization_filtered_resolution"
-      ],
       "assertions": [
         "SBDFS-085-001",
         "SBDFS-085-002",
@@ -834,11 +824,28 @@
         "SBDFS-085-008",
         "SBDFS-085-009",
         "SBDFS-085-010"
-      ]
+      ],
+      "coverage": [
+        "authorization_refusal",
+        "recursive_group_authorization",
+        "security_grant_matrix",
+        "cross_user_sblr_replay_refusal",
+        "authorization_filtered_resolution"
+      ],
+      "path": "scripts/085_security_authority_group_regression.sbsql",
+      "script_id": "SBDFS-085"
     },
     {
-      "script_id": "SBDFS-086",
-      "path": "scripts/086_security_object_ddl.sbsql",
+      "assertions": [
+        "SBDFS-086-001",
+        "SBDFS-086-002",
+        "SBDFS-086-003",
+        "SBDFS-086-004",
+        "SBDFS-086-005",
+        "SBDFS-086-006",
+        "SBDFS-086-007",
+        "SBDFS-086-008"
+      ],
       "coverage": [
         "security_role_ddl",
         "security_group_ddl",
@@ -854,33 +861,27 @@
         "restrictive_composition",
         "has_role_expression"
       ],
-      "assertions": [
-        "SBDFS-086-001",
-        "SBDFS-086-002",
-        "SBDFS-086-003",
-        "SBDFS-086-004",
-        "SBDFS-086-005",
-        "SBDFS-086-006",
-        "SBDFS-086-007",
-        "SBDFS-086-008"
-      ]
+      "path": "scripts/086_security_object_ddl.sbsql",
+      "script_id": "SBDFS-086"
     },
     {
-      "script_id": "SBDFS-090",
-      "path": "scripts/090_optimizer_paths.sbsql",
+      "assertions": [
+        "SBDFS-090-001"
+      ],
       "coverage": [
         "optimizer_index_lookup",
         "optimizer_grouping",
         "optimizer_join",
         "optimizer_cte"
       ],
-      "assertions": [
-        "SBDFS-090-001"
-      ]
+      "path": "scripts/090_optimizer_paths.sbsql",
+      "script_id": "SBDFS-090"
     },
     {
-      "script_id": "SBDFS-092",
-      "path": "scripts/092_multimodel_descriptor_routes.sbsql",
+      "assertions": [
+        "SBDFS-092-001",
+        "SBDFS-092-002"
+      ],
       "coverage": [
         "multimodel_descriptor_ddl",
         "multimodel_statements",
@@ -888,14 +889,14 @@
         "vector_collection_operation",
         "vector_search"
       ],
-      "assertions": [
-        "SBDFS-092-001",
-        "SBDFS-092-002"
-      ]
+      "path": "scripts/092_multimodel_descriptor_routes.sbsql",
+      "script_id": "SBDFS-092"
     },
     {
-      "script_id": "SBDFS-093",
-      "path": "scripts/093_admin_session_artifact_routes.sbsql",
+      "assertions": [
+        "SBDFS-093-001",
+        "SBDFS-093-002"
+      ],
       "coverage": [
         "agent_management",
         "backup_restore_replication_migration",
@@ -906,14 +907,11 @@
         "management_operations",
         "session_configuration"
       ],
-      "assertions": [
-        "SBDFS-093-001",
-        "SBDFS-093-002"
-      ]
+      "path": "scripts/093_admin_session_artifact_routes.sbsql",
+      "script_id": "SBDFS-093"
     },
     {
-      "script_id": "SBDFS-099",
-      "path": "scripts/099_cluster_gated_refusals.sbsql",
+      "assertions": [],
       "coverage": [
         "cluster_gated_statement",
         "cluster_inspection_refusal",
@@ -921,126 +919,292 @@
         "cluster_node_membership_refusal",
         "cluster_compile_link_stub"
       ],
-      "assertions": [],
       "expected_refusals": [
         "099_cluster_gated_refusals.sbsql:2",
         "099_cluster_gated_refusals.sbsql:3",
         "099_cluster_gated_refusals.sbsql:4"
-      ]
+      ],
+      "path": "scripts/099_cluster_gated_refusals.sbsql",
+      "script_id": "SBDFS-099"
     },
     {
-      "script_id": "SBDFS-100",
-      "path": "generated/scripts/100_surface_replay_manifest.sbsql",
-      "coverage": [
-        "generated_full_surface"
-      ],
       "assertions": [
         "SBDFS-100-001",
         "SBDFS-100-002",
         "SBDFS-100-003",
         "SBDFS-100-004"
       ],
-      "generated_case_count": 2621
-    },
-    {
-      "script_id": "SBDFS-101",
-      "path": "generated/scripts/101_surface_replay_commands.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 2621,
+      "path": "generated/scripts/100_surface_replay_manifest.sbsql",
+      "script_id": "SBDFS-100"
+    },
+    {
       "assertions": [
         "SBDFS-101-001"
       ],
-      "generated_case_count": 2618
-    },
-    {
-      "script_id": "SBDFS-110",
-      "path": "generated/scripts/110_sblr_uuid_roundtrip_manifest.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 2618,
+      "path": "generated/scripts/101_surface_replay_commands.sbsql",
+      "script_id": "SBDFS-101"
+    },
+    {
       "assertions": [
         "SBDFS-110-001"
       ],
-      "generated_case_count": 2618
-    },
-    {
-      "script_id": "SBDFS-120",
-      "path": "generated/scripts/120_datatype_native_load.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 2618,
+      "path": "generated/scripts/110_sblr_uuid_roundtrip_manifest.sbsql",
+      "script_id": "SBDFS-110"
+    },
+    {
       "assertions": [
         "SBDFS-120-001",
         "SBDFS-120-002"
       ],
-      "generated_case_count": 5679
-    },
-    {
-      "script_id": "SBDFS-130",
-      "path": "generated/scripts/130_datatype_dml_matrix.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 5679,
+      "path": "generated/scripts/120_datatype_native_load.sbsql",
+      "script_id": "SBDFS-120"
+    },
+    {
       "assertions": [
         "SBDFS-130-001"
       ],
-      "generated_case_count": 1378
-    },
-    {
-      "script_id": "SBDFS-140",
-      "path": "generated/scripts/140_index_family_variation_matrix.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 1378,
+      "path": "generated/scripts/130_datatype_dml_matrix.sbsql",
+      "script_id": "SBDFS-130"
+    },
+    {
       "assertions": [
         "SBDFS-140-001"
       ],
-      "generated_case_count": 28898
-    },
-    {
-      "script_id": "SBDFS-150",
-      "path": "generated/scripts/150_query_join_window_cte_matrix.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 28898,
+      "path": "generated/scripts/140_index_family_variation_matrix.sbsql",
+      "script_id": "SBDFS-140"
+    },
+    {
       "assertions": [
         "SBDFS-150-001"
       ],
-      "generated_case_count": 2066
-    },
-    {
-      "script_id": "SBDFS-160",
-      "path": "generated/scripts/160_builtin_function_invocations.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 2066,
+      "path": "generated/scripts/150_query_join_window_cte_matrix.sbsql",
+      "script_id": "SBDFS-150"
+    },
+    {
       "assertions": [
         "SBDFS-160-001"
       ],
-      "generated_case_count": 1714
-    },
-    {
-      "script_id": "SBDFS-170",
-      "path": "generated/scripts/170_cast_operator_matrix.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "expected_refusals": [
+        "160_builtin_function_invocations.sbsql:4",
+        "160_builtin_function_invocations.sbsql:7",
+        "160_builtin_function_invocations.sbsql:12",
+        "160_builtin_function_invocations.sbsql:31",
+        "160_builtin_function_invocations.sbsql:34",
+        "160_builtin_function_invocations.sbsql:37",
+        "160_builtin_function_invocations.sbsql:41",
+        "160_builtin_function_invocations.sbsql:42",
+        "160_builtin_function_invocations.sbsql:48",
+        "160_builtin_function_invocations.sbsql:65",
+        "160_builtin_function_invocations.sbsql:69",
+        "160_builtin_function_invocations.sbsql:74",
+        "160_builtin_function_invocations.sbsql:77",
+        "160_builtin_function_invocations.sbsql:90",
+        "160_builtin_function_invocations.sbsql:93",
+        "160_builtin_function_invocations.sbsql:96",
+        "160_builtin_function_invocations.sbsql:107",
+        "160_builtin_function_invocations.sbsql:110",
+        "160_builtin_function_invocations.sbsql:135",
+        "160_builtin_function_invocations.sbsql:139",
+        "160_builtin_function_invocations.sbsql:140",
+        "160_builtin_function_invocations.sbsql:144",
+        "160_builtin_function_invocations.sbsql:145",
+        "160_builtin_function_invocations.sbsql:149",
+        "160_builtin_function_invocations.sbsql:153",
+        "160_builtin_function_invocations.sbsql:157",
+        "160_builtin_function_invocations.sbsql:158",
+        "160_builtin_function_invocations.sbsql:196",
+        "160_builtin_function_invocations.sbsql:242",
+        "160_builtin_function_invocations.sbsql:246",
+        "160_builtin_function_invocations.sbsql:247",
+        "160_builtin_function_invocations.sbsql:248",
+        "160_builtin_function_invocations.sbsql:249",
+        "160_builtin_function_invocations.sbsql:250",
+        "160_builtin_function_invocations.sbsql:261",
+        "160_builtin_function_invocations.sbsql:266",
+        "160_builtin_function_invocations.sbsql:270",
+        "160_builtin_function_invocations.sbsql:271",
+        "160_builtin_function_invocations.sbsql:287",
+        "160_builtin_function_invocations.sbsql:288",
+        "160_builtin_function_invocations.sbsql:327",
+        "160_builtin_function_invocations.sbsql:328",
+        "160_builtin_function_invocations.sbsql:336",
+        "160_builtin_function_invocations.sbsql:343",
+        "160_builtin_function_invocations.sbsql:344",
+        "160_builtin_function_invocations.sbsql:345",
+        "160_builtin_function_invocations.sbsql:346",
+        "160_builtin_function_invocations.sbsql:349",
+        "160_builtin_function_invocations.sbsql:350",
+        "160_builtin_function_invocations.sbsql:351",
+        "160_builtin_function_invocations.sbsql:352",
+        "160_builtin_function_invocations.sbsql:385",
+        "160_builtin_function_invocations.sbsql:475",
+        "160_builtin_function_invocations.sbsql:477",
+        "160_builtin_function_invocations.sbsql:484",
+        "160_builtin_function_invocations.sbsql:486",
+        "160_builtin_function_invocations.sbsql:488",
+        "160_builtin_function_invocations.sbsql:496",
+        "160_builtin_function_invocations.sbsql:544",
+        "160_builtin_function_invocations.sbsql:545",
+        "160_builtin_function_invocations.sbsql:572",
+        "160_builtin_function_invocations.sbsql:578",
+        "160_builtin_function_invocations.sbsql:646",
+        "160_builtin_function_invocations.sbsql:647",
+        "160_builtin_function_invocations.sbsql:662",
+        "160_builtin_function_invocations.sbsql:666",
+        "160_builtin_function_invocations.sbsql:676",
+        "160_builtin_function_invocations.sbsql:680",
+        "160_builtin_function_invocations.sbsql:684",
+        "160_builtin_function_invocations.sbsql:688",
+        "160_builtin_function_invocations.sbsql:698",
+        "160_builtin_function_invocations.sbsql:702",
+        "160_builtin_function_invocations.sbsql:706",
+        "160_builtin_function_invocations.sbsql:713",
+        "160_builtin_function_invocations.sbsql:737",
+        "160_builtin_function_invocations.sbsql:747",
+        "160_builtin_function_invocations.sbsql:777",
+        "160_builtin_function_invocations.sbsql:790",
+        "160_builtin_function_invocations.sbsql:870",
+        "160_builtin_function_invocations.sbsql:871",
+        "160_builtin_function_invocations.sbsql:872",
+        "160_builtin_function_invocations.sbsql:1074",
+        "160_builtin_function_invocations.sbsql:1075",
+        "160_builtin_function_invocations.sbsql:1076",
+        "160_builtin_function_invocations.sbsql:1080",
+        "160_builtin_function_invocations.sbsql:1084",
+        "160_builtin_function_invocations.sbsql:1088",
+        "160_builtin_function_invocations.sbsql:1092",
+        "160_builtin_function_invocations.sbsql:1096",
+        "160_builtin_function_invocations.sbsql:1100",
+        "160_builtin_function_invocations.sbsql:1104",
+        "160_builtin_function_invocations.sbsql:1108",
+        "160_builtin_function_invocations.sbsql:1112",
+        "160_builtin_function_invocations.sbsql:1116",
+        "160_builtin_function_invocations.sbsql:1120",
+        "160_builtin_function_invocations.sbsql:1124",
+        "160_builtin_function_invocations.sbsql:1128",
+        "160_builtin_function_invocations.sbsql:1132",
+        "160_builtin_function_invocations.sbsql:1136",
+        "160_builtin_function_invocations.sbsql:1140",
+        "160_builtin_function_invocations.sbsql:1144",
+        "160_builtin_function_invocations.sbsql:1148",
+        "160_builtin_function_invocations.sbsql:1152",
+        "160_builtin_function_invocations.sbsql:1156",
+        "160_builtin_function_invocations.sbsql:1158",
+        "160_builtin_function_invocations.sbsql:1161",
+        "160_builtin_function_invocations.sbsql:1163",
+        "160_builtin_function_invocations.sbsql:1166",
+        "160_builtin_function_invocations.sbsql:1168",
+        "160_builtin_function_invocations.sbsql:1173",
+        "160_builtin_function_invocations.sbsql:1177",
+        "160_builtin_function_invocations.sbsql:1178",
+        "160_builtin_function_invocations.sbsql:1179",
+        "160_builtin_function_invocations.sbsql:1180",
+        "160_builtin_function_invocations.sbsql:1182",
+        "160_builtin_function_invocations.sbsql:1183",
+        "160_builtin_function_invocations.sbsql:1186",
+        "160_builtin_function_invocations.sbsql:1188",
+        "160_builtin_function_invocations.sbsql:1190",
+        "160_builtin_function_invocations.sbsql:1193",
+        "160_builtin_function_invocations.sbsql:1195",
+        "160_builtin_function_invocations.sbsql:1197",
+        "160_builtin_function_invocations.sbsql:1199",
+        "160_builtin_function_invocations.sbsql:1201",
+        "160_builtin_function_invocations.sbsql:1203",
+        "160_builtin_function_invocations.sbsql:1205",
+        "160_builtin_function_invocations.sbsql:1208",
+        "160_builtin_function_invocations.sbsql:1213",
+        "160_builtin_function_invocations.sbsql:1236",
+        "160_builtin_function_invocations.sbsql:1238",
+        "160_builtin_function_invocations.sbsql:1242",
+        "160_builtin_function_invocations.sbsql:1244",
+        "160_builtin_function_invocations.sbsql:1246",
+        "160_builtin_function_invocations.sbsql:1248",
+        "160_builtin_function_invocations.sbsql:1272",
+        "160_builtin_function_invocations.sbsql:1284",
+        "160_builtin_function_invocations.sbsql:1340",
+        "160_builtin_function_invocations.sbsql:1362",
+        "160_builtin_function_invocations.sbsql:1406",
+        "160_builtin_function_invocations.sbsql:1424",
+        "160_builtin_function_invocations.sbsql:1485",
+        "160_builtin_function_invocations.sbsql:1500",
+        "160_builtin_function_invocations.sbsql:1525",
+        "160_builtin_function_invocations.sbsql:1526",
+        "160_builtin_function_invocations.sbsql:1527",
+        "160_builtin_function_invocations.sbsql:1557",
+        "160_builtin_function_invocations.sbsql:1558",
+        "160_builtin_function_invocations.sbsql:1559",
+        "160_builtin_function_invocations.sbsql:1584",
+        "160_builtin_function_invocations.sbsql:1585",
+        "160_builtin_function_invocations.sbsql:1586",
+        "160_builtin_function_invocations.sbsql:1624",
+        "160_builtin_function_invocations.sbsql:1625",
+        "160_builtin_function_invocations.sbsql:1626",
+        "160_builtin_function_invocations.sbsql:1627",
+        "160_builtin_function_invocations.sbsql:1630",
+        "160_builtin_function_invocations.sbsql:1632",
+        "160_builtin_function_invocations.sbsql:1633",
+        "160_builtin_function_invocations.sbsql:1634",
+        "160_builtin_function_invocations.sbsql:1654",
+        "160_builtin_function_invocations.sbsql:1655",
+        "160_builtin_function_invocations.sbsql:1656"
+      ],
+      "generated_case_count": 1716,
+      "path": "generated/scripts/160_builtin_function_invocations.sbsql",
+      "script_id": "SBDFS-160"
+    },
+    {
       "assertions": [
         "SBDFS-170-001"
       ],
-      "generated_case_count": 14794
-    },
-    {
-      "script_id": "SBDFS-180",
-      "path": "generated/scripts/180_optimizer_and_storage_manifest.sbsql",
       "coverage": [
         "generated_full_surface"
       ],
+      "generated_case_count": 14794,
+      "path": "generated/scripts/170_cast_operator_matrix.sbsql",
+      "script_id": "SBDFS-170"
+    },
+    {
       "assertions": [
         "SBDFS-180-001"
       ],
-      "generated_case_count": 622
+      "coverage": [
+        "generated_full_surface"
+      ],
+      "generated_case_count": 622,
+      "path": "generated/scripts/180_optimizer_and_storage_manifest.sbsql",
+      "script_id": "SBDFS-180"
     }
-  ]
+  ],
+  "suite_id": "scratchbird.driver.full_surface.v1"
 }

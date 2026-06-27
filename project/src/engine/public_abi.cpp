@@ -719,7 +719,6 @@ NativeRowPacketDecode decode_native_row_packet_v2(const std::uint8_t* data,
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_frame_only=true");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_format:scratchbird.native_rows.v2");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_shared_field_order=true");
-  decoded.request.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
   decoded.request.option_envelopes.push_back("sblr.rowset_default_markers_absent=true");
   decoded.request.option_envelopes.push_back("sblr.compact_native_rowset_materialized=false");
   decoded.request.option_envelopes.push_back("sblr.native_row_packet_type_vector_validated=true");

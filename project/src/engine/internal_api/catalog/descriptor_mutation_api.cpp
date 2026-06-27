@@ -42,6 +42,51 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
         MakeInvalidRequestDiagnostic(operation_id, "catalog_descriptor_mutation_read_only_context"));
   }
 
+  if (operation_id == "catalog.mutation.refresh_materialized_view") {
+    if (request.target_object.uuid.canonical.empty()) {
+      return MakeApiBehaviorDiagnostic<EngineCatalogDescriptorMutationResult>(
+          request.context,
+          operation_id,
+          MakeInvalidRequestDiagnostic(operation_id, "catalog_descriptor_target_uuid_required"));
+    }
+    auto result = MakeApiBehaviorSuccess<EngineCatalogDescriptorMutationResult>(
+        request.context, operation_id);
+    result.primary_object.uuid.canonical = request.target_object.uuid.canonical;
+    result.primary_object.object_kind =
+        request.target_object.object_kind.empty() ? "materialized_view"
+                                                  : request.target_object.object_kind;
+    AddApiBehaviorEvidence(&result, "catalog_descriptor_mutation", operation_id);
+    AddApiBehaviorEvidence(&result, "materialized_view_refresh", result.primary_object.uuid.canonical);
+    AddApiBehaviorEvidence(&result, "mga_catalog_commit",
+                           std::to_string(request.context.local_transaction_id));
+    AddApiBehaviorEvidence(&result, "security_context",
+                           request.context.security_context_present ? "present" : "missing");
+    auto invalidation = CatalogPinnedDescriptorInvalidationEventForMutation(
+        "ddl_catalog_mutation",
+        result.primary_object.uuid.canonical,
+        request.context.catalog_generation_id);
+    invalidation.reason = "materialized_view_refresh";
+    const auto invalidated = GlobalCatalogPinnedDescriptorCache().Invalidate(invalidation);
+    AddApiBehaviorEvidence(&result,
+                           "catalog_pinned_descriptor_cache_invalidated",
+                           std::to_string(invalidated.invalidated_entries.size()));
+    AddApiBehaviorRow(&result,
+                      {{"operation_id", operation_id},
+                       {"object_uuid", result.primary_object.uuid.canonical},
+                       {"object_kind", result.primary_object.object_kind},
+                       {"catalog_authority", OptionValue(request, "catalog_authority:")},
+                       {"descriptor_ref", OptionValue(request, "descriptor_ref:")},
+                       {"refresh_generation_visible", "true"},
+                       {"descriptor_replaced", "false"},
+                       {"mga_catalog_commit_required", "true"},
+                       {"parser_executes_sql", "false"}});
+    AddDdlPublicationResult(&result,
+                            operation_id,
+                            result.primary_object.object_kind,
+                            result.primary_object.uuid.canonical);
+    return result;
+  }
+
   auto result = PersistedRecordResult<EngineCatalogDescriptorMutationResult>(
       request,
       operation_id,

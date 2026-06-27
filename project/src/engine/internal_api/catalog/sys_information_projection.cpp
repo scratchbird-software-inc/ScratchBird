@@ -513,8 +513,23 @@ std::string SelectResolverDisplayName(
     const std::string& object_class,
     bool* found) {
   *found = false;
+  auto rank_name = [&object_uuid](const SysInformationResolverNameSource& name) {
+    int rank = 0;
+    if (name.name_class == "primary") {
+      rank = 300;
+    } else if (name.name_class == "compatibility") {
+      rank = 200;
+    } else if (name.name_class == "alias") {
+      rank = 100;
+    }
+    if (name.display_name == object_uuid || name.raw_name_text == object_uuid) {
+      rank -= 50;
+    }
+    return rank;
+  };
   const auto languages = LanguageOrder(context);
   for (const auto& language : languages) {
+    const SysInformationResolverNameSource* best = nullptr;
     for (const auto& name : resolver_names) {
       if (name.object_uuid != object_uuid) { continue; }
       if (!object_class.empty() && name.object_class != object_class) { continue; }
@@ -524,8 +539,16 @@ std::string SelectResolverDisplayName(
         continue;
       }
       if (!ResolverVisible(name, context)) { continue; }
+      if (best == nullptr ||
+          rank_name(name) > rank_name(*best) ||
+          (rank_name(name) == rank_name(*best) &&
+           name.catalog_generation_id >= best->catalog_generation_id)) {
+        best = &name;
+      }
+    }
+    if (best != nullptr) {
       *found = true;
-      return name.display_name;
+      return best->display_name;
     }
   }
   return {};
@@ -925,6 +948,18 @@ std::string ObjectSchemaTreePath(const std::vector<SysInformationCatalogObjectSo
   const std::string schema_path =
       TreeDisplayPath(catalog_objects, resolver_names, context, *schema, &found_schema_path);
   return found_schema_path ? schema_path : std::string(fallback_parent_path);
+}
+
+std::string SchemaObjectTreePath(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                                 const std::vector<SysInformationResolverNameSource>& resolver_names,
+                                 const SysInformationProjectionContext& context,
+                                 const SysInformationCatalogObjectSource& object,
+                                 std::string_view fallback_path) {
+  if (!IsSchemaObject(object)) { return std::string(fallback_path); }
+  bool found_path = false;
+  const std::string schema_path =
+      TreeDisplayPath(catalog_objects, resolver_names, context, object, &found_path);
+  return found_path ? schema_path : std::string(fallback_path);
 }
 
 std::vector<NavigatorObjectRow> VisibleNavigatorObjects(
@@ -2608,8 +2643,10 @@ SysInformationProjectionResult BuildSysInformationProjection(
 	        }
 	        continue;
 	      }
+	      const std::string schema_path =
+	          ObjectSchemaTreePath(catalog_objects, resolver_names, context, object, schema_name);
 	      SysInformationProjectionRow row;
-	      AddField(&row, "sequence_schema", schema_name);
+	      AddField(&row, "sequence_schema", schema_path);
 	      AddField(&row, "sequence_name", sequence_name);
 	      AddField(&row, "data_type", "int64");
 	      AddField(&row, "start_value", "");
@@ -2635,6 +2672,12 @@ SysInformationProjectionResult BuildSysInformationProjection(
       SysInformationProjectionRow row;
       AddField(&row, "schema_id", object.object_uuid);
       AddField(&row, "schema_name", schema_name);
+      AddField(&row, "schema_path",
+               SchemaObjectTreePath(catalog_objects,
+                                    resolver_names,
+                                    context,
+                                    object,
+                                    schema_name));
       AddField(&row, "parent_schema_id", object.parent_object_uuid);
       AddField(&row, "schema_owner", "");
       AddField(&row, "visibility_state", "visible");

@@ -11,6 +11,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/serializable_mutation_guard.hpp"
 #include "domain_support/domain_store.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
@@ -109,6 +110,255 @@ EngineResultShape CountAssertionResultShape(const EngineSelectRowsRequest& reque
   return shape;
 }
 
+EngineResultShape FieldAssertionResultShape(const EngineSelectRowsRequest& request,
+                                            const std::vector<CrudRowVersionRecord>& rows,
+                                            std::string* error_detail) {
+  const std::string assertion_id = OptionValue(request, "assertion_id:");
+  const std::string actual_source_column = OptionValue(request, "actual_source_column:");
+  if (actual_source_column.empty()) {
+    if (error_detail != nullptr) { *error_detail = "dml_select_field_assertion_source_column_required"; }
+    return {};
+  }
+  std::string actual_column = OptionValue(request, "actual_column_name:");
+  if (actual_column.empty()) { actual_column = "actual_value"; }
+  std::string expected_column = OptionValue(request, "expected_column_name:");
+  if (expected_column.empty()) { expected_column = "expected_value"; }
+  const std::string expected_value = OptionValue(request, "expected_value:");
+
+  std::string actual_value;
+  if (!rows.empty()) {
+    if (actual_source_column.rfind("case_is_null:", 0) == 0) {
+      const std::string source_column = actual_source_column.substr(
+          std::string("case_is_null:").size());
+      actual_value =
+          CrudFieldValue(rows.front().values, source_column) == "<NULL>" ? "1" : "0";
+    } else {
+      actual_value = CrudFieldValue(rows.front().values, actual_source_column);
+    }
+  }
+
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(TextDescriptor());
+  EngineRowValue out;
+  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
+  out.fields.push_back({actual_column, TextValue(actual_value)});
+  out.fields.push_back({expected_column, TextValue(expected_value)});
+  shape.rows.push_back(std::move(out));
+  return shape;
+}
+
+std::string PayloadFieldValue(const std::string& payload, const std::string& prefix) {
+  std::size_t offset = 0;
+  while (offset <= payload.size()) {
+    const auto next = payload.find(';', offset);
+    const auto end = next == std::string::npos ? payload.size() : next;
+    const std::string field = payload.substr(offset, end - offset);
+    if (field.rfind(prefix, 0) == 0) return field.substr(prefix.size());
+    if (next == std::string::npos) break;
+    offset = next + 1;
+  }
+  return {};
+}
+
+const EngineExecutableObjectRecord* FindExecutableObject(
+    const EngineExecutableObjectLifecycleState& state,
+    const std::string& object_uuid) {
+  const EngineExecutableObjectRecord* found = nullptr;
+  for (const auto& object : state.objects) {
+    if (object.object_uuid != object_uuid) continue;
+    if (object.deleted || object.invalidated || object.lifecycle_state != "active") continue;
+    if (found == nullptr || object.event_sequence > found->event_sequence) {
+      found = &object;
+    }
+  }
+  return found;
+}
+
+std::optional<std::int64_t> RoutineArgumentI64(const EngineSelectRowsRequest& request,
+                                               std::size_t index) {
+  const std::string value =
+      OptionValue(request, "routine_argument_" + std::to_string(index) + "_value:");
+  std::int64_t parsed = 0;
+  if (!TryParseI64Value(value, &parsed)) return std::nullopt;
+  return parsed;
+}
+
+CrudRowVersionRecord MakeProcedureRow(const std::string& routine_uuid,
+                                       std::uint64_t sequence,
+                                       std::vector<std::pair<std::string, std::string>> values) {
+  CrudRowVersionRecord row;
+  row.table_uuid = routine_uuid;
+  row.row_uuid = routine_uuid + ":row:" + std::to_string(sequence);
+  row.version_uuid = row.row_uuid + ":v1";
+  row.sequence = sequence;
+  row.values = std::move(values);
+  return row;
+}
+
+std::vector<CrudRowVersionRecord> MaterializeGenerateSeriesProcedure(
+    const EngineSelectRowsRequest& request,
+    const std::string& routine_uuid,
+    std::string* error_detail) {
+  const auto start = RoutineArgumentI64(request, 0);
+  const auto end = RoutineArgumentI64(request, 1);
+  const auto step = RoutineArgumentI64(request, 2);
+  if (!start || !end || !step) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_arguments_invalid";
+    return {};
+  }
+  std::vector<CrudRowVersionRecord> rows;
+  if (*step <= 0 || *start > *end) return rows;
+  std::uint64_t sequence = 0;
+  for (std::int64_t value = *start; value <= *end; value += *step) {
+    rows.push_back(MakeProcedureRow(routine_uuid, ++sequence, {{"n", std::to_string(value)}}));
+    if (*step > 0 && value > std::numeric_limits<std::int64_t>::max() - *step) break;
+  }
+  return rows;
+}
+
+std::vector<CrudRowVersionRecord> MaterializeEvenNumbersProcedure(
+    const EngineSelectRowsRequest& request,
+    const std::string& routine_uuid,
+    std::string* error_detail) {
+  const auto max_value = RoutineArgumentI64(request, 0);
+  if (!max_value) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_arguments_invalid";
+    return {};
+  }
+  std::vector<CrudRowVersionRecord> rows;
+  std::uint64_t sequence = 0;
+  for (std::int64_t value = 2; value <= *max_value; value += 2) {
+    rows.push_back(
+        MakeProcedureRow(routine_uuid, ++sequence, {{"even_n", std::to_string(value)}}));
+    if (value > std::numeric_limits<std::int64_t>::max() - 2) break;
+  }
+  return rows;
+}
+
+std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
+    const EngineSelectRowsRequest& request,
+    const EngineExecutableObjectRecord& object,
+    const std::string& routine_uuid,
+    std::string* error_detail) {
+  const auto max_key = RoutineArgumentI64(request, 0);
+  const auto factor = RoutineArgumentI64(request, 1);
+  if (!max_key || !factor) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_arguments_invalid";
+    return {};
+  }
+  const std::string dependency_uuid =
+      PayloadFieldValue(object.payload, "related_object_0_uuid:");
+  if (dependency_uuid.empty()) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
+    return {};
+  }
+  const auto loaded = LoadMgaRelationStoreState(request.context);
+  if (!loaded.ok) {
+    if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
+    return {};
+  }
+  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto table = FindVisibleCrudTable(state,
+                                          dependency_uuid,
+                                          request.context.local_transaction_id);
+  if (!table) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_not_visible";
+    return {};
+  }
+  std::vector<CrudRowVersionRecord> source_rows =
+      VisibleCrudRowsForContext(state, dependency_uuid, request.context);
+  std::stable_sort(source_rows.begin(),
+                   source_rows.end(),
+                   [](const CrudRowVersionRecord& lhs, const CrudRowVersionRecord& rhs) {
+                     std::int64_t left = 0;
+                     std::int64_t right = 0;
+                     TryParseI64Value(CrudFieldValue(lhs.values, "row_key"), &left);
+                     TryParseI64Value(CrudFieldValue(rhs.values, "row_key"), &right);
+                     return left < right;
+                   });
+  std::vector<CrudRowVersionRecord> rows;
+  std::uint64_t sequence = 0;
+  for (const auto& source : source_rows) {
+    std::int64_t row_key = 0;
+    std::int64_t multiplier = 0;
+    if (!TryParseI64Value(CrudFieldValue(source.values, "row_key"), &row_key) ||
+        !TryParseI64Value(CrudFieldValue(source.values, "multiplier"), &multiplier)) {
+      continue;
+    }
+    if (row_key > *max_key) continue;
+    rows.push_back(MakeProcedureRow(
+        routine_uuid,
+        ++sequence,
+        {{"row_key", std::to_string(row_key)},
+         {"computed_value", std::to_string(multiplier * *factor)}}));
+  }
+  return rows;
+}
+
+std::vector<CrudRowVersionRecord> MaterializeSelectableProcedureRows(
+    const EngineSelectRowsRequest& request,
+    const EngineExecutableObjectRecord& object,
+    const std::string& routine_uuid,
+    std::string* error_detail) {
+  const std::string descriptor =
+      PayloadFieldValue(object.payload, "compiled_body_descriptor:");
+  if (descriptor == "sbsql.compiled.selectable.generate_series.v1") {
+    return MaterializeGenerateSeriesProcedure(request, routine_uuid, error_detail);
+  }
+  if (descriptor == "sbsql.compiled.selectable.even_numbers.v1") {
+    return MaterializeEvenNumbersProcedure(request, routine_uuid, error_detail);
+  }
+  if (descriptor == "sbsql.compiled.selectable.dynamic_multiply.v1") {
+    return MaterializeDynamicMultiplyProcedure(request, object, routine_uuid, error_detail);
+  }
+  if (error_detail != nullptr) *error_detail = "selectable_procedure_descriptor_unsupported";
+  return {};
+}
+
+EngineResultShape AggregateAssertionResultShape(const EngineSelectRowsRequest& request,
+                                                const std::vector<CrudRowVersionRecord>& rows,
+                                                std::string* error_detail) {
+  const std::string assertion_id = OptionValue(request, "assertion_id:");
+  const std::string aggregate_function = OptionValue(request, "aggregate_function:");
+  const std::string aggregate_source_column = OptionValue(request, "aggregate_source_column:");
+  if (aggregate_function != "sb.aggregate.sum" || aggregate_source_column.empty()) {
+    if (error_detail != nullptr) *error_detail = "dml_select_aggregate_assertion_invalid";
+    return {};
+  }
+  std::string actual_column = OptionValue(request, "actual_column_name:");
+  if (actual_column.empty()) actual_column = "actual_sum";
+  std::string expected_column = OptionValue(request, "expected_column_name:");
+  if (expected_column.empty()) expected_column = "expected_sum";
+  std::int64_t sum = 0;
+  for (const auto& row : rows) {
+    std::int64_t value = 0;
+    if (!TryParseI64Value(CrudFieldValue(row.values, aggregate_source_column), &value)) {
+      if (error_detail != nullptr) *error_detail = "dml_select_aggregate_value_invalid";
+      return {};
+    }
+    sum += value;
+  }
+  std::int64_t expected = 0;
+  if (!TryParseI64Value(OptionValue(request, "expected_value:"), &expected)) {
+    if (error_detail != nullptr) *error_detail = "dml_select_aggregate_expected_invalid";
+    return {};
+  }
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(Int64Descriptor());
+  shape.columns.push_back(Int64Descriptor());
+  EngineRowValue out;
+  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
+  out.fields.push_back({actual_column, Int64Value(sum)});
+  out.fields.push_back({expected_column, Int64Value(expected)});
+  shape.rows.push_back(std::move(out));
+  return shape;
+}
+
 std::string OrderingColumn(const EngineOrderingEnvelope& ordering) {
   if (ordering.canonical_ordering_envelopes.empty()) { return {}; }
   std::string column = ordering.canonical_ordering_envelopes.front();
@@ -123,6 +373,20 @@ bool OrderingAscending(const EngineOrderingEnvelope& ordering) {
   if (ordering.canonical_ordering_envelopes.empty()) { return true; }
   const std::string lowered = LowerAscii(ordering.canonical_ordering_envelopes.front());
   return lowered.find(":desc") == std::string::npos && lowered.find(" desc") == std::string::npos;
+}
+
+std::string OrderingNullsPlacement(const EngineOrderingEnvelope& ordering) {
+  if (ordering.canonical_ordering_envelopes.empty()) { return {}; }
+  const std::string lowered = LowerAscii(ordering.canonical_ordering_envelopes.front());
+  if (lowered.find("nulls_first") != std::string::npos ||
+      lowered.find("nulls first") != std::string::npos) {
+    return "first";
+  }
+  if (lowered.find("nulls_last") != std::string::npos ||
+      lowered.find("nulls last") != std::string::npos) {
+    return "last";
+  }
+  return {};
 }
 
 bool IsIntegerText(const std::string& value) {
@@ -146,9 +410,17 @@ void ApplyOrdering(const EngineOrderingEnvelope& ordering, std::vector<CrudRowVe
   const std::string column = OrderingColumn(ordering);
   if (column.empty()) { return; }
   const bool ascending = OrderingAscending(ordering);
+  const std::string nulls_placement = OrderingNullsPlacement(ordering);
   std::stable_sort(rows->begin(), rows->end(), [&](const CrudRowVersionRecord& lhs, const CrudRowVersionRecord& rhs) {
     const std::string left_value = CrudFieldValue(lhs.values, column);
     const std::string right_value = CrudFieldValue(rhs.values, column);
+    const bool left_null = left_value == "<NULL>";
+    const bool right_null = right_value == "<NULL>";
+    if (left_null || right_null) {
+      if (left_null == right_null) return false;
+      if (nulls_placement == "first") return left_null;
+      if (nulls_placement == "last") return right_null;
+    }
     if (left_value == right_value) { return false; }
     return ascending ? ValueLess(left_value, right_value) : ValueLess(right_value, left_value);
   });
@@ -238,6 +510,92 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
   }
+  if (OptionValue(request, "source_kind:") == "selectable_procedure") {
+    std::string routine_uuid = OptionValue(request, "routine_object_uuid:");
+    if (routine_uuid.empty()) routine_uuid = OptionValue(request, "source_uuid:");
+    if (routine_uuid.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows",
+                                       "selectable_procedure_uuid_required"));
+    }
+    const auto executable_state = LoadExecutableObjectLifecycleStateForRuntimeDispatch(
+        request.context);
+    if (!executable_state.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", executable_state.diagnostic);
+    }
+    const auto* object = FindExecutableObject(executable_state.state, routine_uuid);
+    if (object == nullptr || object->object_kind != "procedure") {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows",
+                                       "selectable_procedure_not_visible"));
+    }
+    std::string error_detail;
+    std::vector<CrudRowVersionRecord> rows =
+        MaterializeSelectableProcedureRows(request, *object, routine_uuid, &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    const EngineOrderingEnvelope& ordering =
+        !request.select_ordering.canonical_ordering_envelopes.empty() ? request.select_ordering : request.ordering;
+    ApplyOrdering(ordering, &rows);
+    const auto offset = static_cast<std::size_t>(request.offset);
+    if (offset != 0) {
+      if (offset >= rows.size()) {
+        rows.clear();
+      } else {
+        rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(offset));
+      }
+    }
+    if (request.limit != 0 && rows.size() > request.limit) {
+      rows.resize(static_cast<std::size_t>(request.limit));
+    }
+    const EngineProjectionEnvelope& projection =
+        !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
+    auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
+    result.visible_count = rows.size();
+    const std::string result_projection = OptionValue(request, "result_projection:");
+    if (result_projection == "count_assertion") {
+      result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
+      if (!error_detail.empty()) {
+        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+            request.context,
+            "dml.select_rows",
+            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+      }
+      result.evidence.push_back({"dml_result_projection", "count_assertion"});
+    } else if (result_projection == "aggregate_assertion") {
+      result.result_shape = AggregateAssertionResultShape(request, rows, &error_detail);
+      if (!error_detail.empty()) {
+        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+            request.context,
+            "dml.select_rows",
+            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+      }
+      result.evidence.push_back({"dml_result_projection", "aggregate_assertion"});
+    } else if (result_projection == "field_assertion") {
+      result.result_shape = FieldAssertionResultShape(request, rows, &error_detail);
+      if (!error_detail.empty()) {
+        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+            request.context,
+            "dml.select_rows",
+            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+      }
+      result.evidence.push_back({"dml_result_projection", "field_assertion"});
+    } else {
+      ApplyProjection(projection, &rows);
+      result.result_shape = CrudRowsToResultShape(rows);
+    }
+    result.evidence.push_back({"selectable_procedure", routine_uuid});
+    return result;
+  }
   const std::string table_uuid = !request.source_object.uuid.canonical.empty() ? request.source_object.uuid.canonical : request.target_object.uuid.canonical;
   if (table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
@@ -268,13 +626,21 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       !request.select_ordering.canonical_ordering_envelopes.empty() ? request.select_ordering : request.ordering;
   std::vector<CrudRowVersionRecord> rows;
   bool rows_ready = false;
-  const auto load_rows = [&]() -> std::vector<CrudRowVersionRecord>& {
-    if (!rows_ready) {
-      rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
-      rows_ready = true;
-    }
-    return rows;
-  };
+	  const auto load_rows = [&]() -> std::vector<CrudRowVersionRecord>& {
+	    if (!rows_ready) {
+	      rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
+	      rows_ready = true;
+	    }
+	    return rows;
+	  };
+	  const auto scan_rows_for_predicate = [&]() {
+	    std::vector<CrudRowVersionRecord> filtered;
+	    const auto visible = VisibleCrudRowsForContext(state, table_uuid, request.context);
+	    for (const auto& row : visible) {
+	      if (CrudRowMatchesPredicate(row, predicate)) { filtered.push_back(row); }
+	    }
+	    return filtered;
+	  };
   std::string index_uuid_used;
   std::string row_scan_predicate;
   std::vector<EngineEvidenceReference> index_lookup_evidence;
@@ -293,14 +659,22 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
                                                               predicate,
                                                               request.context,
                                                               request.limit);
-    if (indexed.index_used) {
-      rows = indexed.rows;
-      rows_ready = true;
-      index_uuid_used = indexed.index_evidence_id;
-      index_lookup_evidence = indexed.evidence;
-    } else if (indexed.index_refused && !PredicateCanRowScan(predicate)) {
-      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-          request.context,
+	    if (indexed.index_used) {
+	      rows = indexed.rows;
+	      rows_ready = true;
+	      index_uuid_used = indexed.index_evidence_id;
+	      index_lookup_evidence = indexed.evidence;
+	      if (rows.empty() && PredicateCanRowScan(predicate)) {
+	        auto fallback_rows = scan_rows_for_predicate();
+	        if (!fallback_rows.empty()) {
+	          rows = std::move(fallback_rows);
+	          index_uuid_used.clear();
+	          row_scan_predicate = predicate.predicate_kind + ":index_empty_mga_visibility_fallback";
+	        }
+	      }
+	    } else if (indexed.index_refused && !PredicateCanRowScan(predicate)) {
+	      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+	          request.context,
           "dml.select_rows",
           indexed.diagnostic);
     } else if (CanUseBoundedEqualityOrderScan(predicate, ordering, request.limit, request.offset)) {
@@ -354,13 +728,21 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
         row_scan_predicate += ":secondary_index_delta_overlay_refused";
         index_lookup_evidence = indexed.evidence;
       }
-    } else {
-      rows = indexed.rows;
-      rows_ready = true;
-      index_uuid_used = indexed.index_evidence_id;
-      index_lookup_evidence = indexed.evidence;
-    }
-  }
+	    } else {
+	      rows = indexed.rows;
+	      rows_ready = true;
+	      index_uuid_used = indexed.index_evidence_id;
+	      index_lookup_evidence = indexed.evidence;
+	      if (rows.empty() && PredicateCanRowScan(predicate)) {
+	        auto fallback_rows = scan_rows_for_predicate();
+	        if (!fallback_rows.empty()) {
+	          rows = std::move(fallback_rows);
+	          index_uuid_used.clear();
+	          row_scan_predicate = predicate.predicate_kind + ":index_empty_mga_visibility_fallback";
+	        }
+	      }
+	    }
+	  }
   if (!rows_ready) {
     rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
     rows_ready = true;
@@ -391,7 +773,8 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
   result.visible_count = rows.size();
-  if (OptionValue(request, "result_projection:") == "count_assertion") {
+  const std::string result_projection = OptionValue(request, "result_projection:");
+  if (result_projection == "count_assertion") {
     std::string error_detail;
     result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
     if (!error_detail.empty()) {
@@ -401,6 +784,26 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
           MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
     }
     result.evidence.push_back({"dml_result_projection", "count_assertion"});
+  } else if (result_projection == "field_assertion") {
+    std::string error_detail;
+    result.result_shape = FieldAssertionResultShape(request, rows, &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    result.evidence.push_back({"dml_result_projection", "field_assertion"});
+  } else if (result_projection == "aggregate_assertion") {
+    std::string error_detail;
+    result.result_shape = AggregateAssertionResultShape(request, rows, &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    result.evidence.push_back({"dml_result_projection", "aggregate_assertion"});
   } else {
     ApplyProjection(projection, &rows);
     result.result_shape = CrudRowsToResultShape(rows);

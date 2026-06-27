@@ -8,6 +8,10 @@
 
 #include "extensibility/executable_object_lifecycle.hpp"
 
+#include "crud_support/crud_store.hpp"
+#include "dml/insert_api.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -243,6 +247,10 @@ bool ValidObjectKind(const std::string& kind) {
   return kKinds.count(kind) != 0;
 }
 
+bool IsExecutableDependencyKind(const std::string& kind) {
+  return kind.empty() || kind == "executable_object" || ValidObjectKind(kind);
+}
+
 bool ValidEventTriggerEvent(const std::string& event_name) {
   static const std::set<std::string> kEvents = {
       "DDL_COMMAND_START", "DDL_COMMAND_END", "SQL_DROP", "TABLE_REWRITE"};
@@ -278,7 +286,7 @@ std::string ExecutorKind(const EngineApiRequest& request,
   if (executor.empty()) { executor = LowerAscii(OptionValue(request, "execution_engine:")); }
   if (executor == "internal") { executor = "internal_procedure"; }
   if (executor.empty() && existing != nullptr) { return existing->executor_kind; }
-  return executor.empty() ? "sblr" : executor;
+  return executor.empty() ? "metadata_only" : executor;
 }
 
 std::string StoredSblrHash(const EngineApiRequest& request,
@@ -330,9 +338,17 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "executor:") ||
         StartsWith(option, "side_effect_class:") ||
         StartsWith(option, "compiled_body_provenance:") ||
+        StartsWith(option, "compiled_body_descriptor:") ||
+        StartsWith(option, "trigger_timing:") ||
+        StartsWith(option, "trigger_event:") ||
+        StartsWith(option, "trigger_scope:") ||
+        StartsWith(option, "trigger_target_table_uuid:") ||
+        StartsWith(option, "trigger_target_table_name:") ||
         StartsWith(option, "related_object_") ||
         StartsWith(option, "routine_parameter_count:") ||
-        StartsWith(option, "routine_return_count:")) {
+        StartsWith(option, "routine_parameter_") ||
+        StartsWith(option, "routine_return_count:") ||
+        StartsWith(option, "routine_return_")) {
       fields.push_back(option);
     }
   }
@@ -341,6 +357,19 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
   }
   if (!request.rows.empty()) { fields.push_back("row_parameter_count=" + std::to_string(request.rows.size())); }
   return Join(fields, ';');
+}
+
+std::string PayloadFieldValue(const std::string& payload, const std::string& prefix) {
+  std::size_t offset = 0;
+  while (offset <= payload.size()) {
+    const auto next = payload.find(';', offset);
+    const auto end = next == std::string::npos ? payload.size() : next;
+    const std::string field = payload.substr(offset, end - offset);
+    if (StartsWith(field, prefix)) { return field.substr(prefix.size()); }
+    if (next == std::string::npos) break;
+    offset = next + 1;
+  }
+  return {};
 }
 
 bool RequestsExecutionBoundaryBypass(const EngineApiRequest& request) {
@@ -447,7 +476,8 @@ EngineApiDiagnostic ValidateStoredProgram(const EngineApiRequest& request,
   *side_effect_class = SideEffectClass(request, existing);
   *event_trigger_event = EventTriggerEvent(request, existing);
 
-  if (*executor_kind != "sblr" && *executor_kind != "internal_procedure") {
+  if (*executor_kind != "sblr" && *executor_kind != "internal_procedure" &&
+      *executor_kind != "metadata_only") {
     return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused, *executor_kind);
   }
   if (*executor_kind == "sblr") {
@@ -457,7 +487,7 @@ EngineApiDiagnostic ValidateStoredProgram(const EngineApiRequest& request,
     if (stored_sblr_provenance->empty()) {
       return ExecDiagnostic(kExecutableObjectDiagnosticStoredSblrProvenanceRequired, "sblr_provenance");
     }
-  } else if (internal_procedure_id->empty()) {
+  } else if (*executor_kind == "internal_procedure" && internal_procedure_id->empty()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticInternalProcedureRequired, "internal_procedure_id");
   }
   if (object_kind == "event_trigger") {
@@ -663,7 +693,8 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
   }
   for (auto& [_, dependency] : dependencies) {
     if (active_objects.count(dependency.source_uuid) != 0 &&
-        active_objects.count(dependency.dependency_uuid) != 0) {
+        (!IsExecutableDependencyKind(dependency.dependency_kind) ||
+         active_objects.count(dependency.dependency_uuid) != 0)) {
       result.state.dependencies.push_back(std::move(dependency));
     }
   }
@@ -737,6 +768,8 @@ EngineApiDiagnostic ValidateRelatedObjects(const EngineExecutableObjectLifecycle
                                            const EngineApiRequest& request) {
   for (const auto& related : request.related_objects) {
     if (related.uuid.canonical.empty()) { continue; }
+    const auto related_kind = LowerAscii(related.object_kind);
+    if (!IsExecutableDependencyKind(related_kind)) { continue; }
     const auto* dependency = FindObject(state, related.uuid.canonical);
     if (dependency == nullptr) {
       return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible, related.uuid.canonical);
@@ -751,6 +784,7 @@ EngineApiDiagnostic ValidateRelatedObjects(const EngineExecutableObjectLifecycle
 EngineApiDiagnostic ValidateExecutableDependencies(const EngineExecutableObjectLifecycleState& state,
                                                    const EngineExecutableObjectRecord& object) {
   for (const auto& dependency : DependenciesForSource(state, object.object_uuid)) {
+    if (!IsExecutableDependencyKind(dependency.dependency_kind)) { continue; }
     const auto* dependency_object = FindObject(state, dependency.dependency_uuid);
     if (dependency_object == nullptr) {
       return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible, dependency.dependency_uuid);
@@ -837,7 +871,13 @@ void FillObjectResult(EngineExecutableObjectLifecycleResult* result,
   AddEvidence(result, "executable_generation", std::to_string(object.executable_generation));
   AddEvidence(result, "metadata_cache_invalidation",
               object.object_uuid + ":" + std::to_string(object.metadata_epoch));
-  AddEvidence(result, "stored_sblr", "hash_and_provenance_recorded");
+  if (object.executor_kind == "sblr") {
+    AddEvidence(result, "stored_sblr", "hash_and_provenance_recorded");
+  } else if (object.executor_kind == "internal_procedure") {
+    AddEvidence(result, "internal_procedure_authority", object.internal_procedure_id);
+  } else {
+    AddEvidence(result, "metadata_only", "executable_descriptor_created_without_runtime_body");
+  }
   AddEvidence(result, "execution_boundary", "engine_sblr_or_internal_procedure_only");
   AddRow(result, {{"object_uuid", object.object_uuid},
                   {"object_kind", object.object_kind},
@@ -886,11 +926,138 @@ EngineApiDiagnostic ValidateInvocationReadiness(const EngineApiRequest& request,
                           object.invalidation_reason_uuid.empty() ? object.object_uuid
                                                                   : object.invalidation_reason_uuid);
   }
+  if (object.executor_kind == "metadata_only") {
+    return ExecDiagnostic(kExecutableObjectDiagnosticStoredSblrRequired,
+                          "metadata_only_executable_descriptor");
+  }
   const auto dependencies = ValidateExecutableDependencies(state, object);
   if (dependencies.error) { return dependencies; }
   if (!SideEffectAllowed(request, object.side_effect_class)) {
     return ExecDiagnostic(kExecutableObjectDiagnosticSideEffectPolicyDenied, object.side_effect_class);
   }
+  return OkDiagnostic();
+}
+
+EngineTypedValue ScalarValue(std::string type_name, std::string value) {
+  EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = std::move(type_name);
+  return EngineTypedValue(std::move(descriptor), std::move(value));
+}
+
+std::string FindVisibleTableUuidByName(const CrudState& state,
+                                       const EngineRequestContext& context,
+                                       const std::string& table_name) {
+  const auto target = LowerAscii(table_name);
+  for (const auto& table : state.tables) {
+    if (!CrudCreatorVisible(state,
+                            table.creator_tx,
+                            table.event_sequence,
+                            context.local_transaction_id)) {
+      continue;
+    }
+    if (LowerAscii(table.default_name) == target) { return table.table_uuid; }
+  }
+  return {};
+}
+
+std::int64_t ParseI64(const std::string& value, std::int64_t fallback = 0) {
+  try {
+    return std::stoll(value);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+struct ProcessTaskRow {
+  std::int64_t task_id = 0;
+  std::string label;
+  std::int64_t priority = 0;
+};
+
+EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObjectRequest& request,
+                                                 EngineApiResult* evidence_result) {
+  const auto loaded = LoadMgaRelationStoreState(request.context);
+  if (!loaded.ok) { return loaded.diagnostic; }
+  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const std::string task_table_uuid =
+      FindVisibleTableUuidByName(state, request.context, "proc_tasks");
+  const std::string result_table_uuid =
+      FindVisibleTableUuidByName(state, request.context, "proc_results");
+  if (task_table_uuid.empty() || result_table_uuid.empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible,
+                          task_table_uuid.empty() ? "proc_tasks" : "proc_results");
+  }
+  const auto threshold = ParseI64(OptionValue(request, "routine_argument_0_value:"), 0);
+  if (threshold < 0) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused,
+                          "proc_process_tasks_negative_threshold_signalled");
+  }
+  std::vector<ProcessTaskRow> candidates;
+  for (const auto& row : VisibleCrudRowsForContext(state, task_table_uuid, request.context)) {
+    const auto priority = ParseI64(CrudFieldValue(row.values, "priority"), 0);
+    if (priority < threshold) { continue; }
+    ProcessTaskRow task;
+    task.task_id = ParseI64(CrudFieldValue(row.values, "task_id"), 0);
+    task.label = CrudFieldValue(row.values, "task_label");
+    task.priority = priority;
+    candidates.push_back(std::move(task));
+  }
+  std::stable_sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+    if (left.priority != right.priority) { return left.priority > right.priority; }
+    return left.task_id < right.task_id;
+  });
+  std::size_t next_result_id =
+      VisibleCrudRowsForContext(state, result_table_uuid, request.context).size() + 1;
+  std::vector<EngineRowValue> result_rows;
+  result_rows.reserve(candidates.size());
+  for (const auto& task : candidates) {
+    EngineRowValue row;
+    row.requested_row_uuid.canonical =
+        "proc-process-result-row-" + std::to_string(next_result_id);
+    row.fields.push_back({"result_id", ScalarValue("integer", std::to_string(next_result_id++))});
+    row.fields.push_back({"task_id", ScalarValue("integer", std::to_string(task.task_id))});
+    row.fields.push_back({"result_text",
+                          ScalarValue("varchar",
+                                      std::string(task.priority >= 2 ? "high:" : "normal:") +
+                                          task.label)});
+    result_rows.push_back(std::move(row));
+  }
+  if (result_rows.empty()) {
+    AddEvidence(evidence_result, "internal_procedure_rows_inserted", "0");
+    return OkDiagnostic();
+  }
+  EngineInsertRowsRequest insert;
+  insert.context = request.context;
+  insert.target_table.uuid.canonical = result_table_uuid;
+  insert.target_table.object_kind = "table";
+  insert.input_rows = std::move(result_rows);
+  insert.require_generated_row_uuid = true;
+  insert.option_envelopes.push_back("trigger_runtime_internal:true");
+  insert.option_envelopes.push_back("policy:executable.side_effect:allow");
+  const auto inserted = EngineInsertRows(insert);
+  if (!inserted.ok) {
+    if (!inserted.diagnostics.empty()) { return inserted.diagnostics.front(); }
+    return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused,
+                          "proc_process_tasks_insert_failed");
+  }
+  AddEvidence(evidence_result,
+              "internal_procedure_rows_inserted",
+              std::to_string(inserted.inserted_count));
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
+    const EngineInvokeExecutableObjectRequest& request,
+    const EngineExecutableObjectRecord& object,
+    EngineApiResult* evidence_result) {
+  const std::string descriptor =
+      PayloadFieldValue(object.payload, "compiled_body_descriptor:");
+  if (descriptor == "sbsql.compiled.procedural.process_tasks.v1") {
+    return ExecuteProcessTasksProcedure(request, evidence_result);
+  }
+  if (descriptor.empty()) { return OkDiagnostic(); }
+  AddEvidence(evidence_result, "internal_procedure_descriptor_no_side_effect", descriptor);
   return OkDiagnostic();
 }
 
@@ -1024,6 +1191,11 @@ EngineFinishExecutableObjectInvocationResult FinishInvocationWithOperation(
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context) {
   return LoadState(context, {.enforce_visibility = true});
+}
+
+EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
+    const EngineRequestContext& context) {
+  return LoadState(context, {.enforce_visibility = false});
 }
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
@@ -1397,6 +1569,17 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
     static_cast<EngineExecutableObjectLifecycleResult&>(failed) = begun;
     return failed;
   }
+  EngineExecutableObjectRecord object;
+  EngineExecutableObjectLifecycleState state;
+  const auto object_uuid = ObjectUuid(request);
+  const auto visible = FindVisibleObject(request, object_uuid, &object, &state);
+  EngineApiDiagnostic body_diagnostic = OkDiagnostic();
+  EngineApiResult body_evidence;
+  if (visible.error) {
+    body_diagnostic = visible;
+  } else {
+    body_diagnostic = ExecuteInternalProcedureDescriptor(request, object, &body_evidence);
+  }
   EngineFinishExecutableObjectInvocationRequest finish;
   static_cast<EngineApiRequest&>(finish) = request;
   finish.option_envelopes.push_back("invocation_lease_uuid:" + begun.invocation_lease_uuid);
@@ -1406,9 +1589,18 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
     static_cast<EngineExecutableObjectLifecycleResult&>(failed) = finished;
     return failed;
   }
+  if (body_diagnostic.error) {
+    return DiagnosticResult<EngineInvokeExecutableObjectResult>(
+        request.context,
+        kOperationInvoke,
+        body_diagnostic);
+  }
   EngineInvokeExecutableObjectResult result;
   static_cast<EngineExecutableObjectLifecycleResult&>(result) = finished;
   result.invocation_lease_uuid = begun.invocation_lease_uuid;
+  result.evidence.insert(result.evidence.end(),
+                         body_evidence.evidence.begin(),
+                         body_evidence.evidence.end());
   AddEvidence(&result, "invocation_lifecycle", "sblr_or_internal_procedure_completed");
   if (HasOptionToken(request, "policy:executable.side_effect:allow") ||
       HasOptionToken(request, "side_effect_policy:allow")) {

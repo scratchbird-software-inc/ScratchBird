@@ -578,6 +578,9 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                        std::string("\"target_object_uuid\":\"") + std::string(kTargetUuid) + "\""),
               EvidenceMessage(row, "parser_bind_lower",
                               "policy create target UUID missing from security payload"));
+      Require(Contains(artifacts.envelope.payload, "\"policy_name\":\"app_policy\""),
+              EvidenceMessage(row, "parser_bind_lower",
+                              "policy name payload missing from create route"));
       Require(Contains(artifacts.envelope.payload, "\"policy_effect\":\"row_filter\""),
               EvidenceMessage(row, "parser_bind_lower", "policy effect missing from create payload"));
     } else if (row.operation_id == "security.policy.alter") {
@@ -603,9 +606,11 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
   Require(!Contains(artifacts.envelope.payload, "app_role"),
           EvidenceMessage(row, "no_sql_text_authority",
                           "security envelope embedded grantee name text"));
-  Require(!Contains(artifacts.envelope.payload, "app_policy"),
-          EvidenceMessage(row, "no_sql_text_authority",
-                          "security envelope embedded policy name text"));
+  if (row.operation_id != "security.policy.create") {
+    Require(!Contains(artifacts.envelope.payload, "app_policy"),
+            EvidenceMessage(row, "no_sql_text_authority",
+                            "security envelope embedded policy name text"));
+  }
   Require(!Contains(artifacts.envelope.payload, "placement_policy"),
           EvidenceMessage(row, "no_sql_text_authority",
                           "security envelope embedded placement policy name text"));
@@ -694,6 +699,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(std::string operation_id, std::string
     envelope.operands.push_back({"text", "role_mode", "explicit"});
   } else if (envelope.operation_id == "security.policy.create") {
     envelope.operands.push_back({"text", "policy_uuid", std::string(kPolicyUuid)});
+    envelope.operands.push_back({"text", "policy_name", "app_policy"});
     envelope.operands.push_back({"text", "target_object_uuid", std::string(kTargetUuid)});
     envelope.operands.push_back({"text", "target_object_kind", "table"});
     envelope.operands.push_back({"text", "policy_effect", "row_filter"});

@@ -90,6 +90,31 @@ std::string valueOrDefault(const std::map<std::string, std::string>& args,
     return it == args.end() || it->second.empty() ? fallback : it->second;
 }
 
+void clearErrorContext(scratchbird::core::ErrorContext* ctx) {
+    if (ctx == nullptr) {
+        return;
+    }
+    if (ctx->cause != nullptr) {
+        delete ctx->cause;
+        ctx->cause = nullptr;
+    }
+    ctx->code = scratchbird::core::Status::OK;
+    ctx->sqlstate = scratchbird::core::SQLSTATE_SUCCESS;
+    ctx->sqlstate_text.clear();
+    ctx->message.clear();
+    ctx->file = nullptr;
+    ctx->line = 0;
+    ctx->function = nullptr;
+    ctx->constraint_name.clear();
+    ctx->table_name.clear();
+    ctx->column_name.clear();
+    ctx->violating_value.clear();
+    ctx->referenced_table.clear();
+    ctx->referenced_column.clear();
+    ctx->check_expression.clear();
+    ctx->hint.clear();
+}
+
 bool hasFlag(const std::map<std::string, std::string>& args, const std::string& key) {
     return args.find(key) != args.end();
 }
@@ -725,7 +750,7 @@ std::string classify(const std::string& sql, const std::string& statementId, con
     if (expectedRefusals.count(statementId)) {
         return "security_refusal";
     }
-    const auto first = firstTokenLower(sql);
+    const auto first = mainStatementTokenLower(sql);
     if (first == "create" || first == "alter" || first == "drop" || first == "truncate") {
         return "ddl";
     }
@@ -823,8 +848,8 @@ std::vector<std::string> namespaceAncestorSchemas(const std::string& namespaceNa
 }
 
 bool statementReturnsRows(const std::string& sql) {
-    const std::string first = firstTokenLower(sql);
-    if (first == "select" || first == "with" || first == "values" || first == "show" ||
+    const std::string first = mainStatementTokenLower(sql);
+    if (first == "select" || first == "values" || first == "show" ||
         first == "explain" || first == "sbsql_surface_replay") {
         return true;
     }
@@ -1829,9 +1854,30 @@ bool expectedDiagnosticMatches(const std::string& statementId,
     if (it == expectedDiagnostics.end() || it->second.empty()) {
         return true;
     }
+    const auto aliasesFor = [](const std::string& expected) {
+        std::vector<std::string> aliases{expected};
+        if (expected == "SBSQL.NUMERIC.OVERFLOW" ||
+            expected == "SBSQL.FUNCTION.NUMERIC_OVERFLOW") {
+            aliases.push_back("SB_DIAG_FUNCTION_NUMERIC_OVERFLOW");
+        } else if (expected == "SBSQL.NUMERIC.DOMAIN" ||
+                   expected == "SBSQL.FUNCTION.NUMERIC_DOMAIN") {
+            aliases.push_back("SB_DIAG_FUNCTION_NUMERIC_DOMAIN");
+        } else if (expected == "SBSQL.NUMERIC.DIVISION_BY_ZERO" ||
+                   expected == "SBSQL.FUNCTION.NUMERIC_DIVISION_BY_ZERO") {
+            aliases.push_back("SB_DIAG_FUNCTION_NUMERIC_DIVISION_BY_ZERO");
+        } else if (expected == "SBSQL.FUNCTION.INVALID_INPUT" ||
+                   expected == "SBSQL.NUMERIC.INVALID_INPUT") {
+            aliases.push_back("SB_DIAG_FUNCTION_INVALID_INPUT");
+        } else if (expected == "SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE") {
+            aliases.push_back("SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE");
+        }
+        return aliases;
+    };
     for (const auto& expected : it->second) {
-        if (sqlstate.find(expected) != std::string::npos || message.find(expected) != std::string::npos) {
-            return true;
+        for (const auto& candidate : aliasesFor(expected)) {
+            if (sqlstate.find(candidate) != std::string::npos || message.find(candidate) != std::string::npos) {
+                return true;
+            }
         }
     }
     return false;
@@ -2619,6 +2665,7 @@ int main(int argc, char** argv) {
                                        {"execute", 0},
                                        {"executeQuery", 0},
                                        {"metadataQuery", 0},
+                                       {"reconnect", 0},
                                        {"commit", 0},
                                        {"rollback", 0},
                                        {"savepoint", 0},
@@ -2654,6 +2701,11 @@ int main(int argc, char** argv) {
             std::stoull(valueOrDefault(args, "--prepared-cache-size", "256")));
         const bool preparedCacheEnabled =
             preparedCacheLimit > 0 && valueOrDefault(args, "--prepared-cache-mode", "read_queries") != "off";
+        int executedStatements = 0;
+        int skippedScripts = 0;
+        int expectedRefusalPasses = 0;
+        int assertionPasses = 0;
+        int assertionFailures = 0;
 
         std::vector<std::pair<std::string, int>> monitoredProcesses;
 #ifndef _WIN32
@@ -2770,7 +2822,93 @@ int main(int argc, char** argv) {
                                            parserMode + " is not exposed by the C++ client yet; the runner fails closed"));
         }
 
+        auto reconnectAfterTransactionBoundaryDesync =
+            [&](const std::string& statementId,
+                const std::string& elementId,
+                const std::string& diagnostic,
+                uint64_t staleTransactionId) -> bool {
+            appendJsonl(paths.at("wire"),
+                        {{"event", "transaction_boundary_desync_reconnect_start"},
+                         {"statement_id", statementId},
+                         {"element_id", elementId},
+                         {"diagnostic_code", diagnostic},
+                         {"stale_transaction_id", staleTransactionId},
+                         {"mga_authority", "engine"}});
+            conn.disconnect();
+            preparedCache.clear();
+
+            scratchbird::core::ErrorContext reconnectCtx;
+            const int64_t reconnectStarted = nowNs();
+            const auto reconnectStatus = conn.connect(config, &reconnectCtx);
+            api["reconnect"]++;
+            addTiming(&timings, "connection", reconnectStarted);
+            recordProcessMetrics("post_reconnect", statementId, elementId, executedStatements);
+            if (reconnectStatus == scratchbird::core::Status::OK) {
+                appendJsonl(paths.at("wire"),
+                            {{"event", "transaction_boundary_desync_reconnect_complete"},
+                             {"statement_id", statementId},
+                             {"element_id", elementId},
+                             {"stale_transaction_id", staleTransactionId},
+                             {"transaction_id_observed", conn.currentTransactionId()},
+                             {"prepared_cache_cleared", true},
+                             {"mga_authority", "engine"}});
+                return true;
+            }
+
+            const std::string reconnectDiagnostic = statusMessage(reconnectCtx);
+            failures.push_back(makeFailure(statementId,
+                                           "transaction boundary reconnect failed: " +
+                                               reconnectDiagnostic));
+            appendJsonl(paths.at("diagnostics"),
+                        {{"statement_id", statementId},
+                         {"element_id", elementId},
+                         {"sqlstate", sqlstateOf(reconnectCtx)},
+                         {"message", reconnectDiagnostic},
+                         {"phase", "transaction_boundary_desync_reconnect"}});
+            appendJsonl(paths.at("wire"),
+                        {{"event", "transaction_boundary_desync_reconnect_failed"},
+                         {"statement_id", statementId},
+                         {"element_id", elementId},
+                         {"stale_transaction_id", staleTransactionId},
+                         {"sqlstate", sqlstateOf(reconnectCtx)},
+                         {"diagnostic_code", reconnectDiagnostic},
+                         {"mga_authority", "engine"}});
+            return false;
+        };
+
+        auto shouldReconnectAfterTransactionBoundaryDesync =
+            [](scratchbird::core::Status statementStatus,
+               const std::string& diagnostic,
+               uint64_t transactionIdBefore,
+               uint64_t transactionIdAfter) {
+            if (statementStatus == scratchbird::core::Status::OK ||
+                transactionIdBefore == 0) {
+                return false;
+            }
+            const bool replacementOpened =
+                diagnostic.find("autocommit rollback opened a replacement transaction") != std::string::npos;
+            const bool transactionMismatch =
+                diagnostic.find("SBWP.TRANSACTION_ID_MISMATCH") != std::string::npos;
+            if (replacementOpened && transactionIdAfter <= transactionIdBefore) {
+                return true;
+            }
+            return transactionMismatch && transactionIdAfter == transactionIdBefore;
+        };
+
+        auto shouldRetryPreparedAsOrdinarySql =
+            [](scratchbird::core::Status statementStatus,
+               const scratchbird::core::ErrorContext& statementCtx) {
+            if (statementStatus == scratchbird::core::Status::OK) {
+                return false;
+            }
+            const std::string diagnostic = statusMessage(statementCtx);
+            return diagnostic.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
+                       std::string::npos ||
+                   diagnostic.find("trigger_aware_path_required") != std::string::npos;
+        };
+
         auto executePreparedCached = [&](const std::string& sql,
+                                         const std::string& fallbackSql,
                                          const std::string& statementId,
                                          const std::string& elementId,
                                          const std::vector<PreparedParamValue>* params,
@@ -2798,6 +2936,29 @@ int main(int argc, char** argv) {
                 const auto preparedStatus = runPrepared(found->second.get());
                 if (preparedStatus == scratchbird::core::Status::OK) {
                     return preparedStatus;
+                }
+                if (shouldRetryPreparedAsOrdinarySql(preparedStatus, *statementCtx)) {
+                    api["preparedCacheInvalidation"]++;
+                    appendJsonl(paths.at("wire"), {{"event", "prepared_cache_invalidate"},
+                                                   {"statement_id", statementId},
+                                                   {"element_id", elementId},
+                                                   {"sql_hash", sha256Text(sql)},
+                                                   {"prepared_parameter_count",
+                                                    params == nullptr ? 0 : static_cast<int64_t>(params->size())},
+                                                   {"reason", statusMessage(*statementCtx)},
+                                                   {"retry_route", "ordinary_sql_after_trigger_aware_refusal"},
+                                                   {"engine_sql_text_execution", false},
+                                                   {"mga_authority", "engine"}});
+                    preparedCache.erase(found);
+                    clearErrorContext(statementCtx);
+                    if (preparedHandleUsed != nullptr) {
+                        *preparedHandleUsed = false;
+                    }
+                    api["execute"]++;
+                    if (resultSet != nullptr) {
+                        return conn.executeQuery(fallbackSql, resultSet, statementCtx);
+                    }
+                    return conn.execute(fallbackSql, rowsAffected, statementCtx);
                 }
                 api["preparedCacheInvalidation"]++;
                 appendJsonl(paths.at("wire"), {{"event", "prepared_cache_invalidate"},
@@ -2858,7 +3019,31 @@ int main(int argc, char** argv) {
                                            {"engine_sql_text_execution", false},
                                            {"mga_authority", "engine"}});
             auto inserted = preparedCache.emplace(sql, std::move(prepared));
-            return runPrepared(inserted.first->second.get());
+            const auto preparedStatus = runPrepared(inserted.first->second.get());
+            if (shouldRetryPreparedAsOrdinarySql(preparedStatus, *statementCtx)) {
+                api["preparedCacheInvalidation"]++;
+                appendJsonl(paths.at("wire"), {{"event", "prepared_cache_invalidate"},
+                                               {"statement_id", statementId},
+                                               {"element_id", elementId},
+                                               {"sql_hash", sha256Text(sql)},
+                                               {"prepared_parameter_count",
+                                                params == nullptr ? 0 : static_cast<int64_t>(params->size())},
+                                               {"reason", statusMessage(*statementCtx)},
+                                               {"retry_route", "ordinary_sql_after_trigger_aware_refusal"},
+                                               {"engine_sql_text_execution", false},
+                                               {"mga_authority", "engine"}});
+                preparedCache.erase(inserted.first);
+                clearErrorContext(statementCtx);
+                if (preparedHandleUsed != nullptr) {
+                    *preparedHandleUsed = false;
+                }
+                api["execute"]++;
+                if (resultSet != nullptr) {
+                    return conn.executeQuery(fallbackSql, resultSet, statementCtx);
+                }
+                return conn.execute(fallbackSql, rowsAffected, statementCtx);
+            }
+            return preparedStatus;
         };
 
         if (failures.empty() && preparedCacheEnabled) {
@@ -2938,12 +3123,6 @@ int main(int argc, char** argv) {
                 }
             }
         }
-
-        int executedStatements = 0;
-        int skippedScripts = 0;
-        int expectedRefusalPasses = 0;
-        int assertionPasses = 0;
-        int assertionFailures = 0;
 
         if (failures.empty()) {
             for (const auto& scriptEntry : manifest.value("scripts", json::array())) {
@@ -3148,6 +3327,7 @@ int main(int argc, char** argv) {
                             scratchbird::client::ResultSet resultSet;
                             if (usePreparedCache) {
                                 status = executePreparedCached(preparedSql,
+                                                               *sqlForExecution,
                                                                statementId,
                                                                elementId,
                                                                preparedParams,
@@ -3186,6 +3366,7 @@ int main(int argc, char** argv) {
                                                                 : int64_t{0}}});
                             if (usePreparedCache && !copyStatement) {
                                 status = executePreparedCached(preparedSql,
+                                                               *sqlForExecution,
                                                                statementId,
                                                                elementId,
                                                                preparedParams,
@@ -3259,6 +3440,9 @@ int main(int argc, char** argv) {
                                 }
                                 statementPassed = false;
                                 failureRecordedForStatement = true;
+                                if (diagnostic.empty()) {
+                                    diagnostic = "assertion mismatch";
+                                }
                                 failures.push_back({{"statement_id", statementId},
                                                     {"element_id", elementId},
                                                     {"assertion_id", assertion.value("assertion_id", "")},
@@ -3500,7 +3684,7 @@ int main(int argc, char** argv) {
                                      {"result_digest", resultDigest},
                                      {"elapsed_ns", statementElapsedNs},
                                      {"server_revalidation_state", "required"},
-                                     {"transaction_id_observed", conn.currentTransactionId()},
+                                     {"transaction_id_observed", transactionIdAfter},
                                      {"mga_authority", "engine"},
                                      {"native_api_surface", "cpp"},
                                      {"code_example_section", "connect_prepare_execute_fetch_assert"}};
@@ -3517,6 +3701,19 @@ int main(int argc, char** argv) {
                                      {"element_id", elementId},
                                      {"columns", columns},
                                      {"rows", rows}});
+                    }
+                    const bool reconnectAfterDesync =
+                        !hasFlag(args, "--stop-on-error") &&
+                        shouldReconnectAfterTransactionBoundaryDesync(status,
+                                                                      diagnostic,
+                                                                      transactionIdBefore,
+                                                                      transactionIdAfter);
+                    if (reconnectAfterDesync &&
+                        !reconnectAfterTransactionBoundaryDesync(statementId,
+                                                                 elementId,
+                                                                 diagnostic,
+                                                                 transactionIdAfter)) {
+                        break;
                     }
                     if (!statementPassed) {
                         appendJsonl(paths.at("diagnostics"), {{"statement_id", statementId},

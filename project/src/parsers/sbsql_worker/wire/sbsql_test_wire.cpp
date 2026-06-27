@@ -100,6 +100,13 @@ std::string NewRowUuid() {
   return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
 }
 
+std::string NewObjectUuid() {
+  static std::uint64_t sequence = 1000000;
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(UuidKind::object, CurrentUnixMillis() + (++sequence));
+  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
+}
+
 std::string AfterCommand(std::string_view line, std::string_view command) {
   auto trimmed = TrimAscii(line);
   if (trimmed.size() <= command.size()) return {};
@@ -194,19 +201,23 @@ bool ExecutionInvalidatesNameResolution(std::string_view operation_id) {
 
 bool ExecutionPreservesReferencedRelationNames(std::string_view operation_id) {
   return operation_id == "ddl.create_index" ||
-         operation_id == "ddl.create_index_template";
+         operation_id == "ddl.create_index_template" ||
+         operation_id == "ddl.comment_on_object" ||
+         operation_id == "catalog.mutation.refresh_materialized_view";
 }
 
 bool IsReferencedRelationNameClass(std::string_view object_class) {
   return object_class == "relation" ||
          object_class == "table" ||
-         object_class == "view";
+         object_class == "view" ||
+         object_class == "materialized_view";
 }
 
 struct ObjectReference {
   std::string presented_name;
   std::string object_class{"relation"};
   bool quoted{false};
+  bool create_reservation{false};
 };
 
 struct ResolvedObjectReferenceSeed {
@@ -513,6 +524,16 @@ std::optional<std::string> DdlResultRowField(std::string_view payload,
   return std::nullopt;
 }
 
+bool IsNameNotFoundDiagnostic(const MessageVectorSet& messages) {
+  if (messages.diagnostics.empty()) return false;
+  for (const auto& diagnostic : messages.diagnostics) {
+    if (diagnostic.code == "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE") {
+      return true;
+    }
+  }
+  return false;
+}
+
 PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
   PipelineResult result;
   result.accepted = !entry.sblr_payload.empty();
@@ -605,6 +626,36 @@ std::optional<ObjectReference> ExtractObjectReferenceAt(const CstDocument& cst,
   return ref;
 }
 
+std::size_t IndexAfterObjectReferenceAt(const CstDocument& cst, std::size_t marker) {
+  std::size_t index = marker;
+  bool consumed_any = false;
+  bool expect_name_part = true;
+  while (index < cst.tokens.size()) {
+    const auto& token = cst.tokens[index];
+    if (IsTriviaToken(token)) {
+      ++index;
+      continue;
+    }
+    if (token.kind == TokenKind::kSymbol && token.text == ".") {
+      if (!consumed_any || expect_name_part) return marker;
+      ++index;
+      expect_name_part = true;
+      continue;
+    }
+    if (token.kind != TokenKind::kIdentifier && token.kind != TokenKind::kKeyword) break;
+    if (!expect_name_part) break;
+    consumed_any = true;
+    expect_name_part = false;
+    ++index;
+  }
+  while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+  return consumed_any && !expect_name_part ? index : marker;
+}
+
+bool ObjectReferenceHasSchemaQualifier(std::string_view presented_name) {
+  return presented_name.find('.') != std::string_view::npos;
+}
+
 void DropObjectReferenceLeaf(ObjectReference* ref) {
   if (ref == nullptr) return;
   const auto dot = ref->presented_name.rfind('.');
@@ -619,6 +670,35 @@ std::string LowerObjectReferenceName(std::string_view text) {
     out.push_back(static_cast<char>(std::tolower(ch)));
   }
   return out;
+}
+
+bool IsCanonicalBuiltInFunctionReference(std::string_view presented_name) {
+  const std::string lowered = LowerObjectReferenceName(presented_name);
+  static constexpr std::string_view kPrefixes[] = {
+      "sb.crypto.",
+      "sb.cursor.",
+      "sb.handle.",
+      "sb.json.",
+      "sb.lob.",
+      "sb.locator.",
+      "sb.multiset.",
+      "sb.operator.",
+      "sb.rowset.",
+      "sb.scalar.",
+      "sb.session.",
+      "sb.setof.",
+      "sb.stream.",
+      "sb.table_value.",
+      "sb.temporal.",
+      "sb.type.",
+      "sb.uuid.",
+      "sb.vector.",
+      "sb.xml.",
+  };
+  for (const auto prefix : kPrefixes) {
+    if (lowered.rfind(prefix, 0) == 0) return true;
+  }
+  return false;
 }
 
 std::vector<std::string> ExtractLeadingCteNames(const CstDocument& cst) {
@@ -981,6 +1061,245 @@ std::vector<ObjectReference> ExtractDomainDdlObjectReferences(const CstDocument&
   return refs;
 }
 
+std::string ExtractDdlObjectClassAt(const CstDocument& cst, std::size_t* marker) {
+  if (marker == nullptr) return {};
+  *marker = NextNonTriviaIndex(cst, *marker);
+  if (*marker >= cst.tokens.size()) return {};
+  if (IsWord(cst.tokens[*marker], "MATERIALIZED")) {
+    const std::size_t view_token = NextNonTriviaIndex(cst, *marker + 1);
+    if (view_token < cst.tokens.size() && IsWord(cst.tokens[view_token], "VIEW")) {
+      *marker = NextNonTriviaIndex(cst, view_token + 1);
+      return "materialized_view";
+    }
+    return {};
+  }
+  static constexpr std::string_view kObjectClasses[] = {
+      "SCHEMA", "TABLE", "INDEX", "VIEW", "SEQUENCE", "DOMAIN", "FUNCTION",
+      "PROCEDURE", "TRIGGER", "PACKAGE", "UDR", "ROLE", "USER", "GROUP",
+      "POLICY", "OPERATOR", "AGGREGATE", "CAST", "ROUTINE"};
+  for (const auto object_class : kObjectClasses) {
+    if (IsWord(cst.tokens[*marker], object_class)) {
+      *marker = NextNonTriviaIndex(cst, *marker + 1);
+      return LowerObjectReferenceName(object_class);
+    }
+  }
+  return {};
+}
+
+std::vector<ObjectReference> ExtractCatalogDdlObjectReferences(const CstDocument& cst,
+                                                               std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size()) return refs;
+  auto push_ref = [&](std::size_t marker, std::string object_class) {
+    if (auto ref = ExtractObjectReferenceAt(cst, marker)) {
+      ref->object_class = object_class == "routine" ? "procedure" : std::move(object_class);
+      refs.push_back(*ref);
+    }
+  };
+
+  if (IsWord(cst.tokens[first_token], "COMMENT")) {
+    const std::size_t on_token = NextNonTriviaIndex(cst, first_token + 1);
+    if (on_token >= cst.tokens.size() || !IsWord(cst.tokens[on_token], "ON")) return refs;
+    std::size_t marker = on_token + 1;
+    marker = NextNonTriviaIndex(cst, marker);
+    if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "COLUMN")) {
+      marker = NextNonTriviaIndex(cst, marker + 1);
+      if (auto ref = ExtractObjectReferenceAt(cst, marker)) {
+        DropObjectReferenceLeaf(&*ref);
+        ref->object_class = "relation";
+        refs.push_back(*ref);
+      }
+      return refs;
+    }
+    std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
+    if (!object_class.empty()) push_ref(marker, std::move(object_class));
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "ALTER")) {
+    std::size_t marker = first_token + 1;
+    std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
+    if (!object_class.empty()) push_ref(marker, std::move(object_class));
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "REFRESH")) {
+    std::size_t marker = first_token + 1;
+    std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
+    if (!object_class.empty()) push_ref(marker, std::move(object_class));
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "DROP")) {
+    std::size_t marker = first_token + 1;
+    std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
+    if (object_class.empty()) return refs;
+    if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "IF")) {
+      const std::size_t exists_token = NextNonTriviaIndex(cst, marker + 1);
+      if (exists_token < cst.tokens.size() && IsWord(cst.tokens[exists_token], "EXISTS")) {
+        marker = NextNonTriviaIndex(cst, exists_token + 1);
+      }
+    }
+    push_ref(marker, std::move(object_class));
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "CREATE")) {
+    std::size_t marker = first_token + 1;
+    const std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
+    if (!object_class.empty()) {
+      if (marker < cst.tokens.size() && IsWord(cst.tokens[marker], "IF")) {
+        const std::size_t not_token = NextNonTriviaIndex(cst, marker + 1);
+        const std::size_t exists_token = NextNonTriviaIndex(cst, not_token + 1);
+        if (not_token < cst.tokens.size() && exists_token < cst.tokens.size() &&
+            IsWord(cst.tokens[not_token], "NOT") &&
+            IsWord(cst.tokens[exists_token], "EXISTS")) {
+          marker = NextNonTriviaIndex(cst, exists_token + 1);
+        }
+      }
+      if (auto ref = ExtractObjectReferenceAt(cst, marker)) {
+        ref->object_class = object_class == "routine" ? "procedure" : object_class;
+        ref->create_reservation = true;
+        refs.push_back(*ref);
+      }
+    }
+    return refs;
+  }
+
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractCreateExecutableObjectReferences(
+    const CstDocument& cst,
+    std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  if (first_token >= cst.tokens.size() || !IsWord(cst.tokens[first_token], "CREATE")) {
+    return refs;
+  }
+  std::size_t marker = NextNonTriviaIndex(cst, first_token + 1);
+  if (marker >= cst.tokens.size()) return refs;
+  std::string object_class;
+  if (IsWord(cst.tokens[marker], "FUNCTION")) {
+    object_class = "function";
+  } else if (IsWord(cst.tokens[marker], "PROCEDURE")) {
+    object_class = "procedure";
+  } else if (IsWord(cst.tokens[marker], "TRIGGER")) {
+    object_class = "trigger";
+  } else {
+    return refs;
+  }
+
+  auto push_unique = [&](ObjectReference ref) {
+    if (ref.presented_name.empty()) return;
+    const auto duplicate =
+        std::find_if(refs.begin(), refs.end(), [&](const ObjectReference& existing) {
+          return existing.presented_name == ref.presented_name &&
+                 existing.object_class == ref.object_class &&
+                 existing.create_reservation == ref.create_reservation;
+        });
+    if (duplicate == refs.end()) refs.push_back(std::move(ref));
+  };
+
+  marker = NextNonTriviaIndex(cst, marker + 1);
+  if (auto created = ExtractObjectReferenceAt(cst, marker)) {
+    created->object_class = object_class;
+    created->create_reservation = true;
+    push_unique(*created);
+  }
+
+  for (std::size_t index = marker; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd) break;
+
+    if (IsWord(token, "ON")) {
+      std::size_t target = NextNonTriviaIndex(cst, index + 1);
+      if (target < cst.tokens.size() && IsWord(cst.tokens[target], "TABLE")) {
+        target = NextNonTriviaIndex(cst, target + 1);
+      }
+      if (auto ref = ExtractObjectReferenceAt(cst, target);
+          ref && ObjectReferenceHasSchemaQualifier(ref->presented_name)) {
+        ref->object_class = "table";
+        push_unique(*ref);
+      }
+      continue;
+    }
+
+    if (IsWord(token, "INTO") || IsWord(token, "FROM")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, index + 1));
+          ref && ObjectReferenceHasSchemaQualifier(ref->presented_name)) {
+        ref->object_class = "table";
+        push_unique(*ref);
+      }
+      continue;
+    }
+
+    if (IsWord(token, "FOR")) {
+      std::size_t previous = index;
+      while (previous > 0) {
+        --previous;
+        if (!IsTriviaToken(cst.tokens[previous])) break;
+      }
+      if (previous < cst.tokens.size() && IsWord(cst.tokens[previous], "VALUE")) {
+        std::size_t before_value = previous;
+        while (before_value > 0) {
+          --before_value;
+          if (!IsTriviaToken(cst.tokens[before_value])) break;
+        }
+        if (before_value < cst.tokens.size() &&
+            IsWord(cst.tokens[before_value], "NEXT")) {
+          if (auto ref = ExtractObjectReferenceAt(
+                  cst, NextNonTriviaIndex(cst, index + 1));
+              ref && ObjectReferenceHasSchemaQualifier(ref->presented_name)) {
+            ref->object_class = "sequence";
+            push_unique(*ref);
+          }
+        }
+      }
+    }
+  }
+
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractRoutineCallObjectReferences(
+    const CstDocument& cst,
+    std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  for (std::size_t index = first_token; index < cst.tokens.size(); ++index) {
+    const auto& token = cst.tokens[index];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd ||
+        token.kind == TokenKind::kStatementTerminator) {
+      break;
+    }
+    if (token.kind != TokenKind::kIdentifier && token.kind != TokenKind::kKeyword) {
+      continue;
+    }
+    auto ref = ExtractObjectReferenceAt(cst, index);
+    if (!ref || !ObjectReferenceHasSchemaQualifier(ref->presented_name)) continue;
+    const std::size_t after_ref = IndexAfterObjectReferenceAt(cst, index);
+    if (after_ref >= cst.tokens.size() || cst.tokens[after_ref].text != "(") continue;
+    if (IsCanonicalBuiltInFunctionReference(ref->presented_name)) {
+      index = after_ref;
+      continue;
+    }
+
+    std::size_t previous = index;
+    while (previous > 0) {
+      --previous;
+      if (!IsTriviaToken(cst.tokens[previous])) break;
+    }
+    ref->object_class = (previous < index && IsWord(cst.tokens[previous], "FROM"))
+                            ? "procedure"
+                            : "function";
+    refs.push_back(*ref);
+    if (refs.size() >= 16) break;
+    index = after_ref;
+  }
+  return refs;
+}
+
 std::vector<ObjectReference> ExtractSecurityDclObjectReferences(const CstDocument& cst,
                                                                 std::size_t first_token) {
   std::vector<ObjectReference> refs;
@@ -1073,9 +1392,12 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
                                                                    std::size_t first_token) {
   std::vector<ObjectReference> refs;
   if (first_token >= cst.tokens.size()) return refs;
-  const auto push_ref_at = [&](std::size_t marker, std::string object_class) {
+  const auto push_ref_at = [&](std::size_t marker,
+                               std::string object_class,
+                               bool create_reservation = false) {
     if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
       ref->object_class = std::move(object_class);
+      ref->create_reservation = create_reservation;
       refs.push_back(*ref);
     }
   };
@@ -1100,10 +1422,29 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
   if (!IsWord(cst.tokens[first_token], "CREATE")) return refs;
   const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
   if (second >= cst.tokens.size()) return refs;
+  if (IsWord(cst.tokens[second], "ROLE")) {
+    push_ref_at(second + 1, "role", true);
+    return refs;
+  }
+  if (IsWord(cst.tokens[second], "GROUP")) {
+    push_ref_at(second + 1, "group", true);
+    return refs;
+  }
+  if (IsWord(cst.tokens[second], "PRINCIPAL") || IsWord(cst.tokens[second], "USER")) {
+    push_ref_at(second + 1, "principal", true);
+    return refs;
+  }
   if (!IsWord(cst.tokens[second], "POLICY") &&
       !IsWord(cst.tokens[second], "MASK") &&
       !IsWord(cst.tokens[second], "RLS")) {
     return refs;
+  }
+  if (IsWord(cst.tokens[second], "POLICY")) {
+    push_ref_at(second + 1, "policy", true);
+  } else if (IsWord(cst.tokens[second], "MASK")) {
+    push_ref_at(second + 1, "mask", true);
+  } else {
+    push_ref_at(second + 1, "rls", true);
   }
   for (std::size_t index = second + 1; index < cst.tokens.size(); ++index) {
     const auto& token = cst.tokens[index];
@@ -1216,6 +1557,11 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     return domain_ddl_refs;
   }
 
+  auto create_executable_refs = ExtractCreateExecutableObjectReferences(cst, first_token);
+  if (!create_executable_refs.empty()) {
+    return create_executable_refs;
+  }
+
   auto security_dcl_refs = ExtractSecurityDclObjectReferences(cst, first_token);
   if (!security_dcl_refs.empty()) {
     return security_dcl_refs;
@@ -1226,10 +1572,21 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     return security_policy_refs;
   }
 
+  auto catalog_ddl_refs = ExtractCatalogDdlObjectReferences(cst, first_token);
+  if (!catalog_ddl_refs.empty()) {
+    return catalog_ddl_refs;
+  }
+
+  auto routine_call_refs = ExtractRoutineCallObjectReferences(cst, first_token);
+  if (!routine_call_refs.empty()) {
+    refs.insert(refs.end(), routine_call_refs.begin(), routine_call_refs.end());
+  }
+
   for (std::size_t i = first_token; i < cst.tokens.size(); ++i) {
     const auto& token = cst.tokens[i];
     if (IsTriviaToken(token)) continue;
     if (token.kind == TokenKind::kEnd) break;
+    if (IsLiteralKind(token.kind)) continue;
     if (!IsWord(token, "FROM") && !IsWord(token, "INTO") &&
         !IsWord(token, "UPDATE") && !IsWord(token, "TABLE") &&
         !IsWord(token, "CALL") && !IsWord(token, "JOIN")) {
@@ -1238,6 +1595,11 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     auto ref = ExtractObjectReferenceAt(cst, i + 1);
     if (!ref) continue;
     if (IsLocalCteReference(*ref, local_cte_names)) continue;
+    const std::size_t after_ref = IndexAfterObjectReferenceAt(cst, i + 1);
+    if ((IsWord(token, "FROM") || IsWord(token, "CALL")) &&
+        after_ref < cst.tokens.size() && cst.tokens[after_ref].text == "(") {
+      ref->object_class = "procedure";
+    }
     refs.push_back(*ref);
     if (refs.size() >= 8) break;
   }
@@ -3648,12 +4010,48 @@ void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
     const CstDocument& cst,
     const PipelineResult& result) {
   if (!result.accepted || result.server_result_payload.empty()) return;
-  const auto object_uuid = DdlResultRowField(result.server_result_payload, "object_uuid");
-  const auto object_kind = DdlResultRowField(result.server_result_payload, "object_kind");
+  auto object_uuid = DdlResultRowField(result.server_result_payload, "object_uuid");
+  auto object_kind = DdlResultRowField(result.server_result_payload, "object_kind");
+  std::string route_create_kind;
+  std::string result_name_field{"name"};
+  if (!object_uuid || object_uuid->empty()) {
+    if (result.server_operation_id == "security.role.create") {
+      object_uuid = DdlResultRowField(result.server_result_payload, "role_uuid");
+      route_create_kind = "ROLE";
+      result_name_field = "role_name";
+    } else if (result.server_operation_id == "security.group.create") {
+      object_uuid = DdlResultRowField(result.server_result_payload, "group_uuid");
+      route_create_kind = "GROUP";
+      result_name_field = "group_name";
+    } else if (result.server_operation_id == "security.principal.create") {
+      object_uuid = DdlResultRowField(result.server_result_payload, "principal_uuid");
+      route_create_kind = "PRINCIPAL";
+      result_name_field = "principal_name";
+    } else if (result.server_operation_id == "security.policy.create") {
+      object_uuid = DdlResultRowField(result.server_result_payload, "policy_uuid");
+      std::size_t index = 0;
+      if (ConsumeRouteKeyword(cst, &index, "CREATE")) {
+        if (ConsumeRouteKeyword(cst, &index, "POLICY")) {
+          route_create_kind = "POLICY";
+        } else if (ConsumeRouteKeyword(cst, &index, "MASK")) {
+          route_create_kind = "MASK";
+        } else if (ConsumeRouteKeyword(cst, &index, "RLS")) {
+          route_create_kind = "RLS";
+        }
+      }
+      result_name_field = "policy_name";
+    }
+  }
+  if ((!object_kind || object_kind->empty()) && !route_create_kind.empty()) {
+    object_kind = route_create_kind;
+  }
   if (!object_uuid || object_uuid->empty() || !object_kind || object_kind->empty()) return;
   const auto created = ExtractCreatedDdlNameFromCst(cst, *object_kind);
   if (!created) return;
-  const auto payload_name = DdlResultRowField(result.server_result_payload, "name");
+  auto payload_name = DdlResultRowField(result.server_result_payload, result_name_field);
+  if (!payload_name || payload_name->empty()) {
+    payload_name = DdlResultRowField(result.server_result_payload, "name");
+  }
   const std::string canonical_name =
       payload_name && !payload_name->empty() ? *payload_name : created->presented_name;
   for (const auto& object_class : created->object_classes) {
@@ -4097,9 +4495,66 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     const auto refs = ExtractObjectReferences(cst);
     mark_phase("extract_object_references");
     for (const auto& ref : refs) {
-      auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
+      PublicNameResolutionResult resolved;
+      if (ref.create_reservation) {
+        auto existing = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
+        if (existing.resolved) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBSQL.NAME_RESOLUTION.CREATE_NAME_ALREADY_EXISTS",
+              "ERROR",
+              "create object name already resolves in the authenticated session",
+              "sbp_sbsql.wire",
+              {{"object_class", ref.object_class},
+               {"presented_name", ref.presented_name}}));
+          break;
+        }
+        if (!IsNameNotFoundDiagnostic(existing.messages)) {
+          result.messages = std::move(existing.messages);
+          break;
+        }
+        resolved.resolved = true;
+        resolved.object_uuid = NewObjectUuid();
+        resolved.canonical_name = ref.presented_name;
+        resolved.object_class = ref.object_class;
+        resolved.catalog_epoch = session_.catalog_epoch;
+        resolved.security_epoch = session_.security_policy_epoch;
+        if (resolved.object_uuid.empty()) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBSQL.NAME_RESOLUTION.CREATE_UUID_RESERVATION_FAILED",
+              "ERROR",
+              "create object UUID reservation failed before SBLR lowering",
+              "sbp_sbsql.wire",
+              {{"object_class", ref.object_class},
+               {"presented_name", ref.presented_name}}));
+          break;
+        }
+      } else {
+        resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
+      }
       if (!resolved.resolved) {
+        if (ref.object_class == "procedure") {
+          auto relation_probe = ResolveNameOnRoute(ref.presented_name, ref.quoted, "relation");
+          if (relation_probe.resolved) {
+            if (std::find(resolved_object_uuids.begin(),
+                          resolved_object_uuids.end(),
+                          relation_probe.object_uuid) == resolved_object_uuids.end()) {
+              resolved_object_uuids.push_back(relation_probe.object_uuid);
+              ObjectReference relation_ref = ref;
+              relation_ref.object_class = "relation";
+              resolved_object_reference_seeds.push_back({relation_ref, relation_probe});
+            }
+            continue;
+          }
+        }
         result.messages = std::move(resolved.messages);
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBSQL.NAME_RESOLUTION.REFERENCE_FAILED",
+            "ERROR",
+            "public name resolution failed for a referenced object before SBLR lowering",
+            "sbp_sbsql.wire",
+            {{"presented_name", ref.presented_name},
+             {"object_class", ref.object_class},
+             {"quoted", ref.quoted ? "true" : "false"}}));
         break;
       }
       resolved_object_uuids.push_back(resolved.object_uuid);
@@ -4168,16 +4623,32 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (!ExecutionPreservesReferencedRelationNames(operation_id)) return;
     for (const auto& seed : resolved_object_reference_seeds) {
       if (!seed.resolved.resolved || seed.resolved.object_uuid.empty()) continue;
-      const std::string object_class =
-          seed.resolved.object_class.empty() ? seed.ref.object_class : seed.resolved.object_class;
-      if (!IsReferencedRelationNameClass(object_class)) continue;
+      const std::string lookup_class =
+          seed.ref.object_class.empty() ? std::string("relation") : seed.ref.object_class;
+      const std::string resolved_class =
+          seed.resolved.object_class.empty() ? lookup_class : seed.resolved.object_class;
+      if (!IsReferencedRelationNameClass(lookup_class) &&
+          !IsReferencedRelationNameClass(resolved_class)) {
+        continue;
+      }
       StoreNameResolutionCacheEntry(seed.ref.presented_name,
                                     seed.ref.quoted,
-                                    object_class,
+                                    lookup_class,
                                     seed.resolved.object_uuid,
                                     seed.resolved.canonical_name,
                                     session_.catalog_epoch,
-                                    session_.security_policy_epoch);
+                                    session_.security_policy_epoch,
+                                    resolved_class);
+      if (resolved_class != lookup_class && IsReferencedRelationNameClass(resolved_class)) {
+        StoreNameResolutionCacheEntry(seed.ref.presented_name,
+                                      seed.ref.quoted,
+                                      resolved_class,
+                                      seed.resolved.object_uuid,
+                                      seed.resolved.canonical_name,
+                                      session_.catalog_epoch,
+                                      session_.security_policy_epoch,
+                                      resolved_class);
+      }
     }
   };
   if (submit && result.accepted) {

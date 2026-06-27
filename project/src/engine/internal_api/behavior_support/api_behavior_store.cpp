@@ -172,10 +172,10 @@ std::string MakeApiBehaviorRecordEvent(const ApiBehaviorRecord& record) {
 
 std::string ApiBehaviorPrimaryName(const EngineApiRequest& request, const std::string& fallback) {
   if (!request.localized_names.empty() && !request.localized_names.front().name.empty()) { return request.localized_names.front().name; }
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
   for (const auto& option : request.option_envelopes) {
     if (StartsWith(option, "name:")) { return option.substr(5); }
   }
+  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
   return fallback;
 }
 

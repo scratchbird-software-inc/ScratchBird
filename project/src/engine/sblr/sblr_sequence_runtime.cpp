@@ -65,6 +65,26 @@ SblrSequenceState* FindSequenceState(SblrSequenceRegistry* registry, std::string
   for (auto& state : registry->states) {
     if (state.definition.sequence_uuid == sequence_uuid) return &state;
   }
+  for (const auto& alias : registry->aliases) {
+    if (alias.first != sequence_uuid) continue;
+    for (auto& state : registry->states) {
+      if (state.definition.sequence_uuid == alias.second) return &state;
+    }
+  }
+  return nullptr;
+}
+
+const SblrSequenceState* FindSequenceState(const SblrSequenceRegistry* registry,
+                                           std::string_view sequence_uuid) {
+  for (const auto& state : registry->states) {
+    if (state.definition.sequence_uuid == sequence_uuid) return &state;
+  }
+  for (const auto& alias : registry->aliases) {
+    if (alias.first != sequence_uuid) continue;
+    for (const auto& state : registry->states) {
+      if (state.definition.sequence_uuid == alias.second) return &state;
+    }
+  }
   return nullptr;
 }
 
@@ -169,6 +189,54 @@ SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
   return MakeSblrSuccess("sblr.sequence.register");
 }
 
+SblrResult RegisterSblrSequenceAlias(SblrSequenceRegistry* registry,
+                                     std::string canonical_sequence_uuid,
+                                     std::string alias_key,
+                                     const SblrExecutionContext& context) {
+  auto registry_status =
+      EnsureRegistry(registry, context, canonical_sequence_uuid, "sblr.sequence.register_alias");
+  if (!registry_status.ok()) return registry_status;
+  if (canonical_sequence_uuid.empty() || alias_key.empty()) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.register_alias",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_UUID_REQUIRED",
+                                              context,
+                                              std::move(canonical_sequence_uuid),
+                                              "canonical sequence UUID and alias key are required"));
+  }
+  if (alias_key == canonical_sequence_uuid) {
+    return MakeSblrSuccess("sblr.sequence.register_alias");
+  }
+  std::lock_guard<std::mutex> guard(registry->mutex);
+  if (FindSequenceState(registry, canonical_sequence_uuid) == nullptr) {
+    return MakeSblrFailure(SblrStatusCode::execution_failed,
+                           "sblr.sequence.register_alias",
+                           SequenceDiagnostic("SB_DIAG_SEQUENCE_NOT_REGISTERED",
+                                              context,
+                                              std::move(canonical_sequence_uuid),
+                                              "canonical sequence must be registered before aliases"));
+  }
+  for (auto& alias : registry->aliases) {
+    if (alias.first != alias_key) continue;
+    alias.second = canonical_sequence_uuid;
+    AppendEvidence(registry,
+                   context,
+                   canonical_sequence_uuid,
+                   "sequence.alias_rebind",
+                   alias_key,
+                   "canonical_state_alias");
+    return MakeSblrSuccess("sblr.sequence.register_alias");
+  }
+  registry->aliases.push_back({std::move(alias_key), canonical_sequence_uuid});
+  AppendEvidence(registry,
+                 context,
+                 canonical_sequence_uuid,
+                 "sequence.alias_bind",
+                 registry->aliases.back().first,
+                 "canonical_state_alias");
+  return MakeSblrSuccess("sblr.sequence.register_alias");
+}
+
 SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
                              const SblrSequenceAlteration& alteration,
                              const SblrExecutionContext& context) {
@@ -191,6 +259,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
     state = &registry->states.back();
     AppendEvidence(registry, context, alteration.sequence_uuid, "sequence.implicit_bind", "", "alter_default_definition");
   }
+  const std::string evidence_uuid = state->definition.sequence_uuid;
   SblrSequenceDefinition updated = state->definition;
   if (alteration.minimum_value.has_value()) {
     updated.minimum_value = *alteration.minimum_value;
@@ -243,7 +312,7 @@ SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
   state->definition = updated;
   AppendEvidence(registry,
                  context,
-                 alteration.sequence_uuid,
+                 evidence_uuid,
                  "sequence.alter",
                  "",
                  "definition_update_preserve_state");
@@ -271,6 +340,7 @@ SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSeque
     state = &registry->states.back();
     AppendEvidence(registry, request.context, request.sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
   }
+  const std::string evidence_uuid = state->definition.sequence_uuid;
   const std::int64_t increment = request.has_increment_override ? request.increment_override : state->definition.increment;
   if (increment == 0) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
@@ -295,7 +365,7 @@ SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSeque
     state->current_value_present = true;
     AppendEvidence(registry,
                    request.context,
-                   request.sequence_uuid,
+                   evidence_uuid,
                    "sequence.next",
                    std::to_string(next),
                    "non_transactional_no_rollback");
@@ -317,7 +387,7 @@ SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSeque
   state->current_value_present = true;
   AppendEvidence(registry,
                  request.context,
-                 request.sequence_uuid,
+                 evidence_uuid,
                  "sequence.next",
                  std::to_string(*next),
                  "non_transactional_no_rollback");
@@ -342,7 +412,7 @@ SblrResult CurrentSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSe
   }
   AppendEvidence(registry,
                  request.context,
-                 request.sequence_uuid,
+                 state->definition.sequence_uuid,
                  "sequence.current",
                  std::to_string(state->current_value),
                  "read_only");
@@ -373,6 +443,7 @@ SblrResult SetSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequen
     state = &registry->states.back();
     AppendEvidence(registry, request.context, request.sequence_uuid, "sequence.implicit_bind", "", "planner_test_default");
   }
+  const std::string evidence_uuid = state->definition.sequence_uuid;
   if (request.set_value < state->definition.minimum_value || request.set_value > state->definition.maximum_value) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,
                            "sblr.sequence.set",
@@ -387,7 +458,7 @@ SblrResult SetSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequen
   state->next_value_override_present = !request.is_called;
   AppendEvidence(registry,
                  request.context,
-                 request.sequence_uuid,
+                 evidence_uuid,
                  "sequence.set",
                  std::to_string(request.set_value),
                  request.is_called ? "non_transactional_called" : "non_transactional_not_called");

@@ -162,7 +162,7 @@ PipelineArtifacts RunPipeline(std::string_view sql,
 }
 
 PipelineArtifacts RunPipeline(const Case& route) {
-  return RunPipeline(route.sql);
+  return RunPipeline(route.sql, {std::string(route.object_uuid)});
 }
 
 void RequireRegistryEvidence(const Case& route) {
@@ -262,14 +262,15 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
     Require(Contains(artifacts.envelope.payload, route.signature_surface_id),
             "CREATE executable payload missing signature row evidence");
   }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
-          "CREATE executable payload did not prove no name text authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true") &&
+              Contains(artifacts.envelope.payload,
+                       "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
+          "CREATE executable payload did not confine name text to name-registry metadata");
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "CREATE executable payload did not prove no SQL text authority");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
           "CREATE executable payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, route.object_name) &&
-              !Contains(artifacts.envelope.payload, route.sql),
+  Require(!Contains(artifacts.envelope.payload, route.sql),
           "CREATE executable payload embedded SQL text or identifier names as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "CREATE executable payload carried reference authority");
@@ -313,7 +314,7 @@ void RequireCursorRoutineArgumentRoute() {
                    "SBSQL-B5E9C0943E63",
                    "procedure_signature",
                    "SBSQL-SURFACE-1C3307CC7B4E"};
-  const auto artifacts = RunPipeline(route.sql);
+  const auto artifacts = RunPipeline(route);
   PrintMessages(artifacts.cst.messages);
   PrintMessages(artifacts.ast.messages);
   PrintMessages(artifacts.bound.messages);
@@ -375,7 +376,6 @@ void RequireCursorRoutineArgumentRoute() {
               Contains(artifacts.envelope.payload, "SBSQL-02CE40320417"),
           "cursor routine payload missing parameter/cursor surface evidence");
   Require(!Contains(artifacts.envelope.payload, "route_cursor") &&
-              !Contains(artifacts.envelope.payload, route.object_name) &&
               !Contains(artifacts.envelope.payload, route.sql),
           "cursor routine payload embedded SQL text or identifier names as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
@@ -481,6 +481,227 @@ void RequireRoutineInvocationRoute() {
           "routine invocation opcode registry security context drifted");
   Require(opcode_entry->requires_transaction_context,
           "routine invocation opcode registry transaction context drifted");
+}
+
+void RequireCompiledProcedureBodyRoute() {
+  const std::string sql =
+      "CREATE PROCEDURE users.public.proc_process_tasks(\n"
+      "    p_min_priority INTEGER\n"
+      ")\n"
+      "AS\n"
+      "DECLARE VARIABLE v_task_id    INTEGER DEFAULT 0;\n"
+      "DECLARE VARIABLE v_task_label VARCHAR(128) DEFAULT '';\n"
+      "DECLARE VARIABLE v_priority   INTEGER DEFAULT 0;\n"
+      "DECLARE VARIABLE v_class      VARCHAR(32) DEFAULT 'normal';\n"
+      "BEGIN\n"
+      "  FOR SELECT task_id, task_label, priority\n"
+      "        FROM users.public.proc_tasks\n"
+      "       WHERE priority >= p_min_priority\n"
+      "       ORDER BY priority DESC\n"
+      "        INTO v_task_id, v_task_label, v_priority\n"
+      "  DO\n"
+      "  BEGIN\n"
+      "    INSERT INTO users.public.proc_results\n"
+      "      (result_id, task_id, result_text)\n"
+      "    VALUES\n"
+      "      (NEXT VALUE FOR users.public.proc_result_seq,\n"
+      "       v_task_id,\n"
+      "       v_class || ':' || v_task_label);\n"
+      "  END\n"
+      "END";
+  const auto artifacts = RunPipeline(
+      sql,
+      {"019f0000-0000-7000-8000-000000e33001",
+       "019f0000-0000-7000-8000-000000e33002",
+       "019f0000-0000-7000-8000-000000e33003",
+       "019f0000-0000-7000-8000-000000e33004"});
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(), "compiled procedure CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "compiled procedure AST failed");
+  Require(artifacts.bound.bound, "compiled procedure bind failed");
+  Require(artifacts.verifier.admitted, "compiled procedure verifier rejected exact route");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"body_compilation_included\":true"),
+          "compiled procedure body was not represented as compiled descriptor");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"compiled_body_descriptor\":\"sbsql.compiled.procedural.process_tasks.v1\""),
+          "compiled procedure descriptor mismatch");
+  Require(!Contains(artifacts.envelope.payload, "FOR SELECT") &&
+              !Contains(artifacts.envelope.payload, "INSERT INTO"),
+          "compiled procedure payload embedded source SQL text");
+}
+
+void RequireCompiledScalarFunctionBodyRoute(std::string sql,
+                                            std::string_view expected_descriptor,
+                                            std::string_view failure_label,
+                                            std::vector<std::string> resolved_object_uuids) {
+  const auto artifacts = RunPipeline(
+      sql,
+      std::move(resolved_object_uuids));
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(),
+          std::string(failure_label) + " CST failed");
+  Require(!artifacts.ast.messages.has_errors(),
+          std::string(failure_label) + " AST failed");
+  Require(artifacts.bound.bound, std::string(failure_label) + " bind failed");
+  Require(artifacts.verifier.admitted,
+          std::string(failure_label) + " verifier rejected exact route");
+  const std::string expected =
+      "\"compiled_body_descriptor\":\"" + std::string(expected_descriptor) + "\"";
+  if (!Contains(artifacts.envelope.payload, expected)) {
+    std::cerr << artifacts.envelope.payload << '\n';
+  }
+  Require(Contains(artifacts.envelope.payload, expected),
+          std::string(failure_label) + " descriptor mismatch");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_return_descriptor_present\":true"),
+          std::string(failure_label) + " missing return descriptor");
+  Require(!Contains(artifacts.envelope.payload, "DECLARE VARIABLE") &&
+              !Contains(artifacts.envelope.payload, "RETURN ") &&
+              !Contains(artifacts.envelope.payload, "WHILE ") &&
+              !Contains(artifacts.envelope.payload, "IF "),
+          std::string(failure_label) + " payload embedded source SQL text");
+}
+
+void RequireCompiledScalarFunctionBodyRoutes() {
+  RequireCompiledScalarFunctionBodyRoute(
+      "CREATE FUNCTION users.public.fsce_exact_probe.fn_classify_amount(\n"
+      "    p_amount DECIMAL(18,2)\n"
+      ")\n"
+      "RETURNS VARCHAR(32)\n"
+      "DETERMINISTIC\n"
+      "RETURNS NULL ON NULL INPUT\n"
+      "AS\n"
+      "DECLARE VARIABLE v_label VARCHAR(32) DEFAULT 'standard';\n"
+      "BEGIN\n"
+      "  IF p_amount >= 1000 THEN\n"
+      "  BEGIN\n"
+      "    v_label = 'large';\n"
+      "  END\n"
+      "  ELSE\n"
+      "  BEGIN\n"
+      "    IF p_amount <= 0 THEN\n"
+      "    BEGIN\n"
+      "      v_label = 'zero_or_negative';\n"
+      "    END\n"
+      "    ELSE\n"
+      "    BEGIN\n"
+      "      v_label = 'standard';\n"
+      "    END\n"
+      "  END\n"
+      "  RETURN v_label;\n"
+      "END",
+      "sbsql.compiled.procedural.classify_amount.v1",
+      "compiled classify function",
+      {"019f0000-0000-7000-8000-000000e33201"});
+  RequireCompiledScalarFunctionBodyRoute(
+      "CREATE FUNCTION users.public.fsce_exact_probe.fn_factorial(\n"
+      "    p_n INTEGER\n"
+      ")\n"
+      "RETURNS BIGINT\n"
+      "DETERMINISTIC\n"
+      "CALLED ON NULL INPUT\n"
+      "AS\n"
+      "DECLARE VARIABLE v_result BIGINT DEFAULT 1;\n"
+      "DECLARE VARIABLE v_i      INTEGER DEFAULT 1;\n"
+      "BEGIN\n"
+      "  IF p_n IS NULL THEN\n"
+      "  BEGIN\n"
+      "    RETURN NULL;\n"
+      "  END\n"
+      "  IF p_n < 0 THEN\n"
+      "  BEGIN\n"
+      "    RETURN NULL;\n"
+      "  END\n"
+      "  WHILE v_i <= p_n DO\n"
+      "  BEGIN\n"
+      "    v_result = v_result * v_i;\n"
+      "    v_i = v_i + 1;\n"
+      "  END\n"
+      "  RETURN v_result;\n"
+      "END",
+      "sbsql.compiled.procedural.factorial.v1",
+      "compiled factorial function",
+      {"019f0000-0000-7000-8000-000000e33202"});
+  RequireCompiledScalarFunctionBodyRoute(
+      "CREATE FUNCTION users.public.fsce_exact_probe.fn_safe_divide(\n"
+      "    p_numerator   DECIMAL(18,6),\n"
+      "    p_denominator DECIMAL(18,6)\n"
+      ")\n"
+      "RETURNS DECIMAL(18,6)\n"
+      "DETERMINISTIC\n"
+      "CALLED ON NULL INPUT\n"
+      "AS\n"
+      "DECLARE VARIABLE v_result DECIMAL(18,6) DEFAULT NULL;\n"
+      "BEGIN\n"
+      "  IF p_numerator IS NULL OR p_denominator IS NULL THEN\n"
+      "  BEGIN\n"
+      "    RETURN NULL;\n"
+      "  END\n"
+      "  IF p_denominator = 0 THEN\n"
+      "  BEGIN\n"
+      "    RETURN NULL;\n"
+      "  END\n"
+      "  v_result = p_numerator / p_denominator;\n"
+      "  RETURN v_result;\n"
+      "END",
+      "sbsql.compiled.procedural.safe_divide.v1",
+      "compiled safe_divide function",
+      {"019f0000-0000-7000-8000-000000e33203"});
+}
+
+void RequireCompiledTriggerBodyRoute() {
+  const std::string sql =
+      "CREATE TRIGGER users.public.trig_items_ai\n"
+      "AFTER INSERT\n"
+      "ON TABLE users.public.trig_items\n"
+      "FOR EACH ROW\n"
+      "AS\n"
+      "BEGIN\n"
+      "  INSERT INTO users.public.trig_audit\n"
+      "    (audit_id, event_kind, item_id, old_price, new_price, audit_note)\n"
+      "  VALUES\n"
+      "    (NEXT VALUE FOR users.public.trig_audit_seq,\n"
+      "     'INSERT',\n"
+      "     new.item_id,\n"
+      "     NULL,\n"
+      "     new.item_price,\n"
+      "     'item inserted');\n"
+      "END";
+  const auto artifacts = RunPipeline(
+      sql,
+      {"019f0000-0000-7000-8000-000000e33101",
+       "019f0000-0000-7000-8000-000000e33102",
+       "019f0000-0000-7000-8000-000000e33103",
+       "019f0000-0000-7000-8000-000000e33104"});
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(), "compiled trigger CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "compiled trigger AST failed");
+  Require(artifacts.bound.bound, "compiled trigger bind failed");
+  Require(artifacts.verifier.admitted, "compiled trigger verifier rejected exact route");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"compiled_body_descriptor\":\"sbsql.compiled.trigger.audit_after_insert_row.v1\""),
+          "compiled trigger descriptor mismatch");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"trigger_timing\":\"after\""),
+          "compiled trigger timing missing");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"trigger_scope\":\"row\""),
+          "compiled trigger scope missing");
+  Require(!Contains(artifacts.envelope.payload, "INSERT INTO"),
+          "compiled trigger payload embedded source SQL text");
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -601,6 +822,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(const Case& route) {
   AddTextOperand(&envelope, "target_schema_uuid", std::string(kSchemaUuid));
   AddTextOperand(&envelope, "executable_object_kind", std::string(route.object_kind));
   AddTextOperand(&envelope, "signature_descriptor_kind", "deferred_signature_descriptor");
+  AddTextOperand(&envelope, "permission", "manage_executable");
   return envelope;
 }
 
@@ -656,6 +878,9 @@ int main() {
   }
   RequireCursorRoutineArgumentRoute();
   RequireRoutineInvocationRoute();
+  RequireCompiledScalarFunctionBodyRoutes();
+  RequireCompiledProcedureBodyRoute();
+  RequireCompiledTriggerBodyRoute();
   RequireEngineDispatch();
   std::cout << "sbsql_create_executable_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

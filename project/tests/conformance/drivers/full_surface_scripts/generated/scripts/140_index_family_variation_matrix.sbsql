@@ -8,6 +8,22 @@ CREATE TABLE __SB_NAMESPACE__.index_case_manifest (
     statement_text TEXT NOT NULL
 );
 
+CREATE TABLE __SB_NAMESPACE__.index_unique_family_probe_values (
+    case_id INTEGER PRIMARY KEY,
+    sample_value BIGINT NOT NULL UNIQUE,
+    seed_text VARCHAR(128) NOT NULL UNIQUE
+);
+
+INSERT INTO __SB_NAMESPACE__.index_unique_family_probe_values (case_id, sample_value, seed_text) VALUES
+    (1, 101, 'alpha'),
+    (2, 202, 'bravo'),
+    (3, 303, 'charlie'),
+    (4, 404, 'delta'),
+    (5, 505, 'echo'),
+    (6, 606, 'foxtrot'),
+    (7, 707, 'golf'),
+    (8, 808, 'hotel');
+
 INSERT INTO __SB_NAMESPACE__.index_case_manifest VALUES
     ('IDX-DATATYPE-null_type-btree', 'null_type', 'btree', 'datatype_plain', 'CREATE INDEX idx_datatype_null_type_btree ON __SB_NAMESPACE__.dt_null_type_values USING BTREE (sample_value)'),
     ('IDX-DATATYPE-boolean-btree', 'boolean', 'btree', 'datatype_plain', 'CREATE INDEX idx_datatype_boolean_btree ON __SB_NAMESPACE__.dt_boolean_values USING BTREE (sample_value)'),
@@ -95,175 +111,175 @@ INSERT INTO __SB_NAMESPACE__.index_case_manifest VALUES
     ('IDX-DATATYPE-cursor-btree', 'cursor', 'btree', 'datatype_plain', 'CREATE INDEX idx_datatype_cursor_btree ON __SB_NAMESPACE__.dt_cursor_values USING BTREE (sample_value)'),
     ('IDX-DATATYPE-result_set-btree', 'result_set', 'btree', 'datatype_plain', 'CREATE INDEX idx_datatype_result_set_btree ON __SB_NAMESPACE__.dt_result_set_values USING BTREE (sample_value)'),
     ('IDX-DATATYPE-table_value-btree', 'table_value', 'btree', 'datatype_plain', 'CREATE INDEX idx_datatype_table_value_btree ON __SB_NAMESPACE__.dt_table_value_values USING BTREE (sample_value)'),
-    ('IDX-FAMILY-btree-plain', 'int64', 'btree', 'plain', 'CREATE INDEX idx_family_btree_plain ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value)'),
-    ('IDX-FAMILY-btree-unique', 'int64', 'btree', 'unique', 'CREATE UNIQUE INDEX idx_family_btree_unique ON __SB_NAMESPACE__.dt_int64_values USING BTREE (case_id)'),
-    ('IDX-FAMILY-btree-partial', 'int64', 'btree', 'partial', 'CREATE INDEX idx_family_btree_partial ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-btree-covering', 'int64', 'btree', 'covering', 'CREATE INDEX idx_family_btree_covering ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-btree-expression', 'int64', 'btree', 'expression', 'CREATE INDEX idx_family_btree_expression ON __SB_NAMESPACE__.dt_int64_values USING BTREE (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-btree-descending', 'int64', 'btree', 'descending', 'CREATE INDEX idx_family_btree_descending ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value DESC)'),
-    ('IDX-FAMILY-unique_btree-plain', 'int64', 'unique_btree', 'plain', 'CREATE INDEX idx_family_unique_btree_plain ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value)'),
-    ('IDX-FAMILY-unique_btree-unique', 'int64', 'unique_btree', 'unique', 'CREATE UNIQUE INDEX idx_family_unique_btree_unique ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (case_id)'),
-    ('IDX-FAMILY-unique_btree-partial', 'int64', 'unique_btree', 'partial', 'CREATE INDEX idx_family_unique_btree_partial ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-unique_btree-covering', 'int64', 'unique_btree', 'covering', 'CREATE INDEX idx_family_unique_btree_covering ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-unique_btree-expression', 'int64', 'unique_btree', 'expression', 'CREATE INDEX idx_family_unique_btree_expression ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-unique_btree-descending', 'int64', 'unique_btree', 'descending', 'CREATE INDEX idx_family_unique_btree_descending ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value DESC)'),
-    ('IDX-FAMILY-expression-plain', 'int64', 'expression', 'plain', 'CREATE INDEX idx_family_expression_plain ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value)'),
-    ('IDX-FAMILY-expression-unique', 'int64', 'expression', 'unique', 'CREATE UNIQUE INDEX idx_family_expression_unique ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (case_id)'),
-    ('IDX-FAMILY-expression-partial', 'int64', 'expression', 'partial', 'CREATE INDEX idx_family_expression_partial ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-expression-covering', 'int64', 'expression', 'covering', 'CREATE INDEX idx_family_expression_covering ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-expression-expression', 'int64', 'expression', 'expression', 'CREATE INDEX idx_family_expression_expression ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-expression-descending', 'int64', 'expression', 'descending', 'CREATE INDEX idx_family_expression_descending ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value DESC)'),
-    ('IDX-FAMILY-partial-plain', 'int64', 'partial', 'plain', 'CREATE INDEX idx_family_partial_plain ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value)'),
-    ('IDX-FAMILY-partial-unique', 'int64', 'partial', 'unique', 'CREATE UNIQUE INDEX idx_family_partial_unique ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (case_id)'),
-    ('IDX-FAMILY-partial-partial', 'int64', 'partial', 'partial', 'CREATE INDEX idx_family_partial_partial ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-partial-covering', 'int64', 'partial', 'covering', 'CREATE INDEX idx_family_partial_covering ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-partial-expression', 'int64', 'partial', 'expression', 'CREATE INDEX idx_family_partial_expression ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-partial-descending', 'int64', 'partial', 'descending', 'CREATE INDEX idx_family_partial_descending ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value DESC)'),
-    ('IDX-FAMILY-covering-plain', 'int64', 'covering', 'plain', 'CREATE INDEX idx_family_covering_plain ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value)'),
-    ('IDX-FAMILY-covering-unique', 'int64', 'covering', 'unique', 'CREATE UNIQUE INDEX idx_family_covering_unique ON __SB_NAMESPACE__.dt_int64_values USING COVERING (case_id)'),
-    ('IDX-FAMILY-covering-partial', 'int64', 'covering', 'partial', 'CREATE INDEX idx_family_covering_partial ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-covering-covering', 'int64', 'covering', 'covering', 'CREATE INDEX idx_family_covering_covering ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-covering-expression', 'int64', 'covering', 'expression', 'CREATE INDEX idx_family_covering_expression ON __SB_NAMESPACE__.dt_int64_values USING COVERING (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-covering-descending', 'int64', 'covering', 'descending', 'CREATE INDEX idx_family_covering_descending ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value DESC)'),
-    ('IDX-FAMILY-hash-plain', 'int64', 'hash', 'plain', 'CREATE INDEX idx_family_hash_plain ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value)'),
-    ('IDX-FAMILY-hash-unique', 'int64', 'hash', 'unique', 'CREATE UNIQUE INDEX idx_family_hash_unique ON __SB_NAMESPACE__.dt_int64_values USING HASH (case_id)'),
-    ('IDX-FAMILY-hash-partial', 'int64', 'hash', 'partial', 'CREATE INDEX idx_family_hash_partial ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-hash-covering', 'int64', 'hash', 'covering', 'CREATE INDEX idx_family_hash_covering ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-hash-expression', 'int64', 'hash', 'expression', 'CREATE INDEX idx_family_hash_expression ON __SB_NAMESPACE__.dt_int64_values USING HASH (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-hash-descending', 'int64', 'hash', 'descending', 'CREATE INDEX idx_family_hash_descending ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value DESC)'),
-    ('IDX-FAMILY-bitmap-plain', 'int64', 'bitmap', 'plain', 'CREATE INDEX idx_family_bitmap_plain ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value)'),
-    ('IDX-FAMILY-bitmap-unique', 'int64', 'bitmap', 'unique', 'CREATE UNIQUE INDEX idx_family_bitmap_unique ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (case_id)'),
-    ('IDX-FAMILY-bitmap-partial', 'int64', 'bitmap', 'partial', 'CREATE INDEX idx_family_bitmap_partial ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-bitmap-covering', 'int64', 'bitmap', 'covering', 'CREATE INDEX idx_family_bitmap_covering ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-bitmap-expression', 'int64', 'bitmap', 'expression', 'CREATE INDEX idx_family_bitmap_expression ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-bitmap-descending', 'int64', 'bitmap', 'descending', 'CREATE INDEX idx_family_bitmap_descending ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value DESC)');
+    ('IDX-FAMILY-btree-plain', 'int64', 'btree', 'plain', 'CREATE INDEX idx_family_btree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value)'),
+    ('IDX-FAMILY-btree-unique', 'int64', 'btree', 'unique', 'CREATE UNIQUE INDEX idx_family_btree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (case_id)'),
+    ('IDX-FAMILY-btree-partial', 'int64', 'btree', 'partial', 'CREATE INDEX idx_family_btree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-btree-covering', 'int64', 'btree', 'covering', 'CREATE INDEX idx_family_btree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-btree-expression', 'int64', 'btree', 'expression', 'CREATE INDEX idx_family_btree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-btree-descending', 'int64', 'btree', 'descending', 'CREATE INDEX idx_family_btree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value DESC)'),
+    ('IDX-FAMILY-unique_btree-plain', 'int64', 'unique_btree', 'plain', 'CREATE INDEX idx_family_unique_btree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value)'),
+    ('IDX-FAMILY-unique_btree-unique', 'int64', 'unique_btree', 'unique', 'CREATE UNIQUE INDEX idx_family_unique_btree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (case_id)'),
+    ('IDX-FAMILY-unique_btree-partial', 'int64', 'unique_btree', 'partial', 'CREATE INDEX idx_family_unique_btree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-unique_btree-covering', 'int64', 'unique_btree', 'covering', 'CREATE INDEX idx_family_unique_btree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-unique_btree-expression', 'int64', 'unique_btree', 'expression', 'CREATE INDEX idx_family_unique_btree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-unique_btree-descending', 'int64', 'unique_btree', 'descending', 'CREATE INDEX idx_family_unique_btree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value DESC)'),
+    ('IDX-FAMILY-expression-plain', 'int64', 'expression', 'plain', 'CREATE INDEX idx_family_expression_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value)'),
+    ('IDX-FAMILY-expression-unique', 'int64', 'expression', 'unique', 'CREATE UNIQUE INDEX idx_family_expression_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (case_id)'),
+    ('IDX-FAMILY-expression-partial', 'int64', 'expression', 'partial', 'CREATE INDEX idx_family_expression_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-expression-covering', 'int64', 'expression', 'covering', 'CREATE INDEX idx_family_expression_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-expression-expression', 'int64', 'expression', 'expression', 'CREATE INDEX idx_family_expression_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-expression-descending', 'int64', 'expression', 'descending', 'CREATE INDEX idx_family_expression_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value DESC)'),
+    ('IDX-FAMILY-partial-plain', 'int64', 'partial', 'plain', 'CREATE INDEX idx_family_partial_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value)'),
+    ('IDX-FAMILY-partial-unique', 'int64', 'partial', 'unique', 'CREATE UNIQUE INDEX idx_family_partial_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (case_id)'),
+    ('IDX-FAMILY-partial-partial', 'int64', 'partial', 'partial', 'CREATE INDEX idx_family_partial_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-partial-covering', 'int64', 'partial', 'covering', 'CREATE INDEX idx_family_partial_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-partial-expression', 'int64', 'partial', 'expression', 'CREATE INDEX idx_family_partial_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-partial-descending', 'int64', 'partial', 'descending', 'CREATE INDEX idx_family_partial_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value DESC)'),
+    ('IDX-FAMILY-covering-plain', 'int64', 'covering', 'plain', 'CREATE INDEX idx_family_covering_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value)'),
+    ('IDX-FAMILY-covering-unique', 'int64', 'covering', 'unique', 'CREATE UNIQUE INDEX idx_family_covering_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (case_id)'),
+    ('IDX-FAMILY-covering-partial', 'int64', 'covering', 'partial', 'CREATE INDEX idx_family_covering_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-covering-covering', 'int64', 'covering', 'covering', 'CREATE INDEX idx_family_covering_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-covering-expression', 'int64', 'covering', 'expression', 'CREATE INDEX idx_family_covering_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-covering-descending', 'int64', 'covering', 'descending', 'CREATE INDEX idx_family_covering_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value DESC)'),
+    ('IDX-FAMILY-hash-plain', 'int64', 'hash', 'plain', 'CREATE INDEX idx_family_hash_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value)'),
+    ('IDX-FAMILY-hash-unique', 'int64', 'hash', 'unique', 'CREATE UNIQUE INDEX idx_family_hash_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (case_id)'),
+    ('IDX-FAMILY-hash-partial', 'int64', 'hash', 'partial', 'CREATE INDEX idx_family_hash_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-hash-covering', 'int64', 'hash', 'covering', 'CREATE INDEX idx_family_hash_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-hash-expression', 'int64', 'hash', 'expression', 'CREATE INDEX idx_family_hash_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-hash-descending', 'int64', 'hash', 'descending', 'CREATE INDEX idx_family_hash_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value DESC)'),
+    ('IDX-FAMILY-bitmap-plain', 'int64', 'bitmap', 'plain', 'CREATE INDEX idx_family_bitmap_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value)'),
+    ('IDX-FAMILY-bitmap-unique', 'int64', 'bitmap', 'unique', 'CREATE UNIQUE INDEX idx_family_bitmap_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (case_id)'),
+    ('IDX-FAMILY-bitmap-partial', 'int64', 'bitmap', 'partial', 'CREATE INDEX idx_family_bitmap_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-bitmap-covering', 'int64', 'bitmap', 'covering', 'CREATE INDEX idx_family_bitmap_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-bitmap-expression', 'int64', 'bitmap', 'expression', 'CREATE INDEX idx_family_bitmap_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-bitmap-descending', 'int64', 'bitmap', 'descending', 'CREATE INDEX idx_family_bitmap_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value DESC)');
 INSERT INTO __SB_NAMESPACE__.index_case_manifest VALUES
-    ('IDX-FAMILY-brin_zone-plain', 'int64', 'brin_zone', 'plain', 'CREATE INDEX idx_family_brin_zone_plain ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value)'),
-    ('IDX-FAMILY-brin_zone-unique', 'int64', 'brin_zone', 'unique', 'CREATE UNIQUE INDEX idx_family_brin_zone_unique ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (case_id)'),
-    ('IDX-FAMILY-brin_zone-partial', 'int64', 'brin_zone', 'partial', 'CREATE INDEX idx_family_brin_zone_partial ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-brin_zone-covering', 'int64', 'brin_zone', 'covering', 'CREATE INDEX idx_family_brin_zone_covering ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-brin_zone-expression', 'int64', 'brin_zone', 'expression', 'CREATE INDEX idx_family_brin_zone_expression ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-brin_zone-descending', 'int64', 'brin_zone', 'descending', 'CREATE INDEX idx_family_brin_zone_descending ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value DESC)'),
-    ('IDX-FAMILY-bloom-plain', 'int64', 'bloom', 'plain', 'CREATE INDEX idx_family_bloom_plain ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value)'),
-    ('IDX-FAMILY-bloom-unique', 'int64', 'bloom', 'unique', 'CREATE UNIQUE INDEX idx_family_bloom_unique ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (case_id)'),
-    ('IDX-FAMILY-bloom-partial', 'int64', 'bloom', 'partial', 'CREATE INDEX idx_family_bloom_partial ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-bloom-covering', 'int64', 'bloom', 'covering', 'CREATE INDEX idx_family_bloom_covering ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-bloom-expression', 'int64', 'bloom', 'expression', 'CREATE INDEX idx_family_bloom_expression ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-bloom-descending', 'int64', 'bloom', 'descending', 'CREATE INDEX idx_family_bloom_descending ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value DESC)'),
-    ('IDX-FAMILY-full_text-plain', 'int64', 'full_text', 'plain', 'CREATE INDEX idx_family_full_text_plain ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value)'),
-    ('IDX-FAMILY-full_text-unique', 'int64', 'full_text', 'unique', 'CREATE UNIQUE INDEX idx_family_full_text_unique ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (case_id)'),
-    ('IDX-FAMILY-full_text-partial', 'int64', 'full_text', 'partial', 'CREATE INDEX idx_family_full_text_partial ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-full_text-covering', 'int64', 'full_text', 'covering', 'CREATE INDEX idx_family_full_text_covering ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-full_text-expression', 'int64', 'full_text', 'expression', 'CREATE INDEX idx_family_full_text_expression ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-full_text-descending', 'int64', 'full_text', 'descending', 'CREATE INDEX idx_family_full_text_descending ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value DESC)'),
-    ('IDX-FAMILY-gin-plain', 'int64', 'gin', 'plain', 'CREATE INDEX idx_family_gin_plain ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value)'),
-    ('IDX-FAMILY-gin-unique', 'int64', 'gin', 'unique', 'CREATE UNIQUE INDEX idx_family_gin_unique ON __SB_NAMESPACE__.dt_int64_values USING GIN (case_id)'),
-    ('IDX-FAMILY-gin-partial', 'int64', 'gin', 'partial', 'CREATE INDEX idx_family_gin_partial ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-gin-covering', 'int64', 'gin', 'covering', 'CREATE INDEX idx_family_gin_covering ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-gin-expression', 'int64', 'gin', 'expression', 'CREATE INDEX idx_family_gin_expression ON __SB_NAMESPACE__.dt_int64_values USING GIN (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-gin-descending', 'int64', 'gin', 'descending', 'CREATE INDEX idx_family_gin_descending ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value DESC)'),
-    ('IDX-FAMILY-inverted-plain', 'int64', 'inverted', 'plain', 'CREATE INDEX idx_family_inverted_plain ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value)'),
-    ('IDX-FAMILY-inverted-unique', 'int64', 'inverted', 'unique', 'CREATE UNIQUE INDEX idx_family_inverted_unique ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (case_id)'),
-    ('IDX-FAMILY-inverted-partial', 'int64', 'inverted', 'partial', 'CREATE INDEX idx_family_inverted_partial ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-inverted-covering', 'int64', 'inverted', 'covering', 'CREATE INDEX idx_family_inverted_covering ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-inverted-expression', 'int64', 'inverted', 'expression', 'CREATE INDEX idx_family_inverted_expression ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-inverted-descending', 'int64', 'inverted', 'descending', 'CREATE INDEX idx_family_inverted_descending ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value DESC)'),
-    ('IDX-FAMILY-ngram-plain', 'int64', 'ngram', 'plain', 'CREATE INDEX idx_family_ngram_plain ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value)'),
-    ('IDX-FAMILY-ngram-unique', 'int64', 'ngram', 'unique', 'CREATE UNIQUE INDEX idx_family_ngram_unique ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (case_id)'),
-    ('IDX-FAMILY-ngram-partial', 'int64', 'ngram', 'partial', 'CREATE INDEX idx_family_ngram_partial ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-ngram-covering', 'int64', 'ngram', 'covering', 'CREATE INDEX idx_family_ngram_covering ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-ngram-expression', 'int64', 'ngram', 'expression', 'CREATE INDEX idx_family_ngram_expression ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-ngram-descending', 'int64', 'ngram', 'descending', 'CREATE INDEX idx_family_ngram_descending ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value DESC)'),
-    ('IDX-FAMILY-sparse_wand-plain', 'int64', 'sparse_wand', 'plain', 'CREATE INDEX idx_family_sparse_wand_plain ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value)'),
-    ('IDX-FAMILY-sparse_wand-unique', 'int64', 'sparse_wand', 'unique', 'CREATE UNIQUE INDEX idx_family_sparse_wand_unique ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (case_id)'),
-    ('IDX-FAMILY-sparse_wand-partial', 'int64', 'sparse_wand', 'partial', 'CREATE INDEX idx_family_sparse_wand_partial ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-sparse_wand-covering', 'int64', 'sparse_wand', 'covering', 'CREATE INDEX idx_family_sparse_wand_covering ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-sparse_wand-expression', 'int64', 'sparse_wand', 'expression', 'CREATE INDEX idx_family_sparse_wand_expression ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-sparse_wand-descending', 'int64', 'sparse_wand', 'descending', 'CREATE INDEX idx_family_sparse_wand_descending ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value DESC)'),
-    ('IDX-FAMILY-spatial-plain', 'int64', 'spatial', 'plain', 'CREATE INDEX idx_family_spatial_plain ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value)'),
-    ('IDX-FAMILY-spatial-unique', 'int64', 'spatial', 'unique', 'CREATE UNIQUE INDEX idx_family_spatial_unique ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (case_id)'),
-    ('IDX-FAMILY-spatial-partial', 'int64', 'spatial', 'partial', 'CREATE INDEX idx_family_spatial_partial ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-spatial-covering', 'int64', 'spatial', 'covering', 'CREATE INDEX idx_family_spatial_covering ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-spatial-expression', 'int64', 'spatial', 'expression', 'CREATE INDEX idx_family_spatial_expression ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-spatial-descending', 'int64', 'spatial', 'descending', 'CREATE INDEX idx_family_spatial_descending ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value DESC)'),
-    ('IDX-FAMILY-rtree-plain', 'int64', 'rtree', 'plain', 'CREATE INDEX idx_family_rtree_plain ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value)'),
-    ('IDX-FAMILY-rtree-unique', 'int64', 'rtree', 'unique', 'CREATE UNIQUE INDEX idx_family_rtree_unique ON __SB_NAMESPACE__.dt_int64_values USING RTREE (case_id)'),
-    ('IDX-FAMILY-rtree-partial', 'int64', 'rtree', 'partial', 'CREATE INDEX idx_family_rtree_partial ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-rtree-covering', 'int64', 'rtree', 'covering', 'CREATE INDEX idx_family_rtree_covering ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-rtree-expression', 'int64', 'rtree', 'expression', 'CREATE INDEX idx_family_rtree_expression ON __SB_NAMESPACE__.dt_int64_values USING RTREE (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-rtree-descending', 'int64', 'rtree', 'descending', 'CREATE INDEX idx_family_rtree_descending ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value DESC)'),
-    ('IDX-FAMILY-gist-plain', 'int64', 'gist', 'plain', 'CREATE INDEX idx_family_gist_plain ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value)'),
-    ('IDX-FAMILY-gist-unique', 'int64', 'gist', 'unique', 'CREATE UNIQUE INDEX idx_family_gist_unique ON __SB_NAMESPACE__.dt_int64_values USING GIST (case_id)'),
-    ('IDX-FAMILY-gist-partial', 'int64', 'gist', 'partial', 'CREATE INDEX idx_family_gist_partial ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-gist-covering', 'int64', 'gist', 'covering', 'CREATE INDEX idx_family_gist_covering ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-gist-expression', 'int64', 'gist', 'expression', 'CREATE INDEX idx_family_gist_expression ON __SB_NAMESPACE__.dt_int64_values USING GIST (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-gist-descending', 'int64', 'gist', 'descending', 'CREATE INDEX idx_family_gist_descending ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value DESC)'),
-    ('IDX-FAMILY-spgist-plain', 'int64', 'spgist', 'plain', 'CREATE INDEX idx_family_spgist_plain ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value)'),
-    ('IDX-FAMILY-spgist-unique', 'int64', 'spgist', 'unique', 'CREATE UNIQUE INDEX idx_family_spgist_unique ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (case_id)'),
-    ('IDX-FAMILY-spgist-partial', 'int64', 'spgist', 'partial', 'CREATE INDEX idx_family_spgist_partial ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-spgist-covering', 'int64', 'spgist', 'covering', 'CREATE INDEX idx_family_spgist_covering ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-spgist-expression', 'int64', 'spgist', 'expression', 'CREATE INDEX idx_family_spgist_expression ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-spgist-descending', 'int64', 'spgist', 'descending', 'CREATE INDEX idx_family_spgist_descending ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value DESC)'),
-    ('IDX-FAMILY-vector_exact-plain', 'int64', 'vector_exact', 'plain', 'CREATE INDEX idx_family_vector_exact_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value)'),
-    ('IDX-FAMILY-vector_exact-unique', 'int64', 'vector_exact', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_exact_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (case_id)'),
-    ('IDX-FAMILY-vector_exact-partial', 'int64', 'vector_exact', 'partial', 'CREATE INDEX idx_family_vector_exact_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-vector_exact-covering', 'int64', 'vector_exact', 'covering', 'CREATE INDEX idx_family_vector_exact_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-vector_exact-expression', 'int64', 'vector_exact', 'expression', 'CREATE INDEX idx_family_vector_exact_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-vector_exact-descending', 'int64', 'vector_exact', 'descending', 'CREATE INDEX idx_family_vector_exact_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value DESC)'),
-    ('IDX-FAMILY-vector_hnsw-plain', 'int64', 'vector_hnsw', 'plain', 'CREATE INDEX idx_family_vector_hnsw_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value)'),
-    ('IDX-FAMILY-vector_hnsw-unique', 'int64', 'vector_hnsw', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_hnsw_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (case_id)'),
-    ('IDX-FAMILY-vector_hnsw-partial', 'int64', 'vector_hnsw', 'partial', 'CREATE INDEX idx_family_vector_hnsw_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-vector_hnsw-covering', 'int64', 'vector_hnsw', 'covering', 'CREATE INDEX idx_family_vector_hnsw_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-vector_hnsw-expression', 'int64', 'vector_hnsw', 'expression', 'CREATE INDEX idx_family_vector_hnsw_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-vector_hnsw-descending', 'int64', 'vector_hnsw', 'descending', 'CREATE INDEX idx_family_vector_hnsw_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value DESC)'),
-    ('IDX-FAMILY-vector_ivf-plain', 'int64', 'vector_ivf', 'plain', 'CREATE INDEX idx_family_vector_ivf_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value)'),
-    ('IDX-FAMILY-vector_ivf-unique', 'int64', 'vector_ivf', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_ivf_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (case_id)'),
-    ('IDX-FAMILY-vector_ivf-partial', 'int64', 'vector_ivf', 'partial', 'CREATE INDEX idx_family_vector_ivf_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-vector_ivf-covering', 'int64', 'vector_ivf', 'covering', 'CREATE INDEX idx_family_vector_ivf_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-vector_ivf-expression', 'int64', 'vector_ivf', 'expression', 'CREATE INDEX idx_family_vector_ivf_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-vector_ivf-descending', 'int64', 'vector_ivf', 'descending', 'CREATE INDEX idx_family_vector_ivf_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value DESC)'),
-    ('IDX-FAMILY-columnar_zone-plain', 'int64', 'columnar_zone', 'plain', 'CREATE INDEX idx_family_columnar_zone_plain ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value)'),
-    ('IDX-FAMILY-columnar_zone-unique', 'int64', 'columnar_zone', 'unique', 'CREATE UNIQUE INDEX idx_family_columnar_zone_unique ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (case_id)'),
-    ('IDX-FAMILY-columnar_zone-partial', 'int64', 'columnar_zone', 'partial', 'CREATE INDEX idx_family_columnar_zone_partial ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-columnar_zone-covering', 'int64', 'columnar_zone', 'covering', 'CREATE INDEX idx_family_columnar_zone_covering ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-columnar_zone-expression', 'int64', 'columnar_zone', 'expression', 'CREATE INDEX idx_family_columnar_zone_expression ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-columnar_zone-descending', 'int64', 'columnar_zone', 'descending', 'CREATE INDEX idx_family_columnar_zone_descending ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value DESC)'),
-    ('IDX-FAMILY-document_path-plain', 'int64', 'document_path', 'plain', 'CREATE INDEX idx_family_document_path_plain ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value)'),
-    ('IDX-FAMILY-document_path-unique', 'int64', 'document_path', 'unique', 'CREATE UNIQUE INDEX idx_family_document_path_unique ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (case_id)'),
-    ('IDX-FAMILY-document_path-partial', 'int64', 'document_path', 'partial', 'CREATE INDEX idx_family_document_path_partial ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-document_path-covering', 'int64', 'document_path', 'covering', 'CREATE INDEX idx_family_document_path_covering ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-document_path-expression', 'int64', 'document_path', 'expression', 'CREATE INDEX idx_family_document_path_expression ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-document_path-descending', 'int64', 'document_path', 'descending', 'CREATE INDEX idx_family_document_path_descending ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value DESC)'),
-    ('IDX-FAMILY-graph-plain', 'int64', 'graph', 'plain', 'CREATE INDEX idx_family_graph_plain ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value)'),
-    ('IDX-FAMILY-graph-unique', 'int64', 'graph', 'unique', 'CREATE UNIQUE INDEX idx_family_graph_unique ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (case_id)'),
-    ('IDX-FAMILY-graph-partial', 'int64', 'graph', 'partial', 'CREATE INDEX idx_family_graph_partial ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-graph-covering', 'int64', 'graph', 'covering', 'CREATE INDEX idx_family_graph_covering ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-graph-expression', 'int64', 'graph', 'expression', 'CREATE INDEX idx_family_graph_expression ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-graph-descending', 'int64', 'graph', 'descending', 'CREATE INDEX idx_family_graph_descending ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value DESC)'),
-    ('IDX-FAMILY-temporary_work-plain', 'int64', 'temporary_work', 'plain', 'CREATE INDEX idx_family_temporary_work_plain ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value)'),
-    ('IDX-FAMILY-temporary_work-unique', 'int64', 'temporary_work', 'unique', 'CREATE UNIQUE INDEX idx_family_temporary_work_unique ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (case_id)'),
-    ('IDX-FAMILY-temporary_work-partial', 'int64', 'temporary_work', 'partial', 'CREATE INDEX idx_family_temporary_work_partial ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-temporary_work-covering', 'int64', 'temporary_work', 'covering', 'CREATE INDEX idx_family_temporary_work_covering ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-temporary_work-expression', 'int64', 'temporary_work', 'expression', 'CREATE INDEX idx_family_temporary_work_expression ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-temporary_work-descending', 'int64', 'temporary_work', 'descending', 'CREATE INDEX idx_family_temporary_work_descending ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value DESC)'),
-    ('IDX-FAMILY-in_memory-plain', 'int64', 'in_memory', 'plain', 'CREATE INDEX idx_family_in_memory_plain ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value)'),
-    ('IDX-FAMILY-in_memory-unique', 'int64', 'in_memory', 'unique', 'CREATE UNIQUE INDEX idx_family_in_memory_unique ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (case_id)'),
-    ('IDX-FAMILY-in_memory-partial', 'int64', 'in_memory', 'partial', 'CREATE INDEX idx_family_in_memory_partial ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-in_memory-covering', 'int64', 'in_memory', 'covering', 'CREATE INDEX idx_family_in_memory_covering ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-in_memory-expression', 'int64', 'in_memory', 'expression', 'CREATE INDEX idx_family_in_memory_expression ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-in_memory-descending', 'int64', 'in_memory', 'descending', 'CREATE INDEX idx_family_in_memory_descending ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value DESC)'),
-    ('IDX-FAMILY-reference_emulated-plain', 'int64', 'reference_emulated', 'plain', 'CREATE INDEX idx_family_reference_emulated_plain ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value)'),
-    ('IDX-FAMILY-reference_emulated-unique', 'int64', 'reference_emulated', 'unique', 'CREATE UNIQUE INDEX idx_family_reference_emulated_unique ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (case_id)'),
-    ('IDX-FAMILY-reference_emulated-partial', 'int64', 'reference_emulated', 'partial', 'CREATE INDEX idx_family_reference_emulated_partial ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-reference_emulated-covering', 'int64', 'reference_emulated', 'covering', 'CREATE INDEX idx_family_reference_emulated_covering ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-reference_emulated-expression', 'int64', 'reference_emulated', 'expression', 'CREATE INDEX idx_family_reference_emulated_expression ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-reference_emulated-descending', 'int64', 'reference_emulated', 'descending', 'CREATE INDEX idx_family_reference_emulated_descending ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value DESC)'),
-    ('IDX-FAMILY-policy_blocked-plain', 'int64', 'policy_blocked', 'plain', 'CREATE INDEX idx_family_policy_blocked_plain ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value)'),
-    ('IDX-FAMILY-policy_blocked-unique', 'int64', 'policy_blocked', 'unique', 'CREATE UNIQUE INDEX idx_family_policy_blocked_unique ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (case_id)'),
-    ('IDX-FAMILY-policy_blocked-partial', 'int64', 'policy_blocked', 'partial', 'CREATE INDEX idx_family_policy_blocked_partial ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value) WHERE case_id % 2 = 0'),
-    ('IDX-FAMILY-policy_blocked-covering', 'int64', 'policy_blocked', 'covering', 'CREATE INDEX idx_family_policy_blocked_covering ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value) INCLUDE (seed_text)'),
-    ('IDX-FAMILY-policy_blocked-expression', 'int64', 'policy_blocked', 'expression', 'CREATE INDEX idx_family_policy_blocked_expression ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (CAST(sample_value AS VARCHAR(512)))'),
-    ('IDX-FAMILY-policy_blocked-descending', 'int64', 'policy_blocked', 'descending', 'CREATE INDEX idx_family_policy_blocked_descending ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value DESC)');
+    ('IDX-FAMILY-brin_zone-plain', 'int64', 'brin_zone', 'plain', 'CREATE INDEX idx_family_brin_zone_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value)'),
+    ('IDX-FAMILY-brin_zone-unique', 'int64', 'brin_zone', 'unique', 'CREATE UNIQUE INDEX idx_family_brin_zone_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (case_id)'),
+    ('IDX-FAMILY-brin_zone-partial', 'int64', 'brin_zone', 'partial', 'CREATE INDEX idx_family_brin_zone_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-brin_zone-covering', 'int64', 'brin_zone', 'covering', 'CREATE INDEX idx_family_brin_zone_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-brin_zone-expression', 'int64', 'brin_zone', 'expression', 'CREATE INDEX idx_family_brin_zone_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-brin_zone-descending', 'int64', 'brin_zone', 'descending', 'CREATE INDEX idx_family_brin_zone_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value DESC)'),
+    ('IDX-FAMILY-bloom-plain', 'int64', 'bloom', 'plain', 'CREATE INDEX idx_family_bloom_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value)'),
+    ('IDX-FAMILY-bloom-unique', 'int64', 'bloom', 'unique', 'CREATE UNIQUE INDEX idx_family_bloom_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (case_id)'),
+    ('IDX-FAMILY-bloom-partial', 'int64', 'bloom', 'partial', 'CREATE INDEX idx_family_bloom_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-bloom-covering', 'int64', 'bloom', 'covering', 'CREATE INDEX idx_family_bloom_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-bloom-expression', 'int64', 'bloom', 'expression', 'CREATE INDEX idx_family_bloom_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-bloom-descending', 'int64', 'bloom', 'descending', 'CREATE INDEX idx_family_bloom_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value DESC)'),
+    ('IDX-FAMILY-full_text-plain', 'int64', 'full_text', 'plain', 'CREATE INDEX idx_family_full_text_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value)'),
+    ('IDX-FAMILY-full_text-unique', 'int64', 'full_text', 'unique', 'CREATE UNIQUE INDEX idx_family_full_text_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (case_id)'),
+    ('IDX-FAMILY-full_text-partial', 'int64', 'full_text', 'partial', 'CREATE INDEX idx_family_full_text_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-full_text-covering', 'int64', 'full_text', 'covering', 'CREATE INDEX idx_family_full_text_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-full_text-expression', 'int64', 'full_text', 'expression', 'CREATE INDEX idx_family_full_text_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-full_text-descending', 'int64', 'full_text', 'descending', 'CREATE INDEX idx_family_full_text_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value DESC)'),
+    ('IDX-FAMILY-gin-plain', 'int64', 'gin', 'plain', 'CREATE INDEX idx_family_gin_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value)'),
+    ('IDX-FAMILY-gin-unique', 'int64', 'gin', 'unique', 'CREATE UNIQUE INDEX idx_family_gin_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (case_id)'),
+    ('IDX-FAMILY-gin-partial', 'int64', 'gin', 'partial', 'CREATE INDEX idx_family_gin_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-gin-covering', 'int64', 'gin', 'covering', 'CREATE INDEX idx_family_gin_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-gin-expression', 'int64', 'gin', 'expression', 'CREATE INDEX idx_family_gin_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-gin-descending', 'int64', 'gin', 'descending', 'CREATE INDEX idx_family_gin_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value DESC)'),
+    ('IDX-FAMILY-inverted-plain', 'int64', 'inverted', 'plain', 'CREATE INDEX idx_family_inverted_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value)'),
+    ('IDX-FAMILY-inverted-unique', 'int64', 'inverted', 'unique', 'CREATE UNIQUE INDEX idx_family_inverted_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (case_id)'),
+    ('IDX-FAMILY-inverted-partial', 'int64', 'inverted', 'partial', 'CREATE INDEX idx_family_inverted_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-inverted-covering', 'int64', 'inverted', 'covering', 'CREATE INDEX idx_family_inverted_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-inverted-expression', 'int64', 'inverted', 'expression', 'CREATE INDEX idx_family_inverted_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-inverted-descending', 'int64', 'inverted', 'descending', 'CREATE INDEX idx_family_inverted_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value DESC)'),
+    ('IDX-FAMILY-ngram-plain', 'int64', 'ngram', 'plain', 'CREATE INDEX idx_family_ngram_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value)'),
+    ('IDX-FAMILY-ngram-unique', 'int64', 'ngram', 'unique', 'CREATE UNIQUE INDEX idx_family_ngram_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (case_id)'),
+    ('IDX-FAMILY-ngram-partial', 'int64', 'ngram', 'partial', 'CREATE INDEX idx_family_ngram_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-ngram-covering', 'int64', 'ngram', 'covering', 'CREATE INDEX idx_family_ngram_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-ngram-expression', 'int64', 'ngram', 'expression', 'CREATE INDEX idx_family_ngram_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-ngram-descending', 'int64', 'ngram', 'descending', 'CREATE INDEX idx_family_ngram_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value DESC)'),
+    ('IDX-FAMILY-sparse_wand-plain', 'int64', 'sparse_wand', 'plain', 'CREATE INDEX idx_family_sparse_wand_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value)'),
+    ('IDX-FAMILY-sparse_wand-unique', 'int64', 'sparse_wand', 'unique', 'CREATE UNIQUE INDEX idx_family_sparse_wand_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (case_id)'),
+    ('IDX-FAMILY-sparse_wand-partial', 'int64', 'sparse_wand', 'partial', 'CREATE INDEX idx_family_sparse_wand_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-sparse_wand-covering', 'int64', 'sparse_wand', 'covering', 'CREATE INDEX idx_family_sparse_wand_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-sparse_wand-expression', 'int64', 'sparse_wand', 'expression', 'CREATE INDEX idx_family_sparse_wand_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-sparse_wand-descending', 'int64', 'sparse_wand', 'descending', 'CREATE INDEX idx_family_sparse_wand_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value DESC)'),
+    ('IDX-FAMILY-spatial-plain', 'int64', 'spatial', 'plain', 'CREATE INDEX idx_family_spatial_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value)'),
+    ('IDX-FAMILY-spatial-unique', 'int64', 'spatial', 'unique', 'CREATE UNIQUE INDEX idx_family_spatial_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (case_id)'),
+    ('IDX-FAMILY-spatial-partial', 'int64', 'spatial', 'partial', 'CREATE INDEX idx_family_spatial_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-spatial-covering', 'int64', 'spatial', 'covering', 'CREATE INDEX idx_family_spatial_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-spatial-expression', 'int64', 'spatial', 'expression', 'CREATE INDEX idx_family_spatial_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-spatial-descending', 'int64', 'spatial', 'descending', 'CREATE INDEX idx_family_spatial_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value DESC)'),
+    ('IDX-FAMILY-rtree-plain', 'int64', 'rtree', 'plain', 'CREATE INDEX idx_family_rtree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value)'),
+    ('IDX-FAMILY-rtree-unique', 'int64', 'rtree', 'unique', 'CREATE UNIQUE INDEX idx_family_rtree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (case_id)'),
+    ('IDX-FAMILY-rtree-partial', 'int64', 'rtree', 'partial', 'CREATE INDEX idx_family_rtree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-rtree-covering', 'int64', 'rtree', 'covering', 'CREATE INDEX idx_family_rtree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-rtree-expression', 'int64', 'rtree', 'expression', 'CREATE INDEX idx_family_rtree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-rtree-descending', 'int64', 'rtree', 'descending', 'CREATE INDEX idx_family_rtree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value DESC)'),
+    ('IDX-FAMILY-gist-plain', 'int64', 'gist', 'plain', 'CREATE INDEX idx_family_gist_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value)'),
+    ('IDX-FAMILY-gist-unique', 'int64', 'gist', 'unique', 'CREATE UNIQUE INDEX idx_family_gist_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (case_id)'),
+    ('IDX-FAMILY-gist-partial', 'int64', 'gist', 'partial', 'CREATE INDEX idx_family_gist_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-gist-covering', 'int64', 'gist', 'covering', 'CREATE INDEX idx_family_gist_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-gist-expression', 'int64', 'gist', 'expression', 'CREATE INDEX idx_family_gist_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-gist-descending', 'int64', 'gist', 'descending', 'CREATE INDEX idx_family_gist_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value DESC)'),
+    ('IDX-FAMILY-spgist-plain', 'int64', 'spgist', 'plain', 'CREATE INDEX idx_family_spgist_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value)'),
+    ('IDX-FAMILY-spgist-unique', 'int64', 'spgist', 'unique', 'CREATE UNIQUE INDEX idx_family_spgist_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (case_id)'),
+    ('IDX-FAMILY-spgist-partial', 'int64', 'spgist', 'partial', 'CREATE INDEX idx_family_spgist_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-spgist-covering', 'int64', 'spgist', 'covering', 'CREATE INDEX idx_family_spgist_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-spgist-expression', 'int64', 'spgist', 'expression', 'CREATE INDEX idx_family_spgist_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-spgist-descending', 'int64', 'spgist', 'descending', 'CREATE INDEX idx_family_spgist_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value DESC)'),
+    ('IDX-FAMILY-vector_exact-plain', 'int64', 'vector_exact', 'plain', 'CREATE INDEX idx_family_vector_exact_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value)'),
+    ('IDX-FAMILY-vector_exact-unique', 'int64', 'vector_exact', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_exact_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (case_id)'),
+    ('IDX-FAMILY-vector_exact-partial', 'int64', 'vector_exact', 'partial', 'CREATE INDEX idx_family_vector_exact_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-vector_exact-covering', 'int64', 'vector_exact', 'covering', 'CREATE INDEX idx_family_vector_exact_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-vector_exact-expression', 'int64', 'vector_exact', 'expression', 'CREATE INDEX idx_family_vector_exact_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-vector_exact-descending', 'int64', 'vector_exact', 'descending', 'CREATE INDEX idx_family_vector_exact_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value DESC)'),
+    ('IDX-FAMILY-vector_hnsw-plain', 'int64', 'vector_hnsw', 'plain', 'CREATE INDEX idx_family_vector_hnsw_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value)'),
+    ('IDX-FAMILY-vector_hnsw-unique', 'int64', 'vector_hnsw', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_hnsw_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (case_id)'),
+    ('IDX-FAMILY-vector_hnsw-partial', 'int64', 'vector_hnsw', 'partial', 'CREATE INDEX idx_family_vector_hnsw_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-vector_hnsw-covering', 'int64', 'vector_hnsw', 'covering', 'CREATE INDEX idx_family_vector_hnsw_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-vector_hnsw-expression', 'int64', 'vector_hnsw', 'expression', 'CREATE INDEX idx_family_vector_hnsw_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-vector_hnsw-descending', 'int64', 'vector_hnsw', 'descending', 'CREATE INDEX idx_family_vector_hnsw_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value DESC)'),
+    ('IDX-FAMILY-vector_ivf-plain', 'int64', 'vector_ivf', 'plain', 'CREATE INDEX idx_family_vector_ivf_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value)'),
+    ('IDX-FAMILY-vector_ivf-unique', 'int64', 'vector_ivf', 'unique', 'CREATE UNIQUE INDEX idx_family_vector_ivf_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (case_id)'),
+    ('IDX-FAMILY-vector_ivf-partial', 'int64', 'vector_ivf', 'partial', 'CREATE INDEX idx_family_vector_ivf_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-vector_ivf-covering', 'int64', 'vector_ivf', 'covering', 'CREATE INDEX idx_family_vector_ivf_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-vector_ivf-expression', 'int64', 'vector_ivf', 'expression', 'CREATE INDEX idx_family_vector_ivf_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-vector_ivf-descending', 'int64', 'vector_ivf', 'descending', 'CREATE INDEX idx_family_vector_ivf_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value DESC)'),
+    ('IDX-FAMILY-columnar_zone-plain', 'int64', 'columnar_zone', 'plain', 'CREATE INDEX idx_family_columnar_zone_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value)'),
+    ('IDX-FAMILY-columnar_zone-unique', 'int64', 'columnar_zone', 'unique', 'CREATE UNIQUE INDEX idx_family_columnar_zone_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (case_id)'),
+    ('IDX-FAMILY-columnar_zone-partial', 'int64', 'columnar_zone', 'partial', 'CREATE INDEX idx_family_columnar_zone_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-columnar_zone-covering', 'int64', 'columnar_zone', 'covering', 'CREATE INDEX idx_family_columnar_zone_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-columnar_zone-expression', 'int64', 'columnar_zone', 'expression', 'CREATE INDEX idx_family_columnar_zone_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-columnar_zone-descending', 'int64', 'columnar_zone', 'descending', 'CREATE INDEX idx_family_columnar_zone_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value DESC)'),
+    ('IDX-FAMILY-document_path-plain', 'int64', 'document_path', 'plain', 'CREATE INDEX idx_family_document_path_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value)'),
+    ('IDX-FAMILY-document_path-unique', 'int64', 'document_path', 'unique', 'CREATE UNIQUE INDEX idx_family_document_path_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (case_id)'),
+    ('IDX-FAMILY-document_path-partial', 'int64', 'document_path', 'partial', 'CREATE INDEX idx_family_document_path_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-document_path-covering', 'int64', 'document_path', 'covering', 'CREATE INDEX idx_family_document_path_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-document_path-expression', 'int64', 'document_path', 'expression', 'CREATE INDEX idx_family_document_path_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-document_path-descending', 'int64', 'document_path', 'descending', 'CREATE INDEX idx_family_document_path_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value DESC)'),
+    ('IDX-FAMILY-graph-plain', 'int64', 'graph', 'plain', 'CREATE INDEX idx_family_graph_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value)'),
+    ('IDX-FAMILY-graph-unique', 'int64', 'graph', 'unique', 'CREATE UNIQUE INDEX idx_family_graph_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (case_id)'),
+    ('IDX-FAMILY-graph-partial', 'int64', 'graph', 'partial', 'CREATE INDEX idx_family_graph_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-graph-covering', 'int64', 'graph', 'covering', 'CREATE INDEX idx_family_graph_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-graph-expression', 'int64', 'graph', 'expression', 'CREATE INDEX idx_family_graph_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-graph-descending', 'int64', 'graph', 'descending', 'CREATE INDEX idx_family_graph_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value DESC)'),
+    ('IDX-FAMILY-temporary_work-plain', 'int64', 'temporary_work', 'plain', 'CREATE INDEX idx_family_temporary_work_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value)'),
+    ('IDX-FAMILY-temporary_work-unique', 'int64', 'temporary_work', 'unique', 'CREATE UNIQUE INDEX idx_family_temporary_work_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (case_id)'),
+    ('IDX-FAMILY-temporary_work-partial', 'int64', 'temporary_work', 'partial', 'CREATE INDEX idx_family_temporary_work_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-temporary_work-covering', 'int64', 'temporary_work', 'covering', 'CREATE INDEX idx_family_temporary_work_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-temporary_work-expression', 'int64', 'temporary_work', 'expression', 'CREATE INDEX idx_family_temporary_work_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-temporary_work-descending', 'int64', 'temporary_work', 'descending', 'CREATE INDEX idx_family_temporary_work_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value DESC)'),
+    ('IDX-FAMILY-in_memory-plain', 'int64', 'in_memory', 'plain', 'CREATE INDEX idx_family_in_memory_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value)'),
+    ('IDX-FAMILY-in_memory-unique', 'int64', 'in_memory', 'unique', 'CREATE UNIQUE INDEX idx_family_in_memory_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (case_id)'),
+    ('IDX-FAMILY-in_memory-partial', 'int64', 'in_memory', 'partial', 'CREATE INDEX idx_family_in_memory_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-in_memory-covering', 'int64', 'in_memory', 'covering', 'CREATE INDEX idx_family_in_memory_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-in_memory-expression', 'int64', 'in_memory', 'expression', 'CREATE INDEX idx_family_in_memory_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-in_memory-descending', 'int64', 'in_memory', 'descending', 'CREATE INDEX idx_family_in_memory_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value DESC)'),
+    ('IDX-FAMILY-reference_emulated-plain', 'int64', 'reference_emulated', 'plain', 'CREATE INDEX idx_family_reference_emulated_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value)'),
+    ('IDX-FAMILY-reference_emulated-unique', 'int64', 'reference_emulated', 'unique', 'CREATE UNIQUE INDEX idx_family_reference_emulated_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (case_id)'),
+    ('IDX-FAMILY-reference_emulated-partial', 'int64', 'reference_emulated', 'partial', 'CREATE INDEX idx_family_reference_emulated_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-reference_emulated-covering', 'int64', 'reference_emulated', 'covering', 'CREATE INDEX idx_family_reference_emulated_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-reference_emulated-expression', 'int64', 'reference_emulated', 'expression', 'CREATE INDEX idx_family_reference_emulated_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-reference_emulated-descending', 'int64', 'reference_emulated', 'descending', 'CREATE INDEX idx_family_reference_emulated_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value DESC)'),
+    ('IDX-FAMILY-policy_blocked-plain', 'int64', 'policy_blocked', 'plain', 'CREATE INDEX idx_family_policy_blocked_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value)'),
+    ('IDX-FAMILY-policy_blocked-unique', 'int64', 'policy_blocked', 'unique', 'CREATE UNIQUE INDEX idx_family_policy_blocked_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (case_id)'),
+    ('IDX-FAMILY-policy_blocked-partial', 'int64', 'policy_blocked', 'partial', 'CREATE INDEX idx_family_policy_blocked_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value) WHERE case_id % 2 = 0'),
+    ('IDX-FAMILY-policy_blocked-covering', 'int64', 'policy_blocked', 'covering', 'CREATE INDEX idx_family_policy_blocked_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value) INCLUDE (seed_text)'),
+    ('IDX-FAMILY-policy_blocked-expression', 'int64', 'policy_blocked', 'expression', 'CREATE INDEX idx_family_policy_blocked_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (CAST(sample_value AS VARCHAR(512)))'),
+    ('IDX-FAMILY-policy_blocked-descending', 'int64', 'policy_blocked', 'descending', 'CREATE INDEX idx_family_policy_blocked_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value DESC)');
 CREATE INDEX idx_datatype_null_type_btree ON __SB_NAMESPACE__.dt_null_type_values USING BTREE (sample_value);
 CREATE INDEX idx_datatype_boolean_btree ON __SB_NAMESPACE__.dt_boolean_values USING BTREE (sample_value);
 CREATE INDEX idx_datatype_int8_btree ON __SB_NAMESPACE__.dt_int8_values USING BTREE (sample_value);
@@ -350,174 +366,174 @@ CREATE INDEX idx_datatype_opaque_extension_btree ON __SB_NAMESPACE__.dt_opaque_e
 CREATE INDEX idx_datatype_cursor_btree ON __SB_NAMESPACE__.dt_cursor_values USING BTREE (sample_value);
 CREATE INDEX idx_datatype_result_set_btree ON __SB_NAMESPACE__.dt_result_set_values USING BTREE (sample_value);
 CREATE INDEX idx_datatype_table_value_btree ON __SB_NAMESPACE__.dt_table_value_values USING BTREE (sample_value);
-CREATE INDEX idx_family_btree_plain ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value);
-CREATE UNIQUE INDEX idx_family_btree_unique ON __SB_NAMESPACE__.dt_int64_values USING BTREE (case_id);
-CREATE INDEX idx_family_btree_partial ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_btree_covering ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_btree_expression ON __SB_NAMESPACE__.dt_int64_values USING BTREE (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_btree_descending ON __SB_NAMESPACE__.dt_int64_values USING BTREE (sample_value DESC);
-CREATE INDEX idx_family_unique_btree_plain ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value);
-CREATE UNIQUE INDEX idx_family_unique_btree_unique ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (case_id);
-CREATE INDEX idx_family_unique_btree_partial ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_unique_btree_covering ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_unique_btree_expression ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_unique_btree_descending ON __SB_NAMESPACE__.dt_int64_values USING UNIQUE_BTREE (sample_value DESC);
-CREATE INDEX idx_family_expression_plain ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value);
-CREATE UNIQUE INDEX idx_family_expression_unique ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (case_id);
-CREATE INDEX idx_family_expression_partial ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_expression_covering ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_expression_expression ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_expression_descending ON __SB_NAMESPACE__.dt_int64_values USING EXPRESSION (sample_value DESC);
-CREATE INDEX idx_family_partial_plain ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value);
-CREATE UNIQUE INDEX idx_family_partial_unique ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (case_id);
-CREATE INDEX idx_family_partial_partial ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_partial_covering ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_partial_expression ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_partial_descending ON __SB_NAMESPACE__.dt_int64_values USING PARTIAL (sample_value DESC);
-CREATE INDEX idx_family_covering_plain ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value);
-CREATE UNIQUE INDEX idx_family_covering_unique ON __SB_NAMESPACE__.dt_int64_values USING COVERING (case_id);
-CREATE INDEX idx_family_covering_partial ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_covering_covering ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_covering_expression ON __SB_NAMESPACE__.dt_int64_values USING COVERING (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_covering_descending ON __SB_NAMESPACE__.dt_int64_values USING COVERING (sample_value DESC);
-CREATE INDEX idx_family_hash_plain ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value);
-CREATE UNIQUE INDEX idx_family_hash_unique ON __SB_NAMESPACE__.dt_int64_values USING HASH (case_id);
-CREATE INDEX idx_family_hash_partial ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_hash_covering ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_hash_expression ON __SB_NAMESPACE__.dt_int64_values USING HASH (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_hash_descending ON __SB_NAMESPACE__.dt_int64_values USING HASH (sample_value DESC);
-CREATE INDEX idx_family_bitmap_plain ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value);
-CREATE UNIQUE INDEX idx_family_bitmap_unique ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (case_id);
-CREATE INDEX idx_family_bitmap_partial ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_bitmap_covering ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_bitmap_expression ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_bitmap_descending ON __SB_NAMESPACE__.dt_int64_values USING BITMAP (sample_value DESC);
-CREATE INDEX idx_family_brin_zone_plain ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value);
-CREATE UNIQUE INDEX idx_family_brin_zone_unique ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (case_id);
-CREATE INDEX idx_family_brin_zone_partial ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_brin_zone_covering ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_brin_zone_expression ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_brin_zone_descending ON __SB_NAMESPACE__.dt_int64_values USING BRIN_ZONE (sample_value DESC);
-CREATE INDEX idx_family_bloom_plain ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value);
-CREATE UNIQUE INDEX idx_family_bloom_unique ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (case_id);
-CREATE INDEX idx_family_bloom_partial ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_bloom_covering ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_bloom_expression ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_bloom_descending ON __SB_NAMESPACE__.dt_int64_values USING BLOOM (sample_value DESC);
-CREATE INDEX idx_family_full_text_plain ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value);
-CREATE UNIQUE INDEX idx_family_full_text_unique ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (case_id);
-CREATE INDEX idx_family_full_text_partial ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_full_text_covering ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_full_text_expression ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_full_text_descending ON __SB_NAMESPACE__.dt_int64_values USING FULL_TEXT (sample_value DESC);
-CREATE INDEX idx_family_gin_plain ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value);
-CREATE UNIQUE INDEX idx_family_gin_unique ON __SB_NAMESPACE__.dt_int64_values USING GIN (case_id);
-CREATE INDEX idx_family_gin_partial ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_gin_covering ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_gin_expression ON __SB_NAMESPACE__.dt_int64_values USING GIN (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_gin_descending ON __SB_NAMESPACE__.dt_int64_values USING GIN (sample_value DESC);
-CREATE INDEX idx_family_inverted_plain ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value);
-CREATE UNIQUE INDEX idx_family_inverted_unique ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (case_id);
-CREATE INDEX idx_family_inverted_partial ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_inverted_covering ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_inverted_expression ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_inverted_descending ON __SB_NAMESPACE__.dt_int64_values USING INVERTED (sample_value DESC);
-CREATE INDEX idx_family_ngram_plain ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value);
-CREATE UNIQUE INDEX idx_family_ngram_unique ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (case_id);
-CREATE INDEX idx_family_ngram_partial ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_ngram_covering ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_ngram_expression ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_ngram_descending ON __SB_NAMESPACE__.dt_int64_values USING NGRAM (sample_value DESC);
-CREATE INDEX idx_family_sparse_wand_plain ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value);
-CREATE UNIQUE INDEX idx_family_sparse_wand_unique ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (case_id);
-CREATE INDEX idx_family_sparse_wand_partial ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_sparse_wand_covering ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_sparse_wand_expression ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_sparse_wand_descending ON __SB_NAMESPACE__.dt_int64_values USING SPARSE_WAND (sample_value DESC);
-CREATE INDEX idx_family_spatial_plain ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value);
-CREATE UNIQUE INDEX idx_family_spatial_unique ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (case_id);
-CREATE INDEX idx_family_spatial_partial ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_spatial_covering ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_spatial_expression ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_spatial_descending ON __SB_NAMESPACE__.dt_int64_values USING SPATIAL (sample_value DESC);
-CREATE INDEX idx_family_rtree_plain ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value);
-CREATE UNIQUE INDEX idx_family_rtree_unique ON __SB_NAMESPACE__.dt_int64_values USING RTREE (case_id);
-CREATE INDEX idx_family_rtree_partial ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_rtree_covering ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_rtree_expression ON __SB_NAMESPACE__.dt_int64_values USING RTREE (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_rtree_descending ON __SB_NAMESPACE__.dt_int64_values USING RTREE (sample_value DESC);
-CREATE INDEX idx_family_gist_plain ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value);
-CREATE UNIQUE INDEX idx_family_gist_unique ON __SB_NAMESPACE__.dt_int64_values USING GIST (case_id);
-CREATE INDEX idx_family_gist_partial ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_gist_covering ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_gist_expression ON __SB_NAMESPACE__.dt_int64_values USING GIST (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_gist_descending ON __SB_NAMESPACE__.dt_int64_values USING GIST (sample_value DESC);
-CREATE INDEX idx_family_spgist_plain ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value);
-CREATE UNIQUE INDEX idx_family_spgist_unique ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (case_id);
-CREATE INDEX idx_family_spgist_partial ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_spgist_covering ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_spgist_expression ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_spgist_descending ON __SB_NAMESPACE__.dt_int64_values USING SPGIST (sample_value DESC);
-CREATE INDEX idx_family_vector_exact_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value);
-CREATE UNIQUE INDEX idx_family_vector_exact_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (case_id);
-CREATE INDEX idx_family_vector_exact_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_vector_exact_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_vector_exact_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_vector_exact_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_EXACT (sample_value DESC);
-CREATE INDEX idx_family_vector_hnsw_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value);
-CREATE UNIQUE INDEX idx_family_vector_hnsw_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (case_id);
-CREATE INDEX idx_family_vector_hnsw_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_vector_hnsw_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_vector_hnsw_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_vector_hnsw_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_HNSW (sample_value DESC);
-CREATE INDEX idx_family_vector_ivf_plain ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value);
-CREATE UNIQUE INDEX idx_family_vector_ivf_unique ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (case_id);
-CREATE INDEX idx_family_vector_ivf_partial ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_vector_ivf_covering ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_vector_ivf_expression ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_vector_ivf_descending ON __SB_NAMESPACE__.dt_int64_values USING VECTOR_IVF (sample_value DESC);
-CREATE INDEX idx_family_columnar_zone_plain ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value);
-CREATE UNIQUE INDEX idx_family_columnar_zone_unique ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (case_id);
-CREATE INDEX idx_family_columnar_zone_partial ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_columnar_zone_covering ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_columnar_zone_expression ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_columnar_zone_descending ON __SB_NAMESPACE__.dt_int64_values USING COLUMNAR_ZONE (sample_value DESC);
-CREATE INDEX idx_family_document_path_plain ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value);
-CREATE UNIQUE INDEX idx_family_document_path_unique ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (case_id);
-CREATE INDEX idx_family_document_path_partial ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_document_path_covering ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_document_path_expression ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_document_path_descending ON __SB_NAMESPACE__.dt_int64_values USING DOCUMENT_PATH (sample_value DESC);
-CREATE INDEX idx_family_graph_plain ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value);
-CREATE UNIQUE INDEX idx_family_graph_unique ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (case_id);
-CREATE INDEX idx_family_graph_partial ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_graph_covering ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_graph_expression ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_graph_descending ON __SB_NAMESPACE__.dt_int64_values USING GRAPH (sample_value DESC);
-CREATE INDEX idx_family_temporary_work_plain ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value);
-CREATE UNIQUE INDEX idx_family_temporary_work_unique ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (case_id);
-CREATE INDEX idx_family_temporary_work_partial ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_temporary_work_covering ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_temporary_work_expression ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_temporary_work_descending ON __SB_NAMESPACE__.dt_int64_values USING TEMPORARY_WORK (sample_value DESC);
-CREATE INDEX idx_family_in_memory_plain ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value);
-CREATE UNIQUE INDEX idx_family_in_memory_unique ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (case_id);
-CREATE INDEX idx_family_in_memory_partial ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_in_memory_covering ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_in_memory_expression ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_in_memory_descending ON __SB_NAMESPACE__.dt_int64_values USING IN_MEMORY (sample_value DESC);
-CREATE INDEX idx_family_reference_emulated_plain ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value);
-CREATE UNIQUE INDEX idx_family_reference_emulated_unique ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (case_id);
-CREATE INDEX idx_family_reference_emulated_partial ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_reference_emulated_covering ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_reference_emulated_expression ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_reference_emulated_descending ON __SB_NAMESPACE__.dt_int64_values USING REFERENCE_EMULATED (sample_value DESC);
-CREATE INDEX idx_family_policy_blocked_plain ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value);
-CREATE UNIQUE INDEX idx_family_policy_blocked_unique ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (case_id);
-CREATE INDEX idx_family_policy_blocked_partial ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value) WHERE case_id % 2 = 0;
-CREATE INDEX idx_family_policy_blocked_covering ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value) INCLUDE (seed_text);
-CREATE INDEX idx_family_policy_blocked_expression ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (CAST(sample_value AS VARCHAR(512)));
-CREATE INDEX idx_family_policy_blocked_descending ON __SB_NAMESPACE__.dt_int64_values USING POLICY_BLOCKED (sample_value DESC);
+CREATE INDEX idx_family_btree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value);
+CREATE UNIQUE INDEX idx_family_btree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (case_id);
+CREATE INDEX idx_family_btree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_btree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_btree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_btree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BTREE (sample_value DESC);
+CREATE INDEX idx_family_unique_btree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value);
+CREATE UNIQUE INDEX idx_family_unique_btree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (case_id);
+CREATE INDEX idx_family_unique_btree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_unique_btree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_unique_btree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_unique_btree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING UNIQUE_BTREE (sample_value DESC);
+CREATE INDEX idx_family_expression_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value);
+CREATE UNIQUE INDEX idx_family_expression_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (case_id);
+CREATE INDEX idx_family_expression_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_expression_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_expression_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_expression_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING EXPRESSION (sample_value DESC);
+CREATE INDEX idx_family_partial_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value);
+CREATE UNIQUE INDEX idx_family_partial_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (case_id);
+CREATE INDEX idx_family_partial_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_partial_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_partial_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_partial_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING PARTIAL (sample_value DESC);
+CREATE INDEX idx_family_covering_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value);
+CREATE UNIQUE INDEX idx_family_covering_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (case_id);
+CREATE INDEX idx_family_covering_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_covering_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_covering_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_covering_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING COVERING (sample_value DESC);
+CREATE INDEX idx_family_hash_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value);
+CREATE UNIQUE INDEX idx_family_hash_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (case_id);
+CREATE INDEX idx_family_hash_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_hash_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_hash_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_hash_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING HASH (sample_value DESC);
+CREATE INDEX idx_family_bitmap_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value);
+CREATE UNIQUE INDEX idx_family_bitmap_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (case_id);
+CREATE INDEX idx_family_bitmap_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_bitmap_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_bitmap_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_bitmap_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BITMAP (sample_value DESC);
+CREATE INDEX idx_family_brin_zone_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value);
+CREATE UNIQUE INDEX idx_family_brin_zone_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (case_id);
+CREATE INDEX idx_family_brin_zone_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_brin_zone_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_brin_zone_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_brin_zone_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BRIN_ZONE (sample_value DESC);
+CREATE INDEX idx_family_bloom_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value);
+CREATE UNIQUE INDEX idx_family_bloom_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (case_id);
+CREATE INDEX idx_family_bloom_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_bloom_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_bloom_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_bloom_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING BLOOM (sample_value DESC);
+CREATE INDEX idx_family_full_text_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value);
+CREATE UNIQUE INDEX idx_family_full_text_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (case_id);
+CREATE INDEX idx_family_full_text_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_full_text_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_full_text_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_full_text_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING FULL_TEXT (sample_value DESC);
+CREATE INDEX idx_family_gin_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value);
+CREATE UNIQUE INDEX idx_family_gin_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (case_id);
+CREATE INDEX idx_family_gin_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_gin_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_gin_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_gin_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIN (sample_value DESC);
+CREATE INDEX idx_family_inverted_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value);
+CREATE UNIQUE INDEX idx_family_inverted_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (case_id);
+CREATE INDEX idx_family_inverted_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_inverted_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_inverted_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_inverted_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING INVERTED (sample_value DESC);
+CREATE INDEX idx_family_ngram_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value);
+CREATE UNIQUE INDEX idx_family_ngram_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (case_id);
+CREATE INDEX idx_family_ngram_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_ngram_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_ngram_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_ngram_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING NGRAM (sample_value DESC);
+CREATE INDEX idx_family_sparse_wand_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value);
+CREATE UNIQUE INDEX idx_family_sparse_wand_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (case_id);
+CREATE INDEX idx_family_sparse_wand_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_sparse_wand_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_sparse_wand_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_sparse_wand_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPARSE_WAND (sample_value DESC);
+CREATE INDEX idx_family_spatial_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value);
+CREATE UNIQUE INDEX idx_family_spatial_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (case_id);
+CREATE INDEX idx_family_spatial_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_spatial_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_spatial_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_spatial_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPATIAL (sample_value DESC);
+CREATE INDEX idx_family_rtree_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value);
+CREATE UNIQUE INDEX idx_family_rtree_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (case_id);
+CREATE INDEX idx_family_rtree_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_rtree_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_rtree_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_rtree_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING RTREE (sample_value DESC);
+CREATE INDEX idx_family_gist_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value);
+CREATE UNIQUE INDEX idx_family_gist_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (case_id);
+CREATE INDEX idx_family_gist_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_gist_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_gist_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_gist_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GIST (sample_value DESC);
+CREATE INDEX idx_family_spgist_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value);
+CREATE UNIQUE INDEX idx_family_spgist_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (case_id);
+CREATE INDEX idx_family_spgist_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_spgist_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_spgist_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_spgist_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING SPGIST (sample_value DESC);
+CREATE INDEX idx_family_vector_exact_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value);
+CREATE UNIQUE INDEX idx_family_vector_exact_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (case_id);
+CREATE INDEX idx_family_vector_exact_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_vector_exact_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_vector_exact_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_vector_exact_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_EXACT (sample_value DESC);
+CREATE INDEX idx_family_vector_hnsw_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value);
+CREATE UNIQUE INDEX idx_family_vector_hnsw_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (case_id);
+CREATE INDEX idx_family_vector_hnsw_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_vector_hnsw_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_vector_hnsw_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_vector_hnsw_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_HNSW (sample_value DESC);
+CREATE INDEX idx_family_vector_ivf_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value);
+CREATE UNIQUE INDEX idx_family_vector_ivf_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (case_id);
+CREATE INDEX idx_family_vector_ivf_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_vector_ivf_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_vector_ivf_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_vector_ivf_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING VECTOR_IVF (sample_value DESC);
+CREATE INDEX idx_family_columnar_zone_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value);
+CREATE UNIQUE INDEX idx_family_columnar_zone_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (case_id);
+CREATE INDEX idx_family_columnar_zone_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_columnar_zone_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_columnar_zone_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_columnar_zone_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING COLUMNAR_ZONE (sample_value DESC);
+CREATE INDEX idx_family_document_path_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value);
+CREATE UNIQUE INDEX idx_family_document_path_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (case_id);
+CREATE INDEX idx_family_document_path_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_document_path_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_document_path_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_document_path_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING DOCUMENT_PATH (sample_value DESC);
+CREATE INDEX idx_family_graph_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value);
+CREATE UNIQUE INDEX idx_family_graph_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (case_id);
+CREATE INDEX idx_family_graph_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_graph_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_graph_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_graph_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING GRAPH (sample_value DESC);
+CREATE INDEX idx_family_temporary_work_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value);
+CREATE UNIQUE INDEX idx_family_temporary_work_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (case_id);
+CREATE INDEX idx_family_temporary_work_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_temporary_work_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_temporary_work_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_temporary_work_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING TEMPORARY_WORK (sample_value DESC);
+CREATE INDEX idx_family_in_memory_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value);
+CREATE UNIQUE INDEX idx_family_in_memory_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (case_id);
+CREATE INDEX idx_family_in_memory_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_in_memory_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_in_memory_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_in_memory_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING IN_MEMORY (sample_value DESC);
+CREATE INDEX idx_family_reference_emulated_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value);
+CREATE UNIQUE INDEX idx_family_reference_emulated_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (case_id);
+CREATE INDEX idx_family_reference_emulated_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_reference_emulated_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_reference_emulated_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_reference_emulated_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING REFERENCE_EMULATED (sample_value DESC);
+CREATE INDEX idx_family_policy_blocked_plain ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value);
+CREATE UNIQUE INDEX idx_family_policy_blocked_unique ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (case_id);
+CREATE INDEX idx_family_policy_blocked_partial ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value) WHERE case_id % 2 = 0;
+CREATE INDEX idx_family_policy_blocked_covering ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value) INCLUDE (seed_text);
+CREATE INDEX idx_family_policy_blocked_expression ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (CAST(sample_value AS VARCHAR(512)));
+CREATE INDEX idx_family_policy_blocked_descending ON __SB_NAMESPACE__.index_unique_family_probe_values USING POLICY_BLOCKED (sample_value DESC);
 
 SELECT 'SBDFS-140-001' AS assertion_id,
        COUNT(*) AS actual_index_cases,

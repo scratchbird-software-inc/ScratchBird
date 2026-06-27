@@ -263,15 +263,22 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   }
   std::vector<EngineLocalizedName> table_names = request.table_names.empty() ? request.localized_names : request.table_names;
   if (table_names.empty()) { table_names.push_back({"en", "primary", "", table_name, true}); }
-  const auto table_name_appended = PersistNameRegistryEntriesForObject(request.context,
-                                                                      "ddl.create_table",
-                                                                      table_uuid,
-                                                                      "table",
-                                                                      target_schema_uuid,
-                                                                      table_names,
-                                                                      table_name);
-  if (table_name_appended.error) {
-    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", table_name_appended);
+  EngineCatalogCreateObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = "ddl.create_table";
+  catalog_request.target_object.uuid.canonical = table_uuid;
+  catalog_request.target_object.object_kind = "table";
+  catalog_request.target_schema.uuid.canonical = target_schema_uuid;
+  catalog_request.localized_names = table_names;
+  const auto catalog_created = EngineCatalogCreateObject(catalog_request);
+  if (!catalog_created.ok) {
+    EngineApiDiagnostic diagnostic = catalog_created.diagnostics.empty()
+                                         ? MakeInvalidRequestDiagnostic("ddl.create_table",
+                                                                        "catalog_table_object_create_failed")
+                                         : catalog_created.diagnostics.front();
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context,
+                                                             "ddl.create_table",
+                                                             diagnostic);
   }
   std::vector<CrudIndexRecord> implicit_support_indexes;
   for (const auto& [column_name, column_descriptor] : columns) {

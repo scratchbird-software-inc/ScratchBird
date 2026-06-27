@@ -10,6 +10,7 @@
 
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/insert_batch.hpp"
 #include "dml/insert_physical_integration.hpp"
 #include "dml/dml_row_locator_stream.hpp"
@@ -1560,12 +1561,6 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
         request.shared_row_field_order.size());
   }
   direct.option_envelopes = request.option_envelopes;
-  if ((!direct.shared_row_field_order.empty() ||
-       InsertRowsShareFieldOrder(input_rows)) &&
-      !InsertOptionKeyPresent(direct.option_envelopes,
-                              "sblr.canonical_rowset_shared_shape")) {
-    direct.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
-  }
   direct.diagnostic_options = request.diagnostic_options;
   direct.estimated_row_count = request.estimated_row_count == 0
                                    ? static_cast<EngineApiU64>(input_rows.size())
@@ -1597,8 +1592,7 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
   if (direct.lane_operation == "native_bulk" &&
       !InsertOptionKeyPresent(direct.option_envelopes,
                               "native_bulk.single_window") &&
-      (!direct.shared_row_field_order.empty() ||
-       InsertRowsShareFieldOrder(input_rows))) {
+      !direct.shared_row_field_order.empty()) {
     direct.option_envelopes.push_back("native_bulk.single_window=true");
   }
   direct.duplicate_mode = request.duplicate_mode;
@@ -2727,6 +2721,36 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
     const CrudIndexRecord& index,
     const std::vector<std::string>& keys,
     const std::string& exclude_row_uuid) {
+  const auto visible_row_scan_fallback = [&]() -> std::optional<UniqueConflictProbeResult> {
+    ++physical_probe_cache.scan_fallback_attempts;
+    std::set<std::string> candidate_row_uuids;
+    for (const auto& row : state.row_versions) {
+      if (row.table_uuid != table_uuid ||
+          row.row_uuid == exclude_row_uuid) {
+        continue;
+      }
+      candidate_row_uuids.insert(row.row_uuid);
+    }
+    for (const auto& row_uuid : candidate_row_uuids) {
+      const auto row =
+          FindVisibleCrudRowUuidCandidate(state, table_uuid, row_uuid, context);
+      if (!row) {
+        continue;
+      }
+      for (const auto& key : keys) {
+        if (RowHasUniqueIndexKey(index, row->values, key)) {
+          ++physical_probe_cache.scan_fallback_hits;
+          return UniqueConflictProbeResult{*row,
+                                           index.index_uuid,
+                                           key,
+                                           "persisted_visible_row_scan_fallback",
+                                           "mga_visible_row_version_scan"};
+        }
+      }
+    }
+    return std::nullopt;
+  };
+
   const auto found_index =
       physical_probe_cache.key_rows_by_index_uuid.find(index.index_uuid);
   if (found_index != physical_probe_cache.key_rows_by_index_uuid.end()) {
@@ -2752,7 +2776,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
       }
     }
     ++physical_probe_cache.physical_probe_misses;
-    return std::nullopt;
+    return visible_row_scan_fallback();
   }
   ++physical_probe_cache.scan_fallback_attempts;
   for (const auto& key : keys) {
@@ -2782,7 +2806,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
       }
     }
   }
-  return std::nullopt;
+  return visible_row_scan_fallback();
 }
 
 std::optional<UniqueConflictProbeResult> FindUniqueConflictByIndex(
@@ -3001,7 +3025,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     return failure;
   }
   const auto direct_initial_input_rows = request.EffectiveInputRows();
-  if (!direct_initial_input_rows.empty()) {
+  const bool executable_trigger_descriptors_present =
+      dml_trigger_runtime::HasActiveTableTriggerDescriptors(
+          request.context,
+          request.target_table.uuid.canonical);
+  if (!direct_initial_input_rows.empty() && !executable_trigger_descriptors_present) {
     auto direct_attempt = TryDirectPhysicalInsertRoute(request,
                                                       conflict_action,
                                                       direct_initial_input_rows);
@@ -3017,6 +3045,10 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   const auto generated_source_capacity =
       TryBuildInsertSelectSourceCapacitySnapshot(request,
                                                  generated_source_uuids);
+  const bool generated_source_capacity_required =
+      !generated_source_uuids.empty();
+  const bool generated_source_capacity_ready =
+      !generated_source_capacity_required || generated_source_capacity.usable;
   std::vector<std::string> generated_insert_scope_uuids{
       request.target_table.uuid.canonical};
   generated_insert_scope_uuids.insert(generated_insert_scope_uuids.end(),
@@ -3081,10 +3113,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           : std::nullopt;
   if (request.EffectiveInputRows().empty() &&
       direct_generated_count &&
-      generated_source_capacity.usable &&
+      generated_source_capacity_ready &&
+      !executable_trigger_descriptors_present &&
       InsertOptionValue(request, "insert_select_source_kind:") ==
           "recursive_counter_cte") {
-    EngineApiU64 visible_capacity = 1;
+    EngineApiU64 visible_capacity = generated_source_capacity_required
+                                        ? 1
+                                        : *direct_generated_count;
     for (const auto& [unused_source_uuid, source_count] :
          generated_source_capacity.visible_row_counts) {
       (void)unused_source_uuid;
@@ -3109,9 +3144,17 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                         std::to_string(*direct_generated_count)});
       direct_prefix_evidence.push_back({"insert_select_generated_route",
                                         "direct_physical_counter_projection"});
-      direct_prefix_evidence.insert(direct_prefix_evidence.end(),
-                                    generated_source_capacity.evidence.begin(),
-                                    generated_source_capacity.evidence.end());
+      if (generated_source_capacity_required) {
+        direct_prefix_evidence.insert(direct_prefix_evidence.end(),
+                                      generated_source_capacity.evidence.begin(),
+                                      generated_source_capacity.evidence.end());
+      } else {
+        direct_prefix_evidence.push_back(
+            {"insert_select_source_capacity_summary_route",
+             "pure_recursive_counter_cte"});
+        direct_prefix_evidence.push_back(
+            {"insert_select_source_capacity_checked", "not_required"});
+      }
       EngineInsertRowsRequest direct_generated_request = request;
       direct_generated_request.estimated_row_count = *direct_generated_count;
       const std::span<const EngineRowValue> no_materialized_rows;
@@ -3167,7 +3210,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "at_least_one_row_required"));
   }
 
-  if (!generated_insert_select_rows.empty()) {
+  if (!generated_insert_select_rows.empty() && !executable_trigger_descriptors_present) {
     std::vector<EngineEvidenceReference> direct_prefix_evidence;
     direct_prefix_evidence.push_back({"insert_select_generator",
                                       "recursive_counter_cte"});
@@ -3353,6 +3396,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   }
   AddMutationOptimizerEvidence("insert", request.context.local_transaction_id != 0, true, &result.evidence);
   std::vector<CrudRowVersionRecord> returning_rows;
+  std::vector<CrudRowVersionRecord> trigger_insert_rows;
   std::vector<StagedInsertRow> staged_insert_rows;
   InsertPreworkQueue insert_prework(request,
                                     batch_context,
@@ -4230,18 +4274,19 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 
       for (std::size_t index = window_begin; index < window_end; ++index) {
         const auto& row_record = row_records[index - window_begin];
+        CrudRowVersionRecord trigger_row;
+        trigger_row.creator_tx = request.context.local_transaction_id;
+        trigger_row.event_sequence = row_record.event_sequence;
+        trigger_row.sequence = row_record.sequence;
+        trigger_row.table_uuid = request.target_table.uuid.canonical;
+        trigger_row.row_uuid = row_record.row_uuid;
+        trigger_row.version_uuid = row_record.version_uuid;
+        trigger_row.deleted = false;
+        trigger_row.values = staged_insert_rows[index].logical_values;
+        trigger_insert_rows.push_back(trigger_row);
         if (!suppress_payload_rows) {
           result.row_uuids.push_back({row_record.row_uuid});
-          CrudRowVersionRecord returning_row;
-          returning_row.creator_tx = request.context.local_transaction_id;
-          returning_row.event_sequence = row_record.event_sequence;
-          returning_row.sequence = row_record.sequence;
-          returning_row.table_uuid = request.target_table.uuid.canonical;
-          returning_row.row_uuid = row_record.row_uuid;
-          returning_row.version_uuid = row_record.version_uuid;
-          returning_row.deleted = false;
-          returning_row.values = staged_insert_rows[index].logical_values;
-          returning_rows.push_back(std::move(returning_row));
+          returning_rows.push_back(std::move(trigger_row));
         }
         ++result.inserted_count;
         ++batch_context.actual_row_count;
@@ -4325,7 +4370,25 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
   result.evidence.push_back({"row_uuid_generation", request.require_generated_row_uuid ? "required" : "caller_allowed"});
-  result.evidence.push_back({"trigger_udr_hooks", "inactive_checked"});
+  const auto trigger_result =
+      dml_trigger_runtime::FireAfterInsertTableTriggers(request.context,
+                                                        state,
+                                                        request.target_table.uuid.canonical,
+                                                        trigger_insert_rows,
+                                                        request.option_envelopes);
+  if (!trigger_result.ok) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        trigger_result.diagnostic);
+  }
+  result.evidence.insert(result.evidence.end(),
+                         trigger_result.evidence.begin(),
+                         trigger_result.evidence.end());
+  result.evidence.push_back({"trigger_udr_hooks",
+                             trigger_result.fired_count == 0
+                                 ? "descriptor_checked"
+                                 : "descriptor_executed"});
   result.evidence.push_back({"unique_index_logical_preflight_probes",
                              std::to_string(result.dml_summary.index_probes)});
   result.evidence.push_back({"unique_index_physical_probes",
