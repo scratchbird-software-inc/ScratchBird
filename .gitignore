@@ -48,6 +48,7 @@ project/drivers/**/deps/
 project/drivers/**/dist/
 project/drivers/**/node_modules/
 project/drivers/**/target/
+project/drivers/driver/dotnet/**/bin/
 project/drivers/**/bin/Debug/
 project/drivers/**/obj/
 *.o

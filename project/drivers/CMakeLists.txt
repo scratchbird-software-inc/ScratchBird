@@ -50,6 +50,12 @@ set(SB_DRIVER_NATIVE_MATRIX_PLAN_GATE
 set(SB_DRIVER_NATIVE_FULL_SURFACE_MATRIX_RUNNER
   "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_driver_native_full_surface_matrix.py"
 )
+set(SB_DRIVER_NATIVE_TOOL_BUILDER
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native_driver_tools.py"
+)
+set(SB_DRIVER_SCRIPT_DIFF_RUNNER
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_driver_script_diff.py"
+)
 set(SB_DRIVER_FULL_SURFACE_SCRIPT_SUITE_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/full_surface_scripts/validate_full_surface_script_suite.py"
 )
@@ -76,6 +82,14 @@ option(SB_DRIVER_REQUIRE_ALL_TOOLCHAINS
 )
 option(SB_BUILD_DRIVER_NATIVE_CMAKE_TARGETS
   "Build native CMake driver/tool targets as part of the driver gate subtree"
+  ON
+)
+option(SB_DRIVER_STAGE_COMPILED_TOOLS
+  "Compile supported per-language sb_isql driver tools during the native tool staging gate"
+  ON
+)
+option(SB_DRIVER_STRICT_STAGED_RUNTIMES
+  "Fail the staged driver tool gate when a runtime-only launcher dependency is missing"
   OFF
 )
 
@@ -206,11 +220,54 @@ function(sb_add_driver_native_full_surface_matrix_runner_gate test_name)
       "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_MATRIX_RUNNER}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
       "--plan-only"
+      "--require-staged-tools"
       "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
   )
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "driver;driver_native_full_surface_gate;matrix_orchestrator;${test_name}"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+    FIXTURES_REQUIRED "driver_native_core_tools_staged"
+  )
+endfunction()
+
+function(sb_add_driver_native_tool_stage_gate test_name)
+  set(stage_args)
+  if(SB_DRIVER_STAGE_COMPILED_TOOLS)
+    list(APPEND stage_args "--build-compiled")
+  endif()
+  if(SB_DRIVER_STRICT_STAGED_RUNTIMES)
+    list(APPEND stage_args "--strict-runtimes")
+  endif()
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_TOOL_BUILDER}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--build-root" "${PROJECT_BINARY_DIR}"
+      "--manifest-out" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+      ${stage_args}
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;driver_native_tool_binaries;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+    FIXTURES_SETUP "driver_native_core_tools_staged"
+  )
+endfunction()
+
+function(sb_add_driver_script_diff_contract_gate test_name)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_SCRIPT_DIFF_RUNNER}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--bin-root" "${PROJECT_BINARY_DIR}/output/linux/bin"
+      "--report" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+      "--contract-check"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;driver_script_diff_contract;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+    FIXTURES_REQUIRED "driver_native_core_tools_staged"
   )
 endfunction()
 
@@ -370,6 +427,8 @@ sb_add_driver_native_full_surface_gate(driver_native_full_surface_gate_input gat
 sb_add_driver_native_full_surface_gate(driver_native_full_surface_tool_inventory tool-inventory)
 sb_add_driver_native_full_surface_artifact_schema_gate(driver_native_full_surface_artifact_schema)
 sb_add_driver_native_matrix_plan_gate(driver_native_full_surface_matrix_plan)
+sb_add_driver_native_tool_stage_gate(driver_native_core_tool_binaries)
+sb_add_driver_script_diff_contract_gate(driver_native_script_diff_contract)
 sb_add_driver_native_full_surface_matrix_runner_gate(driver_native_full_surface_matrix_runner_plan)
 sb_add_driver_full_surface_script_suite_gate(driver_full_surface_script_suite_gate)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_schema_gate schema)
