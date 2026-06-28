@@ -1506,6 +1506,28 @@ std::optional<size_t> chainEndForStatement(
     return std::nullopt;
 }
 
+std::string defaultScriptChainChunkSizeFor(const std::string& scriptId,
+                                           bool hasActiveRanges) {
+    if (!hasActiveRanges) {
+        return "64";
+    }
+    // Generated conformance scripts run in full-suite context after many
+    // catalog/security/procedure surfaces have already been exercised. Keep
+    // generated chunks below the client read timeout so a single slow batch
+    // cannot poison the transaction state for later scripts.
+    if (scriptId == "SBDFS-140") {
+        return "4";
+    }
+    if (scriptId == "SBDFS-150" || scriptId == "SBDFS-160" ||
+        scriptId == "SBDFS-170" || scriptId == "SBDFS-180") {
+        return "8";
+    }
+    if (scriptId == "SBDFS-120" || scriptId == "SBDFS-130") {
+        return "16";
+    }
+    return "256";
+}
+
 std::string sbdfs130TableKey(const std::string& sql) {
     const std::size_t tableStart = sql.find(".dt_");
     if (tableStart == std::string::npos) {
@@ -3505,7 +3527,7 @@ int main(int argc, char** argv) {
                         ? std::vector<std::pair<size_t, size_t>>{}
                         : scriptChainRanges(scriptId, statements, expectedRefusalIndexes);
                 const std::string defaultScriptChainChunkSize =
-                    activeScriptChainRanges.empty() ? "64" : "256";
+                    defaultScriptChainChunkSizeFor(scriptId, !activeScriptChainRanges.empty());
                 const size_t scriptChainChunkSize = std::max<size_t>(
                     1,
                     static_cast<size_t>(std::stoull(
@@ -3658,6 +3680,13 @@ int main(int argc, char** argv) {
                                          {"message", chainDiagnostic}});
                             appendText(paths.at("stderr"),
                                        chainStatementId + ": " + chainDiagnostic + "\n");
+                            if (!hasFlag(args, "--stop-on-error")) {
+                                (void)reconnectAfterTransactionBoundaryDesync(
+                                    chainStatementId,
+                                    chainElementId,
+                                    chainDiagnostic,
+                                    conn.currentTransactionId());
+                            }
                             break;
                         }
 
