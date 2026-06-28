@@ -44,6 +44,7 @@
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/write_result_policy.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "extensibility/gpu_api.hpp"
@@ -234,6 +235,30 @@ bool HasDispatchDiagnosticCode(const SblrDispatchResult& result,
     }
   }
   return false;
+}
+
+bool IsDefaultSummaryWriteDmlOperation(std::string_view operation_id) {
+  return operation_id == "dml.insert_rows" ||
+         operation_id == "dml.update_rows" ||
+         operation_id == "dml.delete_rows" ||
+         operation_id == "dml.merge_rows" ||
+         operation_id == "dml.execute_import_rows" ||
+         operation_id == "dml.execute_native_bulk_ingest";
+}
+
+void EnsureDefaultWriteResultPolicy(api::EngineApiRequest* request,
+                                    std::string_view operation_id) {
+  if (request == nullptr || !IsDefaultSummaryWriteDmlOperation(operation_id)) {
+    return;
+  }
+  for (const auto& option : request->option_envelopes) {
+    if (api::IsWriteResultPolicyOption(option)) {
+      return;
+    }
+  }
+  request->option_envelopes.push_back("result_payload_policy:summary_only");
+  request->option_envelopes.push_back(
+      "sblr.default_write_result_policy:summary_only");
 }
 
 void PropagateClusterApiDiagnostics(SblrDispatchResult* result) {
@@ -2776,10 +2801,9 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
 
 api::EngineInsertRowsRequest TypedInsertRowsRequest(const SblrDispatchRequest& request) {
   api::EngineInsertRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.input_rows = base.rows;
   typed.estimated_row_count = DispatchOptionU64(base, "estimated_row_count:");
   typed.insert_mode = api::SecurityOptionValue(base, "insert_mode:");
   const std::string duplicate_mode = api::SecurityOptionValue(base, "duplicate_mode:");
@@ -2808,6 +2832,8 @@ api::EngineInsertRowsRequest TypedInsertRowsRequest(const SblrDispatchRequest& r
   typed.strict_bulk_load_requested = api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
   typed.reference_unique_checks_relaxed = api::SecurityOptionBool(base, "reference_unique_checks_relaxed:", false);
   typed.reference_foreign_key_checks_relaxed = api::SecurityOptionBool(base, "reference_foreign_key_checks_relaxed:", false);
+  typed.input_rows = std::move(base.rows);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
 
@@ -4016,11 +4042,11 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
 
 api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& request) {
   api::EngineUpdateRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.update_predicate = base.predicate;
-  typed.assignments = base.assignments;
+  typed.update_predicate = std::move(base.predicate);
+  typed.assignments = std::move(base.assignments);
   if (typed.assignments.empty()) {
     const std::string assignment_plan = api::SecurityOptionValue(base, "assignment_plan:");
     std::string item;
@@ -4035,28 +4061,31 @@ api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& r
       typed.assignments.push_back({item.substr(0, separator), std::move(placeholder)});
     }
   }
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
 
 api::EngineDeleteRowsRequest TypedDeleteRowsRequest(const SblrDispatchRequest& request) {
   api::EngineDeleteRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.delete_predicate = base.predicate;
+  typed.delete_predicate = std::move(base.predicate);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
 
 api::EngineMergeRowsRequest TypedMergeRowsRequest(const SblrDispatchRequest& request) {
   api::EngineMergeRowsRequest typed;
-  const api::EngineApiRequest base = BaseApiRequest(request);
-  static_cast<api::EngineApiRequest&>(typed) = base;
+  api::EngineApiRequest base = BaseApiRequest(request);
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.match_predicate = base.predicate;
-  typed.input_rows = base.rows;
-  typed.update_assignments = base.assignments;
+  typed.match_predicate = std::move(base.predicate);
+  typed.input_rows = std::move(base.rows);
+  typed.update_assignments = std::move(base.assignments);
   typed.update_when_matched = api::SecurityOptionBool(base, "update_when_matched:", true);
   typed.insert_when_not_matched = api::SecurityOptionBool(base, "insert_when_not_matched:", true);
+  static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
 
@@ -4839,7 +4868,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "dml.insert_rows") {
     auto phase_last = SblrSteadyClock::now();
     std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-    phase_micros.reserve(2);
+    phase_micros.reserve(3);
     const auto mark_phase = [&](std::string phase) {
       const auto now = SblrSteadyClock::now();
       phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
@@ -4847,8 +4876,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     };
     auto typed = TypedInsertRowsRequest(request);
     mark_phase("typed_insert_request");
-    result.api_result = api::EngineInsertRows(typed);
+    auto insert_result = api::EngineInsertRows(typed);
     mark_phase("engine_insert_rows");
+    result.api_result =
+        std::move(static_cast<api::EngineApiResult&>(insert_result));
+    mark_phase("adopt_api_result");
     WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
                                 op,
                                 request.envelope.operands.size(),
@@ -4858,7 +4890,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "dml.update_rows") {
     auto phase_last = SblrSteadyClock::now();
     std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-    phase_micros.reserve(2);
+    phase_micros.reserve(3);
     const auto mark_phase = [&](std::string phase) {
       const auto now = SblrSteadyClock::now();
       phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
@@ -4866,8 +4898,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     };
     auto typed = TypedUpdateRowsRequest(request);
     mark_phase("typed_update_request");
-    result.api_result = api::EngineUpdateRows(typed);
+    auto update_result = api::EngineUpdateRows(typed);
     mark_phase("engine_update_rows");
+    result.api_result =
+        std::move(static_cast<api::EngineApiResult&>(update_result));
+    mark_phase("adopt_api_result");
     WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
                                 op,
                                 request.envelope.operands.size(),
@@ -4876,7 +4911,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "dml.delete_rows") {
     auto phase_last = SblrSteadyClock::now();
     std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-    phase_micros.reserve(2);
+    phase_micros.reserve(3);
     const auto mark_phase = [&](std::string phase) {
       const auto now = SblrSteadyClock::now();
       phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
@@ -4884,8 +4919,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     };
     auto typed = TypedDeleteRowsRequest(request);
     mark_phase("typed_delete_request");
-    result.api_result = api::EngineDeleteRows(typed);
+    auto delete_result = api::EngineDeleteRows(typed);
     mark_phase("engine_delete_rows");
+    result.api_result =
+        std::move(static_cast<api::EngineApiResult&>(delete_result));
+    mark_phase("adopt_api_result");
     WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
                                 op,
                                 request.envelope.operands.size(),
@@ -4894,7 +4932,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "dml.merge_rows") {
     auto phase_last = SblrSteadyClock::now();
     std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-    phase_micros.reserve(2);
+    phase_micros.reserve(3);
     const auto mark_phase = [&](std::string phase) {
       const auto now = SblrSteadyClock::now();
       phase_micros.push_back({std::move(phase), SblrElapsedMicros(phase_last, now)});
@@ -4902,8 +4940,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     };
     auto typed = TypedMergeRowsRequest(request);
     mark_phase("typed_merge_request");
-    result.api_result = api::EngineMergeRows(typed);
+    auto merge_result = api::EngineMergeRows(typed);
     mark_phase("engine_merge_rows");
+    result.api_result =
+        std::move(static_cast<api::EngineApiResult&>(merge_result));
+    mark_phase("adopt_api_result");
     WriteSblrDispatchPhaseTrace("dispatch_operation_dml",
                                 op,
                                 request.envelope.operands.size(),

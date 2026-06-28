@@ -2555,6 +2555,126 @@ EngineResultShape CountScalarResultShape(std::uint64_t count, std::string column
 
 EngineResultShape CountAssertionResultShape(const EnginePlanOperationRequest& request,
                                             std::uint64_t actual_count,
+                                            std::string* error_detail);
+
+bool CountFastPathCanUseTargetRows(const EnginePlanOperationRequest& request,
+                                   const std::string& operation) {
+  if (!(operation == "count" || operation == "count_all")) return false;
+  if (request.target_object.uuid.canonical.empty()) return false;
+  if (!request.relations.empty() || !request.rows.empty() ||
+      !request.related_objects.empty()) {
+    return false;
+  }
+  if (!OptionValue(request, "catalog_projection:").empty()) return false;
+  if (ParseBoolValue(OptionValue(request, "count_distinct:"), false)) return false;
+  const std::string result_projection =
+      LowerAscii(OptionValue(request, "result_projection:"));
+  return result_projection.empty() || result_projection == "count" ||
+         result_projection == "count_assertion";
+}
+
+bool CrudRowFieldIsNotNull(const CrudRowVersionRecord& row,
+                           const std::string& field_name) {
+  for (const auto& [field, value] : row.values) {
+    if (field == field_name) return value != "<NULL>";
+  }
+  return false;
+}
+
+EnginePlanOperationResult ExecuteFastCrudCount(
+    const EnginePlanOperationRequest& request,
+    const std::string& operation) {
+  if (request.context.local_transaction_id == 0) {
+    return QueryFailure<EnginePlanOperationResult>(
+        request.context,
+        "local_transaction_id_required_for_crud_query_sources");
+  }
+  const auto loaded = LoadMgaRelationStoreRowsOnlyForMutationTarget(
+      request.context,
+      request.target_object.uuid.canonical);
+  if (!loaded.ok) {
+    return QueryFailure<EnginePlanOperationResult>(
+        request.context,
+        loaded.diagnostic.detail.empty() ? loaded.diagnostic.code
+                                         : loaded.diagnostic.detail);
+  }
+  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto table = FindVisibleCrudTable(state,
+                                          request.target_object.uuid.canonical,
+                                          request.context.local_transaction_id);
+  if (!table) {
+    return QueryFailure<EnginePlanOperationResult>(
+        request.context,
+        "query_relation_target_not_visible");
+  }
+  const bool count_all =
+      ParseBoolValue(OptionValue(request, "count_all:"),
+                     request.aggregate_value_field.empty());
+  std::string value_field = !request.aggregate_value_field.empty()
+                                ? request.aggregate_value_field
+                                : OptionValue(request, "aggregate_value_field:");
+  if (!count_all && (value_field.empty() || value_field == "*")) {
+    return QueryFailure<EnginePlanOperationResult>(
+        request.context,
+        "query_plan_count_value_field_required");
+  }
+  std::uint64_t count = 0;
+  for (const auto& row : VisibleCrudRowsForContext(
+           state,
+           request.target_object.uuid.canonical,
+           request.context)) {
+    if (!CrudRowMatchesPredicate(row, request.predicate)) continue;
+    if (count_all || CrudRowFieldIsNotNull(row, value_field)) {
+      ++count;
+    }
+  }
+  count = ApplyCountWindow(request, count);
+
+  EnginePlanOperationResult result =
+      MakeApiBehaviorSuccess<EnginePlanOperationResult>(request.context,
+                                                        "query.plan_operation");
+  AddSbsfc081Evidence(&result, request);
+  AddSbsfc082Evidence(&result, request);
+  AddSbsfc083Evidence(&result, request);
+  AddSbsfc084Evidence(&result, request);
+  AddSbsfc085Evidence(&result, request);
+  const std::string result_projection =
+      LowerAscii(OptionValue(request, "result_projection:"));
+  std::string error_detail;
+  if (result_projection == "count_assertion") {
+    result.result_shape = CountAssertionResultShape(request, count, &error_detail);
+    if (!error_detail.empty()) {
+      return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                     error_detail);
+    }
+    result.evidence.push_back({"query_count_result_projection",
+                               "count_assertion"});
+  } else {
+    result.result_shape = CountScalarResultShape(count, "c0");
+  }
+  result.plan_kind = operation;
+  result.output_row_count = result.result_shape.rows.size();
+  AddApiBehaviorEvidence(&result, "query_execution", operation);
+  result.evidence.push_back({"query_executor", "local_noncluster_fast_count"});
+  result.evidence.push_back({"query_count_fast_path", "scoped_mga_rows"});
+  result.evidence.push_back({"query_aggregate", count_all ? "count_all" : "count_non_null"});
+  result.evidence.push_back({"query_aggregate_function_requested", "count"});
+  result.evidence.push_back({"query_aggregate_typed_result", "int64_nonnull"});
+  result.evidence.push_back({"query_count_input_row_count", std::to_string(count)});
+  if (!count_all) {
+    result.evidence.push_back({"query_aggregate_value_binding",
+                               request.aggregate_value_field.empty()
+                                   ? "option_field"
+                                   : "descriptor_field"});
+  }
+  result.evidence.push_back({"query_relation_count", "1"});
+  result.evidence.push_back({"query_output_row_count",
+                             std::to_string(result.result_shape.rows.size())});
+  return result;
+}
+
+EngineResultShape CountAssertionResultShape(const EnginePlanOperationRequest& request,
+                                            std::uint64_t actual_count,
                                             std::string* error_detail) {
   const std::string assertion_id = OptionValue(request, "assertion_id:");
   std::string actual_column = OptionValue(request, "actual_column_name:");
@@ -6041,11 +6161,14 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   AddSbsfc084Evidence(&result, request);
   AddSbsfc085Evidence(&result, request);
   if (request.execute || OptionValue(request, "execute:") == "true") {
+    const std::string operation = QueryOperation(request);
+    if (CountFastPathCanUseTargetRows(request, operation)) {
+      return ExecuteFastCrudCount(request, operation);
+    }
     std::string error_detail;
     const auto relations = BuildRelations(request, &error_detail);
     if (!relations) { return QueryFailure<EnginePlanOperationResult>(request.context, error_detail); }
     if (relations->empty()) { return QueryFailure<EnginePlanOperationResult>(request.context, "query_relation_required"); }
-    const std::string operation = QueryOperation(request);
     const bool set_by_name = request.set_by_name ||
                              ParseBoolValue(OptionValue(request, "set_by_name:"), false);
     if (IsSetOperationName(operation) && set_by_name &&

@@ -16,16 +16,51 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+using SelectApiSteadyClock = std::chrono::steady_clock;
+
+std::uint64_t SelectApiElapsedMicros(
+    SelectApiSteadyClock::time_point begin,
+    SelectApiSteadyClock::time_point end = SelectApiSteadyClock::now()) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+}
+
+void WriteSelectApiPhaseTrace(
+    std::string_view layer,
+    std::string_view operation,
+    std::size_t row_count,
+    const std::vector<std::pair<std::string, std::uint64_t>>& phase_micros) {
+  const char* trace_path = std::getenv("SCRATCHBIRD_SELECT_API_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  static std::mutex trace_mutex;
+  std::lock_guard<std::mutex> guard(trace_mutex);
+  std::ofstream out(trace_path, std::ios::app);
+  if (!out) return;
+  out << "layer=" << layer
+      << '\t' << "operation=" << operation
+      << '\t' << "rows=" << row_count;
+  std::uint64_t total = 0;
+  for (const auto& [phase, micros] : phase_micros) {
+    total += micros;
+    out << '\t' << phase << "_us=" << micros;
+  }
+  out << '\t' << "total_us=" << total << '\n';
+}
 
 std::string LowerAscii(std::string value) {
   for (char& c : value) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
@@ -510,6 +545,21 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
   }
+  auto select_phase_last = SelectApiSteadyClock::now();
+  std::vector<std::pair<std::string, std::uint64_t>> select_phase_micros;
+  select_phase_micros.reserve(14);
+  const auto mark_select_phase = [&](std::string phase) {
+    const auto now = SelectApiSteadyClock::now();
+    select_phase_micros.push_back(
+        {std::move(phase), SelectApiElapsedMicros(select_phase_last, now)});
+    select_phase_last = now;
+  };
+  const auto write_select_trace = [&](std::size_t row_count) {
+    WriteSelectApiPhaseTrace("engine_select_rows",
+                             "dml.select_rows",
+                             row_count,
+                             select_phase_micros);
+  };
   if (OptionValue(request, "source_kind:") == "selectable_procedure") {
     std::string routine_uuid = OptionValue(request, "routine_object_uuid:");
     if (routine_uuid.empty()) routine_uuid = OptionValue(request, "source_uuid:");
@@ -522,6 +572,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     }
     const auto executable_state = LoadExecutableObjectLifecycleStateForRuntimeDispatch(
         request.context);
+    mark_select_phase("load_executable_state");
     if (!executable_state.ok) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
           request.context, "dml.select_rows", executable_state.diagnostic);
@@ -537,6 +588,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     std::string error_detail;
     std::vector<CrudRowVersionRecord> rows =
         MaterializeSelectableProcedureRows(request, *object, routine_uuid, &error_detail);
+    mark_select_phase("materialize_selectable_procedure");
     if (!error_detail.empty()) {
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
           request.context,
@@ -546,6 +598,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     const EngineOrderingEnvelope& ordering =
         !request.select_ordering.canonical_ordering_envelopes.empty() ? request.select_ordering : request.ordering;
     ApplyOrdering(ordering, &rows);
+    mark_select_phase("apply_ordering");
     const auto offset = static_cast<std::size_t>(request.offset);
     if (offset != 0) {
       if (offset >= rows.size()) {
@@ -593,17 +646,22 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       ApplyProjection(projection, &rows);
       result.result_shape = CrudRowsToResultShape(rows);
     }
+    mark_select_phase("result_shape");
     result.evidence.push_back({"selectable_procedure", routine_uuid});
+    write_select_trace(result.visible_count);
     return result;
   }
   const std::string table_uuid = !request.source_object.uuid.canonical.empty() ? request.source_object.uuid.canonical : request.target_object.uuid.canonical;
   if (table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
   }
-  const auto loaded = LoadMgaRelationStoreState(request.context);
+  auto loaded =
+      LoadMgaRelationStoreStateForMutationTarget(request.context, table_uuid);
+  mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
   const auto table = FindVisibleCrudTable(state, table_uuid, request.context.local_transaction_id);
+  mark_select_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_not_visible"));
   }
@@ -743,10 +801,12 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
 	      }
 	    }
 	  }
+  mark_select_phase("resolve_visible_rows");
   if (!rows_ready) {
     rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
     rows_ready = true;
   }
+  mark_select_phase("ensure_visible_rows");
   for (auto& row : rows) {
     const auto policy = ApplyDomainReadPoliciesToCrudValues(request.context,
                                                            table->columns,
@@ -757,7 +817,9 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     }
     row.values = policy.values;
   }
+  mark_select_phase("domain_read_policy");
   ApplyOrdering(ordering, &rows);
+  mark_select_phase("apply_ordering");
   const auto offset = static_cast<std::size_t>(request.offset);
   if (offset != 0) {
     if (offset >= rows.size()) {
@@ -769,6 +831,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (request.limit != 0 && rows.size() > request.limit) {
     rows.resize(static_cast<std::size_t>(request.limit));
   }
+  mark_select_phase("limit_offset");
   const EngineProjectionEnvelope& projection =
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
@@ -808,6 +871,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     ApplyProjection(projection, &rows);
     result.result_shape = CrudRowsToResultShape(rows);
   }
+  mark_select_phase("result_shape");
   if (!index_uuid_used.empty()) { result.evidence.push_back({"index_lookup", index_uuid_used}); }
   if (!row_scan_predicate.empty()) { result.evidence.push_back({"row_scan_predicate", row_scan_predicate}); }
   result.evidence.insert(result.evidence.end(),
@@ -819,6 +883,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       table_uuid,
       predicate,
       request.option_envelopes);
+  mark_select_phase("serializable_read_record");
   if (!serializable_recorded.ok) {
     auto failure = MakeCrudDiagnosticResult<EngineSelectRowsResult>(
         request.context,
@@ -835,6 +900,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   result.evidence.insert(result.evidence.end(),
                          serializable_recorded.evidence.begin(),
                          serializable_recorded.evidence.end());
+  write_select_trace(result.visible_count);
   return result;
 }
 

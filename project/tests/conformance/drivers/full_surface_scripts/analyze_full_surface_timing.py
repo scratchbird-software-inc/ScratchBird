@@ -119,6 +119,25 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_key_value_rows(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if not path.is_file():
+        return rows
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            row: dict[str, str] = {}
+            for part in line.split("\t"):
+                if "=" not in part:
+                    raise ValueError(f"{path}:{line_number}: invalid key/value field: {part!r}")
+                key, value = part.split("=", 1)
+                row[key] = value
+            rows.append(row)
+    return rows
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames: list[str] = []
@@ -201,79 +220,230 @@ def analyze_timing_ledger(
     }
 
 
-def analyze_phase_traces(artifact_root: Path, top_n: int) -> dict[str, Any]:
-    trace_root = artifact_root / "driver-phase-traces"
-    by_script_phase: dict[tuple[str, str], PhaseBucket] = defaultdict(PhaseBucket)
-    by_statement_phase: dict[tuple[str, str, str, str], PhaseBucket] = defaultdict(PhaseBucket)
-    by_phase: dict[str, PhaseBucket] = defaultdict(PhaseBucket)
-    slow_phase_samples: list[dict[str, Any]] = []
-    if not trace_root.is_dir():
-        return {
-            "trace_root": str(trace_root),
-            "phase_trace_file_count": 0,
-            "by_script_phase": [],
-            "by_statement_phase": [],
-            "by_phase": [],
-            "slow_phase_samples": [],
+def add_phase_sample(
+    *,
+    layer: str,
+    script_id: str,
+    statement_id: str,
+    command_group: str,
+    execution_mode: str,
+    event: str,
+    phase: str,
+    elapsed_us: int,
+    byte_count: int,
+    count: int,
+    message_type: str,
+    sequence: Any,
+    tls_active: Any,
+    by_script_phase: dict[tuple[str, str, str], PhaseBucket],
+    by_statement_phase: dict[tuple[str, str, str, str, str], PhaseBucket],
+    by_phase: dict[tuple[str, str], PhaseBucket],
+    slow_phase_samples: list[dict[str, Any]],
+) -> None:
+    by_script_phase[(layer, script_id, phase)].add(elapsed_us, byte_count, message_type)
+    if statement_id:
+        by_statement_phase[(layer, script_id, statement_id, command_group, phase)].add(
+            elapsed_us,
+            byte_count,
+            message_type,
+        )
+    by_phase[(layer, phase)].add(elapsed_us, byte_count, message_type)
+    slow_phase_samples.append(
+        {
+            "layer": layer,
+            "script_id": script_id,
+            "statement_id": statement_id,
+            "command_group": command_group,
+            "execution_mode": execution_mode,
+            "event": event,
+            "phase": phase,
+            "elapsed_ms": round(elapsed_us / 1000.0, 3),
+            "bytes": byte_count,
+            "count": count,
+            "message_type": message_type,
+            "sequence": sequence,
+            "tls_active": tls_active,
         }
+    )
 
-    for trace_path in sorted(trace_root.glob("*.jsonl")):
-        script_id = trace_path.stem
-        for row in load_jsonl(trace_path):
-            phase = str(row.get("phase") or "")
-            elapsed_us = int(row.get("elapsed_us") or 0)
-            byte_count = int(row.get("bytes") or 0)
-            message_type = str(row.get("message_type") or "")
-            statement_id = str(row.get("statement_id") or "")
-            command_group = str(row.get("command_group") or "")
-            by_script_phase[(script_id, phase)].add(elapsed_us, byte_count, message_type)
-            if statement_id:
-                by_statement_phase[(script_id, statement_id, command_group, phase)].add(
-                    elapsed_us,
-                    byte_count,
-                    message_type,
+
+def analyze_phase_traces(artifact_root: Path, top_n: int) -> dict[str, Any]:
+    driver_trace_root = artifact_root / "driver-phase-traces"
+    parser_worker_trace_root = artifact_root / "parser-worker-phase-traces"
+    parser_pipeline_trace_root = artifact_root / "parser-pipeline-phase-traces"
+    server_trace_root = artifact_root / "server-phase-traces"
+    by_script_phase: dict[tuple[str, str], PhaseBucket] = defaultdict(PhaseBucket)
+    by_script_phase_layered: dict[tuple[str, str, str], PhaseBucket] = defaultdict(PhaseBucket)
+    by_statement_phase: dict[tuple[str, str, str, str, str], PhaseBucket] = defaultdict(PhaseBucket)
+    by_phase: dict[tuple[str, str], PhaseBucket] = defaultdict(PhaseBucket)
+    slow_phase_samples: list[dict[str, Any]] = []
+
+    def consume_json_trace_dir(trace_root: Path, layer: str) -> int:
+        if not trace_root.is_dir():
+            return 0
+        file_count = 0
+        for trace_path in sorted(trace_root.glob("*.jsonl")):
+            file_count += 1
+            fallback_script_id = trace_path.stem
+            for row in load_jsonl(trace_path):
+                elapsed_value = row.get("elapsed_us") or 0
+                elapsed_us = int(float(elapsed_value))
+                byte_count = int(row.get("bytes") or 0)
+                phase = str(row.get("phase") or "")
+                script_id = str(row.get("script_id") or "") or fallback_script_id
+                statement_id = str(row.get("statement_id") or "")
+                command_group = str(row.get("command_group") or "")
+                detail = str(row.get("message_type") or row.get("detail") or "")
+                add_phase_sample(
+                    layer=layer,
+                    script_id=script_id,
+                    statement_id=statement_id,
+                    command_group=command_group,
+                    execution_mode=str(row.get("execution_mode") or ""),
+                    event=str(row.get("event") or ""),
+                    phase=phase,
+                    elapsed_us=elapsed_us,
+                    byte_count=byte_count,
+                    count=int(row.get("count") or 0),
+                    message_type=detail,
+                    sequence=row.get("sequence", 0),
+                    tls_active=row.get("tls_active", None),
+                    by_script_phase=by_script_phase_layered,
+                    by_statement_phase=by_statement_phase,
+                    by_phase=by_phase,
+                    slow_phase_samples=slow_phase_samples,
                 )
-            by_phase[phase].add(elapsed_us, byte_count, message_type)
-            slow_phase_samples.append(
-                {
-                    "script_id": script_id,
-                    "statement_id": statement_id,
-                    "command_group": command_group,
-                    "execution_mode": row.get("execution_mode", ""),
-                    "event": row.get("event", ""),
-                    "phase": phase,
-                    "elapsed_ms": round(elapsed_us / 1000.0, 3),
-                    "bytes": byte_count,
-                    "message_type": message_type,
-                    "sequence": row.get("sequence", 0),
-                    "tls_active": row.get("tls_active", None),
-                }
-            )
+        return file_count
+
+    def consume_pipeline_trace_dir(trace_root: Path) -> int:
+        if not trace_root.is_dir():
+            return 0
+        file_count = 0
+        for trace_path in sorted(trace_root.glob("*.tsv")):
+            file_count += 1
+            script_id = trace_path.stem
+            for row in load_key_value_rows(trace_path):
+                byte_count = int(row.get("sql_bytes") or 0)
+                operation = row.get("operation") or row.get("family") or ""
+                for key, value in row.items():
+                    if not key.endswith("_us"):
+                        continue
+                    try:
+                        elapsed_us = int(float(value))
+                    except ValueError:
+                        continue
+                    add_phase_sample(
+                        layer="parser_pipeline",
+                        script_id=script_id,
+                        statement_id="",
+                        command_group=str(row.get("family") or ""),
+                        execution_mode="",
+                        event="pipeline",
+                        phase=key[:-3],
+                        elapsed_us=elapsed_us,
+                        byte_count=byte_count,
+                        count=1,
+                        message_type=operation,
+                        sequence=0,
+                        tls_active=None,
+                        by_script_phase=by_script_phase_layered,
+                        by_statement_phase=by_statement_phase,
+                        by_phase=by_phase,
+                        slow_phase_samples=slow_phase_samples,
+                    )
+        return file_count
+
+    def consume_server_trace_files(trace_paths: list[Path]) -> int:
+        file_count = 0
+        for trace_path in sorted(trace_paths):
+            if not trace_path.is_file():
+                continue
+            file_count += 1
+            trace_name = trace_path.stem
+            if trace_name.startswith("server-"):
+                trace_name = trace_name[len("server-"):]
+            for row in load_key_value_rows(trace_path):
+                byte_count = int(row.get("encoded_bytes") or row.get("envelope_bytes") or 0)
+                operation = row.get("operation") or ""
+                row_layer = row.get("layer") or trace_name
+                layer = f"server_{trace_name}:{row_layer}"
+                row_count = int(row.get("rows") or row.get("accepted") or 1)
+                for key, value in row.items():
+                    if not key.endswith("_us"):
+                        continue
+                    try:
+                        elapsed_us = int(float(value))
+                    except ValueError:
+                        continue
+                    add_phase_sample(
+                        layer=layer,
+                        script_id=trace_name,
+                        statement_id="",
+                        command_group=operation,
+                        execution_mode="",
+                        event="server_phase_trace",
+                        phase=key[:-3],
+                        elapsed_us=elapsed_us,
+                        byte_count=byte_count,
+                        count=row_count,
+                        message_type=operation,
+                        sequence=0,
+                        tls_active=None,
+                        by_script_phase=by_script_phase_layered,
+                        by_statement_phase=by_statement_phase,
+                        by_phase=by_phase,
+                        slow_phase_samples=slow_phase_samples,
+                    )
+        return file_count
+
+    driver_count = consume_json_trace_dir(driver_trace_root, "driver")
+    worker_count = consume_json_trace_dir(parser_worker_trace_root, "parser_worker")
+    pipeline_count = consume_pipeline_trace_dir(parser_pipeline_trace_root)
+    server_trace_paths: list[Path] = []
+    if server_trace_root.is_dir():
+        server_trace_paths.extend(server_trace_root.glob("*.tsv"))
+    server_trace_paths.extend(artifact_root.glob("server-*.tsv"))
+    server_count = consume_server_trace_files(server_trace_paths)
+
+    for (layer, script_id, phase), bucket in by_script_phase_layered.items():
+        by_script_phase[(f"{layer}:{script_id}", phase)] = bucket
 
     script_phase_rows = [
-        bucket.as_row(script_id=script_id, phase=phase)
+        bucket.as_row(layer=script_id.split(":", 1)[0], script_id=script_id.split(":", 1)[1], phase=phase)
         for (script_id, phase), bucket in by_script_phase.items()
     ]
     statement_phase_rows = [
         bucket.as_row(
+            layer=layer,
             script_id=script_id,
             statement_id=statement_id,
             command_group=command_group,
             phase=phase,
         )
-        for (script_id, statement_id, command_group, phase), bucket in by_statement_phase.items()
+        for (layer, script_id, statement_id, command_group, phase), bucket in by_statement_phase.items()
     ]
     phase_rows = [
-        bucket.as_row(phase=phase)
-        for phase, bucket in by_phase.items()
+        bucket.as_row(layer=layer, phase=phase)
+        for (layer, phase), bucket in by_phase.items()
     ]
     script_phase_rows.sort(key=lambda item: item["total_ms"], reverse=True)
     statement_phase_rows.sort(key=lambda item: item["total_ms"], reverse=True)
     phase_rows.sort(key=lambda item: item["total_ms"], reverse=True)
     slow_phase_samples.sort(key=lambda item: item["elapsed_ms"], reverse=True)
     return {
-        "trace_root": str(trace_root),
-        "phase_trace_file_count": len(list(trace_root.glob("*.jsonl"))),
+        "trace_roots": {
+            "driver": str(driver_trace_root),
+            "parser_worker": str(parser_worker_trace_root),
+            "parser_pipeline": str(parser_pipeline_trace_root),
+            "server": str(server_trace_root),
+        },
+        "phase_trace_file_count": driver_count + worker_count + pipeline_count + server_count,
+        "phase_trace_file_counts": {
+            "driver": driver_count,
+            "parser_worker": worker_count,
+            "parser_pipeline": pipeline_count,
+            "server": server_count,
+        },
         "by_script_phase": script_phase_rows,
         "by_statement_phase": statement_phase_rows,
         "by_phase": phase_rows,
@@ -334,15 +504,15 @@ def render_markdown(report: dict[str, Any], top_n: int) -> str:
     lines.extend(
         [
             "",
-            "## Driver Phase Totals",
+            "## Phase Totals",
             "",
-            "| Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Layer | Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in phases["by_phase"][:top_n]:
         lines.append(
-            "| {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
+            "| {layer} | {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
                 **row
             )
         )
@@ -351,13 +521,13 @@ def render_markdown(report: dict[str, Any], top_n: int) -> str:
             "",
             "## Slowest Statement/Phase Pairs",
             "",
-            "| Statement | Script | Group | Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
-            "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Layer | Statement | Script | Group | Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
+            "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in phases["by_statement_phase"][:top_n]:
         lines.append(
-            "| `{statement_id}` | {script_id} | {command_group} | {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
+            "| {layer} | `{statement_id}` | {script_id} | {command_group} | {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
                 **row
             )
         )
@@ -366,13 +536,13 @@ def render_markdown(report: dict[str, Any], top_n: int) -> str:
             "",
             "## Slowest Script/Phase Pairs",
             "",
-            "| Script | Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Layer | Script | Phase | Total ms | Count | Avg ms | Max ms | Bytes |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in phases["by_script_phase"][:top_n]:
         lines.append(
-            "| {script_id} | {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
+            "| {layer} | {script_id} | {phase} | {total_ms} | {sample_count} | {avg_ms} | {max_ms} | {bytes} |".format(
                 **row
             )
         )
