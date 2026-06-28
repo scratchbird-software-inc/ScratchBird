@@ -39,7 +39,26 @@ ARTIFACT_GATE_REL = Path("project/tests/conformance/drivers/driver_native_full_s
 LANGUAGE_SURFACE_REL = Path("project/drivers/language/sbsql_language_surface_manifest.json")
 DEFAULT_OUTPUT_REL = Path("build/reports/driver_native_full_surface_matrix.json")
 DEFAULT_ARTIFACT_REL = Path("build/driver-conformance/native-full-surface")
+DEFAULT_STAGED_BIN_REL = Path("build/output/linux/bin")
 RELEASE_BUCKETS = {"release_candidate", "release_supported", "supported"}
+STAGED_DRIVER_EXECUTABLES = {
+    "cpp": "sb_isql_cpp",
+    "dart": "sb_isql_dart",
+    "dotnet": "sb_isql_dotnet",
+    "elixir": "sb_isql_elixir",
+    "go": "sb_isql_go",
+    "jdbc": "sb_isql_jdbc",
+    "mojo": "sb_isql_mojo",
+    "node": "sb_isql_node",
+    "odbc": "sb_isql_odbc",
+    "pascal": "sb_isql_pascal",
+    "php": "sb_isql_php",
+    "python": "sb_isql_python",
+    "r": "sb_isql_r",
+    "ruby": "sb_isql_ruby",
+    "rust": "sb_isql_rust",
+    "swift": "sb_isql_swift",
+}
 
 
 @dataclass(frozen=True)
@@ -143,7 +162,20 @@ def default_language_contract(repo_root: Path) -> dict[str, str]:
     }
 
 
+def staged_command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path] | None:
+    executable_name = STAGED_DRIVER_EXECUTABLES.get(driver)
+    if not executable_name:
+        return None
+    executable = repo_root / DEFAULT_STAGED_BIN_REL / executable_name
+    if executable.is_file() and os.access(executable, os.X_OK):
+        return [str(executable)], repo_root
+    return None
+
+
 def command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path]:
+    staged = staged_command_for_driver(repo_root, driver)
+    if staged is not None:
+        return staged
     if driver == "cpp":
         return [str(repo_root / "build/output/linux/bin/sb_isql_cpp")], repo_root
     if driver == "odbc":
@@ -350,6 +382,7 @@ def main() -> int:
     parser.add_argument("--syntax-profile")
     parser.add_argument("--topology-profile")
     parser.add_argument("--standard-english-fallback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--require-staged-tools", action="store_true")
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
@@ -384,7 +417,13 @@ def main() -> int:
 
     for driver in drivers:
         driver_caps = capability_for(tool_matrix, driver)
-        base_command, cwd = command_for_driver(repo_root, driver)
+        if args.require_staged_tools:
+            staged = staged_command_for_driver(repo_root, driver)
+            if staged is None:
+                raise RuntimeError(f"staged driver executable missing for {driver}")
+            base_command, cwd = staged
+        else:
+            base_command, cwd = command_for_driver(repo_root, driver)
         for route_pair in route_pairs:
             if not route_supported_for_driver(route_pair.route, driver_caps):
                 continue
