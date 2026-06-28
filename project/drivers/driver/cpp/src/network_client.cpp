@@ -261,8 +261,20 @@ void writeDriverPhaseTrace(std::string_view event,
     if (!out) {
         return;
     }
+    const char* run_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_RUN_ID");
+    const char* script_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_SCRIPT_ID");
+    const char* statement_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_STATEMENT_ID");
+    const char* element_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_ELEMENT_ID");
+    const char* command_group = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_COMMAND_GROUP");
+    const char* execution_mode = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE");
     out << "{\"event\":\"" << driverTraceJsonEscape(event) << "\""
         << ",\"phase\":\"" << driverTraceJsonEscape(phase) << "\""
+        << ",\"run_id\":\"" << driverTraceJsonEscape(run_id ? run_id : "") << "\""
+        << ",\"script_id\":\"" << driverTraceJsonEscape(script_id ? script_id : "") << "\""
+        << ",\"statement_id\":\"" << driverTraceJsonEscape(statement_id ? statement_id : "") << "\""
+        << ",\"element_id\":\"" << driverTraceJsonEscape(element_id ? element_id : "") << "\""
+        << ",\"command_group\":\"" << driverTraceJsonEscape(command_group ? command_group : "") << "\""
+        << ",\"execution_mode\":\"" << driverTraceJsonEscape(execution_mode ? execution_mode : "") << "\""
         << ",\"elapsed_us\":" << (elapsed_ns / 1000)
         << ",\"bytes\":" << bytes
         << ",\"count\":" << count
@@ -2788,7 +2800,8 @@ bool NetworkClient::isConnected() const {
 
 core::Status NetworkClient::executeQuery(const std::string& sql,
                                          NetworkResultSet& results,
-                                         core::ErrorContext* ctx) {
+                                         core::ErrorContext* ctx,
+                                         uint32_t extra_query_flags) {
     results = NetworkResultSet{};
     const bool phase_trace = driverPhaseTraceEnabled();
     const int64_t execute_started = phase_trace ? driverPhaseNowNs() : 0;
@@ -2851,7 +2864,7 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
             }
         }
     }
-    uint32_t query_flags = protocol::kQueryFlagBinaryResult;
+    uint32_t query_flags = protocol::kQueryFlagBinaryResult | extra_query_flags;
     if (config_.autocommit && !explicit_transaction_active_ &&
         querySupportsServerAutocommit(sql)) {
         query_flags |= protocol::kQueryFlagAutocommit;

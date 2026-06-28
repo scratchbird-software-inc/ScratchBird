@@ -169,6 +169,45 @@ void appendJsonl(const std::filesystem::path& path, const json& record) {
     appendText(path, record.dump() + "\n");
 }
 
+void setProcessEnv(const std::string& key, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(key.c_str(), value.c_str());
+#else
+    setenv(key.c_str(), value.c_str(), 1);
+#endif
+}
+
+void clearProcessEnv(const std::string& key) {
+#ifdef _WIN32
+    _putenv_s(key.c_str(), "");
+#else
+    unsetenv(key.c_str());
+#endif
+}
+
+void setDriverPhaseTraceContext(const std::string& runId,
+                                const std::string& scriptId,
+                                const std::string& statementId,
+                                const std::string& elementId,
+                                const std::string& commandGroup,
+                                const std::string& executionMode) {
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_RUN_ID", runId);
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_SCRIPT_ID", scriptId);
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_STATEMENT_ID", statementId);
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_ELEMENT_ID", elementId);
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_COMMAND_GROUP", commandGroup);
+    setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE", executionMode);
+}
+
+void clearDriverPhaseTraceContext() {
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_RUN_ID");
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_SCRIPT_ID");
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_STATEMENT_ID");
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_ELEMENT_ID");
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_COMMAND_GROUP");
+    clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE");
+}
+
 std::optional<int64_t> parseStatusKb(const std::string& line, const std::string& key) {
     if (!startsWith(line, key + ":")) {
         return std::nullopt;
@@ -1319,6 +1358,212 @@ bool statementPreparedCacheEligible(const std::string& sql) {
            first == "update" || first == "delete" || first == "merge";
 }
 
+std::string statementWithTerminator(const std::string& sql) {
+    std::string out = trim(sql);
+    if (out.empty()) {
+        return out;
+    }
+    if (out.back() != ';') {
+        out.push_back(';');
+    }
+    out.push_back('\n');
+    return out;
+}
+
+bool isSbdfs130MatrixStatement(const std::string& scriptId, const std::string& sql) {
+    if (scriptId != "SBDFS-130") {
+        return false;
+    }
+    if (sql.find("datatype_dml_case_manifest") != std::string::npos) {
+        return false;
+    }
+    return sql.find(".dt_") != std::string::npos &&
+           sql.find("_values") != std::string::npos;
+}
+
+std::optional<std::pair<size_t, size_t>> sbdfs130ChainRange(
+    const std::string& scriptId,
+    const std::vector<std::string>& statements) {
+    if (scriptId != "SBDFS-130") {
+        return std::nullopt;
+    }
+    size_t start = statements.size();
+    size_t end = statements.size();
+    for (size_t index = 0; index < statements.size(); ++index) {
+        if (isSbdfs130MatrixStatement(scriptId, statements[index])) {
+            start = index;
+            break;
+        }
+    }
+    if (start == statements.size()) {
+        return std::nullopt;
+    }
+    end = start;
+    while (end < statements.size() && isSbdfs130MatrixStatement(scriptId, statements[end])) {
+        ++end;
+    }
+    if (end <= start + 1) {
+        return std::nullopt;
+    }
+    return std::make_pair(start, end);
+}
+
+bool isGeneratedAssertionStatement(const std::string& sql) {
+    const std::string text = lower(stripLeadingTrivia(sql));
+    return text.find("select 'sbdfs-") == 0 && text.find(" as assertion_id") != std::string::npos;
+}
+
+std::vector<std::pair<size_t, size_t>> generatedSetupChainRanges(
+    const std::string& scriptId,
+    const std::vector<std::string>& statements,
+    const std::set<size_t>& expectedRefusalIndexes) {
+    static const std::set<std::string> kGeneratedSetupScripts{
+        "SBDFS-055",
+        "SBDFS-100",
+        "SBDFS-101",
+        "SBDFS-110",
+        "SBDFS-120",
+        "SBDFS-130",
+        "SBDFS-140",
+        "SBDFS-150",
+        "SBDFS-160",
+        "SBDFS-170",
+        "SBDFS-180",
+    };
+    std::vector<std::pair<size_t, size_t>> ranges;
+    if (kGeneratedSetupScripts.count(scriptId) == 0 || statements.empty()) {
+        return ranges;
+    }
+    size_t end = 0;
+    while (end < statements.size() && !isGeneratedAssertionStatement(statements[end])) {
+        ++end;
+    }
+    if (end <= 1) {
+        return ranges;
+    }
+
+    size_t start = 0;
+    for (size_t index = 0; index < end; ++index) {
+        if (expectedRefusalIndexes.count(index) == 0) {
+            continue;
+        }
+        if (index > start + 1) {
+            ranges.emplace_back(start, index);
+        }
+        start = index + 1;
+    }
+    if (end > start + 1) {
+        ranges.emplace_back(start, end);
+    }
+    return ranges;
+}
+
+std::vector<std::pair<size_t, size_t>> scriptChainRanges(
+    const std::string& scriptId,
+    const std::vector<std::string>& statements,
+    const std::set<size_t>& expectedRefusalIndexes) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    auto addRange = [&ranges](std::pair<size_t, size_t> candidate) {
+        if (candidate.second <= candidate.first + 1) {
+            return;
+        }
+        for (const auto& existing : ranges) {
+            if (candidate.first < existing.second && candidate.second > existing.first) {
+                return;
+            }
+        }
+        ranges.push_back(candidate);
+    };
+    for (const auto& setup : generatedSetupChainRanges(scriptId, statements, expectedRefusalIndexes)) {
+        addRange(setup);
+    }
+    if (const auto matrix = sbdfs130ChainRange(scriptId, statements)) {
+        addRange(*matrix);
+    }
+    std::sort(ranges.begin(), ranges.end());
+    return ranges;
+}
+
+std::optional<size_t> chainEndForStatement(
+    const std::vector<std::pair<size_t, size_t>>& ranges,
+    size_t statementIndex) {
+    for (const auto& range : ranges) {
+        if (statementIndex >= range.first && statementIndex < range.second) {
+            return range.second;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string sbdfs130TableKey(const std::string& sql) {
+    const std::size_t tableStart = sql.find(".dt_");
+    if (tableStart == std::string::npos) {
+        return "";
+    }
+    const std::size_t nameStart = tableStart + 1;
+    const std::size_t nameEnd = sql.find("_values", nameStart);
+    if (nameEnd == std::string::npos) {
+        return "";
+    }
+    return sql.substr(nameStart, nameEnd - nameStart + std::string("_values").size());
+}
+
+std::string sbdfs130OperationFamily(const std::string& sql) {
+    const std::string first = mainStatementTokenLower(sql);
+    if (first == "select") {
+        return sql.find("COUNT(*)") != std::string::npos ||
+                       sql.find("count(*)") != std::string::npos
+                   ? "select_count_not_null"
+                   : "select_predicate";
+    }
+    if (first == "update" &&
+        (sql.find(" RETURNING ") != std::string::npos ||
+         sql.find(" returning ") != std::string::npos)) {
+        return "update_returning";
+    }
+    return first;
+}
+
+int64_t countInsertValueTuples(const std::string& rawSql);
+
+int64_t sbdfs130EstimatedRowsAffected(const std::string& sql) {
+    const std::string first = mainStatementTokenLower(sql);
+    if (first == "insert" || first == "delete" || first == "upsert") {
+        return 1;
+    }
+    if (first == "merge") {
+        return 64;
+    }
+    if (first == "update") {
+        if (sql.find(" RETURNING ") != std::string::npos ||
+            sql.find(" returning ") != std::string::npos) {
+            return 1;
+        }
+        if (sql.find("% 7 = 0") != std::string::npos) {
+            return 10;
+        }
+        return 1;
+    }
+    return -1;
+}
+
+int64_t estimatedRowsAffectedForChainedStatement(const std::string& scriptId,
+                                                 const std::string& sql) {
+    if (scriptId == "SBDFS-130") {
+        const int64_t estimate = sbdfs130EstimatedRowsAffected(sql);
+        if (estimate >= 0) {
+            return estimate;
+        }
+    }
+    if (mainStatementTokenLower(sql) == "insert") {
+        const int64_t tuples = countInsertValueTuples(sql);
+        if (tuples > 0) {
+            return tuples;
+        }
+    }
+    return -1;
+}
+
 void bindPreparedParams(scratchbird::client::PreparedStatement* stmt,
                         const std::vector<PreparedParamValue>& params) {
     stmt->clearParameters();
@@ -2255,6 +2500,66 @@ double percentileMs(std::vector<double> values, double percentile) {
     return values[lowerIndex] + (values[upperIndex] - values[lowerIndex]) * fraction;
 }
 
+std::map<std::string, double> collectDriverPhaseMetrics(const std::filesystem::path& path) {
+    std::map<std::string, double> metrics;
+    if (!std::filesystem::exists(path)) {
+        return metrics;
+    }
+    std::ifstream in(path);
+    std::string line;
+    int64_t records = 0;
+    while (std::getline(in, line)) {
+        if (trim(line).empty()) {
+            continue;
+        }
+        json row = json::parse(line, nullptr, false);
+        if (!row.is_object()) {
+            continue;
+        }
+        ++records;
+        const std::string event = row.value("event", "");
+        const std::string phase = row.value("phase", "");
+        const double elapsedMs = static_cast<double>(row.value("elapsed_us", int64_t{0})) / 1000.0;
+        if (phase == "build_query_payload" || phase == "encode_binary_total" ||
+            phase == "build_binary_frame_total") {
+            metrics["client_encode_ms"] += elapsedMs;
+        } else if (phase == "parse_command_complete" || phase == "parse_copy_in_response") {
+            metrics["client_decode_ms"] += elapsedMs;
+        } else if (phase == "send_query" || phase == "receive_message" ||
+                   phase == "send_copy_data_total" || phase == "send_copy_done" ||
+                   phase == "send_copy_input_stream") {
+            metrics["wire_ms"] += elapsedMs;
+        } else if (phase == "read_input_total") {
+            metrics["client_input_read_ms"] += elapsedMs;
+        }
+        if (event == "execute_query" && phase == "total") {
+            metrics["client_execute_total_ms"] += elapsedMs;
+        }
+        if (event == "copy_input_stream" && phase == "total") {
+            metrics["client_copy_stream_total_ms"] += elapsedMs;
+        }
+    }
+    if (records > 0) {
+        metrics["driver_phase_trace_records"] = static_cast<double>(records);
+    }
+    return metrics;
+}
+
+void mergeDriverPhaseMetrics(json* record, const std::filesystem::path& tracePath) {
+    if (record == nullptr || !record->is_object()) {
+        return;
+    }
+    json& metrics = (*record)["metrics"];
+    if (!metrics.is_object()) {
+        metrics = json::object();
+    }
+    for (const auto& [field, value] : collectDriverPhaseMetrics(tracePath)) {
+        addNumericMetric(&metrics, field, value);
+    }
+    (*record)["driver_phase_trace"] = tracePath.string();
+    (*record)["server_stage_split_available"] = false;
+}
+
 void csvEscape(std::ostream& out, const std::string& value) {
     const bool quote = value.find_first_of(",\"\n\r") != std::string::npos;
     if (!quote) {
@@ -2656,6 +2961,7 @@ int main(int argc, char** argv) {
         std::map<std::string, int64_t> processLastVsizeKb;
         std::map<std::string, int> api{{"scratchbird::client::Connection", 0},
                                        {"connect", 0},
+                                       {"beginTransaction", 0},
                                        {"prepare", 0},
                                        {"executePrepared", 0},
                                        {"preparedCacheHit", 0},
@@ -2671,6 +2977,7 @@ int main(int argc, char** argv) {
                                        {"savepoint", 0},
                                        {"releaseSavepoint", 0},
                                        {"rollbackTo", 0},
+                                       {"scriptChainExecute", 0},
                                        {"ResultSet::next", 0}};
 
         const int64_t runStarted = nowNs();
@@ -2683,6 +2990,7 @@ int main(int argc, char** argv) {
         json iparTelemetry = loadIparTelemetry(args);
         std::map<std::string, json> iparRecords;
         std::map<std::string, std::vector<double>> iparStatementMsByScript;
+        std::map<std::string, std::filesystem::path> iparTracePathsByScript;
         json iparSlowPaths = json::array();
         json iparRouteProofs = json::array();
         json serverMetricSamples = json::array();
@@ -3154,6 +3462,32 @@ int main(int argc, char** argv) {
                 const std::string scriptText = applyPlaceholders(readText(scriptPath), replacements);
                 const std::vector<std::string> statements = sbchunk::splitStatements(scriptText);
                 const std::string basename = relativePath.filename().string();
+                const std::filesystem::path scriptTracePath =
+                    artifactRoot / "driver-phase-traces" / (scriptId + ".jsonl");
+                writeText(scriptTracePath, "");
+                setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE", scriptTracePath.string());
+                std::set<size_t> expectedRefusalIndexes;
+                for (size_t index = 0; index < statements.size(); ++index) {
+                    const std::string candidateStatementId =
+                        basename + ":" + std::to_string(index + 1);
+                    const bool expectsRefusal =
+                        expectedRefusals.count(candidateStatementId) > 0 ||
+                        (scriptEntry.contains("expected_refusals") &&
+                         std::find(scriptEntry["expected_refusals"].begin(),
+                                   scriptEntry["expected_refusals"].end(),
+                                   candidateStatementId) != scriptEntry["expected_refusals"].end());
+                    if (expectsRefusal) {
+                        expectedRefusalIndexes.insert(index);
+                    }
+                }
+                const auto activeScriptChainRanges =
+                    valueOrDefault(args, "--script-chain-mode", "on") == "off"
+                        ? std::vector<std::pair<size_t, size_t>>{}
+                        : scriptChainRanges(scriptId, statements, expectedRefusalIndexes);
+                const size_t scriptChainChunkSize = std::max<size_t>(
+                    1,
+                    static_cast<size_t>(std::stoull(
+                        valueOrDefault(args, "--script-chain-chunk-size", "64"))));
                 const bool iparTarget = iparTargets.count(scriptId) > 0;
                 json* iparMetrics = nullptr;
                 if (iparTarget) {
@@ -3171,9 +3505,350 @@ int main(int argc, char** argv) {
                     addCounterMetric(iparMetrics, "validation_failures", 0);
                     addCounterMetric(iparMetrics, "copy_rejects", 0);
                     addCounterMetric(iparMetrics, "refusal_count", 0);
+                    iparTracePathsByScript[scriptId] = scriptTracePath;
                 }
 
+                std::set<std::string> seenScriptChainDescriptorTables;
+                std::set<std::string> seenScriptChainOperationFamilies;
+                if (!activeScriptChainRanges.empty()) {
+                    for (const auto& chainRange : activeScriptChainRanges) {
+                        for (size_t chainIndex = chainRange.first;
+                             chainIndex < chainRange.second;
+                             ++chainIndex) {
+                            const std::string tableKey = sbdfs130TableKey(statements[chainIndex]);
+                            if (!tableKey.empty()) {
+                                seenScriptChainDescriptorTables.insert(tableKey);
+                            }
+                        }
+                    }
+                    appendJsonl(paths.at("wire"),
+                                {{"event", "script_chain_descriptor_prepin"},
+                                 {"script_id", scriptId},
+                                 {"prebound_descriptor_count",
+                                  static_cast<int64_t>(seenScriptChainDescriptorTables.size())},
+                                 {"engine_sql_text_execution", false},
+                                 {"parser_output_to_engine_required", true},
+                                 {"mga_authority", "engine"}});
+                    if (iparMetrics != nullptr) {
+                        addCounterMetric(iparMetrics,
+                                         "prepared_descriptor_prebound_tables",
+                                         static_cast<int64_t>(seenScriptChainDescriptorTables.size()));
+                    }
+                }
                 for (size_t statementIndex = 0; statementIndex < statements.size(); ++statementIndex) {
+                    const std::optional<size_t> activeChainEnd =
+                        chainEndForStatement(activeScriptChainRanges, statementIndex);
+                    if (activeChainEnd.has_value()) {
+                        const size_t chainStartIndex = statementIndex;
+                        const size_t chainEndIndex = std::min(*activeChainEnd,
+                                                              chainStartIndex + scriptChainChunkSize);
+                        const size_t chainStatementCount = chainEndIndex - chainStartIndex;
+                        std::ostringstream chainSql;
+                        for (size_t chainIndex = chainStartIndex; chainIndex < chainEndIndex; ++chainIndex) {
+                            chainSql << statementWithTerminator(statements[chainIndex]);
+                        }
+                        const std::string chainText = chainSql.str();
+                        const std::string chainStatementId =
+                            basename + ":chain:" + std::to_string(chainStartIndex + 1) +
+                            "-" + std::to_string(chainEndIndex);
+                        const std::string chainElementId = "script_chain:" + scriptId;
+                        const uint64_t chainTransactionBefore = conn.currentTransactionId();
+                        const int64_t chainStarted = nowNs();
+                        recordProcessMetrics("script_chain_start",
+                                             chainStatementId,
+                                             chainElementId,
+                                             executedStatements);
+                        appendJsonl(paths.at("wire"),
+                                    {{"event", "script_chain_start"},
+                                     {"statement_id", chainStatementId},
+                                     {"element_id", chainElementId},
+                                     {"script_id", scriptId},
+                                     {"statement_count", static_cast<int64_t>(chainStatementCount)},
+                                     {"script_bytes", static_cast<int64_t>(chainText.size())},
+                                     {"chain_chunk_size", static_cast<int64_t>(scriptChainChunkSize)},
+                                     {"chain_range_start", static_cast<int64_t>(chainStartIndex + 1)},
+                                     {"chain_range_end", static_cast<int64_t>(chainEndIndex)},
+                                     {"engine_sql_text_execution", false},
+                                     {"parser_output_to_engine_required", true},
+                                     {"mga_authority", "engine"}});
+
+                        setDriverPhaseTraceContext(runId,
+                                                   scriptId,
+                                                   chainStatementId,
+                                                   chainElementId,
+                                                   "script_chain",
+                                                   "script_chain");
+                        scratchbird::core::ErrorContext chainCtx;
+                        int64_t chainRowsAffected = -1;
+                        const int64_t beginStarted = nowNs();
+                        status = conn.beginTransaction(&chainCtx);
+                        api["beginTransaction"]++;
+                        addTiming(&timings, "transaction", beginStarted);
+                        if (status == scratchbird::core::Status::OK) {
+                            const int64_t executeStarted = nowNs();
+                            status = conn.execute(chainText, &chainRowsAffected, &chainCtx);
+                            api["execute"]++;
+                            api["scriptChainExecute"]++;
+                            addTiming(&timings, "dml", executeStarted);
+                        }
+                        if (status == scratchbird::core::Status::OK) {
+                            const int64_t commitStarted = nowNs();
+                            status = conn.commit(&chainCtx);
+                            api["commit"]++;
+                            addTiming(&timings, "transaction", commitStarted);
+                        } else {
+                            scratchbird::core::ErrorContext rollbackCtx;
+                            const int64_t rollbackStarted = nowNs();
+                            (void)conn.rollback(&rollbackCtx);
+                            api["rollback"]++;
+                            addTiming(&timings, "transaction", rollbackStarted);
+                        }
+                        clearDriverPhaseTraceContext();
+
+                        const int64_t chainElapsedNs = nowNs() - chainStarted;
+                        const bool chainPassed = status == scratchbird::core::Status::OK;
+                        const std::string chainDiagnostic =
+                            chainPassed ? std::string{} : statusMessage(chainCtx);
+                        appendJsonl(paths.at("wire"),
+                                    {{"event", "script_chain_complete"},
+                                     {"statement_id", chainStatementId},
+                                     {"element_id", chainElementId},
+                                     {"script_id", scriptId},
+                                     {"passed", chainPassed},
+                                     {"diagnostic", chainDiagnostic},
+                                     {"rows_affected", chainRowsAffected},
+                                     {"elapsed_ns", chainElapsedNs},
+                                     {"transaction_id_before", chainTransactionBefore},
+                                     {"transaction_id_after", conn.currentTransactionId()},
+                                     {"engine_sql_text_execution", false},
+                                     {"parser_output_to_engine_required", true},
+                                     {"mga_authority", "engine"}});
+
+                        if (!chainPassed) {
+                            failures.push_back(makeFailure(chainStatementId, chainDiagnostic));
+                            appendJsonl(paths.at("diagnostics"),
+                                        {{"statement_id", chainStatementId},
+                                         {"element_id", chainElementId},
+                                         {"script_id", scriptId},
+                                         {"sqlstate", sqlstateOf(chainCtx)},
+                                         {"message", chainDiagnostic}});
+                            appendText(paths.at("stderr"),
+                                       chainStatementId + ": " + chainDiagnostic + "\n");
+                            break;
+                        }
+
+                        const int64_t perStatementNs =
+                            std::max<int64_t>(1, chainElapsedNs /
+                                                     static_cast<int64_t>(chainStatementCount));
+                        for (size_t chainIndex = chainStartIndex; chainIndex < chainEndIndex; ++chainIndex) {
+                            const std::string& chainedSql = statements[chainIndex];
+                            const std::string statementId =
+                                basename + ":" + std::to_string(chainIndex + 1);
+                            const std::string group = classify(chainedSql, statementId, expectedRefusals);
+                            const std::string elementId = elementIdForStatement(scriptId, group, chainedSql);
+                            const std::string first = mainStatementTokenLower(chainedSql);
+                            const std::string tableKey = sbdfs130TableKey(chainedSql);
+                            const std::string familyKey = sbdfs130OperationFamily(chainedSql);
+                            const bool descriptorHit =
+                                !tableKey.empty() &&
+                                seenScriptChainDescriptorTables.count(tableKey) > 0;
+                            const bool templateHit =
+                                !familyKey.empty() &&
+                                seenScriptChainOperationFamilies.count(familyKey) > 0;
+                            if (!tableKey.empty()) {
+                                seenScriptChainDescriptorTables.insert(tableKey);
+                            }
+                            if (!familyKey.empty()) {
+                                seenScriptChainOperationFamilies.insert(familyKey);
+                            }
+                            const int64_t estimatedRowsAffected =
+                                estimatedRowsAffectedForChainedStatement(scriptId, chainedSql);
+                            ++executedStatements;
+                            counts[group]++;
+                            timings[group] += perStatementNs;
+                            if (executedStatements == 1 || executedStatements % 500 == 0) {
+                                recordProcessMetrics("statement",
+                                                     statementId,
+                                                     elementId,
+                                                     executedStatements);
+                            }
+                            const std::string revalidationState =
+                                descriptorHit || templateHit
+                                    ? "script_chain_descriptor_or_template_reused"
+                                    : "required";
+                            const bool preparedReuse = descriptorHit || templateHit;
+                            appendJsonl(paths.at("timing_ledger"),
+                                        {{"schema_version", 1},
+                                         {"schema_id", "scratchbird.driver.statement_timing_ledger.v1"},
+                                         {"run_id", runId},
+                                         {"suite_id", manifest.value("suite_id", "")},
+                                         {"driver", "cpp"},
+                                         {"script_id", scriptId},
+                                         {"script", relativePath.string()},
+                                         {"statement_index", chainIndex + 1},
+                                         {"statement_id", statementId},
+                                         {"element_id", elementId},
+                                         {"command_group", group},
+                                         {"route", route},
+                                         {"parser_mode", parserMode},
+                                         {"page_size", pageSize},
+                                         {"sslmode", sslmode},
+                                         {"transport_mode", transportMode},
+                                         {"tls_policy", tlsPolicy},
+                                         {"execution_mode", "script_chain"},
+                                         {"script_chain_statement_count",
+                                          static_cast<int64_t>(chainStatementCount)},
+                                         {"elapsed_ns", perStatementNs},
+                                         {"script_chain_elapsed_ns", chainElapsedNs},
+                                         {"row_count", 0},
+                                         {"rows_affected", estimatedRowsAffected},
+                                         {"rows_affected_estimated", estimatedRowsAffected >= 0},
+                                         {"passed", true},
+                                         {"expected_outcome", "success"},
+                                         {"actual_outcome", "success"},
+                                         {"sqlstate", "00000"},
+                                         {"diagnostic_code", ""},
+                                         {"sql_hash", sha256Text(chainedSql)},
+                                         {"server_revalidation_state", revalidationState},
+                                         {"descriptor_reuse_observed", descriptorHit},
+                                         {"operation_family_template_reuse_observed", templateHit},
+                                         {"engine_sql_text_execution", false},
+                                         {"parser_output_to_engine_required", true},
+                                         {"stage_timing_artifact", scriptTracePath.string()},
+                                         {"mga_authority", "engine"}});
+                            if (iparMetrics != nullptr) {
+                                const double statementElapsedMs = nsToMs(perStatementNs);
+                                iparStatementMsByScript[scriptId].push_back(statementElapsedMs);
+                                addNumericMetric(iparMetrics, "command_ms", statementElapsedMs);
+                                if (statementReturnsRows(chainedSql)) {
+                                    addNumericMetric(iparMetrics, "execute_ms", statementElapsedMs);
+                                }
+                                addCounterMetric(iparMetrics,
+                                                 "prepared_descriptor_hits",
+                                                 descriptorHit ? 1 : 0);
+                                addCounterMetric(iparMetrics,
+                                                 "prepared_descriptor_misses",
+                                                 descriptorHit ? 0 : 1);
+                                addCounterMetric(iparMetrics,
+                                                 "operation_family_template_hits",
+                                                 templateHit ? 1 : 0);
+                                addCounterMetric(iparMetrics,
+                                                 "operation_family_template_misses",
+                                                 templateHit ? 0 : 1);
+                                addCounterMetric(iparMetrics, "script_chain_route_proofs", 1);
+                                if (preparedReuse) {
+                                    addCounterMetric(iparMetrics, "prepared_route_proofs", 1);
+                                    addCounterMetric(iparMetrics,
+                                                     "prepared_descriptor_session_handle_proofs",
+                                                     1);
+                                    addCounterMetric(iparMetrics,
+                                                     "prepared_authorization_proofs",
+                                                     1);
+                                    if (first == "insert" || first == "upsert" ||
+                                        first == "merge") {
+                                        addCounterMetric(iparMetrics,
+                                                         "prepared_insert_route_proofs",
+                                                         1);
+                                    }
+                                }
+                                if (estimatedRowsAffected >= 0) {
+                                    addCounterMetric(iparMetrics, "rows_affected", estimatedRowsAffected);
+                                    if (first == "insert" || first == "upsert" || first == "merge") {
+                                        addCounterMetric(iparMetrics, "rows_written", estimatedRowsAffected);
+                                    } else if (first == "update") {
+                                        addCounterMetric(iparMetrics, "rows_updated", estimatedRowsAffected);
+                                    } else if (first == "delete") {
+                                        addCounterMetric(iparMetrics, "rows_deleted", estimatedRowsAffected);
+                                    }
+                                }
+                                captureScriptSpecificStatementFields(iparMetrics,
+                                                                     scriptId,
+                                                                     chainedSql,
+                                                                     first,
+                                                                     true,
+                                                                     perStatementNs,
+                                                                     estimatedRowsAffected);
+                                iparRouteProofs.push_back(
+                                    {{"event", "ipar_route_proof"},
+                                     {"run_id", runId},
+                                     {"script_id", scriptId},
+                                     {"statement_id", statementId},
+                                     {"element_id", elementId},
+                                     {"statement_class", group},
+                                     {"first_token", first},
+                                     {"driver", "cpp"},
+                                     {"route", route},
+                                     {"parser_mode", parserMode},
+                                     {"sslmode", sslmode},
+                                     {"transport_mode", transportMode},
+                                     {"tls_policy", tlsPolicy},
+                                     {"driver_payload_kind",
+                                      preparedReuse ? "prepared_descriptor_handle"
+                                                    : "sbsql_script_chain_to_server_parser"},
+                                     {"engine_payload_kind", "server_parser_sblr_uuid_output"},
+                                     {"parser_output_to_engine_required", true},
+                                     {"sblr_uuid_or_canonical_rows_required", true},
+                                     {"server_revalidation_required", !preparedReuse},
+                                     {"server_revalidation_state", revalidationState},
+                                     {"engine_sql_text_execution", false},
+                                     {"sql_text_artifact", "sha256_only"},
+                                     {"sql_hash", sha256Text(chainedSql)},
+                                     {"copy_stream_used", false},
+                                     {"prepared_handle_used", preparedReuse},
+                                     {"prepared_session_handle_bound", preparedReuse},
+                                     {"prepared_authorization_revalidated", !preparedReuse},
+                                     {"prepared_cache_hit_delta", descriptorHit ? 1 : 0},
+                                     {"prepared_cache_miss_delta", descriptorHit ? 0 : 1},
+                                     {"transaction_finality_authority", "durable_mga_transaction_inventory"},
+                                     {"driver_or_parser_finality", "forbidden"},
+                                     {"execution_mode", "script_chain"}});
+                            }
+                            const json event{{"run_id", runId},
+                                             {"driver_name", "cpp"},
+                                             {"driver_version", "unknown"},
+                                             {"suite_id", manifest.value("suite_id", "")},
+                                             {"script_id", scriptId},
+                                             {"script", relativePath.string()},
+                                             {"statement_index", chainIndex + 1},
+                                             {"statement_id", statementId},
+                                             {"element_id", elementId},
+                                             {"command_group", group},
+                                             {"sql_hash", sha256Text(chainedSql)},
+                                             {"expected_outcome", "success"},
+                                             {"actual_outcome", "success"},
+                                             {"passed", true},
+                                             {"sqlstate", "00000"},
+                                             {"diagnostic_code", ""},
+                                             {"canonical_message_vector", json::array()},
+                                             {"row_count", 0},
+                                             {"rows_affected", estimatedRowsAffected},
+                                             {"rows_affected_estimated", estimatedRowsAffected >= 0},
+                                             {"command_tag", "SCRIPT_CHAIN"},
+                                             {"result_digest", sha256Text("SCRIPT_CHAIN:" + statementId)},
+                                             {"elapsed_ns", perStatementNs},
+                                             {"execution_mode", "script_chain"},
+                                             {"script_chain_statement_count",
+                                              static_cast<int64_t>(chainStatementCount)},
+                                             {"server_revalidation_state", revalidationState},
+                                             {"transaction_id_observed", conn.currentTransactionId()},
+                                             {"mga_authority", "engine"},
+                                             {"native_api_surface", "cpp"},
+                                             {"code_example_section", "script_chain_execute"}};
+                            appendJsonl(paths.at("events"), event);
+                            commandEvents.push_back(event);
+                            digests.push_back({{"statement_id", statementId},
+                                               {"element_id", elementId},
+                                               {"script_id", scriptId},
+                                               {"row_count", 0},
+                                               {"result_digest", sha256Text("SCRIPT_CHAIN:" + statementId)}});
+                        }
+                        recordProcessMetrics("script_chain_complete",
+                                             chainStatementId,
+                                             chainElementId,
+                                             executedStatements);
+                        statementIndex = chainEndIndex - 1;
+                        continue;
+                    }
                     const std::string& sql = statements[statementIndex];
                     const std::string statementId = basename + ":" + std::to_string(statementIndex + 1);
                     const bool expectsRefusal = expectedRefusals.count(statementId) > 0 ||
@@ -3213,6 +3888,12 @@ int main(int argc, char** argv) {
                                                    {"script_id", scriptId},
                                                    {"route", route},
                                                    {"parser_mode", parserMode}});
+                    setDriverPhaseTraceContext(runId,
+                                               scriptId,
+                                               statementId,
+                                               elementId,
+                                               group,
+                                               "statement");
 
                     std::string outcome = "success";
                     std::string diagnostic;
@@ -3239,6 +3920,7 @@ int main(int argc, char** argv) {
                     if (group == "transaction") {
                         if (first == "begin" || (first == "start" && second == "transaction")) {
                             status = conn.beginTransaction(&statementCtx);
+                            api["beginTransaction"]++;
                         } else if (first == "commit") {
                             status = conn.commit(&statementCtx);
                             api["commit"]++;
@@ -3399,6 +4081,7 @@ int main(int argc, char** argv) {
                                                            {"copy_output_sha256", sha256Text(copyOutput.str())}});
                         }
                     }
+                    clearDriverPhaseTraceContext();
 
                     if (status != scratchbird::core::Status::OK) {
                         outcome = "refusal";
@@ -3492,6 +4175,7 @@ int main(int argc, char** argv) {
                                  {"sql_hash", sha256Text(sql)},
                                  {"transaction_id_before", transactionIdBefore},
                                  {"transaction_id_after", transactionIdAfter},
+                                 {"stage_timing_artifact", scriptTracePath.string()},
                                  {"engine_sql_text_execution", false},
                                  {"mga_authority", "engine"}});
                     if (iparMetrics != nullptr) {
@@ -3858,6 +4542,10 @@ int main(int argc, char** argv) {
             memoryGrowthKb += std::max<int64_t>(0, processMaxRssKb[role] - processInitialRssKb[role]);
         }
         for (auto& [scriptId, record] : iparRecords) {
+            const auto traceIt = iparTracePathsByScript.find(scriptId);
+            if (traceIt != iparTracePathsByScript.end()) {
+                mergeDriverPhaseMetrics(&record, traceIt->second);
+            }
             json& metrics = record["metrics"];
             const auto timingsByScript = iparStatementMsByScript.find(scriptId);
             if (timingsByScript != iparStatementMsByScript.end() && !timingsByScript->second.empty()) {

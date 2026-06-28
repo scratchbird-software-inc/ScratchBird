@@ -902,14 +902,18 @@ def append_batched_values_insert(
     table_name: str,
     rows: list[str],
     *,
+    columns: list[str] | None = None,
     batch_size: int = 128,
 ) -> int:
     if not rows:
         return 0
+    column_clause = ""
+    if columns:
+        column_clause = " (" + ", ".join(columns) + ")"
     statement_count = 0
     for offset in range(0, len(rows), batch_size):
         batch = rows[offset:offset + batch_size]
-        lines.append(f"INSERT INTO {table_name} VALUES")
+        lines.append(f"INSERT INTO {table_name}{column_clause} VALUES")
         for index, row in enumerate(batch):
             suffix = ";" if index + 1 == len(batch) else ","
             lines.append(f"    {row}{suffix}")
@@ -943,6 +947,7 @@ def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per
             lines,
             f"{namespace}.datatype_surface_manifest",
             [f"({sql_string(datatype)}, {sql_string(sql_type)}, {rows_per_type})"],
+            columns=["datatype_name", "sql_type_name", "generated_rows"],
         )
         row_values: list[str] = []
         for index in range(rows_per_type):
@@ -954,7 +959,12 @@ def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per
             ]
             row_values.append(f"({', '.join(values)})")
         statement_count += 1
-        statement_count += append_batched_values_insert(lines, f"{namespace}.{table_name}", row_values)
+        statement_count += append_batched_values_insert(
+            lines,
+            f"{namespace}.{table_name}",
+            row_values,
+            columns=["case_id", "sample_value", "alternate_value", "seed_text"],
+        )
     lines.extend(
         [
             "",
@@ -994,7 +1004,12 @@ def generate_datatype_dml_matrix(namespace: str, datatypes: list[str]) -> tuple[
         for operation in operations:
             case_id = f"DML-{qident(datatype)}-{operation}"
             if operation == "insert":
-                statement = f"INSERT INTO {namespace}.{table_name} VALUES (100001, {literal_for_datatype(datatype, 100001)}, {literal_for_datatype(datatype, 100002)}, 'dml-extra')"
+                statement = (
+                    f"INSERT INTO {namespace}.{table_name} "
+                    "(case_id, sample_value, alternate_value, seed_text) VALUES "
+                    f"(100001, {literal_for_datatype(datatype, 100001)}, "
+                    f"{literal_for_datatype(datatype, 100002)}, 'dml-extra')"
+                )
             elif operation == "select":
                 statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} WHERE sample_value IS NOT NULL"
             elif operation == "update":
@@ -1017,6 +1032,7 @@ def generate_datatype_dml_matrix(namespace: str, datatypes: list[str]) -> tuple[
         lines,
         f"{namespace}.datatype_dml_case_manifest",
         manifest_rows,
+        columns=["case_id", "datatype_name", "operation_name", "statement_text"],
     )
     lines.extend(execution_statements)
     statement_count += len(execution_statements)

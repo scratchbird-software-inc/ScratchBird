@@ -1171,7 +1171,8 @@ core::Status Connection::execute(const std::string& sql,
                                  int64_t* rows_affected,
                                  core::ErrorContext* ctx) {
     NetworkResultSet results;
-    core::Status status = impl_->client.executeQuery(sql, results, ctx);
+    core::Status status = impl_->client.executeQuery(
+        sql, results, ctx, protocol::kQueryFlagScriptSummaryResult);
     impl_->last_error = impl_->client.lastError();
     if (rows_affected) {
         *rows_affected = results.rows_affected;

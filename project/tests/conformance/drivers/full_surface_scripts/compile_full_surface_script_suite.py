@@ -131,14 +131,18 @@ def append_batched_values_insert(
     table_name: str,
     rows: list[str],
     *,
+    columns: list[str] | None = None,
     batch_size: int = 256,
 ) -> int:
     if not rows:
         return 0
+    column_clause = ""
+    if columns:
+        column_clause = " (" + ", ".join(columns) + ")"
     statement_count = 0
     for offset in range(0, len(rows), batch_size):
         batch = rows[offset:offset + batch_size]
-        lines.append(f"INSERT INTO {table_name} VALUES")
+        lines.append(f"INSERT INTO {table_name}{column_clause} VALUES")
         for index, row in enumerate(batch):
             suffix = ";" if index + 1 == len(batch) else ","
             lines.append(f"    {row}{suffix}")
@@ -239,6 +243,19 @@ def build_generated_builtin_fixture_script(
         lines,
         f"{namespace}.builtin_fixture_manifest",
         manifest_rows,
+        columns=[
+            "fixture_id",
+            "surface_id",
+            "function_id",
+            "canonical_builtin_id",
+            "case_kind",
+            "arguments_json",
+            "expected_result_value",
+            "expected_result_descriptor",
+            "expected_diagnostic_code",
+            "source_file",
+        ],
+        batch_size=128,
     )
     lines.extend(
         [

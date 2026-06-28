@@ -63,6 +63,7 @@ namespace datatypes = scratchbird::core::datatypes;
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
 constexpr std::uint32_t kQueryFlagScriptIngest = 0x80;
 constexpr std::uint32_t kQueryFlagScriptSizeHint = 0x100;
+constexpr std::uint32_t kQueryFlagScriptSummaryResult = 0x200;
 constexpr std::uint32_t kExecuteFlagAutocommit = 0x01;
 constexpr std::uint8_t kTxnFinalityPayloadVersion = 1;
 constexpr std::uint16_t kTxnCommitFlagHasIdempotencyKey = 0x0001;
@@ -4563,7 +4564,9 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                                          SbwpSessionState* state,
                                                          CopyImportState rowset,
                                                          bool send_ready,
-                                                         bool* command_accepted) {
+                                                         bool* command_accepted,
+                                                         bool suppress_success_result = false,
+                                                         PipelineResult* success_result = nullptr) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   const std::size_t row_count = rowset.rows.size();
@@ -4746,6 +4749,13 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
         if (trigger_aware_result.server_affected_rows == 0) {
           trigger_aware_result.server_affected_rows = row_count;
         }
+        if (success_result != nullptr) {
+          *success_result = trigger_aware_result;
+        }
+        if (suppress_success_result) {
+          write_total_trace("trigger_aware_insert_rows_fallback_success_suppressed");
+          return !send_ready || SendReady(io, state);
+        }
         if (!SendPipelineResult(io, session, state, rowset.sql, trigger_aware_result)) {
           write_total_trace("trigger_aware_insert_rows_send_failed");
           return false;
@@ -4775,6 +4785,13 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
   if (result.server_row_count == 0) result.server_row_count = row_count;
   result.server_affected_rows_present = true;
   if (result.server_affected_rows == 0) result.server_affected_rows = row_count;
+  if (success_result != nullptr) {
+    *success_result = result;
+  }
+  if (suppress_success_result) {
+    write_total_trace(uses_prepared ? "prepared_success_suppressed" : "direct_success_suppressed");
+    return !send_ready || SendReady(io, state);
+  }
   const std::int64_t send_started = phase_trace ? ParserPhaseNowNs() : 0;
   if (!SendPipelineResult(io, session, state, rowset.sql, result)) {
     WriteParserPhaseTraceIfEnabled(phase_trace,
@@ -4806,7 +4823,9 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                                          std::string_view raw_sql,
                                                          bool send_ready,
                                                          bool autocommit_emulation,
-                                                         bool* command_accepted = nullptr) {
+                                                         bool* command_accepted = nullptr,
+                                                         bool suppress_success_result = false,
+                                                         PipelineResult* success_result = nullptr) {
   if (command_accepted != nullptr) *command_accepted = true;
   if (autocommit_emulation) return std::nullopt;
   auto rowset = AnalyzeSimpleLiteralInsertRowset(raw_sql);
@@ -4816,7 +4835,9 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                              state,
                                              std::move(*rowset),
                                              send_ready,
-                                             command_accepted);
+                                             command_accepted,
+                                             suppress_success_result,
+                                             success_result);
 }
 
 std::string SqlQuote(std::string_view value) {
@@ -5361,13 +5382,30 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 bool send_ready,
                 bool autocommit_emulation = false,
                 const SbwpTxnCommitRequest* commit_request = nullptr,
-                bool* command_accepted = nullptr) {
+                bool* command_accepted = nullptr,
+                bool suppress_success_result = false,
+                PipelineResult* success_result = nullptr) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   state->ready_sent_for_current_operation = false;
   if (command_accepted != nullptr) *command_accepted = true;
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   if (sql.empty()) {
+    if (suppress_success_result) {
+      if (success_result != nullptr) {
+        *success_result = PipelineResult{};
+        success_result->accepted = true;
+      }
+      WriteParserPhaseTraceIfEnabled(phase_trace,
+                                     "execute_sql",
+                                     "total",
+                                     total_started,
+                                     raw_sql.size(),
+                                     1,
+                                     0,
+                                     "empty_suppressed");
+      return !send_ready || SendReady(io, state);
+    }
     if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "execute_sql",
@@ -5380,8 +5418,15 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     return !send_ready || SendReady(io, state);
   }
   if (auto fast_insert =
-          TryExecuteSimpleInsertRowsetFastPath(
-              session, io, state, sql, send_ready, autocommit_emulation, command_accepted);
+          TryExecuteSimpleInsertRowsetFastPath(session,
+                                              io,
+                                              state,
+                                              sql,
+                                              send_ready,
+                                              autocommit_emulation,
+                                              command_accepted,
+                                              suppress_success_result,
+                                              success_result);
       fast_insert.has_value()) {
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "execute_sql",
@@ -5541,6 +5586,22 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     if (!SendFrame(io, state, kCopyInResponse, copy_in_response)) return false;
     return true;
   }
+  if (success_result != nullptr) {
+    *success_result = result;
+  }
+  if (suppress_success_result) {
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_sql",
+                                   "total",
+                                   total_started,
+                                   sql.size(),
+                                   1,
+                                   result.server_row_count,
+                                   result.server_operation_id.empty()
+                                       ? "suppressed_success_result"
+                                       : result.server_operation_id);
+    return !send_ready || SendReady(io, state);
+  }
   if (!SendPipelineResult(io, session, state, sql, result)) return false;
   if (commit_finality.has_value() && !SendTxnFinalityStatus(io, state, *commit_finality)) {
     return false;
@@ -5563,6 +5624,10 @@ bool QueryPayloadRequestsScriptIngest(const QueryPayload& query) {
          query.expected_statement_count > 1;
 }
 
+bool QueryPayloadRequestsScriptSummaryResult(const QueryPayload& query) {
+  return (query.flags & kQueryFlagScriptSummaryResult) != 0;
+}
+
 bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                         ClientIo* io,
                         SbwpSessionState* state,
@@ -5571,6 +5636,8 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   const bool autocommit_emulation = (query.flags & kQueryFlagAutocommit) != 0;
+  const bool summarize_script_results =
+      QueryPayloadRequestsScriptSummaryResult(query);
   std::vector<std::string> statements;
   if (QueryPayloadRequestsScriptIngest(query) ||
       (query.sql.find(';') != std::string::npos &&
@@ -5608,6 +5675,17 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
     std::vector<std::string> fallback_statements;
     bool active{false};
   } pending;
+  std::uint64_t summarized_rows = 0;
+  std::uint64_t summarized_statements = 0;
+
+  const auto fold_summary = [&](const PipelineResult& result) {
+    ++summarized_statements;
+    if (result.server_affected_rows_present) {
+      summarized_rows += result.server_affected_rows;
+    } else if (result.server_row_count != 0) {
+      summarized_rows += result.server_row_count;
+    }
+  };
 
   const auto flush_pending = [&]() -> bool {
     if (!pending.active) return true;
@@ -5615,12 +5693,16 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
     const std::size_t pending_rows = pending.rowset.rows.size();
     const std::size_t fallback_count = pending.fallback_statements.size();
     const std::int64_t fast_started = phase_trace ? ParserPhaseNowNs() : 0;
-    auto fast_result = TryExecuteSimpleInsertRowsetFastPath(session,
-                                                           io,
-                                                           state,
-                                                           std::move(pending.rowset),
-                                                           false,
-                                                           &accepted);
+    PipelineResult fast_path_result;
+    auto fast_result =
+        TryExecuteSimpleInsertRowsetFastPath(session,
+                                            io,
+                                            state,
+                                            std::move(pending.rowset),
+                                            false,
+                                            &accepted,
+                                            summarize_script_results,
+                                            &fast_path_result);
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "script_insert_group",
                                    "flush_fast_path",
@@ -5637,6 +5719,9 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
       if (!accepted) {
         return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
+      if (summarize_script_results && fast_path_result.accepted) {
+        fold_summary(fast_path_result);
+      }
       return true;
     }
     const auto fallback = std::move(pending.fallback_statements);
@@ -5644,7 +5729,17 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
     const std::int64_t fallback_started = phase_trace ? ParserPhaseNowNs() : 0;
     for (const auto& sql : fallback) {
       accepted = true;
-      if (!ExecuteSql(session, io, state, sql, false, autocommit_emulation, nullptr, &accepted)) {
+      PipelineResult statement_result;
+      if (!ExecuteSql(session,
+                      io,
+                      state,
+                      sql,
+                      false,
+                      autocommit_emulation,
+                      nullptr,
+                      &accepted,
+                      summarize_script_results,
+                      &statement_result)) {
         WriteParserPhaseTraceIfEnabled(phase_trace,
                                        "script_insert_group",
                                        "fallback_statement_execution",
@@ -5666,6 +5761,9 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                                        "rejected");
         return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
       }
+      if (summarize_script_results && statement_result.accepted) {
+        fold_summary(statement_result);
+      }
     }
     WriteParserPhaseTraceIfEnabled(phase_trace,
                                    "script_insert_group",
@@ -5679,7 +5777,7 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   };
 
   for (const auto& statement : statements) {
-    if (!autocommit_emulation) {
+    if (!autocommit_emulation && !summarize_script_results) {
       auto rowset = AnalyzeSimpleLiteralInsertRowset(statement, true);
       if (rowset.has_value()) {
         if (!pending.active) {
@@ -5715,6 +5813,7 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
 
     if (!flush_pending()) return false;
     bool accepted = true;
+    PipelineResult statement_result;
     if (!ExecuteSql(session,
                     io,
                     state,
@@ -5722,11 +5821,16 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                     false,
                     autocommit_emulation,
                     nullptr,
-                    &accepted)) {
+                    &accepted,
+                    summarize_script_results,
+                    &statement_result)) {
       return false;
     }
     if (!accepted) {
       return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    if (summarize_script_results && statement_result.accepted) {
+      fold_summary(statement_result);
     }
   }
 
@@ -5738,7 +5842,24 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                                  query.sql.size(),
                                  statements.size(),
                                  0,
-                                 "multi_statement");
+                                 summarize_script_results ? "multi_statement_summary_result"
+                                                          : "multi_statement");
+  if (summarize_script_results) {
+    if (!SendFrame(io,
+                   state,
+                   kCommandComplete,
+                   CommandCompletePayload(summarized_rows, "SCRIPT"))) {
+      return false;
+    }
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_script_or_sql",
+                                   "script_summary_result",
+                                   phase_trace ? ParserPhaseNowNs() : 0,
+                                   query.sql.size(),
+                                   summarized_statements,
+                                   summarized_rows,
+                                   "command_complete_sent");
+  }
   return !send_ready || SendReady(io, state);
 }
 

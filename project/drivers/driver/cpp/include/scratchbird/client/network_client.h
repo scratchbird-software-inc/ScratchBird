@@ -254,7 +254,8 @@ public:
 
     core::Status executeQuery(const std::string& sql,
                               NetworkResultSet& results,
-                              core::ErrorContext* ctx = nullptr);
+                              core::ErrorContext* ctx = nullptr,
+                              uint32_t extra_query_flags = 0);
     core::Status prepare(const std::string& sql,
                          NetworkPreparedStatement& stmt,
                          core::ErrorContext* ctx = nullptr);

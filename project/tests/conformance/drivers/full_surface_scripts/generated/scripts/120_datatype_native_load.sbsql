@@ -7,9 +7,9 @@ CREATE TABLE __SB_NAMESPACE__.datatype_surface_manifest (
 );
 
 CREATE TABLE __SB_NAMESPACE__.dt_null_type_values (case_id INTEGER PRIMARY KEY, sample_value VARCHAR(32), alternate_value VARCHAR(32), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('null_type', 'VARCHAR(32)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_null_type_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_null_type_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, NULL, NULL, 'null_type:0'),
     (1, NULL, NULL, 'null_type:1'),
     (2, NULL, NULL, 'null_type:2'),
@@ -75,9 +75,9 @@ INSERT INTO __SB_NAMESPACE__.dt_null_type_values VALUES
     (62, NULL, NULL, 'null_type:62'),
     (63, NULL, NULL, 'null_type:63');
 CREATE TABLE __SB_NAMESPACE__.dt_boolean_values (case_id INTEGER PRIMARY KEY, sample_value BOOLEAN, alternate_value BOOLEAN, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('boolean', 'BOOLEAN', 64);
-INSERT INTO __SB_NAMESPACE__.dt_boolean_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_boolean_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, TRUE, TRUE, 'boolean:0'),
     (1, FALSE, FALSE, 'boolean:1'),
     (2, TRUE, TRUE, 'boolean:2'),
@@ -143,9 +143,9 @@ INSERT INTO __SB_NAMESPACE__.dt_boolean_values VALUES
     (62, TRUE, TRUE, 'boolean:62'),
     (63, FALSE, FALSE, 'boolean:63');
 CREATE TABLE __SB_NAMESPACE__.dt_int8_values (case_id INTEGER PRIMARY KEY, sample_value INT8, alternate_value INT8, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('int8', 'INT8', 64);
-INSERT INTO __SB_NAMESPACE__.dt_int8_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_int8_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -10129, -24946, 'int8:0'),
     (1, 29318, -78210, 'int8:1'),
     (2, -71375, 97106, 'int8:2'),
@@ -211,9 +211,9 @@ INSERT INTO __SB_NAMESPACE__.dt_int8_values VALUES
     (62, -64759, 84270, 'int8:62'),
     (63, -6440, 52978, 'int8:63');
 CREATE TABLE __SB_NAMESPACE__.dt_int16_values (case_id INTEGER PRIMARY KEY, sample_value SMALLINT, alternate_value SMALLINT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('int16', 'SMALLINT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_int16_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_int16_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -27414, -93478, 'int16:0'),
     (1, -204, -66029, 'int16:1'),
     (2, 19664, 54635, 'int16:2'),
@@ -279,9 +279,9 @@ INSERT INTO __SB_NAMESPACE__.dt_int16_values VALUES
     (62, -65981, -37408, 'int16:62'),
     (63, -7417, -13321, 'int16:63');
 CREATE TABLE __SB_NAMESPACE__.dt_int32_values (case_id INTEGER PRIMARY KEY, sample_value INTEGER, alternate_value INTEGER, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('int32', 'INTEGER', 64);
-INSERT INTO __SB_NAMESPACE__.dt_int32_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_int32_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 70406, 96759, 'int32:0'),
     (1, -64663, -43784, 'int32:1'),
     (2, 16730, 97065, 'int32:2'),
@@ -347,9 +347,9 @@ INSERT INTO __SB_NAMESPACE__.dt_int32_values VALUES
     (62, 13717, 41286, 'int32:62'),
     (63, -84749, 44135, 'int32:63');
 CREATE TABLE __SB_NAMESPACE__.dt_int64_values (case_id INTEGER PRIMARY KEY, sample_value BIGINT, alternate_value BIGINT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('int64', 'BIGINT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_int64_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_int64_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -25314, -51506, 'int64:0'),
     (1, 62383, -43880, 'int64:1'),
     (2, 28173, -64690, 'int64:2'),
@@ -415,9 +415,9 @@ INSERT INTO __SB_NAMESPACE__.dt_int64_values VALUES
     (62, 11102, -61373, 'int64:62'),
     (63, -52515, -91694, 'int64:63');
 CREATE TABLE __SB_NAMESPACE__.dt_int128_values (case_id INTEGER PRIMARY KEY, sample_value INT128, alternate_value INT128, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('int128', 'INT128', 64);
-INSERT INTO __SB_NAMESPACE__.dt_int128_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_int128_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 16452, 50525, 'int128:0'),
     (1, 79372, -1273, 'int128:1'),
     (2, -85219, 923, 'int128:2'),
@@ -483,9 +483,9 @@ INSERT INTO __SB_NAMESPACE__.dt_int128_values VALUES
     (62, -65981, -13112, 'int128:62'),
     (63, -10248, -46651, 'int128:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uint8_values (case_id INTEGER PRIMARY KEY, sample_value UINT8, alternate_value UINT8, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uint8', 'UINT8', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uint8_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uint8_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 9611905, 9746390, 'uint8:0'),
     (1, 5038228, 9484243, 'uint8:1'),
     (2, 3657928, 2219677, 'uint8:2'),
@@ -551,9 +551,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uint8_values VALUES
     (62, 9542310, 1449917, 'uint8:62'),
     (63, 8042576, 9204965, 'uint8:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uint16_values (case_id INTEGER PRIMARY KEY, sample_value UINT16, alternate_value UINT16, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uint16', 'UINT16', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uint16_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uint16_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 9122733, 3934732, 'uint16:0'),
     (1, 1834194, 6720703, 'uint16:1'),
     (2, 2253292, 365804, 'uint16:2'),
@@ -619,9 +619,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uint16_values VALUES
     (62, 6766571, 8669103, 'uint16:62'),
     (63, 1357916, 6036518, 'uint16:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uint32_values (case_id INTEGER PRIMARY KEY, sample_value UINT32, alternate_value UINT32, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uint32', 'UINT32', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uint32_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uint32_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 6168502, 5636049, 'uint32:0'),
     (1, 6543263, 9310469, 'uint32:1'),
     (2, 7995139, 7519033, 'uint32:2'),
@@ -687,9 +687,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uint32_values VALUES
     (62, 9103299, 6261382, 'uint32:62'),
     (63, 3382644, 1334292, 'uint32:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uint64_values (case_id INTEGER PRIMARY KEY, sample_value UINT64, alternate_value UINT64, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uint64', 'UINT64', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uint64_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uint64_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 9485098, 6396845, 'uint64:0'),
     (1, 5593697, 2212381, 'uint64:1'),
     (2, 5273296, 5644312, 'uint64:2'),
@@ -755,9 +755,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uint64_values VALUES
     (62, 3152729, 6860767, 'uint64:62'),
     (63, 8529868, 9278197, 'uint64:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uint128_values (case_id INTEGER PRIMARY KEY, sample_value UINT128, alternate_value UINT128, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uint128', 'UINT128', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uint128_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uint128_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 3344223, 1874278, 'uint128:0'),
     (1, 7946537, 9404034, 'uint128:1'),
     (2, 9237766, 8947929, 'uint128:2'),
@@ -823,9 +823,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uint128_values VALUES
     (62, 4848420, 4580823, 'uint128:62'),
     (63, 385722, 1501070, 'uint128:63');
 CREATE TABLE __SB_NAMESPACE__.dt_bfloat16_values (case_id INTEGER PRIMARY KEY, sample_value BFLOAT16, alternate_value BFLOAT16, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('bfloat16', 'BFLOAT16', 64);
-INSERT INTO __SB_NAMESPACE__.dt_bfloat16_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_bfloat16_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -8301.000, -24917.064, 'bfloat16:0'),
     (1, -33567.001, -22713.065, 'bfloat16:1'),
     (2, 17148.002, 25122.066, 'bfloat16:2'),
@@ -891,9 +891,9 @@ INSERT INTO __SB_NAMESPACE__.dt_bfloat16_values VALUES
     (62, -16855.062, -11090.126, 'bfloat16:62'),
     (63, -32518.063, -41549.127, 'bfloat16:63');
 CREATE TABLE __SB_NAMESPACE__.dt_real16_values (case_id INTEGER PRIMARY KEY, sample_value REAL16, alternate_value REAL16, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('real16', 'REAL16', 64);
-INSERT INTO __SB_NAMESPACE__.dt_real16_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_real16_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 11870.000, 42755.064, 'real16:0'),
     (1, 7967.001, 38030.065, 'real16:1'),
     (2, 40037.002, 28074.066, 'real16:2'),
@@ -959,9 +959,9 @@ INSERT INTO __SB_NAMESPACE__.dt_real16_values VALUES
     (62, 21797.062, -35555.126, 'real16:62'),
     (63, 28495.063, 9813.127, 'real16:63');
 CREATE TABLE __SB_NAMESPACE__.dt_real32_values (case_id INTEGER PRIMARY KEY, sample_value REAL, alternate_value REAL, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('real32', 'REAL', 64);
-INSERT INTO __SB_NAMESPACE__.dt_real32_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_real32_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -20145.000, 4070.064, 'real32:0'),
     (1, -45598.001, -44728.065, 'real32:1'),
     (2, -7957.002, 28855.066, 'real32:2'),
@@ -1027,9 +1027,9 @@ INSERT INTO __SB_NAMESPACE__.dt_real32_values VALUES
     (62, -37804.062, -7886.126, 'real32:62'),
     (63, -18265.063, -23027.127, 'real32:63');
 CREATE TABLE __SB_NAMESPACE__.dt_real64_values (case_id INTEGER PRIMARY KEY, sample_value DOUBLE PRECISION, alternate_value DOUBLE PRECISION, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('real64', 'DOUBLE PRECISION', 64);
-INSERT INTO __SB_NAMESPACE__.dt_real64_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_real64_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -22824.000, -15697.064, 'real64:0'),
     (1, 14451.001, -2951.065, 'real64:1'),
     (2, -40396.002, -12465.066, 'real64:2'),
@@ -1095,9 +1095,9 @@ INSERT INTO __SB_NAMESPACE__.dt_real64_values VALUES
     (62, 22693.062, 28587.126, 'real64:62'),
     (63, -22635.063, -7483.127, 'real64:63');
 CREATE TABLE __SB_NAMESPACE__.dt_real128_values (case_id INTEGER PRIMARY KEY, sample_value REAL128, alternate_value REAL128, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('real128', 'REAL128', 64);
-INSERT INTO __SB_NAMESPACE__.dt_real128_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_real128_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -36452.000, -21201.064, 'real128:0'),
     (1, -9582.001, -14758.065, 'real128:1'),
     (2, -28173.002, 38713.066, 'real128:2'),
@@ -1163,9 +1163,9 @@ INSERT INTO __SB_NAMESPACE__.dt_real128_values VALUES
     (62, 2280.062, -22706.126, 'real128:62'),
     (63, -36897.063, 48024.127, 'real128:63');
 CREATE TABLE __SB_NAMESPACE__.dt_decimal_values (case_id INTEGER PRIMARY KEY, sample_value DECIMAL(38, 9), alternate_value DECIMAL(38, 9), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('decimal', 'DECIMAL(38, 9)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_decimal_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_decimal_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -8672.000, 2526.064, 'decimal:0'),
     (1, -13842.001, -35369.065, 'decimal:1'),
     (2, 22534.002, -19780.066, 'decimal:2'),
@@ -1231,9 +1231,9 @@ INSERT INTO __SB_NAMESPACE__.dt_decimal_values VALUES
     (62, -48955.062, 28113.126, 'decimal:62'),
     (63, 14313.063, 42171.127, 'decimal:63');
 CREATE TABLE __SB_NAMESPACE__.dt_decimal_float_values (case_id INTEGER PRIMARY KEY, sample_value DECFLOAT, alternate_value DECFLOAT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('decimal_float', 'DECFLOAT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_decimal_float_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_decimal_float_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 18457.000, -44607.064, 'decimal_float:0'),
     (1, 25476.001, 20311.065, 'decimal_float:1'),
     (2, 45176.002, 10264.066, 'decimal_float:2'),
@@ -1299,9 +1299,9 @@ INSERT INTO __SB_NAMESPACE__.dt_decimal_float_values VALUES
     (62, 6181.062, -27360.126, 'decimal_float:62'),
     (63, -20542.063, -37820.127, 'decimal_float:63');
 CREATE TABLE __SB_NAMESPACE__.dt_uuid_values (case_id INTEGER PRIMARY KEY, sample_value UUID, alternate_value UUID, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('uuid', 'UUID', 64);
-INSERT INTO __SB_NAMESPACE__.dt_uuid_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_uuid_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, UUID '018f0a2b-0000-7000-9000-000003948563', UUID '018f0a2b-0000-7004-9004-000003905351', 'uuid:0'),
     (1, UUID '018f0a2b-0000-7001-9001-000006172719', UUID '018f0a2b-0000-7005-9005-000001163217', 'uuid:1'),
     (2, UUID '018f0a2b-0000-7002-9002-000008161305', UUID '018f0a2b-0000-7006-9006-000004057667', 'uuid:2'),
@@ -1367,9 +1367,9 @@ INSERT INTO __SB_NAMESPACE__.dt_uuid_values VALUES
     (62, UUID '018f0a2b-0000-7002-9002-000007121322', UUID '018f0a2b-0000-7006-9006-000003116906', 'uuid:62'),
     (63, UUID '018f0a2b-0000-7003-9003-000004662653', UUID '018f0a2b-0000-7007-9007-000007193646', 'uuid:63');
 CREATE TABLE __SB_NAMESPACE__.dt_ip_address_values (case_id INTEGER PRIMARY KEY, sample_value IP_ADDRESS, alternate_value IP_ADDRESS, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('ip_address', 'IP_ADDRESS', 64);
-INSERT INTO __SB_NAMESPACE__.dt_ip_address_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_ip_address_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, '10.0.0.0', '10.64.193.67', 'ip_address:0'),
     (1, '10.1.7.13', '10.65.200.80', 'ip_address:1'),
     (2, '10.2.14.26', '10.66.207.93', 'ip_address:2'),
@@ -1435,9 +1435,9 @@ INSERT INTO __SB_NAMESPACE__.dt_ip_address_values VALUES
     (62, '10.62.179.41', '10.126.117.108', 'ip_address:62'),
     (63, '10.63.186.54', '10.127.124.121', 'ip_address:63');
 CREATE TABLE __SB_NAMESPACE__.dt_network_prefix_values (case_id INTEGER PRIMARY KEY, sample_value NETWORK_PREFIX, alternate_value NETWORK_PREFIX, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('network_prefix', 'NETWORK_PREFIX', 64);
-INSERT INTO __SB_NAMESPACE__.dt_network_prefix_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_network_prefix_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, '10.0.0.0/16', '10.64.0.0/16', 'network_prefix:0'),
     (1, '10.1.0.0/16', '10.65.0.0/16', 'network_prefix:1'),
     (2, '10.2.0.0/16', '10.66.0.0/16', 'network_prefix:2'),
@@ -1503,9 +1503,9 @@ INSERT INTO __SB_NAMESPACE__.dt_network_prefix_values VALUES
     (62, '10.62.0.0/16', '10.126.0.0/16', 'network_prefix:62'),
     (63, '10.63.0.0/16', '10.127.0.0/16', 'network_prefix:63');
 CREATE TABLE __SB_NAMESPACE__.dt_mac_address_values (case_id INTEGER PRIMARY KEY, sample_value MAC_ADDRESS, alternate_value MAC_ADDRESS, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('mac_address', 'MAC_ADDRESS', 64);
-INSERT INTO __SB_NAMESPACE__.dt_mac_address_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_mac_address_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, '02:00:00:00:00:00', '02:00:40:c0:41:c1', 'mac_address:0'),
     (1, '02:00:01:03:05:07', '02:00:41:c3:46:c8', 'mac_address:1'),
     (2, '02:00:02:06:0a:0e', '02:00:42:c6:4b:cf', 'mac_address:2'),
@@ -1571,9 +1571,9 @@ INSERT INTO __SB_NAMESPACE__.dt_mac_address_values VALUES
     (62, '02:00:3e:ba:37:b3', '02:00:7e:7b:78:75', 'mac_address:62'),
     (63, '02:00:3f:bd:3c:ba', '02:00:7f:7e:7d:7c', 'mac_address:63');
 CREATE TABLE __SB_NAMESPACE__.dt_character_values (case_id INTEGER PRIMARY KEY, sample_value VARCHAR(512), alternate_value VARCHAR(512), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('character', 'VARCHAR(512)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_character_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_character_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 'sb-character-0-6966143', 'sb-character-64-7945237', 'character:0'),
     (1, 'sb-character-1-2947208', 'sb-character-65-7498038', 'character:1'),
     (2, 'sb-character-2-4913696', 'sb-character-66-1226804', 'character:2'),
@@ -1639,9 +1639,9 @@ INSERT INTO __SB_NAMESPACE__.dt_character_values VALUES
     (62, 'sb-character-62-8025649', 'sb-character-126-2654018', 'character:62'),
     (63, 'sb-character-63-5882763', 'sb-character-127-9417420', 'character:63');
 CREATE TABLE __SB_NAMESPACE__.dt_binary_values (case_id INTEGER PRIMARY KEY, sample_value VARBINARY(512), alternate_value VARBINARY(512), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('binary', 'VARBINARY(512)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_binary_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_binary_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, X'0000007a24c9', X'000000056ba8', 'binary:0'),
     (1, X'000000645da3', X'00000030d9da', 'binary:1'),
     (2, X'000000720af3', X'0000003b45b9', 'binary:2'),
@@ -1707,9 +1707,9 @@ INSERT INTO __SB_NAMESPACE__.dt_binary_values VALUES
     (62, X'000000008450', X'000000528c77', 'binary:62'),
     (63, X'00000058ea42', X'0000008b7d26', 'binary:63');
 CREATE TABLE __SB_NAMESPACE__.dt_bit_string_values (case_id INTEGER PRIMARY KEY, sample_value BIT VARYING(512), alternate_value BIT VARYING(512), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('bit_string', 'BIT VARYING(512)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_bit_string_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_bit_string_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, B'11010111', B'10101101', 'bit_string:0'),
     (1, B'10000110', B'11011010', 'bit_string:1'),
     (2, B'01010101', B'01010101', 'bit_string:2'),
@@ -1775,9 +1775,9 @@ INSERT INTO __SB_NAMESPACE__.dt_bit_string_values VALUES
     (62, B'10010111', B'01001110', 'bit_string:62'),
     (63, B'00011000', B'10100111', 'bit_string:63');
 CREATE TABLE __SB_NAMESPACE__.dt_date_values (case_id INTEGER PRIMARY KEY, sample_value DATE, alternate_value DATE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('date', 'DATE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_date_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_date_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, DATE '2026-01-01', DATE '2026-05-09', 'date:0'),
     (1, DATE '2026-02-02', DATE '2026-06-10', 'date:1'),
     (2, DATE '2026-03-03', DATE '2026-07-11', 'date:2'),
@@ -1843,9 +1843,9 @@ INSERT INTO __SB_NAMESPACE__.dt_date_values VALUES
     (62, DATE '2026-03-07', DATE '2026-07-15', 'date:62'),
     (63, DATE '2026-04-08', DATE '2026-08-16', 'date:63');
 CREATE TABLE __SB_NAMESPACE__.dt_time_values (case_id INTEGER PRIMARY KEY, sample_value TIME, alternate_value TIME, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('time', 'TIME', 64);
-INSERT INTO __SB_NAMESPACE__.dt_time_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_time_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, TIME '00:00:00', TIME '16:12:28', 'time:0'),
     (1, TIME '01:03:07', TIME '17:15:35', 'time:1'),
     (2, TIME '02:06:14', TIME '18:18:42', 'time:2'),
@@ -1911,9 +1911,9 @@ INSERT INTO __SB_NAMESPACE__.dt_time_values VALUES
     (62, TIME '14:06:14', TIME '06:18:42', 'time:62'),
     (63, TIME '15:09:21', TIME '07:21:49', 'time:63');
 CREATE TABLE __SB_NAMESPACE__.dt_timestamp_values (case_id INTEGER PRIMARY KEY, sample_value TIMESTAMP, alternate_value TIMESTAMP, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('timestamp', 'TIMESTAMP', 64);
-INSERT INTO __SB_NAMESPACE__.dt_timestamp_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_timestamp_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-05-09 16:12:28', 'timestamp:0'),
     (1, TIMESTAMP '2026-02-02 01:03:07', TIMESTAMP '2026-06-10 17:15:35', 'timestamp:1'),
     (2, TIMESTAMP '2026-03-03 02:06:14', TIMESTAMP '2026-07-11 18:18:42', 'timestamp:2'),
@@ -1979,9 +1979,9 @@ INSERT INTO __SB_NAMESPACE__.dt_timestamp_values VALUES
     (62, TIMESTAMP '2026-03-07 14:06:14', TIMESTAMP '2026-07-15 06:18:42', 'timestamp:62'),
     (63, TIMESTAMP '2026-04-08 15:09:21', TIMESTAMP '2026-08-16 07:21:49', 'timestamp:63');
 CREATE TABLE __SB_NAMESPACE__.dt_interval_values (case_id INTEGER PRIMARY KEY, sample_value INTERVAL, alternate_value INTERVAL, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('interval', 'INTERVAL', 64);
-INSERT INTO __SB_NAMESPACE__.dt_interval_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_interval_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, -87611, 90137, 'interval:0'),
     (1, -73745, 40218, 'interval:1'),
     (2, -26128, 20613, 'interval:2'),
@@ -2047,9 +2047,9 @@ INSERT INTO __SB_NAMESPACE__.dt_interval_values VALUES
     (62, 99238, 95258, 'interval:62'),
     (63, 19345, 3159, 'interval:63');
 CREATE TABLE __SB_NAMESPACE__.dt_blob_values (case_id INTEGER PRIMARY KEY, sample_value BLOB, alternate_value BLOB, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('blob', 'BLOB', 64);
-INSERT INTO __SB_NAMESPACE__.dt_blob_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_blob_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "blob", "i": 0, "n": 2169987}' AS BLOB), CAST('{"datatype": "blob", "i": 64, "n": 7855158}' AS BLOB), 'blob:0'),
     (1, CAST('{"datatype": "blob", "i": 1, "n": 8035987}' AS BLOB), CAST('{"datatype": "blob", "i": 65, "n": 4490889}' AS BLOB), 'blob:1'),
     (2, CAST('{"datatype": "blob", "i": 2, "n": 983821}' AS BLOB), CAST('{"datatype": "blob", "i": 66, "n": 7220993}' AS BLOB), 'blob:2'),
@@ -2115,9 +2115,9 @@ INSERT INTO __SB_NAMESPACE__.dt_blob_values VALUES
     (62, CAST('{"datatype": "blob", "i": 62, "n": 6057898}' AS BLOB), CAST('{"datatype": "blob", "i": 126, "n": 5017047}' AS BLOB), 'blob:62'),
     (63, CAST('{"datatype": "blob", "i": 63, "n": 6268940}' AS BLOB), CAST('{"datatype": "blob", "i": 127, "n": 9219997}' AS BLOB), 'blob:63');
 CREATE TABLE __SB_NAMESPACE__.dt_document_values (case_id INTEGER PRIMARY KEY, sample_value DOCUMENT, alternate_value DOCUMENT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('document', 'DOCUMENT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "document", "i": 0, "n": 3110327}', JSON '{"datatype": "document", "i": 64, "n": 4245881}', 'document:0'),
     (1, JSON '{"datatype": "document", "i": 1, "n": 9257734}', JSON '{"datatype": "document", "i": 65, "n": 3206543}', 'document:1'),
     (2, JSON '{"datatype": "document", "i": 2, "n": 507487}', JSON '{"datatype": "document", "i": 66, "n": 5926548}', 'document:2'),
@@ -2183,9 +2183,9 @@ INSERT INTO __SB_NAMESPACE__.dt_document_values VALUES
     (62, JSON '{"datatype": "document", "i": 62, "n": 6672356}', JSON '{"datatype": "document", "i": 126, "n": 7611445}', 'document:62'),
     (63, JSON '{"datatype": "document", "i": 63, "n": 2009006}', JSON '{"datatype": "document", "i": 127, "n": 4227130}', 'document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_json_document_values (case_id INTEGER PRIMARY KEY, sample_value JSON, alternate_value JSON, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('json_document', 'JSON', 64);
-INSERT INTO __SB_NAMESPACE__.dt_json_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_json_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "json_document", "i": 0, "n": 8627829}', JSON '{"datatype": "json_document", "i": 64, "n": 4517210}', 'json_document:0'),
     (1, JSON '{"datatype": "json_document", "i": 1, "n": 4170449}', JSON '{"datatype": "json_document", "i": 65, "n": 5110913}', 'json_document:1'),
     (2, JSON '{"datatype": "json_document", "i": 2, "n": 1129681}', JSON '{"datatype": "json_document", "i": 66, "n": 4152393}', 'json_document:2'),
@@ -2251,9 +2251,9 @@ INSERT INTO __SB_NAMESPACE__.dt_json_document_values VALUES
     (62, JSON '{"datatype": "json_document", "i": 62, "n": 6296801}', JSON '{"datatype": "json_document", "i": 126, "n": 8666445}', 'json_document:62'),
     (63, JSON '{"datatype": "json_document", "i": 63, "n": 7234029}', JSON '{"datatype": "json_document", "i": 127, "n": 1290956}', 'json_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_binary_json_document_values (case_id INTEGER PRIMARY KEY, sample_value JSONB, alternate_value JSONB, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('binary_json_document', 'JSONB', 64);
-INSERT INTO __SB_NAMESPACE__.dt_binary_json_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_binary_json_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "binary_json_document", "i": 0, "n": 9222236}', JSON '{"datatype": "binary_json_document", "i": 64, "n": 7379229}', 'binary_json_document:0'),
     (1, JSON '{"datatype": "binary_json_document", "i": 1, "n": 2831180}', JSON '{"datatype": "binary_json_document", "i": 65, "n": 5206377}', 'binary_json_document:1'),
     (2, JSON '{"datatype": "binary_json_document", "i": 2, "n": 8494914}', JSON '{"datatype": "binary_json_document", "i": 66, "n": 6240833}', 'binary_json_document:2'),
@@ -2319,9 +2319,9 @@ INSERT INTO __SB_NAMESPACE__.dt_binary_json_document_values VALUES
     (62, JSON '{"datatype": "binary_json_document", "i": 62, "n": 7263295}', JSON '{"datatype": "binary_json_document", "i": 126, "n": 9518685}', 'binary_json_document:62'),
     (63, JSON '{"datatype": "binary_json_document", "i": 63, "n": 3997368}', JSON '{"datatype": "binary_json_document", "i": 127, "n": 9287602}', 'binary_json_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_bson_document_values (case_id INTEGER PRIMARY KEY, sample_value BSON, alternate_value BSON, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('bson_document', 'BSON', 64);
-INSERT INTO __SB_NAMESPACE__.dt_bson_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_bson_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "bson_document", "i": 0, "n": 8029800}', JSON '{"datatype": "bson_document", "i": 64, "n": 1570248}', 'bson_document:0'),
     (1, JSON '{"datatype": "bson_document", "i": 1, "n": 4212607}', JSON '{"datatype": "bson_document", "i": 65, "n": 9391958}', 'bson_document:1'),
     (2, JSON '{"datatype": "bson_document", "i": 2, "n": 4435228}', JSON '{"datatype": "bson_document", "i": 66, "n": 4758332}', 'bson_document:2'),
@@ -2387,9 +2387,9 @@ INSERT INTO __SB_NAMESPACE__.dt_bson_document_values VALUES
     (62, JSON '{"datatype": "bson_document", "i": 62, "n": 1167117}', JSON '{"datatype": "bson_document", "i": 126, "n": 2638071}', 'bson_document:62'),
     (63, JSON '{"datatype": "bson_document", "i": 63, "n": 2288150}', JSON '{"datatype": "bson_document", "i": 127, "n": 9940745}', 'bson_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_xml_document_values (case_id INTEGER PRIMARY KEY, sample_value XML, alternate_value XML, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('xml_document', 'XML', 64);
-INSERT INTO __SB_NAMESPACE__.dt_xml_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_xml_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, XML '<row datatype="xml_document" i="0" n="5626344"/>', XML '<row datatype="xml_document" i="64" n="7649507"/>', 'xml_document:0'),
     (1, XML '<row datatype="xml_document" i="1" n="7807876"/>', XML '<row datatype="xml_document" i="65" n="1951098"/>', 'xml_document:1'),
     (2, XML '<row datatype="xml_document" i="2" n="8748639"/>', XML '<row datatype="xml_document" i="66" n="7384661"/>', 'xml_document:2'),
@@ -2455,9 +2455,9 @@ INSERT INTO __SB_NAMESPACE__.dt_xml_document_values VALUES
     (62, XML '<row datatype="xml_document" i="62" n="2854695"/>', XML '<row datatype="xml_document" i="126" n="425992"/>', 'xml_document:62'),
     (63, XML '<row datatype="xml_document" i="63" n="6244920"/>', XML '<row datatype="xml_document" i="127" n="2943258"/>', 'xml_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_hstore_document_values (case_id INTEGER PRIMARY KEY, sample_value HSTORE, alternate_value HSTORE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('hstore_document', 'HSTORE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_hstore_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_hstore_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "hstore_document", "i": 0, "n": 8409358}' AS HSTORE), CAST('{"datatype": "hstore_document", "i": 64, "n": 2515607}' AS HSTORE), 'hstore_document:0'),
     (1, CAST('{"datatype": "hstore_document", "i": 1, "n": 6348175}' AS HSTORE), CAST('{"datatype": "hstore_document", "i": 65, "n": 9604783}' AS HSTORE), 'hstore_document:1'),
     (2, CAST('{"datatype": "hstore_document", "i": 2, "n": 5151698}' AS HSTORE), CAST('{"datatype": "hstore_document", "i": 66, "n": 9020445}' AS HSTORE), 'hstore_document:2'),
@@ -2523,9 +2523,9 @@ INSERT INTO __SB_NAMESPACE__.dt_hstore_document_values VALUES
     (62, CAST('{"datatype": "hstore_document", "i": 62, "n": 4733662}' AS HSTORE), CAST('{"datatype": "hstore_document", "i": 126, "n": 1462007}' AS HSTORE), 'hstore_document:62'),
     (63, CAST('{"datatype": "hstore_document", "i": 63, "n": 7341995}' AS HSTORE), CAST('{"datatype": "hstore_document", "i": 127, "n": 1573195}' AS HSTORE), 'hstore_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_object_document_values (case_id INTEGER PRIMARY KEY, sample_value OBJECT, alternate_value OBJECT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('object_document', 'OBJECT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_object_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_object_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "object_document", "i": 0, "n": 402045}', JSON '{"datatype": "object_document", "i": 64, "n": 7554347}', 'object_document:0'),
     (1, JSON '{"datatype": "object_document", "i": 1, "n": 3321457}', JSON '{"datatype": "object_document", "i": 65, "n": 7538227}', 'object_document:1'),
     (2, JSON '{"datatype": "object_document", "i": 2, "n": 1686254}', JSON '{"datatype": "object_document", "i": 66, "n": 461093}', 'object_document:2'),
@@ -2591,9 +2591,9 @@ INSERT INTO __SB_NAMESPACE__.dt_object_document_values VALUES
     (62, JSON '{"datatype": "object_document", "i": 62, "n": 36180}', JSON '{"datatype": "object_document", "i": 126, "n": 8149944}', 'object_document:62'),
     (63, JSON '{"datatype": "object_document", "i": 63, "n": 4667892}', JSON '{"datatype": "object_document", "i": 127, "n": 9337723}', 'object_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_flattened_object_document_values (case_id INTEGER PRIMARY KEY, sample_value FLATTENED_OBJECT, alternate_value FLATTENED_OBJECT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('flattened_object_document', 'FLATTENED_OBJECT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_flattened_object_document_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_flattened_object_document_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, JSON '{"datatype": "flattened_object_document", "i": 0, "n": 4576334}', JSON '{"datatype": "flattened_object_document", "i": 64, "n": 7158330}', 'flattened_object_document:0'),
     (1, JSON '{"datatype": "flattened_object_document", "i": 1, "n": 673942}', JSON '{"datatype": "flattened_object_document", "i": 65, "n": 6991490}', 'flattened_object_document:1'),
     (2, JSON '{"datatype": "flattened_object_document", "i": 2, "n": 3239907}', JSON '{"datatype": "flattened_object_document", "i": 66, "n": 5913277}', 'flattened_object_document:2'),
@@ -2659,9 +2659,9 @@ INSERT INTO __SB_NAMESPACE__.dt_flattened_object_document_values VALUES
     (62, JSON '{"datatype": "flattened_object_document", "i": 62, "n": 7812946}', JSON '{"datatype": "flattened_object_document", "i": 126, "n": 9193924}', 'flattened_object_document:62'),
     (63, JSON '{"datatype": "flattened_object_document", "i": 63, "n": 6003142}', JSON '{"datatype": "flattened_object_document", "i": 127, "n": 8502365}', 'flattened_object_document:63');
 CREATE TABLE __SB_NAMESPACE__.dt_enum_value_values (case_id INTEGER PRIMARY KEY, sample_value ENUM_VALUE, alternate_value ENUM_VALUE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('enum_value', 'ENUM_VALUE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_enum_value_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_enum_value_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "enum_value", "i": 0, "n": 6169788}' AS ENUM_VALUE), CAST('{"datatype": "enum_value", "i": 64, "n": 8203194}' AS ENUM_VALUE), 'enum_value:0'),
     (1, CAST('{"datatype": "enum_value", "i": 1, "n": 6487589}' AS ENUM_VALUE), CAST('{"datatype": "enum_value", "i": 65, "n": 2105329}' AS ENUM_VALUE), 'enum_value:1'),
     (2, CAST('{"datatype": "enum_value", "i": 2, "n": 8238225}' AS ENUM_VALUE), CAST('{"datatype": "enum_value", "i": 66, "n": 6282664}' AS ENUM_VALUE), 'enum_value:2'),
@@ -2727,9 +2727,9 @@ INSERT INTO __SB_NAMESPACE__.dt_enum_value_values VALUES
     (62, CAST('{"datatype": "enum_value", "i": 62, "n": 4143101}' AS ENUM_VALUE), CAST('{"datatype": "enum_value", "i": 126, "n": 8122319}' AS ENUM_VALUE), 'enum_value:62'),
     (63, CAST('{"datatype": "enum_value", "i": 63, "n": 1378515}' AS ENUM_VALUE), CAST('{"datatype": "enum_value", "i": 127, "n": 1681161}' AS ENUM_VALUE), 'enum_value:63');
 CREATE TABLE __SB_NAMESPACE__.dt_set_value_values (case_id INTEGER PRIMARY KEY, sample_value SET_VALUE, alternate_value SET_VALUE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('set_value', 'SET_VALUE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_set_value_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_set_value_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "set_value", "i": 0, "n": 3498043}' AS SET_VALUE), CAST('{"datatype": "set_value", "i": 64, "n": 8061411}' AS SET_VALUE), 'set_value:0'),
     (1, CAST('{"datatype": "set_value", "i": 1, "n": 6835657}' AS SET_VALUE), CAST('{"datatype": "set_value", "i": 65, "n": 6539324}' AS SET_VALUE), 'set_value:1'),
     (2, CAST('{"datatype": "set_value", "i": 2, "n": 508167}' AS SET_VALUE), CAST('{"datatype": "set_value", "i": 66, "n": 8992082}' AS SET_VALUE), 'set_value:2'),
@@ -2795,9 +2795,9 @@ INSERT INTO __SB_NAMESPACE__.dt_set_value_values VALUES
     (62, CAST('{"datatype": "set_value", "i": 62, "n": 2882313}' AS SET_VALUE), CAST('{"datatype": "set_value", "i": 126, "n": 3355199}' AS SET_VALUE), 'set_value:62'),
     (63, CAST('{"datatype": "set_value", "i": 63, "n": 1155546}' AS SET_VALUE), CAST('{"datatype": "set_value", "i": 127, "n": 951704}' AS SET_VALUE), 'set_value:63');
 CREATE TABLE __SB_NAMESPACE__.dt_array_values (case_id INTEGER PRIMARY KEY, sample_value ARRAY<INTEGER>, alternate_value ARRAY<INTEGER>, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('array', 'ARRAY<INTEGER>', 64);
-INSERT INTO __SB_NAMESPACE__.dt_array_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_array_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, ARRAY[0, 802, 114], ARRAY[64, 347, 621], 'array:0'),
     (1, ARRAY[1, 683, 97], ARRAY[65, 336, 905], 'array:1'),
     (2, ARRAY[2, 545, 363], ARRAY[66, 535, 790], 'array:2'),
@@ -2863,9 +2863,9 @@ INSERT INTO __SB_NAMESPACE__.dt_array_values VALUES
     (62, ARRAY[62, 252, 321], ARRAY[126, 295, 899], 'array:62'),
     (63, ARRAY[63, 225, 460], ARRAY[127, 752, 821], 'array:63');
 CREATE TABLE __SB_NAMESPACE__.dt_list_values (case_id INTEGER PRIMARY KEY, sample_value LIST<INTEGER>, alternate_value LIST<INTEGER>, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('list', 'LIST<INTEGER>', 64);
-INSERT INTO __SB_NAMESPACE__.dt_list_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_list_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, ARRAY[0, 109, 444], ARRAY[64, 940, 705], 'list:0'),
     (1, ARRAY[1, 676, 668], ARRAY[65, 991, 855], 'list:1'),
     (2, ARRAY[2, 173, 310], ARRAY[66, 360, 622], 'list:2'),
@@ -2931,9 +2931,9 @@ INSERT INTO __SB_NAMESPACE__.dt_list_values VALUES
     (62, ARRAY[62, 570, 367], ARRAY[126, 470, 495], 'list:62'),
     (63, ARRAY[63, 356, 336], ARRAY[127, 974, 853], 'list:63');
 CREATE TABLE __SB_NAMESPACE__.dt_map_values (case_id INTEGER PRIMARY KEY, sample_value MAP<VARCHAR(64), INTEGER>, alternate_value MAP<VARCHAR(64), INTEGER>, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('map', 'MAP<VARCHAR(64), INTEGER>', 64);
-INSERT INTO __SB_NAMESPACE__.dt_map_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_map_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "map", "i": 0, "n": 7390080}' AS MAP<VARCHAR(64), INTEGER>), CAST('{"datatype": "map", "i": 64, "n": 943896}' AS MAP<VARCHAR(64), INTEGER>), 'map:0'),
     (1, CAST('{"datatype": "map", "i": 1, "n": 1833748}' AS MAP<VARCHAR(64), INTEGER>), CAST('{"datatype": "map", "i": 65, "n": 7287837}' AS MAP<VARCHAR(64), INTEGER>), 'map:1'),
     (2, CAST('{"datatype": "map", "i": 2, "n": 7996261}' AS MAP<VARCHAR(64), INTEGER>), CAST('{"datatype": "map", "i": 66, "n": 584354}' AS MAP<VARCHAR(64), INTEGER>), 'map:2'),
@@ -2999,9 +2999,9 @@ INSERT INTO __SB_NAMESPACE__.dt_map_values VALUES
     (62, CAST('{"datatype": "map", "i": 62, "n": 1192388}' AS MAP<VARCHAR(64), INTEGER>), CAST('{"datatype": "map", "i": 126, "n": 958244}' AS MAP<VARCHAR(64), INTEGER>), 'map:62'),
     (63, CAST('{"datatype": "map", "i": 63, "n": 6366080}' AS MAP<VARCHAR(64), INTEGER>), CAST('{"datatype": "map", "i": 127, "n": 5954474}' AS MAP<VARCHAR(64), INTEGER>), 'map:63');
 CREATE TABLE __SB_NAMESPACE__.dt_row_values (case_id INTEGER PRIMARY KEY, sample_value ROW, alternate_value ROW, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('row', 'ROW', 64);
-INSERT INTO __SB_NAMESPACE__.dt_row_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_row_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "row", "i": 0, "n": 5475981}' AS ROW), CAST('{"datatype": "row", "i": 64, "n": 5972445}' AS ROW), 'row:0'),
     (1, CAST('{"datatype": "row", "i": 1, "n": 5741787}' AS ROW), CAST('{"datatype": "row", "i": 65, "n": 4522588}' AS ROW), 'row:1'),
     (2, CAST('{"datatype": "row", "i": 2, "n": 6450421}' AS ROW), CAST('{"datatype": "row", "i": 66, "n": 2516701}' AS ROW), 'row:2'),
@@ -3067,9 +3067,9 @@ INSERT INTO __SB_NAMESPACE__.dt_row_values VALUES
     (62, CAST('{"datatype": "row", "i": 62, "n": 2908771}' AS ROW), CAST('{"datatype": "row", "i": 126, "n": 549896}' AS ROW), 'row:62'),
     (63, CAST('{"datatype": "row", "i": 63, "n": 6344021}' AS ROW), CAST('{"datatype": "row", "i": 127, "n": 2066661}' AS ROW), 'row:63');
 CREATE TABLE __SB_NAMESPACE__.dt_composite_values (case_id INTEGER PRIMARY KEY, sample_value COMPOSITE, alternate_value COMPOSITE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('composite', 'COMPOSITE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_composite_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_composite_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "composite", "i": 0, "n": 8473465}' AS COMPOSITE), CAST('{"datatype": "composite", "i": 64, "n": 2072082}' AS COMPOSITE), 'composite:0'),
     (1, CAST('{"datatype": "composite", "i": 1, "n": 8052889}' AS COMPOSITE), CAST('{"datatype": "composite", "i": 65, "n": 2021829}' AS COMPOSITE), 'composite:1'),
     (2, CAST('{"datatype": "composite", "i": 2, "n": 4903763}' AS COMPOSITE), CAST('{"datatype": "composite", "i": 66, "n": 2170923}' AS COMPOSITE), 'composite:2'),
@@ -3135,9 +3135,9 @@ INSERT INTO __SB_NAMESPACE__.dt_composite_values VALUES
     (62, CAST('{"datatype": "composite", "i": 62, "n": 2710476}' AS COMPOSITE), CAST('{"datatype": "composite", "i": 126, "n": 1173186}' AS COMPOSITE), 'composite:62'),
     (63, CAST('{"datatype": "composite", "i": 63, "n": 4663269}' AS COMPOSITE), CAST('{"datatype": "composite", "i": 127, "n": 9740238}' AS COMPOSITE), 'composite:63');
 CREATE TABLE __SB_NAMESPACE__.dt_variant_values (case_id INTEGER PRIMARY KEY, sample_value VARIANT, alternate_value VARIANT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('variant', 'VARIANT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_variant_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_variant_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "variant", "i": 0, "n": 7353385}' AS VARIANT), CAST('{"datatype": "variant", "i": 64, "n": 8631817}' AS VARIANT), 'variant:0'),
     (1, CAST('{"datatype": "variant", "i": 1, "n": 2270553}' AS VARIANT), CAST('{"datatype": "variant", "i": 65, "n": 4109231}' AS VARIANT), 'variant:1'),
     (2, CAST('{"datatype": "variant", "i": 2, "n": 5487491}' AS VARIANT), CAST('{"datatype": "variant", "i": 66, "n": 742081}' AS VARIANT), 'variant:2'),
@@ -3203,9 +3203,9 @@ INSERT INTO __SB_NAMESPACE__.dt_variant_values VALUES
     (62, CAST('{"datatype": "variant", "i": 62, "n": 8589933}' AS VARIANT), CAST('{"datatype": "variant", "i": 126, "n": 3905826}' AS VARIANT), 'variant:62'),
     (63, CAST('{"datatype": "variant", "i": 63, "n": 1514542}' AS VARIANT), CAST('{"datatype": "variant", "i": 127, "n": 6154443}' AS VARIANT), 'variant:63');
 CREATE TABLE __SB_NAMESPACE__.dt_range_values (case_id INTEGER PRIMARY KEY, sample_value RANGE<INTEGER>, alternate_value RANGE<INTEGER>, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('range', 'RANGE<INTEGER>', 64);
-INSERT INTO __SB_NAMESPACE__.dt_range_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_range_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "range", "i": 0, "n": 9428196}' AS RANGE<INTEGER>), CAST('{"datatype": "range", "i": 64, "n": 3579905}' AS RANGE<INTEGER>), 'range:0'),
     (1, CAST('{"datatype": "range", "i": 1, "n": 6928202}' AS RANGE<INTEGER>), CAST('{"datatype": "range", "i": 65, "n": 1751973}' AS RANGE<INTEGER>), 'range:1'),
     (2, CAST('{"datatype": "range", "i": 2, "n": 1998334}' AS RANGE<INTEGER>), CAST('{"datatype": "range", "i": 66, "n": 4645567}' AS RANGE<INTEGER>), 'range:2'),
@@ -3271,9 +3271,9 @@ INSERT INTO __SB_NAMESPACE__.dt_range_values VALUES
     (62, CAST('{"datatype": "range", "i": 62, "n": 8969584}' AS RANGE<INTEGER>), CAST('{"datatype": "range", "i": 126, "n": 8213994}' AS RANGE<INTEGER>), 'range:62'),
     (63, CAST('{"datatype": "range", "i": 63, "n": 1464008}' AS RANGE<INTEGER>), CAST('{"datatype": "range", "i": 127, "n": 7563659}' AS RANGE<INTEGER>), 'range:63');
 CREATE TABLE __SB_NAMESPACE__.dt_multirange_values (case_id INTEGER PRIMARY KEY, sample_value MULTIRANGE<INTEGER>, alternate_value MULTIRANGE<INTEGER>, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('multirange', 'MULTIRANGE<INTEGER>', 64);
-INSERT INTO __SB_NAMESPACE__.dt_multirange_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_multirange_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "multirange", "i": 0, "n": 285630}' AS MULTIRANGE<INTEGER>), CAST('{"datatype": "multirange", "i": 64, "n": 895298}' AS MULTIRANGE<INTEGER>), 'multirange:0'),
     (1, CAST('{"datatype": "multirange", "i": 1, "n": 752833}' AS MULTIRANGE<INTEGER>), CAST('{"datatype": "multirange", "i": 65, "n": 9713896}' AS MULTIRANGE<INTEGER>), 'multirange:1'),
     (2, CAST('{"datatype": "multirange", "i": 2, "n": 1440450}' AS MULTIRANGE<INTEGER>), CAST('{"datatype": "multirange", "i": 66, "n": 1720329}' AS MULTIRANGE<INTEGER>), 'multirange:2'),
@@ -3339,9 +3339,9 @@ INSERT INTO __SB_NAMESPACE__.dt_multirange_values VALUES
     (62, CAST('{"datatype": "multirange", "i": 62, "n": 4533373}' AS MULTIRANGE<INTEGER>), CAST('{"datatype": "multirange", "i": 126, "n": 3081130}' AS MULTIRANGE<INTEGER>), 'multirange:62'),
     (63, CAST('{"datatype": "multirange", "i": 63, "n": 7858933}' AS MULTIRANGE<INTEGER>), CAST('{"datatype": "multirange", "i": 127, "n": 5283631}' AS MULTIRANGE<INTEGER>), 'multirange:63');
 CREATE TABLE __SB_NAMESPACE__.dt_token_stream_values (case_id INTEGER PRIMARY KEY, sample_value TOKEN_STREAM, alternate_value TOKEN_STREAM, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('token_stream', 'TOKEN_STREAM', 64);
-INSERT INTO __SB_NAMESPACE__.dt_token_stream_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_token_stream_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "token_stream", "i": 0, "n": 808298}' AS TOKEN_STREAM), CAST('{"datatype": "token_stream", "i": 64, "n": 6627817}' AS TOKEN_STREAM), 'token_stream:0'),
     (1, CAST('{"datatype": "token_stream", "i": 1, "n": 4706897}' AS TOKEN_STREAM), CAST('{"datatype": "token_stream", "i": 65, "n": 1153664}' AS TOKEN_STREAM), 'token_stream:1'),
     (2, CAST('{"datatype": "token_stream", "i": 2, "n": 2802352}' AS TOKEN_STREAM), CAST('{"datatype": "token_stream", "i": 66, "n": 9169955}' AS TOKEN_STREAM), 'token_stream:2'),
@@ -3407,9 +3407,9 @@ INSERT INTO __SB_NAMESPACE__.dt_token_stream_values VALUES
     (62, CAST('{"datatype": "token_stream", "i": 62, "n": 8727399}' AS TOKEN_STREAM), CAST('{"datatype": "token_stream", "i": 126, "n": 8058258}' AS TOKEN_STREAM), 'token_stream:62'),
     (63, CAST('{"datatype": "token_stream", "i": 63, "n": 602753}' AS TOKEN_STREAM), CAST('{"datatype": "token_stream", "i": 127, "n": 9558949}' AS TOKEN_STREAM), 'token_stream:63');
 CREATE TABLE __SB_NAMESPACE__.dt_search_query_values (case_id INTEGER PRIMARY KEY, sample_value SEARCH_QUERY, alternate_value SEARCH_QUERY, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('search_query', 'SEARCH_QUERY', 64);
-INSERT INTO __SB_NAMESPACE__.dt_search_query_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_search_query_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "search_query", "i": 0, "n": 5454972}' AS SEARCH_QUERY), CAST('{"datatype": "search_query", "i": 64, "n": 9624403}' AS SEARCH_QUERY), 'search_query:0'),
     (1, CAST('{"datatype": "search_query", "i": 1, "n": 2798135}' AS SEARCH_QUERY), CAST('{"datatype": "search_query", "i": 65, "n": 3926875}' AS SEARCH_QUERY), 'search_query:1'),
     (2, CAST('{"datatype": "search_query", "i": 2, "n": 2312081}' AS SEARCH_QUERY), CAST('{"datatype": "search_query", "i": 66, "n": 2894268}' AS SEARCH_QUERY), 'search_query:2'),
@@ -3475,9 +3475,9 @@ INSERT INTO __SB_NAMESPACE__.dt_search_query_values VALUES
     (62, CAST('{"datatype": "search_query", "i": 62, "n": 9435623}' AS SEARCH_QUERY), CAST('{"datatype": "search_query", "i": 126, "n": 6566555}' AS SEARCH_QUERY), 'search_query:62'),
     (63, CAST('{"datatype": "search_query", "i": 63, "n": 4346878}' AS SEARCH_QUERY), CAST('{"datatype": "search_query", "i": 127, "n": 2218148}' AS SEARCH_QUERY), 'search_query:63');
 CREATE TABLE __SB_NAMESPACE__.dt_search_rank_feature_values (case_id INTEGER PRIMARY KEY, sample_value SEARCH_RANK_FEATURE, alternate_value SEARCH_RANK_FEATURE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('search_rank_feature', 'SEARCH_RANK_FEATURE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_search_rank_feature_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_search_rank_feature_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "search_rank_feature", "i": 0, "n": 8144029}' AS SEARCH_RANK_FEATURE), CAST('{"datatype": "search_rank_feature", "i": 64, "n": 6755223}' AS SEARCH_RANK_FEATURE), 'search_rank_feature:0'),
     (1, CAST('{"datatype": "search_rank_feature", "i": 1, "n": 3626824}' AS SEARCH_RANK_FEATURE), CAST('{"datatype": "search_rank_feature", "i": 65, "n": 6929033}' AS SEARCH_RANK_FEATURE), 'search_rank_feature:1'),
     (2, CAST('{"datatype": "search_rank_feature", "i": 2, "n": 3817563}' AS SEARCH_RANK_FEATURE), CAST('{"datatype": "search_rank_feature", "i": 66, "n": 5976676}' AS SEARCH_RANK_FEATURE), 'search_rank_feature:2'),
@@ -3543,9 +3543,9 @@ INSERT INTO __SB_NAMESPACE__.dt_search_rank_feature_values VALUES
     (62, CAST('{"datatype": "search_rank_feature", "i": 62, "n": 9858111}' AS SEARCH_RANK_FEATURE), CAST('{"datatype": "search_rank_feature", "i": 126, "n": 6884469}' AS SEARCH_RANK_FEATURE), 'search_rank_feature:62'),
     (63, CAST('{"datatype": "search_rank_feature", "i": 63, "n": 3397332}' AS SEARCH_RANK_FEATURE), CAST('{"datatype": "search_rank_feature", "i": 127, "n": 2677874}' AS SEARCH_RANK_FEATURE), 'search_rank_feature:63');
 CREATE TABLE __SB_NAMESPACE__.dt_search_completion_values (case_id INTEGER PRIMARY KEY, sample_value SEARCH_COMPLETION, alternate_value SEARCH_COMPLETION, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('search_completion', 'SEARCH_COMPLETION', 64);
-INSERT INTO __SB_NAMESPACE__.dt_search_completion_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_search_completion_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "search_completion", "i": 0, "n": 3737946}' AS SEARCH_COMPLETION), CAST('{"datatype": "search_completion", "i": 64, "n": 5125566}' AS SEARCH_COMPLETION), 'search_completion:0'),
     (1, CAST('{"datatype": "search_completion", "i": 1, "n": 3733593}' AS SEARCH_COMPLETION), CAST('{"datatype": "search_completion", "i": 65, "n": 5793380}' AS SEARCH_COMPLETION), 'search_completion:1'),
     (2, CAST('{"datatype": "search_completion", "i": 2, "n": 495102}' AS SEARCH_COMPLETION), CAST('{"datatype": "search_completion", "i": 66, "n": 6620094}' AS SEARCH_COMPLETION), 'search_completion:2'),
@@ -3611,9 +3611,9 @@ INSERT INTO __SB_NAMESPACE__.dt_search_completion_values VALUES
     (62, CAST('{"datatype": "search_completion", "i": 62, "n": 7021432}' AS SEARCH_COMPLETION), CAST('{"datatype": "search_completion", "i": 126, "n": 5614315}' AS SEARCH_COMPLETION), 'search_completion:62'),
     (63, CAST('{"datatype": "search_completion", "i": 63, "n": 9486963}' AS SEARCH_COMPLETION), CAST('{"datatype": "search_completion", "i": 127, "n": 9455559}' AS SEARCH_COMPLETION), 'search_completion:63');
 CREATE TABLE __SB_NAMESPACE__.dt_search_percolator_values (case_id INTEGER PRIMARY KEY, sample_value SEARCH_PERCOLATOR, alternate_value SEARCH_PERCOLATOR, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('search_percolator', 'SEARCH_PERCOLATOR', 64);
-INSERT INTO __SB_NAMESPACE__.dt_search_percolator_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_search_percolator_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "search_percolator", "i": 0, "n": 7218747}' AS SEARCH_PERCOLATOR), CAST('{"datatype": "search_percolator", "i": 64, "n": 5740993}' AS SEARCH_PERCOLATOR), 'search_percolator:0'),
     (1, CAST('{"datatype": "search_percolator", "i": 1, "n": 6211923}' AS SEARCH_PERCOLATOR), CAST('{"datatype": "search_percolator", "i": 65, "n": 4661958}' AS SEARCH_PERCOLATOR), 'search_percolator:1'),
     (2, CAST('{"datatype": "search_percolator", "i": 2, "n": 8704789}' AS SEARCH_PERCOLATOR), CAST('{"datatype": "search_percolator", "i": 66, "n": 1071936}' AS SEARCH_PERCOLATOR), 'search_percolator:2'),
@@ -3679,9 +3679,9 @@ INSERT INTO __SB_NAMESPACE__.dt_search_percolator_values VALUES
     (62, CAST('{"datatype": "search_percolator", "i": 62, "n": 5557107}' AS SEARCH_PERCOLATOR), CAST('{"datatype": "search_percolator", "i": 126, "n": 1726169}' AS SEARCH_PERCOLATOR), 'search_percolator:62'),
     (63, CAST('{"datatype": "search_percolator", "i": 63, "n": 8071205}' AS SEARCH_PERCOLATOR), CAST('{"datatype": "search_percolator", "i": 127, "n": 4001702}' AS SEARCH_PERCOLATOR), 'search_percolator:63');
 CREATE TABLE __SB_NAMESPACE__.dt_geometry_values (case_id INTEGER PRIMARY KEY, sample_value GEOMETRY, alternate_value GEOMETRY, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('geometry', 'GEOMETRY', 64);
-INSERT INTO __SB_NAMESPACE__.dt_geometry_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_geometry_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 'POINT(0 81)', 'POINT(64 83)', 'geometry:0'),
     (1, 'POINT(1 75)', 'POINT(65 88)', 'geometry:1'),
     (2, 'POINT(2 78)', 'POINT(66 26)', 'geometry:2'),
@@ -3747,9 +3747,9 @@ INSERT INTO __SB_NAMESPACE__.dt_geometry_values VALUES
     (62, 'POINT(62 28)', 'POINT(26 75)', 'geometry:62'),
     (63, 'POINT(63 26)', 'POINT(27 46)', 'geometry:63');
 CREATE TABLE __SB_NAMESPACE__.dt_geography_values (case_id INTEGER PRIMARY KEY, sample_value GEOGRAPHY, alternate_value GEOGRAPHY, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('geography', 'GEOGRAPHY', 64);
-INSERT INTO __SB_NAMESPACE__.dt_geography_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_geography_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 'POINT(0 86)', 'POINT(64 18)', 'geography:0'),
     (1, 'POINT(1 78)', 'POINT(65 78)', 'geography:1'),
     (2, 'POINT(2 82)', 'POINT(66 14)', 'geography:2'),
@@ -3815,9 +3815,9 @@ INSERT INTO __SB_NAMESPACE__.dt_geography_values VALUES
     (62, 'POINT(62 81)', 'POINT(26 18)', 'geography:62'),
     (63, 'POINT(63 76)', 'POINT(27 45)', 'geography:63');
 CREATE TABLE __SB_NAMESPACE__.dt_point_values (case_id INTEGER PRIMARY KEY, sample_value POINT, alternate_value POINT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('point', 'POINT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_point_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_point_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 'POINT(0 22)', 'POINT(64 62)', 'point:0'),
     (1, 'POINT(1 42)', 'POINT(65 46)', 'point:1'),
     (2, 'POINT(2 89)', 'POINT(66 58)', 'point:2'),
@@ -3883,9 +3883,9 @@ INSERT INTO __SB_NAMESPACE__.dt_point_values VALUES
     (62, 'POINT(62 8)', 'POINT(26 55)', 'point:62'),
     (63, 'POINT(63 16)', 'POINT(27 81)', 'point:63');
 CREATE TABLE __SB_NAMESPACE__.dt_shape_values (case_id INTEGER PRIMARY KEY, sample_value SHAPE, alternate_value SHAPE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('shape', 'SHAPE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_shape_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_shape_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, 'POINT(0 72)', 'POINT(64 64)', 'shape:0'),
     (1, 'POINT(1 30)', 'POINT(65 50)', 'shape:1'),
     (2, 'POINT(2 14)', 'POINT(66 21)', 'shape:2'),
@@ -3951,9 +3951,9 @@ INSERT INTO __SB_NAMESPACE__.dt_shape_values VALUES
     (62, 'POINT(62 25)', 'POINT(26 60)', 'shape:62'),
     (63, 'POINT(63 74)', 'POINT(27 19)', 'shape:63');
 CREATE TABLE __SB_NAMESPACE__.dt_raster_values (case_id INTEGER PRIMARY KEY, sample_value RASTER, alternate_value RASTER, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('raster', 'RASTER', 64);
-INSERT INTO __SB_NAMESPACE__.dt_raster_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_raster_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "raster", "i": 0, "n": 9726605}' AS RASTER), CAST('{"datatype": "raster", "i": 64, "n": 6044376}' AS RASTER), 'raster:0'),
     (1, CAST('{"datatype": "raster", "i": 1, "n": 8171419}' AS RASTER), CAST('{"datatype": "raster", "i": 65, "n": 9190742}' AS RASTER), 'raster:1'),
     (2, CAST('{"datatype": "raster", "i": 2, "n": 1717685}' AS RASTER), CAST('{"datatype": "raster", "i": 66, "n": 5205315}' AS RASTER), 'raster:2'),
@@ -4019,9 +4019,9 @@ INSERT INTO __SB_NAMESPACE__.dt_raster_values VALUES
     (62, CAST('{"datatype": "raster", "i": 62, "n": 3722744}' AS RASTER), CAST('{"datatype": "raster", "i": 126, "n": 6425536}' AS RASTER), 'raster:62'),
     (63, CAST('{"datatype": "raster", "i": 63, "n": 6107020}' AS RASTER), CAST('{"datatype": "raster", "i": 127, "n": 7212206}' AS RASTER), 'raster:63');
 CREATE TABLE __SB_NAMESPACE__.dt_vector_values (case_id INTEGER PRIMARY KEY, sample_value VECTOR(8), alternate_value VECTOR(8), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('vector', 'VECTOR(8)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_vector_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_vector_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, VECTOR '[0.337,0.354,0.371,0.388,0.405,0.422,0.439,0.456]', VECTOR '[0.707,0.724,0.741,0.758,0.775,0.792,0.809,0.826]', 'vector:0'),
     (1, VECTOR '[0.773,0.790,0.807,0.824,0.841,0.858,0.875,0.892]', VECTOR '[0.075,0.092,0.109,0.126,0.143,0.160,0.177,0.194]', 'vector:1'),
     (2, VECTOR '[0.166,0.183,0.200,0.217,0.234,0.251,0.268,0.285]', VECTOR '[0.291,0.308,0.325,0.342,0.359,0.376,0.393,0.410]', 'vector:2'),
@@ -4087,9 +4087,9 @@ INSERT INTO __SB_NAMESPACE__.dt_vector_values VALUES
     (62, VECTOR '[0.607,0.624,0.641,0.658,0.675,0.692,0.709,0.726]', VECTOR '[0.129,0.146,0.163,0.180,0.197,0.214,0.231,0.248]', 'vector:62'),
     (63, VECTOR '[0.138,0.155,0.172,0.189,0.206,0.223,0.240,0.257]', VECTOR '[0.471,0.488,0.505,0.522,0.539,0.556,0.573,0.590]', 'vector:63');
 CREATE TABLE __SB_NAMESPACE__.dt_dense_vector_values (case_id INTEGER PRIMARY KEY, sample_value DENSE_VECTOR(8), alternate_value DENSE_VECTOR(8), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('dense_vector', 'DENSE_VECTOR(8)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_dense_vector_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_dense_vector_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, VECTOR '[0.153,0.170,0.187,0.204,0.221,0.238,0.255,0.272]', VECTOR '[0.437,0.454,0.471,0.488,0.505,0.522,0.539,0.556]', 'dense_vector:0'),
     (1, VECTOR '[0.948,0.965,0.982,0.999,0.016,0.033,0.050,0.067]', VECTOR '[0.090,0.107,0.124,0.141,0.158,0.175,0.192,0.209]', 'dense_vector:1'),
     (2, VECTOR '[0.234,0.251,0.268,0.285,0.302,0.319,0.336,0.353]', VECTOR '[0.422,0.439,0.456,0.473,0.490,0.507,0.524,0.541]', 'dense_vector:2'),
@@ -4155,9 +4155,9 @@ INSERT INTO __SB_NAMESPACE__.dt_dense_vector_values VALUES
     (62, VECTOR '[0.260,0.277,0.294,0.311,0.328,0.345,0.362,0.379]', VECTOR '[0.919,0.936,0.953,0.970,0.987,0.004,0.021,0.038]', 'dense_vector:62'),
     (63, VECTOR '[0.131,0.148,0.165,0.182,0.199,0.216,0.233,0.250]', VECTOR '[0.874,0.891,0.908,0.925,0.942,0.959,0.976,0.993]', 'dense_vector:63');
 CREATE TABLE __SB_NAMESPACE__.dt_sparse_vector_values (case_id INTEGER PRIMARY KEY, sample_value SPARSE_VECTOR(8), alternate_value SPARSE_VECTOR(8), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('sparse_vector', 'SPARSE_VECTOR(8)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_sparse_vector_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_sparse_vector_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, VECTOR '[0.835,0.852,0.869,0.886,0.903,0.920,0.937,0.954]', VECTOR '[0.634,0.651,0.668,0.685,0.702,0.719,0.736,0.753]', 'sparse_vector:0'),
     (1, VECTOR '[0.830,0.847,0.864,0.881,0.898,0.915,0.932,0.949]', VECTOR '[0.448,0.465,0.482,0.499,0.516,0.533,0.550,0.567]', 'sparse_vector:1'),
     (2, VECTOR '[0.044,0.061,0.078,0.095,0.112,0.129,0.146,0.163]', VECTOR '[0.701,0.718,0.735,0.752,0.769,0.786,0.803,0.820]', 'sparse_vector:2'),
@@ -4223,9 +4223,9 @@ INSERT INTO __SB_NAMESPACE__.dt_sparse_vector_values VALUES
     (62, VECTOR '[0.767,0.784,0.801,0.818,0.835,0.852,0.869,0.886]', VECTOR '[0.555,0.572,0.589,0.606,0.623,0.640,0.657,0.674]', 'sparse_vector:62'),
     (63, VECTOR '[0.194,0.211,0.228,0.245,0.262,0.279,0.296,0.313]', VECTOR '[0.478,0.495,0.512,0.529,0.546,0.563,0.580,0.597]', 'sparse_vector:63');
 CREATE TABLE __SB_NAMESPACE__.dt_binary_vector_values (case_id INTEGER PRIMARY KEY, sample_value BINARY_VECTOR(64), alternate_value BINARY_VECTOR(64), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('binary_vector', 'BINARY_VECTOR(64)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_binary_vector_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_binary_vector_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, VECTOR '[0.028,0.045,0.062,0.079,0.096,0.113,0.130,0.147]', VECTOR '[0.440,0.457,0.474,0.491,0.508,0.525,0.542,0.559]', 'binary_vector:0'),
     (1, VECTOR '[0.189,0.206,0.223,0.240,0.257,0.274,0.291,0.308]', VECTOR '[0.262,0.279,0.296,0.313,0.330,0.347,0.364,0.381]', 'binary_vector:1'),
     (2, VECTOR '[0.777,0.794,0.811,0.828,0.845,0.862,0.879,0.896]', VECTOR '[0.160,0.177,0.194,0.211,0.228,0.245,0.262,0.279]', 'binary_vector:2'),
@@ -4291,9 +4291,9 @@ INSERT INTO __SB_NAMESPACE__.dt_binary_vector_values VALUES
     (62, VECTOR '[0.131,0.148,0.165,0.182,0.199,0.216,0.233,0.250]', VECTOR '[0.490,0.507,0.524,0.541,0.558,0.575,0.592,0.609]', 'binary_vector:62'),
     (63, VECTOR '[0.183,0.200,0.217,0.234,0.251,0.268,0.285,0.302]', VECTOR '[0.357,0.374,0.391,0.408,0.425,0.442,0.459,0.476]', 'binary_vector:63');
 CREATE TABLE __SB_NAMESPACE__.dt_quantized_vector_values (case_id INTEGER PRIMARY KEY, sample_value QUANTIZED_VECTOR(8), alternate_value QUANTIZED_VECTOR(8), seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('quantized_vector', 'QUANTIZED_VECTOR(8)', 64);
-INSERT INTO __SB_NAMESPACE__.dt_quantized_vector_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_quantized_vector_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, VECTOR '[0.750,0.767,0.784,0.801,0.818,0.835,0.852,0.869]', VECTOR '[0.713,0.730,0.747,0.764,0.781,0.798,0.815,0.832]', 'quantized_vector:0'),
     (1, VECTOR '[0.980,0.997,0.014,0.031,0.048,0.065,0.082,0.099]', VECTOR '[0.963,0.980,0.997,0.014,0.031,0.048,0.065,0.082]', 'quantized_vector:1'),
     (2, VECTOR '[0.992,0.009,0.026,0.043,0.060,0.077,0.094,0.111]', VECTOR '[0.025,0.042,0.059,0.076,0.093,0.110,0.127,0.144]', 'quantized_vector:2'),
@@ -4359,9 +4359,9 @@ INSERT INTO __SB_NAMESPACE__.dt_quantized_vector_values VALUES
     (62, VECTOR '[0.671,0.688,0.705,0.722,0.739,0.756,0.773,0.790]', VECTOR '[0.678,0.695,0.712,0.729,0.746,0.763,0.780,0.797]', 'quantized_vector:62'),
     (63, VECTOR '[0.408,0.425,0.442,0.459,0.476,0.493,0.510,0.527]', VECTOR '[0.422,0.439,0.456,0.473,0.490,0.507,0.524,0.541]', 'quantized_vector:63');
 CREATE TABLE __SB_NAMESPACE__.dt_graph_node_values (case_id INTEGER PRIMARY KEY, sample_value GRAPH_NODE, alternate_value GRAPH_NODE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('graph_node', 'GRAPH_NODE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_graph_node_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_graph_node_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "graph_node", "i": 0, "n": 8963068}' AS GRAPH_NODE), CAST('{"datatype": "graph_node", "i": 64, "n": 9052123}' AS GRAPH_NODE), 'graph_node:0'),
     (1, CAST('{"datatype": "graph_node", "i": 1, "n": 1633834}' AS GRAPH_NODE), CAST('{"datatype": "graph_node", "i": 65, "n": 2293295}' AS GRAPH_NODE), 'graph_node:1'),
     (2, CAST('{"datatype": "graph_node", "i": 2, "n": 8067746}' AS GRAPH_NODE), CAST('{"datatype": "graph_node", "i": 66, "n": 9664796}' AS GRAPH_NODE), 'graph_node:2'),
@@ -4427,9 +4427,9 @@ INSERT INTO __SB_NAMESPACE__.dt_graph_node_values VALUES
     (62, CAST('{"datatype": "graph_node", "i": 62, "n": 9095946}' AS GRAPH_NODE), CAST('{"datatype": "graph_node", "i": 126, "n": 8652946}' AS GRAPH_NODE), 'graph_node:62'),
     (63, CAST('{"datatype": "graph_node", "i": 63, "n": 8622840}' AS GRAPH_NODE), CAST('{"datatype": "graph_node", "i": 127, "n": 4060701}' AS GRAPH_NODE), 'graph_node:63');
 CREATE TABLE __SB_NAMESPACE__.dt_graph_edge_values (case_id INTEGER PRIMARY KEY, sample_value GRAPH_EDGE, alternate_value GRAPH_EDGE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('graph_edge', 'GRAPH_EDGE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_graph_edge_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_graph_edge_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "graph_edge", "i": 0, "n": 4981397}' AS GRAPH_EDGE), CAST('{"datatype": "graph_edge", "i": 64, "n": 9159919}' AS GRAPH_EDGE), 'graph_edge:0'),
     (1, CAST('{"datatype": "graph_edge", "i": 1, "n": 8412889}' AS GRAPH_EDGE), CAST('{"datatype": "graph_edge", "i": 65, "n": 9005830}' AS GRAPH_EDGE), 'graph_edge:1'),
     (2, CAST('{"datatype": "graph_edge", "i": 2, "n": 8589352}' AS GRAPH_EDGE), CAST('{"datatype": "graph_edge", "i": 66, "n": 8207411}' AS GRAPH_EDGE), 'graph_edge:2'),
@@ -4495,9 +4495,9 @@ INSERT INTO __SB_NAMESPACE__.dt_graph_edge_values VALUES
     (62, CAST('{"datatype": "graph_edge", "i": 62, "n": 5055983}' AS GRAPH_EDGE), CAST('{"datatype": "graph_edge", "i": 126, "n": 588565}' AS GRAPH_EDGE), 'graph_edge:62'),
     (63, CAST('{"datatype": "graph_edge", "i": 63, "n": 9624851}' AS GRAPH_EDGE), CAST('{"datatype": "graph_edge", "i": 127, "n": 1533906}' AS GRAPH_EDGE), 'graph_edge:63');
 CREATE TABLE __SB_NAMESPACE__.dt_graph_path_values (case_id INTEGER PRIMARY KEY, sample_value GRAPH_PATH, alternate_value GRAPH_PATH, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('graph_path', 'GRAPH_PATH', 64);
-INSERT INTO __SB_NAMESPACE__.dt_graph_path_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_graph_path_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "graph_path", "i": 0, "n": 5359166}' AS GRAPH_PATH), CAST('{"datatype": "graph_path", "i": 64, "n": 5207508}' AS GRAPH_PATH), 'graph_path:0'),
     (1, CAST('{"datatype": "graph_path", "i": 1, "n": 3024458}' AS GRAPH_PATH), CAST('{"datatype": "graph_path", "i": 65, "n": 6352561}' AS GRAPH_PATH), 'graph_path:1'),
     (2, CAST('{"datatype": "graph_path", "i": 2, "n": 9826906}' AS GRAPH_PATH), CAST('{"datatype": "graph_path", "i": 66, "n": 9398786}' AS GRAPH_PATH), 'graph_path:2'),
@@ -4563,9 +4563,9 @@ INSERT INTO __SB_NAMESPACE__.dt_graph_path_values VALUES
     (62, CAST('{"datatype": "graph_path", "i": 62, "n": 8384585}' AS GRAPH_PATH), CAST('{"datatype": "graph_path", "i": 126, "n": 5229937}' AS GRAPH_PATH), 'graph_path:62'),
     (63, CAST('{"datatype": "graph_path", "i": 63, "n": 8138735}' AS GRAPH_PATH), CAST('{"datatype": "graph_path", "i": 127, "n": 1562254}' AS GRAPH_PATH), 'graph_path:63');
 CREATE TABLE __SB_NAMESPACE__.dt_time_series_value_values (case_id INTEGER PRIMARY KEY, sample_value TIME_SERIES_VALUE, alternate_value TIME_SERIES_VALUE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('time_series_value', 'TIME_SERIES_VALUE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_time_series_value_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_time_series_value_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "time_series_value", "i": 0, "n": 6709580}' AS TIME_SERIES_VALUE), CAST('{"datatype": "time_series_value", "i": 64, "n": 4189171}' AS TIME_SERIES_VALUE), 'time_series_value:0'),
     (1, CAST('{"datatype": "time_series_value", "i": 1, "n": 8292412}' AS TIME_SERIES_VALUE), CAST('{"datatype": "time_series_value", "i": 65, "n": 2173433}' AS TIME_SERIES_VALUE), 'time_series_value:1'),
     (2, CAST('{"datatype": "time_series_value", "i": 2, "n": 2611148}' AS TIME_SERIES_VALUE), CAST('{"datatype": "time_series_value", "i": 66, "n": 1222017}' AS TIME_SERIES_VALUE), 'time_series_value:2'),
@@ -4631,9 +4631,9 @@ INSERT INTO __SB_NAMESPACE__.dt_time_series_value_values VALUES
     (62, CAST('{"datatype": "time_series_value", "i": 62, "n": 3367748}' AS TIME_SERIES_VALUE), CAST('{"datatype": "time_series_value", "i": 126, "n": 8618305}' AS TIME_SERIES_VALUE), 'time_series_value:62'),
     (63, CAST('{"datatype": "time_series_value", "i": 63, "n": 6997794}' AS TIME_SERIES_VALUE), CAST('{"datatype": "time_series_value", "i": 127, "n": 8262367}' AS TIME_SERIES_VALUE), 'time_series_value:63');
 CREATE TABLE __SB_NAMESPACE__.dt_columnar_segment_values (case_id INTEGER PRIMARY KEY, sample_value COLUMNAR_SEGMENT, alternate_value COLUMNAR_SEGMENT, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('columnar_segment', 'COLUMNAR_SEGMENT', 64);
-INSERT INTO __SB_NAMESPACE__.dt_columnar_segment_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_columnar_segment_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "columnar_segment", "i": 0, "n": 1043093}' AS COLUMNAR_SEGMENT), CAST('{"datatype": "columnar_segment", "i": 64, "n": 5419983}' AS COLUMNAR_SEGMENT), 'columnar_segment:0'),
     (1, CAST('{"datatype": "columnar_segment", "i": 1, "n": 3667773}' AS COLUMNAR_SEGMENT), CAST('{"datatype": "columnar_segment", "i": 65, "n": 2453472}' AS COLUMNAR_SEGMENT), 'columnar_segment:1'),
     (2, CAST('{"datatype": "columnar_segment", "i": 2, "n": 6455677}' AS COLUMNAR_SEGMENT), CAST('{"datatype": "columnar_segment", "i": 66, "n": 4747064}' AS COLUMNAR_SEGMENT), 'columnar_segment:2'),
@@ -4699,9 +4699,9 @@ INSERT INTO __SB_NAMESPACE__.dt_columnar_segment_values VALUES
     (62, CAST('{"datatype": "columnar_segment", "i": 62, "n": 9252439}' AS COLUMNAR_SEGMENT), CAST('{"datatype": "columnar_segment", "i": 126, "n": 4173073}' AS COLUMNAR_SEGMENT), 'columnar_segment:62'),
     (63, CAST('{"datatype": "columnar_segment", "i": 63, "n": 2700616}' AS COLUMNAR_SEGMENT), CAST('{"datatype": "columnar_segment", "i": 127, "n": 3399719}' AS COLUMNAR_SEGMENT), 'columnar_segment:63');
 CREATE TABLE __SB_NAMESPACE__.dt_aggregate_state_values (case_id INTEGER PRIMARY KEY, sample_value AGGREGATE_STATE, alternate_value AGGREGATE_STATE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('aggregate_state', 'AGGREGATE_STATE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_aggregate_state_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_aggregate_state_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "aggregate_state", "i": 0, "n": 8099933}' AS AGGREGATE_STATE), CAST('{"datatype": "aggregate_state", "i": 64, "n": 7483914}' AS AGGREGATE_STATE), 'aggregate_state:0'),
     (1, CAST('{"datatype": "aggregate_state", "i": 1, "n": 2954886}' AS AGGREGATE_STATE), CAST('{"datatype": "aggregate_state", "i": 65, "n": 8276677}' AS AGGREGATE_STATE), 'aggregate_state:1'),
     (2, CAST('{"datatype": "aggregate_state", "i": 2, "n": 9207144}' AS AGGREGATE_STATE), CAST('{"datatype": "aggregate_state", "i": 66, "n": 3177905}' AS AGGREGATE_STATE), 'aggregate_state:2'),
@@ -4767,9 +4767,9 @@ INSERT INTO __SB_NAMESPACE__.dt_aggregate_state_values VALUES
     (62, CAST('{"datatype": "aggregate_state", "i": 62, "n": 6057056}' AS AGGREGATE_STATE), CAST('{"datatype": "aggregate_state", "i": 126, "n": 1796052}' AS AGGREGATE_STATE), 'aggregate_state:62'),
     (63, CAST('{"datatype": "aggregate_state", "i": 63, "n": 9276189}' AS AGGREGATE_STATE), CAST('{"datatype": "aggregate_state", "i": 127, "n": 8867428}' AS AGGREGATE_STATE), 'aggregate_state:63');
 CREATE TABLE __SB_NAMESPACE__.dt_hll_sketch_values (case_id INTEGER PRIMARY KEY, sample_value HLL_SKETCH, alternate_value HLL_SKETCH, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('hll_sketch', 'HLL_SKETCH', 64);
-INSERT INTO __SB_NAMESPACE__.dt_hll_sketch_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_hll_sketch_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "hll_sketch", "i": 0, "n": 4897847}' AS HLL_SKETCH), CAST('{"datatype": "hll_sketch", "i": 64, "n": 2166566}' AS HLL_SKETCH), 'hll_sketch:0'),
     (1, CAST('{"datatype": "hll_sketch", "i": 1, "n": 3877733}' AS HLL_SKETCH), CAST('{"datatype": "hll_sketch", "i": 65, "n": 8785040}' AS HLL_SKETCH), 'hll_sketch:1'),
     (2, CAST('{"datatype": "hll_sketch", "i": 2, "n": 4947915}' AS HLL_SKETCH), CAST('{"datatype": "hll_sketch", "i": 66, "n": 4300702}' AS HLL_SKETCH), 'hll_sketch:2'),
@@ -4835,9 +4835,9 @@ INSERT INTO __SB_NAMESPACE__.dt_hll_sketch_values VALUES
     (62, CAST('{"datatype": "hll_sketch", "i": 62, "n": 8739829}' AS HLL_SKETCH), CAST('{"datatype": "hll_sketch", "i": 126, "n": 492840}' AS HLL_SKETCH), 'hll_sketch:62'),
     (63, CAST('{"datatype": "hll_sketch", "i": 63, "n": 5312293}' AS HLL_SKETCH), CAST('{"datatype": "hll_sketch", "i": 127, "n": 804267}' AS HLL_SKETCH), 'hll_sketch:63');
 CREATE TABLE __SB_NAMESPACE__.dt_bloom_filter_values (case_id INTEGER PRIMARY KEY, sample_value BLOOM_FILTER, alternate_value BLOOM_FILTER, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('bloom_filter', 'BLOOM_FILTER', 64);
-INSERT INTO __SB_NAMESPACE__.dt_bloom_filter_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_bloom_filter_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "bloom_filter", "i": 0, "n": 3394106}' AS BLOOM_FILTER), CAST('{"datatype": "bloom_filter", "i": 64, "n": 8792534}' AS BLOOM_FILTER), 'bloom_filter:0'),
     (1, CAST('{"datatype": "bloom_filter", "i": 1, "n": 970900}' AS BLOOM_FILTER), CAST('{"datatype": "bloom_filter", "i": 65, "n": 8826609}' AS BLOOM_FILTER), 'bloom_filter:1'),
     (2, CAST('{"datatype": "bloom_filter", "i": 2, "n": 7453261}' AS BLOOM_FILTER), CAST('{"datatype": "bloom_filter", "i": 66, "n": 6301957}' AS BLOOM_FILTER), 'bloom_filter:2'),
@@ -4903,9 +4903,9 @@ INSERT INTO __SB_NAMESPACE__.dt_bloom_filter_values VALUES
     (62, CAST('{"datatype": "bloom_filter", "i": 62, "n": 5724310}' AS BLOOM_FILTER), CAST('{"datatype": "bloom_filter", "i": 126, "n": 6546517}' AS BLOOM_FILTER), 'bloom_filter:62'),
     (63, CAST('{"datatype": "bloom_filter", "i": 63, "n": 8877290}' AS BLOOM_FILTER), CAST('{"datatype": "bloom_filter", "i": 127, "n": 5147942}' AS BLOOM_FILTER), 'bloom_filter:63');
 CREATE TABLE __SB_NAMESPACE__.dt_quantile_sketch_values (case_id INTEGER PRIMARY KEY, sample_value QUANTILE_SKETCH, alternate_value QUANTILE_SKETCH, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('quantile_sketch', 'QUANTILE_SKETCH', 64);
-INSERT INTO __SB_NAMESPACE__.dt_quantile_sketch_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_quantile_sketch_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "quantile_sketch", "i": 0, "n": 7041296}' AS QUANTILE_SKETCH), CAST('{"datatype": "quantile_sketch", "i": 64, "n": 7915886}' AS QUANTILE_SKETCH), 'quantile_sketch:0'),
     (1, CAST('{"datatype": "quantile_sketch", "i": 1, "n": 390303}' AS QUANTILE_SKETCH), CAST('{"datatype": "quantile_sketch", "i": 65, "n": 2052565}' AS QUANTILE_SKETCH), 'quantile_sketch:1'),
     (2, CAST('{"datatype": "quantile_sketch", "i": 2, "n": 1093591}' AS QUANTILE_SKETCH), CAST('{"datatype": "quantile_sketch", "i": 66, "n": 3220867}' AS QUANTILE_SKETCH), 'quantile_sketch:2'),
@@ -4971,9 +4971,9 @@ INSERT INTO __SB_NAMESPACE__.dt_quantile_sketch_values VALUES
     (62, CAST('{"datatype": "quantile_sketch", "i": 62, "n": 4332507}' AS QUANTILE_SKETCH), CAST('{"datatype": "quantile_sketch", "i": 126, "n": 2545585}' AS QUANTILE_SKETCH), 'quantile_sketch:62'),
     (63, CAST('{"datatype": "quantile_sketch", "i": 63, "n": 1655060}' AS QUANTILE_SKETCH), CAST('{"datatype": "quantile_sketch", "i": 127, "n": 2226666}' AS QUANTILE_SKETCH), 'quantile_sketch:63');
 CREATE TABLE __SB_NAMESPACE__.dt_histogram_sketch_values (case_id INTEGER PRIMARY KEY, sample_value HISTOGRAM_SKETCH, alternate_value HISTOGRAM_SKETCH, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('histogram_sketch', 'HISTOGRAM_SKETCH', 64);
-INSERT INTO __SB_NAMESPACE__.dt_histogram_sketch_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_histogram_sketch_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "histogram_sketch", "i": 0, "n": 4304335}' AS HISTOGRAM_SKETCH), CAST('{"datatype": "histogram_sketch", "i": 64, "n": 7139117}' AS HISTOGRAM_SKETCH), 'histogram_sketch:0'),
     (1, CAST('{"datatype": "histogram_sketch", "i": 1, "n": 771526}' AS HISTOGRAM_SKETCH), CAST('{"datatype": "histogram_sketch", "i": 65, "n": 3158224}' AS HISTOGRAM_SKETCH), 'histogram_sketch:1'),
     (2, CAST('{"datatype": "histogram_sketch", "i": 2, "n": 167744}' AS HISTOGRAM_SKETCH), CAST('{"datatype": "histogram_sketch", "i": 66, "n": 9153884}' AS HISTOGRAM_SKETCH), 'histogram_sketch:2'),
@@ -5039,9 +5039,9 @@ INSERT INTO __SB_NAMESPACE__.dt_histogram_sketch_values VALUES
     (62, CAST('{"datatype": "histogram_sketch", "i": 62, "n": 2662842}' AS HISTOGRAM_SKETCH), CAST('{"datatype": "histogram_sketch", "i": 126, "n": 2760967}' AS HISTOGRAM_SKETCH), 'histogram_sketch:62'),
     (63, CAST('{"datatype": "histogram_sketch", "i": 63, "n": 7619642}' AS HISTOGRAM_SKETCH), CAST('{"datatype": "histogram_sketch", "i": 127, "n": 2360970}' AS HISTOGRAM_SKETCH), 'histogram_sketch:63');
 CREATE TABLE __SB_NAMESPACE__.dt_ranking_summary_values (case_id INTEGER PRIMARY KEY, sample_value RANKING_SUMMARY, alternate_value RANKING_SUMMARY, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('ranking_summary', 'RANKING_SUMMARY', 64);
-INSERT INTO __SB_NAMESPACE__.dt_ranking_summary_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_ranking_summary_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "ranking_summary", "i": 0, "n": 5488945}' AS RANKING_SUMMARY), CAST('{"datatype": "ranking_summary", "i": 64, "n": 7824580}' AS RANKING_SUMMARY), 'ranking_summary:0'),
     (1, CAST('{"datatype": "ranking_summary", "i": 1, "n": 3523555}' AS RANKING_SUMMARY), CAST('{"datatype": "ranking_summary", "i": 65, "n": 9672310}' AS RANKING_SUMMARY), 'ranking_summary:1'),
     (2, CAST('{"datatype": "ranking_summary", "i": 2, "n": 2371888}' AS RANKING_SUMMARY), CAST('{"datatype": "ranking_summary", "i": 66, "n": 2455121}' AS RANKING_SUMMARY), 'ranking_summary:2'),
@@ -5107,9 +5107,9 @@ INSERT INTO __SB_NAMESPACE__.dt_ranking_summary_values VALUES
     (62, CAST('{"datatype": "ranking_summary", "i": 62, "n": 6541338}' AS RANKING_SUMMARY), CAST('{"datatype": "ranking_summary", "i": 126, "n": 5771281}' AS RANKING_SUMMARY), 'ranking_summary:62'),
     (63, CAST('{"datatype": "ranking_summary", "i": 63, "n": 7807242}' AS RANKING_SUMMARY), CAST('{"datatype": "ranking_summary", "i": 127, "n": 5496153}' AS RANKING_SUMMARY), 'ranking_summary:63');
 CREATE TABLE __SB_NAMESPACE__.dt_vector_summary_values (case_id INTEGER PRIMARY KEY, sample_value VECTOR_SUMMARY, alternate_value VECTOR_SUMMARY, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('vector_summary', 'VECTOR_SUMMARY', 64);
-INSERT INTO __SB_NAMESPACE__.dt_vector_summary_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_vector_summary_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "vector_summary", "i": 0, "n": 5064741}' AS VECTOR_SUMMARY), CAST('{"datatype": "vector_summary", "i": 64, "n": 3215089}' AS VECTOR_SUMMARY), 'vector_summary:0'),
     (1, CAST('{"datatype": "vector_summary", "i": 1, "n": 5730621}' AS VECTOR_SUMMARY), CAST('{"datatype": "vector_summary", "i": 65, "n": 1897856}' AS VECTOR_SUMMARY), 'vector_summary:1'),
     (2, CAST('{"datatype": "vector_summary", "i": 2, "n": 2180513}' AS VECTOR_SUMMARY), CAST('{"datatype": "vector_summary", "i": 66, "n": 9998525}' AS VECTOR_SUMMARY), 'vector_summary:2'),
@@ -5175,9 +5175,9 @@ INSERT INTO __SB_NAMESPACE__.dt_vector_summary_values VALUES
     (62, CAST('{"datatype": "vector_summary", "i": 62, "n": 6561666}' AS VECTOR_SUMMARY), CAST('{"datatype": "vector_summary", "i": 126, "n": 9134875}' AS VECTOR_SUMMARY), 'vector_summary:62'),
     (63, CAST('{"datatype": "vector_summary", "i": 63, "n": 9297725}' AS VECTOR_SUMMARY), CAST('{"datatype": "vector_summary", "i": 127, "n": 3632615}' AS VECTOR_SUMMARY), 'vector_summary:63');
 CREATE TABLE __SB_NAMESPACE__.dt_lob_locator_values (case_id INTEGER PRIMARY KEY, sample_value LOB_LOCATOR, alternate_value LOB_LOCATOR, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('lob_locator', 'LOB_LOCATOR', 64);
-INSERT INTO __SB_NAMESPACE__.dt_lob_locator_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_lob_locator_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "lob_locator", "i": 0, "n": 8358883}' AS LOB_LOCATOR), CAST('{"datatype": "lob_locator", "i": 64, "n": 7332127}' AS LOB_LOCATOR), 'lob_locator:0'),
     (1, CAST('{"datatype": "lob_locator", "i": 1, "n": 6307962}' AS LOB_LOCATOR), CAST('{"datatype": "lob_locator", "i": 65, "n": 7689057}' AS LOB_LOCATOR), 'lob_locator:1'),
     (2, CAST('{"datatype": "lob_locator", "i": 2, "n": 934622}' AS LOB_LOCATOR), CAST('{"datatype": "lob_locator", "i": 66, "n": 9123745}' AS LOB_LOCATOR), 'lob_locator:2'),
@@ -5243,9 +5243,9 @@ INSERT INTO __SB_NAMESPACE__.dt_lob_locator_values VALUES
     (62, CAST('{"datatype": "lob_locator", "i": 62, "n": 6381091}' AS LOB_LOCATOR), CAST('{"datatype": "lob_locator", "i": 126, "n": 4629151}' AS LOB_LOCATOR), 'lob_locator:62'),
     (63, CAST('{"datatype": "lob_locator", "i": 63, "n": 3307268}' AS LOB_LOCATOR), CAST('{"datatype": "lob_locator", "i": 127, "n": 3857612}' AS LOB_LOCATOR), 'lob_locator:63');
 CREATE TABLE __SB_NAMESPACE__.dt_external_file_locator_values (case_id INTEGER PRIMARY KEY, sample_value EXTERNAL_FILE_LOCATOR, alternate_value EXTERNAL_FILE_LOCATOR, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('external_file_locator', 'EXTERNAL_FILE_LOCATOR', 64);
-INSERT INTO __SB_NAMESPACE__.dt_external_file_locator_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_external_file_locator_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "external_file_locator", "i": 0, "n": 6722216}' AS EXTERNAL_FILE_LOCATOR), CAST('{"datatype": "external_file_locator", "i": 64, "n": 8031354}' AS EXTERNAL_FILE_LOCATOR), 'external_file_locator:0'),
     (1, CAST('{"datatype": "external_file_locator", "i": 1, "n": 2108021}' AS EXTERNAL_FILE_LOCATOR), CAST('{"datatype": "external_file_locator", "i": 65, "n": 4097021}' AS EXTERNAL_FILE_LOCATOR), 'external_file_locator:1'),
     (2, CAST('{"datatype": "external_file_locator", "i": 2, "n": 3068505}' AS EXTERNAL_FILE_LOCATOR), CAST('{"datatype": "external_file_locator", "i": 66, "n": 4312061}' AS EXTERNAL_FILE_LOCATOR), 'external_file_locator:2'),
@@ -5311,9 +5311,9 @@ INSERT INTO __SB_NAMESPACE__.dt_external_file_locator_values VALUES
     (62, CAST('{"datatype": "external_file_locator", "i": 62, "n": 6713737}' AS EXTERNAL_FILE_LOCATOR), CAST('{"datatype": "external_file_locator", "i": 126, "n": 8831258}' AS EXTERNAL_FILE_LOCATOR), 'external_file_locator:62'),
     (63, CAST('{"datatype": "external_file_locator", "i": 63, "n": 5134867}' AS EXTERNAL_FILE_LOCATOR), CAST('{"datatype": "external_file_locator", "i": 127, "n": 4441520}' AS EXTERNAL_FILE_LOCATOR), 'external_file_locator:63');
 CREATE TABLE __SB_NAMESPACE__.dt_remote_object_locator_values (case_id INTEGER PRIMARY KEY, sample_value REMOTE_OBJECT_LOCATOR, alternate_value REMOTE_OBJECT_LOCATOR, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('remote_object_locator', 'REMOTE_OBJECT_LOCATOR', 64);
-INSERT INTO __SB_NAMESPACE__.dt_remote_object_locator_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_remote_object_locator_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "remote_object_locator", "i": 0, "n": 9110670}' AS REMOTE_OBJECT_LOCATOR), CAST('{"datatype": "remote_object_locator", "i": 64, "n": 2119724}' AS REMOTE_OBJECT_LOCATOR), 'remote_object_locator:0'),
     (1, CAST('{"datatype": "remote_object_locator", "i": 1, "n": 9952956}' AS REMOTE_OBJECT_LOCATOR), CAST('{"datatype": "remote_object_locator", "i": 65, "n": 1289442}' AS REMOTE_OBJECT_LOCATOR), 'remote_object_locator:1'),
     (2, CAST('{"datatype": "remote_object_locator", "i": 2, "n": 2497600}' AS REMOTE_OBJECT_LOCATOR), CAST('{"datatype": "remote_object_locator", "i": 66, "n": 458879}' AS REMOTE_OBJECT_LOCATOR), 'remote_object_locator:2'),
@@ -5379,9 +5379,9 @@ INSERT INTO __SB_NAMESPACE__.dt_remote_object_locator_values VALUES
     (62, CAST('{"datatype": "remote_object_locator", "i": 62, "n": 5804971}' AS REMOTE_OBJECT_LOCATOR), CAST('{"datatype": "remote_object_locator", "i": 126, "n": 5948472}' AS REMOTE_OBJECT_LOCATOR), 'remote_object_locator:62'),
     (63, CAST('{"datatype": "remote_object_locator", "i": 63, "n": 7228423}' AS REMOTE_OBJECT_LOCATOR), CAST('{"datatype": "remote_object_locator", "i": 127, "n": 4679618}' AS REMOTE_OBJECT_LOCATOR), 'remote_object_locator:63');
 CREATE TABLE __SB_NAMESPACE__.dt_bridge_handle_values (case_id INTEGER PRIMARY KEY, sample_value BRIDGE_HANDLE, alternate_value BRIDGE_HANDLE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('bridge_handle', 'BRIDGE_HANDLE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_bridge_handle_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_bridge_handle_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "bridge_handle", "i": 0, "n": 3943225}' AS BRIDGE_HANDLE), CAST('{"datatype": "bridge_handle", "i": 64, "n": 1951371}' AS BRIDGE_HANDLE), 'bridge_handle:0'),
     (1, CAST('{"datatype": "bridge_handle", "i": 1, "n": 8234309}' AS BRIDGE_HANDLE), CAST('{"datatype": "bridge_handle", "i": 65, "n": 1136708}' AS BRIDGE_HANDLE), 'bridge_handle:1'),
     (2, CAST('{"datatype": "bridge_handle", "i": 2, "n": 28043}' AS BRIDGE_HANDLE), CAST('{"datatype": "bridge_handle", "i": 66, "n": 6638259}' AS BRIDGE_HANDLE), 'bridge_handle:2'),
@@ -5447,9 +5447,9 @@ INSERT INTO __SB_NAMESPACE__.dt_bridge_handle_values VALUES
     (62, CAST('{"datatype": "bridge_handle", "i": 62, "n": 4433392}' AS BRIDGE_HANDLE), CAST('{"datatype": "bridge_handle", "i": 126, "n": 9062705}' AS BRIDGE_HANDLE), 'bridge_handle:62'),
     (63, CAST('{"datatype": "bridge_handle", "i": 63, "n": 8039284}' AS BRIDGE_HANDLE), CAST('{"datatype": "bridge_handle", "i": 127, "n": 495652}' AS BRIDGE_HANDLE), 'bridge_handle:63');
 CREATE TABLE __SB_NAMESPACE__.dt_cursor_handle_values (case_id INTEGER PRIMARY KEY, sample_value CURSOR_HANDLE, alternate_value CURSOR_HANDLE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('cursor_handle', 'CURSOR_HANDLE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_cursor_handle_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_cursor_handle_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "cursor_handle", "i": 0, "n": 4947046}' AS CURSOR_HANDLE), CAST('{"datatype": "cursor_handle", "i": 64, "n": 9309680}' AS CURSOR_HANDLE), 'cursor_handle:0'),
     (1, CAST('{"datatype": "cursor_handle", "i": 1, "n": 9424812}' AS CURSOR_HANDLE), CAST('{"datatype": "cursor_handle", "i": 65, "n": 1842366}' AS CURSOR_HANDLE), 'cursor_handle:1'),
     (2, CAST('{"datatype": "cursor_handle", "i": 2, "n": 7586713}' AS CURSOR_HANDLE), CAST('{"datatype": "cursor_handle", "i": 66, "n": 4904803}' AS CURSOR_HANDLE), 'cursor_handle:2'),
@@ -5515,9 +5515,9 @@ INSERT INTO __SB_NAMESPACE__.dt_cursor_handle_values VALUES
     (62, CAST('{"datatype": "cursor_handle", "i": 62, "n": 2109470}' AS CURSOR_HANDLE), CAST('{"datatype": "cursor_handle", "i": 126, "n": 342992}' AS CURSOR_HANDLE), 'cursor_handle:62'),
     (63, CAST('{"datatype": "cursor_handle", "i": 63, "n": 9795341}' AS CURSOR_HANDLE), CAST('{"datatype": "cursor_handle", "i": 127, "n": 2913811}' AS CURSOR_HANDLE), 'cursor_handle:63');
 CREATE TABLE __SB_NAMESPACE__.dt_system_reference_values (case_id INTEGER PRIMARY KEY, sample_value SYSTEM_REFERENCE, alternate_value SYSTEM_REFERENCE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('system_reference', 'SYSTEM_REFERENCE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_system_reference_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_system_reference_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "system_reference", "i": 0, "n": 2150590}' AS SYSTEM_REFERENCE), CAST('{"datatype": "system_reference", "i": 64, "n": 6931855}' AS SYSTEM_REFERENCE), 'system_reference:0'),
     (1, CAST('{"datatype": "system_reference", "i": 1, "n": 4803238}' AS SYSTEM_REFERENCE), CAST('{"datatype": "system_reference", "i": 65, "n": 9719100}' AS SYSTEM_REFERENCE), 'system_reference:1'),
     (2, CAST('{"datatype": "system_reference", "i": 2, "n": 6834427}' AS SYSTEM_REFERENCE), CAST('{"datatype": "system_reference", "i": 66, "n": 8938505}' AS SYSTEM_REFERENCE), 'system_reference:2'),
@@ -5583,9 +5583,9 @@ INSERT INTO __SB_NAMESPACE__.dt_system_reference_values VALUES
     (62, CAST('{"datatype": "system_reference", "i": 62, "n": 8610874}' AS SYSTEM_REFERENCE), CAST('{"datatype": "system_reference", "i": 126, "n": 7023871}' AS SYSTEM_REFERENCE), 'system_reference:62'),
     (63, CAST('{"datatype": "system_reference", "i": 63, "n": 790435}' AS SYSTEM_REFERENCE), CAST('{"datatype": "system_reference", "i": 127, "n": 4458316}' AS SYSTEM_REFERENCE), 'system_reference:63');
 CREATE TABLE __SB_NAMESPACE__.dt_opaque_extension_values (case_id INTEGER PRIMARY KEY, sample_value OPAQUE_EXTENSION, alternate_value OPAQUE_EXTENSION, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('opaque_extension', 'OPAQUE_EXTENSION', 64);
-INSERT INTO __SB_NAMESPACE__.dt_opaque_extension_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_opaque_extension_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "opaque_extension", "i": 0, "n": 6571242}' AS OPAQUE_EXTENSION), CAST('{"datatype": "opaque_extension", "i": 64, "n": 5106976}' AS OPAQUE_EXTENSION), 'opaque_extension:0'),
     (1, CAST('{"datatype": "opaque_extension", "i": 1, "n": 1462746}' AS OPAQUE_EXTENSION), CAST('{"datatype": "opaque_extension", "i": 65, "n": 1881175}' AS OPAQUE_EXTENSION), 'opaque_extension:1'),
     (2, CAST('{"datatype": "opaque_extension", "i": 2, "n": 6239297}' AS OPAQUE_EXTENSION), CAST('{"datatype": "opaque_extension", "i": 66, "n": 5461892}' AS OPAQUE_EXTENSION), 'opaque_extension:2'),
@@ -5651,9 +5651,9 @@ INSERT INTO __SB_NAMESPACE__.dt_opaque_extension_values VALUES
     (62, CAST('{"datatype": "opaque_extension", "i": 62, "n": 3111304}' AS OPAQUE_EXTENSION), CAST('{"datatype": "opaque_extension", "i": 126, "n": 6142620}' AS OPAQUE_EXTENSION), 'opaque_extension:62'),
     (63, CAST('{"datatype": "opaque_extension", "i": 63, "n": 3702357}' AS OPAQUE_EXTENSION), CAST('{"datatype": "opaque_extension", "i": 127, "n": 2198074}' AS OPAQUE_EXTENSION), 'opaque_extension:63');
 CREATE TABLE __SB_NAMESPACE__.dt_cursor_values (case_id INTEGER PRIMARY KEY, sample_value CURSOR, alternate_value CURSOR, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('cursor', 'CURSOR', 64);
-INSERT INTO __SB_NAMESPACE__.dt_cursor_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_cursor_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "cursor", "i": 0, "n": 7521433}' AS CURSOR), CAST('{"datatype": "cursor", "i": 64, "n": 6834024}' AS CURSOR), 'cursor:0'),
     (1, CAST('{"datatype": "cursor", "i": 1, "n": 6665254}' AS CURSOR), CAST('{"datatype": "cursor", "i": 65, "n": 2334866}' AS CURSOR), 'cursor:1'),
     (2, CAST('{"datatype": "cursor", "i": 2, "n": 9405651}' AS CURSOR), CAST('{"datatype": "cursor", "i": 66, "n": 5539107}' AS CURSOR), 'cursor:2'),
@@ -5719,9 +5719,9 @@ INSERT INTO __SB_NAMESPACE__.dt_cursor_values VALUES
     (62, CAST('{"datatype": "cursor", "i": 62, "n": 3169138}' AS CURSOR), CAST('{"datatype": "cursor", "i": 126, "n": 5260565}' AS CURSOR), 'cursor:62'),
     (63, CAST('{"datatype": "cursor", "i": 63, "n": 3711248}' AS CURSOR), CAST('{"datatype": "cursor", "i": 127, "n": 5989348}' AS CURSOR), 'cursor:63');
 CREATE TABLE __SB_NAMESPACE__.dt_result_set_values (case_id INTEGER PRIMARY KEY, sample_value RESULT_SET, alternate_value RESULT_SET, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('result_set', 'RESULT_SET', 64);
-INSERT INTO __SB_NAMESPACE__.dt_result_set_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_result_set_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "result_set", "i": 0, "n": 5882431}' AS RESULT_SET), CAST('{"datatype": "result_set", "i": 64, "n": 6650267}' AS RESULT_SET), 'result_set:0'),
     (1, CAST('{"datatype": "result_set", "i": 1, "n": 17812}' AS RESULT_SET), CAST('{"datatype": "result_set", "i": 65, "n": 6266192}' AS RESULT_SET), 'result_set:1'),
     (2, CAST('{"datatype": "result_set", "i": 2, "n": 4999826}' AS RESULT_SET), CAST('{"datatype": "result_set", "i": 66, "n": 7443665}' AS RESULT_SET), 'result_set:2'),
@@ -5787,9 +5787,9 @@ INSERT INTO __SB_NAMESPACE__.dt_result_set_values VALUES
     (62, CAST('{"datatype": "result_set", "i": 62, "n": 2728501}' AS RESULT_SET), CAST('{"datatype": "result_set", "i": 126, "n": 4331743}' AS RESULT_SET), 'result_set:62'),
     (63, CAST('{"datatype": "result_set", "i": 63, "n": 8500558}' AS RESULT_SET), CAST('{"datatype": "result_set", "i": 127, "n": 1586001}' AS RESULT_SET), 'result_set:63');
 CREATE TABLE __SB_NAMESPACE__.dt_table_value_values (case_id INTEGER PRIMARY KEY, sample_value TABLE_VALUE, alternate_value TABLE_VALUE, seed_text VARCHAR(128) NOT NULL);
-INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest VALUES
+INSERT INTO __SB_NAMESPACE__.datatype_surface_manifest (datatype_name, sql_type_name, generated_rows) VALUES
     ('table_value', 'TABLE_VALUE', 64);
-INSERT INTO __SB_NAMESPACE__.dt_table_value_values VALUES
+INSERT INTO __SB_NAMESPACE__.dt_table_value_values (case_id, sample_value, alternate_value, seed_text) VALUES
     (0, CAST('{"datatype": "table_value", "i": 0, "n": 240318}' AS TABLE_VALUE), CAST('{"datatype": "table_value", "i": 64, "n": 3110816}' AS TABLE_VALUE), 'table_value:0'),
     (1, CAST('{"datatype": "table_value", "i": 1, "n": 729710}' AS TABLE_VALUE), CAST('{"datatype": "table_value", "i": 65, "n": 1339487}' AS TABLE_VALUE), 'table_value:1'),
     (2, CAST('{"datatype": "table_value", "i": 2, "n": 5046952}' AS TABLE_VALUE), CAST('{"datatype": "table_value", "i": 66, "n": 3799166}' AS TABLE_VALUE), 'table_value:2'),

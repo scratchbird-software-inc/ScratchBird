@@ -136,6 +136,7 @@ constexpr uint32_t kQueryFlagNoCache = 0x20;
 constexpr uint32_t kQueryFlagAutocommit = 0x40;
 constexpr uint32_t kQueryFlagScriptIngest = 0x80;
 constexpr uint32_t kQueryFlagScriptSizeHint = 0x100;
+constexpr uint32_t kQueryFlagScriptSummaryResult = 0x200;
 constexpr uint32_t kExecuteFlagAutocommit = 0x01;
 
 constexpr uint8_t kTxnFinalityPayloadVersion = 1;
