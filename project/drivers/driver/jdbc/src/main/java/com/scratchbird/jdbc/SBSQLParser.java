@@ -245,8 +245,7 @@ public class SBSQLParser {
      * <p>Quote-aware (single/double quotes) and comment-aware ({@code --} line
      * comments ride along verbatim with the statement; {@code /} {@code *} ... {@code *}{@code /}
      * block comments are likewise copied verbatim). Honors the
-     * {@code SET TERM <terminator>} client directive (Firebird / {@code sb_isql}
-     * semantics): the directive changes the active terminator and is consumed — it
+     * {@code SET TERM <terminator>} client directive: the directive changes the active terminator and is consumed — it
      * is not emitted as a statement and is not counted in statement indexing. This
      * lets procedural bodies (functions, procedures, triggers) contain inner
      * {@code ;} between {@code SET TERM ^} and the restoring {@code SET TERM ;^}.

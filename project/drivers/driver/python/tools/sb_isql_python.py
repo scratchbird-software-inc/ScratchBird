@@ -36,6 +36,17 @@ ROUTES = {"embedded", "ipc_local", "listener-parser", "manager-listener-parser"}
 PARSER_MODES = {"server-parser", "standalone-parser", "driver-sblr-uuid"}
 
 
+def bool_arg(value: str | None) -> bool:
+    if value is None:
+        return True
+    lowered = value.lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
+
+
 class JsonlWriter:
     def __init__(self, path: Path):
         self.path = path
@@ -63,6 +74,22 @@ def now_ns() -> int:
     return time.perf_counter_ns()
 
 
+def add_expected_refusal_ids(target: set[str], value: Any) -> None:
+    if isinstance(value, str):
+        target.add(value)
+        return
+    if isinstance(value, dict):
+        for key in ("statement_id", "statementId", "id"):
+            item = value.get(key)
+            if isinstance(item, str):
+                target.add(item)
+        for key in ("statement_ids", "statementIds", "expected_refusals", "expectedRefusals", "expected_diagnostics", "expectedDiagnostics"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                for item in nested:
+                    add_expected_refusal_ids(target, item)
+
+
 def load_expected_refusals(path: str | None) -> set[str]:
     if not path:
         return set()
@@ -70,10 +97,14 @@ def load_expected_refusals(path: str | None) -> set[str]:
     if not refusal_path.is_file():
         raise FileNotFoundError(f"expected refusal file not found: {refusal_path}")
     doc = json.loads(refusal_path.read_text(encoding="utf-8"))
+    expected: set[str] = set()
     if isinstance(doc, dict):
-        return {str(value) for value in doc.get("statement_ids", [])}
+        add_expected_refusal_ids(expected, doc)
+        return expected
     if isinstance(doc, list):
-        return {str(value) for value in doc}
+        for item in doc:
+            add_expected_refusal_ids(expected, item)
+        return expected
     raise ValueError("expected refusals must be a JSON object or array")
 
 
@@ -160,6 +191,14 @@ def connect_with_public_api(args: argparse.Namespace):
     else:
         kwargs["front_door_mode"] = "direct"
     return scratchbird.connect(**kwargs)
+
+
+def transport_mode_for_route(route: str, sslmode: str) -> str:
+    if route == "embedded":
+        return "embedded_no_network_transport"
+    if route == "ipc_local":
+        return "local_ipc_no_tls"
+    return "tls_disabled" if sslmode == "disable" else "tls_required"
 
 
 def emit_metadata_snapshot(conn, path: Path, args: argparse.Namespace) -> None:
@@ -268,6 +307,11 @@ def run_script(args: argparse.Namespace) -> int:
             "route": args.route,
             "parser_mode": args.parser_mode,
             "page_size": args.page_size,
+            "language_profile": args.language_profile,
+            "language_resource_identity": args.language_resource_identity,
+            "language_resource_hash": args.language_resource_hash,
+            "syntax_profile": args.syntax_profile,
+            "topology_profile": args.topology_profile,
             "elapsed_ns": connect_elapsed,
         })
 
@@ -369,6 +413,13 @@ def run_script(args: argparse.Namespace) -> int:
                 "round_trip_count": None,
                 "fetch_batch_count": None,
                 "server_revalidation_state": "required",
+                "language_profile": args.language_profile,
+                "language_resource_pack": args.language_resource_pack,
+                "language_resource_identity": args.language_resource_identity,
+                "language_resource_hash": args.language_resource_hash,
+                "syntax_profile": args.syntax_profile,
+                "topology_profile": args.topology_profile,
+                "standard_english_fallback": args.standard_english_fallback,
                 "transaction_id_observed": None,
                 "mga_authority": "engine",
                 "native_api_surface": "python_dbapi_2",
@@ -411,7 +462,7 @@ def run_script(args: argparse.Namespace) -> int:
 
     total_elapsed = now_ns() - run_started
     timing_groups["overall"] = total_elapsed
-    transport_mode = "tls_disabled" if args.sslmode == "disable" else "tls_required"
+    transport_mode = transport_mode_for_route(args.route, args.sslmode)
     summary = {
         "run_id": args.run_id,
         "driver_name": "python",
@@ -421,6 +472,14 @@ def run_script(args: argparse.Namespace) -> int:
         "namespace": args.namespace,
         "sslmode": args.sslmode,
         "transport_mode": transport_mode,
+        "language_resource_pack": args.language_resource_pack,
+        "language_resource_identity": args.language_resource_identity,
+        "language_resource_hash": args.language_resource_hash,
+        "language_resource_authority": "shared_server_parser_resource_pack",
+        "language_profile": args.language_profile,
+        "syntax_profile": args.syntax_profile,
+        "topology_profile": args.topology_profile,
+        "standard_english_fallback": args.standard_english_fallback,
         "status": "fail" if failures else "pass",
         "statement_count": len(statements),
         "failure_count": len(failures),
@@ -494,21 +553,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metrics", required=True)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--summary", required=True)
-    parser.add_argument("--stop-on-error", choices=("true", "false"), default="true")
+    parser.add_argument("--stop-on-error", nargs="?", const="true", default="true", type=bool_arg)
     parser.add_argument("--expected-refusals")
     parser.add_argument("--statement-timeout-ms", type=int, default=30000)
     parser.add_argument("--fetch-size", type=int, default=1000)
     parser.add_argument("--concurrency-worker", type=int, default=0)
     parser.add_argument("--run-id", default=os.environ.get("SB_DRIVER_RUN_ID", "manual"))
-    parser.add_argument("--create-database", action="store_true")
+    parser.add_argument("--create-database", nargs="?", const="true", default="false", type=bool_arg)
     parser.add_argument("--create-emulation-mode", default="sbsql")
+    parser.add_argument("--language-resource-pack", default="project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack")
+    parser.add_argument("--language-resource-identity", default="sbsql.common_resource_pack.v1")
+    parser.add_argument("--language-resource-hash", default="sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc")
+    parser.add_argument("--language-profile", default="en-US")
+    parser.add_argument("--syntax-profile", default="sbsql.v3")
+    parser.add_argument("--topology-profile", default="topology.sbsql.canonical.v1")
+    parser.add_argument("--standard-english-fallback", nargs="?", const="true", default="true", type=bool_arg)
     return parser
 
 
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
-    args.stop_on_error = args.stop_on_error.lower() == "true"
     return run_script(args)
 
 

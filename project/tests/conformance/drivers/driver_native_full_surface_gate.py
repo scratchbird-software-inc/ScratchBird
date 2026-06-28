@@ -27,6 +27,7 @@ INPUT_REL = Path("project/tests/conformance/drivers/native_full_surface_gate_inp
 TOOL_MATRIX_REL = Path("project/tests/conformance/drivers/native_tool_matrix.json")
 MANIFEST_REL = Path("project/drivers/DriverPackageManifest.csv")
 REPORT_REL = Path("build/reports/driver_native_full_surface_gate.json")
+LANGUAGE_SURFACE_REL = Path("project/drivers/language/sbsql_language_surface_manifest.json")
 
 RELEASE_BUCKETS_REQUIRING_NATIVE_TOOL = {
     "release_candidate",
@@ -36,6 +37,34 @@ RELEASE_BUCKETS_REQUIRING_NATIVE_TOOL = {
 
 PLANNED_NOT_IMPLEMENTED_STATUSES = {
     "planned_not_implemented",
+}
+
+ALLOWED_TRANSPORT_MODES = {
+    "embedded_no_network_transport",
+    "local_ipc_no_tls",
+    "tls_disabled",
+    "tls_required",
+}
+
+ALLOWED_SSLMODES = {
+    "allow",
+    "disable",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
+}
+
+NETWORK_ROUTES = {
+    "listener-parser",
+    "manager-listener-parser",
+}
+
+ROUTE_TRANSPORT_MODES = {
+    "embedded": {"embedded_no_network_transport"},
+    "ipc_local": {"local_ipc_no_tls"},
+    "listener-parser": {"tls_disabled", "tls_required"},
+    "manager-listener-parser": {"tls_disabled", "tls_required"},
 }
 
 
@@ -91,6 +120,13 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         "--concurrency-worker",
         "--create-database",
         "--create-emulation-mode",
+        "--language-resource-pack",
+        "--language-resource-identity",
+        "--language-resource-hash",
+        "--language-profile",
+        "--syntax-profile",
+        "--topology-profile",
+        "--standard-english-fallback",
     }
     required_artifacts = {
         "command-events.jsonl",
@@ -139,7 +175,51 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_tool_matrix(doc: dict[str, Any], manifest_rows: list[dict[str, str]], repo_root: Path) -> list[str]:
+def language_contract(repo_root: Path) -> dict[str, Any]:
+    manifest = load_json(repo_root / LANGUAGE_SURFACE_REL)
+    metadata = manifest.get("common_resource_pack_metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("language surface manifest missing common_resource_pack_metadata")
+    return {
+        "resource_identity": str(metadata.get("resource_identity", "")),
+        "resource_hash": str(metadata.get("resource_pack_common_resource_hash", "")),
+        "resource_pack_path": str(metadata.get("resource_pack_path", "")),
+        "syntax_profile": "sbsql.v3",
+        "topology_profile": "topology.sbsql.canonical.v1",
+        "supported_exact_profiles": {
+            str(profile)
+            for profile in as_list(metadata.get("supported_exact_profiles"))
+        },
+    }
+
+
+def argument_token_present(text: str, argument: str, tool: dict[str, Any]) -> bool:
+    argument_tokens = tool.get("argument_tokens")
+    if isinstance(argument_tokens, dict):
+        explicit = argument_tokens.get(argument)
+        if isinstance(explicit, str):
+            return explicit in text
+        if isinstance(explicit, list):
+            return any(str(token) in text for token in explicit)
+    name = argument[2:] if argument.startswith("--") else argument
+    return any(
+        token in text
+        for token in (
+            argument,
+            f'"{argument}"',
+            f"'{argument}'",
+            f'"{name}"',
+            f"'{name}'",
+        )
+    )
+
+
+def validate_tool_matrix(
+    doc: dict[str, Any],
+    manifest_rows: list[dict[str, str]],
+    gate_input: dict[str, Any],
+    repo_root: Path,
+) -> list[str]:
     errors: list[str] = []
     if doc.get("schema_version") != 1:
         errors.append("tool_matrix:schema_version_must_be_1")
@@ -148,6 +228,7 @@ def validate_tool_matrix(doc: dict[str, Any], manifest_rows: list[dict[str, str]
     if len(by_driver) != len(tools):
         errors.append("tool_matrix:duplicate_driver_entries")
     forbidden_tokens = [str(token) for token in as_list(doc.get("forbidden_tokens"))]
+    required_tool_arguments = [str(arg) for arg in as_list(gate_input.get("required_tool_arguments"))]
     driver_rows = [
         row for row in manifest_rows
         if row.get("category") == "driver"
@@ -185,14 +266,31 @@ def validate_tool_matrix(doc: dict[str, Any], manifest_rows: list[dict[str, str]
         missing_tokens = [token for token in native_tokens if token not in text]
         if missing_tokens:
             errors.append(f"tool_matrix:{name}:missing_native_api_tokens:{','.join(missing_tokens)}")
+        missing_arguments = [
+            argument for argument in required_tool_arguments
+            if not argument_token_present(text, argument, tool)
+        ]
+        if missing_arguments:
+            errors.append(f"tool_matrix:{name}:missing_required_tool_arguments:{','.join(missing_arguments)}")
         banned = [token for token in forbidden_tokens if token in text]
         if banned:
             errors.append(f"tool_matrix:{name}:forbidden_static_or_shellout_tokens:{','.join(banned)}")
     return errors
 
 
-def validate_artifacts(repo_root: Path, artifact_root: Path, gate_input: dict[str, Any]) -> list[str]:
+def validate_artifacts(
+    repo_root: Path,
+    artifact_root: Path,
+    gate_input: dict[str, Any],
+    *,
+    require_complete_matrix: bool = False,
+) -> list[str]:
     errors: list[str] = []
+    try:
+        language = language_contract(repo_root)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        language = {}
+        errors.append(f"artifact_schema:language_contract_load_failed:{exc}")
     if not artifact_root.exists():
         return [f"artifact_schema:missing_artifact_root:{artifact_root}"]
     required = [str(name) for name in as_list(gate_input.get("required_artifacts"))]
@@ -234,6 +332,43 @@ def validate_artifacts(repo_root: Path, artifact_root: Path, gate_input: dict[st
                     if not isinstance(value, int) or value <= 0:
                         errors.append(f"artifact_schema:{summary_path}:process_metrics:{role}:{key}_invalid")
         driver_name = str(summary.get("driver_name") or run_root.name)
+        if summary.get("language_resource_identity") != language.get("resource_identity"):
+            errors.append(f"artifact_schema:{summary_path}:language_resource_identity_mismatch")
+        if summary.get("language_resource_hash") != language.get("resource_hash"):
+            errors.append(f"artifact_schema:{summary_path}:language_resource_hash_mismatch")
+        if summary.get("language_resource_pack") != language.get("resource_pack_path"):
+            errors.append(f"artifact_schema:{summary_path}:language_resource_pack_mismatch")
+        if summary.get("syntax_profile") != language.get("syntax_profile"):
+            errors.append(f"artifact_schema:{summary_path}:syntax_profile_mismatch")
+        if summary.get("topology_profile") != language.get("topology_profile"):
+            errors.append(f"artifact_schema:{summary_path}:topology_profile_mismatch")
+        language_profile = str(summary.get("language_profile") or "")
+        if language_profile not in language.get("supported_exact_profiles", set()):
+            errors.append(f"artifact_schema:{summary_path}:language_profile_not_supported:{language_profile}")
+        if summary.get("standard_english_fallback") is not True:
+            errors.append(f"artifact_schema:{summary_path}:standard_english_fallback_not_true")
+        if summary.get("language_resource_authority") != "shared_server_parser_resource_pack":
+            errors.append(f"artifact_schema:{summary_path}:language_resource_authority_invalid")
+        command_events = run_root / "command-events.jsonl"
+        if command_events.is_file():
+            try:
+                first_event_line = next(
+                    (line for line in command_events.read_text(encoding="utf-8").splitlines() if line.strip()),
+                    "",
+                )
+                if first_event_line:
+                    first_event = json.loads(first_event_line)
+                    for key in (
+                        "language_resource_identity",
+                        "language_resource_hash",
+                        "language_profile",
+                        "syntax_profile",
+                        "topology_profile",
+                    ):
+                        if first_event.get(key) != summary.get(key):
+                            errors.append(f"artifact_schema:{summary_path}:command_event_{key}_mismatch")
+            except (OSError, json.JSONDecodeError) as exc:
+                errors.append(f"artifact_schema:{command_events}:invalid_command_events:{exc}")
         transport_modes = set(str(value) for value in as_list(summary.get("transport_modes")))
         if summary.get("transport_mode") is not None:
             transport_modes.add(str(summary.get("transport_mode")))
@@ -244,25 +379,164 @@ def validate_artifacts(repo_root: Path, artifact_root: Path, gate_input: dict[st
             errors.append(f"artifact_schema:{summary_path}:missing_transport_mode")
         if not sslmodes:
             errors.append(f"artifact_schema:{summary_path}:missing_sslmode")
-        unknown_transport_modes = sorted(transport_modes - {"tls_required", "tls_disabled"})
+        route = str(summary.get("route") or "")
+        unknown_transport_modes = sorted(transport_modes - ALLOWED_TRANSPORT_MODES)
         if unknown_transport_modes:
             errors.append(
                 f"artifact_schema:{summary_path}:unknown_transport_modes:{','.join(unknown_transport_modes)}"
             )
-        unknown_sslmodes = sorted(sslmodes - {"require", "disable"})
+        expected_for_route = ROUTE_TRANSPORT_MODES.get(route)
+        if expected_for_route is None:
+            errors.append(f"artifact_schema:{summary_path}:unknown_route:{route}")
+        elif not transport_modes.issubset(expected_for_route):
+            errors.append(
+                f"artifact_schema:{summary_path}:transport_mode_route_mismatch:"
+                f"route={route}:transport={','.join(sorted(transport_modes))}"
+            )
+        unknown_sslmodes = sorted(sslmodes - ALLOWED_SSLMODES)
         if unknown_sslmodes:
             errors.append(f"artifact_schema:{summary_path}:unknown_sslmodes:{','.join(unknown_sslmodes)}")
         transport_by_driver.setdefault(driver_name, set()).update(transport_modes)
         sslmode_by_driver.setdefault(driver_name, set()).update(sslmodes)
+        if route in NETWORK_ROUTES:
+            transport_by_driver.setdefault(f"{driver_name}:network", set()).update(transport_modes)
     for driver_name, observed in sorted(transport_by_driver.items()):
+        if not require_complete_matrix:
+            continue
+        if driver_name.endswith(":network"):
+            if not {"tls_required", "tls_disabled"}.issubset(observed):
+                errors.append(
+                    f"artifact_schema:{driver_name[:-8]}:missing_tls_and_non_tls_network_transport_modes"
+                )
+            continue
+        if observed.isdisjoint({"tls_required", "tls_disabled"}):
+            continue
         if not {"tls_required", "tls_disabled"}.issubset(observed):
             errors.append(
                 f"artifact_schema:{driver_name}:missing_tls_and_non_tls_transport_modes"
             )
     for driver_name, observed in sorted(sslmode_by_driver.items()):
+        if not require_complete_matrix:
+            continue
         if not {"require", "disable"}.issubset(observed):
             errors.append(f"artifact_schema:{driver_name}:missing_sslmode_require_and_disable")
     return errors
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dict[str, Any]) -> Path:
+    run_root = artifact_root / "cpp" / "listener-parser" / "8k" / "server-parser" / "fixture-run"
+    required = [str(name) for name in as_list(gate_input.get("required_artifacts"))]
+    summary = {
+        "driver_name": "cpp",
+        "driver_or_parser_finality": "forbidden",
+        "elapsed_ns": 1000,
+        "failure_count": 0,
+        "language_profile": "en-US",
+        "language_resource_authority": "shared_server_parser_resource_pack",
+        "language_resource_hash": "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
+        "language_resource_identity": "sbsql.common_resource_pack.v1",
+        "language_resource_pack": "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+        "mga_authority": "engine",
+        "namespace": "users.public.examples.cpp.fixture.listener-parser.8k.w0",
+        "page_size": "8k",
+        "parser_mode": "server-parser",
+        "process_metrics": {
+            "client": {
+                "last_rss_kb": 1024,
+                "last_vsize_kb": 4096,
+                "max_rss_kb": 1024,
+                "max_vsize_kb": 4096,
+            },
+            "server": {
+                "last_rss_kb": 2048,
+                "last_vsize_kb": 8192,
+                "max_rss_kb": 2048,
+                "max_vsize_kb": 8192,
+            },
+        },
+        "route": "listener-parser",
+        "run_id": "fixture-run",
+        "server_revalidation_required": True,
+        "sslmode": "require",
+        "standard_english_fallback": True,
+        "status": "pass",
+        "syntax_profile": "sbsql.v3",
+        "topology_profile": "topology.sbsql.canonical.v1",
+        "transport_mode": "tls_required",
+    }
+    command_event = {
+        "actual_outcome": "success",
+        "canonical_message_vector": [],
+        "code_example_section": "fixture",
+        "command_group": "query",
+        "diagnostic_code": "",
+        "driver_name": "cpp",
+        "driver_version": "fixture",
+        "elapsed_ns": 1000,
+        "expected_outcome": "success",
+        "fetch_batch_count": 1,
+        "language_profile": summary["language_profile"],
+        "language_resource_hash": summary["language_resource_hash"],
+        "language_resource_identity": summary["language_resource_identity"],
+        "language_resource_pack": summary["language_resource_pack"],
+        "mga_authority": "engine",
+        "namespace": summary["namespace"],
+        "native_api_surface": "cpp",
+        "page_size": "8k",
+        "parser_mode": "server-parser",
+        "result_digest": "sha256:fixture",
+        "route": "listener-parser",
+        "round_trip_count": 1,
+        "row_count": 1,
+        "run_id": "fixture-run",
+        "script": "fixture.sbsql",
+        "server_revalidation_state": "required",
+        "sql_hash": "sha256:fixture",
+        "sqlstate": "00000",
+        "statement_id": "fixture.sbsql:1",
+        "statement_index": 1,
+        "standard_english_fallback": True,
+        "syntax_profile": summary["syntax_profile"],
+        "topology_profile": summary["topology_profile"],
+        "transaction_id_observed": "fixture",
+    }
+    for filename in required:
+        path = run_root / filename
+        if filename.endswith(".jsonl"):
+            if filename == "command-events.jsonl":
+                write_jsonl(path, [command_event])
+            elif filename == "process-metrics.jsonl":
+                write_jsonl(path, [{"role": "client", "rss_kb": 1024, "vsize_kb": 4096}])
+            else:
+                write_jsonl(path, [{"fixture": True}])
+        elif filename == "summary.json":
+            write_json(path, summary)
+        elif filename == "junit.xml":
+            path.write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<testsuite name="driver-native-artifact-fixture" tests="1" failures="0">\n'
+                '  <testcase classname="scratchbird.driver.fixture" name="fixture"/>\n'
+                '</testsuite>\n',
+                encoding="utf-8",
+            )
+        elif filename.endswith(".log"):
+            path.write_text("fixture\n", encoding="utf-8")
+        else:
+            write_json(path, {"fixture": True})
+    return run_root
 
 
 def write_report(path: Path, mode: str, errors: list[str]) -> None:
@@ -286,6 +560,8 @@ def main() -> int:
     )
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--require-complete-matrix", action="store_true")
+    parser.add_argument("--generate-deterministic-fixture", action="store_true")
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
@@ -309,10 +585,19 @@ def main() -> int:
     if args.mode in ("gate-input", "all"):
         errors.extend(validate_gate_input(gate_input))
     if args.mode in ("tool-inventory", "all"):
-        errors.extend(validate_tool_matrix(tool_matrix, manifest_rows, repo_root))
+        errors.extend(validate_tool_matrix(tool_matrix, manifest_rows, gate_input, repo_root))
     if args.mode in ("artifact-schema", "all"):
         artifact_root = (args.artifact_root or repo_root / "build" / "driver-conformance").resolve()
-        errors.extend(validate_artifacts(repo_root, artifact_root, gate_input))
+        if args.generate_deterministic_fixture:
+            generate_deterministic_artifact_fixture(artifact_root, gate_input)
+        errors.extend(
+            validate_artifacts(
+                repo_root,
+                artifact_root,
+                gate_input,
+                require_complete_matrix=args.require_complete_matrix,
+            )
+        )
 
     output = args.output or repo_root / REPORT_REL
     write_report(output, args.mode, errors)

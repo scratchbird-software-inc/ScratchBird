@@ -20,6 +20,52 @@ const routes = {
   'manager-listener-parser',
 };
 const parserModes = {'server-parser', 'standalone-parser', 'driver-sblr-uuid'};
+const sslModes = {
+  'allow',
+  'disable',
+  'prefer',
+  'require',
+  'verify-ca',
+  'verify-full',
+};
+const supportedArgs = {
+  '--database',
+  '--host',
+  '--port',
+  '--user',
+  '--password',
+  '--role',
+  '--sslmode',
+  '--sslrootcert',
+  '--sslcert',
+  '--sslkey',
+  '--route',
+  '--parser-mode',
+  '--page-size',
+  '--namespace',
+  '--input',
+  '--output',
+  '--error',
+  '--diagnostics',
+  '--metrics',
+  '--transcript',
+  '--summary',
+  '--stop-on-error',
+  '--expected-refusals',
+  '--statement-timeout-ms',
+  '--fetch-size',
+  '--concurrency-worker',
+  '--create-database',
+  '--create-emulation-mode',
+  '--run-id',
+  '--language-resource-pack',
+  '--language-resource-identity',
+  '--language-resource-hash',
+  '--language-profile',
+  '--syntax-profile',
+  '--topology-profile',
+  '--standard-english-fallback',
+};
 
 Future<void> main(List<String> raw) async {
   try {
@@ -42,6 +88,7 @@ Future<int> runTool(Map<String, String> args) async {
     'timing': '$runRoot/timing-groups.json',
     'digests': '$runRoot/result-digests.json',
     'metadata': '$runRoot/metadata-snapshots.json',
+    'process': '$runRoot/process-metrics.jsonl',
     'refusals': '$runRoot/security-refusals.json',
     'api': '$runRoot/native-api-coverage.json',
     'review': '$runRoot/code-example-review.json',
@@ -68,6 +115,7 @@ Future<int> runTool(Map<String, String> args) async {
     'connect': 0,
     'query': 0,
     'queryMetadata': 0,
+    'attachCreate': 0,
     'begin': 0,
     'commit': 0,
     'rollback': 0,
@@ -78,6 +126,9 @@ Future<int> runTool(Map<String, String> args) async {
   final digests = <Map<String, Object?>>[];
   final securityRefusals = <Map<String, Object?>>[];
   final started = monotonicNs();
+  final expectedRefusals = await loadExpectedRefusals(
+    args['--expected-refusals'],
+  );
   ScratchBirdClient? client;
 
   try {
@@ -117,14 +168,18 @@ Future<int> runTool(Map<String, String> args) async {
       'driver_or_parser_finality': 'forbidden',
     });
 
-    if (args.containsKey('--create-database')) {
-      throw StateError(
-        '--create-database is not implemented in the Dart native tool yet',
+    if (flagEnabled(args, '--create-database')) {
+      final createStarted = monotonicNs();
+      await client.attachCreate(
+        args['--create-emulation-mode'] ?? 'sbsql',
+        required(args, '--database'),
       );
+      apiHits['attachCreate'] = apiHits['attachCreate']! + 1;
+      addTiming(timings, 'database_create', createStarted);
     }
     if (required(args, '--parser-mode') != 'server-parser') {
       throw StateError(
-        '${required(args, '--parser-mode')} is not yet implemented by the Dart native tool; it fails closed',
+        '${required(args, '--parser-mode')} is not accepted by the Dart native tool lane; it fails closed',
       );
     }
 
@@ -135,6 +190,9 @@ Future<int> runTool(Map<String, String> args) async {
       final sql = statements[index];
       final statementId =
           '${File(required(args, '--input')).uri.pathSegments.last}:${index + 1}';
+      final expectedOutcome = expectedRefusals.contains(statementId)
+          ? 'refusal'
+          : 'success';
       final group = classifyStatement(sql);
       final statementStarted = monotonicNs();
       var outcome = 'success';
@@ -162,6 +220,13 @@ Future<int> runTool(Map<String, String> args) async {
           'row_count': rowCount,
           'result_digest': resultDigest,
         });
+        if (expectedOutcome == 'refusal') {
+          outcome = 'unexpected_success';
+          failures.add({
+            'statement_id': statementId,
+            'message': 'statement succeeded but was expected to refuse',
+          });
+        }
       } catch (error) {
         outcome = 'refusal';
         sqlstate = 'HY000';
@@ -175,8 +240,17 @@ Future<int> runTool(Map<String, String> args) async {
           required(args, '--error'),
           '$statementId: $diagnostic\n',
         );
-        failures.add({'statement_id': statementId, 'message': diagnostic});
-        if (args.containsKey('--stop-on-error')) {
+        if (expectedOutcome == 'success') {
+          failures.add({'statement_id': statementId, 'message': diagnostic});
+        } else {
+          securityRefusals.add({
+            'statement_id': statementId,
+            'sqlstate': sqlstate,
+            'diagnostic_code': diagnostic,
+          });
+        }
+        if (expectedOutcome == 'success' &&
+            flagEnabled(args, '--stop-on-error')) {
           addTiming(timings, group, statementStarted);
           break;
         }
@@ -196,7 +270,7 @@ Future<int> runTool(Map<String, String> args) async {
         'statement_id': statementId,
         'command_group': group,
         'sql_hash': sha256Text(sql),
-        'expected_outcome': 'success',
+        'expected_outcome': expectedOutcome,
         'actual_outcome': outcome,
         'sqlstate': sqlstate,
         'diagnostic_code': diagnostic,
@@ -205,6 +279,24 @@ Future<int> runTool(Map<String, String> args) async {
         'result_digest': resultDigest,
         'elapsed_ns': elapsed,
         'server_revalidation_state': 'required',
+        'language_profile': args['--language-profile'] ?? 'en-US',
+        'language_resource_pack':
+            args['--language-resource-pack'] ??
+            'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
+        'language_resource_identity':
+            args['--language-resource-identity'] ??
+            'sbsql.common_resource_pack.v1',
+        'language_resource_hash':
+            args['--language-resource-hash'] ??
+            'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
+        'syntax_profile': args['--syntax-profile'] ?? 'sbsql.v3',
+        'topology_profile':
+            args['--topology-profile'] ?? 'topology.sbsql.canonical.v1',
+        'standard_english_fallback': flagEnabled(
+          args,
+          '--standard-english-fallback',
+          true,
+        ),
         'transaction_id_observed': null,
         'mga_authority': 'engine',
         'native_api_surface': 'dart',
@@ -235,6 +327,11 @@ Future<int> runTool(Map<String, String> args) async {
   final elapsed = monotonicNs() - started;
   timings['overall'] = elapsed;
   final sslmode = args['--sslmode'] ?? 'require';
+  final transportMode = resolveTransportMode(
+    required(args, '--route'),
+    sslmode,
+  );
+  final processMetrics = currentProcessMetrics();
   final summary = {
     'run_id': args['--run-id'] ?? 'manual',
     'driver_name': 'dart',
@@ -243,10 +340,29 @@ Future<int> runTool(Map<String, String> args) async {
     'page_size': required(args, '--page-size'),
     'namespace': required(args, '--namespace'),
     'sslmode': sslmode,
-    'transport_mode': sslmode == 'disable' ? 'tls_disabled' : 'tls_required',
+    'transport_mode': transportMode,
+    'language_resource_pack':
+        args['--language-resource-pack'] ??
+        'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
+    'language_resource_identity':
+        args['--language-resource-identity'] ?? 'sbsql.common_resource_pack.v1',
+    'language_resource_hash':
+        args['--language-resource-hash'] ??
+        'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
+    'language_resource_authority': 'shared_server_parser_resource_pack',
+    'language_profile': args['--language-profile'] ?? 'en-US',
+    'syntax_profile': args['--syntax-profile'] ?? 'sbsql.v3',
+    'topology_profile':
+        args['--topology-profile'] ?? 'topology.sbsql.canonical.v1',
+    'standard_english_fallback': flagEnabled(
+      args,
+      '--standard-english-fallback',
+      true,
+    ),
     'status': failures.isEmpty ? 'pass' : 'fail',
     'failure_count': failures.length,
     'elapsed_ns': elapsed,
+    'process_metrics': processMetrics,
     'server_revalidation_required': true,
     'driver_or_parser_finality': 'forbidden',
     'mga_authority': 'engine',
@@ -255,6 +371,11 @@ Future<int> runTool(Map<String, String> args) async {
   await writeText(required(args, '--metrics'), '${jsonEncode(timings)}\n');
   await writeText(paths['timing']!, '${jsonEncode(timings)}\n');
   await writeText(paths['digests']!, '${jsonEncode(digests)}\n');
+  await appendJsonl(paths['process']!, {
+    'role': 'client',
+    'rss_kb': processMetrics['client']!['last_rss_kb'],
+    'vsize_kb': processMetrics['client']!['last_vsize_kb'],
+  });
   await writeText(paths['refusals']!, '${jsonEncode(securityRefusals)}\n');
   await writeText(paths['api']!, '${jsonEncode(apiHits)}\n');
   await writeText(
@@ -303,8 +424,17 @@ Map<String, String> parseArgs(List<String> raw) {
     if (!key.startsWith('--')) {
       throw ArgumentError('unexpected positional argument: $key');
     }
-    if (key == '--stop-on-error' || key == '--create-database') {
-      args[key] = 'true';
+    if (!supportedArgs.contains(key)) {
+      throw ArgumentError('unsupported argument: $key');
+    }
+    if (key == '--stop-on-error' ||
+        key == '--create-database' ||
+        key == '--standard-english-fallback') {
+      if (i + 1 < raw.length && !raw[i + 1].startsWith('--')) {
+        args[key] = parseBoolValue(key, raw[++i]).toString();
+      } else {
+        args[key] = 'true';
+      }
       continue;
     }
     if (i + 1 >= raw.length || raw[i + 1].startsWith('--')) {
@@ -326,6 +456,16 @@ void validate(Map<String, String> args) {
     throw ArgumentError(
       'unsupported parser mode: ${required(args, '--parser-mode')}',
     );
+  final sslmode = args['--sslmode'] ?? 'require';
+  if (!sslModes.contains(sslmode)) {
+    throw ArgumentError('unsupported sslmode: $sslmode');
+  }
+}
+
+String resolveTransportMode(String route, String sslmode) {
+  if (route == 'embedded') return 'embedded_no_network_transport';
+  if (route == 'ipc_local') return 'local_ipc_no_tls';
+  return sslmode == 'disable' ? 'tls_disabled' : 'tls_required';
 }
 
 String classifyStatement(String sql) {
@@ -357,6 +497,52 @@ String required(Map<String, String> args, String key) {
 Future<String> readInput(String path) async => path == '-'
     ? stdin.transform(utf8.decoder).join()
     : File(path).readAsString();
+
+Future<Set<String>> loadExpectedRefusals(String? path) async {
+  if (path == null || path.isEmpty) return <String>{};
+  final file = File(path);
+  if (!await file.exists()) {
+    throw ArgumentError('expected refusal file not found: $path');
+  }
+  final decoded = jsonDecode(await file.readAsString());
+  if (decoded is Map<String, dynamic>) {
+    final ids = <String>{};
+    final statementIds = decoded['statement_ids'];
+    if (statementIds is List) ids.addAll(statementIds.map((value) => '$value'));
+    final expected = decoded['expected_refusals'];
+    if (expected is List) ids.addAll(expected.map((value) => '$value'));
+    return ids;
+  }
+  if (decoded is List) return decoded.map((value) => '$value').toSet();
+  throw ArgumentError('expected refusals must be a JSON object or array');
+}
+
+bool parseBoolValue(String key, String value) {
+  final normalized = value.toLowerCase();
+  if (normalized == 'true') return true;
+  if (normalized == 'false') return false;
+  throw ArgumentError('$key expects true or false, got: $value');
+}
+
+bool flagEnabled(
+  Map<String, String> args,
+  String key, [
+  bool fallback = false,
+]) => (args[key] ?? fallback.toString()).toLowerCase() == 'true';
+
+Map<String, Map<String, int>> currentProcessMetrics() {
+  final rssKb = (ProcessInfo.currentRss / 1024).ceil();
+  final value = rssKb < 1 ? 1 : rssKb;
+  return {
+    'client': {
+      'last_rss_kb': value,
+      'last_vsize_kb': value,
+      'max_rss_kb': value,
+      'max_vsize_kb': value,
+    },
+  };
+}
+
 int monotonicNs() => DateTime.now().microsecondsSinceEpoch * 1000;
 void addTiming(Map<String, int> timings, String group, int started) =>
     timings[group] = (timings[group] ?? 0) + (monotonicNs() - started);

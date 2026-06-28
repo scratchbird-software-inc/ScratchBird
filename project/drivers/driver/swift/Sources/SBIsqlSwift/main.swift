@@ -13,6 +13,45 @@ import ScratchBird
 let pageSizes = Set(["4k", "8k", "16k", "32k", "64k", "128k"])
 let routes = Set(["embedded", "ipc_local", "listener-parser", "manager-listener-parser"])
 let parserModes = Set(["server-parser", "standalone-parser", "driver-sblr-uuid"])
+let sslModes = Set(["allow", "disable", "prefer", "require", "verify-ca", "verify-full"])
+let supportedArgs = Set([
+    "--database",
+    "--host",
+    "--port",
+    "--user",
+    "--password",
+    "--role",
+    "--sslmode",
+    "--sslrootcert",
+    "--sslcert",
+    "--sslkey",
+    "--route",
+    "--parser-mode",
+    "--page-size",
+    "--namespace",
+    "--input",
+    "--output",
+    "--error",
+    "--diagnostics",
+    "--metrics",
+    "--transcript",
+    "--summary",
+    "--stop-on-error",
+    "--expected-refusals",
+    "--statement-timeout-ms",
+    "--fetch-size",
+    "--concurrency-worker",
+    "--create-database",
+    "--create-emulation-mode",
+    "--run-id",
+    "--language-resource-pack",
+    "--language-resource-identity",
+    "--language-resource-hash",
+    "--language-profile",
+    "--syntax-profile",
+    "--topology-profile",
+    "--standard-english-fallback",
+])
 
 @main
 struct SBIsqlSwift {
@@ -38,6 +77,7 @@ struct SBIsqlSwift {
             "timing": "\(runRoot)/timing-groups.json",
             "digests": "\(runRoot)/result-digests.json",
             "metadata": "\(runRoot)/metadata-snapshots.json",
+            "process": "\(runRoot)/process-metrics.jsonl",
             "refusals": "\(runRoot)/security-refusals.json",
             "api": "\(runRoot)/native-api-coverage.json",
             "review": "\(runRoot)/code-example-review.json",
@@ -62,6 +102,7 @@ struct SBIsqlSwift {
             "connect": 0,
             "query": 0,
             "metadataTables": 0,
+            "attachCreate": 0,
             "begin": 0,
             "commit": 0,
             "rollback": 0,
@@ -70,6 +111,8 @@ struct SBIsqlSwift {
         var testcases: [[String: Any?]] = []
         var failures: [[String: Any?]] = []
         var digests: [[String: Any?]] = []
+        var securityRefusals: [[String: Any?]] = []
+        let expectedRefusals = try loadExpectedRefusals(args["--expected-refusals"] ?? "")
         let started = nowNs()
         var connection: ScratchBirdConnection?
 
@@ -103,16 +146,24 @@ struct SBIsqlSwift {
             ])
             try appendJsonl(paths["wire"]!, ["event": "server_admission_required", "driver_or_parser_finality": "forbidden"])
 
-            if args["--create-database"] != nil {
-                throw RuntimeError("--create-database is not implemented in the Swift native tool yet")
+            if flagEnabled(args, "--create-database") {
+                let createStarted = nowNs()
+                try await connection!.attachCreate(
+                    emulationMode: args["--create-emulation-mode"] ?? "sbsql",
+                    dbName: try required(args, "--database")
+                )
+                api["attachCreate", default: 0] += 1
+                addTiming(&timings, "database_create", createStarted)
             }
             if try required(args, "--parser-mode") != "server-parser" {
-                throw RuntimeError("\(try required(args, "--parser-mode")) is not yet implemented by the Swift native tool; it fails closed")
+                throw RuntimeError("\(try required(args, "--parser-mode")) is not accepted by the Swift native tool lane; it fails closed")
             }
 
             let statements = splitStatements(try readInput(try required(args, "--input")))
             for (index, sql) in statements.enumerated() {
                 let statementId = "\(URL(fileURLWithPath: try required(args, "--input")).lastPathComponent):\(index + 1)"
+                let expectedRefusal = expectedRefusals.contains(statementId)
+                let expectedOutcome = expectedRefusal ? "refusal" : "success"
                 let group = classify(sql)
                 let statementStarted = nowNs()
                 var outcome = "success"
@@ -133,14 +184,23 @@ struct SBIsqlSwift {
                         try appendText(try required(args, "--output"), "\(jsonLine(["statement_id": statementId, "rows": String(describing: result.rows)]))\n")
                     }
                     digests.append(["statement_id": statementId, "row_count": rowCount, "result_digest": resultDigest])
+                    if expectedRefusal {
+                        outcome = "unexpected_success"
+                        diagnostic = "statement succeeded but was expected to refuse"
+                        failures.append(["statement_id": statementId, "message": diagnostic])
+                    }
                 } catch {
                     outcome = "refusal"
                     sqlstate = "HY000"
                     diagnostic = "\(error)"
                     try appendJsonl(try required(args, "--diagnostics"), ["statement_id": statementId, "sqlstate": sqlstate, "message": diagnostic])
                     try appendText(try required(args, "--error"), "\(statementId): \(diagnostic!)\n")
-                    failures.append(["statement_id": statementId, "message": diagnostic])
-                    if args["--stop-on-error"] != nil {
+                    if expectedRefusal {
+                        securityRefusals.append(["statement_id": statementId, "sqlstate": sqlstate, "diagnostic_code": diagnostic])
+                    } else {
+                        failures.append(["statement_id": statementId, "message": diagnostic])
+                    }
+                    if !expectedRefusal && flagEnabled(args, "--stop-on-error") {
                         addTiming(&timings, group, statementStarted)
                         break
                     }
@@ -158,7 +218,7 @@ struct SBIsqlSwift {
                     "statement_id": statementId,
                     "command_group": group,
                     "sql_hash": sha256Text(sql),
-                    "expected_outcome": "success",
+                    "expected_outcome": expectedOutcome,
                     "actual_outcome": outcome,
                     "sqlstate": sqlstate,
                     "diagnostic_code": diagnostic,
@@ -166,6 +226,13 @@ struct SBIsqlSwift {
                     "result_digest": resultDigest,
                     "elapsed_ns": nowNs() - statementStarted,
                     "server_revalidation_state": "required",
+                    "language_profile": args["--language-profile"] ?? "en-US",
+                    "language_resource_pack": args["--language-resource-pack"] ?? "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+                    "language_resource_identity": args["--language-resource-identity"] ?? "sbsql.common_resource_pack.v1",
+                    "language_resource_hash": args["--language-resource-hash"] ?? "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
+                    "syntax_profile": args["--syntax-profile"] ?? "sbsql.v3",
+                    "topology_profile": args["--topology-profile"] ?? "topology.sbsql.canonical.v1",
+                    "standard_english_fallback": flagEnabled(args, "--standard-english-fallback", true),
                     "mga_authority": "engine",
                     "native_api_surface": "swift"
                 ]
@@ -190,6 +257,8 @@ struct SBIsqlSwift {
 
         timings["overall"] = nowNs() - started
         let sslmode = args["--sslmode"] ?? "require"
+        let transportMode = transportModeForRoute(try required(args, "--route"), sslmode)
+        let processMetrics = currentProcessMetrics()
         let summary: [String: Any?] = [
             "run_id": args["--run-id"] ?? "manual",
             "driver_name": "swift",
@@ -198,10 +267,19 @@ struct SBIsqlSwift {
             "page_size": try required(args, "--page-size"),
             "namespace": try required(args, "--namespace"),
             "sslmode": sslmode,
-            "transport_mode": sslmode == "disable" ? "tls_disabled" : "tls_required",
+            "transport_mode": transportMode,
+            "language_resource_pack": args["--language-resource-pack"] ?? "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+            "language_resource_identity": args["--language-resource-identity"] ?? "sbsql.common_resource_pack.v1",
+            "language_resource_hash": args["--language-resource-hash"] ?? "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
+            "language_resource_authority": "shared_server_parser_resource_pack",
+            "language_profile": args["--language-profile"] ?? "en-US",
+            "syntax_profile": args["--syntax-profile"] ?? "sbsql.v3",
+            "topology_profile": args["--topology-profile"] ?? "topology.sbsql.canonical.v1",
+            "standard_english_fallback": flagEnabled(args, "--standard-english-fallback", true),
             "status": failures.isEmpty ? "pass" : "fail",
             "failure_count": failures.count,
             "elapsed_ns": timings["overall"] ?? 0,
+            "process_metrics": processMetrics,
             "server_revalidation_required": true,
             "driver_or_parser_finality": "forbidden",
             "mga_authority": "engine"
@@ -210,7 +288,12 @@ struct SBIsqlSwift {
         try writeText(try required(args, "--metrics"), "\(jsonLine(timings))\n")
         try writeText(paths["timing"]!, "\(jsonLine(timings))\n")
         try writeText(paths["digests"]!, "\(jsonArray(digests))\n")
-        try writeText(paths["refusals"]!, "[]\n")
+        try appendJsonl(paths["process"]!, [
+            "role": "client",
+            "rss_kb": processMetrics["client"]?["last_rss_kb"] ?? 1,
+            "vsize_kb": processMetrics["client"]?["last_vsize_kb"] ?? 1
+        ])
+        try writeText(paths["refusals"]!, "\(jsonArray(securityRefusals))\n")
         try writeText(paths["api"]!, "\(jsonLine(api))\n")
         try writeText(paths["review"]!, "\(jsonLine(["driver": "swift", "public_api_only": true, "shells_out_to_other_driver": false, "source_is_canonical_example": true]))\n")
         try writeText(paths["junit"]!, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"SBIsqlSwift\" tests=\"\(max(testcases.count, 1))\" failures=\"\(failures.count)\">\n  <testcase classname=\"scratchbird.swift\" name=\"run\"></testcase>\n</testsuite>\n")
@@ -230,9 +313,15 @@ func parseArgs(_ raw: [String]) throws -> [String: String] {
     while index < raw.count {
         let key = raw[index]
         guard key.hasPrefix("--") else { throw RuntimeError("unexpected positional argument: \(key)") }
-        if key == "--stop-on-error" || key == "--create-database" {
-            args[key] = "true"
-            index += 1
+        guard supportedArgs.contains(key) else { throw RuntimeError("unsupported argument: \(key)") }
+        if key == "--stop-on-error" || key == "--create-database" || key == "--standard-english-fallback" {
+            if index + 1 < raw.count && !raw[index + 1].hasPrefix("--") {
+                args[key] = try parseBoolValue(key, raw[index + 1])
+                index += 2
+            } else {
+                args[key] = "true"
+                index += 1
+            }
             continue
         }
         guard index + 1 < raw.count, !raw[index + 1].hasPrefix("--") else { throw RuntimeError("missing value for \(key)") }
@@ -246,6 +335,49 @@ func validate(_ args: [String: String]) throws {
     guard pageSizes.contains(try required(args, "--page-size")) else { throw RuntimeError("unsupported page size") }
     guard routes.contains(try required(args, "--route")) else { throw RuntimeError("unsupported route") }
     guard parserModes.contains(try required(args, "--parser-mode")) else { throw RuntimeError("unsupported parser mode") }
+    let sslmode = args["--sslmode"] ?? "require"
+    guard sslModes.contains(sslmode) else { throw RuntimeError("unsupported sslmode: \(sslmode)") }
+}
+
+func transportModeForRoute(_ route: String, _ sslmode: String) -> String {
+    if route == "embedded" { return "embedded_no_network_transport" }
+    if route == "ipc_local" { return "local_ipc_no_tls" }
+    return sslmode == "disable" ? "tls_disabled" : "tls_required"
+}
+
+func loadExpectedRefusals(_ path: String) throws -> Set<String> {
+    if path.isEmpty { return Set<String>() }
+    guard FileManager.default.fileExists(atPath: path) else {
+        throw RuntimeError("expected refusal file not found: \(path)")
+    }
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    let json = try JSONSerialization.jsonObject(with: data)
+    var ids = Set<String>()
+    if let array = json as? [Any] {
+        for item in array { ids.insert(String(describing: item)) }
+        return ids
+    }
+    if let object = json as? [String: Any] {
+        if let statementIds = object["statement_ids"] as? [Any] {
+            for item in statementIds { ids.insert(String(describing: item)) }
+        }
+        if let expected = object["expected_refusals"] as? [Any] {
+            for item in expected { ids.insert(String(describing: item)) }
+        }
+        return ids
+    }
+    throw RuntimeError("expected refusals must be a JSON object or array")
+}
+
+func parseBoolValue(_ key: String, _ value: String) throws -> String {
+    let normalized = value.lowercased()
+    if normalized == "true" { return "true" }
+    if normalized == "false" { return "false" }
+    throw RuntimeError("\(key) expects true or false, got: \(value)")
+}
+
+func flagEnabled(_ args: [String: String], _ key: String, _ fallback: Bool = false) -> Bool {
+    return (args[key] ?? (fallback ? "true" : "false")).lowercased() == "true"
 }
 
 func runTransaction(_ connection: ScratchBirdConnection, _ sql: String, _ api: inout [String: Int]) async throws {
@@ -290,7 +422,7 @@ func chunkSetTerm(_ chunk: String) -> String? {
 /// Split SQL into top-level statements on the active terminator.
 ///
 /// Quote-aware (single/double quotes) and `--` comment-aware. Honors the
-/// `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+/// `SET TERM <terminator>` client directive:
 /// the directive changes the active terminator and is consumed — it is not
 /// emitted as a statement and is not counted. With no `SET TERM` directive
 /// present, the behavior is identical to a plain quote-aware top-level `;`
@@ -377,6 +509,29 @@ func readInput(_ path: String) throws -> String {
 func nowNs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1_000_000_000) }
 func addTiming(_ timings: inout [String: Int64], _ group: String, _ started: Int64) { timings[group, default: 0] += nowNs() - started }
 func sha256Text(_ text: String) -> String { "sha256:" + SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+func currentProcessMetrics() -> [String: [String: Int]] {
+    var rssKb = 1
+    var vsizeKb = 1
+    if let status = try? String(contentsOfFile: "/proc/self/status") {
+        for line in status.split(separator: "\n") {
+            if line.hasPrefix("VmRSS:") {
+                rssKb = Int(line.split(separator: " ").dropFirst().first ?? "1") ?? 1
+            } else if line.hasPrefix("VmSize:") {
+                vsizeKb = Int(line.split(separator: " ").dropFirst().first ?? "1") ?? 1
+            }
+        }
+    }
+    if rssKb < 1 { rssKb = 1 }
+    if vsizeKb < 1 { vsizeKb = rssKb }
+    return [
+        "client": [
+            "last_rss_kb": rssKb,
+            "last_vsize_kb": vsizeKb,
+            "max_rss_kb": rssKb,
+            "max_vsize_kb": vsizeKb
+        ]
+    ]
+}
 func writeText(_ path: String, _ text: String) throws { try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path, withIntermediateDirectories: true); try text.write(toFile: path, atomically: false, encoding: .utf8) }
 func appendText(_ path: String, _ text: String) throws { try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path, withIntermediateDirectories: true); let data = Data(text.utf8); if FileManager.default.fileExists(atPath: path) { let h = try FileHandle(forWritingTo: URL(fileURLWithPath: path)); try h.seekToEnd(); try h.write(contentsOf: data); try h.close() } else { try data.write(to: URL(fileURLWithPath: path)) } }
 func appendJsonl(_ path: String, _ value: [String: Any?]) throws { try appendText(path, jsonLine(value) + "\n") }
@@ -390,6 +545,11 @@ func jsonValue(_ value: Any?) -> String {
     if let bool = value as? Bool { return bool ? "true" : "false" }
     if let int = value as? Int { return "\(int)" }
     if let int64 = value as? Int64 { return "\(int64)" }
+    if let dict = value as? [String: Any?] { return jsonLine(dict) }
+    if let dict = value as? [String: Int] { return jsonLine(dict) }
+    if let dict = value as? [String: [String: Int]] {
+        return "{" + dict.map { "\"\($0.key)\":\(jsonLine($0.value))" }.joined(separator: ",") + "}"
+    }
     if let array = value as? [Any?] { return "[" + array.map(jsonValue).joined(separator: ",") + "]" }
     return "\"\(String(describing: value))\""
 }

@@ -10,9 +10,51 @@
 
 declare(strict_types=1);
 
+use ScratchBird\PDO\Connection;
 use ScratchBird\PDO\ScratchBirdPDO;
 
 require_driver_sources(dirname(__DIR__));
+
+const SUPPORTED_ARGS = [
+    '--database',
+    '--host',
+    '--port',
+    '--user',
+    '--password',
+    '--role',
+    '--sslmode',
+    '--sslrootcert',
+    '--sslcert',
+    '--sslkey',
+    '--route',
+    '--parser-mode',
+    '--page-size',
+    '--namespace',
+    '--input',
+    '--output',
+    '--error',
+    '--diagnostics',
+    '--metrics',
+    '--transcript',
+    '--summary',
+    '--stop-on-error',
+    '--expected-refusals',
+    '--statement-timeout-ms',
+    '--fetch-size',
+    '--concurrency-worker',
+    '--create-database',
+    '--create-emulation-mode',
+    '--run-id',
+    '--language-resource-pack',
+    '--language-resource-identity',
+    '--language-resource-hash',
+    '--language-profile',
+    '--syntax-profile',
+    '--topology-profile',
+    '--standard-english-fallback',
+];
+
+const SSLMODES = ['allow', 'disable', 'prefer', 'require', 'verify-ca', 'verify-full'];
 
 main($argv);
 
@@ -41,6 +83,7 @@ function run_tool(array $args): int
         'timing' => $runRoot . '/timing-groups.json',
         'digests' => $runRoot . '/result-digests.json',
         'metadata' => $runRoot . '/metadata-snapshots.json',
+        'process' => $runRoot . '/process-metrics.jsonl',
         'refusals' => $runRoot . '/security-refusals.json',
         'api' => $runRoot . '/native-api-coverage.json',
         'review' => $runRoot . '/code-example-review.json',
@@ -67,6 +110,7 @@ function run_tool(array $args): int
         'fetch' => 0,
         'errorInfo' => 0,
         'queryMetadata' => 0,
+        'attachCreate' => 0,
         'commit' => 0,
         'rollback' => 0,
     ];
@@ -75,6 +119,7 @@ function run_tool(array $args): int
     $digests = [];
     $securityRefusals = [];
     $started = hrtime(true);
+    $expectedRefusals = load_expected_refusals(value_or_default($args, '--expected-refusals', ''));
     $pdo = null;
 
     try {
@@ -108,15 +153,26 @@ function run_tool(array $args): int
         ]);
 
         if (flag_enabled($args, '--create-database')) {
-            throw new RuntimeException('--create-database is not implemented in the PHP native tool yet');
+            $createStarted = hrtime(true);
+            $createConnection = new Connection($dsn, required($args, '--user'), required($args, '--password'), [
+                'role' => value_or_default($args, '--role', ''),
+            ]);
+            try {
+                $createConnection->attachCreate(value_or_default($args, '--create-emulation-mode', 'sbsql'), required($args, '--database'));
+                $apiHits['attachCreate']++;
+            } finally {
+                $createConnection->close();
+            }
+            add_timing($timings, 'database_create', $createStarted);
         }
         if (required($args, '--parser-mode') !== 'server-parser') {
-            throw new RuntimeException(required($args, '--parser-mode') . ' is not yet implemented by the PHP native tool; it fails closed');
+            throw new RuntimeException(required($args, '--parser-mode') . ' is not accepted by the PHP native tool lane; it fails closed');
         }
 
         $statements = split_statements(read_input(required($args, '--input')));
         foreach ($statements as $index => $sql) {
             $statementId = basename(required($args, '--input')) . ':' . ($index + 1);
+            $expectedOutcome = isset($expectedRefusals[$statementId]) ? 'refusal' : 'success';
             $group = classify_statement($sql);
             $statementStarted = hrtime(true);
             $outcome = 'success';
@@ -152,6 +208,10 @@ function run_tool(array $args): int
                     'row_count' => $rowCount,
                     'result_digest' => $resultDigest,
                 ];
+                if ($expectedOutcome === 'refusal') {
+                    $outcome = 'unexpected_success';
+                    $failures[] = ['statement_id' => $statementId, 'message' => 'statement succeeded but was expected to refuse'];
+                }
             } catch (Throwable $ex) {
                 $outcome = 'refusal';
                 $sqlstate = 'HY000';
@@ -162,8 +222,16 @@ function run_tool(array $args): int
                     'message' => $diagnostic,
                 ]);
                 append_text(required($args, '--error'), $statementId . ': ' . $diagnostic . PHP_EOL);
-                $failures[] = ['statement_id' => $statementId, 'message' => $diagnostic];
-                if (flag_enabled($args, '--stop-on-error')) {
+                if ($expectedOutcome === 'success') {
+                    $failures[] = ['statement_id' => $statementId, 'message' => $diagnostic];
+                } else {
+                    $securityRefusals[] = [
+                        'statement_id' => $statementId,
+                        'sqlstate' => $sqlstate,
+                        'diagnostic_code' => $diagnostic,
+                    ];
+                }
+                if ($expectedOutcome === 'success' && flag_enabled($args, '--stop-on-error')) {
                     add_timing($timings, $group, $statementStarted);
                     break;
                 }
@@ -183,7 +251,7 @@ function run_tool(array $args): int
                 'statement_id' => $statementId,
                 'command_group' => $group,
                 'sql_hash' => sha256_text($sql),
-                'expected_outcome' => 'success',
+                'expected_outcome' => $expectedOutcome,
                 'actual_outcome' => $outcome,
                 'sqlstate' => $sqlstate,
                 'diagnostic_code' => $diagnostic,
@@ -192,6 +260,13 @@ function run_tool(array $args): int
                 'result_digest' => $resultDigest,
                 'elapsed_ns' => $elapsed,
                 'server_revalidation_state' => 'required',
+                'language_profile' => value_or_default($args, '--language-profile', 'en-US'),
+                'language_resource_pack' => value_or_default($args, '--language-resource-pack', 'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack'),
+                'language_resource_identity' => value_or_default($args, '--language-resource-identity', 'sbsql.common_resource_pack.v1'),
+                'language_resource_hash' => value_or_default($args, '--language-resource-hash', 'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc'),
+                'syntax_profile' => value_or_default($args, '--syntax-profile', 'sbsql.v3'),
+                'topology_profile' => value_or_default($args, '--topology-profile', 'topology.sbsql.canonical.v1'),
+                'standard_english_fallback' => flag_enabled($args, '--standard-english-fallback', true),
                 'transaction_id_observed' => null,
                 'mga_authority' => 'engine',
                 'native_api_surface' => 'php_pdo_style',
@@ -219,6 +294,8 @@ function run_tool(array $args): int
     $elapsed = hrtime(true) - $started;
     $timings['overall'] = $elapsed;
     $sslmode = value_or_default($args, '--sslmode', 'require');
+    $transportMode = resolve_transport_mode(required($args, '--route'), $sslmode);
+    $processMetrics = current_process_metrics();
     $summary = [
         'run_id' => value_or_default($args, '--run-id', 'manual'),
         'driver_name' => 'php',
@@ -227,10 +304,19 @@ function run_tool(array $args): int
         'page_size' => required($args, '--page-size'),
         'namespace' => required($args, '--namespace'),
         'sslmode' => $sslmode,
-        'transport_mode' => $sslmode === 'disable' ? 'tls_disabled' : 'tls_required',
+        'transport_mode' => $transportMode,
+        'language_resource_pack' => value_or_default($args, '--language-resource-pack', 'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack'),
+        'language_resource_identity' => value_or_default($args, '--language-resource-identity', 'sbsql.common_resource_pack.v1'),
+        'language_resource_hash' => value_or_default($args, '--language-resource-hash', 'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc'),
+        'language_resource_authority' => 'shared_server_parser_resource_pack',
+        'language_profile' => value_or_default($args, '--language-profile', 'en-US'),
+        'syntax_profile' => value_or_default($args, '--syntax-profile', 'sbsql.v3'),
+        'topology_profile' => value_or_default($args, '--topology-profile', 'topology.sbsql.canonical.v1'),
+        'standard_english_fallback' => flag_enabled($args, '--standard-english-fallback', true),
         'status' => empty($failures) ? 'pass' : 'fail',
         'failure_count' => count($failures),
         'elapsed_ns' => $elapsed,
+        'process_metrics' => $processMetrics,
         'server_revalidation_required' => true,
         'driver_or_parser_finality' => 'forbidden',
         'mga_authority' => 'engine',
@@ -239,6 +325,11 @@ function run_tool(array $args): int
     write_text(required($args, '--metrics'), json_encode($timings, JSON_THROW_ON_ERROR) . PHP_EOL);
     write_text($paths['timing'], json_encode($timings, JSON_THROW_ON_ERROR) . PHP_EOL);
     write_text($paths['digests'], json_encode($digests, JSON_THROW_ON_ERROR) . PHP_EOL);
+    append_jsonl($paths['process'], [
+        'role' => 'client',
+        'rss_kb' => $processMetrics['client']['last_rss_kb'],
+        'vsize_kb' => $processMetrics['client']['last_vsize_kb'],
+    ]);
     write_text($paths['refusals'], json_encode($securityRefusals, JSON_THROW_ON_ERROR) . PHP_EOL);
     write_text($paths['api'], json_encode($apiHits, JSON_THROW_ON_ERROR) . PHP_EOL);
     write_text($paths['review'], json_encode([
@@ -273,8 +364,15 @@ function parse_args(array $raw): array
         if (!str_starts_with($key, '--')) {
             throw new InvalidArgumentException('unexpected positional argument: ' . $key);
         }
-        if ($key === '--stop-on-error' || $key === '--create-database') {
-            $args[$key] = true;
+        if (!in_array($key, SUPPORTED_ARGS, true)) {
+            throw new InvalidArgumentException('unsupported argument: ' . $key);
+        }
+        if ($key === '--stop-on-error' || $key === '--create-database' || $key === '--standard-english-fallback') {
+            if (isset($raw[$i + 1]) && !str_starts_with($raw[$i + 1], '--')) {
+                $args[$key] = parse_bool_value($key, $raw[++$i]);
+            } else {
+                $args[$key] = true;
+            }
             continue;
         }
         if (!isset($raw[$i + 1]) || str_starts_with($raw[$i + 1], '--')) {
@@ -305,6 +403,10 @@ function validate_args(array $args): void
     if (!isset($parserModes[required($args, '--parser-mode')])) {
         throw new InvalidArgumentException('unsupported parser mode: ' . required($args, '--parser-mode'));
     }
+    $sslmode = value_or_default($args, '--sslmode', 'require');
+    if (!in_array($sslmode, SSLMODES, true)) {
+        throw new InvalidArgumentException('unsupported sslmode: ' . $sslmode);
+    }
 }
 
 function required(array $args, string $key): string
@@ -320,9 +422,74 @@ function value_or_default(array $args, string $key, string $default): string
     return array_key_exists($key, $args) ? (string) $args[$key] : $default;
 }
 
-function flag_enabled(array $args, string $key): bool
+function flag_enabled(array $args, string $key, bool $default = false): bool
 {
-    return array_key_exists($key, $args) && $args[$key] === true;
+    return array_key_exists($key, $args) ? $args[$key] === true : $default;
+}
+
+function parse_bool_value(string $key, string $value): bool
+{
+    $normalized = strtolower($value);
+    if ($normalized === 'true') {
+        return true;
+    }
+    if ($normalized === 'false') {
+        return false;
+    }
+    throw new InvalidArgumentException($key . ' expects true or false, got: ' . $value);
+}
+
+function resolve_transport_mode(string $route, string $sslmode): string
+{
+    if ($route === 'embedded') {
+        return 'embedded_no_network_transport';
+    }
+    if ($route === 'ipc_local') {
+        return 'local_ipc_no_tls';
+    }
+    return $sslmode === 'disable' ? 'tls_disabled' : 'tls_required';
+}
+
+function load_expected_refusals(string $path): array
+{
+    if ($path === '') {
+        return [];
+    }
+    if (!is_file($path)) {
+        throw new InvalidArgumentException('expected refusal file not found: ' . $path);
+    }
+    $doc = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+    $ids = [];
+    if (is_array($doc) && array_is_list($doc)) {
+        $ids = $doc;
+    } elseif (is_array($doc) && !array_is_list($doc)) {
+        if (isset($doc['statement_ids']) && is_array($doc['statement_ids'])) {
+            $ids = array_merge($ids, $doc['statement_ids']);
+        }
+        if (isset($doc['expected_refusals']) && is_array($doc['expected_refusals'])) {
+            $ids = array_merge($ids, $doc['expected_refusals']);
+        }
+    } else {
+        throw new InvalidArgumentException('expected refusals must be a JSON object or array');
+    }
+    $set = [];
+    foreach ($ids as $id) {
+        $set[(string) $id] = true;
+    }
+    return $set;
+}
+
+function current_process_metrics(): array
+{
+    $rssKb = max(1, (int) ceil(memory_get_usage(true) / 1024));
+    return [
+        'client' => [
+            'last_rss_kb' => $rssKb,
+            'last_vsize_kb' => $rssKb,
+            'max_rss_kb' => $rssKb,
+            'max_vsize_kb' => $rssKb,
+        ],
+    ];
 }
 
 function split_statements(string $script): array

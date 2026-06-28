@@ -34,6 +34,45 @@ source_driver("dbi.R")
 page_sizes <- c("4k", "8k", "16k", "32k", "64k", "128k")
 routes <- c("embedded", "ipc_local", "listener-parser", "manager-listener-parser")
 parser_modes <- c("server-parser", "standalone-parser", "driver-sblr-uuid")
+ssl_modes <- c("allow", "disable", "prefer", "require", "verify-ca", "verify-full")
+supported_args <- c(
+  "--database",
+  "--host",
+  "--port",
+  "--user",
+  "--password",
+  "--role",
+  "--sslmode",
+  "--sslrootcert",
+  "--sslcert",
+  "--sslkey",
+  "--route",
+  "--parser-mode",
+  "--page-size",
+  "--namespace",
+  "--input",
+  "--output",
+  "--error",
+  "--diagnostics",
+  "--metrics",
+  "--transcript",
+  "--summary",
+  "--stop-on-error",
+  "--expected-refusals",
+  "--statement-timeout-ms",
+  "--fetch-size",
+  "--concurrency-worker",
+  "--create-database",
+  "--create-emulation-mode",
+  "--run-id",
+  "--language-resource-pack",
+  "--language-resource-identity",
+  "--language-resource-hash",
+  "--language-profile",
+  "--syntax-profile",
+  "--topology-profile",
+  "--standard-english-fallback"
+)
 
 main <- function() {
   args <- parse_args(commandArgs(trailingOnly = TRUE))
@@ -51,6 +90,7 @@ run_tool <- function(args) {
     timing = file.path(run_root, "timing-groups.json"),
     digests = file.path(run_root, "result-digests.json"),
     metadata = file.path(run_root, "metadata-snapshots.json"),
+    process = file.path(run_root, "process-metrics.jsonl"),
     refusals = file.path(run_root, "security-refusals.json"),
     api = file.path(run_root, "native-api-coverage.json"),
     review = file.path(run_root, "code-example-review.json"),
@@ -71,6 +111,7 @@ run_tool <- function(args) {
     "DBI::dbFetch" = 0,
     "DBI::dbExecute" = 0,
     "DBI::dbListTables" = 0,
+    "sb_attach_create" = 0,
     "DBI::dbCommit" = 0,
     "DBI::dbRollback" = 0
   )
@@ -79,6 +120,7 @@ run_tool <- function(args) {
   digests <- list()
   security_refusals <- list()
   started <- nanotime()
+  expected_refusals <- load_expected_refusals(value_or_default(args, "--expected-refusals", ""))
   conn <- NULL
 
   tryCatch({
@@ -105,19 +147,30 @@ run_tool <- function(args) {
       driver = "r",
       route = required(args, "--route"),
       parser_mode = required(args, "--parser-mode"),
-      page_size = required(args, "--page-size")
+      page_size = required(args, "--page-size"),
+      language_profile = value_or_default(args, "--language-profile", "en-US"),
+      language_resource_identity = value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+      language_resource_hash = value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+      syntax_profile = value_or_default(args, "--syntax-profile", "sbsql.v3"),
+      topology_profile = value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1")
     ))
     append_jsonl(paths$wire, list(event = "server_admission_required", driver_or_parser_finality = "forbidden"))
 
-    if (isTRUE(args[["--create-database"]])) stop("--create-database is not implemented in the R native tool yet")
+    if (isTRUE(args[["--create-database"]])) {
+      create_started <- nanotime()
+      sb_attach_create(conn@ptr$client, value_or_default(args, "--create-emulation-mode", "sbsql"), required(args, "--database"))
+      api_hits[["sb_attach_create"]] <- api_hits[["sb_attach_create"]] + 1
+      timings <- add_timing(timings, "database_create", create_started)
+    }
     if (required(args, "--parser-mode") != "server-parser") {
-      stop(paste(required(args, "--parser-mode"), "is not yet implemented by the R native tool; it fails closed"))
+      stop(paste(required(args, "--parser-mode"), "is not accepted by the R native tool lane; it fails closed"))
     }
 
     statements <- split_statements(read_input(required(args, "--input")))
     for (i in seq_along(statements)) {
       sql <- statements[[i]]
       statement_id <- paste0(basename(required(args, "--input")), ":", i)
+      expected_outcome <- if (statement_id %in% expected_refusals) "refusal" else "success"
       group <- classify_statement(sql)
       statement_started <- nanotime()
       outcome <- "success"
@@ -145,14 +198,22 @@ run_tool <- function(args) {
           append_text(required(args, "--output"), paste0(jsonlite::toJSON(list(statement_id = statement_id, rows = rows), auto_unbox = TRUE), "\n"))
         }
         digests[[length(digests) + 1]] <<- list(statement_id = statement_id, row_count = row_count, result_digest = result_digest)
+        if (identical(expected_outcome, "refusal")) {
+          outcome <- "unexpected_success"
+          failures[[length(failures) + 1]] <- list(statement_id = statement_id, message = "statement succeeded but was expected to refuse")
+        }
       }, error = function(e) {
         outcome <<- "refusal"
         sqlstate <<- "HY000"
         diagnostic <<- conditionMessage(e)
         append_jsonl(required(args, "--diagnostics"), list(statement_id = statement_id, sqlstate = sqlstate, message = diagnostic))
         append_text(required(args, "--error"), paste0(statement_id, ": ", diagnostic, "\n"))
-        failures[[length(failures) + 1]] <<- list(statement_id = statement_id, message = diagnostic)
-        if (isTRUE(args[["--stop-on-error"]])) {
+        if (identical(expected_outcome, "success")) {
+          failures[[length(failures) + 1]] <<- list(statement_id = statement_id, message = diagnostic)
+        } else {
+          security_refusals[[length(security_refusals) + 1]] <<- list(statement_id = statement_id, sqlstate = sqlstate, diagnostic_code = diagnostic)
+        }
+        if (identical(expected_outcome, "success") && isTRUE(args[["--stop-on-error"]])) {
           timings <<- add_timing(timings, group, statement_started)
         }
       })
@@ -171,7 +232,7 @@ run_tool <- function(args) {
         statement_id = statement_id,
         command_group = group,
         sql_hash = sha256_text(sql),
-        expected_outcome = "success",
+        expected_outcome = expected_outcome,
         actual_outcome = outcome,
         sqlstate = sqlstate,
         diagnostic_code = diagnostic,
@@ -180,6 +241,13 @@ run_tool <- function(args) {
         result_digest = result_digest,
         elapsed_ns = elapsed,
         server_revalidation_state = "required",
+        language_profile = value_or_default(args, "--language-profile", "en-US"),
+        language_resource_pack = value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+        language_resource_identity = value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+        language_resource_hash = value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+        syntax_profile = value_or_default(args, "--syntax-profile", "sbsql.v3"),
+        topology_profile = value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+        standard_english_fallback = flag_enabled(args, "--standard-english-fallback", TRUE),
         transaction_id_observed = NULL,
         mga_authority = "engine",
         native_api_surface = "r_dbi",
@@ -205,6 +273,8 @@ run_tool <- function(args) {
   elapsed <- nanotime() - started
   timings[["overall"]] <- elapsed
   sslmode <- value_or_default(args, "--sslmode", "require")
+  transport_mode <- resolve_transport_mode(required(args, "--route"), sslmode)
+  process_metrics <- current_process_metrics()
   summary <- list(
     run_id = value_or_default(args, "--run-id", "manual"),
     driver_name = "r",
@@ -213,10 +283,19 @@ run_tool <- function(args) {
     page_size = required(args, "--page-size"),
     namespace = required(args, "--namespace"),
     sslmode = sslmode,
-    transport_mode = if (sslmode == "disable") "tls_disabled" else "tls_required",
+    transport_mode = transport_mode,
+    language_resource_pack = value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+    language_resource_identity = value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+    language_resource_hash = value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+    language_resource_authority = "shared_server_parser_resource_pack",
+    language_profile = value_or_default(args, "--language-profile", "en-US"),
+    syntax_profile = value_or_default(args, "--syntax-profile", "sbsql.v3"),
+    topology_profile = value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+    standard_english_fallback = flag_enabled(args, "--standard-english-fallback", TRUE),
     status = if (length(failures) == 0) "pass" else "fail",
     failure_count = length(failures),
     elapsed_ns = elapsed,
+    process_metrics = process_metrics,
     server_revalidation_required = TRUE,
     driver_or_parser_finality = "forbidden",
     mga_authority = "engine"
@@ -225,6 +304,7 @@ run_tool <- function(args) {
   write_text(required(args, "--metrics"), paste0(jsonlite::toJSON(timings, auto_unbox = TRUE), "\n"))
   write_text(paths$timing, paste0(jsonlite::toJSON(timings, auto_unbox = TRUE), "\n"))
   write_text(paths$digests, paste0(jsonlite::toJSON(digests, auto_unbox = TRUE), "\n"))
+  append_jsonl(paths$process, list(role = "client", rss_kb = process_metrics$client$last_rss_kb, vsize_kb = process_metrics$client$last_vsize_kb))
   write_text(paths$refusals, paste0(jsonlite::toJSON(security_refusals, auto_unbox = TRUE), "\n"))
   write_text(paths$api, paste0(jsonlite::toJSON(api_hits, auto_unbox = TRUE), "\n"))
   write_text(paths$review, paste0(jsonlite::toJSON(list(driver = "r", public_api_only = TRUE, shells_out_to_other_driver = FALSE,
@@ -241,9 +321,15 @@ parse_args <- function(raw) {
   while (i <= length(raw)) {
     key <- raw[[i]]
     if (!startsWith(key, "--")) stop(paste("unexpected positional argument:", key))
-    if (key %in% c("--stop-on-error", "--create-database")) {
-      args[[key]] <- TRUE
-      i <- i + 1
+    if (!(key %in% supported_args)) stop(paste("unsupported argument:", key))
+    if (key %in% c("--stop-on-error", "--create-database", "--standard-english-fallback")) {
+      if (i + 1 <= length(raw) && !startsWith(raw[[i + 1]], "--")) {
+        args[[key]] <- parse_bool_value(key, raw[[i + 1]])
+        i <- i + 2
+      } else {
+        args[[key]] <- TRUE
+        i <- i + 1
+      }
       next
     }
     if (i + 1 > length(raw) || startsWith(raw[[i + 1]], "--")) stop(paste("missing value for", key))
@@ -257,6 +343,8 @@ validate_args <- function(args) {
   if (!(required(args, "--page-size") %in% page_sizes)) stop(paste("unsupported page size:", required(args, "--page-size")))
   if (!(required(args, "--route") %in% routes)) stop(paste("unsupported route:", required(args, "--route")))
   if (!(required(args, "--parser-mode") %in% parser_modes)) stop(paste("unsupported parser mode:", required(args, "--parser-mode")))
+  sslmode <- value_or_default(args, "--sslmode", "require")
+  if (!(sslmode %in% ssl_modes)) stop(paste("unsupported sslmode:", sslmode))
 }
 
 required <- function(args, key) {
@@ -268,6 +356,56 @@ required <- function(args, key) {
 value_or_default <- function(args, key, default) {
   value <- args[[key]]
   if (is.null(value)) default else as.character(value)
+}
+
+flag_enabled <- function(args, key, default = FALSE) {
+  value <- args[[key]]
+  if (is.null(value)) default else isTRUE(value)
+}
+
+parse_bool_value <- function(key, value) {
+  normalized <- tolower(as.character(value))
+  if (identical(normalized, "true")) return(TRUE)
+  if (identical(normalized, "false")) return(FALSE)
+  stop(paste(key, "expects true or false, got:", value))
+}
+
+resolve_transport_mode <- function(route, sslmode) {
+  if (identical(route, "embedded")) return("embedded_no_network_transport")
+  if (identical(route, "ipc_local")) return("local_ipc_no_tls")
+  if (identical(sslmode, "disable")) "tls_disabled" else "tls_required"
+}
+
+load_expected_refusals <- function(path) {
+  if (is.null(path) || !nzchar(path)) return(character())
+  if (!file.exists(path)) stop(paste("expected refusal file not found:", path))
+  doc <- jsonlite::fromJSON(path, simplifyVector = FALSE)
+  ids <- NULL
+  if (is.list(doc) && !is.null(names(doc)) && "statement_ids" %in% names(doc)) {
+    ids <- doc$statement_ids
+    if ("expected_refusals" %in% names(doc)) ids <- c(ids, doc$expected_refusals)
+  } else if (is.list(doc) && !is.null(names(doc)) && "expected_refusals" %in% names(doc)) {
+    ids <- doc$expected_refusals
+  } else if (is.list(doc) && is.null(names(doc))) {
+    ids <- doc
+  } else if (is.atomic(doc)) {
+    ids <- doc
+  }
+  if (is.null(ids)) stop("expected refusals must be a JSON object or array")
+  as.character(unlist(ids, use.names = FALSE))
+}
+
+current_process_metrics <- function() {
+  used_kb <- tryCatch({
+    gc_info <- gc()
+    max(1L, as.integer(sum(gc_info[, 2], na.rm = TRUE) * 1024))
+  }, error = function(e) 1L)
+  list(client = list(
+    last_rss_kb = used_kb,
+    last_vsize_kb = used_kb,
+    max_rss_kb = used_kb,
+    max_vsize_kb = used_kb
+  ))
 }
 
 split_statements <- function(script) {

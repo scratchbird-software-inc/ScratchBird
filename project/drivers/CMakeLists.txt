@@ -44,6 +44,12 @@ set(SB_DRIVER_STATIC_REQUIREMENT_GATE
 set(SB_DRIVER_NATIVE_FULL_SURFACE_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/driver_native_full_surface_gate.py"
 )
+set(SB_DRIVER_NATIVE_MATRIX_PLAN_GATE
+  "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/driver_native_matrix_plan_gate.py"
+)
+set(SB_DRIVER_NATIVE_FULL_SURFACE_MATRIX_RUNNER
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_driver_native_full_surface_matrix.py"
+)
 set(SB_DRIVER_FULL_SURFACE_SCRIPT_SUITE_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/full_surface_scripts/validate_full_surface_script_suite.py"
 )
@@ -158,6 +164,52 @@ function(sb_add_driver_native_full_surface_gate test_name mode)
   )
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "driver;driver_native_full_surface_gate;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+  )
+endfunction()
+
+function(sb_add_driver_native_full_surface_artifact_schema_gate test_name)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--mode" "artifact-schema"
+      "--artifact-root" "${SB_DRIVER_BUILD_ROOT}/native-artifact-schema-fixture"
+      "--generate-deterministic-fixture"
+      "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;artifact_schema;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+  )
+endfunction()
+
+function(sb_add_driver_native_matrix_plan_gate test_name)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_MATRIX_PLAN_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;matrix_plan;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+  )
+endfunction()
+
+function(sb_add_driver_native_full_surface_matrix_runner_gate test_name)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_MATRIX_RUNNER}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--plan-only"
+      "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;matrix_orchestrator;${test_name}"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
@@ -316,6 +368,9 @@ sb_add_driver_static_requirement_gate(driver_cache_lifecycle cache_lifecycle)
 sb_add_driver_dbeaver_management_gate(dbeaver_management_platform_corpus_gate)
 sb_add_driver_native_full_surface_gate(driver_native_full_surface_gate_input gate-input)
 sb_add_driver_native_full_surface_gate(driver_native_full_surface_tool_inventory tool-inventory)
+sb_add_driver_native_full_surface_artifact_schema_gate(driver_native_full_surface_artifact_schema)
+sb_add_driver_native_matrix_plan_gate(driver_native_full_surface_matrix_plan)
+sb_add_driver_native_full_surface_matrix_runner_gate(driver_native_full_surface_matrix_runner_plan)
 sb_add_driver_full_surface_script_suite_gate(driver_full_surface_script_suite_gate)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_schema_gate schema)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_plan_gate plan)

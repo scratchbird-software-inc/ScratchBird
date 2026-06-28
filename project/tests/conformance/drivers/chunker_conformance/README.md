@@ -26,7 +26,7 @@ Ported from the standalone CLI `project/drivers/tool/cli/sb_isql.cpp` (`SET TERM
    quote-aware top-level `;` split (backward compatible — existing scripts and
    `statement_id` indices do not shift).
 
-Usage idiom (Firebird / `sb_isql`):
+Usage idiom:
 
 ```
 SET TERM ^ ;

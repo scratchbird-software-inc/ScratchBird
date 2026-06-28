@@ -27,35 +27,42 @@ import (
 )
 
 type config struct {
-	Database           string
-	Host               string
-	Port               int
-	User               string
-	Password           string
-	Role               string
-	SSLMode            string
-	SSLRootCert        string
-	SSLCert            string
-	SSLKey             string
-	Route              string
-	ParserMode         string
-	PageSize           string
-	Namespace          string
-	Input              string
-	Output             string
-	Error              string
-	Diagnostics        string
-	Metrics            string
-	Transcript         string
-	Summary            string
-	StopOnError        bool
-	ExpectedRefusals   string
-	StatementTimeoutMS int
-	FetchSize          int
-	ConcurrencyWorker  int
-	RunID              string
-	CreateDatabase     bool
-	CreateEmulation    string
+	Database                 string
+	Host                     string
+	Port                     int
+	User                     string
+	Password                 string
+	Role                     string
+	SSLMode                  string
+	SSLRootCert              string
+	SSLCert                  string
+	SSLKey                   string
+	Route                    string
+	ParserMode               string
+	PageSize                 string
+	Namespace                string
+	Input                    string
+	Output                   string
+	Error                    string
+	Diagnostics              string
+	Metrics                  string
+	Transcript               string
+	Summary                  string
+	StopOnError              bool
+	ExpectedRefusals         string
+	StatementTimeoutMS       int
+	FetchSize                int
+	ConcurrencyWorker        int
+	RunID                    string
+	CreateDatabase           bool
+	CreateEmulation          string
+	LanguageResourcePack     string
+	LanguageResourceIdentity string
+	LanguageResourceHash     string
+	LanguageProfile          string
+	SyntaxProfile            string
+	TopologyProfile          string
+	StandardEnglishFallback  bool
 }
 
 type commandEvent map[string]any
@@ -105,8 +112,49 @@ func parseFlags() config {
 	flag.StringVar(&cfg.RunID, "run-id", "manual", "run id")
 	flag.BoolVar(&cfg.CreateDatabase, "create-database", false, "create database before script")
 	flag.StringVar(&cfg.CreateEmulation, "create-emulation-mode", "sbsql", "create mode")
-	flag.Parse()
+	flag.StringVar(&cfg.LanguageResourcePack, "language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack", "ScratchBird language resource pack path")
+	flag.StringVar(&cfg.LanguageResourceIdentity, "language-resource-identity", "sbsql.common_resource_pack.v1", "ScratchBird language resource identity")
+	flag.StringVar(&cfg.LanguageResourceHash, "language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc", "ScratchBird language resource common hash")
+	flag.StringVar(&cfg.LanguageProfile, "language-profile", "en-US", "ScratchBird language profile")
+	flag.StringVar(&cfg.SyntaxProfile, "syntax-profile", "sbsql.v3", "ScratchBird syntax profile")
+	flag.StringVar(&cfg.TopologyProfile, "topology-profile", "topology.sbsql.canonical.v1", "ScratchBird topology profile")
+	flag.BoolVar(&cfg.StandardEnglishFallback, "standard-english-fallback", true, "allow canonical English fallback")
+	_ = flag.CommandLine.Parse(normalizeBoolFlagArgs(os.Args[1:]))
+	if flag.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "unexpected positional argument: "+strings.Join(flag.Args(), " "))
+		os.Exit(2)
+	}
 	return cfg
+}
+
+func normalizeBoolFlagArgs(args []string) []string {
+	normalized := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if (arg == "--stop-on-error" || arg == "--create-database" || arg == "--standard-english-fallback") && index+1 < len(args) {
+			next := args[index+1]
+			if !strings.HasPrefix(next, "--") {
+				if boolValue, ok := normalizeBoolLiteral(next); ok {
+					normalized = append(normalized, arg+"="+boolValue)
+					index++
+					continue
+				}
+			}
+		}
+		normalized = append(normalized, arg)
+	}
+	return normalized
+}
+
+func normalizeBoolLiteral(value string) (string, bool) {
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return "true", true
+	case "0", "false", "no", "off":
+		return "false", true
+	default:
+		return "", false
+	}
 }
 
 func run(cfg config) error {
@@ -185,6 +233,11 @@ func run(cfg config) error {
 		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
 	}
 
+	expectedRefusals, err := loadExpectedRefusals(cfg.ExpectedRefusals)
+	if err != nil {
+		failures = append(failures, map[string]any{"statement_id": "expected_refusals", "message": err.Error()})
+		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
+	}
 	script, err := readInput(cfg.Input)
 	if err != nil {
 		failures = append(failures, map[string]any{"statement_id": "input", "message": err.Error()})
@@ -194,11 +247,16 @@ func run(cfg config) error {
 		statementID := fmt.Sprintf("%s:%d", filepath.Base(cfg.Input), index+1)
 		group := classify(statement)
 		stmtStarted := time.Now()
+		expectedOutcome := "success"
+		if expectedRefusals[statementID] {
+			expectedOutcome = "refusal"
+		}
 		outcome := "success"
 		rowCount := int64(-1)
 		var resultDigest any
 		var sqlState any
 		var diagnostic any
+		breakAfterEvent := false
 		stmt, err := conn.PrepareContext(ctx, statement)
 		apiHits["PrepareContext"]++
 		if err == nil {
@@ -240,43 +298,64 @@ func run(cfg config) error {
 				"statement_id": statementID, "sqlstate": sqlState, "message": diagnostic,
 			})
 			appendText(cfg.Error, statementID+": "+err.Error()+"\n")
-			failures = append(failures, map[string]any{"statement_id": statementID, "message": err.Error()})
-			if cfg.StopOnError {
-				elapsed := time.Since(stmtStarted)
-				addTiming(timings, group, elapsed)
-				break
+			if expectedOutcome == "refusal" {
+				securityRefusals = append(securityRefusals, map[string]any{
+					"statement_id":    statementID,
+					"sqlstate":        sqlState,
+					"diagnostic_code": diagnostic,
+				})
+			} else {
+				failures = append(failures, map[string]any{"statement_id": statementID, "message": err.Error()})
+				breakAfterEvent = cfg.StopOnError
 			}
+		} else if expectedOutcome == "refusal" {
+			outcome = "unexpected_success"
+			failures = append(failures, map[string]any{
+				"statement_id": statementID,
+				"message":      "statement succeeded but was expected to refuse",
+			})
+			breakAfterEvent = cfg.StopOnError
 		}
 		elapsed := time.Since(stmtStarted)
 		addTiming(timings, group, elapsed)
 		event := commandEvent{
-			"run_id":                    cfg.RunID,
-			"driver_name":               "go",
-			"driver_version":            "unknown",
-			"route":                     cfg.Route,
-			"parser_mode":               cfg.ParserMode,
-			"page_size":                 cfg.PageSize,
-			"namespace":                 cfg.Namespace,
-			"script":                    cfg.Input,
-			"statement_index":           index + 1,
-			"statement_id":              statementID,
-			"command_group":             group,
-			"sql_hash":                  sha256Text(statement),
-			"expected_outcome":          "success",
-			"actual_outcome":            outcome,
-			"sqlstate":                  sqlState,
-			"diagnostic_code":           diagnostic,
-			"canonical_message_vector":  []string{},
-			"row_count":                 rowCount,
-			"result_digest":             resultDigest,
-			"elapsed_ns":                elapsed.Nanoseconds(),
-			"server_revalidation_state": "required",
-			"mga_authority":             "engine",
-			"native_api_surface":        "database_sql",
-			"code_example_section":      "prepare_execute_fetch",
+			"run_id":                     cfg.RunID,
+			"driver_name":                "go",
+			"driver_version":             "unknown",
+			"route":                      cfg.Route,
+			"parser_mode":                cfg.ParserMode,
+			"page_size":                  cfg.PageSize,
+			"namespace":                  cfg.Namespace,
+			"script":                     cfg.Input,
+			"statement_index":            index + 1,
+			"statement_id":               statementID,
+			"command_group":              group,
+			"sql_hash":                   sha256Text(statement),
+			"expected_outcome":           expectedOutcome,
+			"actual_outcome":             outcome,
+			"sqlstate":                   sqlState,
+			"diagnostic_code":            diagnostic,
+			"canonical_message_vector":   []string{},
+			"row_count":                  rowCount,
+			"result_digest":              resultDigest,
+			"elapsed_ns":                 elapsed.Nanoseconds(),
+			"server_revalidation_state":  "required",
+			"language_profile":           cfg.LanguageProfile,
+			"language_resource_pack":     cfg.LanguageResourcePack,
+			"language_resource_identity": cfg.LanguageResourceIdentity,
+			"language_resource_hash":     cfg.LanguageResourceHash,
+			"syntax_profile":             cfg.SyntaxProfile,
+			"topology_profile":           cfg.TopologyProfile,
+			"standard_english_fallback":  cfg.StandardEnglishFallback,
+			"mga_authority":              "engine",
+			"native_api_surface":         "database_sql",
+			"code_example_section":       "prepare_execute_fetch",
 		}
 		appendJSONL(filepath.Join(runRoot, "command-events.jsonl"), event)
 		testcases = append(testcases, event)
+		if breakAfterEvent {
+			break
+		}
 	}
 	writeMetadataSnapshot(ctx, conn, cfg, apiHits)
 	var tx *sql.Tx
@@ -343,15 +422,16 @@ func finish(
 ) error {
 	runRoot := filepath.Dir(cfg.Summary)
 	timings["overall"] = elapsed.Nanoseconds()
-	transportMode := "tls_required"
-	if cfg.SSLMode == "disable" {
-		transportMode = "tls_disabled"
-	}
+	transportMode := transportModeForRoute(cfg.Route, cfg.SSLMode)
 	summary := map[string]any{
 		"run_id": cfg.RunID, "driver_name": "go", "route": cfg.Route,
 		"parser_mode": cfg.ParserMode, "page_size": cfg.PageSize,
 		"namespace": cfg.Namespace, "status": status(failures),
 		"sslmode": cfg.SSLMode, "transport_mode": transportMode,
+		"language_resource_pack": cfg.LanguageResourcePack, "language_resource_identity": cfg.LanguageResourceIdentity,
+		"language_resource_hash": cfg.LanguageResourceHash, "language_resource_authority": "shared_server_parser_resource_pack",
+		"language_profile": cfg.LanguageProfile, "syntax_profile": cfg.SyntaxProfile,
+		"topology_profile": cfg.TopologyProfile, "standard_english_fallback": cfg.StandardEnglishFallback,
 		"failure_count": len(failures), "elapsed_ns": elapsed.Nanoseconds(),
 		"server_revalidation_required": true,
 		"driver_or_parser_finality":    "forbidden",
@@ -397,6 +477,59 @@ func validate(cfg config) error {
 		return fmt.Errorf("unsupported parser mode %s", cfg.ParserMode)
 	}
 	return nil
+}
+
+func transportModeForRoute(route, sslmode string) string {
+	switch route {
+	case "embedded":
+		return "embedded_no_network_transport"
+	case "ipc_local":
+		return "local_ipc_no_tls"
+	default:
+		if sslmode == "disable" {
+			return "tls_disabled"
+		}
+		return "tls_required"
+	}
+}
+
+func loadExpectedRefusals(path string) (map[string]bool, error) {
+	expected := map[string]bool{}
+	if path == "" {
+		return expected, nil
+	}
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc any
+	if err := json.Unmarshal(bytes, &doc); err != nil {
+		return nil, err
+	}
+	collectExpectedRefusalIDs(expected, doc)
+	return expected, nil
+}
+
+func collectExpectedRefusalIDs(expected map[string]bool, value any) {
+	switch typed := value.(type) {
+	case string:
+		expected[typed] = true
+	case []any:
+		for _, item := range typed {
+			collectExpectedRefusalIDs(expected, item)
+		}
+	case map[string]any:
+		for _, key := range []string{"statement_id", "statementId", "id"} {
+			if text, ok := typed[key].(string); ok {
+				expected[text] = true
+			}
+		}
+		for _, key := range []string{"statement_ids", "statementIds", "expected_refusals", "expectedRefusals", "expected_diagnostics", "expectedDiagnostics"} {
+			if nested, ok := typed[key]; ok {
+				collectExpectedRefusalIDs(expected, nested)
+			}
+		}
+	}
 }
 
 func readRows(rows *sql.Rows) ([][]any, error) {

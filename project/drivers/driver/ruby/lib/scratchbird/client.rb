@@ -1643,7 +1643,7 @@ module Scratchbird
     #
     # Quote-aware (single/double quotes, including SQL-style doubled-quote
     # escapes) and `--` line-comment aware. Honors the `SET TERM <terminator>`
-    # client directive (Firebird / sb_isql semantics): the directive changes the
+    # client directive: the directive changes the
     # active terminator and is consumed -- it is not emitted as a statement and
     # is not counted. With no SET TERM directive present the behavior is identical
     # to a plain quote-aware top-level `;` split, so existing scripts are unchanged.

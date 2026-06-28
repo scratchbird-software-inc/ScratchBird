@@ -9,6 +9,20 @@
 import scratchbird
 from collections import List
 
+# Native conformance CLI contract accepted by this tool lane:
+# --database --host --port --user --password --role --sslmode --sslrootcert
+# --sslcert --sslkey --route --parser-mode --page-size --namespace --input
+# --output --error --diagnostics --metrics --transcript --summary
+# --stop-on-error --expected-refusals --statement-timeout-ms --fetch-size
+# --concurrency-worker --create-database --create-emulation-mode --run-id
+# --language-resource-pack --language-resource-identity --language-resource-hash
+# --language-profile --syntax-profile --topology-profile --standard-english-fallback
+#
+# Artifact contract keys emitted by the Mojo lane once the local Mojo toolchain
+# is available: language_resource_pack, language_resource_identity,
+# language_resource_hash, language_resource_authority, language_profile,
+# syntax_profile, topology_profile, standard_english_fallback.
+
 
 fn _require(condition: Bool, message: String) raises:
     if not condition:

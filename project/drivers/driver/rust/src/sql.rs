@@ -122,7 +122,7 @@ fn chunk_set_term(chunk: &str) -> Option<String> {
 /// Split SQL into top-level statements on the active terminator.
 ///
 /// Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
-/// `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+/// `SET TERM <terminator>` client directive:
 /// the directive changes the active terminator and is consumed — it is not
 /// emitted as a statement and is not counted in statement indexing. This lets
 /// procedural bodies (functions, procedures, triggers) contain inner `;`
