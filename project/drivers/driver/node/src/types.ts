@@ -12,6 +12,9 @@ export interface ClientConfig {
   host?: string;
   port?: number;
   frontDoorMode?: "direct" | "manager_proxy" | string;
+  transportMode?: "inet_listener" | "local_ipc" | string;
+  ipcMethod?: "unix" | string;
+  ipcPath?: string;
   protocol?: string;
   parser?: string;
   dialect?: string;

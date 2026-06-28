@@ -88,6 +88,8 @@ private func normalizeConnectionParams(_ raw: [String: String]) -> [String: Stri
             out["search_path"] = value
         case "binarytransfer":
             out["binary_transfer"] = value
+        case "ipcpath", "unixsocket", "socketpath":
+            out["ipc_path"] = value
         case "frontdoormode", "connection_mode", "ingress_mode":
             out["front_door_mode"] = value
         case "mcp_auth_token":
@@ -152,6 +154,7 @@ public struct ScratchBirdConfig {
     public var sslcert: String?
     public var sslkey: String?
     public var sslpassword: String?
+    public var ipcPath: String?
     public var applicationName: String?
     public var searchPath: String?
     public var role: String?
@@ -199,6 +202,7 @@ public struct ScratchBirdConfig {
         sslcert: String? = nil,
         sslkey: String? = nil,
         sslpassword: String? = nil,
+        ipcPath: String? = nil,
         applicationName: String? = nil,
         searchPath: String? = nil,
         role: String? = nil,
@@ -245,6 +249,7 @@ public struct ScratchBirdConfig {
         self.sslcert = sslcert
         self.sslkey = sslkey
         self.sslpassword = sslpassword
+        self.ipcPath = ipcPath
         self.applicationName = applicationName
         self.searchPath = searchPath
         self.role = role
@@ -300,6 +305,7 @@ public struct ScratchBirdConfig {
             self.sslcert = params["sslcert"]
             self.sslkey = params["sslkey"]
             self.sslpassword = params["sslpassword"]
+            self.ipcPath = params["ipc_path"]
             self.applicationName = params["application_name"]
             self.searchPath = params["search_path"]
             self.role = params["role"]
@@ -354,6 +360,7 @@ public struct ScratchBirdConfig {
             self.sslcert = params["sslcert"]
             self.sslkey = params["sslkey"]
             self.sslpassword = params["sslpassword"]
+            self.ipcPath = params["ipc_path"]
             self.applicationName = params["application_name"]
             self.searchPath = params["search_path"]
             self.role = params["role"]

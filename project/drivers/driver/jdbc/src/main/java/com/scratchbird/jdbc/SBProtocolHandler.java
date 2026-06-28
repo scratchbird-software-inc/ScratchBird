@@ -22,8 +22,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLDataException;
 import java.sql.SQLFeatureNotSupportedException;
@@ -265,6 +268,7 @@ public class SBProtocolHandler {
     private final SBConnectionProperties props;
 
     private Socket socket;
+    private SocketChannel socketChannel;
     private InputStream inputStream;
     private OutputStream outputStream;
 
@@ -380,6 +384,18 @@ public class SBProtocolHandler {
             props.setPort(SBDriver.DEFAULT_PORT);
         }
 
+        String transportMode = normalizeTransportMode(props.getTransportMode());
+        if ("local_ipc".equals(transportMode)) {
+            String ipcPath = props.getIpcPath();
+            if (ipcPath == null || ipcPath.isBlank()) {
+                throw createSQLException("ipc_path is required for local_ipc", "08001");
+            }
+            socketChannel = SocketChannel.open(UnixDomainSocketAddress.of(ipcPath));
+            inputStream = new BufferedInputStream(Channels.newInputStream(socketChannel), 65536);
+            outputStream = new BufferedOutputStream(Channels.newOutputStream(socketChannel), 65536);
+            return;
+        }
+
         socket = new Socket();
         socket.setTcpNoDelay(true);
         socket.setKeepAlive(props.isTcpKeepAlive());
@@ -399,6 +415,17 @@ public class SBProtocolHandler {
         if (!"disable".equalsIgnoreCase(sslMode)) {
             upgradeToSSL(sslMode);
         }
+    }
+
+    private static String normalizeTransportMode(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT).replace('-', '_');
+        if (normalized.isEmpty()) {
+            return "inet_listener";
+        }
+        if ("local".equals(normalized) || "ipc".equals(normalized)) {
+            return "local_ipc";
+        }
+        return normalized;
     }
 
     public synchronized SBQueryResult execute(String sql) throws SQLException {
@@ -769,7 +796,9 @@ public class SBProtocolHandler {
                     }
                 }
             } finally {
-                socket.setSoTimeout(oldTimeout);
+                if (socket != null) {
+                    socket.setSoTimeout(oldTimeout);
+                }
             }
         } catch (IOException e) {
             return false;
@@ -780,6 +809,9 @@ public class SBProtocolHandler {
         try {
             if (socket != null) {
                 socket.close();
+            }
+            if (socketChannel != null) {
+                socketChannel.close();
             }
         } catch (IOException e) {
             // Ignore
@@ -794,6 +826,9 @@ public class SBProtocolHandler {
         try {
             if (socket != null) {
                 socket.close();
+            }
+            if (socketChannel != null) {
+                socketChannel.close();
             }
         } catch (IOException e) {
             // Ignore
@@ -833,7 +868,10 @@ public class SBProtocolHandler {
     }
 
     public synchronized boolean isConnected() {
-        return connected && socket != null && !socket.isClosed() && inputStream != null && outputStream != null;
+        boolean transportOpen =
+            (socket != null && !socket.isClosed()) ||
+            (socketChannel != null && socketChannel.isOpen());
+        return connected && transportOpen && inputStream != null && outputStream != null;
     }
 
     public synchronized void setNetworkTimeout(int milliseconds) {

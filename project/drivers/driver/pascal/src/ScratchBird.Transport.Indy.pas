@@ -65,6 +65,22 @@ var
   Mode: string;
 begin
   Mode := LowerCase(FConfig.SSLMode);
+  if Trim(FConfig.Transport) = '' then
+    FConfig.Transport := 'inet';
+  if (not SameText(FConfig.Transport, 'inet')) and
+     (not SameText(FConfig.Transport, 'ipc')) and
+     (not SameText(FConfig.Transport, 'embedded')) then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'transport must be inet, ipc, or embedded',
+      '0A000', '', '');
+  if SameText(FConfig.Transport, 'embedded') then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'embedded transport is not supported by the Pascal driver; no ScratchBird C++ library boundary is exposed',
+      '0A000', '', '');
+  if SameText(FConfig.Transport, 'ipc') then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'Unix-domain socket IPC transport is not supported by the Pascal Indy transport',
+      '0A000', '', '');
   if Mode = 'disable' then
     raise EScratchbirdConnectionError.CreateWithInfo(
       'TLS is required for ScratchBird connections', '08001', '', '');

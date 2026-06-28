@@ -26,6 +26,9 @@ public class SBConnectionProperties {
     private String host = "localhost";
     private int port = SBDriver.DEFAULT_PORT;
     private String frontDoorMode = "direct";
+    private String transportMode = "inet_listener";
+    private String ipcMethod = "unix";
+    private String ipcPath = "";
     private String protocol = "native";
     private String database;
 
@@ -140,6 +143,21 @@ public class SBConnectionProperties {
             case "connection_mode":
             case "ingress_mode":
                 this.frontDoorMode = normalizeFrontDoorMode(value);
+                break;
+            case "transport_mode":
+            case "transportmode":
+            case "transport":
+                this.transportMode = value;
+                break;
+            case "ipc_method":
+            case "ipcmethod":
+                this.ipcMethod = value;
+                break;
+            case "ipc_path":
+            case "ipcpath":
+            case "socket_path":
+            case "pipe_name":
+                this.ipcPath = value;
                 break;
             case "database":
             case "databasename":
@@ -408,6 +426,18 @@ public class SBConnectionProperties {
             case "connection_mode":
             case "ingress_mode":
                 return frontDoorMode;
+            case "transport_mode":
+            case "transportmode":
+            case "transport":
+                return transportMode;
+            case "ipc_method":
+            case "ipcmethod":
+                return ipcMethod;
+            case "ipc_path":
+            case "ipcpath":
+            case "socket_path":
+            case "pipe_name":
+                return ipcPath;
             case "database":
             case "databasename":
             case "dbname":
@@ -601,6 +631,34 @@ public class SBConnectionProperties {
 
     public void setFrontDoorMode(String frontDoorMode) {
         this.frontDoorMode = normalizeFrontDoorMode(frontDoorMode);
+    }
+
+    public String getTransportMode() {
+        return transportMode;
+    }
+
+    public void setTransportMode(String transportMode) {
+        this.transportMode = transportMode == null || transportMode.isBlank()
+            ? "inet_listener"
+            : transportMode;
+    }
+
+    public String getIpcMethod() {
+        return ipcMethod;
+    }
+
+    public void setIpcMethod(String ipcMethod) {
+        this.ipcMethod = ipcMethod == null || ipcMethod.isBlank()
+            ? "unix"
+            : ipcMethod;
+    }
+
+    public String getIpcPath() {
+        return ipcPath;
+    }
+
+    public void setIpcPath(String ipcPath) {
+        this.ipcPath = ipcPath == null ? "" : ipcPath;
     }
 
     public String getDatabase() {
@@ -1064,6 +1122,9 @@ public class SBConnectionProperties {
         props.setProperty("host", host);
         props.setProperty("port", String.valueOf(port));
         props.setProperty("front_door_mode", frontDoorMode);
+        props.setProperty("transport_mode", transportMode);
+        props.setProperty("ipc_method", ipcMethod);
+        if (ipcPath != null && !ipcPath.isEmpty()) props.setProperty("ipc_path", ipcPath);
         props.setProperty("protocol", protocol);
         if (database != null) props.setProperty("database", database);
         if (user != null) props.setProperty("user", user);

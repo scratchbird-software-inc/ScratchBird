@@ -20,6 +20,9 @@ type Config struct {
 	Host                        string
 	Port                        int
 	FrontDoorMode               string
+	TransportMode               string
+	IPCMethod                   string
+	IPCPath                     string
 	Database                    string
 	User                        string
 	Password                    string
@@ -64,6 +67,8 @@ func defaultConfig() Config {
 		Host:                     "localhost",
 		Port:                     3092,
 		FrontDoorMode:            "direct",
+		TransportMode:            "inet_listener",
+		IPCMethod:                "unix",
 		Protocol:                 "native",
 		SSLMode:                  "require",
 		ConnectTimeout:           30 * time.Second,
@@ -229,6 +234,12 @@ func applyParam(cfg *Config, key, value string) error {
 			return errors.New("front_door_mode must be direct or manager_proxy")
 		}
 		cfg.FrontDoorMode = normalized
+	case "transport_mode", "transportmode", "transport":
+		cfg.TransportMode = value
+	case "ipc_method", "ipcmethod":
+		cfg.IPCMethod = value
+	case "ipc_path", "ipcpath", "socket_path", "pipe_name":
+		cfg.IPCPath = value
 	case "database", "dbname", "initial catalog":
 		cfg.Database = value
 	case "user", "username", "user id", "uid":

@@ -39,6 +39,7 @@ const supportedArgs = {
   '--sslrootcert',
   '--sslcert',
   '--sslkey',
+  '--ipc-path',
   '--route',
   '--parser-mode',
   '--page-size',
@@ -129,23 +130,25 @@ Future<int> runTool(Map<String, String> args) async {
   final expectedRefusals = await loadExpectedRefusals(
     args['--expected-refusals'],
   );
+  final route = required(args, '--route');
+  final sslmode = effectiveSslMode(route, args['--sslmode'] ?? 'require');
   ScratchBirdClient? client;
 
   try {
     final config = ScratchBirdConfig(
       host: required(args, '--host'),
       port: int.parse(required(args, '--port')),
+      ipcPath: route == 'ipc_local' ? required(args, '--ipc-path') : null,
       database: required(args, '--database'),
       user: required(args, '--user'),
       password: required(args, '--password'),
       role: args['--role'],
-      sslmode: args['--sslmode'] ?? 'require',
+      sslmode: sslmode,
       sslrootcert: args['--sslrootcert'],
       sslcert: args['--sslcert'],
       sslkey: args['--sslkey'],
-      frontDoorMode: required(args, '--route') == 'manager-listener-parser'
-          ? 'manager_proxy'
-          : 'direct',
+      frontDoorMode:
+          route == 'manager-listener-parser' ? 'manager_proxy' : 'direct',
       applicationName: 'SBIsqlDart',
       metadataExpandSchemaParents: true,
       fetchSize: int.parse(args['--fetch-size'] ?? '1000'),
@@ -159,7 +162,7 @@ Future<int> runTool(Map<String, String> args) async {
     await appendJsonl(required(args, '--transcript'), {
       'event': 'connect',
       'driver': 'dart',
-      'route': required(args, '--route'),
+      'route': route,
       'parser_mode': required(args, '--parser-mode'),
       'page_size': required(args, '--page-size'),
     });
@@ -190,9 +193,8 @@ Future<int> runTool(Map<String, String> args) async {
       final sql = statements[index];
       final statementId =
           '${File(required(args, '--input')).uri.pathSegments.last}:${index + 1}';
-      final expectedOutcome = expectedRefusals.contains(statementId)
-          ? 'refusal'
-          : 'success';
+      final expectedOutcome =
+          expectedRefusals.contains(statementId) ? 'refusal' : 'success';
       final group = classifyStatement(sql);
       final statementStarted = monotonicNs();
       var outcome = 'success';
@@ -212,7 +214,10 @@ Future<int> runTool(Map<String, String> args) async {
           resultDigest = sha256Text(jsonEncode(result.rows));
           await appendText(
             required(args, '--output'),
-            '${jsonEncode({'statement_id': statementId, 'rows': result.rows})}\n',
+            '${jsonEncode({
+                  'statement_id': statementId,
+                  'rows': result.rows
+                })}\n',
           );
         }
         digests.add({
@@ -280,14 +285,11 @@ Future<int> runTool(Map<String, String> args) async {
         'elapsed_ns': elapsed,
         'server_revalidation_state': 'required',
         'language_profile': args['--language-profile'] ?? 'en-US',
-        'language_resource_pack':
-            args['--language-resource-pack'] ??
+        'language_resource_pack': args['--language-resource-pack'] ??
             'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
-        'language_resource_identity':
-            args['--language-resource-identity'] ??
+        'language_resource_identity': args['--language-resource-identity'] ??
             'sbsql.common_resource_pack.v1',
-        'language_resource_hash':
-            args['--language-resource-hash'] ??
+        'language_resource_hash': args['--language-resource-hash'] ??
             'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
         'syntax_profile': args['--syntax-profile'] ?? 'sbsql.v3',
         'topology_profile':
@@ -311,7 +313,10 @@ Future<int> runTool(Map<String, String> args) async {
     apiHits['queryMetadata'] = apiHits['queryMetadata']! + 1;
     await writeText(
       paths['metadata']!,
-      '${jsonEncode({'tables_digest': sha256Text(jsonEncode(metadata.rows)), 'row_count': metadata.rows.length})}\n',
+      '${jsonEncode({
+            'tables_digest': sha256Text(jsonEncode(metadata.rows)),
+            'row_count': metadata.rows.length
+          })}\n',
     );
     addTiming(timings, 'metadata', metadataStarted);
   } catch (error) {
@@ -326,28 +331,30 @@ Future<int> runTool(Map<String, String> args) async {
 
   final elapsed = monotonicNs() - started;
   timings['overall'] = elapsed;
-  final sslmode = args['--sslmode'] ?? 'require';
   final transportMode = resolveTransportMode(
-    required(args, '--route'),
+    route,
     sslmode,
   );
   final processMetrics = currentProcessMetrics();
   final summary = {
     'run_id': args['--run-id'] ?? 'manual',
     'driver_name': 'dart',
-    'route': required(args, '--route'),
+    'route': route,
     'parser_mode': required(args, '--parser-mode'),
     'page_size': required(args, '--page-size'),
     'namespace': required(args, '--namespace'),
     'sslmode': sslmode,
     'transport_mode': transportMode,
-    'language_resource_pack':
-        args['--language-resource-pack'] ??
+    'transport_endpoint_kind': endpointKindForRoute(route),
+    'driver_transport_implementation': transportImplementationForRoute(
+      route,
+    ),
+    'cpp_library_boundary': 'none',
+    'language_resource_pack': args['--language-resource-pack'] ??
         'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
     'language_resource_identity':
         args['--language-resource-identity'] ?? 'sbsql.common_resource_pack.v1',
-    'language_resource_hash':
-        args['--language-resource-hash'] ??
+    'language_resource_hash': args['--language-resource-hash'] ??
         'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
     'language_resource_authority': 'shared_server_parser_resource_pack',
     'language_profile': args['--language-profile'] ?? 'en-US',
@@ -381,12 +388,19 @@ Future<int> runTool(Map<String, String> args) async {
   await writeText(
     paths['review']!,
     '${jsonEncode({
-      'driver': 'dart',
-      'public_api_only': true,
-      'shells_out_to_other_driver': false,
-      'source_is_canonical_example': true,
-      'sections': ['connection', 'query', 'fetch', 'metadata', 'diagnostics', 'transaction'],
-    })}\n',
+          'driver': 'dart',
+          'public_api_only': true,
+          'shells_out_to_other_driver': false,
+          'source_is_canonical_example': true,
+          'sections': [
+            'connection',
+            'query',
+            'fetch',
+            'metadata',
+            'diagnostics',
+            'transaction'
+          ],
+        })}\n',
   );
   await writeText(
     paths['junit']!,
@@ -452,6 +466,10 @@ void validate(Map<String, String> args) {
     );
   if (!routes.contains(required(args, '--route')))
     throw ArgumentError('unsupported route: ${required(args, '--route')}');
+  if (required(args, '--route') == 'ipc_local' &&
+      (args['--ipc-path'] == null || args['--ipc-path']!.trim().isEmpty)) {
+    throw ArgumentError('ipc_local route requires --ipc-path');
+  }
   if (!parserModes.contains(required(args, '--parser-mode')))
     throw ArgumentError(
       'unsupported parser mode: ${required(args, '--parser-mode')}',
@@ -468,6 +486,21 @@ String resolveTransportMode(String route, String sslmode) {
   return sslmode == 'disable' ? 'tls_disabled' : 'tls_required';
 }
 
+String effectiveSslMode(String route, String sslmode) =>
+    route == 'ipc_local' ? 'disable' : sslmode;
+
+String endpointKindForRoute(String route) {
+  if (route == 'embedded') return 'none';
+  if (route == 'ipc_local') return 'unix_domain_socket';
+  return 'tcp';
+}
+
+String transportImplementationForRoute(String route) {
+  if (route == 'embedded') return 'unsupported_no_cpp_library_boundary';
+  if (route == 'ipc_local') return 'native_dart_unix_socket';
+  return 'native_dart_tcp';
+}
+
 String classifyStatement(String sql) {
   final trimmed = sql.trim().toLowerCase();
   final first = trimmed.split(RegExp(r'\s+')).first;
@@ -480,8 +513,7 @@ String classifyStatement(String sql) {
     'savepoint',
     'begin',
     'start',
-  }.contains(first))
-    return 'transaction';
+  }.contains(first)) return 'transaction';
   if (const {'grant', 'revoke'}.contains(first)) return 'security_refusal';
   if (trimmed.contains('sys.')) return 'metadata';
   return 'query';
@@ -528,7 +560,8 @@ bool flagEnabled(
   Map<String, String> args,
   String key, [
   bool fallback = false,
-]) => (args[key] ?? fallback.toString()).toLowerCase() == 'true';
+]) =>
+    (args[key] ?? fallback.toString()).toLowerCase() == 'true';
 
 Map<String, Map<String, int>> currentProcessMetrics() {
   final rssKb = (ProcessInfo.currentRss / 1024).ceil();

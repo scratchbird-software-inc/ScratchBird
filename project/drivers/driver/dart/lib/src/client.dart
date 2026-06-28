@@ -190,6 +190,28 @@ class ScratchBirdClient {
   }
 
   Future<void> _connectTransport() async {
+    final ipcPath = config.ipcPath?.trim();
+    if (ipcPath != null && ipcPath.isNotEmpty) {
+      try {
+        _socket = await Socket.connect(
+          InternetAddress(ipcPath, type: InternetAddressType.unix),
+          0,
+          timeout: Duration(milliseconds: config.connectTimeoutMs),
+        );
+      } on UnsupportedError catch (error) {
+        throw ScratchBirdConnectionException(
+          'Local IPC transport is not supported by this Dart runtime: $error',
+        );
+      } on SocketException catch (error) {
+        throw ScratchBirdConnectionException(
+          'Local IPC connect failed for $ipcPath: ${error.message}',
+        );
+      }
+      _iter = StreamIterator(_socket!);
+      _reader = _SocketReader(_iter);
+      return;
+    }
+
     final host = config.host;
     final port = config.port;
     final sslmode = _normalizeSslMode(config.sslmode);

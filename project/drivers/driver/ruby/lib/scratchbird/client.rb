@@ -901,12 +901,20 @@ module Scratchbird
       begin
         @config.protocol = Config.normalize_native_protocol(@config.protocol)
         @config.front_door_mode = Config.normalize_front_door_mode(@config.front_door_mode)
+        @config.transport = Config.normalize_transport(@config.transport)
       rescue ArgumentError => e
         raise NotSupportedError, e.message
       end
       raise ConnectionError, "user and database are required" if require_identity && (@config.user.to_s.empty? || @config.database.to_s.empty?)
       if require_manager_token && @config.front_door_mode == "manager_proxy" && @config.manager_auth_token.to_s.empty?
         raise ConnectionError, "manager_proxy mode requires manager_auth_token"
+      end
+      if @config.transport == "embedded"
+        raise NotSupportedError, "embedded transport is not supported by the Ruby driver; no ScratchBird C++ library boundary is exposed"
+      end
+      if @config.transport == "ipc"
+        @socket = connect_ipc
+        return
       end
       raw_socket = connect_tcp
       @socket = wrap_tls(raw_socket)
@@ -1016,6 +1024,15 @@ module Scratchbird
       socket = Socket.tcp(@config.host, @config.port, connect_timeout: timeout)
       socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
       socket
+    end
+
+    def connect_ipc
+      path = @config.ipc_path.to_s
+      raise ConnectionError, "ipc_path is required for local IPC transport" if path.empty?
+      unless defined?(UNIXSocket)
+        raise NotSupportedError, "Unix-domain socket IPC transport is not supported by this Ruby runtime"
+      end
+      UNIXSocket.new(path)
     end
 
     def wrap_tls(raw_socket)

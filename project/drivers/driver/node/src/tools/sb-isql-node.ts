@@ -27,6 +27,7 @@ interface Args {
   sslrootcert: string;
   sslcert: string;
   sslkey: string;
+  ipcPath: string;
   route: string;
   parserMode: string;
   pageSize: string;
@@ -69,6 +70,7 @@ const SUPPORTED_ARGS = new Set([
   "--sslrootcert",
   "--sslcert",
   "--sslkey",
+  "--ipc-path",
   "--route",
   "--parser-mode",
   "--page-size",
@@ -157,13 +159,16 @@ async function run(args: Args): Promise<number> {
       user: args.user,
       password: args.password,
       role: args.role || undefined,
-      sslmode: args.sslmode,
       sslrootcert: args.sslrootcert || undefined,
       sslcert: args.sslcert || undefined,
       sslkey: args.sslkey || undefined,
       binaryTransfer: true,
       applicationName: "SBIsqlNode",
       frontDoorMode: frontDoorModeForRoute(args.route),
+      transportMode: args.route === "ipc_local" ? "local_ipc" : "inet_listener",
+      ipcMethod: args.route === "ipc_local" ? "unix" : undefined,
+      ipcPath: args.route === "ipc_local" ? args.ipcPath : undefined,
+      sslmode: args.route === "ipc_local" ? "disable" : args.sslmode,
       metadataExpandSchemaParents: true,
     };
     client = new ScratchBirdClient(config);
@@ -185,7 +190,10 @@ async function run(args: Args): Promise<number> {
     });
 
     if (args.createDatabase) {
-      throw new Error("--create-database is not implemented in the Node native tool yet");
+      const createStarted = process.hrtime.bigint();
+      await client.attachCreate(args.createEmulationMode, args.database);
+      apiHits.attachCreate = (apiHits.attachCreate ?? 0) + 1;
+      addTiming(timings, "database_create", createStarted);
     }
     if (args.parserMode !== "server-parser") {
       throw new Error(`${args.parserMode} is not yet implemented by the Node native tool; it fails closed`);
@@ -322,6 +330,9 @@ async function run(args: Args): Promise<number> {
     namespace: args.namespace,
     sslmode: args.sslmode,
     transport_mode: transportMode,
+    transport_endpoint_kind: endpointKindForRoute(args.route),
+    driver_transport_implementation: transportImplementationForRoute(args.route),
+    cpp_library_boundary: "none",
     language_resource_pack: args.languageResourcePack,
     language_resource_identity: args.languageResourceIdentity,
     language_resource_hash: args.languageResourceHash,
@@ -405,6 +416,7 @@ function parseArgs(raw: string[]): Args {
     sslrootcert: values["--sslrootcert"] ?? "",
     sslcert: values["--sslcert"] ?? "",
     sslkey: values["--sslkey"] ?? "",
+    ipcPath: values["--ipc-path"] ?? process.env.SCRATCHBIRD_IPC_PATH ?? "",
     route: values["--route"] ?? "listener-parser",
     parserMode: values["--parser-mode"] ?? "server-parser",
     pageSize: values["--page-size"] ?? "8k",
@@ -503,9 +515,24 @@ function transportModeForRoute(route: string, sslmode: string): string {
   return sslmode === "disable" ? "tls_disabled" : "tls_required";
 }
 
+function endpointKindForRoute(route: string): string {
+  if (route === "ipc_local") return "unix_domain_socket";
+  if (route === "embedded") return "embedded_bridge";
+  return "tcp";
+}
+
+function transportImplementationForRoute(route: string): string {
+  if (route === "embedded") return "unsupported_no_cpp_library_boundary";
+  if (route === "ipc_local") return "native_node_unix_domain_socket";
+  return "native_node_tcp";
+}
+
 function validate(args: Args): void {
   if (!PAGE_SIZES.has(args.pageSize)) throw new Error(`unsupported page size: ${args.pageSize}`);
   if (!ROUTES.has(args.route)) throw new Error(`unsupported route: ${args.route}`);
+  if (args.route === "embedded") {
+    throw new Error("embedded transport is unsupported by the Node driver; no ScratchBird C++ library boundary is exposed");
+  }
   if (!PARSER_MODES.has(args.parserMode)) throw new Error(`unsupported parser mode: ${args.parserMode}`);
   if (!Number.isInteger(args.port) || args.port <= 0) throw new Error(`invalid port: ${args.port}`);
 }

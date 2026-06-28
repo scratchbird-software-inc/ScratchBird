@@ -116,6 +116,9 @@ defmodule ScratchBird.Config do
   defp normalize_alias("applicationname"), do: "application_name"
   defp normalize_alias("searchpath"), do: "search_path"
   defp normalize_alias("binarytransfer"), do: "binary_transfer"
+  defp normalize_alias("ipcpath"), do: "ipc_path"
+  defp normalize_alias("unixsocket"), do: "ipc_path"
+  defp normalize_alias("socketpath"), do: "ipc_path"
   defp normalize_alias("parser"), do: "protocol"
   defp normalize_alias("dialect"), do: "protocol"
   defp normalize_alias("frontdoormode"), do: "front_door_mode"
@@ -159,7 +162,9 @@ defmodule ScratchBird.Config do
     cfg
     |> Map.update!(:protocol, &normalize_native_protocol/1)
     |> Map.update!(:front_door_mode, &normalize_front_door_mode/1)
-    |> Map.update!(:sslmode, fn value -> value |> to_string() |> String.trim() |> String.downcase() end)
+    |> Map.update!(:sslmode, fn value ->
+      value |> to_string() |> String.trim() |> String.downcase()
+    end)
     |> Map.update!(:port, &to_int(&1, @default_port))
     |> Map.update(:connect_timeout, 5000, &to_int(&1, 5000))
     |> Map.update(:socket_timeout, 0, &to_int(&1, 0))
@@ -171,6 +176,7 @@ defmodule ScratchBird.Config do
   end
 
   defp parse_userinfo(nil), do: %{user: nil, password: nil}
+
   defp parse_userinfo(userinfo) when is_binary(userinfo) do
     case String.split(userinfo, ":", parts: 2) do
       [user, pass] -> %{user: user, password: pass}
@@ -183,12 +189,24 @@ defmodule ScratchBird.Config do
     normalized = value |> to_string() |> String.trim() |> String.downcase()
 
     case normalized do
-      "" -> "native"
-      "native" -> "native"
-      "scratchbird" -> "native"
-      "scratchbird-native" -> "native"
-      "scratchbird_native" -> "native"
-      _ -> raise ArgumentError, "Only protocol=native is supported; connect to the native parser listener/port."
+      "" ->
+        "native"
+
+      "native" ->
+        "native"
+
+      "scratchbird" ->
+        "native"
+
+      "scratchbird-native" ->
+        "native"
+
+      "scratchbird_native" ->
+        "native"
+
+      _ ->
+        raise ArgumentError,
+              "Only protocol=native is supported; connect to the native parser listener/port."
     end
   end
 

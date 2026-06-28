@@ -32,8 +32,10 @@ type
     FPlainSocket: TSocketHandle;
     function ParseTlsMode(const SSLMode: string): TTlsMode;
     procedure RaiseTlsFailure(const Stage: string; const Status: TTlsStatus);
+    function UseIpcSocket: Boolean;
     function UsePlainSocket: Boolean;
     procedure ConnectPlain;
+    procedure ConnectIpc;
     procedure DisconnectPlain;
   public
     constructor Create;
@@ -89,7 +91,21 @@ end;
 procedure TNativeScratchBirdTransport.Configure(const Config: TScratchBirdConfig);
 begin
   FConfig := Config;
+  if Trim(FConfig.Transport) = '' then
+    FConfig.Transport := 'inet';
+  if (not SameText(FConfig.Transport, 'inet')) and
+     (not SameText(FConfig.Transport, 'ipc')) and
+     (not SameText(FConfig.Transport, 'embedded')) then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'transport must be inet, ipc, or embedded',
+      '0A000', '', '');
+  if SameText(FConfig.Transport, 'embedded') then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'embedded transport is not supported by the Pascal driver; no ScratchBird C++ library boundary is exposed',
+      '0A000', '', '');
   FTlsConfig.Mode := ParseTlsMode(Config.SSLMode);
+  if UseIpcSocket then
+    FTlsConfig.Mode := tmDisable;
   if FTlsConfig.Mode in [tmVerifyCA, tmVerifyFull] then
     FTlsConfig.RevocationPolicy := trpHardFail
   else
@@ -116,14 +132,23 @@ begin
   raise EScratchbirdConnectionError.CreateWithInfo(MessageText, '08001', '', '');
 end;
 
+function TNativeScratchBirdTransport.UseIpcSocket: Boolean;
+begin
+  Result := SameText(FConfig.Transport, 'ipc');
+end;
+
 function TNativeScratchBirdTransport.UsePlainSocket: Boolean;
 begin
-  Result := FTlsConfig.Mode = tmDisable;
+  Result := UseIpcSocket or (FTlsConfig.Mode = tmDisable);
 end;
 
 procedure TNativeScratchBirdTransport.ConnectPlain;
 {$IFDEF MSWINDOWS}
 begin
+  if UseIpcSocket then
+    raise EScratchbirdNotSupported.CreateWithInfo(
+      'Unix-domain socket IPC transport is not supported by this Pascal runtime',
+      '0A000', '', '');
   raise EScratchbirdNotSupported.CreateWithInfo(
     'native plain socket transport is not implemented for Windows Pascal builds',
     '0A000', '', '');
@@ -134,6 +159,12 @@ var
   HostEntry: THostEntry;
   Address: TInetSockAddr;
 begin
+  if UseIpcSocket then
+  begin
+    ConnectIpc;
+    Exit;
+  end;
+
   if FPlainSocket <> INVALID_TLS_SOCKET_HANDLE then
   begin
     CloseSocket(FPlainSocket);
@@ -171,6 +202,58 @@ begin
     FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
     raise EScratchbirdConnectionError.CreateWithInfo(
       'native socket connect failed: ' + IntToStr(SocketError),
+      '08001', '', '');
+  end;
+end;
+{$ENDIF}
+
+procedure TNativeScratchBirdTransport.ConnectIpc;
+{$IFDEF MSWINDOWS}
+begin
+  raise EScratchbirdNotSupported.CreateWithInfo(
+    'Unix-domain socket IPC transport is not supported by this Pascal runtime',
+    '0A000', '', '');
+end;
+{$ELSE}
+var
+  Address: TUnixSockAddr;
+  PathBytes: RawByteString;
+  I: Integer;
+begin
+  if Trim(FConfig.IpcPath) = '' then
+    raise EScratchbirdConnectionError.CreateWithInfo(
+      'ipc_path is required for local IPC transport',
+      '08001', '', '');
+
+  if FPlainSocket <> INVALID_TLS_SOCKET_HANDLE then
+  begin
+    CloseSocket(FPlainSocket);
+    FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
+  end;
+
+  PathBytes := RawByteString(FConfig.IpcPath);
+  if Length(PathBytes) >= SizeOf(Address.path) then
+    raise EScratchbirdConnectionError.CreateWithInfo(
+      'ipc_path is too long for a Unix-domain socket',
+      '08001', '', '');
+
+  FPlainSocket := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  if FPlainSocket < 0 then
+    raise EScratchbirdConnectionError.CreateWithInfo(
+      'native IPC socket create failed: ' + IntToStr(SocketError),
+      '08001', '', '');
+
+  FillChar(Address, SizeOf(Address), 0);
+  Address.family := AF_UNIX;
+  for I := 1 to Length(PathBytes) do
+    Address.path[I - 1] := PathBytes[I];
+
+  if fpConnect(FPlainSocket, @Address, SizeOf(Address)) <> 0 then
+  begin
+    CloseSocket(FPlainSocket);
+    FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
+    raise EScratchbirdConnectionError.CreateWithInfo(
+      'native IPC socket connect failed: ' + IntToStr(SocketError),
       '08001', '', '');
   end;
 end;

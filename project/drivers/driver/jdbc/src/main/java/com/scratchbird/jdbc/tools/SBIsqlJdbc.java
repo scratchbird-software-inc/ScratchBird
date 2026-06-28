@@ -35,6 +35,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.scratchbird.jdbc.SBConnection;
+
 /**
  * Native JDBC conformance shell and JDBC usage example.
  *
@@ -63,6 +65,7 @@ public final class SBIsqlJdbc {
         "--sslrootcert",
         "--sslcert",
         "--sslkey",
+        "--ipc-path",
         "--route",
         "--parser-mode",
         "--page-size",
@@ -173,10 +176,15 @@ public final class SBIsqlJdbc {
                 "engine_sql_text_execution", false));
 
             if (args.booleanFlag("--create-database")) {
-                throw new UnsupportedOperationException(
-                    "--create-database is not implemented in the JDBC native tool yet"
-                    + " (create_emulation_mode="
-                    + args.valueOrDefault("--create-emulation-mode", "sbsql") + ")");
+                long createStarted = System.nanoTime();
+                SBConnection sbConnection = conn instanceof SBConnection
+                    ? (SBConnection) conn
+                    : conn.unwrap(SBConnection.class);
+                sbConnection.attachCreate(
+                    args.valueOrDefault("--create-emulation-mode", "sbsql"),
+                    args.required("--database"));
+                apiHits.merge("SBConnection.attachCreate", 1, Integer::sum);
+                addTiming(timings, "database_create", System.nanoTime() - createStarted);
             }
             if (!"server-parser".equals(args.required("--parser-mode"))) {
                 throw new UnsupportedOperationException(
@@ -334,6 +342,9 @@ public final class SBIsqlJdbc {
             "namespace", args.required("--namespace"),
             "sslmode", sslmode,
             "transport_mode", transportMode,
+            "transport_endpoint_kind", endpointKindForRoute(args.required("--route")),
+            "driver_transport_implementation", transportImplementationForRoute(args.required("--route")),
+            "cpp_library_boundary", "none",
             "tls_policy", tlsPolicyForRoute(args.required("--route"), sslmode),
             "language_resource_pack", args.valueOrDefault("--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
             "language_resource_identity", args.valueOrDefault("--language-resource-identity", "sbsql.common_resource_pack.v1"),
@@ -370,7 +381,7 @@ public final class SBIsqlJdbc {
         Class.forName("com.scratchbird.jdbc.SBDriver");
         String url = "jdbc:scratchbird://" + args.required("--host") + ":"
             + args.required("--port") + "/" + args.required("--database")
-            + "?sslmode=" + args.required("--sslmode")
+            + "?sslmode=" + ("ipc_local".equals(args.required("--route")) ? "disable" : args.required("--sslmode"))
             + "&binary_transfer=true"
             + "&ApplicationName=SBIsqlJdbc";
         if (!args.valueOrDefault("--sslrootcert", "").isBlank()) {
@@ -385,6 +396,11 @@ public final class SBIsqlJdbc {
         Properties props = new Properties();
         props.setProperty("user", args.required("--user"));
         props.setProperty("password", args.required("--password"));
+        if ("ipc_local".equals(args.required("--route"))) {
+            props.setProperty("transport_mode", "local_ipc");
+            props.setProperty("ipc_method", "unix");
+            props.setProperty("ipc_path", args.valueOrDefault("--ipc-path", ""));
+        }
         if (!args.valueOrDefault("--role", "").isBlank()) {
             props.setProperty("role", args.valueOrDefault("--role", ""));
         }
@@ -457,6 +473,10 @@ public final class SBIsqlJdbc {
         }
         if (!ROUTES.contains(args.required("--route"))) {
             throw new IllegalArgumentException("unsupported route: " + args.required("--route"));
+        }
+        if ("embedded".equals(args.required("--route"))) {
+            throw new IllegalArgumentException(
+                "embedded transport is unsupported by the JDBC driver; no ScratchBird C++ library boundary is exposed");
         }
         if (!PARSER_MODES.contains(args.required("--parser-mode"))) {
             throw new IllegalArgumentException("unsupported parser mode: " + args.required("--parser-mode"));
@@ -641,6 +661,26 @@ public final class SBIsqlJdbc {
             return "local_ipc_no_tls";
         }
         return "disable".equalsIgnoreCase(sslmode) ? "tls_disabled" : "tls_required";
+    }
+
+    private static String endpointKindForRoute(String route) {
+        if ("ipc_local".equals(route)) {
+            return "unix_domain_socket";
+        }
+        if ("embedded".equals(route)) {
+            return "embedded_bridge";
+        }
+        return "tcp";
+    }
+
+    private static String transportImplementationForRoute(String route) {
+        if ("embedded".equals(route)) {
+            return "unsupported_no_cpp_library_boundary";
+        }
+        if ("ipc_local".equals(route)) {
+            return "native_jdbc_unix_domain_socket";
+        }
+        return "native_jdbc_tcp";
     }
 
     private static String tlsPolicyForRoute(String route, String sslmode) {

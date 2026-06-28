@@ -16,6 +16,8 @@ use rand::RngCore;
 use serde_json::{json, Value as JsonValue};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::time::timeout;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
@@ -481,7 +483,8 @@ impl Client {
         let resolved_host = self.config.host.clone();
         let resolved_port = self.config.port;
         let result = if self.config.front_door_mode == "manager_proxy" {
-            self.probe_manager_auth_surface(resolved_host, resolved_port).await
+            self.probe_manager_auth_surface(resolved_host, resolved_port)
+                .await
         } else {
             let params = self.build_startup_params()?;
             self.probe_direct_auth_surface(params, resolved_host, resolved_port)
@@ -563,7 +566,7 @@ impl Client {
                     None,
                     None,
                 )
-        })?;
+            })?;
         self.config.compression = compression_mode.to_string();
 
         if require_identity && (self.config.user.is_empty() || self.config.database.is_empty()) {
@@ -771,7 +774,9 @@ impl Client {
         self.ensure_connected()?;
         let span = self.begin_operation("query_multi").await?;
         let normalized = normalize(sql, params)?;
-        if let Some(statements) = self.split_executable_statements(&normalized.sql, &normalized.params)? {
+        if let Some(statements) =
+            self.split_executable_statements(&normalized.sql, &normalized.params)?
+        {
             let mut all_sets = Vec::new();
             for statement in statements {
                 if statement.params.is_empty() {
@@ -850,7 +855,12 @@ impl Client {
                 i += 1;
                 continue;
             }
-            if !in_single && !in_double && ch == '$' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+            if !in_single
+                && !in_double
+                && ch == '$'
+                && i + 1 < chars.len()
+                && chars[i + 1].is_ascii_digit()
+            {
                 let mut j = i + 1;
                 while j < chars.len() && chars[j].is_ascii_digit() {
                     j += 1;
@@ -1965,9 +1975,10 @@ impl Client {
                 protocol::MSG_PARAMETER_STATUS => continue,
                 protocol::MSG_AUTH_REQUEST => {
                     let (method, _) = protocol::parse_auth_request(&msg.payload)?;
-                    let admitted_methods = describe_auth_method(method, &self.config.auth_method_id)
-                        .map(|surface| vec![surface])
-                        .unwrap_or_default();
+                    let admitted_methods =
+                        describe_auth_method(method, &self.config.auth_method_id)
+                            .map(|surface| vec![surface])
+                            .unwrap_or_default();
                     return Ok(AuthProbeResult {
                         reachable: true,
                         front_door_mode: "direct".to_string(),
@@ -2232,7 +2243,10 @@ impl Client {
                         self.resolved_auth_context.resolved_auth_method =
                             auth_method_name(protocol::AUTH_OK).to_string();
                         self.resolved_auth_context.resolved_auth_plugin_id =
-                            auth_plugin_id_for_method(protocol::AUTH_OK, &self.config.auth_method_id);
+                            auth_plugin_id_for_method(
+                                protocol::AUTH_OK,
+                                &self.config.auth_method_id,
+                            );
                     }
                 }
                 protocol::MSG_PARAMETER_STATUS => {
@@ -2603,6 +2617,38 @@ impl Client {
     }
 
     async fn connect_transport(&self) -> Result<Box<dyn AsyncReadWrite>> {
+        let transport_mode = self
+            .config
+            .transport_mode
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_");
+        if matches!(transport_mode.as_str(), "local" | "ipc" | "local_ipc") {
+            #[cfg(unix)]
+            {
+                if self.config.ipc_path.trim().is_empty() {
+                    return Err(Error::new(
+                        ErrorKind::Connection,
+                        "ipc_path is required for local_ipc",
+                    ));
+                }
+                let stream = timeout(
+                    Duration::from_millis(self.config.connect_timeout_ms),
+                    UnixStream::connect(&self.config.ipc_path),
+                )
+                .await
+                .map_err(|_| Error::new(ErrorKind::Connection, "connect timeout"))?
+                .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
+                return Ok(Box::new(stream));
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(Error::new(
+                    ErrorKind::NotSupported,
+                    "local_ipc requires native IPC support on this platform",
+                ));
+            }
+        }
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let timeout_ms = self.config.connect_timeout_ms;
         let stream = timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr))

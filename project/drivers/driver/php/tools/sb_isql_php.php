@@ -26,6 +26,7 @@ const SUPPORTED_ARGS = [
     '--sslrootcert',
     '--sslcert',
     '--sslkey',
+    '--ipc-path',
     '--route',
     '--parser-mode',
     '--page-size',
@@ -123,17 +124,24 @@ function run_tool(array $args): int
     $pdo = null;
 
     try {
+        $route = required($args, '--route');
+        ensure_transport_route_supported($route, $args);
+        $effectiveSslmode = effective_sslmode_for_route($route, value_or_default($args, '--sslmode', 'require'));
         $dsn = sprintf(
-            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;sslrootcert=%s;sslcert=%s;sslkey=%s;front_door_mode=%s;metadata_expand_schema_parents=true',
+            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;sslrootcert=%s;sslcert=%s;sslkey=%s;front_door_mode=%s;transport=%s;metadata_expand_schema_parents=true',
             required($args, '--host'),
             required($args, '--port'),
             required($args, '--database'),
-            value_or_default($args, '--sslmode', 'require'),
+            $effectiveSslmode,
             value_or_default($args, '--sslrootcert', ''),
             value_or_default($args, '--sslcert', ''),
             value_or_default($args, '--sslkey', ''),
-            required($args, '--route') === 'manager-listener-parser' ? 'manager_proxy' : 'direct'
+            $route === 'manager-listener-parser' ? 'manager_proxy' : 'direct',
+            transport_config_for_route($route)
         );
+        if ($route === 'ipc_local') {
+            $dsn .= ';ipc_path=' . required($args, '--ipc-path');
+        }
         $connectStarted = hrtime(true);
         $pdo = new ScratchBirdPDO($dsn, required($args, '--user'), required($args, '--password'), [
             'role' => value_or_default($args, '--role', ''),
@@ -143,7 +151,7 @@ function run_tool(array $args): int
         append_jsonl(required($args, '--transcript'), [
             'event' => 'connect',
             'driver' => 'php',
-            'route' => required($args, '--route'),
+            'route' => $route,
             'parser_mode' => required($args, '--parser-mode'),
             'page_size' => required($args, '--page-size'),
         ]);
@@ -293,8 +301,8 @@ function run_tool(array $args): int
 
     $elapsed = hrtime(true) - $started;
     $timings['overall'] = $elapsed;
-    $sslmode = value_or_default($args, '--sslmode', 'require');
-    $transportMode = resolve_transport_mode(required($args, '--route'), $sslmode);
+    $sslmode = effective_sslmode_for_route(required($args, '--route'), value_or_default($args, '--sslmode', 'require'));
+        $transportMode = resolve_transport_mode(required($args, '--route'), $sslmode);
     $processMetrics = current_process_metrics();
     $summary = [
         'run_id' => value_or_default($args, '--run-id', 'manual'),
@@ -305,6 +313,9 @@ function run_tool(array $args): int
         'namespace' => required($args, '--namespace'),
         'sslmode' => $sslmode,
         'transport_mode' => $transportMode,
+        'transport_endpoint_kind' => endpoint_kind_for_route(required($args, '--route')),
+        'driver_transport_implementation' => transport_implementation_for_route(required($args, '--route')),
+        'cpp_library_boundary' => 'none',
         'language_resource_pack' => value_or_default($args, '--language-resource-pack', 'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack'),
         'language_resource_identity' => value_or_default($args, '--language-resource-identity', 'sbsql.common_resource_pack.v1'),
         'language_resource_hash' => value_or_default($args, '--language-resource-hash', 'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc'),
@@ -448,6 +459,54 @@ function resolve_transport_mode(string $route, string $sslmode): string
         return 'local_ipc_no_tls';
     }
     return $sslmode === 'disable' ? 'tls_disabled' : 'tls_required';
+}
+
+function ensure_transport_route_supported(string $route, array $args): void
+{
+    if ($route === 'embedded') {
+        throw new RuntimeException('embedded transport is unsupported by the PHP driver; no ScratchBird C++ library boundary is exposed');
+    }
+    if ($route === 'ipc_local' && value_or_default($args, '--ipc-path', '') === '') {
+        throw new InvalidArgumentException('ipc_path is required for local IPC transport');
+    }
+}
+
+function effective_sslmode_for_route(string $route, string $sslmode): string
+{
+    return $route === 'ipc_local' ? 'disable' : $sslmode;
+}
+
+function transport_config_for_route(string $route): string
+{
+    if ($route === 'ipc_local') {
+        return 'ipc';
+    }
+    if ($route === 'embedded') {
+        return 'embedded';
+    }
+    return 'inet';
+}
+
+function endpoint_kind_for_route(string $route): string
+{
+    if ($route === 'ipc_local') {
+        return 'unix_domain_socket';
+    }
+    if ($route === 'embedded') {
+        return 'none';
+    }
+    return 'tcp';
+}
+
+function transport_implementation_for_route(string $route): string
+{
+    if ($route === 'embedded') {
+        return 'unsupported_no_cpp_library_boundary';
+    }
+    if ($route === 'ipc_local') {
+        return 'native_php_unix_socket';
+    }
+    return 'native_php_tcp';
 }
 
 function load_expected_refusals(string $path): array

@@ -845,6 +845,9 @@ struct ConnectionParams {
     std::string ssl_key;
     std::string ssl_root_cert;
     std::string protocol{"native"};
+    std::string transport_mode{"inet_listener"};
+    std::string ipc_method{"auto"};
+    std::string ipc_path;
     std::string front_door_mode{"direct"};
     std::string manager_auth_token;
     std::string manager_username;

@@ -327,9 +327,15 @@ class ProtocolConnection {
     const host = config.host ?? "localhost";
     const port = config.port ?? 3092;
     const sslMode = resolveSslMode(config);
+    const transportMode = normalizeTransportMode(config.transportMode);
 
-    let rawSocket = await connectTcp(host, port, config.connectTimeoutMs ?? 30000);
+    let rawSocket = transportMode === "local_ipc"
+      ? await connectLocalIpc(config.ipcPath, config.connectTimeoutMs ?? 30000)
+      : await connectTcp(host, port, config.connectTimeoutMs ?? 30000);
     if (sslMode !== "disable") {
+      if (transportMode === "local_ipc") {
+        throw new Error("local_ipc uses Unix-domain sockets and does not negotiate TLS");
+      }
       rawSocket = await upgradeTls(rawSocket, host, sslMode, config);
     }
 
@@ -2403,6 +2409,34 @@ function resolveSslMode(config: ClientConfig): string {
   if (typeof config.ssl === "object") return config.sslmode ?? "require";
   if (config.ssl === true) return config.sslmode ?? "require";
   return config.sslmode ?? "require";
+}
+
+function normalizeTransportMode(value?: string): string {
+  const normalized = (value ?? "inet_listener").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "local" || normalized === "ipc") return "local_ipc";
+  return normalized || "inet_listener";
+}
+
+async function connectLocalIpc(path: string | undefined, timeoutMs: number): Promise<net.Socket> {
+  if (!path?.trim()) {
+    throw new Error("ipc_path is required for local_ipc");
+  }
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ path });
+    socket.setKeepAlive(true);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Connection timeout"));
+    }, timeoutMs);
+    socket.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+  });
 }
 
 async function connectTcp(host: string, port: number, timeoutMs: number): Promise<net.Socket> {

@@ -1116,6 +1116,11 @@ public class SBConnection implements Connection {
             : new SBResolvedAuthContext();
     }
 
+    public void attachCreate(String emulationMode, String dbName) throws SQLException {
+        checkClosed();
+        protocol.attachCreate(emulationMode, dbName);
+    }
+
     public static SBAuthProbeResult probeAuthSurface(SBConnectionProperties props) throws SQLException {
         if (props == null) {
             throw new SQLException("Connection properties cannot be null", "08001");

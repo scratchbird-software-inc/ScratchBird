@@ -46,6 +46,7 @@ supported_args <- c(
   "--sslrootcert",
   "--sslcert",
   "--sslkey",
+  "--ipc-path",
   "--route",
   "--parser-mode",
   "--page-size",
@@ -124,19 +125,24 @@ run_tool <- function(args) {
   conn <- NULL
 
   tryCatch({
-    dsn <- sprintf(
-      "host=%s port=%s database=%s user=%s password=%s role=%s sslmode=%s sslrootcert=%s sslcert=%s sslkey=%s front_door_mode=%s metadata_expand_schema_parents=true",
-      required(args, "--host"),
-      required(args, "--port"),
-      required(args, "--database"),
-      required(args, "--user"),
-      required(args, "--password"),
-      value_or_default(args, "--role", ""),
-      value_or_default(args, "--sslmode", "require"),
-      value_or_default(args, "--sslrootcert", ""),
-      value_or_default(args, "--sslcert", ""),
-      value_or_default(args, "--sslkey", ""),
-      if (required(args, "--route") == "manager-listener-parser") "manager_proxy" else "direct"
+    route <- required(args, "--route")
+    ensure_transport_route_supported(route, args)
+    dsn <- paste(
+      sprintf("host=%s", required(args, "--host")),
+      sprintf("port=%s", required(args, "--port")),
+      sprintf("database=%s", required(args, "--database")),
+      sprintf("user=%s", required(args, "--user")),
+      sprintf("password=%s", required(args, "--password")),
+      sprintf("role=%s", value_or_default(args, "--role", "")),
+      sprintf("sslmode=%s", effective_sslmode_for_route(route, value_or_default(args, "--sslmode", "require"))),
+      sprintf("sslrootcert=%s", value_or_default(args, "--sslrootcert", "")),
+      sprintf("sslcert=%s", value_or_default(args, "--sslcert", "")),
+      sprintf("sslkey=%s", value_or_default(args, "--sslkey", "")),
+      sprintf("front_door_mode=%s", if (route == "manager-listener-parser") "manager_proxy" else "direct"),
+      sprintf("transport=%s", transport_config_for_route(route)),
+      sprintf("ipc_path=%s", value_or_default(args, "--ipc-path", "")),
+      "metadata_expand_schema_parents=true",
+      sep = ";"
     )
     connect_started <- nanotime()
     conn <- DBI::dbConnect(Scratchbird(), dsn)
@@ -145,7 +151,7 @@ run_tool <- function(args) {
     append_jsonl(required(args, "--transcript"), list(
       event = "connect",
       driver = "r",
-      route = required(args, "--route"),
+      route = route,
       parser_mode = required(args, "--parser-mode"),
       page_size = required(args, "--page-size"),
       language_profile = value_or_default(args, "--language-profile", "en-US"),
@@ -272,7 +278,7 @@ run_tool <- function(args) {
 
   elapsed <- nanotime() - started
   timings[["overall"]] <- elapsed
-  sslmode <- value_or_default(args, "--sslmode", "require")
+  sslmode <- effective_sslmode_for_route(required(args, "--route"), value_or_default(args, "--sslmode", "require"))
   transport_mode <- resolve_transport_mode(required(args, "--route"), sslmode)
   process_metrics <- current_process_metrics()
   summary <- list(
@@ -284,6 +290,9 @@ run_tool <- function(args) {
     namespace = required(args, "--namespace"),
     sslmode = sslmode,
     transport_mode = transport_mode,
+    transport_endpoint_kind = endpoint_kind_for_route(required(args, "--route")),
+    driver_transport_implementation = transport_implementation_for_route(required(args, "--route")),
+    cpp_library_boundary = "none",
     language_resource_pack = value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
     language_resource_identity = value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
     language_resource_hash = value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
@@ -374,6 +383,37 @@ resolve_transport_mode <- function(route, sslmode) {
   if (identical(route, "embedded")) return("embedded_no_network_transport")
   if (identical(route, "ipc_local")) return("local_ipc_no_tls")
   if (identical(sslmode, "disable")) "tls_disabled" else "tls_required"
+}
+
+ensure_transport_route_supported <- function(route, args) {
+  if (identical(route, "embedded")) {
+    stop("embedded transport is unsupported by the R driver; no ScratchBird C++ library boundary is exposed")
+  }
+  if (identical(route, "ipc_local") && !nzchar(value_or_default(args, "--ipc-path", ""))) {
+    stop("ipc_path is required for local IPC transport")
+  }
+}
+
+effective_sslmode_for_route <- function(route, sslmode) {
+  if (identical(route, "ipc_local")) "disable" else sslmode
+}
+
+transport_config_for_route <- function(route) {
+  if (identical(route, "ipc_local")) return("ipc")
+  if (identical(route, "embedded")) return("embedded")
+  "inet"
+}
+
+endpoint_kind_for_route <- function(route) {
+  if (identical(route, "ipc_local")) return("unix_domain_socket")
+  if (identical(route, "embedded")) return("none")
+  "tcp"
+}
+
+transport_implementation_for_route <- function(route) {
+  if (identical(route, "embedded")) return("unsupported_no_cpp_library_boundary")
+  if (identical(route, "ipc_local")) return("native_r_unix_socket")
+  "native_r_tcp"
 }
 
 load_expected_refusals <- function(path) {

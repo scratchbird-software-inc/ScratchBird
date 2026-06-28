@@ -20,6 +20,8 @@ type
   TScratchBirdConfig = record
     Host: string;
     Port: Integer;
+    Transport: string;
+    IpcPath: string;
     Protocol: string;
     FrontDoorMode: string;
     Database: string;
@@ -70,6 +72,8 @@ function DefaultConfig: TScratchBirdConfig;
 begin
   Result.Host := 'localhost';
   Result.Port := 3092;
+  Result.Transport := 'inet';
+  Result.IpcPath := '';
   Result.Protocol := 'native';
   Result.FrontDoorMode := 'direct';
   Result.Database := '';
@@ -135,6 +139,34 @@ begin
   raise Exception.Create('front_door_mode must be direct or manager_proxy.');
 end;
 
+function NormalizeTransport(const Value: string): string;
+var
+  Normalized: string;
+begin
+  Normalized := LowerCase(Trim(Value));
+  if (Normalized = '') or (Normalized = 'inet') or (Normalized = 'tcp') or
+     (Normalized = 'network') then
+    Exit('inet');
+  if (Normalized = 'ipc') or (Normalized = 'ipc_local') or (Normalized = 'local_ipc') or
+     (Normalized = 'unix') or (Normalized = 'unix_socket') or (Normalized = 'uds') then
+    Exit('ipc');
+  if Normalized = 'embedded' then
+    Exit('embedded');
+  raise Exception.Create('transport must be inet, ipc, or embedded.');
+end;
+
+function TransportForRoute(const Value: string): string;
+var
+  Normalized: string;
+begin
+  Normalized := LowerCase(Trim(Value));
+  if Normalized = 'ipc_local' then
+    Exit('ipc');
+  if Normalized = 'embedded' then
+    Exit('embedded');
+  Result := 'inet';
+end;
+
 function ParseBoolean(const Value: string): Boolean;
 var
   Normalized: string;
@@ -153,6 +185,12 @@ begin
     Config.Host := Value
   else if KeyLower = 'port' then
     Config.Port := StrToIntDef(Value, Config.Port)
+  else if (KeyLower = 'transport') or (KeyLower = 'transport_mode') or (KeyLower = 'transportmode') then
+    Config.Transport := NormalizeTransport(Value)
+  else if KeyLower = 'route' then
+    Config.Transport := TransportForRoute(Value)
+  else if (KeyLower = 'ipc_path') or (KeyLower = 'ipcpath') or (KeyLower = 'ipc-path') then
+    Config.IpcPath := Value
   else if (KeyLower = 'database') or (KeyLower = 'dbname') or (KeyLower = 'initial catalog') then
     Config.Database := Value
   else if (KeyLower = 'protocol') or (KeyLower = 'parser') or (KeyLower = 'dialect') then

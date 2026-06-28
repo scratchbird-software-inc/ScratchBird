@@ -148,6 +148,10 @@ public final class ScratchBirdConnection {
 
     private static func connectTransport(_ config: ScratchBirdConfig) throws -> ScratchBirdSocket {
         let socket = ScratchBirdSocket()
+        if let ipcPath = config.ipcPath?.trimmingCharacters(in: .whitespacesAndNewlines), !ipcPath.isEmpty {
+            try socket.connectUnix(path: ipcPath)
+            return socket
+        }
         try socket.connect(
             host: config.host,
             port: config.port,

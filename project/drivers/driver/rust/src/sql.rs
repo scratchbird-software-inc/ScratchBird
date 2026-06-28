@@ -497,7 +497,11 @@ mod chunker_conformance_tests {
         }
 
         let passed = cases.len() - failures.len();
-        println!("chunker conformance: {}/{} cases passed", passed, cases.len());
+        println!(
+            "chunker conformance: {}/{} cases passed",
+            passed,
+            cases.len()
+        );
         assert!(
             failures.is_empty(),
             "chunker conformance failures:\n{}",

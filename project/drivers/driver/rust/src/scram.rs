@@ -126,7 +126,12 @@ fn parse_attributes(message: &str) -> std::collections::HashMap<String, String> 
     attrs
 }
 
-fn pbkdf2_bytes(algorithm: ScramAlgorithm, password: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
+fn pbkdf2_bytes(
+    algorithm: ScramAlgorithm,
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+) -> Vec<u8> {
     match algorithm {
         ScramAlgorithm::Sha256 => {
             let mut salted = [0u8; 32];

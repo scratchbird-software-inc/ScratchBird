@@ -37,6 +37,7 @@ type config struct {
 	SSLRootCert              string
 	SSLCert                  string
 	SSLKey                   string
+	IPCPath                  string
 	Route                    string
 	ParserMode               string
 	PageSize                 string
@@ -93,6 +94,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.SSLRootCert, "sslrootcert", "", "TLS root certificate path")
 	flag.StringVar(&cfg.SSLCert, "sslcert", "", "TLS client certificate path")
 	flag.StringVar(&cfg.SSLKey, "sslkey", "", "TLS client key path")
+	flag.StringVar(&cfg.IPCPath, "ipc-path", os.Getenv("SCRATCHBIRD_IPC_PATH"), "local IPC endpoint path")
 	flag.StringVar(&cfg.Route, "route", "listener-parser", "route")
 	flag.StringVar(&cfg.ParserMode, "parser-mode", "server-parser", "parser mode")
 	flag.StringVar(&cfg.PageSize, "page-size", "8k", "page size")
@@ -219,11 +221,23 @@ func run(cfg config) error {
 	})
 
 	if cfg.CreateDatabase {
-		failures = append(failures, map[string]any{
-			"statement_id": "database_create",
-			"message":      "--create-database is not implemented in the Go native tool yet",
+		createStarted := time.Now()
+		err = conn.Raw(func(driverConn any) error {
+			sbConn, ok := driverConn.(*scratchbird.Conn)
+			if !ok {
+				return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
+			}
+			return sbConn.AttachCreate(ctx, cfg.CreateEmulation, cfg.Database)
 		})
-		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
+		if err != nil {
+			failures = append(failures, map[string]any{
+				"statement_id": "database_create",
+				"message":      err.Error(),
+			})
+			return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
+		}
+		apiHits["AttachCreate"]++
+		addTiming(timings, "database_create", time.Since(createStarted))
 	}
 	if cfg.ParserMode != "server-parser" {
 		failures = append(failures, map[string]any{
@@ -368,8 +382,17 @@ func openDB(cfg config) (*sql.DB, error) {
 	if cfg.Route == "manager-listener-parser" {
 		frontDoor = "manager_proxy"
 	}
-	dsn := fmt.Sprintf("scratchbird://%s:%s@%s:%d/%s?sslmode=%s&front_door_mode=%s&application_name=sb-isql-go",
-		urlEscape(cfg.User), urlEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode, frontDoor)
+	sslMode := cfg.SSLMode
+	transportMode := "inet_listener"
+	if cfg.Route == "ipc_local" {
+		sslMode = "disable"
+		transportMode = "local_ipc"
+	}
+	dsn := fmt.Sprintf("scratchbird://%s:%s@%s:%d/%s?sslmode=%s&front_door_mode=%s&transport_mode=%s&application_name=sb-isql-go",
+		urlEscape(cfg.User), urlEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, sslMode, frontDoor, transportMode)
+	if cfg.Route == "ipc_local" {
+		dsn += "&ipc_method=unix&ipc_path=" + urlEscape(cfg.IPCPath)
+	}
 	if cfg.SSLRootCert != "" {
 		dsn += "&sslrootcert=" + urlEscape(cfg.SSLRootCert)
 	}
@@ -428,7 +451,10 @@ func finish(
 		"parser_mode": cfg.ParserMode, "page_size": cfg.PageSize,
 		"namespace": cfg.Namespace, "status": status(failures),
 		"sslmode": cfg.SSLMode, "transport_mode": transportMode,
-		"language_resource_pack": cfg.LanguageResourcePack, "language_resource_identity": cfg.LanguageResourceIdentity,
+		"transport_endpoint_kind":         endpointKindForRoute(cfg.Route),
+		"driver_transport_implementation": transportImplementationForRoute(cfg.Route),
+		"cpp_library_boundary":            "none",
+		"language_resource_pack":          cfg.LanguageResourcePack, "language_resource_identity": cfg.LanguageResourceIdentity,
 		"language_resource_hash": cfg.LanguageResourceHash, "language_resource_authority": "shared_server_parser_resource_pack",
 		"language_profile": cfg.LanguageProfile, "syntax_profile": cfg.SyntaxProfile,
 		"topology_profile": cfg.TopologyProfile, "standard_english_fallback": cfg.StandardEnglishFallback,
@@ -473,6 +499,9 @@ func validate(cfg config) error {
 	if !routes[cfg.Route] {
 		return fmt.Errorf("unsupported route %s", cfg.Route)
 	}
+	if cfg.Route == "embedded" {
+		return errors.New("embedded transport is unsupported by the Go driver; no ScratchBird C++ library boundary is exposed")
+	}
 	if !parserModes[cfg.ParserMode] {
 		return fmt.Errorf("unsupported parser mode %s", cfg.ParserMode)
 	}
@@ -489,7 +518,28 @@ func transportModeForRoute(route, sslmode string) string {
 		if sslmode == "disable" {
 			return "tls_disabled"
 		}
-		return "tls_required"
+	}
+	return "tls_required"
+}
+
+func endpointKindForRoute(route string) string {
+	if route == "ipc_local" {
+		return "unix_domain_socket"
+	}
+	if route == "embedded" {
+		return "embedded_bridge"
+	}
+	return "tcp"
+}
+
+func transportImplementationForRoute(route string) string {
+	switch route {
+	case "embedded":
+		return "unsupported_no_cpp_library_boundary"
+	case "ipc_local":
+		return "native_go_unix_domain_socket"
+	default:
+		return "native_go_tcp"
 	}
 }
 

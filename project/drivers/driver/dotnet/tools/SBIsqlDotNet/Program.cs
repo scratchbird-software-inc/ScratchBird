@@ -33,6 +33,7 @@ internal static class SBIsqlDotNet
         "--sslrootcert",
         "--sslcert",
         "--sslkey",
+        "--ipc-path",
         "--route",
         "--parser-mode",
         "--page-size",
@@ -118,11 +119,20 @@ internal static class SBIsqlDotNet
                 Database = Required(args, "--database"),
                 Username = Required(args, "--user"),
                 Password = Required(args, "--password"),
-                SSLMode = ValueOrDefault(args, "--sslmode", "require"),
+                SSLMode = Required(args, "--route") == "ipc_local"
+                    ? "disable"
+                    : ValueOrDefault(args, "--sslmode", "require"),
                 FrontDoorMode = Required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct",
                 FetchSize = int.Parse(ValueOrDefault(args, "--fetch-size", "1000")),
                 CommandTimeout = Math.Max(1, int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")) / 1000)
             };
+            if (Required(args, "--route") == "ipc_local")
+            {
+                builder["Transport_Mode"] = "local_ipc";
+                builder["IPC_Method"] = "unix";
+                builder["IPC_Path"] = ValueOrDefault(args, "--ipc-path", "");
+                builder["AllowInsecureDisable"] = "true";
+            }
             builder["SslRootCert"] = ValueOrDefault(args, "--sslrootcert", "");
             builder["SslCert"] = ValueOrDefault(args, "--sslcert", "");
             builder["SslKey"] = ValueOrDefault(args, "--sslkey", "");
@@ -155,7 +165,12 @@ internal static class SBIsqlDotNet
 
             if (args.ContainsKey("--create-database"))
             {
-                throw new InvalidOperationException("--create-database is not implemented in the .NET native tool yet");
+                var createStarted = NowNs();
+                ((ScratchBirdConnection)connection).AttachCreate(
+                    ValueOrDefault(args, "--create-emulation-mode", "sbsql"),
+                    Required(args, "--database"));
+                apiHits["AttachCreate"] = apiHits.GetValueOrDefault("AttachCreate") + 1;
+                AddTiming(timings, "database_create", createStarted);
             }
             if (Required(args, "--parser-mode") != "server-parser")
             {
@@ -320,6 +335,9 @@ internal static class SBIsqlDotNet
             @namespace = Required(args, "--namespace"),
             sslmode,
             transport_mode = transportMode,
+            transport_endpoint_kind = EndpointKindForRoute(Required(args, "--route")),
+            driver_transport_implementation = TransportImplementationForRoute(Required(args, "--route")),
+            cpp_library_boundary = "none",
             language_resource_pack = ValueOrDefault(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
             language_resource_identity = ValueOrDefault(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
             language_resource_hash = ValueOrDefault(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
@@ -408,6 +426,7 @@ internal static class SBIsqlDotNet
     {
         if (!PageSizes.Contains(Required(args, "--page-size"))) throw new ArgumentException($"unsupported page size: {Required(args, "--page-size")}");
         if (!Routes.Contains(Required(args, "--route"))) throw new ArgumentException($"unsupported route: {Required(args, "--route")}");
+        if (Required(args, "--route") == "embedded") throw new ArgumentException("embedded transport is unsupported by the .NET driver; no ScratchBird C++ library boundary is exposed");
         if (!ParserModes.Contains(Required(args, "--parser-mode"))) throw new ArgumentException($"unsupported parser mode: {Required(args, "--parser-mode")}");
     }
 
@@ -453,6 +472,22 @@ internal static class SBIsqlDotNet
             "embedded" => "embedded_no_network_transport",
             "ipc_local" => "local_ipc_no_tls",
             _ => string.Equals(sslmode, "disable", StringComparison.OrdinalIgnoreCase) ? "tls_disabled" : "tls_required"
+        };
+
+    private static string EndpointKindForRoute(string route) =>
+        route switch
+        {
+            "ipc_local" => "unix_domain_socket",
+            "embedded" => "embedded_bridge",
+            _ => "tcp"
+        };
+
+    private static string TransportImplementationForRoute(string route) =>
+        route switch
+        {
+            "embedded" => "unsupported_no_cpp_library_boundary",
+            "ipc_local" => "native_dotnet_unix_domain_socket",
+            _ => "native_dotnet_tcp"
         };
 
     private static HashSet<string> LoadExpectedRefusals(string path)

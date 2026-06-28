@@ -10,6 +10,8 @@ sb_config <- function(dsn = "") {
   cfg <- list(
     host = "localhost",
     port = 3092L,
+    transport = "inet",
+    ipc_path = "",
     protocol = "native",
     front_door_mode = "direct",
     database = "",
@@ -138,6 +140,12 @@ apply_param <- function(cfg, key, value) {
     cfg$host <- value
   } else if (key == "port") {
     cfg$port <- as.integer(value)
+  } else if (key %in% c("transport", "transport_mode", "transportmode")) {
+    cfg$transport <- normalize_transport(value)
+  } else if (key == "route") {
+    cfg$transport <- transport_for_route(value)
+  } else if (key %in% c("ipc_path", "ipcpath", "ipc-path")) {
+    cfg$ipc_path <- value
   } else if (key %in% c("database", "dbname", "initial catalog")) {
     cfg$database <- value
   } else if (key %in% c("protocol", "parser", "dialect")) {
@@ -222,4 +230,25 @@ apply_param <- function(cfg, key, value) {
     cfg$extra[[key]] <- value
   }
   cfg
+}
+
+normalize_transport <- function(value) {
+  normalized <- tolower(trimws(as.character(value)))
+  if (normalized %in% c("", "inet", "tcp", "network")) {
+    return("inet")
+  }
+  if (normalized %in% c("ipc", "ipc_local", "local_ipc", "unix", "unix_socket", "uds")) {
+    return("ipc")
+  }
+  if (identical(normalized, "embedded")) {
+    return("embedded")
+  }
+  stop("transport must be inet, ipc, or embedded.")
+}
+
+transport_for_route <- function(value) {
+  normalized <- tolower(trimws(as.character(value)))
+  if (identical(normalized, "ipc_local")) return("ipc")
+  if (identical(normalized, "embedded")) return("embedded")
+  "inet"
 }

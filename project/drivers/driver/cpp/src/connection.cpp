@@ -1122,6 +1122,27 @@ core::Status Connection::connect(const ConnectionConfig& config,
     return status;
 }
 
+core::Status Connection::attachCreate(const std::string& mode,
+                                      const std::string& db_name,
+                                      core::ErrorContext* ctx) {
+    if (!impl_ || impl_->state != ConnectionState::CONNECTED) {
+        if (ctx) {
+            ctx->set(core::Status::INVALID_ARGUMENT,
+                     "Connection is not open",
+                     __FILE__,
+                     __LINE__,
+                     __func__);
+        }
+        return core::Status::INVALID_ARGUMENT;
+    }
+    auto status = impl_->client.attachCreate(mode, db_name, ctx);
+    impl_->last_error = impl_->client.lastError();
+    if (status != core::Status::OK) {
+        impl_->state = ConnectionState::ERROR_STATE;
+    }
+    return status;
+}
+
 void Connection::disconnect() {
     if (!impl_) {
         return;

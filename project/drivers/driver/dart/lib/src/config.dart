@@ -19,6 +19,7 @@ class ScratchBirdConfig {
   final String? sslcert;
   final String? sslkey;
   final String? sslpassword;
+  final String? ipcPath;
   final int connectTimeoutMs;
   final int socketTimeoutMs;
   final String? applicationName;
@@ -63,6 +64,7 @@ class ScratchBirdConfig {
     this.sslcert,
     this.sslkey,
     this.sslpassword,
+    this.ipcPath,
     this.connectTimeoutMs = 5000,
     this.socketTimeoutMs = 0,
     this.applicationName,
@@ -111,6 +113,7 @@ class ScratchBirdConfig {
     String? user,
     String? password,
     String? sslmode,
+    String? ipcPath,
     String? applicationName,
     String? role,
     bool? binaryTransfer,
@@ -152,6 +155,7 @@ class ScratchBirdConfig {
       sslcert: sslcert,
       sslkey: sslkey,
       sslpassword: sslpassword,
+      ipcPath: ipcPath ?? this.ipcPath,
       connectTimeoutMs: connectTimeoutMs,
       socketTimeoutMs: socketTimeoutMs,
       applicationName: applicationName ?? this.applicationName,
@@ -207,6 +211,7 @@ ScratchBirdConfig _fromUri(Uri uri) {
     user: params['user'] ?? user,
     password: params['password'] ?? password,
     sslmode: params['sslmode'] ?? 'require',
+    ipcPath: params['ipc_path'],
     applicationName: params['application_name'],
     role: params['role'],
     binaryTransfer: _parseBool(params['binary_transfer'], true),
@@ -232,8 +237,7 @@ ScratchBirdConfig _fromUri(Uri uri) {
     managerAuthToken: params['manager_auth_token'],
     managerUsername: params['manager_username'],
     managerDatabase: params['manager_database'],
-    managerConnectionProfile:
-        params['manager_connection_profile'] ?? 'SBsql',
+    managerConnectionProfile: params['manager_connection_profile'] ?? 'SBsql',
     managerClientIntent: params['manager_client_intent'] ?? 'SBsql',
     managerClientFlags: _parseInt(params['manager_client_flags'], 0),
     managerAuthFastPath: _parseBool(params['manager_auth_fast_path'], true),
@@ -260,6 +264,7 @@ ScratchBirdConfig _fromKv(String dsn) {
     user: normalized['user'] ?? '',
     password: normalized['password'],
     sslmode: normalized['sslmode'] ?? 'require',
+    ipcPath: normalized['ipc_path'],
     applicationName: normalized['application_name'],
     role: normalized['role'],
     binaryTransfer: _parseBool(normalized['binary_transfer'], true),
@@ -360,6 +365,11 @@ Map<String, String> _normalizeParams(Map<String, String> params) {
         break;
       case 'binarytransfer':
         out['binary_transfer'] = value;
+        break;
+      case 'ipcpath':
+      case 'unixsocket':
+      case 'socketpath':
+        out['ipc_path'] = value;
         break;
       case 'connectclientflags':
         out['connect_client_flags'] = value;

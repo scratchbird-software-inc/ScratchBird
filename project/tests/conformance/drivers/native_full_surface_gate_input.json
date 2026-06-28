@@ -24,6 +24,7 @@
     "--sslrootcert",
     "--sslcert",
     "--sslkey",
+    "--ipc-path",
     "--route",
     "--parser-mode",
     "--page-size",

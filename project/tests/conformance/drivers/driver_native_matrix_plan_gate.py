@@ -93,6 +93,25 @@ def route_transport_variants(routes: list[str]) -> list[dict[str, str]]:
     return variants
 
 
+def capability_for(tool_matrix: dict[str, Any], driver: str) -> dict[str, Any]:
+    caps = tool_matrix.get("transport_capability_by_driver", {})
+    if isinstance(caps, dict):
+        item = caps.get(driver, {})
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def route_supported_for_driver(route: str, caps: dict[str, Any]) -> bool:
+    if route in {"listener-parser", "manager-listener-parser"}:
+        return caps.get("inet_required") is True
+    if route == "ipc_local":
+        return caps.get("native_ipc_supported") is True
+    if route == "embedded":
+        return caps.get("embedded_supported") is True
+    return False
+
+
 def validate_and_plan(repo_root: Path) -> tuple[list[str], dict[str, Any]]:
     gate_input = load_json(repo_root / GATE_INPUT_REL)
     tool_matrix = load_json(repo_root / TOOL_MATRIX_REL)
@@ -113,6 +132,11 @@ def validate_and_plan(repo_root: Path) -> tuple[list[str], dict[str, Any]]:
     for driver in drivers:
         if driver not in matrix_drivers:
             errors.append(f"matrix_plan:{driver}:missing_native_tool_matrix_entry")
+        caps = capability_for(tool_matrix, driver)
+        if caps.get("inet_required") is not True:
+            errors.append(f"matrix_plan:{driver}:inet_support_must_be_required")
+        if caps.get("embedded_supported") is True and not str(caps.get("embedded_boundary", "")).endswith("library") and "cpp" not in str(caps.get("embedded_boundary", "")):
+            errors.append(f"matrix_plan:{driver}:embedded_requires_cpp_library_boundary")
     for axis, values in (
         ("routes", routes),
         ("page_sizes", page_sizes),
@@ -125,7 +149,10 @@ def validate_and_plan(repo_root: Path) -> tuple[list[str], dict[str, Any]]:
     examples: list[dict[str, str]] = []
     combination_count = 0
     for driver in drivers:
+        caps = capability_for(tool_matrix, driver)
         for route_pair in route_pairs:
+            if not route_supported_for_driver(route_pair["route"], caps):
+                continue
             for page_size in page_sizes:
                 for parser_mode in parser_modes:
                     for concurrency_mode in concurrency_modes:
@@ -156,6 +183,9 @@ def validate_and_plan(repo_root: Path) -> tuple[list[str], dict[str, Any]]:
         "driver_count": len(drivers),
         "drivers": drivers,
         "routes": routes,
+        "transport_capability_by_driver": {
+            driver: capability_for(tool_matrix, driver) for driver in drivers
+        },
         "route_transport_variants": route_pairs,
         "page_sizes": page_sizes,
         "parser_modes": parser_modes,

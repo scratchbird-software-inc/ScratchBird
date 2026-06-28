@@ -212,6 +212,25 @@ func (c *Conn) openSocket(ctx context.Context, requireIdentity bool, requireMana
 		return &Error{Kind: ErrConnection, Message: "manager_proxy mode requires manager_auth_token", SQLState: "08001"}
 	}
 
+	transportMode := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(c.config.TransportMode), "-", "_"))
+	if transportMode == "" {
+		transportMode = "inet_listener"
+	}
+	if transportMode == "local" || transportMode == "ipc" || transportMode == "local_ipc" {
+		ipcPath := strings.TrimSpace(c.config.IPCPath)
+		if ipcPath == "" {
+			return &Error{Kind: ErrConnection, Message: "ipc_path is required for local_ipc", SQLState: "08001"}
+		}
+		dialer := &net.Dialer{Timeout: c.config.ConnectTimeout}
+		conn, err := dialer.DialContext(ctx, "unix", ipcPath)
+		if err != nil {
+			return &Error{Kind: ErrConnection, Message: err.Error(), SQLState: "08001"}
+		}
+		c.raw = conn
+		c.config.SSLMode = "disable"
+		return nil
+	}
+
 	address := c.config.Host
 	if strings.TrimSpace(address) == "" {
 		address = "localhost"

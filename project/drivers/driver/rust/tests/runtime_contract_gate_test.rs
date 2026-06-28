@@ -210,7 +210,14 @@ async fn run_runtime_gate_connection(
         &mut stream,
         &mut sequence,
         protocol::MSG_READY,
-        &ready_payload(if txn_id == 0 { zero_txn_ready_status } else { 1 }, txn_id),
+        &ready_payload(
+            if txn_id == 0 {
+                zero_txn_ready_status
+            } else {
+                1
+            },
+            txn_id,
+        ),
         attachment_id,
         txn_id,
     )
@@ -300,7 +307,14 @@ async fn run_runtime_gate_connection(
                     &mut stream,
                     &mut sequence,
                     protocol::MSG_READY,
-                    &ready_payload(if txn_id == 0 { zero_txn_ready_status } else { 1 }, txn_id),
+                    &ready_payload(
+                        if txn_id == 0 {
+                            zero_txn_ready_status
+                        } else {
+                            1
+                        },
+                        txn_id,
+                    ),
                     attachment_id,
                     txn_id,
                 )
@@ -318,7 +332,14 @@ async fn run_runtime_gate_connection(
                     &mut stream,
                     &mut sequence,
                     protocol::MSG_READY,
-                    &ready_payload(if txn_id == 0 { zero_txn_ready_status } else { 1 }, txn_id),
+                    &ready_payload(
+                        if txn_id == 0 {
+                            zero_txn_ready_status
+                        } else {
+                            1
+                        },
+                        txn_id,
+                    ),
                     attachment_id,
                     txn_id,
                 )
@@ -337,7 +358,14 @@ async fn run_runtime_gate_connection(
                     &mut stream,
                     &mut sequence,
                     protocol::MSG_READY,
-                    &ready_payload(if txn_id == 0 { zero_txn_ready_status } else { 1 }, txn_id),
+                    &ready_payload(
+                        if txn_id == 0 {
+                            zero_txn_ready_status
+                        } else {
+                            1
+                        },
+                        txn_id,
+                    ),
                     attachment_id,
                     txn_id,
                 )
@@ -1592,7 +1620,10 @@ async fn runtime_gate_probe_auth_surface_reports_direct_and_manager_modes() {
     assert_eq!(direct_probe.front_door_mode, "direct");
     assert_eq!(direct_probe.required_method, "SCRAM_SHA_512");
     assert_eq!(direct_probe.admitted_methods.len(), 1);
-    assert_eq!(direct_probe.admitted_methods[0].method_name, "SCRAM_SHA_512");
+    assert_eq!(
+        direct_probe.admitted_methods[0].method_name,
+        "SCRAM_SHA_512"
+    );
     assert!(direct_snapshot.auth_responses.is_empty());
 
     let manager_server = RuntimeGateServer::start(RuntimeGateOptions {
@@ -1618,7 +1649,10 @@ async fn runtime_gate_probe_auth_surface_reports_direct_and_manager_modes() {
     assert_eq!(manager_probe.required_method, "TOKEN");
     assert_eq!(manager_probe.admitted_methods.len(), 1);
     assert_eq!(manager_probe.admitted_methods[0].method_name, "TOKEN");
-    assert_eq!(manager_snapshot.manager_frames, vec![MCP_MSG_HELLO, MCP_MSG_AUTH_START]);
+    assert_eq!(
+        manager_snapshot.manager_frames,
+        vec![MCP_MSG_HELLO, MCP_MSG_AUTH_START]
+    );
 }
 
 #[tokio::test]
@@ -1665,10 +1699,7 @@ async fn runtime_gate_autocommit_transition_semantics() {
     let snapshot = server.snapshot();
     server.finish().await;
 
-    assert_eq!(
-        snapshot.events,
-        vec!["txn_commit".to_string()]
-    );
+    assert_eq!(snapshot.events, vec!["txn_commit".to_string()]);
     assert!(snapshot.set_options.is_empty());
 }
 

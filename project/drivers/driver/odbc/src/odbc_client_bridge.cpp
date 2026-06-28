@@ -298,6 +298,9 @@ client::NetworkClientConfig OdbcClientBridge::buildConfig(const ConnectionParams
     cfg.password = params.password;
     cfg.schema = params.schema.empty() ? kDefaultSessionSchema : params.schema;
     cfg.protocol = params.protocol.empty() ? "native" : params.protocol;
+    cfg.transport_mode = params.transport_mode.empty() ? "inet_listener" : params.transport_mode;
+    cfg.ipc_method = params.ipc_method.empty() ? "auto" : params.ipc_method;
+    cfg.ipc_path = params.ipc_path;
     cfg.application_name = params.application_name.empty() ? "scratchbird_odbc" : params.application_name;
     cfg.connect_timeout_ms = params.connect_timeout * 1000;
     if (params.query_timeout > 0) {

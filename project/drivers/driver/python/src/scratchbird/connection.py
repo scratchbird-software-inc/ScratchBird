@@ -287,6 +287,9 @@ class ConnectionConfig:
     host: str = "localhost"
     port: int = 3092
     front_door_mode: str = "direct"
+    transport_mode: str = "inet_listener"
+    ipc_method: str = "unix"
+    ipc_path: str = ""
     protocol: str = "native"
     database: Optional[str] = None
     user: Optional[str] = None
@@ -442,6 +445,27 @@ def _build_connection_config(params: Dict[str, Any]) -> ConnectionConfig:
     cfg = ConnectionConfig()
     cfg.host = params.get("host", cfg.host)
     cfg.port = int(params.get("port", cfg.port))
+    cfg.transport_mode = str(
+        params.get(
+            "transport_mode",
+            params.get("transportmode", params.get("transport", cfg.transport_mode)),
+        )
+        or cfg.transport_mode
+    ).strip() or cfg.transport_mode
+    cfg.ipc_method = str(
+        params.get("ipc_method", params.get("ipcmethod", params.get("ipcmethod", cfg.ipc_method)))
+        or cfg.ipc_method
+    ).strip() or cfg.ipc_method
+    cfg.ipc_path = str(
+        params.get(
+            "ipc_path",
+            params.get(
+                "ipcpath",
+                params.get("socket_path", params.get("pipe_name", cfg.ipc_path)),
+            ),
+        )
+        or cfg.ipc_path
+    )
     try:
         cfg.protocol = normalize_native_protocol(params.get("protocol", params.get("parser", params.get("dialect"))))
         cfg.front_door_mode = normalize_front_door_mode(
@@ -898,6 +922,23 @@ class Connection:
             raise errors.InterfaceError("user and database are required")
         if require_manager_token and self._config.front_door_mode == "manager_proxy" and not self._config.manager_auth_token:
             raise errors.InterfaceError("manager_proxy mode requires manager_auth_token")
+        transport_mode = (self._config.transport_mode or "inet_listener").lower().replace("-", "_")
+        if transport_mode in {"local", "ipc", "local_ipc"}:
+            if not hasattr(socket, "AF_UNIX"):
+                raise errors.OperationalError("[08001] local_ipc requires Unix-domain socket support")
+            if not self._config.ipc_path:
+                raise errors.InterfaceError("ipc_path is required for local_ipc")
+            try:
+                raw_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                raw_sock.settimeout(self._config.connect_timeout or None)
+                raw_sock.connect(self._config.ipc_path)
+            except TimeoutError as exc:
+                raise errors.OperationalError("[08001] local_ipc connection timed out") from exc
+            except OSError as exc:
+                raise errors.OperationalError(f"[08001] failed to connect local_ipc: {exc}") from exc
+            raw_sock.settimeout(self._config.socket_timeout or None)
+            self._socket = raw_sock
+            return
         try:
             raw_sock = socket.create_connection(
                 (self._config.host, self._config.port),

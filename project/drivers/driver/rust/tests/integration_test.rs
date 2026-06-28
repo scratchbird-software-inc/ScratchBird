@@ -89,11 +89,17 @@ async fn transaction_stays_active_across_connect_commit_and_rollback() {
     client.begin(None).await.unwrap();
     client.commit(None).await.unwrap();
     client.savepoint("sp_rust_after_commit").await.unwrap();
-    client.release_savepoint("sp_rust_after_commit").await.unwrap();
+    client
+        .release_savepoint("sp_rust_after_commit")
+        .await
+        .unwrap();
     client.begin(None).await.unwrap();
     client.rollback(None).await.unwrap();
     client.savepoint("sp_rust_after_rollback").await.unwrap();
-    client.release_savepoint("sp_rust_after_rollback").await.unwrap();
+    client
+        .release_savepoint("sp_rust_after_rollback")
+        .await
+        .unwrap();
     client.close().await;
 }
 

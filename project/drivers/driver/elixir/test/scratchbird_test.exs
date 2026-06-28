@@ -61,6 +61,18 @@ defmodule ScratchBirdConfigTest do
     assert cfg.dormant_reattach_token == "def"
   end
 
+  test "parses local ipc path aliases" do
+    uri = Config.from_opts(url: "scratchbird://user:pass@localhost:3092/db?ipc_path=/tmp/sb.sock")
+    assert uri.ipc_path == "/tmp/sb.sock"
+
+    kv =
+      Config.from_opts(
+        dsn: "host=localhost port=3092 database=db user=user ipcpath=/tmp/sb2.sock"
+      )
+
+    assert kv.ipc_path == "/tmp/sb2.sock"
+  end
+
   test "rejects invalid front_door_mode" do
     assert_raise ArgumentError, fn ->
       Config.from_opts(url: "scratchbird://localhost:3092/db?front_door_mode=invalid")

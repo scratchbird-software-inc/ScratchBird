@@ -11,7 +11,7 @@ from collections import List
 
 # Native conformance CLI contract accepted by this tool lane:
 # --database --host --port --user --password --role --sslmode --sslrootcert
-# --sslcert --sslkey --route --parser-mode --page-size --namespace --input
+# --sslcert --sslkey --ipc-path --route --parser-mode --page-size --namespace --input
 # --output --error --diagnostics --metrics --transcript --summary
 # --stop-on-error --expected-refusals --statement-timeout-ms --fetch-size
 # --concurrency-worker --create-database --create-emulation-mode --run-id
