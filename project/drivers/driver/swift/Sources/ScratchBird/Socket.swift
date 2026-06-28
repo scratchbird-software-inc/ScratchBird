@@ -178,6 +178,46 @@ final class ScratchBirdSocket {
         throw NSError(domain: "ScratchBird", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to connect"])
     }
 
+    func connectUnix(path: String) throws {
+        let pathBytes = Array(path.utf8)
+        guard !pathBytes.isEmpty else {
+            throw NSError(domain: "ScratchBird", code: -1, userInfo: [NSLocalizedDescriptionKey: "ipc_path is required for local IPC transport"])
+        }
+
+        var addr = sockaddr_un()
+        let maxPathLength = MemoryLayout.size(ofValue: addr.sun_path)
+        guard pathBytes.count < maxPathLength else {
+            throw NSError(domain: "ScratchBird", code: -1, userInfo: [NSLocalizedDescriptionKey: "ipc_path is too long for a Unix-domain socket"])
+        }
+
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &addr.sun_path) { rawPath in
+            for idx in 0..<pathBytes.count {
+                rawPath[idx] = pathBytes[idx]
+            }
+            rawPath[pathBytes.count] = 0
+        }
+
+        fd = socket(AF_UNIX, socketStream, 0)
+        guard fd >= 0 else {
+            throw NSError(domain: "ScratchBird", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Local IPC socket creation failed: \(String(cString: strerror(errno)))"])
+        }
+
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                systemConnect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if result == 0 {
+            return
+        }
+
+        let connectErrno = errno
+        _ = systemClose(fd)
+        fd = -1
+        throw NSError(domain: "ScratchBird", code: Int(connectErrno), userInfo: [NSLocalizedDescriptionKey: "Local IPC connect failed for \(path): \(String(cString: strerror(connectErrno)))"])
+    }
+
     func write(_ data: Data) throws {
         #if canImport(Network)
         if let connection = nwConnection {

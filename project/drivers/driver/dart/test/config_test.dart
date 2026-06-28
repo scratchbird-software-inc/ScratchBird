@@ -64,4 +64,16 @@ void main() {
     expect(cfg.dormantId, 'dormant-1');
     expect(cfg.dormantReattachToken, 'reattach-1');
   });
+
+  test('parses local ipc path aliases', () {
+    final uri = ScratchBirdConfig.fromDsn(
+      'scratchbird://user:pass@localhost:3092/db?ipc_path=/tmp/sb.sock',
+    );
+    expect(uri.ipcPath, '/tmp/sb.sock');
+
+    final kv = ScratchBirdConfig.fromDsn(
+      'host=localhost port=3092 database=db user=user ipcpath=/tmp/sb2.sock',
+    );
+    expect(kv.ipcPath, '/tmp/sb2.sock');
+  });
 }

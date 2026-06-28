@@ -851,10 +851,7 @@ pub fn parse_ready(payload: &[u8]) -> Result<(u8, u64, u64)> {
 
 pub fn parse_txn_status(payload: &[u8]) -> Result<(u8, u64)> {
     if payload.len() < 12 {
-        return Err(Error::new(
-            ErrorKind::Connection,
-            "txn status truncated",
-        ));
+        return Err(Error::new(ErrorKind::Connection, "txn status truncated"));
     }
     let status = payload[0];
     let txn_id = u64::from_le_bytes(payload[4..12].try_into().unwrap_or([0u8; 8]));

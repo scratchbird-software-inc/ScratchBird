@@ -30,6 +30,7 @@ SUPPORTED_ARGS = %w[
   --sslrootcert
   --sslcert
   --sslkey
+  --ipc-path
   --route
   --parser-mode
   --page-size
@@ -109,18 +110,22 @@ def run(args)
   client = nil
 
   begin
+    route = required(args, "--route")
+    ensure_transport_route_supported(route, args)
     cfg = Scratchbird::Config.new
     cfg.host = required(args, "--host")
     cfg.port = required(args, "--port").to_i
+    cfg.transport = transport_config_for_route(route)
+    cfg.ipc_path = value_or_default(args, "--ipc-path", "")
     cfg.database = required(args, "--database")
     cfg.user = required(args, "--user")
     cfg.password = required(args, "--password")
     cfg.role = value_or_default(args, "--role", "")
-    cfg.sslmode = value_or_default(args, "--sslmode", "require")
+    cfg.sslmode = effective_sslmode_for_route(route, value_or_default(args, "--sslmode", "require"))
     cfg.sslrootcert = value_or_default(args, "--sslrootcert", "")
     cfg.sslcert = value_or_default(args, "--sslcert", "")
     cfg.sslkey = value_or_default(args, "--sslkey", "")
-    cfg.front_door_mode = required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct"
+    cfg.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct"
     cfg.metadata_expand_schema_parents = true
     cfg.application_name = "SBIsqlRuby"
     client = Scratchbird::Client.new(cfg)
@@ -132,7 +137,7 @@ def run(args)
     append_jsonl(required(args, "--transcript"), {
       event: "connect",
       driver: "ruby",
-      route: required(args, "--route"),
+      route: route,
       parser_mode: required(args, "--parser-mode"),
       page_size: required(args, "--page-size")
     })
@@ -249,7 +254,7 @@ def run(args)
 
   elapsed = monotonic_ns - started
   timings["overall"] = elapsed
-  sslmode = value_or_default(args, "--sslmode", "require")
+  sslmode = effective_sslmode_for_route(required(args, "--route"), value_or_default(args, "--sslmode", "require"))
   transport_mode = resolve_transport_mode(required(args, "--route"), sslmode)
   process_metrics = current_process_metrics
   summary = {
@@ -261,6 +266,9 @@ def run(args)
     namespace: required(args, "--namespace"),
     sslmode: sslmode,
     transport_mode: transport_mode,
+    transport_endpoint_kind: endpoint_kind_for_route(required(args, "--route")),
+    driver_transport_implementation: transport_implementation_for_route(required(args, "--route")),
+    cpp_library_boundary: "none",
     language_resource_pack: value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
     language_resource_identity: value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
     language_resource_hash: value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
@@ -457,6 +465,37 @@ def resolve_transport_mode(route, sslmode)
   return "embedded_no_network_transport" if route == "embedded"
   return "local_ipc_no_tls" if route == "ipc_local"
   sslmode == "disable" ? "tls_disabled" : "tls_required"
+end
+
+def ensure_transport_route_supported(route, args)
+  if route == "embedded"
+    raise "embedded transport is unsupported by the Ruby driver; no ScratchBird C++ library boundary is exposed"
+  end
+  if route == "ipc_local" && value_or_default(args, "--ipc-path", "").empty?
+    raise "ipc_path is required for local IPC transport"
+  end
+end
+
+def effective_sslmode_for_route(route, sslmode)
+  route == "ipc_local" ? "disable" : sslmode
+end
+
+def transport_config_for_route(route)
+  return "ipc" if route == "ipc_local"
+  return "embedded" if route == "embedded"
+  "inet"
+end
+
+def endpoint_kind_for_route(route)
+  return "unix_domain_socket" if route == "ipc_local"
+  return "none" if route == "embedded"
+  "tcp"
+end
+
+def transport_implementation_for_route(route)
+  return "unsupported_no_cpp_library_boundary" if route == "embedded"
+  return "native_ruby_unix_socket" if route == "ipc_local"
+  "native_ruby_tcp"
 end
 
 def load_expected_refusals(path)

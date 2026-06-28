@@ -46,6 +46,7 @@ const std::set<std::string> kSupportedArgs{
     "--sslrootcert",
     "--sslcert",
     "--sslkey",
+    "--ipc-path",
     "--route",
     "--parser-mode",
     "--page-size",
@@ -92,6 +93,26 @@ std::string transportModeForRoute(const std::string& route, const std::string& s
         return "local_ipc_no_tls";
     }
     return sslmode == "disable" ? "tls_disabled" : "tls_required";
+}
+
+std::string endpointKindForRoute(const std::string& route) {
+    if (route == "embedded") {
+        return "embedded_bridge";
+    }
+    if (route == "ipc_local") {
+        return "unix_domain_socket";
+    }
+    return "tcp";
+}
+
+std::string transportImplementationForRoute(const std::string& route) {
+    if (route == "embedded") {
+        return "native_cpp_embedded_bridge";
+    }
+    if (route == "ipc_local") {
+        return "native_cpp_local_ipc_bridge";
+    }
+    return "native_cpp_tcp";
 }
 
 std::string tlsPolicyForRoute(const std::string& route, const std::string& sslmode) {
@@ -637,6 +658,15 @@ int main(int argc, char** argv) {
         config.ssl_root_cert = valueOrDefault(args, "--sslrootcert", "");
         config.ssl_cert = valueOrDefault(args, "--sslcert", "");
         config.ssl_key = valueOrDefault(args, "--sslkey", "");
+        if (route == "embedded") {
+            config.transport_mode = "embedded";
+        } else if (route == "ipc_local") {
+            config.transport_mode = "local_ipc";
+            config.ipc_method = "unix";
+            config.ipc_path = valueOrDefault(args, "--ipc-path", "");
+        } else {
+            config.transport_mode = "inet_listener";
+        }
         config.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct";
         config.application_name = "SBIsqlCpp";
         config.query_timeout_ms = static_cast<uint32_t>(
@@ -659,6 +689,9 @@ int main(int argc, char** argv) {
                                                          {"page_size", pageSize},
                                                          {"sslmode", sslmode},
                                                          {"transport_mode", transportMode},
+                                                         {"transport_endpoint_kind", endpointKindForRoute(route)},
+                                                         {"driver_transport_implementation", transportImplementationForRoute(route)},
+                                                         {"cpp_library_boundary", "native_cpp_driver"},
                                                          {"tls_policy", tlsPolicy},
                                                          {"engine_sql_text_execution", false}});
             appendJsonl(paths.at("wire"), {{"event", "server_admission_required"},
@@ -670,8 +703,18 @@ int main(int argc, char** argv) {
         }
 
         if (failures.empty() && booleanArg(args, "--create-database", false)) {
-            failures.push_back({{"statement_id", "database_create"}, {"message", "--create-database is not implemented in the C++ native tool yet"},
-                                {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
+            const int64_t createStarted = nowNs();
+            status = conn.attachCreate(valueOrDefault(args, "--create-emulation-mode", "sbsql"),
+                                       required(args, "--database"),
+                                       &ctx);
+            if (status == scratchbird::core::Status::OK) {
+                api["attachCreate"]++;
+                addTiming(timings, "database_create", createStarted);
+            } else {
+                failures.push_back({{"statement_id", "database_create"},
+                                    {"message", statusMessage(ctx)},
+                                    {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
+            }
         }
         if (failures.empty() && parserMode != "server-parser") {
             failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the C++ native tool; it fails closed"}});
@@ -863,6 +906,9 @@ int main(int argc, char** argv) {
                                {"namespace", required(args, "--namespace")},
                                {"sslmode", sslmode},
                                {"transport_mode", transportMode},
+                               {"transport_endpoint_kind", endpointKindForRoute(route)},
+                               {"driver_transport_implementation", transportImplementationForRoute(route)},
+                               {"cpp_library_boundary", "native_cpp_driver"},
                                {"tls_policy", tlsPolicy},
                                {"language_resource_pack", languageResourcePack},
                                {"language_resource_identity", languageResourceIdentity},

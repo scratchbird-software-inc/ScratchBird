@@ -25,6 +25,7 @@ let supportedArgs = Set([
     "--sslrootcert",
     "--sslcert",
     "--sslkey",
+    "--ipc-path",
     "--route",
     "--parser-mode",
     "--page-size",
@@ -115,19 +116,22 @@ struct SBIsqlSwift {
         let expectedRefusals = try loadExpectedRefusals(args["--expected-refusals"] ?? "")
         let started = nowNs()
         var connection: ScratchBirdConnection?
+        let route = try required(args, "--route")
+        let sslmode = effectiveSslMode(route, args["--sslmode"] ?? "require")
 
         do {
             let config = ScratchBirdConfig(
                 host: try required(args, "--host"),
                 port: Int(try required(args, "--port")) ?? 3092,
-                frontDoorMode: try required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct",
+                frontDoorMode: route == "manager-listener-parser" ? "manager_proxy" : "direct",
                 database: try required(args, "--database"),
                 user: try required(args, "--user"),
                 password: try required(args, "--password"),
-                sslmode: args["--sslmode"] ?? "require",
+                sslmode: sslmode,
                 sslrootcert: args["--sslrootcert"],
                 sslcert: args["--sslcert"],
                 sslkey: args["--sslkey"],
+                ipcPath: route == "ipc_local" ? try required(args, "--ipc-path") : nil,
                 applicationName: "SBIsqlSwift",
                 role: args["--role"],
                 fetchSize: Int(args["--fetch-size"] ?? "1000") ?? 1000
@@ -140,7 +144,7 @@ struct SBIsqlSwift {
             try appendJsonl(try required(args, "--transcript"), [
                 "event": "connect",
                 "driver": "swift",
-                "route": try required(args, "--route"),
+                "route": route,
                 "parser_mode": try required(args, "--parser-mode"),
                 "page_size": try required(args, "--page-size")
             ])
@@ -256,18 +260,20 @@ struct SBIsqlSwift {
         }
 
         timings["overall"] = nowNs() - started
-        let sslmode = args["--sslmode"] ?? "require"
-        let transportMode = transportModeForRoute(try required(args, "--route"), sslmode)
+        let transportMode = transportModeForRoute(route, sslmode)
         let processMetrics = currentProcessMetrics()
         let summary: [String: Any?] = [
             "run_id": args["--run-id"] ?? "manual",
             "driver_name": "swift",
-            "route": try required(args, "--route"),
+            "route": route,
             "parser_mode": try required(args, "--parser-mode"),
             "page_size": try required(args, "--page-size"),
             "namespace": try required(args, "--namespace"),
             "sslmode": sslmode,
             "transport_mode": transportMode,
+            "transport_endpoint_kind": endpointKindForRoute(route),
+            "driver_transport_implementation": transportImplementationForRoute(route),
+            "cpp_library_boundary": "none",
             "language_resource_pack": args["--language-resource-pack"] ?? "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
             "language_resource_identity": args["--language-resource-identity"] ?? "sbsql.common_resource_pack.v1",
             "language_resource_hash": args["--language-resource-hash"] ?? "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
@@ -333,7 +339,11 @@ func parseArgs(_ raw: [String]) throws -> [String: String] {
 
 func validate(_ args: [String: String]) throws {
     guard pageSizes.contains(try required(args, "--page-size")) else { throw RuntimeError("unsupported page size") }
-    guard routes.contains(try required(args, "--route")) else { throw RuntimeError("unsupported route") }
+    let route = try required(args, "--route")
+    guard routes.contains(route) else { throw RuntimeError("unsupported route") }
+    if route == "ipc_local", (args["--ipc-path"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        throw RuntimeError("ipc_local route requires --ipc-path")
+    }
     guard parserModes.contains(try required(args, "--parser-mode")) else { throw RuntimeError("unsupported parser mode") }
     let sslmode = args["--sslmode"] ?? "require"
     guard sslModes.contains(sslmode) else { throw RuntimeError("unsupported sslmode: \(sslmode)") }
@@ -343,6 +353,22 @@ func transportModeForRoute(_ route: String, _ sslmode: String) -> String {
     if route == "embedded" { return "embedded_no_network_transport" }
     if route == "ipc_local" { return "local_ipc_no_tls" }
     return sslmode == "disable" ? "tls_disabled" : "tls_required"
+}
+
+func effectiveSslMode(_ route: String, _ sslmode: String) -> String {
+    route == "ipc_local" ? "disable" : sslmode
+}
+
+func endpointKindForRoute(_ route: String) -> String {
+    if route == "embedded" { return "none" }
+    if route == "ipc_local" { return "unix_domain_socket" }
+    return "tcp"
+}
+
+func transportImplementationForRoute(_ route: String) -> String {
+    if route == "embedded" { return "unsupported_no_cpp_library_boundary" }
+    if route == "ipc_local" { return "native_swift_unix_socket" }
+    return "native_swift_tcp"
 }
 
 func loadExpectedRefusals(_ path: String) throws -> Set<String> {

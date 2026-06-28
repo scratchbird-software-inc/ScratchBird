@@ -103,7 +103,7 @@ begin
     (Name = '--database') or (Name = '--host') or (Name = '--port') or
     (Name = '--user') or (Name = '--password') or (Name = '--role') or
     (Name = '--sslmode') or (Name = '--sslrootcert') or
-    (Name = '--sslcert') or (Name = '--sslkey') or
+    (Name = '--sslcert') or (Name = '--sslkey') or (Name = '--ipc-path') or
     (Name = '--route') or (Name = '--parser-mode') or
     (Name = '--page-size') or (Name = '--namespace') or
     (Name = '--input') or (Name = '--output') or (Name = '--error') or
@@ -205,28 +205,51 @@ begin
   end;
 end;
 
+function EffectiveSslModeForRoute(const Route, SslMode: string): string;
+begin
+  if Route = 'ipc_local' then
+    Exit('disable');
+  Result := SslMode;
+end;
+
+function TransportConfigForRoute(const Route: string): string;
+begin
+  if Route = 'ipc_local' then
+    Exit('ipc');
+  if Route = 'embedded' then
+    Exit('embedded');
+  Result := 'inet';
+end;
+
 function BuildDsn: string;
 var
   Route: string;
 begin
+  Route := ArgValue('--route', 'listener-parser');
+  if (Route = 'ipc_local') and (ArgValue('--ipc-path', '') = '') then
+    raise Exception.Create('ipc_path is required for local IPC transport');
+
   Result := Format(
-    'scratchbird://%s:%s@%s:%s/%s?sslmode=%s&application_name=sb_isql_pascal',
+    'scratchbird://%s:%s@%s:%s/%s?sslmode=%s&application_name=sb_isql_pascal&transport=%s',
     [
       ArgValue('--user', 'alice'),
       ArgValue('--password', 'password'),
       ArgValue('--host', '127.0.0.1'),
       ArgValue('--port', '3092'),
       ArgValue('--database', 'default'),
-      ArgValue('--sslmode', 'require')
+      EffectiveSslModeForRoute(Route, ArgValue('--sslmode', 'require')),
+      TransportConfigForRoute(Route)
     ]);
 
-  Route := ArgValue('--route', 'listener-parser');
   if Route = 'manager-listener-parser' then
     Result := Result + '&front_door_mode=manager_proxy'
   else if Route = 'ipc_local' then
     Result := Result + '&front_door_mode=direct'
   else if Route = 'embedded' then
     Result := Result + '&front_door_mode=direct';
+
+  if Route = 'ipc_local' then
+    Result := Result + '&ipc_path=' + ArgValue('--ipc-path', '');
 
   if ArgValue('--role', '') <> '' then
     Result := Result + '&role=' + ArgValue('--role', '');
@@ -271,6 +294,24 @@ begin
   if LowerCase(SslMode) = 'disable' then
     Exit('tls_disabled');
   Result := 'tls_required';
+end;
+
+function EndpointKindForRoute(const Route: string): string;
+begin
+  if Route = 'ipc_local' then
+    Exit('unix_domain_socket');
+  if Route = 'embedded' then
+    Exit('none');
+  Result := 'tcp';
+end;
+
+function TransportImplementationForRoute(const Route: string): string;
+begin
+  if Route = 'embedded' then
+    Exit('unsupported_no_cpp_library_boundary');
+  if Route = 'ipc_local' then
+    Exit('native_pascal_unix_socket');
+  Result := 'native_pascal_tcp';
 end;
 
 function ExpectedRefusal(const ExpectedText, StatementId: string): Boolean;
@@ -366,7 +407,7 @@ begin
     SuiteStatus := 'pass'
   else
     SuiteStatus := 'fail';
-  SslMode := ArgValue('--sslmode', 'require');
+  SslMode := EffectiveSslModeForRoute(ArgValue('--route', ''), ArgValue('--sslmode', 'require'));
   TransportMode := TransportModeForRoute(ArgValue('--route', ''), SslMode);
   Text := '{' + LineEnding +
     '  "run_id": "' + JsonEscape(ArgValue('--run-id', 'manual')) + '",' + LineEnding +
@@ -377,6 +418,9 @@ begin
     '  "namespace": "' + JsonEscape(ArgValue('--namespace', '')) + '",' + LineEnding +
     '  "sslmode": "' + JsonEscape(SslMode) + '",' + LineEnding +
     '  "transport_mode": "' + JsonEscape(TransportMode) + '",' + LineEnding +
+    '  "transport_endpoint_kind": "' + JsonEscape(EndpointKindForRoute(ArgValue('--route', ''))) + '",' + LineEnding +
+    '  "driver_transport_implementation": "' + JsonEscape(TransportImplementationForRoute(ArgValue('--route', ''))) + '",' + LineEnding +
+    '  "cpp_library_boundary": "none",' + LineEnding +
     '  ' + LanguageEvidenceJson + ',' + LineEnding +
     '  "language_resource_authority": "shared_server_parser_resource_pack",' + LineEnding +
     '  "status": "' + SuiteStatus + '",' + LineEnding +

@@ -226,6 +226,11 @@ public sealed class ScratchBirdConnection : DbConnection
         return recovered;
     }
 
+    public void AttachCreate(string emulationMode, string dbName)
+    {
+        EnsureConnectedClient().AttachCreate(emulationMode, dbName);
+    }
+
     private void EnsureKeepaliveHealthy(ProtocolClient client)
     {
         bool validated;

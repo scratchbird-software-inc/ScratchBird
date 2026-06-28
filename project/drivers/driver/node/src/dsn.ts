@@ -91,6 +91,21 @@ function setConfigParam(config: Partial<ClientConfig>, key: string, value: strin
     case "ingress_mode":
       config.frontDoorMode = normalizeFrontDoorMode(value);
       break;
+    case "transport_mode":
+    case "transportmode":
+    case "transport":
+      config.transportMode = value;
+      break;
+    case "ipc_method":
+    case "ipcmethod":
+      config.ipcMethod = value;
+      break;
+    case "ipc_path":
+    case "ipcpath":
+    case "socket_path":
+    case "pipe_name":
+      config.ipcPath = value;
+      break;
     case "database":
     case "dbname":
       config.database = value;

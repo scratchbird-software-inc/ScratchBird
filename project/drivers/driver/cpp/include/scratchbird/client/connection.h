@@ -279,6 +279,9 @@ public:
                                        bool expand_schema_parents,
                                        std::string* payload_json,
                                        core::ErrorContext* ctx = nullptr);
+    core::Status attachCreate(const std::string& mode,
+                              const std::string& db_name,
+                              core::ErrorContext* ctx = nullptr);
 
     static bool supportsPreparedTransactions();
     static bool supportsDormantReattach();

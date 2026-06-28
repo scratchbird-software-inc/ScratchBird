@@ -98,6 +98,25 @@ def route_variants(routes: list[str]) -> list[RouteVariant]:
     return variants
 
 
+def capability_for(tool_matrix: dict[str, Any], driver: str) -> dict[str, Any]:
+    caps = tool_matrix.get("transport_capability_by_driver", {})
+    if isinstance(caps, dict):
+        item = caps.get(driver, {})
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def route_supported_for_driver(route: str, caps: dict[str, Any]) -> bool:
+    if route in {"listener-parser", "manager-listener-parser"}:
+        return caps.get("inet_required") is True
+    if route == "ipc_local":
+        return caps.get("native_ipc_supported") is True
+    if route == "embedded":
+        return caps.get("embedded_supported") is True
+    return False
+
+
 def tool_source_map(tool_matrix: dict[str, Any]) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for item in as_list(tool_matrix.get("driver_tools")):
@@ -260,6 +279,7 @@ def build_tool_args(
         "--sslrootcert", args.sslrootcert,
         "--sslcert", args.sslcert,
         "--sslkey", args.sslkey,
+        "--ipc-path", args.ipc_path,
         "--route", route,
         "--parser-mode", parser_mode,
         "--page-size", page_size,
@@ -319,6 +339,7 @@ def main() -> int:
     parser.add_argument("--sslrootcert", default="")
     parser.add_argument("--sslcert", default="")
     parser.add_argument("--sslkey", default="")
+    parser.add_argument("--ipc-path", default=os.environ.get("SCRATCHBIRD_IPC_PATH", ""))
     parser.add_argument("--statement-timeout-ms", type=int, default=600000)
     parser.add_argument("--fetch-size", type=int, default=1000)
     parser.add_argument("--create-emulation-mode", default="")
@@ -362,8 +383,11 @@ def main() -> int:
     combination_count = 0
 
     for driver in drivers:
+        driver_caps = capability_for(tool_matrix, driver)
         base_command, cwd = command_for_driver(repo_root, driver)
         for route_pair in route_pairs:
+            if not route_supported_for_driver(route_pair.route, driver_caps):
+                continue
             for page_size in page_sizes:
                 for parser_mode in parser_modes:
                     for concurrency_mode in concurrency_modes:
@@ -465,6 +489,9 @@ def main() -> int:
         "status": "pass" if not failures else "fail",
         "plan_only": args.plan_only,
         "driver_count": len(drivers),
+        "transport_capability_by_driver": {
+            driver: capability_for(tool_matrix, driver) for driver in drivers
+        },
         "route_transport_variants": [pair.__dict__ for pair in route_pairs],
         "page_sizes": page_sizes,
         "parser_modes": parser_modes,

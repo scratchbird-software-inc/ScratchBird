@@ -29,6 +29,7 @@ const SUPPORTED_ARGS: &[&str] = &[
     "--sslrootcert",
     "--sslcert",
     "--sslkey",
+    "--ipc-path",
     "--route",
     "--parser-mode",
     "--page-size",
@@ -69,6 +70,7 @@ struct Args {
     sslrootcert: String,
     sslcert: String,
     sslkey: String,
+    ipc_path: String,
     route: String,
     parser_mode: String,
     page_size: String,
@@ -167,6 +169,12 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     config.password = args.password.clone();
     config.role = args.role.clone();
     config.sslmode = args.sslmode.clone();
+    if args.route == "ipc_local" {
+        config.transport_mode = "local_ipc".to_string();
+        config.ipc_method = "unix".to_string();
+        config.ipc_path = args.ipc_path.clone();
+        config.sslmode = "disable".to_string();
+    }
     config.sslrootcert = if args.sslrootcert.is_empty() {
         None
     } else {
@@ -219,10 +227,20 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     if failures.is_empty() && args.create_database {
-        failures.push(json!({
-            "statement_id": "database_create",
-            "message": "--create-database is not implemented in the Rust native tool yet"
-        }));
+        let create_started = Instant::now();
+        match client
+            .attach_create(&args.create_emulation_mode, &args.database)
+            .await
+        {
+            Ok(()) => {
+                *api_hits.entry("attach_create".to_string()).or_default() += 1;
+                add_timing(&mut timings, "database_create", create_started);
+            }
+            Err(err) => failures.push(json!({
+                "statement_id": "database_create",
+                "message": err.to_string()
+            })),
+        }
     }
     if failures.is_empty() && args.parser_mode != "server-parser" {
         failures.push(json!({
@@ -397,6 +415,9 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         "namespace": args.namespace,
         "sslmode": args.sslmode,
         "transport_mode": transport_mode,
+        "transport_endpoint_kind": endpoint_kind_for_route(&args.route),
+        "driver_transport_implementation": transport_implementation_for_route(&args.route),
+        "cpp_library_boundary": "none",
         "language_resource_pack": args.language_resource_pack,
         "language_resource_identity": args.language_resource_identity,
         "language_resource_hash": args.language_resource_hash,
@@ -578,6 +599,11 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
         sslrootcert: values.get("--sslrootcert").cloned().unwrap_or_default(),
         sslcert: values.get("--sslcert").cloned().unwrap_or_default(),
         sslkey: values.get("--sslkey").cloned().unwrap_or_default(),
+        ipc_path: values
+            .get("--ipc-path")
+            .cloned()
+            .or_else(|| std::env::var("SCRATCHBIRD_IPC_PATH").ok())
+            .unwrap_or_default(),
         route: values
             .get("--route")
             .cloned()
@@ -685,6 +711,12 @@ fn validate(args: &Args) -> Result<(), String> {
     {
         return Err(format!("unsupported route: {}", args.route));
     }
+    if args.route == "embedded" {
+        return Err(
+            "embedded transport is unsupported by the Rust driver; no ScratchBird C++ library boundary is exposed"
+                .to_string(),
+        );
+    }
     if !["server-parser", "standalone-parser", "driver-sblr-uuid"]
         .contains(&args.parser_mode.as_str())
     {
@@ -699,6 +731,24 @@ fn transport_mode_for_route(route: &str, sslmode: &str) -> &'static str {
         "ipc_local" => "local_ipc_no_tls",
         _ if sslmode == "disable" => "tls_disabled",
         _ => "tls_required",
+    }
+}
+
+fn endpoint_kind_for_route(route: &str) -> &'static str {
+    if route == "ipc_local" {
+        return "unix_domain_socket";
+    }
+    if route == "embedded" {
+        return "embedded_bridge";
+    }
+    "tcp"
+}
+
+fn transport_implementation_for_route(route: &str) -> &'static str {
+    match route {
+        "embedded" => "unsupported_no_cpp_library_boundary",
+        "ipc_local" => "native_rust_unix_domain_socket",
+        _ => "native_rust_tcp",
     }
 }
 

@@ -13,6 +13,8 @@ final class Config
 {
     public string $host = 'localhost';
     public int $port = 3092;
+    public string $transport = 'inet';
+    public string $ipcPath = '';
     public string $frontDoorMode = 'direct';
     public string $protocol = 'native';
     public string $database = '';
@@ -122,6 +124,19 @@ final class Config
                 break;
             case 'port':
                 $cfg->port = (int)$value;
+                break;
+            case 'transport':
+            case 'transport_mode':
+            case 'transportmode':
+                $cfg->transport = self::normalizeTransport($value);
+                break;
+            case 'route':
+                $cfg->transport = self::transportForRoute($value);
+                break;
+            case 'ipc_path':
+            case 'ipcpath':
+            case 'ipc-path':
+                $cfg->ipcPath = $value;
                 break;
             case 'front_door_mode':
             case 'frontdoormode':
@@ -325,6 +340,33 @@ final class Config
             return 'manager_proxy';
         }
         throw new \InvalidArgumentException('front_door_mode must be direct or manager_proxy.');
+    }
+
+    private static function normalizeTransport(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['', 'inet', 'tcp', 'network'], true)) {
+            return 'inet';
+        }
+        if (in_array($normalized, ['ipc', 'ipc_local', 'local_ipc', 'unix', 'unix_socket', 'uds'], true)) {
+            return 'ipc';
+        }
+        if ($normalized === 'embedded') {
+            return 'embedded';
+        }
+        throw new \InvalidArgumentException('transport must be inet, ipc, or embedded.');
+    }
+
+    private static function transportForRoute(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if ($normalized === 'ipc_local') {
+            return 'ipc';
+        }
+        if ($normalized === 'embedded') {
+            return 'embedded';
+        }
+        return 'inet';
     }
 
     private static function normalizeCompression(string $value): string

@@ -16,6 +16,9 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub front_door_mode: String,
+    pub transport_mode: String,
+    pub ipc_method: String,
+    pub ipc_path: String,
     pub protocol: String,
     pub database: String,
     pub user: String,
@@ -62,6 +65,9 @@ impl Default for Config {
             host: "localhost".to_string(),
             port: 3092,
             front_door_mode: "direct".to_string(),
+            transport_mode: "inet_listener".to_string(),
+            ipc_method: "unix".to_string(),
+            ipc_path: String::new(),
             protocol: "native".to_string(),
             database: String::new(),
             user: String::new(),
@@ -219,6 +225,15 @@ fn apply_param(cfg: &mut Config, key: &str, value: &str) -> Result<()> {
                 )
             })?;
             cfg.front_door_mode = normalized.to_string();
+        }
+        "transport_mode" | "transportmode" | "transport" => {
+            cfg.transport_mode = value.to_string();
+        }
+        "ipc_method" | "ipcmethod" => {
+            cfg.ipc_method = value.to_string();
+        }
+        "ipc_path" | "ipcpath" | "socket_path" | "pipe_name" => {
+            cfg.ipc_path = value.to_string();
         }
         "database" | "dbname" | "initial catalog" => cfg.database = value.to_string(),
         "user" | "username" | "user id" | "uid" => cfg.user = value.to_string(),

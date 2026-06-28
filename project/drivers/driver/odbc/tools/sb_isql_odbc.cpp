@@ -46,6 +46,7 @@ const std::set<std::string> kSupportedArgs{
     "--sslrootcert",
     "--sslcert",
     "--sslkey",
+    "--ipc-path",
     "--route",
     "--parser-mode",
     "--page-size",
@@ -109,6 +110,24 @@ std::string transportModeForRoute(const std::string& route, const std::string& s
     if (route == "embedded") return "embedded_no_network_transport";
     if (route == "ipc_local") return "local_ipc_no_tls";
     return sslmode == "disable" ? "tls_disabled" : "tls_required";
+}
+
+std::string driverTransportModeForRoute(const std::string& route) {
+    if (route == "embedded") return "embedded";
+    if (route == "ipc_local") return "local_ipc";
+    return "inet_listener";
+}
+
+std::string endpointKindForRoute(const std::string& route) {
+    if (route == "embedded") return "embedded_bridge";
+    if (route == "ipc_local") return "unix_domain_socket";
+    return "tcp";
+}
+
+std::string transportImplementationForRoute(const std::string& route) {
+    if (route == "embedded") return "odbc_native_cpp_embedded_bridge";
+    if (route == "ipc_local") return "odbc_native_cpp_local_ipc_bridge";
+    return "odbc_native_cpp_tcp";
 }
 
 std::string tlsPolicyForRoute(const std::string& route, const std::string& sslmode) {
@@ -313,6 +332,10 @@ int main(int argc, char** argv) {
                                     ";SSLRootCert=" + valueOrDefault(args, "--sslrootcert", "") +
                                     ";SSLCert=" + valueOrDefault(args, "--sslcert", "") +
                                     ";SSLKey=" + valueOrDefault(args, "--sslkey", "") +
+                                    ";Transport_Mode=" + driverTransportModeForRoute(route) +
+                                    ";IPC_Method=unix" +
+                                    ";IPC_Path=" + valueOrDefault(args, "--ipc-path", "") +
+                                    ";Front_Door_Mode=" + (route == "manager-listener-parser" ? "manager_proxy" : "direct") +
                                     ";Role=" + valueOrDefault(args, "--role", "");
         SQLCHAR outConn[256] = {};
         SQLSMALLINT outLen = 0;
@@ -450,6 +473,9 @@ int main(int argc, char** argv) {
                            {"namespace", required(args, "--namespace")},
                            {"sslmode", sslmode},
                            {"transport_mode", transportMode},
+                           {"transport_endpoint_kind", endpointKindForRoute(route)},
+                           {"driver_transport_implementation", transportImplementationForRoute(route)},
+                           {"cpp_library_boundary", "odbc_driver_cpp_implementation"},
                            {"tls_policy", tlsPolicy},
                            {"language_resource_pack", languageResourcePack},
                            {"language_resource_identity", languageResourceIdentity},

@@ -10,6 +10,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Data;
 using System.Linq;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -45,6 +46,7 @@ internal sealed class ProtocolClient
     private sealed record NotificationMessage(uint ProcessId, string Channel, byte[] Payload, char? ChangeType, ulong? RowId);
 
     private TcpClient? _client;
+    private Socket? _unixSocket;
     private Stream? _stream;
     private byte[] _attachmentId = new byte[16];
     private ulong _txnId;
@@ -183,6 +185,23 @@ internal sealed class ProtocolClient
 
     private void OpenTransport(ScratchBirdConfig config)
     {
+        var transportMode = NormalizeTransportMode(config.TransportMode);
+        if (transportMode == "local_ipc")
+        {
+            if (string.IsNullOrWhiteSpace(config.IpcPath))
+            {
+                throw new ScratchBirdConnectionException("ipc_path is required for local_ipc", "08001");
+            }
+            _unixSocket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            var unixConnectTask = _unixSocket.ConnectAsync(new UnixDomainSocketEndPoint(config.IpcPath));
+            if (!unixConnectTask.Wait(config.ConnectTimeoutMs))
+            {
+                throw new ScratchBirdConnectionException("Connection timeout", "08001");
+            }
+            _stream = new NetworkStream(_unixSocket, ownsSocket: true);
+            return;
+        }
+
         _client = new TcpClient { NoDelay = true };
         _client.SendTimeout = config.SocketTimeoutMs > 0 ? config.SocketTimeoutMs : 0;
         _client.ReceiveTimeout = config.SocketTimeoutMs > 0 ? config.SocketTimeoutMs : 0;
@@ -206,6 +225,20 @@ internal sealed class ProtocolClient
         {
             _stream = UpgradeToTls(_stream, config, sslMode);
         }
+    }
+
+    private static string NormalizeTransportMode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant().Replace('-', '_');
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return "inet_listener";
+        }
+        if (normalized is "local" or "ipc")
+        {
+            return "local_ipc";
+        }
+        return normalized;
     }
 
     public QueryStream ExecuteQuery(string sql)
@@ -619,7 +652,11 @@ internal sealed class ProtocolClient
     public void Close()
     {
         _stream?.Dispose();
+        _unixSocket?.Dispose();
         _client?.Close();
+        _unixSocket = null;
+        _client = null;
+        _stream = null;
         _portalResumePending = false;
         _connected = false;
         MarkResolvedAuthContextDetached();

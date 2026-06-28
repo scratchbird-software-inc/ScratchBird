@@ -9,7 +9,18 @@
 defmodule ScratchBird.Connection do
   @moduledoc false
 
-  alias ScratchBird.{AuthBootstrap, Config, Protocol, Scram, Types, CircuitBreaker, Keepalive, LeakDetector, Telemetry}
+  alias ScratchBird.{
+    AuthBootstrap,
+    Config,
+    Protocol,
+    Scram,
+    Types,
+    CircuitBreaker,
+    Keepalive,
+    LeakDetector,
+    Telemetry
+  }
+
   import Bitwise
 
   @manager_protocol_magic 0x42444253
@@ -76,12 +87,14 @@ defmodule ScratchBird.Connection do
     # engine truth rather than resurrected from abandoned local state.
     state = %__MODULE__{
       config: config,
-      resolved_auth_context: AuthBootstrap.default_resolved_auth_context(config[:front_door_mode] || "direct")
+      resolved_auth_context:
+        AuthBootstrap.default_resolved_auth_context(config[:front_door_mode] || "direct")
     }
 
     with :ok <- validate_config(config),
          {:ok, socket, transport} <- open_socket(config),
-         {:ok, state} <- maybe_perform_manager_connect(%{state | socket: socket, transport: transport}),
+         {:ok, state} <-
+           maybe_perform_manager_connect(%{state | socket: socket, transport: transport}),
          {:ok, state} <- handshake(state) do
       {:ok, start_resilience(state)}
     end
@@ -92,7 +105,8 @@ defmodule ScratchBird.Connection do
 
     state = %__MODULE__{
       config: config,
-      resolved_auth_context: AuthBootstrap.default_resolved_auth_context(config[:front_door_mode] || "direct")
+      resolved_auth_context:
+        AuthBootstrap.default_resolved_auth_context(config[:front_door_mode] || "direct")
     }
 
     with :ok <- validate_config(config),
@@ -100,7 +114,8 @@ defmodule ScratchBird.Connection do
       state = %{state | socket: socket, transport: transport}
 
       try do
-        if normalize_front_door_mode(config[:front_door_mode] || "direct") == {:ok, "manager_proxy"} do
+        if normalize_front_door_mode(config[:front_door_mode] || "direct") ==
+             {:ok, "manager_proxy"} do
           probe_manager_auth_surface(state)
         else
           probe_direct_auth_surface(state)
@@ -125,18 +140,29 @@ defmodule ScratchBird.Connection do
     :gen_tcp.close(socket)
   end
 
+  def close(%__MODULE__{transport: :ipc, socket: socket} = state) do
+    _ = stop_resilience(state)
+    :gen_tcp.close(socket)
+  end
+
   defp validate_config(config) do
     sslmode = normalize_ssl_mode(config[:sslmode] || "require")
-    protocol = (config[:protocol] || "native") |> to_string() |> String.trim() |> String.downcase()
+
+    protocol =
+      (config[:protocol] || "native") |> to_string() |> String.trim() |> String.downcase()
+
     front_door_mode = normalize_front_door_mode(config[:front_door_mode] || "direct")
 
     cond do
       protocol not in ["", "native", "scratchbird", "scratchbird-native", "scratchbird_native"] ->
         {:error, "Only protocol=native is supported; connect to the native parser listener/port."}
+
       front_door_mode == :error ->
         {:error, "front_door_mode must be direct or manager_proxy."}
+
       sslmode == :error ->
         {:error, "Unsupported sslmode value"}
+
       true ->
         :ok
     end
@@ -192,8 +218,10 @@ defmodule ScratchBird.Connection do
 
   def detach_to_dormant(state) do
     {:error,
-     %{message: "Dormant detach is not supported by the current public front door", sqlstate: "0A000"},
-     state}
+     %{
+       message: "Dormant detach is not supported by the current public front door",
+       sqlstate: "0A000"
+     }, state}
   end
 
   def reattach_dormant(state, dormant_id, auth_token \\ nil) do
@@ -201,13 +229,16 @@ defmodule ScratchBird.Connection do
     _ = auth_token
 
     {:error,
-     %{message: "Dormant reattach is not supported by the current public front door", sqlstate: "0A000"},
-     state}
+     %{
+       message: "Dormant reattach is not supported by the current public front door",
+       sqlstate: "0A000"
+     }, state}
   end
 
   def begin(state, opts \\ %{}) do
     with_resilience(state, "txn_begin", nil, fn state ->
       opts = Enum.into(opts, %{})
+
       cond do
         can_adopt_fresh_native_boundary?(state, opts) ->
           {:ok, state}
@@ -215,7 +246,8 @@ defmodule ScratchBird.Connection do
         transaction_active?(state) and state.txn_id == 0 ->
           {:error,
            %{
-             message: "non-default begin options cannot adopt an already-active fresh native boundary",
+             message:
+               "non-default begin options cannot adopt an already-active fresh native boundary",
              sqlstate: "0A000"
            }, state}
 
@@ -226,7 +258,12 @@ defmodule ScratchBird.Connection do
           read_committed_mode = Map.get(opts, :read_committed_mode)
           flags = 0
           isolation_level = Map.get(opts, :isolation_level, Protocol.isolation(:read_committed))
-          flags = if Map.has_key?(opts, :isolation_level), do: flags ||| Protocol.txn_flag(:has_isolation), else: flags
+
+          flags =
+            if Map.has_key?(opts, :isolation_level),
+              do: flags ||| Protocol.txn_flag(:has_isolation),
+              else: flags
+
           {flags, isolation_level} =
             if is_nil(read_committed_mode) do
               {flags, isolation_level}
@@ -236,23 +273,44 @@ defmodule ScratchBird.Connection do
                      Protocol.isolation(:read_uncommitted),
                      Protocol.isolation(:read_committed)
                    ] do
-                raise ArgumentError, "read_committed_mode requires a READ COMMITTED isolation alias"
+                raise ArgumentError,
+                      "read_committed_mode requires a READ COMMITTED isolation alias"
               end
 
               if Map.has_key?(opts, :isolation_level) do
                 {flags ||| Protocol.txn_flag(:has_read_committed_mode), isolation_level}
               else
                 {
-                  flags ||| Protocol.txn_flag(:has_read_committed_mode) ||| Protocol.txn_flag(:has_isolation),
+                  flags ||| Protocol.txn_flag(:has_read_committed_mode) |||
+                    Protocol.txn_flag(:has_isolation),
                   Protocol.isolation(:read_committed)
                 }
               end
             end
-          flags = if Map.has_key?(opts, :access_mode), do: flags ||| Protocol.txn_flag(:has_access), else: flags
-          flags = if Map.has_key?(opts, :deferrable), do: flags ||| Protocol.txn_flag(:has_deferrable), else: flags
-          flags = if Map.has_key?(opts, :wait), do: flags ||| Protocol.txn_flag(:has_wait), else: flags
-          flags = if Map.has_key?(opts, :timeout_ms), do: flags ||| Protocol.txn_flag(:has_timeout), else: flags
-          flags = if Map.has_key?(opts, :autocommit_mode), do: flags ||| Protocol.txn_flag(:has_autocommit), else: flags
+
+          flags =
+            if Map.has_key?(opts, :access_mode),
+              do: flags ||| Protocol.txn_flag(:has_access),
+              else: flags
+
+          flags =
+            if Map.has_key?(opts, :deferrable),
+              do: flags ||| Protocol.txn_flag(:has_deferrable),
+              else: flags
+
+          flags =
+            if Map.has_key?(opts, :wait), do: flags ||| Protocol.txn_flag(:has_wait), else: flags
+
+          flags =
+            if Map.has_key?(opts, :timeout_ms),
+              do: flags ||| Protocol.txn_flag(:has_timeout),
+              else: flags
+
+          flags =
+            if Map.has_key?(opts, :autocommit_mode),
+              do: flags ||| Protocol.txn_flag(:has_autocommit),
+              else: flags
+
           payload =
             Protocol.build_txn_begin_payload(
               flags,
@@ -265,6 +323,7 @@ defmodule ScratchBird.Connection do
               Map.get(opts, :timeout_ms, 0),
               Map.get(opts, :read_committed_mode, Protocol.read_committed_mode(:default))
             )
+
           state = send_message(state, Protocol.message_type(:txn_begin), payload, 0)
           drain_until_ready(state)
       end
@@ -321,21 +380,32 @@ defmodule ScratchBird.Connection do
 
   def ping(state) do
     state = send_message(state, Protocol.message_type(:ping), <<>>, 0)
+
     case recv_message(state) do
       {:ok, msg} ->
         case handle_async(state, msg) do
-          {:handled, new_state} -> ping(new_state)
+          {:handled, new_state} ->
+            ping(new_state)
+
           {:ok, new_state} ->
             case msg.type do
-              @msg_pong -> {:ok, new_state}
+              @msg_pong ->
+                {:ok, new_state}
+
               @msg_ready ->
                 {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
                 {:ok, apply_runtime_ready_state(new_state, status, txn_id)}
-              @msg_error -> {:error, Protocol.parse_error(msg.payload), new_state}
-              _ -> ping(new_state)
+
+              @msg_error ->
+                {:error, Protocol.parse_error(msg.payload), new_state}
+
+              _ ->
+                ping(new_state)
             end
         end
-      error -> error
+
+      error ->
+        error
     end
   end
 
@@ -345,11 +415,13 @@ defmodule ScratchBird.Connection do
   end
 
   def subscribe(state, channel, opts \\ %{}) do
-    payload = Protocol.build_subscribe_payload(
-      Map.get(opts, :subscribe_type, Protocol.subscribe_type(:channel)),
-      channel,
-      Map.get(opts, :filter_expr, "")
-    )
+    payload =
+      Protocol.build_subscribe_payload(
+        Map.get(opts, :subscribe_type, Protocol.subscribe_type(:channel)),
+        channel,
+        Map.get(opts, :filter_expr, "")
+      )
+
     state = send_message(state, Protocol.message_type(:subscribe), payload, 0)
     drain_until_ready(state)
   end
@@ -367,6 +439,7 @@ defmodule ScratchBird.Connection do
         |> Enum.map(&Types.encode_param/1)
         |> Enum.map(fn {param, oid} -> {param, oid} end)
         |> Enum.unzip()
+
       payload = Protocol.build_sblr_execute_payload(sblr_hash, sblr_bytecode, param_values)
       state = %{state | last_plan: nil, last_sblr: nil}
       sequence = state.sequence
@@ -425,6 +498,7 @@ defmodule ScratchBird.Connection do
     port = config[:port] || 3092
     sslmode = normalize_ssl_mode(config[:sslmode] || "require")
     connect_timeout = max(to_int(config[:connect_timeout] || 5000, 5000), 1)
+    ipc_path = config[:ipc_path] |> blank_to_nil()
 
     opts = [
       mode: :binary,
@@ -432,77 +506,109 @@ defmodule ScratchBird.Connection do
       active: false
     ]
 
-    if sslmode == {:ok, "disable"} do
-      case :gen_tcp.connect(host, port, opts, connect_timeout) do
-        {:ok, socket} -> {:ok, socket, :tcp}
-        {:error, reason} -> {:error, "TCP connect failed: #{inspect(reason)}"}
-      end
-    else
-      {:ok, sslmode_value} = sslmode
+    cond do
+      ipc_path ->
+        connect_ipc_socket(to_string(ipc_path), opts, connect_timeout)
 
-      verify_mode =
-        if sslmode_value in ["verify-ca", "verify-full"] do
-          :verify_peer
-        else
-          :verify_none
+      sslmode == {:ok, "disable"} ->
+        case :gen_tcp.connect(host, port, opts, connect_timeout) do
+          {:ok, socket} -> {:ok, socket, :tcp}
+          {:error, reason} -> {:error, "TCP connect failed: #{inspect(reason)}"}
         end
 
-      ssl_opts = [
-        verify: verify_mode,
-        versions: [:"tlsv1.3"],
-        server_name_indication: host,
-        reuse_sessions: false
-      ]
+      true ->
+        {:ok, sslmode_value} = sslmode
 
-      ssl_opts =
-        if sslmode_value == "verify-full" do
-          ssl_opts ++ [customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]]
-        else
-          ssl_opts
-        end
+        verify_mode =
+          if sslmode_value in ["verify-ca", "verify-full"] do
+            :verify_peer
+          else
+            :verify_none
+          end
 
-      ssl_opts =
-        cond do
-          config[:sslrootcert] && to_string(config[:sslrootcert]) != "" ->
-            ssl_opts ++ [cacertfile: to_string(config[:sslrootcert])]
+        ssl_opts = [
+          verify: verify_mode,
+          versions: [:"tlsv1.3"],
+          server_name_indication: host,
+          reuse_sessions: false
+        ]
 
-          verify_mode == :verify_peer ->
-            ssl_opts ++ [cacerts: :public_key.cacerts_get()]
-
-          true ->
+        ssl_opts =
+          if sslmode_value == "verify-full" do
+            ssl_opts ++
+              [
+                customize_hostname_check: [
+                  match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+                ]
+              ]
+          else
             ssl_opts
-        end
+          end
 
-      ssl_opts =
-        if config[:sslcert] && to_string(config[:sslcert]) != "" do
-          ssl_opts ++ [certfile: to_string(config[:sslcert])]
-        else
-          ssl_opts
-        end
+        ssl_opts =
+          cond do
+            config[:sslrootcert] && to_string(config[:sslrootcert]) != "" ->
+              ssl_opts ++ [cacertfile: to_string(config[:sslrootcert])]
 
-      ssl_opts =
-        if config[:sslkey] && to_string(config[:sslkey]) != "" do
-          ssl_opts ++ [keyfile: to_string(config[:sslkey])]
-        else
-          ssl_opts
-        end
+            verify_mode == :verify_peer ->
+              ssl_opts ++ [cacerts: :public_key.cacerts_get()]
 
-      ssl_opts =
-        if config[:sslpassword] && to_string(config[:sslpassword]) != "" do
-          ssl_opts ++ [password: to_string(config[:sslpassword])]
-        else
-          ssl_opts
-        end
+            true ->
+              ssl_opts
+          end
 
-      case :ssl.connect(host, port, ssl_opts ++ opts, connect_timeout) do
-        {:ok, socket} -> {:ok, socket, :ssl}
-        err -> err
+        ssl_opts =
+          if config[:sslcert] && to_string(config[:sslcert]) != "" do
+            ssl_opts ++ [certfile: to_string(config[:sslcert])]
+          else
+            ssl_opts
+          end
+
+        ssl_opts =
+          if config[:sslkey] && to_string(config[:sslkey]) != "" do
+            ssl_opts ++ [keyfile: to_string(config[:sslkey])]
+          else
+            ssl_opts
+          end
+
+        ssl_opts =
+          if config[:sslpassword] && to_string(config[:sslpassword]) != "" do
+            ssl_opts ++ [password: to_string(config[:sslpassword])]
+          else
+            ssl_opts
+          end
+
+        case :ssl.connect(host, port, ssl_opts ++ opts, connect_timeout) do
+          {:ok, socket} -> {:ok, socket, :ssl}
+          err -> err
+        end
+    end
+  end
+
+  defp connect_ipc_socket(path, opts, connect_timeout) do
+    if String.trim(path) == "" do
+      {:error, "ipc_path is required for local IPC transport"}
+    else
+      try do
+        case :gen_tcp.connect({:local, to_charlist(path)}, 0, opts, connect_timeout) do
+          {:ok, socket} -> {:ok, socket, :ipc}
+          {:error, reason} -> {:error, "Local IPC connect failed for #{path}: #{inspect(reason)}"}
+        end
+      rescue
+        error ->
+          {:error,
+           "Local IPC transport is not supported by this Erlang runtime: #{Exception.message(error)}"}
+      catch
+        :exit, reason ->
+          {:error,
+           "Local IPC transport is not supported by this Erlang runtime: #{inspect(reason)}"}
       end
     end
   end
 
   defp maybe_perform_manager_connect(state) do
-    if normalize_front_door_mode(state.config[:front_door_mode] || "direct") == {:ok, "manager_proxy"} do
+    if normalize_front_door_mode(state.config[:front_door_mode] || "direct") ==
+         {:ok, "manager_proxy"} do
       perform_manager_connect(state)
     else
       {:ok, state}
@@ -546,14 +652,22 @@ defmodule ScratchBird.Connection do
 
       with :ok <- send_manager_frame(state, @mcp_msg_hello, hello_payload),
            {:ok, msg_type, _hello_status} <- recv_manager_frame(state),
-           :ok <- ensure_manager_type(msg_type, @mcp_msg_status_response, "Expected MCP hello status response"),
+           :ok <-
+             ensure_manager_type(
+               msg_type,
+               @mcp_msg_status_response,
+               "Expected MCP hello status response"
+             ),
            :ok <- manager_auth_exchange(state, manager_user, token, auth_fast_path),
            :ok <- manager_db_connect(state, manager_database, manager_profile, manager_intent) do
         {:ok,
          %{
            state
-           | resolved_auth_context:
-               %{state.resolved_auth_context | ingress_mode: "manager_proxy", manager_authenticated: true}
+           | resolved_auth_context: %{
+               state.resolved_auth_context
+               | ingress_mode: "manager_proxy",
+                 manager_authenticated: true
+             }
          }}
       end
     end
@@ -563,6 +677,7 @@ defmodule ScratchBird.Connection do
     auth_start =
       if auth_fast_path do
         token_bytes = token
+
         IO.iodata_to_binary([
           manager_lpref(manager_user),
           <<@mcp_auth_method_token::8>>,
@@ -578,8 +693,10 @@ defmodule ScratchBird.Connection do
 
     with :ok <- send_manager_frame(state, @mcp_msg_auth_start, auth_start),
          {:ok, msg_type, payload} <- recv_manager_frame(state),
-         {:ok, msg_type, payload} <- maybe_continue_auth_challenge(state, msg_type, payload, token),
-         :ok <- ensure_manager_type(msg_type, @mcp_msg_auth_response, "Expected MCP auth response"),
+         {:ok, msg_type, payload} <-
+           maybe_continue_auth_challenge(state, msg_type, payload, token),
+         :ok <-
+           ensure_manager_type(msg_type, @mcp_msg_auth_response, "Expected MCP auth response"),
          :ok <- validate_auth_response(payload) do
       :ok
     end
@@ -604,10 +721,12 @@ defmodule ScratchBird.Connection do
       {:error, "Truncated MCP auth response"}
     else
       <<status::8, _reserved::little-32, rest::binary>> = payload
+
       if status == 0 do
         :ok
       else
         <<err::binary-size(256), _tail::binary>> = rest
+
         err =
           err
           |> String.replace(~r/\x00+$/, "")
@@ -633,7 +752,12 @@ defmodule ScratchBird.Connection do
 
     with :ok <- send_manager_frame(state, @mcp_msg_db_connect, payload),
          {:ok, msg_type, connect_payload} <- recv_manager_frame(state),
-         :ok <- ensure_manager_type(msg_type, @mcp_msg_connect_response, "Expected MCP connect response"),
+         :ok <-
+           ensure_manager_type(
+             msg_type,
+             @mcp_msg_connect_response,
+             "Expected MCP connect response"
+           ),
          :ok <- validate_connect_response(connect_payload) do
       :ok
     end
@@ -653,7 +777,8 @@ defmodule ScratchBird.Connection do
         err_offset = minimum_size
 
         case payload do
-          <<_::binary-size(err_offset), err_len::little-32, rest::binary>> when byte_size(rest) >= err_len ->
+          <<_::binary-size(err_offset), err_len::little-32, rest::binary>>
+          when byte_size(rest) >= err_len ->
             <<err::binary-size(err_len), _::binary>> = rest
             {:error, if(err == "", do: "MCP database connect failed", else: err)}
 
@@ -672,8 +797,8 @@ defmodule ScratchBird.Connection do
     payload = payload || <<>>
 
     frame =
-      <<@manager_protocol_magic::little-32, @manager_protocol_version::little-16, msg_type::8, 0::8,
-        byte_size(payload)::little-32, payload::binary>>
+      <<@manager_protocol_magic::little-32, @manager_protocol_version::little-16, msg_type::8,
+        0::8, byte_size(payload)::little-32, payload::binary>>
 
     case send_raw(state, frame) do
       :ok -> :ok
@@ -690,8 +815,8 @@ defmodule ScratchBird.Connection do
   end
 
   defp parse_manager_header(
-         <<@manager_protocol_magic::little-32, @manager_protocol_version::little-16, msg_type::8, _reserved::8,
-           payload_len::little-32>>
+         <<@manager_protocol_magic::little-32, @manager_protocol_version::little-16, msg_type::8,
+           _reserved::8, payload_len::little-32>>
        ) do
     if payload_len > @manager_max_payload_size do
       {:error, "manager payload too large"}
@@ -700,8 +825,9 @@ defmodule ScratchBird.Connection do
     end
   end
 
-  defp parse_manager_header(<<magic::little-32, _::binary>>) when magic != @manager_protocol_magic,
-    do: {:error, "manager frame magic mismatch"}
+  defp parse_manager_header(<<magic::little-32, _::binary>>)
+       when magic != @manager_protocol_magic,
+       do: {:error, "manager frame magic mismatch"}
 
   defp parse_manager_header(_), do: {:error, "manager frame version mismatch"}
 
@@ -735,10 +861,17 @@ defmodule ScratchBird.Connection do
 
   defp normalize_ssl_mode(value) do
     case value |> to_string() |> String.trim() |> String.downcase() do
-      "verify_ca" -> {:ok, "verify-ca"}
-      "verify_full" -> {:ok, "verify-full"}
-      mode when mode in ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] -> {:ok, mode}
-      _ -> :error
+      "verify_ca" ->
+        {:ok, "verify-ca"}
+
+      "verify_full" ->
+        {:ok, "verify-full"}
+
+      mode when mode in ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] ->
+        {:ok, mode}
+
+      _ ->
+        :error
     end
   end
 
@@ -818,6 +951,7 @@ defmodule ScratchBird.Connection do
 
         @msg_auth_request ->
           {:ok, method, _data} = Protocol.parse_auth_request(msg.payload)
+
           method_surface =
             AuthBootstrap.describe_auth_method(method, state.config[:auth_method_id])
 
@@ -879,9 +1013,17 @@ defmodule ScratchBird.Connection do
 
     with :ok <- send_manager_frame(state, @mcp_msg_hello, hello_payload),
          {:ok, msg_type, _payload} <- recv_manager_frame(state),
-         :ok <- ensure_manager_type(msg_type, @mcp_msg_status_response, "Expected MCP hello status response") do
+         :ok <-
+           ensure_manager_type(
+             msg_type,
+             @mcp_msg_status_response,
+             "Expected MCP hello status response"
+           ) do
       method_surface =
-        AuthBootstrap.describe_auth_method(Protocol.auth_method(:token), state.config[:auth_method_id])
+        AuthBootstrap.describe_auth_method(
+          Protocol.auth_method(:token),
+          state.config[:auth_method_id]
+        )
 
       {:ok,
        %AuthBootstrap.AuthProbeResult{
@@ -891,7 +1033,8 @@ defmodule ScratchBird.Connection do
          resolved_port: state.config[:port] || 0,
          admitted_methods: if(method_surface, do: [method_surface], else: []),
          required_method: if(method_surface, do: method_surface.wire_method, else: nil),
-         required_plugin_method_id: if(method_surface, do: method_surface.plugin_method_id, else: nil),
+         required_plugin_method_id:
+           if(method_surface, do: method_surface.plugin_method_id, else: nil),
          allowed_transport_mask: nil,
          additional_continuation_possible: true
        }}
@@ -945,7 +1088,12 @@ defmodule ScratchBird.Connection do
         @msg_ready ->
           {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
           state = apply_runtime_ready_state(state, status, txn_id)
-          state = %{state | resolved_auth_context: %{state.resolved_auth_context | attached: true}}
+
+          state = %{
+            state
+            | resolved_auth_context: %{state.resolved_auth_context | attached: true}
+          }
+
           state = apply_search_path(state)
           {:ok, state}
 
@@ -960,7 +1108,8 @@ defmodule ScratchBird.Connection do
 
   defp handle_auth_request(state, method, _data, scram) do
     case method do
-      0 -> {state, scram}
+      0 ->
+        {state, scram}
 
       1 ->
         password = state.config[:password] || ""
@@ -1050,7 +1199,9 @@ defmodule ScratchBird.Connection do
 
   defp apply_search_path(state) do
     schema = state.config[:search_path] || state.config[:schema]
-    if is_binary(schema) and String.trim(schema) != "" and String.downcase(schema) not in ["public", "users.public"] do
+
+    if is_binary(schema) and String.trim(schema) != "" and
+         String.downcase(schema) not in ["public", "users.public"] do
       case send_simple_query(state, "SET SEARCH_PATH TO " <> schema) do
         {:ok, _result, new_state} -> new_state
         {:error, _reason, new_state} -> new_state
@@ -1069,13 +1220,35 @@ defmodule ScratchBird.Connection do
       |> Enum.map(fn {param, oid} -> {param, oid} end)
       |> Enum.unzip()
 
-    state = send_message(state, Protocol.message_type(:parse), Protocol.build_parse_payload("", sql, param_types), 0)
+    state =
+      send_message(
+        state,
+        Protocol.message_type(:parse),
+        Protocol.build_parse_payload("", sql, param_types),
+        0
+      )
+
     case describe_statement(state) do
       {:ok, _count, state} ->
-        state = send_message(state, Protocol.message_type(:bind), Protocol.build_bind_payload("", "", param_values, [1]), 0)
+        state =
+          send_message(
+            state,
+            Protocol.message_type(:bind),
+            Protocol.build_bind_payload("", "", param_values, [1]),
+            0
+          )
+
         state = %{state | last_plan: nil, last_sblr: nil}
         sequence = state.sequence
-        state = send_message(state, Protocol.message_type(:execute), Protocol.build_execute_payload("", 0), 0)
+
+        state =
+          send_message(
+            state,
+            Protocol.message_type(:execute),
+            Protocol.build_execute_payload("", 0),
+            0
+          )
+
         state = %{state | last_query_sequence: sequence}
         state = send_message(state, Protocol.message_type(:sync), <<>>, 0)
         collect_results(state, [])
@@ -1086,7 +1259,14 @@ defmodule ScratchBird.Connection do
   end
 
   defp describe_statement(state) do
-    state = send_message(state, Protocol.message_type(:describe), Protocol.build_describe_payload(?S, ""), 0)
+    state =
+      send_message(
+        state,
+        Protocol.message_type(:describe),
+        Protocol.build_describe_payload(?S, ""),
+        0
+      )
+
     state = send_message(state, Protocol.message_type(:sync), <<>>, 0)
     describe_loop(state, -1)
   end
@@ -1095,22 +1275,29 @@ defmodule ScratchBird.Connection do
     case recv_message(state) do
       {:ok, msg} ->
         case handle_async(state, msg) do
-          {:handled, new_state} -> describe_loop(new_state, param_count)
+          {:handled, new_state} ->
+            describe_loop(new_state, param_count)
+
           {:ok, new_state} ->
             case msg.type do
               @msg_parameter_description ->
                 count = length(Protocol.parse_parameter_description(msg.payload))
                 describe_loop(new_state, count)
+
               @msg_ready ->
                 {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
                 {:ok, param_count, apply_runtime_ready_state(new_state, status, txn_id)}
+
               @msg_error ->
                 {:error, Protocol.parse_error(msg.payload), new_state}
+
               _ ->
                 describe_loop(new_state, param_count)
             end
         end
-      error -> error
+
+      error ->
+        error
     end
   end
 
@@ -1179,6 +1366,7 @@ defmodule ScratchBird.Connection do
 
   defp update_parameter_status(state, name, value) do
     state = %{state | params: Map.put(state.params, name, value)}
+
     state =
       if name == "attachment_id" do
         case parse_uuid_bytes(value) do
@@ -1188,6 +1376,7 @@ defmodule ScratchBird.Connection do
       else
         state
       end
+
     if name == "current_txn_id" do
       case Integer.parse(value) do
         {txn_id, _} -> apply_runtime_txn_id(state, txn_id)
@@ -1200,6 +1389,7 @@ defmodule ScratchBird.Connection do
 
   defp apply_runtime_txn_id(state, txn_id) do
     txn_id = normalize_runtime_txn_id(txn_id)
+
     if txn_id > 0 do
       %{state | txn_id: txn_id, runtime_txn_active: true, runtime_boundary_seen: true}
     else
@@ -1209,6 +1399,7 @@ defmodule ScratchBird.Connection do
 
   defp apply_runtime_ready_state(state, status, txn_id) do
     txn_id = normalize_runtime_txn_id(txn_id)
+
     if normalize_runtime_status(status) != 0 do
       # READY is authoritative for native session activity. The engine can
       # reopen a fresh MGA boundary while the public wire header still reports
@@ -1221,6 +1412,7 @@ defmodule ScratchBird.Connection do
 
   defp apply_runtime_txn_status(state, status, txn_id) do
     txn_id = normalize_runtime_txn_id(txn_id)
+
     if normalize_runtime_status(status) in [?T, ?t] do
       %{state | txn_id: txn_id, runtime_txn_active: true, runtime_boundary_seen: true}
     else
@@ -1245,7 +1437,9 @@ defmodule ScratchBird.Connection do
 
   defp compatible_default_fresh_boundary?(opts) do
     isolation = Map.get(opts, :isolation_level, Protocol.isolation(:read_committed))
-    read_committed_mode = Map.get(opts, :read_committed_mode, Protocol.read_committed_mode(:default))
+
+    read_committed_mode =
+      Map.get(opts, :read_committed_mode, Protocol.read_committed_mode(:default))
 
     Map.get(opts, :conflict_action, 0) == 0 &&
       Map.get(opts, :autocommit_mode, 0) == 0 &&
@@ -1258,18 +1452,22 @@ defmodule ScratchBird.Connection do
   end
 
   defp normalize_runtime_txn_id(txn_id) when is_integer(txn_id), do: txn_id
+
   defp normalize_runtime_txn_id(txn_id) when is_binary(txn_id) do
     case Integer.parse(txn_id) do
       {value, _} -> value
       _ -> 0
     end
   end
+
   defp normalize_runtime_txn_id(_txn_id), do: 0
 
   defp normalize_runtime_status(status) when is_integer(status), do: status
+
   defp normalize_runtime_status(status) when is_binary(status) and byte_size(status) > 0 do
     :binary.first(status)
   end
+
   defp normalize_runtime_status(_status), do: 0
 
   defp parse_uuid_bytes(value) do
@@ -1277,6 +1475,7 @@ defmodule ScratchBird.Connection do
       value
       |> String.replace("-", "")
       |> String.trim()
+
     if String.match?(hex, ~r/^[0-9A-Fa-f]{32}$/) do
       Base.decode16(hex, case: :mixed)
     else
@@ -1288,24 +1487,31 @@ defmodule ScratchBird.Connection do
     case recv_message(state) do
       {:ok, msg} ->
         case handle_async(state, msg) do
-          {:handled, new_state} -> drain_until_ready(new_state)
+          {:handled, new_state} ->
+            drain_until_ready(new_state)
+
           {:ok, new_state} ->
             case msg.type do
               @msg_ready ->
                 {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
                 {:ok, apply_runtime_ready_state(new_state, status, txn_id)}
+
               @msg_error ->
                 {:error, Protocol.parse_error(msg.payload), new_state}
+
               _ ->
                 drain_until_ready(new_state)
             end
         end
-      error -> error
+
+      error ->
+        error
     end
   end
 
   defp start_resilience(state) do
     connection_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+
     %{
       state
       | connection_id: connection_id,
@@ -1320,11 +1526,13 @@ defmodule ScratchBird.Connection do
     if state.leak_guard do
       LeakDetector.release(state.leak_guard)
     end
+
     state
   end
 
   defp validate_if_idle(state) do
     tracker = state.keepalive_tracker
+
     if tracker && Keepalive.Tracker.needs_validation?(tracker) do
       case ping(state) do
         {:ok, new_state} ->
@@ -1343,6 +1551,7 @@ defmodule ScratchBird.Connection do
     cb = state.circuit_breaker || CircuitBreaker.new()
     {allowed, cb} = CircuitBreaker.allow_request?(cb)
     state = %{state | circuit_breaker: cb}
+
     if not allowed do
       {:error, "Circuit breaker is OPEN", state}
     else
@@ -1353,9 +1562,14 @@ defmodule ScratchBird.Connection do
         {:ok, new_state} ->
           telemetry = new_state.telemetry || Telemetry.Collector.new()
           {span, telemetry} = Telemetry.Collector.start_span(telemetry, operation)
+
           span =
             if span && sql do
-              Telemetry.SpanContext.with_attribute(span, "db.statement", Telemetry.Collector.sanitize_query(sql))
+              Telemetry.SpanContext.with_attribute(
+                span,
+                "db.statement",
+                Telemetry.Collector.sanitize_query(sql)
+              )
             else
               span
             end
@@ -1398,7 +1612,9 @@ defmodule ScratchBird.Connection do
     case recv_message(state) do
       {:ok, msg} ->
         case handle_async(state, msg) do
-          {:handled, new_state} -> collect_results(new_state, rows)
+          {:handled, new_state} ->
+            collect_results(new_state, rows)
+
           {:ok, new_state} ->
             case msg.type do
               @msg_row_description ->
@@ -1414,7 +1630,9 @@ defmodule ScratchBird.Connection do
 
               @msg_ready ->
                 {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
-                {:ok, %{rows: Enum.reverse(rows), columns: []}, apply_runtime_ready_state(new_state, status, txn_id)}
+
+                {:ok, %{rows: Enum.reverse(rows), columns: []},
+                 apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
                 {:error, Protocol.parse_error(msg.payload), new_state}
@@ -1423,7 +1641,9 @@ defmodule ScratchBird.Connection do
                 collect_results(new_state, rows)
             end
         end
-      error -> error
+
+      error ->
+        error
     end
   end
 
@@ -1431,7 +1651,9 @@ defmodule ScratchBird.Connection do
     case recv_message(state) do
       {:ok, msg} ->
         case handle_async(state, msg) do
-          {:handled, new_state} -> collect_rows(new_state, columns, rows)
+          {:handled, new_state} ->
+            collect_rows(new_state, columns, rows)
+
           {:ok, new_state} ->
             case msg.type do
               @msg_data_row ->
@@ -1444,7 +1666,9 @@ defmodule ScratchBird.Connection do
 
               @msg_ready ->
                 {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
-                {:ok, %{rows: Enum.reverse(rows), columns: columns}, apply_runtime_ready_state(new_state, status, txn_id)}
+
+                {:ok, %{rows: Enum.reverse(rows), columns: columns},
+                 apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
                 {:error, Protocol.parse_error(msg.payload), new_state}
@@ -1454,7 +1678,8 @@ defmodule ScratchBird.Connection do
             end
         end
 
-      error -> error
+      error ->
+        error
     end
   end
 
@@ -1485,8 +1710,15 @@ defmodule ScratchBird.Connection do
 
   defp requested_features(config) do
     features = 0
-    features = if config[:compression] == "zstd", do: features ||| Protocol.feature(:compression), else: features
-    features = if config[:binary_transfer], do: features ||| Protocol.feature(:streaming), else: features
+
+    features =
+      if config[:compression] == "zstd",
+        do: features ||| Protocol.feature(:compression),
+        else: features
+
+    features =
+      if config[:binary_transfer], do: features ||| Protocol.feature(:streaming), else: features
+
     features
   end
 
@@ -1499,6 +1731,7 @@ defmodule ScratchBird.Connection do
       attachment_id: state.attachment_id,
       txn_id: state.txn_id
     }
+
     data = Protocol.encode_message(header, payload)
     _ = send_raw(state, data)
     %{state | sequence: state.sequence + 1}
@@ -1508,6 +1741,7 @@ defmodule ScratchBird.Connection do
     case state.transport do
       :ssl -> :ssl.send(state.socket, data)
       :tcp -> :gen_tcp.send(state.socket, data)
+      :ipc -> :gen_tcp.send(state.socket, data)
     end
   end
 
@@ -1525,6 +1759,7 @@ defmodule ScratchBird.Connection do
     case state.transport do
       :ssl -> :ssl.recv(state.socket, bytes)
       :tcp -> :gen_tcp.recv(state.socket, bytes)
+      :ipc -> :gen_tcp.recv(state.socket, bytes)
     end
   end
 end

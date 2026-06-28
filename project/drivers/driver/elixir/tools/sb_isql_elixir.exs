@@ -50,6 +50,7 @@ defmodule SBIsqlElixir do
     --sslrootcert
     --sslcert
     --sslkey
+    --ipc-path
     --route
     --parser-mode
     --page-size
@@ -120,6 +121,8 @@ defmodule SBIsqlElixir do
 
     started = monotonic_ns()
     expected_refusals = load_expected_refusals(Map.get(args, "--expected-refusals", ""))
+    route = required!(args, "--route")
+    sslmode = effective_sslmode(route, Map.get(args, "--sslmode", "require"))
 
     state = %{
       timings: %{},
@@ -148,12 +151,13 @@ defmodule SBIsqlElixir do
           user: required!(args, "--user"),
           password: required!(args, "--password"),
           role: Map.get(args, "--role", ""),
-          sslmode: Map.get(args, "--sslmode", "require"),
+          sslmode: sslmode,
           sslrootcert: Map.get(args, "--sslrootcert", ""),
           sslcert: Map.get(args, "--sslcert", ""),
           sslkey: Map.get(args, "--sslkey", ""),
+          ipc_path: if(route == "ipc_local", do: required!(args, "--ipc-path"), else: ""),
           front_door_mode:
-            if(required!(args, "--route") == "manager-listener-parser",
+            if(route == "manager-listener-parser",
               do: "manager_proxy",
               else: "direct"
             ),
@@ -174,7 +178,7 @@ defmodule SBIsqlElixir do
             append_jsonl(required!(args, "--transcript"), %{
               event: "connect",
               driver: "elixir",
-              route: required!(args, "--route"),
+              route: route,
               parser_mode: required!(args, "--parser-mode"),
               page_size: required!(args, "--page-size")
             })
@@ -237,6 +241,7 @@ defmodule SBIsqlElixir do
         true ->
           run_statements(state, args, paths, expected_refusals)
       end
+
     state =
       if state.failures == [] do
         metadata_started = monotonic_ns()
@@ -277,21 +282,34 @@ defmodule SBIsqlElixir do
 
     elapsed = monotonic_ns() - started
     timings = Map.put(state.timings, "overall", elapsed)
-    sslmode = Map.get(args, "--sslmode", "require")
     process_metrics = current_process_metrics()
 
     summary = %{
       run_id: Map.get(args, "--run-id", "manual"),
       driver_name: "elixir",
-      route: required!(args, "--route"),
+      route: route,
       parser_mode: required!(args, "--parser-mode"),
       page_size: required!(args, "--page-size"),
       namespace: required!(args, "--namespace"),
       sslmode: sslmode,
-      transport_mode: transport_mode_for_route(required!(args, "--route"), sslmode),
-      language_resource_pack: Map.get(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
-      language_resource_identity: Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
-      language_resource_hash: Map.get(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+      transport_mode: transport_mode_for_route(route, sslmode),
+      transport_endpoint_kind: endpoint_kind_for_route(route),
+      driver_transport_implementation: transport_implementation_for_route(route),
+      cpp_library_boundary: "none",
+      language_resource_pack:
+        Map.get(
+          args,
+          "--language-resource-pack",
+          "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+        ),
+      language_resource_identity:
+        Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+      language_resource_hash:
+        Map.get(
+          args,
+          "--language-resource-hash",
+          "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"
+        ),
       language_resource_authority: "shared_server_parser_resource_pack",
       language_profile: Map.get(args, "--language-profile", "en-US"),
       syntax_profile: Map.get(args, "--syntax-profile", "sbsql.v3"),
@@ -310,11 +328,13 @@ defmodule SBIsqlElixir do
     write_text(required!(args, "--metrics"), SBIsqlElixir.Json.encode(timings) <> "\n")
     write_text(paths.timing, SBIsqlElixir.Json.encode(timings) <> "\n")
     write_text(paths.digests, SBIsqlElixir.Json.encode(Enum.reverse(state.digests)) <> "\n")
+
     append_jsonl(paths.process, %{
       role: "client",
       rss_kb: process_metrics.client.last_rss_kb,
       vsize_kb: process_metrics.client.last_vsize_kb
     })
+
     write_text(paths.refusals, SBIsqlElixir.Json.encode(Enum.reverse(state.refusals)) <> "\n")
     write_text(paths.api, SBIsqlElixir.Json.encode(state.api) <> "\n")
 
@@ -377,7 +397,9 @@ defmodule SBIsqlElixir do
             }
 
             if expected_refusal do
-              state = add_failure(state, statement_id, "statement succeeded but was expected to refuse")
+              state =
+                add_failure(state, statement_id, "statement succeeded but was expected to refuse")
+
               {state, "unexpected_success", length(rows), digest, nil,
                "statement succeeded but was expected to refuse"}
             else
@@ -394,6 +416,7 @@ defmodule SBIsqlElixir do
             })
 
             append_text(required!(args, "--error"), "#{statement_id}: #{message}\n")
+
             state =
               if expected_refusal do
                 %{
@@ -436,9 +459,20 @@ defmodule SBIsqlElixir do
         elapsed_ns: elapsed,
         server_revalidation_state: "required",
         language_profile: Map.get(args, "--language-profile", "en-US"),
-        language_resource_pack: Map.get(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
-        language_resource_identity: Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
-        language_resource_hash: Map.get(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+        language_resource_pack:
+          Map.get(
+            args,
+            "--language-resource-pack",
+            "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+          ),
+        language_resource_identity:
+          Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+        language_resource_hash:
+          Map.get(
+            args,
+            "--language-resource-hash",
+            "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"
+          ),
         syntax_profile: Map.get(args, "--syntax-profile", "sbsql.v3"),
         topology_profile: Map.get(args, "--topology-profile", "topology.sbsql.canonical.v1"),
         standard_english_fallback: flag_enabled?(args, "--standard-english-fallback", true),
@@ -515,7 +549,10 @@ defmodule SBIsqlElixir do
     if String.starts_with?(value, "--") do
       parse_args([value | rest], Map.put(args, "--stop-on-error", "true"))
     else
-      parse_args(rest, Map.put(args, "--stop-on-error", parse_bool_value!("--stop-on-error", value)))
+      parse_args(
+        rest,
+        Map.put(args, "--stop-on-error", parse_bool_value!("--stop-on-error", value))
+      )
     end
   end
 
@@ -526,7 +563,10 @@ defmodule SBIsqlElixir do
     if String.starts_with?(value, "--") do
       parse_args([value | rest], Map.put(args, "--create-database", "true"))
     else
-      parse_args(rest, Map.put(args, "--create-database", parse_bool_value!("--create-database", value)))
+      parse_args(
+        rest,
+        Map.put(args, "--create-database", parse_bool_value!("--create-database", value))
+      )
     end
   end
 
@@ -537,7 +577,14 @@ defmodule SBIsqlElixir do
     if String.starts_with?(value, "--") do
       parse_args([value | rest], Map.put(args, "--standard-english-fallback", "true"))
     else
-      parse_args(rest, Map.put(args, "--standard-english-fallback", parse_bool_value!("--standard-english-fallback", value)))
+      parse_args(
+        rest,
+        Map.put(
+          args,
+          "--standard-english-fallback",
+          parse_bool_value!("--standard-english-fallback", value)
+        )
+      )
     end
   end
 
@@ -566,8 +613,13 @@ defmodule SBIsqlElixir do
     unless required!(args, "--page-size") in @page_sizes,
       do: raise("unsupported page size: #{required!(args, "--page-size")}")
 
-    unless required!(args, "--route") in @routes,
-      do: raise("unsupported route: #{required!(args, "--route")}")
+    route = required!(args, "--route")
+
+    unless route in @routes,
+      do: raise("unsupported route: #{route}")
+
+    if route == "ipc_local" and String.trim(Map.get(args, "--ipc-path", "")) == "",
+      do: raise("ipc_local route requires --ipc-path")
 
     unless required!(args, "--parser-mode") in @parser_modes,
       do: raise("unsupported parser mode: #{required!(args, "--parser-mode")}")
@@ -637,6 +689,7 @@ defmodule SBIsqlElixir do
   end
 
   defp take_line(<<>>, acc), do: {IO.iodata_to_binary(Enum.reverse(acc)), <<>>}
+
   defp take_line(<<"\n", _::binary>> = rest, acc),
     do: {IO.iodata_to_binary(Enum.reverse(acc)), rest}
 
@@ -706,6 +759,21 @@ defmodule SBIsqlElixir do
   defp transport_mode_for_route(_route, "disable"), do: "tls_disabled"
   defp transport_mode_for_route(_route, _sslmode), do: "tls_required"
 
+  defp effective_sslmode("ipc_local", _sslmode), do: "disable"
+  defp effective_sslmode(_route, sslmode), do: sslmode
+
+  defp endpoint_kind_for_route("embedded"), do: "none"
+  defp endpoint_kind_for_route("ipc_local"), do: "unix_domain_socket"
+  defp endpoint_kind_for_route(_route), do: "tcp"
+
+  defp transport_implementation_for_route("embedded"),
+    do: "unsupported_no_cpp_library_boundary"
+
+  defp transport_implementation_for_route("ipc_local"),
+    do: "native_elixir_unix_socket"
+
+  defp transport_implementation_for_route(_route), do: "native_elixir_tcp"
+
   defp parse_bool_value!(key, value) do
     case String.downcase(value) do
       "true" -> "true"
@@ -714,7 +782,8 @@ defmodule SBIsqlElixir do
     end
   end
 
-  defp flag_enabled?(args, key, default \\ false), do: Map.get(args, key, if(default, do: "true", else: "false")) == "true"
+  defp flag_enabled?(args, key, default \\ false),
+    do: Map.get(args, key, if(default, do: "true", else: "false")) == "true"
 
   defp load_expected_refusals(""), do: MapSet.new()
   defp load_expected_refusals(nil), do: MapSet.new()

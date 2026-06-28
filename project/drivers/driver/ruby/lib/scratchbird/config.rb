@@ -11,6 +11,7 @@ require "uri"
 module Scratchbird
   class Config
     attr_accessor :host, :port, :database, :user, :password, :sslmode,
+                  :transport, :ipc_path,
                   :schema, :role, :sslrootcert, :sslcert, :sslkey, :sslpassword,
                   :connect_timeout_ms, :socket_timeout_ms, :application_name, :protocol,
                   :binary_transfer, :compression, :front_door_mode, :manager_auth_token,
@@ -25,6 +26,8 @@ module Scratchbird
     def initialize
       @host = "localhost"
       @port = 3092
+      @transport = "inet"
+      @ipc_path = ""
       @database = ""
       @user = ""
       @password = ""
@@ -124,12 +127,33 @@ module Scratchbird
       raise ArgumentError, "front_door_mode must be direct or manager_proxy."
     end
 
+    def self.normalize_transport(value)
+      normalized = value.to_s.strip.downcase
+      return "inet" if normalized.empty? || %w[inet tcp network].include?(normalized)
+      return "ipc" if %w[ipc ipc_local local_ipc unix unix_socket uds].include?(normalized)
+      return "embedded" if normalized == "embedded"
+      raise ArgumentError, "transport must be inet, ipc, or embedded."
+    end
+
+    def self.transport_for_route(value)
+      normalized = value.to_s.strip.downcase
+      return "ipc" if normalized == "ipc_local"
+      return "embedded" if normalized == "embedded"
+      "inet"
+    end
+
     def self.apply_param(cfg, key, value)
       case key.to_s.downcase
       when "host", "server", "data source", "datasource"
         cfg.host = value
       when "port"
         cfg.port = value.to_i
+      when "transport", "transport_mode", "transportmode"
+        cfg.transport = normalize_transport(value)
+      when "route"
+        cfg.transport = transport_for_route(value)
+      when "ipc_path", "ipcpath", "ipc-path"
+        cfg.ipc_path = value
       when "front_door_mode", "frontdoormode", "connection_mode", "ingress_mode"
         cfg.front_door_mode = normalize_front_door_mode(value)
       when "database", "dbname", "initial catalog"

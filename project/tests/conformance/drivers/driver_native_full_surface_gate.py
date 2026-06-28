@@ -68,6 +68,25 @@ ROUTE_TRANSPORT_MODES = {
 }
 
 
+def capability_for(tool_matrix: dict[str, Any], driver: str) -> dict[str, Any]:
+    caps = tool_matrix.get("transport_capability_by_driver", {})
+    if isinstance(caps, dict):
+        item = caps.get(driver, {})
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def route_supported_for_driver(route: str, caps: dict[str, Any]) -> bool:
+    if route in NETWORK_ROUTES:
+        return caps.get("inet_required") is True
+    if route == "ipc_local":
+        return caps.get("native_ipc_supported") is True
+    if route == "embedded":
+        return caps.get("embedded_supported") is True
+    return False
+
+
 def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[4]
 
@@ -102,6 +121,7 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         "--sslrootcert",
         "--sslcert",
         "--sslkey",
+        "--ipc-path",
         "--route",
         "--parser-mode",
         "--page-size",
@@ -225,6 +245,10 @@ def validate_tool_matrix(
         errors.append("tool_matrix:schema_version_must_be_1")
     tools = [item for item in as_list(doc.get("driver_tools")) if isinstance(item, dict)]
     by_driver = {str(item.get("driver", "")): item for item in tools}
+    capability_map = doc.get("transport_capability_by_driver", {})
+    if not isinstance(capability_map, dict):
+        errors.append("tool_matrix:missing_transport_capability_by_driver")
+        capability_map = {}
     if len(by_driver) != len(tools):
         errors.append("tool_matrix:duplicate_driver_entries")
     forbidden_tokens = [str(token) for token in as_list(doc.get("forbidden_tokens"))]
@@ -241,6 +265,14 @@ def validate_tool_matrix(
         if tool is None:
             errors.append(f"tool_matrix:{name}:missing_tool_matrix_entry")
             continue
+        caps = capability_for(doc, name)
+        if release_bucket in RELEASE_BUCKETS_REQUIRING_NATIVE_TOOL and driver_status not in PLANNED_NOT_IMPLEMENTED_STATUSES:
+            if caps.get("inet_required") is not True:
+                errors.append(f"tool_matrix:{name}:inet_support_must_be_required")
+            if caps.get("embedded_supported") is True:
+                boundary = str(caps.get("embedded_boundary", ""))
+                if "cpp" not in boundary.lower() and "c++" not in boundary.lower():
+                    errors.append(f"tool_matrix:{name}:embedded_requires_cpp_library_boundary")
         path_text = str(tool.get("path", ""))
         if not path_text:
             errors.append(f"tool_matrix:{name}:missing_path")
@@ -291,6 +323,11 @@ def validate_artifacts(
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         language = {}
         errors.append(f"artifact_schema:language_contract_load_failed:{exc}")
+    try:
+        tool_matrix = load_json(repo_root / TOOL_MATRIX_REL)
+    except (OSError, json.JSONDecodeError) as exc:
+        tool_matrix = {}
+        errors.append(f"artifact_schema:tool_matrix_load_failed:{exc}")
     if not artifact_root.exists():
         return [f"artifact_schema:missing_artifact_root:{artifact_root}"]
     required = [str(name) for name in as_list(gate_input.get("required_artifacts"))]
@@ -380,6 +417,21 @@ def validate_artifacts(
         if not sslmodes:
             errors.append(f"artifact_schema:{summary_path}:missing_sslmode")
         route = str(summary.get("route") or "")
+        caps = capability_for(tool_matrix, driver_name)
+        if not route_supported_for_driver(route, caps):
+            errors.append(
+                f"artifact_schema:{summary_path}:route_not_supported_for_driver:"
+                f"driver={driver_name}:route={route}"
+            )
+        endpoint_kind = str(summary.get("transport_endpoint_kind") or "")
+        implementation = str(summary.get("driver_transport_implementation") or "")
+        cpp_boundary = str(summary.get("cpp_library_boundary") or "")
+        if not endpoint_kind:
+            errors.append(f"artifact_schema:{summary_path}:missing_transport_endpoint_kind")
+        if not implementation:
+            errors.append(f"artifact_schema:{summary_path}:missing_driver_transport_implementation")
+        if not cpp_boundary:
+            errors.append(f"artifact_schema:{summary_path}:missing_cpp_library_boundary")
         unknown_transport_modes = sorted(transport_modes - ALLOWED_TRANSPORT_MODES)
         if unknown_transport_modes:
             errors.append(
@@ -393,6 +445,24 @@ def validate_artifacts(
                 f"artifact_schema:{summary_path}:transport_mode_route_mismatch:"
                 f"route={route}:transport={','.join(sorted(transport_modes))}"
             )
+        if route == "ipc_local" and endpoint_kind not in {"unix_domain_socket", "windows_named_pipe"}:
+            errors.append(
+                f"artifact_schema:{summary_path}:ipc_local_requires_native_ipc_endpoint:{endpoint_kind}"
+            )
+        if route in NETWORK_ROUTES and endpoint_kind != "tcp":
+            errors.append(
+                f"artifact_schema:{summary_path}:network_route_requires_tcp_endpoint:{endpoint_kind}"
+            )
+        if route == "embedded" and endpoint_kind != "embedded_bridge":
+            errors.append(
+                f"artifact_schema:{summary_path}:embedded_route_requires_embedded_bridge:{endpoint_kind}"
+            )
+        if route == "embedded" and caps.get("embedded_supported") is True:
+            boundary = str(caps.get("embedded_boundary", ""))
+            if "cpp" not in boundary.lower() and "c++" not in boundary.lower():
+                errors.append(
+                    f"artifact_schema:{summary_path}:embedded_route_requires_cpp_library_boundary:{boundary}"
+                )
         unknown_sslmodes = sorted(sslmodes - ALLOWED_SSLMODES)
         if unknown_sslmodes:
             errors.append(f"artifact_schema:{summary_path}:unknown_sslmodes:{','.join(unknown_sslmodes)}")
@@ -476,6 +546,9 @@ def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dic
         "syntax_profile": "sbsql.v3",
         "topology_profile": "topology.sbsql.canonical.v1",
         "transport_mode": "tls_required",
+        "transport_endpoint_kind": "tcp",
+        "driver_transport_implementation": "native_cpp_tcp",
+        "cpp_library_boundary": "native_cpp_driver",
     }
     command_event = {
         "actual_outcome": "success",

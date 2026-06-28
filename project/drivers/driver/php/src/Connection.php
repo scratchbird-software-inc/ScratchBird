@@ -1077,6 +1077,17 @@ final class Connection
         if ($requireManagerToken && $this->config->frontDoorMode === 'manager_proxy' && $this->config->managerAuthToken === '') {
             throw new ScratchBirdConnectionException('manager_proxy mode requires manager_auth_token', '08001');
         }
+        $transport = $this->normalizeTransport($this->config->transport ?? 'inet');
+        if ($transport === 'embedded') {
+            throw new ScratchBirdNotSupportedException(
+                'embedded transport is not supported by the PHP driver; no ScratchBird C++ library boundary is exposed.',
+                '0A000'
+            );
+        }
+        if ($transport === 'ipc') {
+            $this->connectIpcSocket();
+            return;
+        }
         $timeout = $this->config->connectTimeoutMs / 1000;
         $address = sprintf('tcp://%s:%d', $this->config->host, $this->config->port);
         $socket = @stream_socket_client($address, $errno, $errstr, $timeout);
@@ -1086,6 +1097,28 @@ final class Connection
         stream_set_blocking($socket, true);
         $this->socket = $socket;
         $this->applyTls();
+    }
+
+    private function connectIpcSocket(): void
+    {
+        if ($this->config->ipcPath === '') {
+            throw new ScratchBirdConnectionException('ipc_path is required for local IPC transport', '08001');
+        }
+        if (!in_array('unix', stream_get_transports(), true)) {
+            throw new ScratchBirdNotSupportedException(
+                'Unix-domain socket IPC transport is not supported by this PHP runtime',
+                '0A000'
+            );
+        }
+
+        $timeout = $this->config->connectTimeoutMs / 1000;
+        $address = 'unix://' . $this->config->ipcPath;
+        $socket = @stream_socket_client($address, $errno, $errstr, $timeout);
+        if ($socket === false) {
+            throw new ScratchBirdConnectionException($errstr ?: 'IPC connection failed', '08001');
+        }
+        stream_set_blocking($socket, true);
+        $this->socket = $socket;
     }
 
     private function resetResolvedAuthContext(): void
@@ -1127,6 +1160,21 @@ final class Connection
             return 'manager_proxy';
         }
         throw new ScratchBirdNotSupportedException('front_door_mode must be direct or manager_proxy.', '0A000');
+    }
+
+    private function normalizeTransport(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['', 'inet', 'tcp', 'network'], true)) {
+            return 'inet';
+        }
+        if (in_array($normalized, ['ipc', 'ipc_local', 'local_ipc', 'unix', 'unix_socket', 'uds'], true)) {
+            return 'ipc';
+        }
+        if ($normalized === 'embedded') {
+            return 'embedded';
+        }
+        throw new ScratchBirdNotSupportedException('transport must be inet, ipc, or embedded.', '0A000');
     }
 
     private function authMethodName(int $method): string

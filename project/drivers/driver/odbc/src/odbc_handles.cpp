@@ -3340,6 +3340,12 @@ SQLRETURN OdbcConnection::parseConnectionString(const std::string& conn_str) {
                 return SQL_ERROR;
             }
             params_.protocol = normalized;
+        } else if (key == "transport_mode" || key == "transport" || key == "mode") {
+            params_.transport_mode = value;
+        } else if (key == "ipc_method" || key == "ipcmethod") {
+            params_.ipc_method = value;
+        } else if (key == "ipc_path" || key == "ipcpath" || key == "socket_path" || key == "pipe_name") {
+            params_.ipc_path = value;
         } else if (key == "front_door_mode" || key == "frontdoormode" ||
                    key == "connection_mode" || key == "ingress_mode") {
             params_.front_door_mode = value;
@@ -3529,6 +3535,39 @@ SQLRETURN OdbcConnection::applyDsnConfig(const std::string& dsn_name) {
             return SQL_ERROR;
         }
         params_.protocol = normalized;
+    }
+
+    auto transport_mode = getEntry("transport_mode");
+    if (transport_mode.empty()) {
+        transport_mode = getEntry("transport");
+    }
+    if (transport_mode.empty()) {
+        transport_mode = getEntry("mode");
+    }
+    if (!transport_mode.empty()) {
+        params_.transport_mode = transport_mode;
+    }
+
+    auto ipc_method = getEntry("ipc_method");
+    if (ipc_method.empty()) {
+        ipc_method = getEntry("ipcmethod");
+    }
+    if (!ipc_method.empty()) {
+        params_.ipc_method = ipc_method;
+    }
+
+    auto ipc_path = getEntry("ipc_path");
+    if (ipc_path.empty()) {
+        ipc_path = getEntry("ipcpath");
+    }
+    if (ipc_path.empty()) {
+        ipc_path = getEntry("socket_path");
+    }
+    if (ipc_path.empty()) {
+        ipc_path = getEntry("pipe_name");
+    }
+    if (!ipc_path.empty()) {
+        params_.ipc_path = ipc_path;
     }
 
     auto front_door_mode = getEntry("front_door_mode");

@@ -19,12 +19,16 @@ SEXP C_sb_tls_connect(SEXP hostSEXP,
                       SEXP passwordSEXP,
                       SEXP connectTimeoutSEXP,
                       SEXP socketTimeoutSEXP);
+SEXP C_sb_ipc_connect(SEXP pathSEXP,
+                      SEXP connectTimeoutSEXP,
+                      SEXP socketTimeoutSEXP);
 SEXP C_sb_tls_write(SEXP extptr, SEXP payloadSEXP);
 SEXP C_sb_tls_read_exact(SEXP extptr, SEXP nSEXP);
 SEXP C_sb_tls_close(SEXP extptr);
 
 static const R_CallMethodDef callMethods[] = {
     {"C_sb_tls_connect",   (DL_FUNC) &C_sb_tls_connect,   9},
+    {"C_sb_ipc_connect",   (DL_FUNC) &C_sb_ipc_connect,   3},
     {"C_sb_tls_write",     (DL_FUNC) &C_sb_tls_write,     2},
     {"C_sb_tls_read_exact",(DL_FUNC) &C_sb_tls_read_exact,2},
     {"C_sb_tls_close",     (DL_FUNC) &C_sb_tls_close,     1},

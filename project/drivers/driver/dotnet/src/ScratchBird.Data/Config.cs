@@ -15,6 +15,9 @@ public sealed class ScratchBirdConfig
     public string Host { get; set; } = "localhost";
     public int Port { get; set; } = 3092;
     public string FrontDoorMode { get; set; } = "direct";
+    public string TransportMode { get; set; } = "inet_listener";
+    public string IpcMethod { get; set; } = "unix";
+    public string IpcPath { get; set; } = "";
     public string Protocol { get; set; } = "native";
     public string Database { get; set; } = "";
     public string Username { get; set; } = "";
@@ -204,6 +207,21 @@ internal static class DsnParser
             case "connection_mode":
             case "ingress_mode":
                 cfg.FrontDoorMode = ScratchBirdConfig.NormalizeFrontDoorMode(value);
+                break;
+            case "transport_mode":
+            case "transportmode":
+            case "transport":
+                cfg.TransportMode = value;
+                break;
+            case "ipc_method":
+            case "ipcmethod":
+                cfg.IpcMethod = value;
+                break;
+            case "ipc_path":
+            case "ipcpath":
+            case "socket_path":
+            case "pipe_name":
+                cfg.IpcPath = value;
                 break;
             case "database":
             case "dbname":

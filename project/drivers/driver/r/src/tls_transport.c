@@ -30,6 +30,7 @@ typedef SOCKET sb_socket_t;
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/time.h>
 #include <netinet/tcp.h>
 typedef int sb_socket_t;
@@ -255,6 +256,88 @@ static sb_socket_t sb_connect_tcp(const char* host, const char* port_str, int co
     return sock;
 }
 
+static SEXP sb_make_plain_connection(sb_socket_t sock) {
+    sb_tls_conn* conn = (sb_tls_conn*) Calloc(1, sb_tls_conn);
+    conn->sock = sock;
+    conn->ctx = NULL;
+    conn->ssl = NULL;
+    conn->closed = 0;
+
+    SEXP extptr = PROTECT(R_MakeExternalPtr(conn, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(extptr, sb_conn_finalizer, TRUE);
+    UNPROTECT(1);
+    return extptr;
+}
+
+static sb_socket_t sb_connect_ipc_socket(const char* path, int connect_timeout_ms, int socket_timeout_ms) {
+#ifdef _WIN32
+    (void) path;
+    (void) connect_timeout_ms;
+    (void) socket_timeout_ms;
+    Rf_error("Unix-domain socket IPC transport is not supported by this R runtime");
+    return SB_INVALID_SOCKET;
+#else
+    if (path == NULL || path[0] == '\0') {
+        Rf_error("ipc_path is required for local IPC transport");
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        Rf_error("ipc_path is too long for a Unix-domain socket");
+    }
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+    sb_socket_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == SB_INVALID_SOCKET) {
+        Rf_error("IPC socket create failed");
+    }
+
+    if (connect_timeout_ms > 0) {
+        if (sb_set_nonblocking(sock, 1) != 0) {
+            sb_close_socket(sock);
+            Rf_error("IPC socket nonblocking setup failed");
+        }
+    }
+
+    int rc = connect(sock, (const struct sockaddr*) &addr, (socklen_t) sizeof(addr));
+    if (rc != 0) {
+        int connected = 0;
+        if (connect_timeout_ms > 0 && errno == EINPROGRESS) {
+            fd_set write_set;
+            FD_ZERO(&write_set);
+            FD_SET(sock, &write_set);
+
+            struct timeval tv;
+            tv.tv_sec = connect_timeout_ms / 1000;
+            tv.tv_usec = (connect_timeout_ms % 1000) * 1000;
+
+            int sel = select(sock + 1, NULL, &write_set, NULL, &tv);
+            if (sel > 0 && FD_ISSET(sock, &write_set)) {
+                int so_error = 0;
+                socklen_t len = sizeof(so_error);
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+                connected = (so_error == 0);
+            }
+        }
+        if (!connected) {
+            sb_close_socket(sock);
+            Rf_error("IPC connection to %s failed", path);
+        }
+    }
+
+    if (connect_timeout_ms > 0) {
+        sb_set_nonblocking(sock, 0);
+    }
+    if (sb_set_socket_timeouts(sock, socket_timeout_ms) != 0) {
+        sb_close_socket(sock);
+        Rf_error("IPC socket timeout setup failed");
+    }
+    return sock;
+#endif
+}
+
 typedef struct {
     const char* password;
 } sb_pass_ctx;
@@ -295,6 +378,19 @@ static const char* sb_scalar_string(SEXP x) {
     return CHAR(asChar(x));
 }
 
+SEXP C_sb_ipc_connect(SEXP pathSEXP,
+                      SEXP connectTimeoutSEXP,
+                      SEXP socketTimeoutSEXP) {
+#ifdef _WIN32
+    sb_ensure_winsock();
+#endif
+    const char* path = sb_scalar_string(pathSEXP);
+    int connect_timeout_ms = asInteger(connectTimeoutSEXP);
+    int socket_timeout_ms = asInteger(socketTimeoutSEXP);
+    sb_socket_t sock = sb_connect_ipc_socket(path, connect_timeout_ms, socket_timeout_ms);
+    return sb_make_plain_connection(sock);
+}
+
 SEXP C_sb_tls_connect(SEXP hostSEXP,
                       SEXP portSEXP,
                       SEXP sslmodeSEXP,
@@ -329,16 +425,7 @@ SEXP C_sb_tls_connect(SEXP hostSEXP,
     sb_socket_t sock = sb_connect_tcp(host, port_str, connect_timeout_ms, socket_timeout_ms);
 
     if (strcmp(sslmode, "disable") == 0) {
-        sb_tls_conn* conn = (sb_tls_conn*) Calloc(1, sb_tls_conn);
-        conn->sock = sock;
-        conn->ctx = NULL;
-        conn->ssl = NULL;
-        conn->closed = 0;
-
-        SEXP extptr = PROTECT(R_MakeExternalPtr(conn, R_NilValue, R_NilValue));
-        R_RegisterCFinalizerEx(extptr, sb_conn_finalizer, TRUE);
-        UNPROTECT(1);
-        return extptr;
+        return sb_make_plain_connection(sock);
     }
 
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());

@@ -185,7 +185,11 @@ def connect_with_public_api(args: argparse.Namespace):
     if args.route == "manager-listener-parser":
         kwargs["front_door_mode"] = "manager"
     elif args.route == "ipc_local":
-        kwargs["front_door_mode"] = "local_ipc"
+        kwargs["front_door_mode"] = "direct"
+        kwargs["transport_mode"] = "local_ipc"
+        kwargs["ipc_method"] = "unix"
+        kwargs["ipc_path"] = args.ipc_path
+        kwargs["sslmode"] = "disable"
     elif args.route == "embedded":
         kwargs["front_door_mode"] = "embedded"
     else:
@@ -199,6 +203,22 @@ def transport_mode_for_route(route: str, sslmode: str) -> str:
     if route == "ipc_local":
         return "local_ipc_no_tls"
     return "tls_disabled" if sslmode == "disable" else "tls_required"
+
+
+def endpoint_kind_for_route(route: str) -> str:
+    if route == "ipc_local":
+        return "unix_domain_socket"
+    if route == "embedded":
+        return "embedded_bridge"
+    return "tcp"
+
+
+def transport_implementation_for_route(route: str) -> str:
+    if route == "embedded":
+        return "unsupported_no_cpp_library_boundary"
+    if route == "ipc_local":
+        return "native_python_unix_domain_socket"
+    return "native_python_tcp"
 
 
 def emit_metadata_snapshot(conn, path: Path, args: argparse.Namespace) -> None:
@@ -236,6 +256,11 @@ def run_script(args: argparse.Namespace) -> int:
         raise ValueError(f"unsupported page size: {args.page_size}")
     if args.route not in ROUTES:
         raise ValueError(f"unsupported route: {args.route}")
+    if args.route == "embedded":
+        raise ValueError(
+            "embedded transport is unsupported by the Python driver; "
+            "no ScratchBird C++ library boundary is exposed"
+        )
     if args.parser_mode not in PARSER_MODES:
         raise ValueError(f"unsupported parser mode: {args.parser_mode}")
 
@@ -472,6 +497,9 @@ def run_script(args: argparse.Namespace) -> int:
         "namespace": args.namespace,
         "sslmode": args.sslmode,
         "transport_mode": transport_mode,
+        "transport_endpoint_kind": endpoint_kind_for_route(args.route),
+        "driver_transport_implementation": transport_implementation_for_route(args.route),
+        "cpp_library_boundary": "none",
         "language_resource_pack": args.language_resource_pack,
         "language_resource_identity": args.language_resource_identity,
         "language_resource_hash": args.language_resource_hash,
@@ -542,6 +570,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sslrootcert")
     parser.add_argument("--sslcert")
     parser.add_argument("--sslkey")
+    parser.add_argument("--ipc-path", default=os.environ.get("SCRATCHBIRD_IPC_PATH", ""))
     parser.add_argument("--route", choices=sorted(ROUTES), default="listener-parser")
     parser.add_argument("--parser-mode", choices=sorted(PARSER_MODES), default="server-parser")
     parser.add_argument("--page-size", choices=sorted(PAGE_SIZES), default="8k")

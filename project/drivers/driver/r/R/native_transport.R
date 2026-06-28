@@ -7,6 +7,21 @@
 # SPDX-License-Identifier: MPL-2.0
 
 sb_tls_connect_native <- function(cfg) {
+  cfg$transport <- normalize_transport(cfg$transport)
+  if (identical(cfg$transport, "embedded")) {
+    stop("embedded transport is not supported by the R driver; no ScratchBird C++ library boundary is exposed")
+  }
+  if (identical(cfg$transport, "ipc")) {
+    ipc_path <- if (is.null(cfg$ipc_path)) "" else as.character(cfg$ipc_path)
+    if (!nzchar(ipc_path)) stop("ipc_path is required for local IPC transport")
+    return(.Call(
+      C_sb_ipc_connect,
+      ipc_path,
+      as.integer(cfg$connect_timeout_ms),
+      as.integer(cfg$socket_timeout_ms)
+    ))
+  }
+
   root_cert <- if (is.null(cfg$sslrootcert)) "" else as.character(cfg$sslrootcert)
   cert_file <- if (is.null(cfg$sslcert)) "" else as.character(cfg$sslcert)
   key_file <- if (is.null(cfg$sslkey)) "" else as.character(cfg$sslkey)
