@@ -287,6 +287,14 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     }
     return !predicate.canonical_predicate_envelope.empty();
   }
+  if (predicate.predicate_kind == "column_is_not_null") {
+    if (predicate.canonical_predicate_envelope.empty()) return false;
+    for (const auto& [field, value] : row.values) {
+      if (field != predicate.canonical_predicate_envelope) continue;
+      return value != "<NULL>";
+    }
+    return false;
+  }
   if (predicate.predicate_kind == "column_equals_column_or_left_null") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
     if (columns.size() != 2) return false;

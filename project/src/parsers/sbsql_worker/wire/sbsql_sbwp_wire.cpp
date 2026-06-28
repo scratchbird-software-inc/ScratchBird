@@ -553,8 +553,20 @@ void WriteParserPhaseTrace(std::string_view event,
   std::lock_guard<std::mutex> guard(trace_mutex);
   std::ofstream out(trace_path, std::ios::app);
   if (!out) return;
+  const char* run_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_RUN_ID");
+  const char* script_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_SCRIPT_ID");
+  const char* statement_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_STATEMENT_ID");
+  const char* element_id = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_ELEMENT_ID");
+  const char* command_group = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_COMMAND_GROUP");
+  const char* execution_mode = std::getenv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE");
   out << "{\"event\":\"" << ParserPhaseJsonEscape(event)
       << "\",\"phase\":\"" << ParserPhaseJsonEscape(phase)
+      << "\",\"run_id\":\"" << ParserPhaseJsonEscape(run_id ? run_id : "")
+      << "\",\"script_id\":\"" << ParserPhaseJsonEscape(script_id ? script_id : "")
+      << "\",\"statement_id\":\"" << ParserPhaseJsonEscape(statement_id ? statement_id : "")
+      << "\",\"element_id\":\"" << ParserPhaseJsonEscape(element_id ? element_id : "")
+      << "\",\"command_group\":\"" << ParserPhaseJsonEscape(command_group ? command_group : "")
+      << "\",\"execution_mode\":\"" << ParserPhaseJsonEscape(execution_mode ? execution_mode : "")
       << "\",\"elapsed_us\":"
       << (static_cast<double>(elapsed_ns) / 1000.0)
       << ",\"bytes\":" << static_cast<unsigned long long>(bytes)
@@ -5777,7 +5789,7 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
   };
 
   for (const auto& statement : statements) {
-    if (!autocommit_emulation && !summarize_script_results) {
+    if (!autocommit_emulation) {
       auto rowset = AnalyzeSimpleLiteralInsertRowset(statement, true);
       if (rowset.has_value()) {
         if (!pending.active) {

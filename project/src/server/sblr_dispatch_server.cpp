@@ -43,6 +43,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace scratchbird::server {
 
@@ -1724,10 +1725,19 @@ bool MutatesPublicNameResolutionAuthority(std::string_view operation_id) {
          operation_id.starts_with("session.set_group");
 }
 
+void ClearDispatchSchemaParentPathCache();
+
 void ClearStablePublicRelationNameCacheForMutation(ServerSessionRegistry* registry,
                                                    std::string_view operation_id) {
   if (registry == nullptr) return;
   if (!MutatesPublicNameResolutionAuthority(operation_id)) return;
+  if (operation_id != "ddl.create_table" &&
+      operation_id != "ddl.create_view" &&
+      operation_id != "ddl.create_index" &&
+      operation_id != "ddl.create_index_template" &&
+      operation_id != "ddl.create_statistics") {
+    ClearDispatchSchemaParentPathCache();
+  }
   if (PreservesStablePublicRelationNameCache(operation_id)) return;
   if (PreservesQualifiedStablePublicRelationNameCache(operation_id)) {
     for (auto it = registry->stable_public_name_resolution_cache_by_key.begin();
@@ -2496,11 +2506,47 @@ engine_api::EngineIdentifierAtom DispatchIdentifierAtom(
   return atom;
 }
 
+std::unordered_map<std::string, std::string>& DispatchSchemaParentPathCache() {
+  thread_local std::unordered_map<std::string, std::string> cache;
+  return cache;
+}
+
+void ClearDispatchSchemaParentPathCache() {
+  DispatchSchemaParentPathCache().clear();
+}
+
+std::string DispatchSchemaParentPathCacheKey(const ServerSessionRecord& session,
+                                             std::string_view schema_parent_path) {
+  std::ostringstream key;
+  key << "schema_parent_path_v1"
+      << "|db=" << session.database_uuid
+      << "|user=" << UuidBytesToText(session.effective_user_uuid)
+      << "|role=" << UuidBytesToText(session.active_role_uuid)
+      << "|security=" << session.security_epoch
+      << "|grant=" << session.grant_epoch
+      << "|policy=" << session.policy_generation
+      << "|role_hash=" << session.role_set_hash
+      << "|group_hash=" << session.group_set_hash
+      << "|search_path_hash=" << session.search_path_hash
+      << "|language_profile=" << session.language_profile
+      << "|language_tag=" << session.language_tag
+      << "|input_syntax=" << session.input_syntax_profile
+      << "|path=" << schema_parent_path;
+  return key.str();
+}
+
 std::string ResolveSchemaParentPathForDispatch(
     const ServerSessionRecord& session,
     std::string_view schema_parent_path) {
   const auto parts = SplitDispatchIdentifierPath(schema_parent_path);
   if (parts.empty()) return {};
+  const std::string cache_key =
+      DispatchSchemaParentPathCacheKey(session, schema_parent_path);
+  auto& cache = DispatchSchemaParentPathCache();
+  const auto cached = cache.find(cache_key);
+  if (cached != cache.end()) {
+    return cached->second;
+  }
   engine_api::EngineResolveNameRequest request;
   request.context = PublicAbiDispatchEngineContext(session);
   request.sql_object_reference.expected_object_type = "schema";
@@ -2512,7 +2558,14 @@ std::string ResolveSchemaParentPathForDispatch(
   }
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
-  return resolved.ok ? resolved.primary_object.uuid.canonical : std::string{};
+  if (!resolved.ok || resolved.primary_object.uuid.canonical.empty()) {
+    return {};
+  }
+  if (cache.size() > 4096) {
+    cache.clear();
+  }
+  cache[cache_key] = resolved.primary_object.uuid.canonical;
+  return resolved.primary_object.uuid.canonical;
 }
 
 std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) {
@@ -4637,6 +4690,106 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     operation_envelope += EscapeOperationOperandField(*savepoint_name);
     operation_envelope += "\n";
   }
+  const auto append_dml_operands = [&]() {
+    if (dispatch_operation_id == "dml.insert_rows") {
+      AppendDmlInsertValueOperands(session, encoded, &operation_envelope);
+      mark_phase("dml_insert_value_operands");
+    }
+    constexpr std::string_view kDmlFields[] = {
+        "target_object_uuid", "target_object_kind", "dml_surface_variant",
+        "source_kind", "source_uuid", "source_fingerprint", "source_position",
+        "routine_object_uuid", "routine_argument_count",
+        "routine_argument_0_type", "routine_argument_0_binding", "routine_argument_0_value",
+        "routine_argument_1_type", "routine_argument_1_binding", "routine_argument_1_value",
+        "routine_argument_2_type", "routine_argument_2_binding", "routine_argument_2_value",
+        "routine_argument_3_type", "routine_argument_3_binding", "routine_argument_3_value",
+        "redacted_source_handle", "source_handle_sensitive", "format_family",
+        "encoding", "line_ending", "delimiter", "quote", "escape",
+        "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
+        "limit", "offset",
+        "result_projection", "aggregate_function", "aggregate_source_column",
+        "assertion_id", "actual_source_column", "actual_column_name",
+        "expected_column_name", "expected_count", "expected_value",
+        "predicate_kind", "predicate_column", "predicate_value",
+        "predicate_value_type", "assignment_column", "assignment_value",
+        "subquery_projection", "subquery_select_column",
+        "subquery_predicate_kind", "subquery_predicate_column",
+        "subquery_predicate_value", "subquery_predicate_value_type",
+        "subquery_additional_predicate_kind", "subquery_additional_predicate_column",
+        "subquery_additional_predicate_value", "subquery_additional_predicate_value_type",
+        "subquery_nested_projection", "subquery_nested_select_column",
+        "subquery_nested_predicate_kind", "subquery_nested_predicate_column",
+        "subquery_nested_predicate_value", "subquery_nested_predicate_value_type",
+        "assignment_value_type", "assignment_plan",
+        "on_conflict_action", "conflict_target_column",
+        "on_conflict_update_column", "on_conflict_update_source_column",
+        "on_conflict_assignment_plan",
+        "strict_bulk_load_requested", "reference_relaxed_semantics_requested",
+        "bulk.allow_opaque_columns", "bulk.allow_triggers",
+        "bulk.allow_foreign_keys", "bulk.target_empty_required",
+        "duplicate_mode", "insert_mode", "require_generated_row_uuid", "reject_mode",
+        "insert_select_source_kind", "insert_select_cte_name",
+        "insert_select_counter_column", "insert_select_counter_start",
+        "insert_select_counter_step", "insert_select_counter_limit",
+        "insert_select_counter_predicate", "insert_select_projection_count",
+        "insert_select_source_uuid_0", "insert_select_source_uuid_1",
+        "insert_select_projection_0", "insert_select_projection_1",
+        "insert_select_projection_2", "insert_select_projection_3",
+        "insert_select_projection_4", "insert_select_projection_5",
+        "insert_select_projection_6", "insert_select_projection_7",
+        "insert_select_projection_8", "insert_select_projection_9",
+        "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
+        "native_bulk_ingest_enabled", "native_bulk_ingest",
+        "result_payload_policy", "resume_policy", "reject_target_uuid", "reject_target_kind",
+        "checkpoint_mode", "checkpoint_interval_rows", "checkpoint_interval_bytes",
+        "checkpoint_interval_millis", "checkpoint_resume_policy", "replay_policy",
+        "failure_action", "checkpoint_target_uuid", "checkpoint_target_kind",
+        "require_source_fingerprint", "require_source_position"};
+    for (const auto field : kDmlFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+    mark_phase("dml_field_scan");
+  };
+  const auto finish_operation_envelope = [&]() -> std::string {
+    AppendExistingOperationOperands(encoded, &operation_envelope);
+    mark_phase("append_existing_operands");
+
+    if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
+        trace_path != nullptr && trace_path[0] != '\0') {
+      std::ofstream trace(trace_path, std::ios::app);
+      if (trace) {
+        trace << "----- " << CurrentUtcTimestampText() << " -----\n";
+        trace << operation_envelope;
+        if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
+          trace << '\n';
+        }
+      }
+    }
+
+    const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
+                            .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)
+                            .append_bytes(reinterpret_cast<const std::uint8_t*>(operation_envelope.data()),
+                                          operation_envelope.size())
+                            .encode();
+    mark_phase("envelope_encode");
+    WritePublicAbiPhaseTrace(dispatch_operation_id,
+                             encoded,
+                             phase_micros,
+                             binary.size());
+    return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
+  };
+  if (dispatch_operation_id.starts_with("dml.")) {
+    mark_phase("pre_dml_bridge");
+    append_dml_operands();
+    return finish_operation_envelope();
+  }
   if (dispatch_operation_id == "transaction.begin") {
     const std::string isolation = JsonTextField(encoded, "transaction_isolation_level").value_or(
         TextLineValue(encoded, "transaction_isolation_level").value_or(""));
@@ -5100,11 +5253,19 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id == "ddl.create_table") {
+    std::unordered_map<std::string, std::string> table_field_cache;
     auto table_field_value = [&](std::string_view field) -> std::string {
-      return ExistingTextOperandValue(encoded, field).value_or(
+      const std::string cache_key(field);
+      const auto cached = table_field_cache.find(cache_key);
+      if (cached != table_field_cache.end()) {
+        return cached->second;
+      }
+      std::string value = ExistingTextOperandValue(encoded, field).value_or(
           JsonTextField(encoded, field).value_or(
               JsonPrimitiveField(encoded, field).value_or(
                   TextLineValue(encoded, field).value_or(""))));
+      table_field_cache.emplace(cache_key, value);
+      return value;
     };
     constexpr std::string_view kTableFields[] = {
         "target_object_uuid", "target_object_kind",
@@ -6376,99 +6537,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   mark_phase("pre_dml_bridge");
-  if (dispatch_operation_id.starts_with("dml.")) {
-    if (dispatch_operation_id == "dml.insert_rows") {
-      AppendDmlInsertValueOperands(session, encoded, &operation_envelope);
-      mark_phase("dml_insert_value_operands");
-    }
-    constexpr std::string_view kDmlFields[] = {
-        "target_object_uuid", "target_object_kind", "dml_surface_variant",
-        "source_kind", "source_uuid", "source_fingerprint", "source_position",
-        "routine_object_uuid", "routine_argument_count",
-        "routine_argument_0_type", "routine_argument_0_binding", "routine_argument_0_value",
-        "routine_argument_1_type", "routine_argument_1_binding", "routine_argument_1_value",
-        "routine_argument_2_type", "routine_argument_2_binding", "routine_argument_2_value",
-        "routine_argument_3_type", "routine_argument_3_binding", "routine_argument_3_value",
-        "redacted_source_handle", "source_handle_sensitive", "format_family",
-        "encoding", "line_ending", "delimiter", "quote", "escape",
-        "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
-        "limit", "offset",
-        "result_projection", "aggregate_function", "aggregate_source_column",
-        "assertion_id", "actual_source_column", "actual_column_name",
-        "expected_column_name", "expected_count", "expected_value",
-        "predicate_kind", "predicate_column", "predicate_value",
-        "predicate_value_type", "assignment_column", "assignment_value",
-        "subquery_projection", "subquery_select_column",
-        "subquery_predicate_kind", "subquery_predicate_column",
-        "subquery_predicate_value", "subquery_predicate_value_type",
-        "subquery_additional_predicate_kind", "subquery_additional_predicate_column",
-        "subquery_additional_predicate_value", "subquery_additional_predicate_value_type",
-        "subquery_nested_projection", "subquery_nested_select_column",
-        "subquery_nested_predicate_kind", "subquery_nested_predicate_column",
-        "subquery_nested_predicate_value", "subquery_nested_predicate_value_type",
-        "assignment_value_type", "assignment_plan",
-        "on_conflict_action", "conflict_target_column",
-        "on_conflict_update_column", "on_conflict_update_source_column",
-        "on_conflict_assignment_plan",
-        "strict_bulk_load_requested", "reference_relaxed_semantics_requested",
-        "bulk.allow_opaque_columns", "bulk.allow_triggers",
-        "bulk.allow_foreign_keys", "bulk.target_empty_required",
-        "duplicate_mode", "insert_mode", "require_generated_row_uuid", "reject_mode",
-        "insert_select_source_kind", "insert_select_cte_name",
-        "insert_select_counter_column", "insert_select_counter_start",
-        "insert_select_counter_step", "insert_select_counter_limit",
-        "insert_select_counter_predicate", "insert_select_projection_count",
-        "insert_select_source_uuid_0", "insert_select_source_uuid_1",
-        "insert_select_projection_0", "insert_select_projection_1",
-        "insert_select_projection_2", "insert_select_projection_3",
-        "insert_select_projection_4", "insert_select_projection_5",
-        "insert_select_projection_6", "insert_select_projection_7",
-        "insert_select_projection_8", "insert_select_projection_9",
-        "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
-        "native_bulk_ingest_enabled", "native_bulk_ingest",
-        "result_payload_policy", "resume_policy", "reject_target_uuid", "reject_target_kind",
-        "checkpoint_mode", "checkpoint_interval_rows", "checkpoint_interval_bytes",
-        "checkpoint_interval_millis", "checkpoint_resume_policy", "replay_policy",
-        "failure_action", "checkpoint_target_uuid", "checkpoint_target_kind",
-        "require_source_fingerprint", "require_source_position"};
-    for (const auto field : kDmlFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      operation_envelope += "operand=text\t";
-      operation_envelope += field;
-      operation_envelope += "\t";
-      operation_envelope += EscapeOperationOperandField(value);
-      operation_envelope += "\n";
-    }
-    mark_phase("dml_field_scan");
-  }
-  AppendExistingOperationOperands(encoded, &operation_envelope);
-  mark_phase("append_existing_operands");
-
-  if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
-      trace_path != nullptr && trace_path[0] != '\0') {
-    std::ofstream trace(trace_path, std::ios::app);
-    if (trace) {
-      trace << "----- " << CurrentUtcTimestampText() << " -----\n";
-      trace << operation_envelope;
-      if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
-        trace << '\n';
-      }
-    }
-  }
-
-  const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
-                          .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)
-                          .append_bytes(reinterpret_cast<const std::uint8_t*>(operation_envelope.data()),
-                                        operation_envelope.size())
-                          .encode();
-  mark_phase("envelope_encode");
-  WritePublicAbiPhaseTrace(dispatch_operation_id,
-                           encoded,
-                           phase_micros,
-                           binary.size());
-  return std::string(reinterpret_cast<const char*>(binary.data()), binary.size());
+  return finish_operation_envelope();
 }
 
 void ApplyTransactionResultToSession(std::string_view operation_id,

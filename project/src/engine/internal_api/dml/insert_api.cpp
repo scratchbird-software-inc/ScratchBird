@@ -93,6 +93,20 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+std::string TrimAscii(std::string_view value) {
+  std::size_t begin = 0;
+  while (begin < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[begin]))) {
+    ++begin;
+  }
+  std::size_t end = value.size();
+  while (end > begin &&
+         std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+    --end;
+  }
+  return std::string(value.substr(begin, end - begin));
+}
+
 bool TableHasDeferredKeyConstraint(const CrudTableRecord& table) {
   for (const auto& [column_name, descriptor] : table.columns) {
     (void)column_name;
@@ -1602,6 +1616,160 @@ dml::DirectPhysicalBulkAppendRequest MakeDirectPhysicalInsertRequest(
   return direct;
 }
 
+std::string InsertColumnDescriptorField(std::string_view descriptor,
+                                        std::string_view requested_key) {
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const std::size_t next = descriptor.find(';', offset);
+    const std::string part = TrimAscii(
+        descriptor.substr(offset,
+                          next == std::string_view::npos
+                              ? std::string_view::npos
+                              : next - offset));
+    if (!part.empty()) {
+      const std::size_t equal = part.find('=');
+      if (equal == std::string::npos) {
+        if (LowerAscii(part) == requested_key) {
+          return "true";
+        }
+      } else {
+        const std::string key = LowerAscii(TrimAscii(
+            std::string_view(part).substr(0, equal)));
+        if (key == requested_key) {
+          return TrimAscii(std::string_view(part).substr(equal + 1));
+        }
+      }
+    }
+    if (next == std::string_view::npos) {
+      break;
+    }
+    offset = next + 1;
+  }
+  return {};
+}
+
+std::string InsertColumnTypeName(std::string_view descriptor) {
+  const std::string type = InsertColumnDescriptorField(descriptor, "type");
+  if (!type.empty()) {
+    return type;
+  }
+  const std::string canonical =
+      InsertColumnDescriptorField(descriptor, "canonical");
+  if (!canonical.empty()) {
+    return canonical;
+  }
+  const std::string canonical_type =
+      InsertColumnDescriptorField(descriptor, "canonical_type");
+  if (!canonical_type.empty()) {
+    return canonical_type;
+  }
+  const std::string source_type =
+      InsertColumnDescriptorField(descriptor, "source_type");
+  if (!source_type.empty()) {
+    return source_type;
+  }
+  const std::string trimmed = TrimAscii(descriptor);
+  return trimmed.empty() ? "text" : trimmed;
+}
+
+EngineTypedValue TypedValueFromStagedInsertField(
+    const CrudTableRecord& table,
+    const std::string& field_name,
+    const std::string& encoded_value) {
+  const std::string column_descriptor =
+      CrudColumnDescriptorForName(table.columns, field_name);
+  EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = InsertColumnTypeName(column_descriptor);
+  descriptor.encoded_descriptor =
+      column_descriptor.empty()
+          ? "type=" + descriptor.canonical_type_name
+          : column_descriptor;
+  const bool is_null = encoded_value == "<NULL>";
+  EngineTypedValue typed;
+  typed.descriptor = std::move(descriptor);
+  typed.encoded_value = is_null ? std::string{} : encoded_value;
+  typed.is_null = is_null;
+  typed.state = is_null ? EngineValueState::sql_null : EngineValueState::value;
+  return typed;
+}
+
+std::vector<EngineRowValue> BuildConflictFreeDirectAppendRows(
+    const CrudTableRecord& table,
+    std::span<const StagedInsertRow> staged_rows) {
+  std::vector<EngineRowValue> rows;
+  rows.reserve(staged_rows.size());
+  for (const auto& staged : staged_rows) {
+    EngineRowValue row;
+    row.requested_row_uuid.canonical = staged.row_record.row_uuid;
+    row.fields.reserve(staged.logical_values.size());
+    for (const auto& [field_name, value] : staged.logical_values) {
+      row.fields.push_back({field_name,
+                            TypedValueFromStagedInsertField(
+                                table,
+                                field_name,
+                                value)});
+    }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+std::vector<std::string> SharedFieldOrderForDirectAppendRows(
+    std::span<const EngineRowValue> rows) {
+  std::vector<std::string> order;
+  if (rows.empty()) {
+    return order;
+  }
+  order.reserve(rows.front().fields.size());
+  for (const auto& [field_name, unused_value] : rows.front().fields) {
+    (void)unused_value;
+    order.push_back(field_name);
+  }
+  for (std::size_t row_index = 1; row_index < rows.size(); ++row_index) {
+    if (rows[row_index].fields.size() != order.size()) {
+      order.clear();
+      return order;
+    }
+    for (std::size_t field_index = 0; field_index < order.size(); ++field_index) {
+      if (rows[row_index].fields[field_index].first != order[field_index]) {
+        order.clear();
+        return order;
+      }
+    }
+  }
+  return order;
+}
+
+bool ConflictFreeDirectAppendEligible(
+    const EngineInsertRowsRequest& request,
+    std::string_view conflict_action,
+    std::span<const EngineRowValue> original_rows,
+    std::span<const StagedInsertRow> staged_rows,
+    const EngineInsertRowsResult& result,
+    bool executable_trigger_descriptors_present) {
+  if (conflict_action.empty() ||
+      executable_trigger_descriptors_present ||
+      staged_rows.empty() ||
+      staged_rows.size() != original_rows.size()) {
+    return false;
+  }
+  if (result.updated_count != 0 || result.skipped_count != 0) {
+    return false;
+  }
+  if (request.reference_unique_checks_relaxed ||
+      request.reference_foreign_key_checks_relaxed ||
+      InsertBatchOptionEnabled(request, "reference.unique_checks=0") ||
+      InsertBatchOptionEnabled(request, "reference.foreign_key_checks=0")) {
+    return false;
+  }
+  if (InsertOptionEnabled(request, "direct_physical_insert=disabled") ||
+      InsertOptionEnabled(request, "insert.direct_physical=disabled")) {
+    return false;
+  }
+  return true;
+}
+
 EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
     const EngineInsertRowsRequest& request,
     dml::DirectPhysicalBulkAppendResult direct_result,
@@ -1689,6 +1857,18 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.dml_summary.rows_changed = result.inserted_count;
   (void)request;
   return result;
+}
+
+void ApplyInsertWriteResultPolicy(
+    const EngineWriteResultPolicyResolution& policy,
+    EngineInsertRowsResult* result) {
+  if (result == nullptr) {
+    return;
+  }
+  ApplyWriteResultPolicy(policy, result);
+  if (WriteResultPolicySuppressesPayloadRows(policy)) {
+    std::vector<EngineUuid>().swap(result->row_uuids);
+  }
 }
 
 struct DirectPhysicalInsertAttempt {
@@ -3029,12 +3209,15 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid.canonical);
+  mark_insert_phase("active_trigger_descriptor_lookup");
   if (!direct_initial_input_rows.empty() && !executable_trigger_descriptors_present) {
     auto direct_attempt = TryDirectPhysicalInsertRoute(request,
                                                       conflict_action,
                                                       direct_initial_input_rows);
     mark_insert_phase("direct_initial_attempt");
     if (direct_attempt.attempted) {
+      ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
+      mark_insert_phase("direct_initial_result_policy");
       write_insert_outer_trace(direct_initial_input_rows.size());
       return std::move(direct_attempt.result);
     }
@@ -3171,6 +3354,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             direct_attempt.result.diagnostics.front().detail ==
                 "insert_select_generated_direct_unsupported";
         if (!generated_direct_unsupported) {
+          ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
+          mark_insert_phase("direct_generated_result_policy");
           write_insert_outer_trace(
               static_cast<std::size_t>(*direct_generated_count));
           return std::move(direct_attempt.result);
@@ -3228,6 +3413,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                       std::move(direct_prefix_evidence));
     mark_insert_phase("direct_generated_attempt");
     if (direct_attempt.attempted) {
+      ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
+      mark_insert_phase("direct_generated_result_policy");
       write_insert_outer_trace(input_rows.size());
       return std::move(direct_attempt.result);
     }
@@ -3971,6 +4158,57 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                 result.evidence);
     }
 
+    if (ConflictFreeDirectAppendEligible(
+            request,
+            conflict_action,
+            input_rows,
+            std::span<const StagedInsertRow>(staged_insert_rows.data(),
+                                             staged_insert_rows.size()),
+            result,
+            executable_trigger_descriptors_present)) {
+      auto direct_rows = BuildConflictFreeDirectAppendRows(
+          *table,
+          std::span<const StagedInsertRow>(staged_insert_rows.data(),
+                                           staged_insert_rows.size()));
+      auto direct_request = MakeDirectPhysicalInsertRequest(
+          request,
+          std::span<const EngineRowValue>(direct_rows.data(),
+                                          direct_rows.size()));
+      direct_request.duplicate_mode = "error";
+      direct_request.lane_operation = "insert_rows";
+      direct_request.estimated_row_count =
+          static_cast<EngineApiU64>(direct_rows.size());
+      direct_request.owned_shared_row_field_order =
+          SharedFieldOrderForDirectAppendRows(
+              std::span<const EngineRowValue>(direct_rows.data(),
+                                              direct_rows.size()));
+      if (!direct_request.owned_shared_row_field_order.empty()) {
+        direct_request.shared_row_field_order =
+            std::span<const std::string>(
+                direct_request.owned_shared_row_field_order.data(),
+                direct_request.owned_shared_row_field_order.size());
+      }
+      direct_request.option_envelopes.push_back(
+          "insert.conflict_free_direct_append=true");
+      direct_request.option_envelopes.push_back(
+          "insert.conflict_free_direct_append_source=post_conflict_probe");
+      auto direct_result = dml::ExecuteDirectPhysicalBulkAppend(direct_request);
+      auto converted = ConvertDirectPhysicalInsertResult(
+          request,
+          std::move(direct_result),
+          result.evidence);
+      converted.evidence.push_back(
+          {"on_conflict_no_match_route",
+           "direct_physical_bulk_append_after_authoritative_probe"});
+      converted.evidence.push_back(
+          {"on_conflict_no_match_rows",
+           std::to_string(staged_insert_rows.size())});
+      ApplyInsertWriteResultPolicy(write_result_policy, &converted);
+      mark_insert_phase("conflict_free_direct_append");
+      write_insert_outer_trace(input_rows.size());
+      return converted;
+    }
+
     const EngineApiU64 admitted_rows =
         std::max<EngineApiU64>(1, batch_context.adaptive_batch_plan.admitted_rows);
     const bool prework_row_capacity_ready =
@@ -4412,7 +4650,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   }
   result.dml_summary.rows_changed = result.inserted_count + result.updated_count;
   AddDmlSummaryEvidence(&result);
-  ApplyWriteResultPolicy(write_result_policy, &result);
+  ApplyInsertWriteResultPolicy(write_result_policy, &result);
   RecordInsertBatchMetric(batch_context, "sb_dml_insert_batch_started_total", 1.0, "ok");
   if (physical_probe_cache.physical_probe_attempts != 0) {
     RecordInsertBatchMetric(batch_context,

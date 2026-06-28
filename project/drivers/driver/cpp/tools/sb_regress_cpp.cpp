@@ -208,6 +208,17 @@ void clearDriverPhaseTraceContext() {
     clearProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_EXECUTION_MODE");
 }
 
+void setParserPhaseTraceFiles(const std::filesystem::path& workerTracePath,
+                              const std::filesystem::path& pipelineTracePath) {
+    setProcessEnv("SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE", workerTracePath.string());
+    setProcessEnv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE", pipelineTracePath.string());
+}
+
+void clearParserPhaseTraceFiles() {
+    clearProcessEnv("SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE");
+    clearProcessEnv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE");
+}
+
 std::optional<int64_t> parseStatusKb(const std::string& line, const std::string& key) {
     if (!startsWith(line, key + ":")) {
         return std::nullopt;
@@ -2884,6 +2895,7 @@ void printUsage() {
         << "Usage: sb_regress_cpp --suite-root <path> --artifact-root <build/path> "
         << "--database <name> --host <host> --port <port> --user <user> --password <password> "
         << "--route <embedded|ipc_local|listener-parser|manager-listener-parser> "
+        << "[--ipc-path <server-sbps-socket>] "
         << "--parser-mode <server-parser|standalone-parser|driver-sblr-uuid> "
         << "--page-size <4k|8k|16k|32k|64k|128k> --namespace <schema>\n";
 }
@@ -3079,6 +3091,7 @@ int main(int argc, char** argv) {
         config.password = required(args, "--password");
         config.role = valueOrDefault(args, "--role", "");
         config.ssl_mode = sslmode;
+        config.ipc_path = valueOrDefault(args, "--ipc-path", "");
         config.ssl_root_cert = valueOrDefault(args, "--sslrootcert", "");
         config.ssl_cert = valueOrDefault(args, "--sslcert", "");
         config.ssl_key = valueOrDefault(args, "--sslkey", "");
@@ -3464,8 +3477,15 @@ int main(int argc, char** argv) {
                 const std::string basename = relativePath.filename().string();
                 const std::filesystem::path scriptTracePath =
                     artifactRoot / "driver-phase-traces" / (scriptId + ".jsonl");
+                const std::filesystem::path parserWorkerTracePath =
+                    artifactRoot / "parser-worker-phase-traces" / (scriptId + ".jsonl");
+                const std::filesystem::path parserPipelineTracePath =
+                    artifactRoot / "parser-pipeline-phase-traces" / (scriptId + ".tsv");
                 writeText(scriptTracePath, "");
+                writeText(parserWorkerTracePath, "");
+                writeText(parserPipelineTracePath, "");
                 setProcessEnv("SCRATCHBIRD_CPP_DRIVER_PHASE_TRACE_FILE", scriptTracePath.string());
+                setParserPhaseTraceFiles(parserWorkerTracePath, parserPipelineTracePath);
                 std::set<size_t> expectedRefusalIndexes;
                 for (size_t index = 0; index < statements.size(); ++index) {
                     const std::string candidateStatementId =
@@ -3484,10 +3504,14 @@ int main(int argc, char** argv) {
                     valueOrDefault(args, "--script-chain-mode", "on") == "off"
                         ? std::vector<std::pair<size_t, size_t>>{}
                         : scriptChainRanges(scriptId, statements, expectedRefusalIndexes);
+                const std::string defaultScriptChainChunkSize =
+                    activeScriptChainRanges.empty() ? "64" : "256";
                 const size_t scriptChainChunkSize = std::max<size_t>(
                     1,
                     static_cast<size_t>(std::stoull(
-                        valueOrDefault(args, "--script-chain-chunk-size", "64"))));
+                        valueOrDefault(args,
+                                       "--script-chain-chunk-size",
+                                       defaultScriptChainChunkSize))));
                 const bool iparTarget = iparTargets.count(scriptId) > 0;
                 json* iparMetrics = nullptr;
                 if (iparTarget) {
@@ -4414,6 +4438,8 @@ int main(int argc, char** argv) {
                 if (!failures.empty() && hasFlag(args, "--stop-on-error")) {
                     break;
                 }
+                clearDriverPhaseTraceContext();
+                clearParserPhaseTraceFiles();
                 if (iparTarget) {
                     json& record = ensureIparRecord(&iparRecords,
                                                     scriptId,

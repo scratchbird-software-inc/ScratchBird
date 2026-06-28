@@ -2677,7 +2677,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   auto update_phase_last = UpdateDeleteSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> update_phase_micros;
-  update_phase_micros.reserve(18);
+  update_phase_micros.reserve(24);
   const auto mark_update_phase = [&](std::string phase) {
     const auto now = UpdateDeleteSteadyClock::now();
     update_phase_micros.push_back(
@@ -3385,6 +3385,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (!suppress_payload_rows) {
     result.result_shape = CrudRowsToResultShape(returning_rows);
   }
+  mark_update_phase("result_shape");
   row_evidence_compactor.AddSummaryEvidence(&result.evidence);
   if (compact_update_row_evidence) {
     result.evidence.push_back({"update_trace_compacted", "true"});
@@ -3399,34 +3400,40 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                  std::to_string(count)});
     }
   }
+  mark_update_phase("update_trace_evidence");
   result.evidence.push_back({"mga_row_version", "row_update"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
-  std::vector<dml_trigger_runtime::DmlTriggerUpdateRowImage> trigger_update_rows;
-  trigger_update_rows.reserve(staged_update_rows.size());
-  for (const auto& staged : staged_update_rows) {
-    trigger_update_rows.push_back({staged.original_row.values, staged.logical_values});
+  if (executable_trigger_descriptors_present) {
+    std::vector<dml_trigger_runtime::DmlTriggerUpdateRowImage> trigger_update_rows;
+    trigger_update_rows.reserve(staged_update_rows.size());
+    for (const auto& staged : staged_update_rows) {
+      trigger_update_rows.push_back({staged.original_row.values, staged.logical_values});
+    }
+    const auto trigger_result =
+        dml_trigger_runtime::FireAfterUpdateTableTriggers(request.context,
+                                                          state,
+                                                          request.target_table.uuid.canonical,
+                                                          trigger_update_rows,
+                                                          request.option_envelopes);
+    if (!trigger_result.ok) {
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+          request.context,
+          "dml.update_rows",
+          trigger_result.diagnostic);
+    }
+    result.evidence.insert(result.evidence.end(),
+                           trigger_result.evidence.begin(),
+                           trigger_result.evidence.end());
+    result.evidence.push_back({"trigger_udr_hooks",
+                               trigger_result.fired_count == 0
+                                   ? "descriptor_checked"
+                                   : "descriptor_executed"});
+  } else {
+    result.evidence.push_back({"trigger_udr_hooks", "descriptor_checked"});
   }
-  const auto trigger_result =
-      dml_trigger_runtime::FireAfterUpdateTableTriggers(request.context,
-                                                        state,
-                                                        request.target_table.uuid.canonical,
-                                                        trigger_update_rows,
-                                                        request.option_envelopes);
-  if (!trigger_result.ok) {
-    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
-        request.context,
-        "dml.update_rows",
-        trigger_result.diagnostic);
-  }
-  result.evidence.insert(result.evidence.end(),
-                         trigger_result.evidence.begin(),
-                         trigger_result.evidence.end());
-  result.evidence.push_back({"trigger_udr_hooks",
-                             trigger_result.fired_count == 0
-                                 ? "descriptor_checked"
-                                 : "descriptor_executed"});
+  mark_update_phase("trigger_runtime");
   AddHotUpdateIndexDisciplineEvidence(hot_update_shape_enabled, hot_update_counters, &result);
   AddUpdateBatchEvidenceToResult(batch_context, &result);
   if (!batch_context.fallback_reason.empty()) {
@@ -3435,9 +3442,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.dml_summary.rows_changed = result.updated_count;
   AddDmlSummaryEvidence(&result);
   ApplyWriteResultPolicy(write_result_policy, &result);
+  mark_update_phase("summary_and_policy");
   RecordUpdateBatchMetric(batch_context, "sb_dml_update_batch_started_total", 1.0, "ok");
   RecordUpdateBatchMetric(batch_context, "sb_dml_update_rows_updated_total", static_cast<double>(result.updated_count), "ok");
-  mark_update_phase("result_evidence");
+  mark_update_phase("update_metrics");
   write_update_trace(static_cast<std::size_t>(result.updated_count));
   return result;
 }

@@ -18,6 +18,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstddef>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -371,8 +372,50 @@ inline DmlExecutableTriggerRuntimeResult LoadExecutableState(
   return result;
 }
 
-inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context,
-                                             const std::string& target_table_uuid) {
+inline std::map<std::string, bool>& ActiveTriggerDescriptorCache() {
+  static thread_local std::map<std::string, bool> cache;
+  return cache;
+}
+
+inline std::string ActiveTriggerDescriptorCacheKey(
+    const EngineRequestContext& context,
+    const std::string& target_table_uuid) {
+  std::string key;
+  key.reserve(context.database_path.size() + target_table_uuid.size() + 192);
+  key += context.database_uuid.canonical;
+  key.push_back('|');
+  key += context.database_path;
+  key.push_back('|');
+  key += target_table_uuid;
+  key.push_back('|');
+  key += context.principal_uuid.canonical;
+  key.push_back('|');
+  key += context.current_role_uuid.canonical;
+  key.push_back('|');
+  key += std::to_string(context.catalog_generation_id);
+  key.push_back('|');
+  key += std::to_string(context.security_epoch);
+  key.push_back('|');
+  key += std::to_string(context.resource_epoch);
+  return key;
+}
+
+inline void TrimActiveTriggerDescriptorCacheIfNeeded() {
+  auto& cache = ActiveTriggerDescriptorCache();
+  constexpr std::size_t kMaxEntries = 4096;
+  constexpr std::size_t kTrimEntries = 512;
+  if (cache.size() <= kMaxEntries) return;
+  auto erase_end = cache.begin();
+  for (std::size_t count = 0;
+       count < kTrimEntries && erase_end != cache.end();
+       ++count) {
+    ++erase_end;
+  }
+  cache.erase(cache.begin(), erase_end);
+}
+
+inline bool ScanActiveTableTriggerDescriptors(const EngineRequestContext& context,
+                                              const std::string& target_table_uuid) {
   const auto loaded = LoadExecutableObjectLifecycleStateForRuntimeDispatch(context);
   if (!loaded.ok) return false;
   auto state = loaded.state;
@@ -398,6 +441,22 @@ inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context
     }
   }
   return false;
+}
+
+inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context,
+                                             const std::string& target_table_uuid) {
+  if (target_table_uuid.empty()) return false;
+  const std::string cache_key =
+      ActiveTriggerDescriptorCacheKey(context, target_table_uuid);
+  auto& cache = ActiveTriggerDescriptorCache();
+  const auto cached = cache.find(cache_key);
+  if (cached != cache.end()) {
+    return cached->second;
+  }
+  const bool present = ScanActiveTableTriggerDescriptors(context, target_table_uuid);
+  cache.emplace(cache_key, present);
+  TrimActiveTriggerDescriptorCacheIfNeeded();
+  return present;
 }
 
 inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
