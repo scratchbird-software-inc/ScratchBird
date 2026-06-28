@@ -41,7 +41,14 @@
     "--fetch-size",
     "--concurrency-worker",
     "--create-database",
-    "--create-emulation-mode"
+    "--create-emulation-mode",
+    "--language-resource-pack",
+    "--language-resource-identity",
+    "--language-resource-hash",
+    "--language-profile",
+    "--syntax-profile",
+    "--topology-profile",
+    "--standard-english-fallback"
   ],
   "required_artifacts": [
     "command-events.jsonl",

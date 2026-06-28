@@ -30,8 +30,8 @@ public static class SqlStatementSplitter
     /// Split SQL into top-level statements on the active terminator.
     ///
     /// Quote-aware (single/double quotes) and <c>--</c> comment-aware. Honors the
-    /// <c>SET TERM &lt;terminator&gt;</c> client directive (Firebird / sb_isql
-    /// semantics): the directive changes the active terminator and is consumed
+    /// <c>SET TERM &lt;terminator&gt;</c> client directive: the directive changes
+    /// the active terminator and is consumed
     /// (not emitted, not counted in statement indexing). With no SET TERM present,
     /// behavior is a plain quote-aware top-level <c>;</c> split, so existing
     /// scripts and statement indices are stable.

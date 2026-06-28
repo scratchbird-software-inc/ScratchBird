@@ -34,6 +34,45 @@ namespace {
 const std::set<std::string> kPageSizes{"4k", "8k", "16k", "32k", "64k", "128k"};
 const std::set<std::string> kRoutes{"embedded", "ipc_local", "listener-parser", "manager-listener-parser"};
 const std::set<std::string> kParserModes{"server-parser", "standalone-parser", "driver-sblr-uuid"};
+const std::set<std::string> kSslModes{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"};
+const std::set<std::string> kSupportedArgs{
+    "--database",
+    "--host",
+    "--port",
+    "--user",
+    "--password",
+    "--role",
+    "--sslmode",
+    "--sslrootcert",
+    "--sslcert",
+    "--sslkey",
+    "--route",
+    "--parser-mode",
+    "--page-size",
+    "--namespace",
+    "--input",
+    "--output",
+    "--error",
+    "--diagnostics",
+    "--metrics",
+    "--transcript",
+    "--summary",
+    "--stop-on-error",
+    "--expected-refusals",
+    "--statement-timeout-ms",
+    "--fetch-size",
+    "--concurrency-worker",
+    "--create-database",
+    "--create-emulation-mode",
+    "--run-id",
+    "--language-resource-pack",
+    "--language-resource-identity",
+    "--language-resource-hash",
+    "--language-profile",
+    "--syntax-profile",
+    "--topology-profile",
+    "--standard-english-fallback",
+};
 
 int64_t nowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -75,6 +114,26 @@ std::string valueOrDefault(const std::map<std::string, std::string>& args,
                            const std::string& fallback) {
     auto it = args.find(key);
     return it == args.end() ? fallback : it->second;
+}
+
+bool booleanArg(const std::map<std::string, std::string>& args,
+                const std::string& key,
+                bool fallback) {
+    auto it = args.find(key);
+    if (it == args.end()) {
+        return fallback;
+    }
+    std::string value = it->second;
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value == "true" || value == "1" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "false" || value == "0" || value == "no" || value == "off") {
+        return false;
+    }
+    throw std::runtime_error("invalid boolean value for " + key + ": " + it->second);
 }
 
 void writeText(const std::string& path, const std::string& text) {
@@ -120,6 +179,51 @@ std::string readInput(const std::string& path) {
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
+}
+
+void addExpectedRefusalIds(const json& value, std::set<std::string>& ids) {
+    if (!value.is_array()) {
+        return;
+    }
+    for (const auto& item : value) {
+        if (item.is_string()) {
+            ids.insert(item.get<std::string>());
+        } else if (item.is_object() && item.contains("statement_id") && item["statement_id"].is_string()) {
+            ids.insert(item["statement_id"].get<std::string>());
+        }
+    }
+}
+
+std::set<std::string> loadExpectedRefusals(const std::string& path) {
+    if (path.empty()) {
+        return {};
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("expected refusal file not found: " + path);
+    }
+    json doc;
+    in >> doc;
+    std::set<std::string> ids;
+    if (doc.is_array()) {
+        addExpectedRefusalIds(doc, ids);
+        return ids;
+    }
+    if (!doc.is_object()) {
+        throw std::runtime_error("expected refusals must be a JSON object or array");
+    }
+    if (doc.contains("statement_ids")) {
+        addExpectedRefusalIds(doc["statement_ids"], ids);
+    }
+    if (doc.contains("expected_refusals")) {
+        addExpectedRefusalIds(doc["expected_refusals"], ids);
+    }
+    if (doc.contains("expected_diagnostics") && doc["expected_diagnostics"].is_object()) {
+        for (const auto& item : doc["expected_diagnostics"].items()) {
+            ids.insert(item.key());
+        }
+    }
+    return ids;
 }
 
 // The statement chunker (quote-aware split on the active terminator, SET TERM
@@ -431,8 +535,15 @@ std::map<std::string, std::string> parseArgs(int argc, char** argv) {
         if (key.rfind("--", 0) != 0) {
             throw std::runtime_error("unexpected positional argument: " + key);
         }
+        if (!kSupportedArgs.count(key)) {
+            throw std::runtime_error("unsupported argument: " + key);
+        }
         if (key == "--stop-on-error" || key == "--create-database") {
-            args[key] = "true";
+            if (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0) {
+                args[key] = argv[++i];
+            } else {
+                args[key] = "true";
+            }
             continue;
         }
         if (i + 1 >= argc || std::string(argv[i + 1]).rfind("--", 0) == 0) {
@@ -447,6 +558,7 @@ void validate(const std::map<std::string, std::string>& args) {
     if (!kPageSizes.count(required(args, "--page-size"))) throw std::runtime_error("unsupported page size");
     if (!kRoutes.count(required(args, "--route"))) throw std::runtime_error("unsupported route");
     if (!kParserModes.count(required(args, "--parser-mode"))) throw std::runtime_error("unsupported parser mode");
+    if (!kSslModes.count(valueOrDefault(args, "--sslmode", "require"))) throw std::runtime_error("unsupported sslmode");
 }
 
 void addTiming(std::map<std::string, int64_t>& timings, const std::string& group, int64_t started) {
@@ -491,6 +603,7 @@ int main(int argc, char** argv) {
         json testcases = json::array();
         json failures = json::array();
         json digests = json::array();
+        json securityRefusals = json::array();
         const int64_t started = nowNs();
         const std::string route = required(args, "--route");
         const std::string parserMode = required(args, "--parser-mode");
@@ -498,6 +611,18 @@ int main(int argc, char** argv) {
         const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
         const std::string transportMode = transportModeForRoute(route, sslmode);
         const std::string tlsPolicy = tlsPolicyForRoute(route, sslmode);
+        const std::string languageResourcePack =
+            valueOrDefault(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack");
+        const std::string languageResourceIdentity =
+            valueOrDefault(args, "--language-resource-identity", "sbsql.common_resource_pack.v1");
+        const std::string languageResourceHash =
+            valueOrDefault(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc");
+        const std::string languageProfile = valueOrDefault(args, "--language-profile", "en-US");
+        const std::string syntaxProfile = valueOrDefault(args, "--syntax-profile", "sbsql.v3");
+        const std::string topologyProfile = valueOrDefault(args, "--topology-profile", "topology.sbsql.canonical.v1");
+        const bool standardEnglishFallback = booleanArg(args, "--standard-english-fallback", true);
+        const std::set<std::string> expectedRefusals =
+            loadExpectedRefusals(valueOrDefault(args, "--expected-refusals", ""));
 
         scratchbird::client::Connection conn;
         api["scratchbird::client::Connection"]++;
@@ -544,8 +669,9 @@ int main(int argc, char** argv) {
             failures.push_back({{"statement_id", "connect"}, {"message", statusMessage(ctx)}});
         }
 
-        if (failures.empty() && args.count("--create-database")) {
-            failures.push_back({{"statement_id", "database_create"}, {"message", "--create-database is not implemented in the C++ native tool yet"}});
+        if (failures.empty() && booleanArg(args, "--create-database", false)) {
+            failures.push_back({{"statement_id", "database_create"}, {"message", "--create-database is not implemented in the C++ native tool yet"},
+                                {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
         }
         if (failures.empty() && parserMode != "server-parser") {
             failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the C++ native tool; it fails closed"}});
@@ -553,15 +679,22 @@ int main(int argc, char** argv) {
 
         if (failures.empty()) {
             const auto statements = sbchunk::splitStatements(readInput(required(args, "--input")));
+            std::string scriptName = std::filesystem::path(required(args, "--input")).filename().string();
+            if (scriptName.empty()) {
+                scriptName = required(args, "--input");
+            }
             for (size_t index = 0; index < statements.size(); ++index) {
                 const auto& sql = statements[index];
-                const std::string statementId = required(args, "--input") + ":" + std::to_string(index + 1);
+                const std::string statementId = scriptName + ":" + std::to_string(index + 1);
+                const bool expectedRefusal = expectedRefusals.count(statementId) != 0;
+                const std::string expectedOutcome = expectedRefusal ? "refusal" : "success";
                 const std::string group = classify(sql);
                 const int64_t statementStarted = nowNs();
                 std::string outcome = "success";
                 int64_t rowCount = -1;
                 std::string resultDigest;
                 std::string diagnostic;
+                std::string sqlState = "00000";
 
                 if (group == "transaction") {
                     if (firstTokenLower(sql) == "commit") {
@@ -645,36 +778,57 @@ int main(int argc, char** argv) {
                 if (status != scratchbird::core::Status::OK) {
                     outcome = "refusal";
                     diagnostic = statusMessage(ctx);
-                    appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", ctx.sqlstate ? ctx.sqlstate : "HY000"}, {"message", diagnostic}});
+                    sqlState = ctx.sqlstate ? ctx.sqlstate : "HY000";
+                    appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", diagnostic}});
                     appendText(required(args, "--error"), statementId + ": " + diagnostic + "\n");
-                    failures.push_back({{"statement_id", statementId}, {"message", diagnostic}});
-                    if (args.count("--stop-on-error")) {
+                    if (expectedRefusal) {
+                        securityRefusals.push_back({{"statement_id", statementId}, {"sqlstate", sqlState}, {"diagnostic_code", diagnostic}});
+                    } else {
+                        failures.push_back({{"statement_id", statementId}, {"message", diagnostic}});
+                    }
+                    if (!expectedRefusal && booleanArg(args, "--stop-on-error", true)) {
                         addTiming(timings, group, statementStarted);
                         break;
                     }
+                } else if (expectedRefusal) {
+                    outcome = "unexpected_success";
+                    diagnostic = "statement succeeded but was expected to refuse";
+                    failures.push_back({{"statement_id", statementId}, {"message", diagnostic}});
                 }
                 addTiming(timings, group, statementStarted);
                 const auto event = json{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                                         {"driver_name", "cpp"},
                                         {"driver_version", "unknown"},
-                                        {"route", route},
-                                        {"parser_mode", parserMode},
-                                        {"page_size", pageSize},
-                                        {"namespace", required(args, "--namespace")},
+                                         {"route", route},
+                                         {"parser_mode", parserMode},
+                                         {"page_size", pageSize},
+                                         {"language_profile", languageProfile},
+                                         {"language_resource_identity", languageResourceIdentity},
+                                         {"language_resource_hash", languageResourceHash},
+                                         {"syntax_profile", syntaxProfile},
+                                         {"topology_profile", topologyProfile},
+                                         {"namespace", required(args, "--namespace")},
                                         {"script", required(args, "--input")},
                                         {"statement_index", index + 1},
                                         {"statement_id", statementId},
                                         {"command_group", group},
                                         {"sql_hash", sha256Text(sql)},
-                                        {"expected_outcome", "success"},
+                                        {"expected_outcome", expectedOutcome},
                                         {"actual_outcome", outcome},
-                                        {"sqlstate", ctx.sqlstate ? ctx.sqlstate : "HY000"},
+                                        {"sqlstate", sqlState},
                                         {"diagnostic_code", diagnostic},
                                         {"canonical_message_vector", json::array()},
                                         {"row_count", rowCount},
                                         {"result_digest", resultDigest},
                                         {"elapsed_ns", nowNs() - statementStarted},
                                         {"server_revalidation_state", "required"},
+                                        {"language_profile", languageProfile},
+                                        {"language_resource_pack", languageResourcePack},
+                                        {"language_resource_identity", languageResourceIdentity},
+                                        {"language_resource_hash", languageResourceHash},
+                                        {"syntax_profile", syntaxProfile},
+                                        {"topology_profile", topologyProfile},
+                                        {"standard_english_fallback", standardEnglishFallback},
                                         {"parser_output_to_engine_required", true},
                                         {"engine_sql_text_execution", false},
                                         {"sql_text_artifact", "sha256_only"},
@@ -710,6 +864,14 @@ int main(int argc, char** argv) {
                                {"sslmode", sslmode},
                                {"transport_mode", transportMode},
                                {"tls_policy", tlsPolicy},
+                               {"language_resource_pack", languageResourcePack},
+                               {"language_resource_identity", languageResourceIdentity},
+                               {"language_resource_hash", languageResourceHash},
+                               {"language_resource_authority", "shared_server_parser_resource_pack"},
+                               {"language_profile", languageProfile},
+                               {"syntax_profile", syntaxProfile},
+                               {"topology_profile", topologyProfile},
+                               {"standard_english_fallback", standardEnglishFallback},
                                {"status", failures.empty() ? "pass" : "fail"},
                                {"failure_count", failures.size()},
                                {"elapsed_ns", timings["overall"]},
@@ -722,7 +884,7 @@ int main(int argc, char** argv) {
         writeText(required(args, "--metrics"), json(timings).dump() + "\n");
         writeText(paths.at("timing"), json(timings).dump() + "\n");
         writeText(paths.at("digests"), digests.dump() + "\n");
-        writeText(paths.at("refusals"), "[]\n");
+        writeText(paths.at("refusals"), securityRefusals.dump() + "\n");
         writeText(paths.at("api"), json(api).dump() + "\n");
         writeText(paths.at("review"), json({{"driver", "cpp"}, {"public_api_only", true}, {"shells_out_to_other_driver", false},
                                              {"source_is_canonical_example", true}, {"sections", {"connection", "prepare", "execute", "fetch", "metadata", "diagnostics", "transaction"}}}).dump() + "\n");

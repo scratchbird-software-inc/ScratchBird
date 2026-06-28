@@ -46,11 +46,56 @@ interface Args {
   runId: string;
   createDatabase: boolean;
   createEmulationMode: string;
+  languageResourcePack: string;
+  languageResourceIdentity: string;
+  languageResourceHash: string;
+  languageProfile: string;
+  syntaxProfile: string;
+  topologyProfile: string;
+  standardEnglishFallback: boolean;
 }
 
 const PAGE_SIZES = new Set(["4k", "8k", "16k", "32k", "64k", "128k"]);
 const ROUTES = new Set(["embedded", "ipc_local", "listener-parser", "manager-listener-parser"]);
 const PARSER_MODES = new Set(["server-parser", "standalone-parser", "driver-sblr-uuid"]);
+const SUPPORTED_ARGS = new Set([
+  "--database",
+  "--host",
+  "--port",
+  "--user",
+  "--password",
+  "--role",
+  "--sslmode",
+  "--sslrootcert",
+  "--sslcert",
+  "--sslkey",
+  "--route",
+  "--parser-mode",
+  "--page-size",
+  "--namespace",
+  "--input",
+  "--output",
+  "--error",
+  "--diagnostics",
+  "--metrics",
+  "--transcript",
+  "--summary",
+  "--stop-on-error",
+  "--expected-refusals",
+  "--statement-timeout-ms",
+  "--fetch-size",
+  "--concurrency-worker",
+  "--create-database",
+  "--create-emulation-mode",
+  "--run-id",
+  "--language-resource-pack",
+  "--language-resource-identity",
+  "--language-resource-hash",
+  "--language-profile",
+  "--syntax-profile",
+  "--topology-profile",
+  "--standard-english-fallback",
+]);
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -118,7 +163,7 @@ async function run(args: Args): Promise<number> {
       sslkey: args.sslkey || undefined,
       binaryTransfer: true,
       applicationName: "SBIsqlNode",
-      frontDoorMode: args.route === "manager-listener-parser" ? "manager_proxy" : "direct",
+      frontDoorMode: frontDoorModeForRoute(args.route),
       metadataExpandSchemaParents: true,
     };
     client = new ScratchBirdClient(config);
@@ -146,6 +191,7 @@ async function run(args: Args): Promise<number> {
       throw new Error(`${args.parserMode} is not yet implemented by the Node native tool; it fails closed`);
     }
 
+    const expectedRefusals = await loadExpectedRefusals(args.expectedRefusals);
     const script = await readInput(args.input);
     const statements = splitTopLevelStatements(script);
     for (let i = 0; i < statements.length; i++) {
@@ -153,11 +199,13 @@ async function run(args: Args): Promise<number> {
       const statementId = `${basename(args.input)}:${i + 1}`;
       const group = classifyStatement(sql);
       const statementStarted = process.hrtime.bigint();
+      const expectedOutcome = expectedRefusals.has(statementId) ? "refusal" : "success";
       let outcome = "success";
       let rowCount = -1;
       let resultDigest: string | null = null;
       let diagnosticCode: string | null = null;
       let sqlState: string | null = null;
+      let breakAfterEvent = false;
       try {
         if (group === "transaction") {
           await runTransaction(client, sql);
@@ -175,6 +223,11 @@ async function run(args: Args): Promise<number> {
           resultDigest = sha256(JSON.stringify(result.rows));
           await appendText(args.output, JSON.stringify({ statement_id: statementId, rows: result.rows }) + "\n");
         }
+        if (expectedOutcome === "refusal") {
+          outcome = "unexpected_success";
+          failures.push({ statement_id: statementId, message: "statement succeeded but was expected to refuse" });
+          breakAfterEvent = args.stopOnError;
+        }
       } catch (error) {
         outcome = "refusal";
         diagnosticCode = error instanceof Error ? error.message : String(error);
@@ -185,10 +238,15 @@ async function run(args: Args): Promise<number> {
           message: diagnosticCode,
         });
         await appendText(args.error, `${statementId}: ${diagnosticCode}\n`);
-        failures.push({ statement_id: statementId, message: diagnosticCode });
-        if (args.stopOnError) {
-          addTiming(timings, group, statementStarted);
-          break;
+        if (expectedOutcome === "refusal") {
+          securityRefusals.push({
+            statement_id: statementId,
+            sqlstate: sqlState,
+            diagnostic_code: diagnosticCode,
+          });
+        } else {
+          failures.push({ statement_id: statementId, message: diagnosticCode });
+          breakAfterEvent = args.stopOnError;
         }
       }
       addTiming(timings, group, statementStarted);
@@ -205,7 +263,7 @@ async function run(args: Args): Promise<number> {
         statement_id: statementId,
         command_group: group,
         sql_hash: sha256(sql),
-        expected_outcome: "success",
+        expected_outcome: expectedOutcome,
         actual_outcome: outcome,
         sqlstate: sqlState,
         diagnostic_code: diagnosticCode,
@@ -214,6 +272,13 @@ async function run(args: Args): Promise<number> {
         result_digest: resultDigest,
         elapsed_ns: Number(process.hrtime.bigint() - statementStarted),
         server_revalidation_state: "required",
+        language_profile: args.languageProfile,
+        language_resource_pack: args.languageResourcePack,
+        language_resource_identity: args.languageResourceIdentity,
+        language_resource_hash: args.languageResourceHash,
+        syntax_profile: args.syntaxProfile,
+        topology_profile: args.topologyProfile,
+        standard_english_fallback: args.standardEnglishFallback,
         transaction_id_observed: null,
         mga_authority: "engine",
         native_api_surface: "node",
@@ -222,6 +287,9 @@ async function run(args: Args): Promise<number> {
       await appendJsonl(paths.events, event);
       testcases.push(event);
       digests.push({ statement_id: statementId, row_count: rowCount, result_digest: resultDigest });
+      if (breakAfterEvent) {
+        break;
+      }
     }
 
     const metadataStarted = process.hrtime.bigint();
@@ -244,7 +312,7 @@ async function run(args: Args): Promise<number> {
 
   const elapsed = Number(process.hrtime.bigint() - started);
   timings.overall = elapsed;
-  const transportMode = args.sslmode === "disable" ? "tls_disabled" : "tls_required";
+  const transportMode = transportModeForRoute(args.route, args.sslmode);
   const summary = {
     run_id: args.runId,
     driver_name: "node",
@@ -254,6 +322,14 @@ async function run(args: Args): Promise<number> {
     namespace: args.namespace,
     sslmode: args.sslmode,
     transport_mode: transportMode,
+    language_resource_pack: args.languageResourcePack,
+    language_resource_identity: args.languageResourceIdentity,
+    language_resource_hash: args.languageResourceHash,
+    language_resource_authority: "shared_server_parser_resource_pack",
+    language_profile: args.languageProfile,
+    syntax_profile: args.syntaxProfile,
+    topology_profile: args.topologyProfile,
+    standard_english_fallback: args.standardEnglishFallback,
     status: failures.length === 0 ? "pass" : "fail",
     failure_count: failures.length,
     elapsed_ns: elapsed,
@@ -292,14 +368,23 @@ async function runTransaction(client: ScratchBirdClient, sql: string): Promise<v
 
 function parseArgs(raw: string[]): Args {
   const values: Record<string, string> = {};
-  const flags = new Set<string>();
+  const flags: Record<string, boolean> = {};
   for (let i = 0; i < raw.length; i++) {
     const arg = raw[i];
     if (!arg.startsWith("--")) {
       throw new Error(`unexpected positional argument: ${arg}`);
     }
-    if (arg === "--stop-on-error" || arg === "--create-database") {
-      flags.add(arg);
+    if (!SUPPORTED_ARGS.has(arg)) {
+      throw new Error(`unsupported argument: ${arg}`);
+    }
+    if (arg === "--stop-on-error" || arg === "--create-database" || arg === "--standard-english-fallback") {
+      const next = raw[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        flags[arg] = parseBoolean(next);
+        i++;
+      } else {
+        flags[arg] = true;
+      }
       continue;
     }
     const value = raw[i + 1];
@@ -331,15 +416,91 @@ function parseArgs(raw: string[]): Args {
     metrics: required(values, "--metrics"),
     transcript: required(values, "--transcript"),
     summary: required(values, "--summary"),
-    stopOnError: flags.has("--stop-on-error"),
+    stopOnError: flags["--stop-on-error"] ?? false,
     expectedRefusals: values["--expected-refusals"] ?? "",
     statementTimeoutMs: Number(values["--statement-timeout-ms"] ?? "30000"),
     fetchSize: Number(values["--fetch-size"] ?? "1000"),
     concurrencyWorker: Number(values["--concurrency-worker"] ?? "0"),
     runId: values["--run-id"] ?? "manual",
-    createDatabase: flags.has("--create-database"),
+    createDatabase: flags["--create-database"] ?? false,
+    languageResourcePack: values["--language-resource-pack"] ?? "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+    languageResourceIdentity: values["--language-resource-identity"] ?? "sbsql.common_resource_pack.v1",
+    languageResourceHash: values["--language-resource-hash"] ?? "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
+    languageProfile: values["--language-profile"] ?? "en-US",
+    syntaxProfile: values["--syntax-profile"] ?? "sbsql.v3",
+    topologyProfile: values["--topology-profile"] ?? "topology.sbsql.canonical.v1",
+    standardEnglishFallback: flags["--standard-english-fallback"] ?? true,
     createEmulationMode: values["--create-emulation-mode"] ?? "sbsql",
   };
+}
+
+function parseBoolean(value: string): boolean {
+  switch (value.toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      throw new Error(`invalid boolean value: ${value}`);
+  }
+}
+
+async function loadExpectedRefusals(path: string): Promise<Set<string>> {
+  const expected = new Set<string>();
+  if (!path) {
+    return expected;
+  }
+  collectExpectedRefusalIds(expected, JSON.parse(await readFile(path, "utf8")));
+  return expected;
+}
+
+function collectExpectedRefusalIds(expected: Set<string>, value: unknown): void {
+  if (typeof value === "string") {
+    expected.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectExpectedRefusalIds(expected, item);
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["statement_id", "statementId", "id"]) {
+    if (typeof record[key] === "string") {
+      expected.add(record[key]);
+    }
+  }
+  for (const key of [
+    "statement_ids",
+    "statementIds",
+    "expected_refusals",
+    "expectedRefusals",
+    "expected_diagnostics",
+    "expectedDiagnostics",
+  ]) {
+    collectExpectedRefusalIds(expected, record[key]);
+  }
+}
+
+function frontDoorModeForRoute(route: string): ClientConfig["frontDoorMode"] {
+  if (route === "manager-listener-parser") return "manager_proxy";
+  return "direct";
+}
+
+function transportModeForRoute(route: string, sslmode: string): string {
+  if (route === "embedded") return "embedded_no_network_transport";
+  if (route === "ipc_local") return "local_ipc_no_tls";
+  return sslmode === "disable" ? "tls_disabled" : "tls_required";
 }
 
 function validate(args: Args): void {

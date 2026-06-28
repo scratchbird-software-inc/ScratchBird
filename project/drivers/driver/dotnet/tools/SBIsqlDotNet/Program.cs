@@ -21,6 +21,45 @@ internal static class SBIsqlDotNet
     private static readonly HashSet<string> PageSizes = ["4k", "8k", "16k", "32k", "64k", "128k"];
     private static readonly HashSet<string> Routes = ["embedded", "ipc_local", "listener-parser", "manager-listener-parser"];
     private static readonly HashSet<string> ParserModes = ["server-parser", "standalone-parser", "driver-sblr-uuid"];
+    private static readonly HashSet<string> SupportedArgs =
+    [
+        "--database",
+        "--host",
+        "--port",
+        "--user",
+        "--password",
+        "--role",
+        "--sslmode",
+        "--sslrootcert",
+        "--sslcert",
+        "--sslkey",
+        "--route",
+        "--parser-mode",
+        "--page-size",
+        "--namespace",
+        "--input",
+        "--output",
+        "--error",
+        "--diagnostics",
+        "--metrics",
+        "--transcript",
+        "--summary",
+        "--stop-on-error",
+        "--expected-refusals",
+        "--statement-timeout-ms",
+        "--fetch-size",
+        "--concurrency-worker",
+        "--create-database",
+        "--create-emulation-mode",
+        "--run-id",
+        "--language-resource-pack",
+        "--language-resource-identity",
+        "--language-resource-hash",
+        "--language-profile",
+        "--syntax-profile",
+        "--topology-profile",
+        "--standard-english-fallback",
+    ];
 
     public static async Task<int> RunAsync(string[] raw)
     {
@@ -67,6 +106,7 @@ internal static class SBIsqlDotNet
         var digests = new List<Dictionary<string, object?>>();
         var securityRefusals = new List<Dictionary<string, object?>>();
         var started = NowNs();
+        var expectedRefusals = LoadExpectedRefusals(ValueOrDefault(args, "--expected-refusals", ""));
 
         DbConnection? connection = null;
         try
@@ -104,7 +144,12 @@ internal static class SBIsqlDotNet
                 driver = "dotnet",
                 route = Required(args, "--route"),
                 parser_mode = Required(args, "--parser-mode"),
-                page_size = Required(args, "--page-size")
+                page_size = Required(args, "--page-size"),
+                language_profile = ValueOrDefault(args, "--language-profile", "en-US"),
+                language_resource_identity = ValueOrDefault(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+                language_resource_hash = ValueOrDefault(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+                syntax_profile = ValueOrDefault(args, "--syntax-profile", "sbsql.v3"),
+                topology_profile = ValueOrDefault(args, "--topology-profile", "topology.sbsql.canonical.v1")
             });
             await AppendJsonlAsync(paths["wire"], new { @event = "server_admission_required", driver_or_parser_finality = "forbidden" });
 
@@ -122,6 +167,8 @@ internal static class SBIsqlDotNet
             {
                 var sql = statements[index];
                 var statementId = $"{Path.GetFileName(Required(args, "--input"))}:{index + 1}";
+                var expectedRefusal = expectedRefusals.Contains(statementId);
+                var expectedOutcome = expectedRefusal ? "refusal" : "success";
                 var group = Classify(sql);
                 var statementStarted = NowNs();
                 var outcome = "success";
@@ -167,6 +214,12 @@ internal static class SBIsqlDotNet
                         await AppendTextAsync(Required(args, "--output"), JsonSerializer.Serialize(new { statement_id = statementId, rows }) + "\n");
                     }
                     digests.Add(new Dictionary<string, object?> { ["statement_id"] = statementId, ["row_count"] = rowCount, ["result_digest"] = resultDigest });
+                    if (expectedRefusal)
+                    {
+                        outcome = "unexpected_success";
+                        diagnostic = "statement succeeded but was expected to refuse";
+                        failures.Add(new Dictionary<string, object?> { ["statement_id"] = statementId, ["message"] = diagnostic });
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -175,8 +228,15 @@ internal static class SBIsqlDotNet
                     diagnostic = ex.Message;
                     await AppendJsonlAsync(Required(args, "--diagnostics"), new { statement_id = statementId, sqlstate = sqlState, message = diagnostic });
                     await AppendTextAsync(Required(args, "--error"), $"{statementId}: {diagnostic}\n");
-                    failures.Add(new Dictionary<string, object?> { ["statement_id"] = statementId, ["message"] = diagnostic });
-                    if (args.ContainsKey("--stop-on-error"))
+                    if (expectedRefusal)
+                    {
+                        securityRefusals.Add(new Dictionary<string, object?> { ["statement_id"] = statementId, ["sqlstate"] = sqlState, ["diagnostic_code"] = diagnostic });
+                    }
+                    else
+                    {
+                        failures.Add(new Dictionary<string, object?> { ["statement_id"] = statementId, ["message"] = diagnostic });
+                    }
+                    if (!expectedRefusal && BooleanArg(args, "--stop-on-error", true))
                     {
                         AddTiming(timings, group, statementStarted);
                         break;
@@ -198,7 +258,7 @@ internal static class SBIsqlDotNet
                     ["statement_id"] = statementId,
                     ["command_group"] = group,
                     ["sql_hash"] = Sha256Text(sql),
-                    ["expected_outcome"] = "success",
+                    ["expected_outcome"] = expectedOutcome,
                     ["actual_outcome"] = outcome,
                     ["sqlstate"] = sqlState,
                     ["diagnostic_code"] = diagnostic,
@@ -207,6 +267,13 @@ internal static class SBIsqlDotNet
                     ["result_digest"] = resultDigest,
                     ["elapsed_ns"] = elapsed,
                     ["server_revalidation_state"] = "required",
+                    ["language_profile"] = ValueOrDefault(args, "--language-profile", "en-US"),
+                    ["language_resource_pack"] = ValueOrDefault(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+                    ["language_resource_identity"] = ValueOrDefault(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+                    ["language_resource_hash"] = ValueOrDefault(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+                    ["syntax_profile"] = ValueOrDefault(args, "--syntax-profile", "sbsql.v3"),
+                    ["topology_profile"] = ValueOrDefault(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+                    ["standard_english_fallback"] = BooleanArg(args, "--standard-english-fallback", true),
                     ["transaction_id_observed"] = null,
                     ["mga_authority"] = "engine",
                     ["native_api_surface"] = "ado_net",
@@ -242,6 +309,7 @@ internal static class SBIsqlDotNet
         var elapsedTotal = NowNs() - started;
         timings["overall"] = elapsedTotal;
         var sslmode = ValueOrDefault(args, "--sslmode", "require");
+        var transportMode = TransportModeForRoute(Required(args, "--route"), sslmode);
         var summary = new
         {
             run_id = ValueOrDefault(args, "--run-id", "manual"),
@@ -251,7 +319,15 @@ internal static class SBIsqlDotNet
             page_size = Required(args, "--page-size"),
             @namespace = Required(args, "--namespace"),
             sslmode,
-            transport_mode = string.Equals(sslmode, "disable", StringComparison.OrdinalIgnoreCase) ? "tls_disabled" : "tls_required",
+            transport_mode = transportMode,
+            language_resource_pack = ValueOrDefault(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+            language_resource_identity = ValueOrDefault(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+            language_resource_hash = ValueOrDefault(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+            language_resource_authority = "shared_server_parser_resource_pack",
+            language_profile = ValueOrDefault(args, "--language-profile", "en-US"),
+            syntax_profile = ValueOrDefault(args, "--syntax-profile", "sbsql.v3"),
+            topology_profile = ValueOrDefault(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+            standard_english_fallback = BooleanArg(args, "--standard-english-fallback", true),
             status = failures.Count == 0 ? "pass" : "fail",
             failure_count = failures.Count,
             elapsed_ns = elapsedTotal,
@@ -303,9 +379,20 @@ internal static class SBIsqlDotNet
             {
                 throw new ArgumentException($"unexpected positional argument: {key}");
             }
-            if (key is "--stop-on-error" or "--create-database")
+            if (!SupportedArgs.Contains(key))
             {
-                args[key] = "true";
+                throw new ArgumentException($"unsupported argument: {key}");
+            }
+            if (key is "--stop-on-error" or "--create-database" or "--standard-english-fallback")
+            {
+                if (i + 1 < raw.Length && !raw[i + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    args[key] = raw[++i];
+                }
+                else
+                {
+                    args[key] = "true";
+                }
                 continue;
             }
             if (i + 1 >= raw.Length || raw[i + 1].StartsWith("--", StringComparison.Ordinal))
@@ -345,6 +432,82 @@ internal static class SBIsqlDotNet
 
     private static string ValueOrDefault(Dictionary<string, string> args, string key, string fallback) =>
         args.TryGetValue(key, out var value) ? value : fallback;
+
+    private static bool BooleanArg(Dictionary<string, string> args, string key, bool fallback)
+    {
+        if (!args.TryGetValue(key, out var value))
+        {
+            return fallback;
+        }
+        return value.ToLowerInvariant() switch
+        {
+            "true" or "1" or "yes" or "on" => true,
+            "false" or "0" or "no" or "off" => false,
+            _ => throw new ArgumentException($"invalid boolean value for {key}: {value}")
+        };
+    }
+
+    private static string TransportModeForRoute(string route, string sslmode) =>
+        route switch
+        {
+            "embedded" => "embedded_no_network_transport",
+            "ipc_local" => "local_ipc_no_tls",
+            _ => string.Equals(sslmode, "disable", StringComparison.OrdinalIgnoreCase) ? "tls_disabled" : "tls_required"
+        };
+
+    private static HashSet<string> LoadExpectedRefusals(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return [];
+        }
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("expected refusal file not found", path);
+        }
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        if (doc.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            AddExpectedRefusals(doc.RootElement, ids);
+            return ids;
+        }
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new ArgumentException("expected refusals must be a JSON object or array");
+        }
+        if (doc.RootElement.TryGetProperty("statement_ids", out var statementIds))
+        {
+            AddExpectedRefusals(statementIds, ids);
+        }
+        if (doc.RootElement.TryGetProperty("expected_refusals", out var expected))
+        {
+            AddExpectedRefusals(expected, ids);
+        }
+        return ids;
+    }
+
+    private static void AddExpectedRefusals(JsonElement value, HashSet<string> ids)
+    {
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                ids.Add(item.GetString() ?? "");
+            }
+            else if (item.ValueKind == JsonValueKind.Object &&
+                     item.TryGetProperty("statement_id", out var statementId) &&
+                     statementId.ValueKind == JsonValueKind.String)
+            {
+                ids.Add(statementId.GetString() ?? "");
+            }
+        }
+        ids.Remove("");
+    }
 
     private static async Task<string> ReadInputAsync(string path) =>
         path == "-" ? await Console.In.ReadToEndAsync() : await File.ReadAllTextAsync(path);

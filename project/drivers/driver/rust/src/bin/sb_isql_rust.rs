@@ -6,17 +6,56 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use serde_json::{json, Value as JsonValue};
-use sha2::{Digest, Sha256};
 use scratchbird::sql::Params;
 use scratchbird::{Client, Config};
+use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
+
+const SUPPORTED_ARGS: &[&str] = &[
+    "--database",
+    "--host",
+    "--port",
+    "--user",
+    "--password",
+    "--role",
+    "--sslmode",
+    "--sslrootcert",
+    "--sslcert",
+    "--sslkey",
+    "--route",
+    "--parser-mode",
+    "--page-size",
+    "--namespace",
+    "--input",
+    "--output",
+    "--error",
+    "--diagnostics",
+    "--metrics",
+    "--transcript",
+    "--summary",
+    "--stop-on-error",
+    "--expected-refusals",
+    "--statement-timeout-ms",
+    "--fetch-size",
+    "--concurrency-worker",
+    "--create-database",
+    "--create-emulation-mode",
+    "--run-id",
+    "--language-resource-pack",
+    "--language-resource-identity",
+    "--language-resource-hash",
+    "--language-profile",
+    "--syntax-profile",
+    "--topology-profile",
+    "--standard-english-fallback",
+];
 
 #[derive(Debug)]
 struct Args {
@@ -49,6 +88,13 @@ struct Args {
     run_id: String,
     create_database: bool,
     create_emulation_mode: String,
+    language_resource_pack: String,
+    language_resource_identity: String,
+    language_resource_hash: String,
+    language_profile: String,
+    syntax_profile: String,
+    topology_profile: String,
+    standard_english_fallback: bool,
 }
 
 #[tokio::main]
@@ -111,7 +157,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     let mut testcases = Vec::<JsonValue>::new();
     let mut failures = Vec::<JsonValue>::new();
     let mut digests = Vec::<JsonValue>::new();
-    let security_refusals = Vec::<JsonValue>::new();
+    let mut security_refusals = Vec::<JsonValue>::new();
 
     let mut config = Config::default();
     config.host = args.host.clone();
@@ -121,9 +167,21 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     config.password = args.password.clone();
     config.role = args.role.clone();
     config.sslmode = args.sslmode.clone();
-    config.sslrootcert = if args.sslrootcert.is_empty() { None } else { Some(args.sslrootcert.clone()) };
-    config.sslcert = if args.sslcert.is_empty() { None } else { Some(args.sslcert.clone()) };
-    config.sslkey = if args.sslkey.is_empty() { None } else { Some(args.sslkey.clone()) };
+    config.sslrootcert = if args.sslrootcert.is_empty() {
+        None
+    } else {
+        Some(args.sslrootcert.clone())
+    };
+    config.sslcert = if args.sslcert.is_empty() {
+        None
+    } else {
+        Some(args.sslcert.clone())
+    };
+    config.sslkey = if args.sslkey.is_empty() {
+        None
+    } else {
+        Some(args.sslkey.clone())
+    };
     config.front_door_mode = if args.route == "manager-listener-parser" {
         "manager_proxy".to_string()
     } else {
@@ -174,6 +232,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     if failures.is_empty() {
+        let expected_refusals = load_expected_refusals(&args.expected_refusals)?;
         let script = read_input(&args.input)?;
         for (index, statement) in split_statements(&script).iter().enumerate() {
             let statement_id = format!(
@@ -186,13 +245,20 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             );
             let group = classify(statement);
             let statement_started = Instant::now();
+            let expected_outcome = if expected_refusals.contains(&statement_id) {
+                "refusal"
+            } else {
+                "success"
+            };
             let mut outcome = "success".to_string();
             let mut row_count = -1_i64;
             let mut result_digest = JsonValue::Null;
             let mut sqlstate = JsonValue::Null;
             let mut diagnostic = JsonValue::Null;
+            let mut break_after_event = false;
             let result = if group == "transaction" {
-                run_transaction(&mut client, statement, &mut api_hits).await
+                run_transaction(&mut client, statement, &mut api_hits)
+                    .await
                     .map(|_| scratchbird::QueryResult {
                         columns: Vec::new(),
                         rows: Vec::new(),
@@ -201,7 +267,9 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                     })
             } else {
                 *api_hits.entry("query_params".to_string()).or_default() += 1;
-                client.query_params(statement, Params::Positional(Vec::new())).await
+                client
+                    .query_params(statement, Params::Positional(Vec::new()))
+                    .await
             };
             match result {
                 Ok(result) => {
@@ -221,6 +289,14 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                         "row_count": row_count,
                         "result_digest": result_digest
                     }));
+                    if expected_outcome == "refusal" {
+                        outcome = "unexpected_success".to_string();
+                        failures.push(json!({
+                            "statement_id": statement_id,
+                            "message": "statement succeeded but was expected to refuse"
+                        }));
+                        break_after_event = args.stop_on_error;
+                    }
                 }
                 Err(err) => {
                     outcome = "refusal".to_string();
@@ -231,10 +307,17 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                         json!({"statement_id": statement_id, "sqlstate": sqlstate, "message": diagnostic}),
                     )?;
                     append_text(&args.error, &format!("{}: {}\n", statement_id, err))?;
-                    failures.push(json!({"statement_id": statement_id, "message": err.to_string()}));
-                    if args.stop_on_error {
-                        add_timing(&mut timings, &group, statement_started);
-                        break;
+                    if expected_outcome == "refusal" {
+                        security_refusals.push(json!({
+                            "statement_id": statement_id,
+                            "sqlstate": sqlstate,
+                            "diagnostic_code": diagnostic
+                        }));
+                    } else {
+                        failures.push(
+                            json!({"statement_id": statement_id, "message": err.to_string()}),
+                        );
+                        break_after_event = args.stop_on_error;
                     }
                 }
             }
@@ -253,7 +336,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                 "statement_id": statement_id,
                 "command_group": group,
                 "sql_hash": sha256(statement),
-                "expected_outcome": "success",
+                "expected_outcome": expected_outcome,
                 "actual_outcome": outcome,
                 "sqlstate": sqlstate,
                 "diagnostic_code": diagnostic,
@@ -262,6 +345,13 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                 "result_digest": result_digest,
                 "elapsed_ns": elapsed_ns,
                 "server_revalidation_state": "required",
+                "language_profile": args.language_profile,
+                "language_resource_pack": args.language_resource_pack,
+                "language_resource_identity": args.language_resource_identity,
+                "language_resource_hash": args.language_resource_hash,
+                "syntax_profile": args.syntax_profile,
+                "topology_profile": args.topology_profile,
+                "standard_english_fallback": args.standard_english_fallback,
                 "transaction_id_observed": null,
                 "mga_authority": "engine",
                 "native_api_surface": "rust",
@@ -269,6 +359,9 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             });
             append_jsonl(&paths.events, event.clone())?;
             testcases.push(event);
+            if break_after_event {
+                break;
+            }
         }
         let metadata_started = Instant::now();
         match client.query_metadata("tables").await {
@@ -286,13 +379,15 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                     ),
                 )?;
             }
-            Err(err) => failures.push(json!({"statement_id": "metadata", "message": err.to_string()})),
+            Err(err) => {
+                failures.push(json!({"statement_id": "metadata", "message": err.to_string()}))
+            }
         }
     }
     client.close().await;
 
     timings.insert("overall".to_string(), started.elapsed().as_nanos());
-    let transport_mode = if args.sslmode == "disable" { "tls_disabled" } else { "tls_required" };
+    let transport_mode = transport_mode_for_route(&args.route, &args.sslmode);
     let summary = json!({
         "run_id": args.run_id,
         "driver_name": "rust",
@@ -302,6 +397,14 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         "namespace": args.namespace,
         "sslmode": args.sslmode,
         "transport_mode": transport_mode,
+        "language_resource_pack": args.language_resource_pack,
+        "language_resource_identity": args.language_resource_identity,
+        "language_resource_hash": args.language_resource_hash,
+        "language_resource_authority": "shared_server_parser_resource_pack",
+        "language_profile": args.language_profile,
+        "syntax_profile": args.syntax_profile,
+        "topology_profile": args.topology_profile,
+        "standard_english_fallback": args.standard_english_fallback,
         "status": if failures.is_empty() { "pass" } else { "fail" },
         "failure_count": failures.len(),
         "elapsed_ns": started.elapsed().as_nanos(),
@@ -310,11 +413,26 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         "mga_authority": "engine"
     });
     write_text(&args.summary, &format!("{summary}\n"))?;
-    write_text(&args.metrics, &format!("{}\n", serde_json::to_string(&timings)?))?;
-    write_text(&paths.timing, &format!("{}\n", serde_json::to_string(&timings)?))?;
-    write_text(&paths.digests, &format!("{}\n", serde_json::to_string(&digests)?))?;
-    write_text(&paths.refusals, &format!("{}\n", serde_json::to_string(&security_refusals)?))?;
-    write_text(&paths.api, &format!("{}\n", serde_json::to_string(&api_hits)?))?;
+    write_text(
+        &args.metrics,
+        &format!("{}\n", serde_json::to_string(&timings)?),
+    )?;
+    write_text(
+        &paths.timing,
+        &format!("{}\n", serde_json::to_string(&timings)?),
+    )?;
+    write_text(
+        &paths.digests,
+        &format!("{}\n", serde_json::to_string(&digests)?),
+    )?;
+    write_text(
+        &paths.refusals,
+        &format!("{}\n", serde_json::to_string(&security_refusals)?),
+    )?;
+    write_text(
+        &paths.api,
+        &format!("{}\n", serde_json::to_string(&api_hits)?),
+    )?;
     write_text(
         &paths.review,
         &format!(
@@ -331,10 +449,16 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     write_text(&paths.junit, &junit(&testcases, &failures))?;
     append_text(
         &paths.stdout_log,
-        &format!("SBIsqlRust status={}\n", summary["status"].as_str().unwrap_or("fail")),
+        &format!(
+            "SBIsqlRust status={}\n",
+            summary["status"].as_str().unwrap_or("fail")
+        ),
     )?;
     if !failures.is_empty() {
-        append_text(&paths.stderr_log, &format!("{}\n", serde_json::to_string(&failures)?))?;
+        append_text(
+            &paths.stderr_log,
+            &format!("{}\n", serde_json::to_string(&failures)?),
+        )?;
     }
     Ok(if failures.is_empty() { 0 } else { 1 })
 }
@@ -407,7 +531,20 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
         if !key.starts_with("--") {
             return Err(format!("unexpected positional argument: {key}"));
         }
-        if key == "--stop-on-error" || key == "--create-database" {
+        if !SUPPORTED_ARGS.contains(&key.as_str()) {
+            return Err(format!("unsupported argument: {key}"));
+        }
+        if key == "--stop-on-error"
+            || key == "--create-database"
+            || key == "--standard-english-fallback"
+        {
+            if let Some(value) = raw.get(index + 1) {
+                if !value.starts_with("--") {
+                    flags.insert(key.clone(), parse_bool(value)?);
+                    index += 2;
+                    continue;
+                }
+            }
             flags.insert(key.clone(), true);
             index += 1;
             continue;
@@ -462,7 +599,10 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
         transcript: PathBuf::from(required(&values, "--transcript")?),
         summary: PathBuf::from(required(&values, "--summary")?),
         stop_on_error: flags.get("--stop-on-error").copied().unwrap_or(false),
-        expected_refusals: values.get("--expected-refusals").cloned().unwrap_or_default(),
+        expected_refusals: values
+            .get("--expected-refusals")
+            .cloned()
+            .unwrap_or_default(),
         statement_timeout_ms: values
             .get("--statement-timeout-ms")
             .and_then(|value| value.parse().ok())
@@ -484,7 +624,43 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             .get("--create-emulation-mode")
             .cloned()
             .unwrap_or_else(|| "sbsql".to_string()),
+        language_resource_pack: values
+            .get("--language-resource-pack")
+            .cloned()
+            .unwrap_or_else(|| "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack".to_string()),
+        language_resource_identity: values
+            .get("--language-resource-identity")
+            .cloned()
+            .unwrap_or_else(|| "sbsql.common_resource_pack.v1".to_string()),
+        language_resource_hash: values
+            .get("--language-resource-hash")
+            .cloned()
+            .unwrap_or_else(|| "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc".to_string()),
+        language_profile: values
+            .get("--language-profile")
+            .cloned()
+            .unwrap_or_else(|| "en-US".to_string()),
+        syntax_profile: values
+            .get("--syntax-profile")
+            .cloned()
+            .unwrap_or_else(|| "sbsql.v3".to_string()),
+        topology_profile: values
+            .get("--topology-profile")
+            .cloned()
+            .unwrap_or_else(|| "topology.sbsql.canonical.v1".to_string()),
+        standard_english_fallback: flags
+            .get("--standard-english-fallback")
+            .copied()
+            .unwrap_or(true),
     })
+}
+
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!("invalid boolean value: {value}")),
+    }
 }
 
 fn required(values: &BTreeMap<String, String>, key: &str) -> Result<String, String> {
@@ -499,8 +675,13 @@ fn validate(args: &Args) -> Result<(), String> {
     if !["4k", "8k", "16k", "32k", "64k", "128k"].contains(&args.page_size.as_str()) {
         return Err(format!("unsupported page size: {}", args.page_size));
     }
-    if !["embedded", "ipc_local", "listener-parser", "manager-listener-parser"]
-        .contains(&args.route.as_str())
+    if ![
+        "embedded",
+        "ipc_local",
+        "listener-parser",
+        "manager-listener-parser",
+    ]
+    .contains(&args.route.as_str())
     {
         return Err(format!("unsupported route: {}", args.route));
     }
@@ -510,6 +691,58 @@ fn validate(args: &Args) -> Result<(), String> {
         return Err(format!("unsupported parser mode: {}", args.parser_mode));
     }
     Ok(())
+}
+
+fn transport_mode_for_route(route: &str, sslmode: &str) -> &'static str {
+    match route {
+        "embedded" => "embedded_no_network_transport",
+        "ipc_local" => "local_ipc_no_tls",
+        _ if sslmode == "disable" => "tls_disabled",
+        _ => "tls_required",
+    }
+}
+
+fn load_expected_refusals(path: &str) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let mut expected = BTreeSet::<String>::new();
+    if path.is_empty() {
+        return Ok(expected);
+    }
+    let doc: JsonValue = serde_json::from_str(&fs::read_to_string(path)?)?;
+    collect_expected_refusal_ids(&mut expected, &doc);
+    Ok(expected)
+}
+
+fn collect_expected_refusal_ids(expected: &mut BTreeSet<String>, value: &JsonValue) {
+    match value {
+        JsonValue::String(text) => {
+            expected.insert(text.clone());
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_expected_refusal_ids(expected, item);
+            }
+        }
+        JsonValue::Object(object) => {
+            for key in ["statement_id", "statementId", "id"] {
+                if let Some(JsonValue::String(text)) = object.get(key) {
+                    expected.insert(text.clone());
+                }
+            }
+            for key in [
+                "statement_ids",
+                "statementIds",
+                "expected_refusals",
+                "expectedRefusals",
+                "expected_diagnostics",
+                "expectedDiagnostics",
+            ] {
+                if let Some(nested) = object.get(key) {
+                    collect_expected_refusal_ids(expected, nested);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn split_statements(script: &str) -> Vec<String> {

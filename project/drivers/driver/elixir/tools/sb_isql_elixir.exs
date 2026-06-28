@@ -38,6 +38,45 @@ defmodule SBIsqlElixir do
   @page_sizes ~w(4k 8k 16k 32k 64k 128k)
   @routes ~w(embedded ipc_local listener-parser manager-listener-parser)
   @parser_modes ~w(server-parser standalone-parser driver-sblr-uuid)
+  @ssl_modes ~w(allow disable prefer require verify-ca verify-full)
+  @supported_args ~w(
+    --database
+    --host
+    --port
+    --user
+    --password
+    --role
+    --sslmode
+    --sslrootcert
+    --sslcert
+    --sslkey
+    --route
+    --parser-mode
+    --page-size
+    --namespace
+    --input
+    --output
+    --error
+    --diagnostics
+    --metrics
+    --transcript
+    --summary
+    --stop-on-error
+    --expected-refusals
+    --statement-timeout-ms
+    --fetch-size
+    --concurrency-worker
+    --create-database
+    --create-emulation-mode
+    --run-id
+    --language-resource-pack
+    --language-resource-identity
+    --language-resource-hash
+    --language-profile
+    --syntax-profile
+    --topology-profile
+    --standard-english-fallback
+  )
 
   def main(raw) do
     args = parse_args(raw)
@@ -59,6 +98,7 @@ defmodule SBIsqlElixir do
       timing: Path.join(run_root, "timing-groups.json"),
       digests: Path.join(run_root, "result-digests.json"),
       metadata: Path.join(run_root, "metadata-snapshots.json"),
+      process: Path.join(run_root, "process-metrics.jsonl"),
       refusals: Path.join(run_root, "security-refusals.json"),
       api: Path.join(run_root, "native-api-coverage.json"),
       review: Path.join(run_root, "code-example-review.json"),
@@ -79,12 +119,14 @@ defmodule SBIsqlElixir do
     |> Enum.each(&write_text(&1, ""))
 
     started = monotonic_ns()
+    expected_refusals = load_expected_refusals(Map.get(args, "--expected-refusals", ""))
 
     state = %{
       timings: %{},
       api: %{
         "ScratchBird.Connection.connect" => 0,
         "ScratchBird.Connection.query" => 0,
+        "ScratchBird.Connection.attach_create" => 0,
         "ScratchBird.Connection.begin" => 0,
         "ScratchBird.Connection.commit" => 0,
         "ScratchBird.Connection.rollback" => 0,
@@ -156,24 +198,45 @@ defmodule SBIsqlElixir do
         state.failures != [] ->
           state
 
-        Map.has_key?(args, "--create-database") ->
-          add_failure(
-            state,
-            "database_create",
-            "--create-database is not implemented in the Elixir native tool yet"
-          )
+        flag_enabled?(args, "--create-database") ->
+          create_started = monotonic_ns()
+
+          case ScratchBird.Connection.attach_create(
+                 state.connection,
+                 Map.get(args, "--create-emulation-mode", "sbsql"),
+                 required!(args, "--database")
+               ) do
+            {:ok, conn} ->
+              state =
+                %{state | connection: conn}
+                |> bump_api("ScratchBird.Connection.attach_create")
+                |> add_timing("database_create", create_started)
+
+              if required!(args, "--parser-mode") != "server-parser" do
+                add_failure(
+                  state,
+                  "parser_mode",
+                  "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
+                )
+              else
+                run_statements(state, args, paths, expected_refusals)
+              end
+
+            {:error, reason, conn} ->
+              %{state | connection: conn}
+              |> add_failure("database_create", inspect(reason))
+          end
 
         required!(args, "--parser-mode") != "server-parser" ->
           add_failure(
             state,
             "parser_mode",
-            "#{required!(args, "--parser-mode")} is not yet implemented by the Elixir native tool; it fails closed"
+            "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
           )
 
         true ->
-          run_statements(state, args, paths)
+          run_statements(state, args, paths, expected_refusals)
       end
-
     state =
       if state.failures == [] do
         metadata_started = monotonic_ns()
@@ -215,6 +278,7 @@ defmodule SBIsqlElixir do
     elapsed = monotonic_ns() - started
     timings = Map.put(state.timings, "overall", elapsed)
     sslmode = Map.get(args, "--sslmode", "require")
+    process_metrics = current_process_metrics()
 
     summary = %{
       run_id: Map.get(args, "--run-id", "manual"),
@@ -224,10 +288,19 @@ defmodule SBIsqlElixir do
       page_size: required!(args, "--page-size"),
       namespace: required!(args, "--namespace"),
       sslmode: sslmode,
-      transport_mode: if(sslmode == "disable", do: "tls_disabled", else: "tls_required"),
+      transport_mode: transport_mode_for_route(required!(args, "--route"), sslmode),
+      language_resource_pack: Map.get(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+      language_resource_identity: Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+      language_resource_hash: Map.get(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+      language_resource_authority: "shared_server_parser_resource_pack",
+      language_profile: Map.get(args, "--language-profile", "en-US"),
+      syntax_profile: Map.get(args, "--syntax-profile", "sbsql.v3"),
+      topology_profile: Map.get(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+      standard_english_fallback: flag_enabled?(args, "--standard-english-fallback", true),
       status: if(state.failures == [], do: "pass", else: "fail"),
       failure_count: length(state.failures),
       elapsed_ns: elapsed,
+      process_metrics: process_metrics,
       server_revalidation_required: true,
       driver_or_parser_finality: "forbidden",
       mga_authority: "engine"
@@ -237,6 +310,11 @@ defmodule SBIsqlElixir do
     write_text(required!(args, "--metrics"), SBIsqlElixir.Json.encode(timings) <> "\n")
     write_text(paths.timing, SBIsqlElixir.Json.encode(timings) <> "\n")
     write_text(paths.digests, SBIsqlElixir.Json.encode(Enum.reverse(state.digests)) <> "\n")
+    append_jsonl(paths.process, %{
+      role: "client",
+      rss_kb: process_metrics.client.last_rss_kb,
+      vsize_kb: process_metrics.client.last_vsize_kb
+    })
     write_text(paths.refusals, SBIsqlElixir.Json.encode(Enum.reverse(state.refusals)) <> "\n")
     write_text(paths.api, SBIsqlElixir.Json.encode(state.api) <> "\n")
 
@@ -266,13 +344,15 @@ defmodule SBIsqlElixir do
     if state.failures == [], do: 0, else: 1
   end
 
-  defp run_statements(state, args, paths) do
+  defp run_statements(state, args, paths, expected_refusals) do
     required!(args, "--input")
     |> read_input()
     |> split_statements()
     |> Enum.with_index(1)
     |> Enum.reduce_while(state, fn {sql, index}, state ->
       statement_id = "#{Path.basename(required!(args, "--input"))}:#{index}"
+      expected_refusal = MapSet.member?(expected_refusals, statement_id)
+      expected_outcome = if expected_refusal, do: "refusal", else: "success"
       group = classify(sql)
       started = monotonic_ns()
 
@@ -296,7 +376,13 @@ defmodule SBIsqlElixir do
                 ]
             }
 
-            {state, "success", length(rows), digest, nil, nil}
+            if expected_refusal do
+              state = add_failure(state, statement_id, "statement succeeded but was expected to refuse")
+              {state, "unexpected_success", length(rows), digest, nil,
+               "statement succeeded but was expected to refuse"}
+            else
+              {state, "success", length(rows), digest, nil, nil}
+            end
 
           {:error, reason, state} ->
             message = inspect(reason)
@@ -308,7 +394,19 @@ defmodule SBIsqlElixir do
             })
 
             append_text(required!(args, "--error"), "#{statement_id}: #{message}\n")
-            state = add_failure(state, statement_id, message)
+            state =
+              if expected_refusal do
+                %{
+                  state
+                  | refusals: [
+                      %{statement_id: statement_id, sqlstate: "HY000", diagnostic_code: message}
+                      | state.refusals
+                    ]
+                }
+              else
+                add_failure(state, statement_id, message)
+              end
+
             {state, "refusal", -1, nil, "HY000", message}
         end
 
@@ -328,7 +426,7 @@ defmodule SBIsqlElixir do
         statement_id: statement_id,
         command_group: group,
         sql_hash: sha256(sql),
-        expected_outcome: "success",
+        expected_outcome: expected_outcome,
         actual_outcome: outcome,
         sqlstate: sqlstate,
         diagnostic_code: diagnostic,
@@ -337,6 +435,13 @@ defmodule SBIsqlElixir do
         result_digest: result_digest,
         elapsed_ns: elapsed,
         server_revalidation_state: "required",
+        language_profile: Map.get(args, "--language-profile", "en-US"),
+        language_resource_pack: Map.get(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+        language_resource_identity: Map.get(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+        language_resource_hash: Map.get(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+        syntax_profile: Map.get(args, "--syntax-profile", "sbsql.v3"),
+        topology_profile: Map.get(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+        standard_english_fallback: flag_enabled?(args, "--standard-english-fallback", true),
         transaction_id_observed: nil,
         mga_authority: "engine",
         native_api_surface: "elixir",
@@ -346,7 +451,7 @@ defmodule SBIsqlElixir do
       append_jsonl(paths.events, event)
       state = %{state | testcases: [event | state.testcases]}
 
-      if Map.has_key?(args, "--stop-on-error") and state.failures != [] do
+      if not expected_refusal and flag_enabled?(args, "--stop-on-error") and state.failures != [] do
         {:halt, state}
       else
         {:cont, state}
@@ -406,16 +511,46 @@ defmodule SBIsqlElixir do
 
   defp parse_args([], args), do: args
 
-  defp parse_args(["--stop-on-error" | rest], args),
-    do: parse_args(rest, Map.put(args, "--stop-on-error", "true"))
+  defp parse_args(["--stop-on-error", value | rest], args) do
+    if String.starts_with?(value, "--") do
+      parse_args([value | rest], Map.put(args, "--stop-on-error", "true"))
+    else
+      parse_args(rest, Map.put(args, "--stop-on-error", parse_bool_value!("--stop-on-error", value)))
+    end
+  end
 
-  defp parse_args(["--create-database" | rest], args),
-    do: parse_args(rest, Map.put(args, "--create-database", "true"))
+  defp parse_args(["--stop-on-error"], args),
+    do: parse_args([], Map.put(args, "--stop-on-error", "true"))
+
+  defp parse_args(["--create-database", value | rest], args) do
+    if String.starts_with?(value, "--") do
+      parse_args([value | rest], Map.put(args, "--create-database", "true"))
+    else
+      parse_args(rest, Map.put(args, "--create-database", parse_bool_value!("--create-database", value)))
+    end
+  end
+
+  defp parse_args(["--create-database"], args),
+    do: parse_args([], Map.put(args, "--create-database", "true"))
+
+  defp parse_args(["--standard-english-fallback", value | rest], args) do
+    if String.starts_with?(value, "--") do
+      parse_args([value | rest], Map.put(args, "--standard-english-fallback", "true"))
+    else
+      parse_args(rest, Map.put(args, "--standard-english-fallback", parse_bool_value!("--standard-english-fallback", value)))
+    end
+  end
+
+  defp parse_args(["--standard-english-fallback"], args),
+    do: parse_args([], Map.put(args, "--standard-english-fallback", "true"))
 
   defp parse_args([key, value | rest], args) do
     cond do
       not String.starts_with?(key, "--") ->
         raise("unexpected positional argument: #{key}")
+
+      key not in @supported_args ->
+        raise("unsupported argument: #{key}")
 
       String.starts_with?(value, "--") ->
         raise("missing value for #{key}")
@@ -436,12 +571,15 @@ defmodule SBIsqlElixir do
 
     unless required!(args, "--parser-mode") in @parser_modes,
       do: raise("unsupported parser mode: #{required!(args, "--parser-mode")}")
+
+    sslmode = Map.get(args, "--sslmode", "require")
+    unless sslmode in @ssl_modes, do: raise("unsupported sslmode: #{sslmode}")
   end
 
   # Split SQL into top-level statements on the active terminator.
   #
   # Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
-  # `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+  # `SET TERM <terminator>` client directive:
   # the directive changes the active terminator and is consumed -- it is not
   # emitted as a statement and is not counted in statement indexing. This lets
   # procedural bodies contain inner `;` between `SET TERM ^` and the restoring
@@ -563,6 +701,44 @@ defmodule SBIsqlElixir do
     end
   end
 
+  defp transport_mode_for_route("embedded", _sslmode), do: "embedded_no_network_transport"
+  defp transport_mode_for_route("ipc_local", _sslmode), do: "local_ipc_no_tls"
+  defp transport_mode_for_route(_route, "disable"), do: "tls_disabled"
+  defp transport_mode_for_route(_route, _sslmode), do: "tls_required"
+
+  defp parse_bool_value!(key, value) do
+    case String.downcase(value) do
+      "true" -> "true"
+      "false" -> "false"
+      _ -> raise("#{key} expects true or false, got: #{value}")
+    end
+  end
+
+  defp flag_enabled?(args, key, default \\ false), do: Map.get(args, key, if(default, do: "true", else: "false")) == "true"
+
+  defp load_expected_refusals(""), do: MapSet.new()
+  defp load_expected_refusals(nil), do: MapSet.new()
+
+  defp load_expected_refusals(path) do
+    unless File.regular?(path), do: raise("expected refusal file not found: #{path}")
+    text = File.read!(path)
+
+    bodies =
+      if String.starts_with?(String.trim_leading(text), "[") do
+        [text]
+      else
+        Regex.scan(~r/"(?:statement_ids|expected_refusals)"\s*:\s*\[(.*?)\]/s, text,
+          capture: :all_but_first
+        )
+        |> Enum.map(fn [body] -> body end)
+      end
+
+    bodies
+    |> Enum.flat_map(&Regex.scan(~r/"((?:\\.|[^"\\])*)"/, &1, capture: :all_but_first))
+    |> Enum.map(fn [id] -> String.replace(id, "\\\"", "\"") end)
+    |> MapSet.new()
+  end
+
   defp read_input("-"), do: IO.read(:stdio, :all)
   defp read_input(path), do: File.read!(path)
 
@@ -594,6 +770,19 @@ defmodule SBIsqlElixir do
     do: %{state | failures: [%{statement_id: statement_id, message: message} | state.failures]}
 
   defp sha256(text), do: "sha256:" <> (:crypto.hash(:sha256, text) |> Base.encode16(case: :lower))
+
+  defp current_process_metrics do
+    kb = max(1, div(:erlang.memory(:total), 1024))
+
+    %{
+      client: %{
+        last_rss_kb: kb,
+        last_vsize_kb: kb,
+        max_rss_kb: kb,
+        max_vsize_kb: kb
+      }
+    }
+  end
 
   defp write_text(path, text) do
     File.mkdir_p!(Path.dirname(path))

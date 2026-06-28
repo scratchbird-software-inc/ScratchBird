@@ -75,7 +75,7 @@ inline std::string setTermDirective(const std::string& chunk) {
 // Split SQL into top-level statements on the active terminator.
 //
 // Quote-aware (single/double quotes) and `--` comment-aware. Honors the
-// `SET TERM <terminator>` client directive (Firebird / sb_isql semantics): the
+// `SET TERM <terminator>` client directive: the
 // directive changes the active terminator and is consumed (not emitted, not
 // counted in statement indexing). With no SET TERM present, behavior is a plain
 // quote-aware top-level `;` split, so existing scripts and indices are stable.

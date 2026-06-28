@@ -10,6 +10,7 @@
 require "digest"
 require "fileutils"
 require "json"
+require "set"
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "scratchbird"
@@ -17,6 +18,45 @@ require "scratchbird"
 PAGE_SIZES = %w[4k 8k 16k 32k 64k 128k].freeze
 ROUTES = %w[embedded ipc_local listener-parser manager-listener-parser].freeze
 PARSER_MODES = %w[server-parser standalone-parser driver-sblr-uuid].freeze
+SSLMODES = %w[allow disable prefer require verify-ca verify-full].freeze
+SUPPORTED_ARGS = %w[
+  --database
+  --host
+  --port
+  --user
+  --password
+  --role
+  --sslmode
+  --sslrootcert
+  --sslcert
+  --sslkey
+  --route
+  --parser-mode
+  --page-size
+  --namespace
+  --input
+  --output
+  --error
+  --diagnostics
+  --metrics
+  --transcript
+  --summary
+  --stop-on-error
+  --expected-refusals
+  --statement-timeout-ms
+  --fetch-size
+  --concurrency-worker
+  --create-database
+  --create-emulation-mode
+  --run-id
+  --language-resource-pack
+  --language-resource-identity
+  --language-resource-hash
+  --language-profile
+  --syntax-profile
+  --topology-profile
+  --standard-english-fallback
+].to_set.freeze
 
 def main(argv)
   args = parse_args(argv)
@@ -36,6 +76,7 @@ def run(args)
     timing: File.join(run_root, "timing-groups.json"),
     digests: File.join(run_root, "result-digests.json"),
     metadata: File.join(run_root, "metadata-snapshots.json"),
+    process: File.join(run_root, "process-metrics.jsonl"),
     refusals: File.join(run_root, "security-refusals.json"),
     api: File.join(run_root, "native-api-coverage.json"),
     review: File.join(run_root, "code-example-review.json"),
@@ -55,6 +96,7 @@ def run(args)
     "prepare" => 0,
     "execute" => 0,
     "query_metadata" => 0,
+    "attach_create" => 0,
     "commit" => 0,
     "rollback" => 0
   }
@@ -63,6 +105,7 @@ def run(args)
   digests = []
   security_refusals = []
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+  expected_refusals = load_expected_refusals(value_or_default(args, "--expected-refusals", ""))
   client = nil
 
   begin
@@ -95,13 +138,19 @@ def run(args)
     })
     append_jsonl(paths[:wire], { event: "server_admission_required", driver_or_parser_finality: "forbidden" })
 
-    raise "--create-database is not implemented in the Ruby native tool yet" if flag?(args, "--create-database")
+    if flag?(args, "--create-database")
+      create_started = monotonic_ns
+      client.attach_create(value_or_default(args, "--create-emulation-mode", "sbsql"), required(args, "--database"))
+      api_hits["attach_create"] += 1
+      add_timing(timings, "database_create", create_started)
+    end
     unless required(args, "--parser-mode") == "server-parser"
-      raise "#{required(args, "--parser-mode")} is not yet implemented by the Ruby native tool; it fails closed"
+      raise "#{required(args, "--parser-mode")} is not accepted by the Ruby native tool lane; it fails closed"
     end
 
     split_statements(read_input(required(args, "--input"))).each_with_index do |sql, index|
       statement_id = "#{File.basename(required(args, "--input"))}:#{index + 1}"
+      expected_outcome = expected_refusals.include?(statement_id) ? "refusal" : "success"
       group = classify_statement(sql)
       statement_started = monotonic_ns
       outcome = "success"
@@ -126,14 +175,22 @@ def run(args)
           append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: rows) + "\n")
         end
         digests << { statement_id: statement_id, row_count: row_count, result_digest: result_digest }
+        if expected_outcome == "refusal"
+          outcome = "unexpected_success"
+          failures << { statement_id: statement_id, message: "statement succeeded but was expected to refuse" }
+        end
       rescue StandardError => e
         outcome = "refusal"
         sqlstate = e.respond_to?(:sqlstate) ? e.sqlstate : "HY000"
         diagnostic = e.message
         append_jsonl(required(args, "--diagnostics"), { statement_id: statement_id, sqlstate: sqlstate, message: diagnostic })
         append_text(required(args, "--error"), "#{statement_id}: #{diagnostic}\n")
-        failures << { statement_id: statement_id, message: diagnostic }
-        if flag?(args, "--stop-on-error")
+        if expected_outcome == "success"
+          failures << { statement_id: statement_id, message: diagnostic }
+        else
+          security_refusals << { statement_id: statement_id, sqlstate: sqlstate, diagnostic_code: diagnostic }
+        end
+        if expected_outcome == "success" && flag?(args, "--stop-on-error")
           add_timing(timings, group, statement_started)
           break
         end
@@ -153,7 +210,7 @@ def run(args)
         statement_id: statement_id,
         command_group: group,
         sql_hash: sha256_text(sql),
-        expected_outcome: "success",
+        expected_outcome: expected_outcome,
         actual_outcome: outcome,
         sqlstate: sqlstate,
         diagnostic_code: diagnostic,
@@ -162,6 +219,13 @@ def run(args)
         result_digest: result_digest,
         elapsed_ns: elapsed,
         server_revalidation_state: "required",
+        language_profile: value_or_default(args, "--language-profile", "en-US"),
+        language_resource_pack: value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+        language_resource_identity: value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+        language_resource_hash: value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+        syntax_profile: value_or_default(args, "--syntax-profile", "sbsql.v3"),
+        topology_profile: value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+        standard_english_fallback: flag?(args, "--standard-english-fallback", true),
         transaction_id_observed: nil,
         mga_authority: "engine",
         native_api_surface: "ruby",
@@ -186,6 +250,8 @@ def run(args)
   elapsed = monotonic_ns - started
   timings["overall"] = elapsed
   sslmode = value_or_default(args, "--sslmode", "require")
+  transport_mode = resolve_transport_mode(required(args, "--route"), sslmode)
+  process_metrics = current_process_metrics
   summary = {
     run_id: value_or_default(args, "--run-id", "manual"),
     driver_name: "ruby",
@@ -194,10 +260,19 @@ def run(args)
     page_size: required(args, "--page-size"),
     namespace: required(args, "--namespace"),
     sslmode: sslmode,
-    transport_mode: sslmode == "disable" ? "tls_disabled" : "tls_required",
+    transport_mode: transport_mode,
+    language_resource_pack: value_or_default(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"),
+    language_resource_identity: value_or_default(args, "--language-resource-identity", "sbsql.common_resource_pack.v1"),
+    language_resource_hash: value_or_default(args, "--language-resource-hash", "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc"),
+    language_resource_authority: "shared_server_parser_resource_pack",
+    language_profile: value_or_default(args, "--language-profile", "en-US"),
+    syntax_profile: value_or_default(args, "--syntax-profile", "sbsql.v3"),
+    topology_profile: value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1"),
+    standard_english_fallback: flag?(args, "--standard-english-fallback", true),
     status: failures.empty? ? "pass" : "fail",
     failure_count: failures.length,
     elapsed_ns: elapsed,
+    process_metrics: process_metrics,
     server_revalidation_required: true,
     driver_or_parser_finality: "forbidden",
     mga_authority: "engine"
@@ -206,6 +281,11 @@ def run(args)
   write_text(required(args, "--metrics"), JSON.generate(timings) + "\n")
   write_text(paths[:timing], JSON.generate(timings) + "\n")
   write_text(paths[:digests], JSON.generate(digests) + "\n")
+  append_jsonl(paths[:process], {
+    role: "client",
+    rss_kb: process_metrics[:client][:last_rss_kb],
+    vsize_kb: process_metrics[:client][:last_vsize_kb]
+  })
   write_text(paths[:refusals], JSON.generate(security_refusals) + "\n")
   write_text(paths[:api], JSON.generate(api_hits) + "\n")
   write_text(paths[:review], JSON.generate(driver: "ruby", public_api_only: true, shells_out_to_other_driver: false,
@@ -222,9 +302,15 @@ def parse_args(raw)
   while index < raw.length
     key = raw[index]
     raise "unexpected positional argument: #{key}" unless key.start_with?("--")
-    if key == "--stop-on-error" || key == "--create-database"
-      args[key] = true
-      index += 1
+    raise "unsupported argument: #{key}" unless SUPPORTED_ARGS.include?(key)
+    if key == "--stop-on-error" || key == "--create-database" || key == "--standard-english-fallback"
+      if index + 1 < raw.length && !raw[index + 1].start_with?("--")
+        args[key] = parse_bool_value(key, raw[index + 1])
+        index += 2
+      else
+        args[key] = true
+        index += 1
+      end
       next
     end
     value = raw[index + 1]
@@ -239,6 +325,8 @@ def validate(args)
   raise "unsupported page size: #{required(args, "--page-size")}" unless PAGE_SIZES.include?(required(args, "--page-size"))
   raise "unsupported route: #{required(args, "--route")}" unless ROUTES.include?(required(args, "--route"))
   raise "unsupported parser mode: #{required(args, "--parser-mode")}" unless PARSER_MODES.include?(required(args, "--parser-mode"))
+  sslmode = value_or_default(args, "--sslmode", "require")
+  raise "unsupported sslmode: #{sslmode}" unless SSLMODES.include?(sslmode)
 end
 
 SET_TERM_RE = /\Aset\s+term\s+(\S.*?)\s*\z/i.freeze
@@ -261,7 +349,7 @@ end
 # Split a script into top-level statements on the active terminator.
 #
 # Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
-# `SET TERM <terminator>` client directive (sb_isql semantics): the directive
+# `SET TERM <terminator>` client directive: the directive
 # changes the active terminator and is consumed -- not emitted, not counted.
 # With no SET TERM present this reduces to a plain quote-aware `;` split.
 def split_statements(script)
@@ -354,8 +442,60 @@ def value_or_default(args, key, default)
   args.fetch(key, default).to_s
 end
 
-def flag?(args, key)
-  args[key] == true
+def flag?(args, key, default = false)
+  args.key?(key) ? args[key] == true : default
+end
+
+def parse_bool_value(key, value)
+  normalized = value.to_s.downcase
+  return true if normalized == "true"
+  return false if normalized == "false"
+  raise "#{key} expects true or false, got: #{value}"
+end
+
+def resolve_transport_mode(route, sslmode)
+  return "embedded_no_network_transport" if route == "embedded"
+  return "local_ipc_no_tls" if route == "ipc_local"
+  sslmode == "disable" ? "tls_disabled" : "tls_required"
+end
+
+def load_expected_refusals(path)
+  return Set.new if path.nil? || path.empty?
+  raise "expected refusal file not found: #{path}" unless File.file?(path)
+  doc = JSON.parse(File.read(path))
+  ids =
+    if doc.is_a?(Hash) && doc["statement_ids"].is_a?(Array)
+      doc["statement_ids"] + Array(doc["expected_refusals"])
+    elsif doc.is_a?(Hash) && doc["expected_refusals"].is_a?(Array)
+      doc["expected_refusals"]
+    elsif doc.is_a?(Array)
+      doc
+    else
+      raise "expected refusals must be a JSON object or array"
+    end
+  ids.map(&:to_s).to_set
+end
+
+def current_process_metrics
+  rss_kb = 1
+  vsize_kb = 1
+  status_path = "/proc/#{$PROCESS_ID}/status"
+  if File.file?(status_path)
+    File.foreach(status_path) do |line|
+      rss_kb = line.split[1].to_i if line.start_with?("VmRSS:")
+      vsize_kb = line.split[1].to_i if line.start_with?("VmSize:")
+    end
+  end
+  rss_kb = 1 if rss_kb < 1
+  vsize_kb = rss_kb if vsize_kb < 1
+  {
+    client: {
+      last_rss_kb: rss_kb,
+      last_vsize_kb: vsize_kb,
+      max_rss_kb: rss_kb,
+      max_vsize_kb: vsize_kb
+    }
+  }
 end
 
 def read_input(path)
