@@ -3673,6 +3673,43 @@ std::map<std::string, DescriptorFieldsCacheRecord>& DescriptorFieldsCache() {
   return cache;
 }
 
+struct MgaMetadataCacheKey {
+  std::string metadata_path;
+  std::uintmax_t metadata_file_size = 0;
+  std::string savepoint_path;
+  std::uintmax_t savepoint_file_size = 0;
+  std::uint64_t local_transaction_id = 0;
+
+  bool operator<(const MgaMetadataCacheKey& other) const {
+    return std::tie(metadata_path,
+                    metadata_file_size,
+                    savepoint_path,
+                    savepoint_file_size,
+                    local_transaction_id) <
+           std::tie(other.metadata_path,
+                    other.metadata_file_size,
+                    other.savepoint_path,
+                    other.savepoint_file_size,
+                    other.local_transaction_id);
+  }
+};
+
+struct MgaMetadataCacheEntry {
+  std::vector<CrudTableRecord> tables;
+  std::vector<CrudIndexRecord> indexes;
+  std::uint64_t max_event_sequence = 0;
+};
+
+std::mutex& MgaMetadataCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<MgaMetadataCacheKey, MgaMetadataCacheEntry>& MgaMetadataCache() {
+  static std::map<MgaMetadataCacheKey, MgaMetadataCacheEntry> cache;
+  return cache;
+}
+
 std::uintmax_t ExistingFileSize(const std::string& path) {
   std::error_code ignored;
   if (path.empty() || !std::filesystem::exists(path, ignored)) {
@@ -3932,8 +3969,33 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "state_required");
   }
+  const std::string metadata_path = MetadataStorePath(context);
+  const std::string savepoint_path = SavepointStorePath(context);
+  const MgaMetadataCacheKey cache_key{
+      metadata_path,
+      ExistingFileSize(metadata_path),
+      savepoint_path,
+      ExistingFileSize(savepoint_path),
+      context.local_transaction_id};
+  {
+    const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
+    const auto cached = MgaMetadataCache().find(cache_key);
+    if (cached != MgaMetadataCache().end()) {
+      state->tables.insert(state->tables.end(),
+                           cached->second.tables.begin(),
+                           cached->second.tables.end());
+      state->indexes.insert(state->indexes.end(),
+                            cached->second.indexes.begin(),
+                            cached->second.indexes.end());
+      state->max_event_sequence =
+          std::max(state->max_event_sequence,
+                   cached->second.max_event_sequence);
+      return OkDiagnostic();
+    }
+  }
   const auto savepoints = ParseSavepoints(context);
-  for (const auto& line : ReadLines(MetadataStorePath(context))) {
+  MgaMetadataCacheEntry decoded;
+  for (const auto& line : ReadLines(metadata_path)) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kRowStoreMagic) { continue; }
     if (fields[1] == "TABLE_METADATA") {
@@ -3955,8 +4017,9 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
                                              table.event_sequence)) {
         continue;
       }
-      state->tables.push_back(std::move(table));
-      state->max_event_sequence = std::max(state->max_event_sequence, ParseU64(fields[3]));
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, ParseU64(fields[3]));
+      decoded.tables.push_back(std::move(table));
     } else if (fields[1] == "INDEX_METADATA") {
       if (fields.size() < 17) {
         return MakeInvalidRequestDiagnostic("mga.relation_metadata", "index_metadata_invalid");
@@ -3987,9 +4050,22 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
                                              index.event_sequence)) {
         continue;
       }
-      state->indexes.push_back(std::move(index));
-      state->max_event_sequence = std::max(state->max_event_sequence, ParseU64(fields[3]));
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, ParseU64(fields[3]));
+      decoded.indexes.push_back(std::move(index));
     }
+  }
+  state->tables.insert(state->tables.end(),
+                       decoded.tables.begin(),
+                       decoded.tables.end());
+  state->indexes.insert(state->indexes.end(),
+                        decoded.indexes.begin(),
+                        decoded.indexes.end());
+  state->max_event_sequence =
+      std::max(state->max_event_sequence, decoded.max_event_sequence);
+  {
+    const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
+    MgaMetadataCache()[cache_key] = std::move(decoded);
   }
   return OkDiagnostic();
 }
