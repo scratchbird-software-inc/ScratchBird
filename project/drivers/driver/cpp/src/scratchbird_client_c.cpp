@@ -186,6 +186,199 @@ std::string trimWhitespace(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+std::string stripLeadingSqlTrivia(const std::string& sql) {
+    size_t pos = 0;
+    while (pos < sql.size()) {
+        while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) {
+            ++pos;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '-' && sql[pos + 1] == '-') {
+            const size_t newline = sql.find('\n', pos + 2);
+            if (newline == std::string::npos) {
+                return "";
+            }
+            pos = newline + 1;
+            continue;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '/' && sql[pos + 1] == '*') {
+            const size_t close = sql.find("*/", pos + 2);
+            if (close == std::string::npos) {
+                return "";
+            }
+            pos = close + 2;
+            continue;
+        }
+        break;
+    }
+    return sql.substr(pos);
+}
+
+void skipSqlTrivia(const std::string& sql, std::size_t* pos) {
+    if (!pos) {
+        return;
+    }
+    while (*pos < sql.size()) {
+        while (*pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[*pos]))) {
+            ++(*pos);
+        }
+        if (*pos + 1 < sql.size() && sql[*pos] == '-' && sql[*pos + 1] == '-') {
+            const size_t newline = sql.find('\n', *pos + 2);
+            if (newline == std::string::npos) {
+                *pos = sql.size();
+                return;
+            }
+            *pos = newline + 1;
+            continue;
+        }
+        if (*pos + 1 < sql.size() && sql[*pos] == '/' && sql[*pos + 1] == '*') {
+            const size_t close = sql.find("*/", *pos + 2);
+            if (close == std::string::npos) {
+                *pos = sql.size();
+                return;
+            }
+            *pos = close + 2;
+            continue;
+        }
+        break;
+    }
+}
+
+std::string readSqlTokenLower(const std::string& sql, std::size_t* pos) {
+    if (!pos) {
+        return "";
+    }
+    skipSqlTrivia(sql, pos);
+    const std::size_t start = *pos;
+    while (*pos < sql.size()) {
+        const unsigned char ch = static_cast<unsigned char>(sql[*pos]);
+        if (!(std::isalnum(ch) || ch == '_' || ch == '$')) {
+            break;
+        }
+        ++(*pos);
+    }
+    std::string token = sql.substr(start, *pos - start);
+    for (char& ch : token) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return token;
+}
+
+bool skipSqlParenthesized(const std::string& sql, std::size_t* pos) {
+    if (!pos || *pos >= sql.size() || sql[*pos] != '(') {
+        return false;
+    }
+    int depth = 0;
+    while (*pos < sql.size()) {
+        const char ch = sql[*pos];
+        if (ch == '\'') {
+            ++(*pos);
+            while (*pos < sql.size()) {
+                if (sql[*pos] == '\'' && *pos + 1 < sql.size() && sql[*pos + 1] == '\'') {
+                    *pos += 2;
+                    continue;
+                }
+                if (sql[*pos] == '\'') {
+                    ++(*pos);
+                    break;
+                }
+                ++(*pos);
+            }
+            continue;
+        }
+        if (ch == '"') {
+            ++(*pos);
+            while (*pos < sql.size()) {
+                if (sql[*pos] == '"' && *pos + 1 < sql.size() && sql[*pos + 1] == '"') {
+                    *pos += 2;
+                    continue;
+                }
+                if (sql[*pos] == '"') {
+                    ++(*pos);
+                    break;
+                }
+                ++(*pos);
+            }
+            continue;
+        }
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')') {
+            --depth;
+            ++(*pos);
+            return depth == 0;
+        }
+        ++(*pos);
+    }
+    return false;
+}
+
+std::string mainStatementTokenLower(const std::string& sql) {
+    const std::string text = stripLeadingSqlTrivia(sql);
+    std::size_t pos = 0;
+    std::string token = readSqlTokenLower(text, &pos);
+    if (token != "with") {
+        return token;
+    }
+    token = readSqlTokenLower(text, &pos);
+    if (token == "recursive") {
+        token = readSqlTokenLower(text, &pos);
+    }
+    while (!token.empty()) {
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == '(' && !skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        bool saw_as = false;
+        for (int guard = 0; guard < 32; ++guard) {
+            const std::string word = readSqlTokenLower(text, &pos);
+            if (word.empty()) {
+                return "with";
+            }
+            if (word == "as") {
+                saw_as = true;
+                break;
+            }
+        }
+        if (!saw_as) {
+            return "with";
+        }
+        std::size_t before_optional = pos;
+        std::string optional = readSqlTokenLower(text, &pos);
+        if (optional == "not") {
+            std::size_t after_not = pos;
+            if (readSqlTokenLower(text, &pos) != "materialized") {
+                pos = after_not;
+            }
+        } else if (optional != "materialized") {
+            pos = before_optional;
+        }
+        if (!skipSqlParenthesized(text, &pos)) {
+            return "with";
+        }
+        skipSqlTrivia(text, &pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            token = readSqlTokenLower(text, &pos);
+            continue;
+        }
+        const std::string main = readSqlTokenLower(text, &pos);
+        return main.empty() ? "with" : main;
+    }
+    return "with";
+}
+
+bool statementReturnsRows(const std::string& sql) {
+    const std::string first = mainStatementTokenLower(sql);
+    if (first == "select" || first == "values" || first == "show" || first == "explain") {
+        return true;
+    }
+    std::string lowered = sql;
+    for (char& ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return (" " + lowered + " ").find(" returning ") != std::string::npos;
+}
+
 std::string quoteSqlLiteral(const std::string& value) {
     std::string out;
     out.reserve(value.size() + 2);
@@ -501,10 +694,23 @@ bool start_operation(sb_connection* conn, const char* op_name, const char* sql, 
     return true;
 }
 
-void end_operation(sb_connection* conn, OperationSpan& ctx, bool success) {
+bool is_circuit_breaker_failure(sb_error_code code) {
+    switch (code) {
+        case SB_ERR_CONNECTION_FAILED:
+        case SB_ERR_SSL_FAILED:
+        case SB_ERR_TIMEOUT:
+        case SB_ERR_DISCONNECTED:
+        case SB_ERR_PROTOCOL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void end_operation(sb_connection* conn, OperationSpan& ctx, bool success, sb_error_code failure_code = SB_OK) {
     if (success) {
         conn->circuit_breaker.RecordSuccess();
-    } else {
+    } else if (is_circuit_breaker_failure(failure_code)) {
         conn->circuit_breaker.RecordFailure();
     }
     if (conn->keepalive_tracker) {
@@ -1114,10 +1320,14 @@ sb_result* sb_execute(sb_connection* conn, const char* sql, sb_error* err) {
     }
     auto* result = new sb_result();
     scratchbird::core::ErrorContext ctx;
-    auto status = conn->client.executeQuery(sql, result->results, &ctx);
+    const uint32_t query_flags = statementReturnsRows(sql)
+                                     ? 0
+                                     : scratchbird::protocol::kQueryFlagScriptSummaryResult;
+    auto status = conn->client.executeQuery(sql, result->results, &ctx, query_flags);
     if (status != scratchbird::core::Status::OK) {
-        set_error(err, map_status(status), ctx.message.empty() ? conn->client.lastError() : ctx.message);
-        end_operation(conn, span, false);
+        const sb_error_code code = map_status(status);
+        set_error(err, code, ctx.message.empty() ? conn->client.lastError() : ctx.message);
+        end_operation(conn, span, false, code);
         delete result;
         return nullptr;
     }
@@ -1148,26 +1358,74 @@ int sb_execute_copy_from_buffer(sb_connection* conn,
         copy_data.assign(data, data + data_size);
     }
     std::istringstream input(copy_data);
+    std::ostringstream output;
+    struct CopyStreamGuard {
+        sb_connection* conn{nullptr};
+        ~CopyStreamGuard() {
+            if (!conn) {
+                return;
+            }
+            conn->client.setCopyInputStream(nullptr);
+            conn->client.setCopyInputSizeHintBytes(0);
+            conn->client.setCopyOutputStream(nullptr);
+        }
+    } guard{conn};
+    OperationSpan span;
+    if (!start_operation(conn, "copy", sql, span, err)) {
+        return err ? static_cast<int>(err->code) : SB_ERR_UNKNOWN;
+    }
     conn->client.setCopyInputSizeHintBytes(data_size);
     conn->client.setCopyPreallocationFactorPercent(82);
     conn->client.setCopyInputStream(&input);
-    sb_result* result = sb_execute(conn, sql, err);
-    conn->client.setCopyInputStream(nullptr);
-    conn->client.setCopyInputSizeHintBytes(0);
-    if (!result) {
+    conn->client.setCopyOutputStream(&output);
+
+    scratchbird::client::NetworkResultSet results;
+    scratchbird::core::ErrorContext ctx;
+    auto status = conn->client.executeQuery(
+        sql,
+        results,
+        &ctx,
+        scratchbird::protocol::kQueryFlagScriptSummaryResult);
+    if (status != scratchbird::core::Status::OK) {
+        const sb_error_code code = map_status(status);
+        set_error(err, code, ctx.message.empty() ? conn->client.lastError() : ctx.message);
+        end_operation(conn, span, false, code);
         return err ? static_cast<int>(err->code) : SB_ERR_UNKNOWN;
     }
-    const int64_t affected = sb_rows_affected(result);
     if (rows_affected_out) {
-        *rows_affected_out = affected;
+        *rows_affected_out = results.rows_affected;
     }
-    sb_result_free(result);
     set_error(err, SB_OK, "");
+    end_operation(conn, span, true);
     return SB_OK;
 }
 
 sb_result* sb_query(sb_connection* conn, const char* sql, sb_error* err) {
-    return sb_execute(conn, sql, err);
+    if (!conn || !sql) {
+        set_error(err, SB_ERR_NULL_POINTER, "Connection and SQL required");
+        return nullptr;
+    }
+    OperationSpan span;
+    if (!start_operation(conn, "query", sql, span, err)) {
+        return nullptr;
+    }
+    auto* result = new sb_result();
+    scratchbird::core::ErrorContext ctx;
+    auto status = conn->client.executeQuery(sql, result->results, &ctx);
+    if (status != scratchbird::core::Status::OK) {
+        const sb_error_code code = map_status(status);
+        set_error(err, code, ctx.message.empty() ? conn->client.lastError() : ctx.message);
+        end_operation(conn, span, false, code);
+        delete result;
+        return nullptr;
+    }
+    result->column_names.reserve(result->results.columns.size());
+    for (const auto& col : result->results.columns) {
+        result->column_names.push_back(col.name);
+    }
+    set_error(err, SB_OK, "");
+    end_operation(conn, span, true);
+    return result;
 }
 
 sb_result* sb_metadata_query(sb_connection* conn, const char* collection_name, sb_error* err) {
@@ -1358,8 +1616,11 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
     }
     const auto& value = results.rows[row->row_index][static_cast<size_t>(column)];
     uint32_t type_oid = 0;
+    uint8_t format = scratchbird::protocol::kFormatBinary;
     if (static_cast<size_t>(column) < results.columns.size()) {
-        type_oid = results.columns[static_cast<size_t>(column)].type_oid;
+        const auto& column_meta = results.columns[static_cast<size_t>(column)];
+        type_oid = column_meta.type_oid;
+        format = column_meta.format;
     }
     out->type = map_type_oid(type_oid);
     out->type_oid = type_oid;
@@ -1368,13 +1629,25 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
         return SB_OK;
     }
     const auto& data = value.data;
+    const bool text_format = format == scratchbird::protocol::kFormatText;
     switch (out->type) {
         case SB_TYPE_BOOLEAN:
-            out->data.boolean_val = (!data.empty() && data[0]) ? 1 : 0;
+            if (text_format) {
+                const std::string text = toLowerAscii(decodeTextColumnValue(value));
+                out->data.boolean_val = (text == "1" || text == "t" || text == "true" || text == "yes") ? 1 : 0;
+            } else {
+                out->data.boolean_val = (!data.empty() && data[0]) ? 1 : 0;
+            }
             break;
         case SB_TYPE_SMALLINT: {
             int16_t v = 0;
-            if (data.size() >= sizeof(v)) {
+            if (text_format) {
+                try {
+                    v = static_cast<int16_t>(std::stoll(decodeTextColumnValue(value)));
+                } catch (...) {
+                    v = 0;
+                }
+            } else if (data.size() >= sizeof(v)) {
                 std::memcpy(&v, data.data(), sizeof(v));
             }
             out->data.smallint_val = v;
@@ -1382,7 +1655,13 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
         }
         case SB_TYPE_INTEGER: {
             int32_t v = 0;
-            if (data.size() >= sizeof(v)) {
+            if (text_format) {
+                try {
+                    v = static_cast<int32_t>(std::stoll(decodeTextColumnValue(value)));
+                } catch (...) {
+                    v = 0;
+                }
+            } else if (data.size() >= sizeof(v)) {
                 std::memcpy(&v, data.data(), sizeof(v));
             }
             out->data.integer_val = v;
@@ -1390,7 +1669,13 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
         }
         case SB_TYPE_BIGINT: {
             int64_t v = 0;
-            if (data.size() >= sizeof(v)) {
+            if (text_format) {
+                try {
+                    v = std::stoll(decodeTextColumnValue(value));
+                } catch (...) {
+                    v = 0;
+                }
+            } else if (data.size() >= sizeof(v)) {
                 std::memcpy(&v, data.data(), sizeof(v));
             }
             out->data.bigint_val = v;
@@ -1398,7 +1683,13 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
         }
         case SB_TYPE_REAL: {
             float v = 0;
-            if (data.size() >= sizeof(v)) {
+            if (text_format) {
+                try {
+                    v = std::stof(decodeTextColumnValue(value));
+                } catch (...) {
+                    v = 0;
+                }
+            } else if (data.size() >= sizeof(v)) {
                 std::memcpy(&v, data.data(), sizeof(v));
             }
             out->data.real_val = v;
@@ -1406,7 +1697,13 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
         }
         case SB_TYPE_DOUBLE: {
             double v = 0;
-            if (data.size() >= sizeof(v)) {
+            if (text_format) {
+                try {
+                    v = std::stod(decodeTextColumnValue(value));
+                } catch (...) {
+                    v = 0;
+                }
+            } else if (data.size() >= sizeof(v)) {
                 std::memcpy(&v, data.data(), sizeof(v));
             }
             out->data.double_val = v;
@@ -1418,7 +1715,13 @@ int sb_value_get(sb_row* row, int column, sb_value* out) {
             break;
         case SB_TYPE_MONEY: {
             int64_t cents = 0;
-            if (data.size() >= sizeof(cents)) {
+            if (text_format) {
+                try {
+                    cents = std::stoll(decodeTextColumnValue(value));
+                } catch (...) {
+                    cents = 0;
+                }
+            } else if (data.size() >= sizeof(cents)) {
                 std::memcpy(&cents, data.data(), sizeof(cents));
             }
             out->data.money_val = cents;
@@ -1644,8 +1947,9 @@ sb_result* sb_execute_prepared(sb_prepared* stmt, sb_error* err) {
     scratchbird::core::ErrorContext ctx;
     auto status = stmt->conn->client.executePrepared(stmt->stmt, result->results, &ctx);
     if (status != scratchbird::core::Status::OK) {
-        set_error(err, map_status(status), ctx.message);
-        end_operation(stmt->conn, span, false);
+        const sb_error_code code = map_status(status);
+        set_error(err, code, ctx.message);
+        end_operation(stmt->conn, span, false, code);
         delete result;
         return nullptr;
     }

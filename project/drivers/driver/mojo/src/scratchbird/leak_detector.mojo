@@ -9,7 +9,6 @@
 # ScratchBird Mojo Driver - Leak detector scaffolding in current Mojo syntax.
 # Copyright (c) 2025-2026 Dalton Calford
 
-from collections import List
 
 comptime LOG_DEBUG = 0
 comptime LOG_WARN = 1
@@ -22,14 +21,14 @@ struct LeakDetectionConfig:
     var check_interval_ms: Int
     var log_level: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.threshold_ms = 30000
         self.capture_stack_trace = False
         self.check_interval_ms = 10000
         self.log_level = LOG_WARN
 
 
-fn _find_checkout_index(connection_ids: List[String], connection_id: String) -> Int:
+def _find_checkout_index(connection_ids: List[String], connection_id: String) -> Int:
     for i in range(len(connection_ids)):
         if connection_ids[i] == connection_id:
             return i
@@ -47,7 +46,7 @@ struct LeakDetector:
     var metadata_entries: List[String]
     var warnings: List[String]
 
-    fn __init__(out self, config: LeakDetectionConfig = LeakDetectionConfig()):
+    def __init__(out self, config: LeakDetectionConfig = LeakDetectionConfig()):
         self.threshold_ms = config.threshold_ms
         self.capture_stack_trace = config.capture_stack_trace
         self.check_interval_ms = config.check_interval_ms
@@ -58,13 +57,13 @@ struct LeakDetector:
         self.metadata_entries = List[String]()
         self.warnings = List[String]()
 
-    fn start(mut self):
+    def start(mut self):
         self.running = True
 
-    fn stop(mut self):
+    def stop(mut self):
         self.running = False
 
-    fn checkout(mut self, connection_id: String, metadata: String = "", checkout_time_ms: Int = 0) -> String:
+    def checkout(mut self, connection_id: String, metadata: String = "", checkout_time_ms: Int = 0) -> String:
         var index = _find_checkout_index(self.connection_ids, connection_id)
         if index >= 0:
             self.checkout_times_ms[index] = checkout_time_ms
@@ -75,7 +74,7 @@ struct LeakDetector:
             self.metadata_entries.append(metadata)
         return connection_id
 
-    fn checkin(mut self, connection_id: String, now_ms: Int = 0) -> Int:
+    def checkin(mut self, connection_id: String, now_ms: Int = 0) -> Int:
         var index = _find_checkout_index(self.connection_ids, connection_id)
         if index < 0:
             return 0
@@ -101,13 +100,13 @@ struct LeakDetector:
         self.metadata_entries = kept_metadata^
         return held_ms
 
-    fn release_checkout(mut self, token: String, now_ms: Int = 0) -> Int:
+    def release_checkout(mut self, token: String, now_ms: Int = 0) -> Int:
         return self.checkin(token, now_ms)
 
-    fn get_active_count(self) -> Int:
+    def get_active_count(self) -> Int:
         return len(self.connection_ids)
 
-    fn check_leaks(mut self, now_ms: Int) -> List[String]:
+    def check_leaks(mut self, now_ms: Int) -> List[String]:
         var leaks = List[String]()
         for i in range(len(self.connection_ids)):
             var held_ms = 0
@@ -119,8 +118,8 @@ struct LeakDetector:
                 self.warnings.append(summary)
         return leaks^
 
-    fn get_warnings(self) -> List[String]:
+    def get_warnings(self) -> List[String]:
         return self.warnings.copy()
 
-    fn clear_warnings(mut self):
+    def clear_warnings(mut self):
         self.warnings = List[String]()

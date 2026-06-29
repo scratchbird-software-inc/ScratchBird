@@ -107,7 +107,7 @@
     {
       "driver": "odbc",
       "path": "project/drivers/driver/odbc/tools/sb_isql_odbc.cpp",
-      "native_tokens": ["SQLAllocHandle", "SQLConnect", "SQLPrepare", "SQLBindParameter", "SQLExecute", "SQLFetch", "SQLTables", "SQLColumns"]
+      "native_tokens": ["SQLAllocHandle", "SQLConnect", "SQLPrepare", "SQLBindParameter", "SQLExecute", "SQLExecDirect", "SQLFetch", "SQLTables", "SQLColumns"]
     },
     {
       "driver": "jdbc",

@@ -78,6 +78,7 @@ def check_real_suite_parity() -> int:
             suite_root=SUITE_ROOT,
             output_root=out,
             values=values,
+            namespace_ancestor_mode="chain",
         )
         chain_text = (out / "full_surface_chain.sbsql").read_text(encoding="utf-8")
         chain_tuples = list(iter_chain_statements(chain_text))

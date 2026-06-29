@@ -9,7 +9,6 @@
 # ScratchBird Mojo Driver - Query pipeline scaffolding in current Mojo syntax.
 # Copyright (c) 2025-2026 Dalton Calford
 
-from collections import List
 
 
 struct PipelineConfig:
@@ -18,7 +17,7 @@ struct PipelineConfig:
     var auto_flush_threshold: Int
     var flush_timeout_ms: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.max_in_flight = 100
         self.auto_flush = True
         self.auto_flush_threshold = 10
@@ -38,7 +37,7 @@ struct QueryPipeline:
     var completed_total: Int
     var failed_total: Int
 
-    fn __init__(out self, config: PipelineConfig = PipelineConfig()):
+    def __init__(out self, config: PipelineConfig = PipelineConfig()):
         self.max_in_flight = config.max_in_flight
         self.auto_flush = config.auto_flush
         self.auto_flush_threshold = config.auto_flush_threshold
@@ -51,14 +50,14 @@ struct QueryPipeline:
         self.completed_total = 0
         self.failed_total = 0
 
-    fn start(mut self, connection_id: String):
+    def start(mut self, connection_id: String):
         self.connection_id = connection_id
         self.running = True
 
-    fn stop(mut self):
+    def stop(mut self):
         self.running = False
 
-    fn queue(mut self, sql: String, params: List[String]) -> Bool:
+    def queue(mut self, sql: String, params: List[String]) -> Bool:
         if not self.has_capacity():
             self.failed_total += 1
             return False
@@ -71,22 +70,22 @@ struct QueryPipeline:
 
         return True
 
-    fn pending_count(self) -> Int:
+    def pending_count(self) -> Int:
         return len(self.pending_sql)
 
-    fn in_flight_count(self) -> Int:
+    def in_flight_count(self) -> Int:
         return self.in_flight
 
-    fn has_capacity(self) -> Bool:
+    def has_capacity(self) -> Bool:
         return self.in_flight + len(self.pending_sql) < self.max_in_flight
 
-    fn completed_count(self) -> Int:
+    def completed_count(self) -> Int:
         return self.completed_total
 
-    fn failed_count(self) -> Int:
+    def failed_count(self) -> Int:
         return self.failed_total
 
-    fn flush(mut self):
+    def flush(mut self):
         if not self.running:
             return
 
@@ -97,7 +96,7 @@ struct QueryPipeline:
 
         self._process_batch(batch_sql^, batch_param_count^)
 
-    fn _process_batch(mut self, batch_sql: List[String], batch_param_count: List[Int]):
+    def _process_batch(mut self, batch_sql: List[String], batch_param_count: List[Int]):
         _ = batch_param_count
         self.in_flight += len(batch_sql)
 
@@ -106,7 +105,7 @@ struct QueryPipeline:
 
         self.in_flight -= len(batch_sql)
 
-    fn _execute_request(mut self, sql: String):
+    def _execute_request(mut self, sql: String):
         if not self.running:
             self.failed_total += 1
             return
@@ -122,11 +121,11 @@ struct QueryPipeline:
 struct PipelineBuilder:
     var queries: List[String]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.queries = List[String]()
 
-    fn add(mut self, sql: String):
+    def add(mut self, sql: String):
         self.queries.append(sql)
 
-    fn build(self) -> List[String]:
+    def build(self) -> List[String]:
         return self.queries.copy()

@@ -7,15 +7,14 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import scratchbird_native
-from collections import List
 
 
-fn _require(condition: Bool, message: String) raises:
+def _require(condition: Bool, message: String) raises:
     if not condition:
         raise Error(message)
 
 
-fn _assert_connect_guard(dsn: String, expected_sqlstate: String, expected_fragment: String) raises:
+def _assert_connect_guard(dsn: String, expected_sqlstate: String, expected_fragment: String) raises:
     var cfg = scratchbird_native.ScratchBirdConfig(dsn)
     try:
         _ = scratchbird_native.connect(cfg)
@@ -33,7 +32,7 @@ fn _assert_connect_guard(dsn: String, expected_sqlstate: String, expected_fragme
         )
 
 
-fn _assert_metadata_guard(collection_name: String, expected_sqlstate: String, expected_fragment: String) raises:
+def _assert_metadata_guard(collection_name: String, expected_sqlstate: String, expected_fragment: String) raises:
     try:
         _ = scratchbird_native.normalize_metadata_collection_name(collection_name)
         raise Error("expected metadata guard to reject collection")
@@ -50,7 +49,7 @@ fn _assert_metadata_guard(collection_name: String, expected_sqlstate: String, ex
         )
 
 
-fn _assert_metadata_restriction_guard(
+def _assert_metadata_restriction_guard(
     collection_name: String,
     restriction_key: String,
     expected_sqlstate: String,
@@ -76,7 +75,7 @@ fn _assert_metadata_restriction_guard(
         )
 
 
-fn _assert_metadata_restriction_count_guard(collection_name: String) raises:
+def _assert_metadata_restriction_count_guard(collection_name: String) raises:
     var keys = List[String]()
     keys.append("schema")
     var values = List[String]()
@@ -96,7 +95,7 @@ fn _assert_metadata_restriction_count_guard(collection_name: String) raises:
         )
 
 
-fn _assert_config_session_pooling_manager_extensions() raises:
+def _assert_config_session_pooling_manager_extensions() raises:
     var cfg_session_overrides = scratchbird_native.ScratchBirdConfig(
         "scratchbird://user:pass@localhost:3092/testdb?sslmode=require&role=app_role&application_name=app_client&autocommit=false&readonly=true&current_schema=analytics&default_row_fetch_size=128"
     )
@@ -259,7 +258,7 @@ fn _assert_config_session_pooling_manager_extensions() raises:
     manager_overrides_conn.close()
 
 
-fn _assert_config_parsing_extensions() raises:
+def _assert_config_parsing_extensions() raises:
     var cfg_default_port = scratchbird_native.ScratchBirdConfig(
         "scratchbird://user:pass@localhost/testdb?sslmode=require&binary_transfer=true"
     )
@@ -411,7 +410,7 @@ fn _assert_config_parsing_extensions() raises:
     manager_token_precedence_conn.close()
 
 
-fn main() raises:
+def main() raises:
     var cfg = scratchbird_native.ScratchBirdConfig(
         "scratchbird://user:pass@localhost:3092/testdb?sslmode=require&binary_transfer=true"
     )

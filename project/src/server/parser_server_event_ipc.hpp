@@ -66,6 +66,7 @@ struct ParserServerEventEngineContext {
   std::string request_id;
   std::string database_path;
   ParserServerEventUuidRef database_uuid;
+  std::uint64_t database_page_size_bytes = 0;
   ParserServerEventUuidRef principal_uuid;
   ParserServerEventUuidRef session_uuid;
   ParserServerEventUuidRef transaction_uuid;

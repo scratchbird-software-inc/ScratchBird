@@ -93,8 +93,9 @@ constexpr std::uint32_t kMaxPayloadBytes = 64u * 1024u * 1024u;
 constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
 constexpr std::uint8_t kFrameFlagPartial = 1u << 1;
 constexpr std::uint8_t kFrameFlagFinal = 1u << 2;
+constexpr std::uint8_t kFrameFlagUrgent = 1u << 3;
 constexpr std::uint8_t kFrameFlagKnownMask =
-    kFrameFlagCompressed | kFrameFlagPartial | kFrameFlagFinal;
+    kFrameFlagCompressed | kFrameFlagPartial | kFrameFlagFinal | kFrameFlagUrgent;
 
 constexpr std::uint32_t kOidBool = 16;
 constexpr std::uint32_t kOidInt8 = 20;

@@ -243,10 +243,12 @@ SQLRETURN OdbcClientBridge::executeSQL(const std::string& sql,
         out_row.reserve(row.size());
         for (size_t i = 0; i < row.size(); ++i) {
             uint32_t type_oid = 0;
+            uint8_t format = protocol::kFormatBinary;
             if (i < net_results.columns.size()) {
                 type_oid = net_results.columns[i].type_oid;
+                format = net_results.columns[i].format;
             }
-            out_row.push_back(stringifyValue(row[i], type_oid));
+            out_row.push_back(stringifyValue(row[i], type_oid, format));
         }
         results.push_back(std::move(out_row));
     }
@@ -454,9 +456,13 @@ std::string OdbcClientBridge::typeOidToString(uint32_t type_oid) {
 }
 
 std::string OdbcClientBridge::stringifyValue(const protocol::ColumnValue& val,
-                                             uint32_t type_oid) {
+                                             uint32_t type_oid,
+                                             uint8_t format) {
     if (val.is_null) {
         return "";
+    }
+    if (format == protocol::kFormatText) {
+        return std::string(val.data.begin(), val.data.end());
     }
 
     auto stripLengthPrefix = [](const std::vector<uint8_t>& data, const uint8_t** out_ptr, size_t* out_len) {

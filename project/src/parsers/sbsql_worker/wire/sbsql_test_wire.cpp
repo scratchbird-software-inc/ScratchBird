@@ -401,7 +401,12 @@ std::string BuildNameResolutionCacheKey(const SessionContext& session,
                                         bool quoted,
                                         std::string_view object_class) {
   std::ostringstream key;
-  key << presented_name << "|quoted=" << (quoted ? "1" : "0")
+  key << "db=" << session.database_uuid
+      << "|user=" << session.authenticated_user_uuid
+      << "|session=" << session.session_uuid
+      << "|connection=" << session.connection_uuid
+      << "|presented=" << presented_name
+      << "|quoted=" << (quoted ? "1" : "0")
       << "|class=" << object_class
       << "|catalog=" << session.catalog_epoch
       << "|security=" << session.security_policy_epoch
@@ -431,7 +436,12 @@ std::string BuildStableRelationNameResolutionCacheKey(
     std::string_view object_class) {
   const bool qualified = presented_name.find('.') != std::string_view::npos;
   std::ostringstream key;
-  key << presented_name << "|quoted=" << (quoted ? "1" : "0")
+  key << "db=" << session.database_uuid
+      << "|user=" << session.authenticated_user_uuid
+      << "|session=" << session.session_uuid
+      << "|connection=" << session.connection_uuid
+      << "|presented=" << presented_name
+      << "|quoted=" << (quoted ? "1" : "0")
       << "|class=" << object_class
       << "|security=" << session.security_policy_epoch
       << "|grant=" << session.grant_epoch
@@ -1392,12 +1402,29 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
                                                                    std::size_t first_token) {
   std::vector<ObjectReference> refs;
   if (first_token >= cst.tokens.size()) return refs;
+  std::optional<ObjectReference> create_policy_schema_ref;
   const auto push_ref_at = [&](std::size_t marker,
                                std::string object_class,
                                bool create_reservation = false) {
     if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
       ref->object_class = std::move(object_class);
       ref->create_reservation = create_reservation;
+      refs.push_back(*ref);
+    }
+  };
+  const auto push_create_policy_ref_at = [&](std::size_t marker,
+                                             std::string object_class) {
+    if (auto ref = ExtractObjectReferenceAt(cst, NextNonTriviaIndex(cst, marker))) {
+      ObjectReference schema_ref = *ref;
+      DropObjectReferenceLeaf(&schema_ref);
+      if (!schema_ref.presented_name.empty() &&
+          schema_ref.presented_name != ref->presented_name) {
+        schema_ref.object_class = "schema";
+        schema_ref.create_reservation = false;
+        create_policy_schema_ref = schema_ref;
+      }
+      ref->object_class = std::move(object_class);
+      ref->create_reservation = true;
       refs.push_back(*ref);
     }
   };
@@ -1440,11 +1467,11 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
     return refs;
   }
   if (IsWord(cst.tokens[second], "POLICY")) {
-    push_ref_at(second + 1, "policy", true);
+    push_create_policy_ref_at(second + 1, "policy");
   } else if (IsWord(cst.tokens[second], "MASK")) {
-    push_ref_at(second + 1, "mask", true);
+    push_create_policy_ref_at(second + 1, "mask");
   } else {
-    push_ref_at(second + 1, "rls", true);
+    push_create_policy_ref_at(second + 1, "rls");
   }
   for (std::size_t index = second + 1; index < cst.tokens.size(); ++index) {
     const auto& token = cst.tokens[index];
@@ -1491,6 +1518,7 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
       push_ref_at(marker, subject_class);
     }
   }
+  if (create_policy_schema_ref) refs.push_back(*create_policy_schema_ref);
   return refs;
 }
 
@@ -4065,6 +4093,27 @@ void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
   }
 }
 
+PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class) {
+  PublicNameResolutionResult resolved;
+  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+    resolved =
+        embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+  } else {
+    SbpsClient client(config_.server_endpoint);
+    resolved =
+        client.ResolveNamePublicUncached(session_, presented_name, quoted, object_class, config_);
+  }
+  if (resolved.resolved) {
+    session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
+    session_.security_policy_epoch =
+        std::max(session_.security_policy_epoch, resolved.security_epoch);
+  }
+  return resolved;
+}
+
 PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     std::string_view presented_name,
     bool quoted,
@@ -4107,14 +4156,8 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRoute(
     return result;
   }
   if (metrics_) metrics_->Increment("sys.metrics.parsers.name_resolution_cache.misses_total");
-  PublicNameResolutionResult resolved;
-  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    resolved =
-        embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
-  } else {
-    SbpsClient client(config_.server_endpoint);
-    resolved = client.ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
-  }
+  PublicNameResolutionResult resolved =
+      ResolveNameOnRouteUncached(presented_name, quoted, object_class);
   if (resolved.resolved) {
     const std::string resolved_class =
         resolved.object_class.empty() ? std::string(object_class)
@@ -4497,12 +4540,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     for (const auto& ref : refs) {
       PublicNameResolutionResult resolved;
       if (ref.create_reservation) {
-        auto existing = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
+        auto existing =
+            ResolveNameOnRouteUncached(ref.presented_name, ref.quoted, ref.object_class);
         if (existing.resolved) {
           result.messages.diagnostics.push_back(MakeDiagnostic(
               "SBSQL.NAME_RESOLUTION.CREATE_NAME_ALREADY_EXISTS",
               "ERROR",
-              "create object name already resolves in the authenticated session",
+              "create object name already resolves in the authenticated session: " +
+                  ref.object_class + " " + ref.presented_name,
               "sbp_sbsql.wire",
               {{"object_class", ref.object_class},
                {"presented_name", ref.presented_name}}));

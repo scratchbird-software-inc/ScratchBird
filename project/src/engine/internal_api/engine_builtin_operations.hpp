@@ -75,6 +75,7 @@ struct EngineVersionInfo {
 struct EngineDatabaseInfo {
   TypedUuid database_uuid;
   std::string database_label;
+  u32 page_size_bytes = 0;
   bool cluster_authority_active = false;
 };
 

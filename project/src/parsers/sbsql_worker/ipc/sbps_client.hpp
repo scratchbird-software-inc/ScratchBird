@@ -108,6 +108,11 @@ class SbpsClient {
                                                bool quoted,
                                                std::string_view object_class,
                                                const ParserConfig& config) const;
+  PublicNameResolutionResult ResolveNamePublicUncached(const SessionContext& session,
+                                                       std::string_view presented_name,
+                                                       bool quoted,
+                                                       std::string_view object_class,
+                                                       const ParserConfig& config) const;
   PublicNameResolutionResult RenderUuidPublic(const SessionContext& session,
                                               std::string_view object_uuid) const;
   ServerExecutionResult ExecuteSblr(const SessionContext& session,

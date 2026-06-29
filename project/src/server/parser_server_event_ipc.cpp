@@ -41,6 +41,7 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
   out.request_id = context.request_id;
   out.database_path = context.database_path;
   out.database_uuid.canonical = context.database_uuid.canonical;
+  out.database_page_size_bytes = context.database_page_size_bytes;
   out.principal_uuid.canonical = context.principal_uuid.canonical;
   out.session_uuid.canonical = context.session_uuid.canonical;
   out.transaction_uuid.canonical = context.transaction_uuid.canonical;

@@ -57,6 +57,14 @@ interface Args {
 }
 
 const PAGE_SIZES = new Set(["4k", "8k", "16k", "32k", "64k", "128k"]);
+const PAGE_SIZE_BYTES: Record<string, number> = {
+  "4k": 4096,
+  "8k": 8192,
+  "16k": 16384,
+  "32k": 32768,
+  "64k": 65536,
+  "128k": 131072,
+};
 const ROUTES = new Set(["embedded", "ipc_local", "listener-parser", "manager-listener-parser"]);
 const PARSER_MODES = new Set(["server-parser", "standalone-parser", "driver-sblr-uuid"]);
 const SUPPORTED_ARGS = new Set([
@@ -99,6 +107,20 @@ const SUPPORTED_ARGS = new Set([
   "--standard-english-fallback",
 ]);
 
+function currentProcessMetrics(): JsonRecord {
+  const usage = process.memoryUsage();
+  const rssKb = Math.max(1, Math.ceil(usage.rss / 1024));
+  const vsizeKb = Math.max(1, Math.ceil((usage.rss + usage.heapTotal + usage.external) / 1024));
+  return {
+    client: {
+      max_rss_kb: rssKb,
+      max_vsize_kb: vsizeKb,
+      last_rss_kb: rssKb,
+      last_vsize_kb: vsizeKb,
+    },
+  };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const status = await run(args);
@@ -115,6 +137,7 @@ async function run(args: Args): Promise<number> {
     timing: `${runRoot}/timing-groups.json`,
     digests: `${runRoot}/result-digests.json`,
     metadata: `${runRoot}/metadata-snapshots.json`,
+    routeEnv: `${runRoot}/route-environment.json`,
     refusals: `${runRoot}/security-refusals.json`,
     api: `${runRoot}/native-api-coverage.json`,
     review: `${runRoot}/code-example-review.json`,
@@ -150,6 +173,7 @@ async function run(args: Args): Promise<number> {
   const securityRefusals: JsonRecord[] = [];
   const started = process.hrtime.bigint();
   let client: ScratchBirdClient | undefined;
+  await writeText(paths.routeEnv, JSON.stringify(routeEnvironment(args, null, "fail", "not_probed")) + "\n");
 
   try {
     const config: ClientConfig = {
@@ -188,12 +212,22 @@ async function run(args: Args): Promise<number> {
       event: "server_admission_required",
       driver_or_parser_finality: "forbidden",
     });
-
     if (args.createDatabase) {
       const createStarted = process.hrtime.bigint();
       await client.attachCreate(args.createEmulationMode, args.database);
       apiHits.attachCreate = (apiHits.attachCreate ?? 0) + 1;
       addTiming(timings, "database_create", createStarted);
+    }
+    const routeEnv = await probeRouteEnvironment(client, args);
+    await writeText(paths.routeEnv, JSON.stringify(routeEnv) + "\n");
+    if (args.route !== "embedded" && routeEnv.page_size_verification_status !== "pass") {
+      failures.push({
+        statement_id: "route_page_size",
+        message: "route page-size verification failed",
+        expected_page_size_bytes: routeEnv.expected_page_size_bytes,
+        actual_page_size_bytes: routeEnv.actual_page_size_bytes,
+      });
+      throw new Error("route page-size verification failed");
     }
     if (args.parserMode !== "server-parser") {
       throw new Error(`${args.parserMode} is not yet implemented by the Node native tool; it fails closed`);
@@ -321,6 +355,7 @@ async function run(args: Args): Promise<number> {
   const elapsed = Number(process.hrtime.bigint() - started);
   timings.overall = elapsed;
   const transportMode = transportModeForRoute(args.route, args.sslmode);
+  const processMetrics = currentProcessMetrics();
   const summary = {
     run_id: args.runId,
     driver_name: "node",
@@ -344,12 +379,18 @@ async function run(args: Args): Promise<number> {
     status: failures.length === 0 ? "pass" : "fail",
     failure_count: failures.length,
     elapsed_ns: elapsed,
+    process_metrics: processMetrics,
     server_revalidation_required: true,
     driver_or_parser_finality: "forbidden",
     mga_authority: "engine",
   };
   await writeText(args.summary, JSON.stringify(summary) + "\n");
-  await writeText(args.metrics, JSON.stringify(timings) + "\n");
+  const clientMetrics = processMetrics.client as JsonRecord;
+  await writeText(args.metrics, JSON.stringify({
+    role: "client",
+    rss_kb: clientMetrics.last_rss_kb,
+    vsize_kb: clientMetrics.last_vsize_kb,
+  }) + "\n");
   await writeText(paths.timing, JSON.stringify(timings) + "\n");
   await writeText(paths.digests, JSON.stringify(digests) + "\n");
   await writeText(paths.refusals, JSON.stringify(securityRefusals) + "\n");
@@ -374,6 +415,43 @@ async function runTransaction(client: ScratchBirdClient, sql: string): Promise<v
     await client.rollback();
   } else {
     await client.begin();
+  }
+}
+
+function routeEnvironment(args: Args, actualPageSize: number | null, status: string, reason?: string): JsonRecord {
+  const record: JsonRecord = {
+    run_id: args.runId,
+    driver: "node",
+    route: args.route,
+    sslmode: args.sslmode,
+    parser_mode: args.parserMode,
+    concurrency_mode: "single",
+    namespace: args.namespace,
+    page_size: args.pageSize,
+    expected_page_size_bytes: PAGE_SIZE_BYTES[args.pageSize],
+    actual_page_size_bytes: actualPageSize,
+    page_size_verification_source: "SHOW DATABASE",
+    page_size_verification_status: status,
+    transport_mode: transportModeForRoute(args.route, args.sslmode),
+    transport_endpoint_kind: endpointKindForRoute(args.route),
+    driver_transport_implementation: transportImplementationForRoute(args.route),
+  };
+  if (reason) {
+    record.failure_reason = reason;
+  }
+  return record;
+}
+
+async function probeRouteEnvironment(client: ScratchBirdClient, args: Args): Promise<JsonRecord> {
+  try {
+    const result = await client.query("SHOW DATABASE");
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    const raw = row?.page_size_bytes;
+    const actual = typeof raw === "number" ? raw : raw === undefined || raw === null ? null : Number(raw);
+    const status = actual === PAGE_SIZE_BYTES[args.pageSize] ? "pass" : "fail";
+    return routeEnvironment(args, actual, status, status === "pass" ? undefined : "actual_page_size_mismatch");
+  } catch (error) {
+    return routeEnvironment(args, null, "fail", error instanceof Error ? error.message : String(error));
   }
 }
 

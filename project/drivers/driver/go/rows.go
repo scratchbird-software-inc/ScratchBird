@@ -25,6 +25,8 @@ type Rows struct {
 	done         bool
 	hasNextSet   bool
 	setBoundary  bool
+	responseSeen bool
+	strayReady   bool
 	pageSize     uint32
 	ctx          context.Context
 	cancel       func()
@@ -52,6 +54,65 @@ func (r *Rows) Columns() []string {
 		names[i] = col.name
 	}
 	return names
+}
+
+func (r *Rows) primeColumns() error {
+	if len(r.columns) > 0 || r.done {
+		return nil
+	}
+	for {
+		msg, err := r.conn.receive()
+		if err != nil {
+			return err
+		}
+		if r.conn.handleAsyncMessage(msg) {
+			continue
+		}
+		switch msg.header.typ {
+		case msgError:
+			return buildProtocolError(msg.body)
+		case msgRowDescription:
+			cols, err := parseRowDescription(msg.body)
+			if err != nil {
+				return err
+			}
+			r.responseSeen = true
+			r.columns = cols
+			return nil
+		case msgDataRow:
+			r.responseSeen = true
+			r.conn.queue(msg)
+			return nil
+		case msgCommandComplete:
+			r.responseSeen = true
+			_, rows, lastID, tag, err := parseCommandComplete(msg.body)
+			if err != nil {
+				return err
+			}
+			r.commandTag = tag
+			r.rowsAffected = int64(rows)
+			r.lastInsertID = int64(lastID)
+			if err := r.markResultSetBoundary(); err != nil {
+				return err
+			}
+			return nil
+		case msgParseComplete, msgBindComplete, msgCloseComplete, msgNoData, msgParameterDescription:
+			continue
+		case msgReady:
+			status, txnID, _, err := parseReady(msg.body)
+			if err == nil {
+				r.conn.applyRuntimeReadyState(status, txnID)
+			}
+			if !r.responseSeen && !r.strayReady {
+				r.strayReady = true
+				continue
+			}
+			r.done = true
+			return nil
+		default:
+			continue
+		}
+	}
 }
 
 func (r *Rows) Close() error {
@@ -107,6 +168,8 @@ func (r *Rows) NextResultSet() error {
 	r.rowsAffected = 0
 	r.lastInsertID = 0
 	r.commandTag = ""
+	r.responseSeen = false
+	r.strayReady = false
 	return nil
 }
 
@@ -133,8 +196,10 @@ func (r *Rows) nextRow() ([]driver.Value, error) {
 			if err != nil {
 				return nil, err
 			}
+			r.responseSeen = true
 			r.columns = cols
 		case msgDataRow:
+			r.responseSeen = true
 			values, err := parseDataRow(msg.body, len(r.columns))
 			if err != nil {
 				return nil, err
@@ -161,6 +226,7 @@ func (r *Rows) nextRow() ([]driver.Value, error) {
 			if err != nil {
 				return nil, err
 			}
+			r.responseSeen = true
 			r.commandTag = tag
 			r.rowsAffected = int64(rows)
 			r.lastInsertID = int64(lastID)
@@ -177,6 +243,10 @@ func (r *Rows) nextRow() ([]driver.Value, error) {
 			status, txnID, _, err := parseReady(msg.body)
 			if err == nil {
 				r.conn.applyRuntimeReadyState(status, txnID)
+			}
+			if !r.responseSeen && !r.strayReady {
+				r.strayReady = true
+				continue
 			}
 			r.done = true
 			return nil, io.EOF

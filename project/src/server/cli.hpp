@@ -12,6 +12,7 @@
 
 #include "diagnostics.hpp"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,7 @@ struct ServerCliOptions {
   bool restricted_open = false;
   bool no_listeners = false;
   bool create_if_missing = false;
+  std::uint64_t create_page_size_bytes = 16384;
   bool lifecycle_request = false;
   std::string config_path;
   std::string control_dir;

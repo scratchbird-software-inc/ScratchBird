@@ -1387,7 +1387,8 @@ std::vector<std::uint8_t> EncodeResolveNamePayload(const SessionContext& session
                                                    std::string_view presented_name,
                                                    bool quoted,
                                                    std::string_view object_class,
-                                                   const ParserConfig& config) {
+                                                   const ParserConfig& config,
+                                                   bool bypass_cache = false) {
   std::vector<std::uint8_t> out;
   PutString(&out, presented_name);
   PutU8(&out, quoted ? 1 : 0);
@@ -1397,6 +1398,7 @@ std::vector<std::uint8_t> EncodeResolveNamePayload(const SessionContext& session
   PutString(&out, session.default_language.empty() ? "en" : session.default_language);
   PutString(&out, JoinSearchPath(session));
   PutString(&out, object_class);
+  PutU8(&out, bypass_cache ? 1 : 0);
   (void)config;
   return out;
 }
@@ -1722,12 +1724,15 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   return true;
 }
 
-PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& session,
-                                                        std::string_view presented_name,
-                                                        bool quoted,
-                                                        std::string_view object_class,
-                                                        const ParserConfig& config) const {
+PublicNameResolutionResult ResolveNamePublicWithCachePolicy(std::string_view endpoint,
+                                                            const SessionContext& session,
+                                                            std::string_view presented_name,
+                                                            bool quoted,
+                                                            std::string_view object_class,
+                                                            const ParserConfig& config,
+                                                            bool use_cache) {
   PublicNameResolutionResult result;
+  const std::string endpoint_string(endpoint);
   if (!session.authenticated) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
         "SBSQL.AUTH.REQUIRED",
@@ -1737,20 +1742,28 @@ PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& s
     return result;
   }
   const auto cache_key =
-      SbpsClientResolveNameCacheKey(endpoint_, session, presented_name, quoted, object_class, config);
-  if (const auto cached = LookupSbpsClientPublicResolutionCache(cache_key)) {
-    return PublicResolutionResultFromCache(*cached);
+      SbpsClientResolveNameCacheKey(
+          endpoint_string, session, presented_name, quoted, object_class, config);
+  if (use_cache) {
+    if (const auto cached = LookupSbpsClientPublicResolutionCache(cache_key)) {
+      return PublicResolutionResultFromCache(*cached);
+    }
   }
   MessageVectorSet messages;
   Frame response;
   const auto session_uuid = TextToUuid(session.session_uuid);
   const auto connection_uuid = TextToUuid(session.connection_uuid);
-  if (!SendRequest(endpoint_,
+  if (!SendRequest(endpoint_string,
                    BaseHeader(kMessageResolveNameRequest,
                               kSchemaResolveNameRequestV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeResolveNamePayload(session, presented_name, quoted, object_class, config),
+                   EncodeResolveNamePayload(session,
+                                            presented_name,
+                                            quoted,
+                                            object_class,
+                                            config,
+                                            !use_cache),
                    &response,
                    &messages)) {
     result.messages = std::move(messages);
@@ -1762,8 +1775,39 @@ PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& s
     return result;
   }
   result = DecodePublicNameResultPayload(response, "resolved");
-  StoreSbpsClientPublicResolutionCacheEntry(cache_key, result);
+  if (use_cache) {
+    StoreSbpsClientPublicResolutionCacheEntry(cache_key, result);
+  }
   return result;
+}
+
+PublicNameResolutionResult SbpsClient::ResolveNamePublic(const SessionContext& session,
+                                                        std::string_view presented_name,
+                                                        bool quoted,
+                                                        std::string_view object_class,
+                                                        const ParserConfig& config) const {
+  return ResolveNamePublicWithCachePolicy(endpoint_,
+                                          session,
+                                          presented_name,
+                                          quoted,
+                                          object_class,
+                                          config,
+                                          true);
+}
+
+PublicNameResolutionResult SbpsClient::ResolveNamePublicUncached(
+    const SessionContext& session,
+    std::string_view presented_name,
+    bool quoted,
+    std::string_view object_class,
+    const ParserConfig& config) const {
+  return ResolveNamePublicWithCachePolicy(endpoint_,
+                                          session,
+                                          presented_name,
+                                          quoted,
+                                          object_class,
+                                          config,
+                                          false);
 }
 
 PublicNameResolutionResult SbpsClient::RenderUuidPublic(const SessionContext& session,

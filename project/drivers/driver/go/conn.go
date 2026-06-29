@@ -973,14 +973,22 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 			return nil, err
 		}
 		c.endOperation(span, true)
-		return newRows(c, ctx), nil
+		rows := newRows(c, ctx)
+		if err := rows.primeColumns(); err != nil {
+			return nil, err
+		}
+		return rows, nil
 	}
 	if err := c.sendExtendedQuery(normalized.sql, normalized.args, ctx); err != nil {
 		c.endOperation(span, false)
 		return nil, err
 	}
 	c.endOperation(span, true)
-	return newRows(c, ctx), nil
+	rows := newRows(c, ctx)
+	if err := rows.primeColumns(); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (c *Conn) sendSimpleQuery(sql string, ctx context.Context) error {
@@ -1701,17 +1709,19 @@ func (c *Conn) applySchema(ctx context.Context) error {
 func (c *Conn) handleAsyncMessage(msg protocolMessage) bool {
 	switch msg.header.typ {
 	case msgParameterStatus:
-		name, value, err := parseParameterStatus(msg.body)
+		statuses, err := parseParameterStatuses(msg.body)
 		if err == nil {
-			c.params[name] = value
-			switch name {
-			case "attachment_id":
-				if parsed, ok := parseUUIDHex(value); ok {
-					c.attachmentID = parsed
-				}
-			case "current_txn_id":
-				if parsed, err := parseUint64String(value); err == nil {
-					c.applyRuntimeTxnID(parsed)
+			for _, status := range statuses {
+				c.params[status.name] = status.value
+				switch status.name {
+				case "attachment_id":
+					if parsed, ok := parseUUIDHex(status.value); ok {
+						c.attachmentID = parsed
+					}
+				case "current_txn_id":
+					if parsed, err := parseUint64String(status.value); err == nil {
+						c.applyRuntimeTxnID(parsed)
+					}
 				}
 			}
 		}
@@ -2150,6 +2160,11 @@ func (s *Stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 		s.conn.endOperation(span, false)
 		return nil, err
 	}
+	describePayload := buildDescribePayload('P', "")
+	if err := s.conn.sendMessage(msgDescribe, describePayload, 0, false); err != nil {
+		s.conn.endOperation(span, false)
+		return nil, err
+	}
 	execPayload := buildExecutePayload("", 0)
 	if err := s.conn.sendMessage(msgExecute, execPayload, 0, false); err != nil {
 		s.conn.endOperation(span, false)
@@ -2209,7 +2224,11 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, err
 	}
 	s.conn.endOperation(span, true)
-	return newRows(s.conn, ctx), nil
+	rows := newRows(s.conn, ctx)
+	if err := rows.primeColumns(); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 type Tx struct {

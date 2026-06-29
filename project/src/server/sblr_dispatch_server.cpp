@@ -4125,6 +4125,7 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
   context.database_uuid.canonical =
       session.database_uuid.empty() ? database.database_uuid : session.database_uuid;
+  context.database_page_size_bytes = database.page_size_bytes;
   context.statement_uuid.canonical = context.request_id;
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;
@@ -5004,7 +5005,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       dispatch_operation_id == "security.policy.show") {
     constexpr std::string_view kSecurityPolicyFields[] = {
         "policy_uuid", "mask_uuid", "rls_uuid",
-        "policy_name", "target_object_uuid", "target_object_kind",
+        "policy_name", "target_schema_uuid", "schema_uuid",
+        "target_object_uuid", "target_object_kind",
         "policy_scope", "policy_effect", "predicate_envelope",
         "definer_principal_uuid", "lifecycle_state", "observed_policy_generation",
         "observed_cache_invalidation_epoch", "include_rows"};

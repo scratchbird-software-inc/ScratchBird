@@ -13,6 +13,7 @@
 #include "manager_control.hpp"
 #include "product_identity.hpp"
 
+#include <charconv>
 #include <sstream>
 #include <string_view>
 
@@ -39,9 +40,30 @@ ServerDiagnostic CliDiagnostic(std::string code,
 bool NeedsValue(std::string_view option) {
   return option == "--config" || option == "--control-dir" || option == "--runtime-dir" ||
          option == "--database" || option == "--sbps-endpoint" || option == "--log" ||
-         option == "--log-level" || option == "--lifecycle-command" ||
+         option == "--log-level" || option == "--create-page-size" ||
+         option == "--create-page-size-bytes" || option == "--lifecycle-command" ||
          option == "--lifecycle-mode" || option == "--lifecycle-target-uuid" ||
          option == "--lifecycle-audit-reason";
+}
+
+bool ParseUint64(std::string_view value, std::uint64_t* out) {
+  if (value.empty() || value.front() == '-') {
+    return false;
+  }
+  std::uint64_t parsed = 0;
+  const auto* begin = value.data();
+  const auto* end = begin + value.size();
+  const auto result = std::from_chars(begin, end, parsed);
+  if (result.ec != std::errc{} || result.ptr != end) {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool SupportedCreatePageSize(std::uint64_t page_size) {
+  return page_size == 4096 || page_size == 8192 || page_size == 16384 ||
+         page_size == 32768 || page_size == 65536 || page_size == 131072;
 }
 
 std::string CanonicalLifecycleOperation(std::string operation) {
@@ -118,6 +140,18 @@ ServerCliParseResult ParseServerCli(int argc, char** argv) {
       result.options.no_listeners = true;
     } else if (arg == "--create-if-missing") {
       result.options.create_if_missing = true;
+    } else if (arg == "--create-page-size" || arg == "--create-page-size-bytes") {
+      const auto value = read_value(arg);
+      std::uint64_t parsed_page_size = 0;
+      if (!ParseUint64(value, &parsed_page_size) || !SupportedCreatePageSize(parsed_page_size)) {
+        result.diagnostics.push_back(CliDiagnostic(
+            "SERVER.CLI.CREATE_PAGE_SIZE_INVALID",
+            "server.cli.create_page_size_invalid",
+            "The create database page size must be one of the supported ScratchBird page sizes.",
+            {{"option", arg}, {"value", value}}));
+      } else {
+        result.options.create_page_size_bytes = parsed_page_size;
+      }
     } else if (arg == "--lifecycle-command") {
       result.options.lifecycle_request = true;
       result.options.lifecycle_operation = CanonicalLifecycleOperation(read_value(arg));
@@ -200,6 +234,8 @@ std::string ServerHelpText() {
       << "  --runtime-dir PATH         Override runtime directory.\\n"
       << "  --database PATH_OR_ALIAS   Select configured database path or alias.\\n"
       << "  --create-if-missing        Permit create-if-missing only when policy allows.\\n"
+      << "  --create-page-size BYTES   Page size for create-if-missing databases: 4096,\\n"
+      << "                             8192, 16384, 32768, 65536, or 131072.\\n"
       << "  --read-only                Open databases read-only.\\n"
       << "  --maintenance              Open in maintenance mode.\\n"
       << "  --restricted-open          Permit restricted open after unsafe classification.\\n"

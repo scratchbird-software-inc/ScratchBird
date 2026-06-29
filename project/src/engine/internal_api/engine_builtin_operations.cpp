@@ -137,6 +137,7 @@ BoundEngineOperation MakeShowDatabaseOperationDescriptor() {
                                EngineResultCardinality::single_row,
                                {Column("database_uuid", CanonicalTypeId::uuid),
                                 Column("database_label", CanonicalTypeId::character),
+                                Column("page_size_bytes", CanonicalTypeId::uint32),
                                 Column("cluster_authority_active", CanonicalTypeId::boolean)})
                          .result_shape;
   return operation;
@@ -248,6 +249,9 @@ EngineOperationResult ExecuteShowDatabaseOperation(const EngineContext& context,
   EngineResultRow row;
   row.cells.push_back(Cell("database_uuid", CanonicalTypeId::uuid, UuidValue(database.database_uuid)));
   row.cells.push_back(Cell("database_label", CanonicalTypeId::character, StringValue(database.database_label)));
+  row.cells.push_back(Cell("page_size_bytes",
+                           CanonicalTypeId::uint32,
+                           UInt32Value(database.page_size_bytes)));
   row.cells.push_back(Cell("cluster_authority_active",
                            CanonicalTypeId::boolean,
                            BoolValue(database.cluster_authority_active)));

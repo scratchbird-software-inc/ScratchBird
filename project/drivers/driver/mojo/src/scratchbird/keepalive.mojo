@@ -10,7 +10,6 @@
 # Keepalive scaffolding in current Mojo syntax.
 # Copyright (c) 2025-2026 Dalton Calford
 
-from collections import List
 
 
 struct KeepaliveConfig:
@@ -18,12 +17,12 @@ struct KeepaliveConfig:
     var max_idle_before_check_ms: Int
     var validation_timeout_ms: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.interval_ms = 120000
         self.max_idle_before_check_ms = 600000
         self.validation_timeout_ms = 5000
 
-    fn __init__(
+    def __init__(
         out self,
         interval_ms: Int,
         max_idle_before_check_ms: Int,
@@ -40,31 +39,31 @@ struct KeepaliveTracker:
     var validation_timeout_ms: Int
     var last_activity_ms: Int
 
-    fn __init__(out self, config: KeepaliveConfig):
+    def __init__(out self, config: KeepaliveConfig):
         self.interval_ms = config.interval_ms
         self.max_idle_before_check_ms = config.max_idle_before_check_ms
         self.validation_timeout_ms = config.validation_timeout_ms
         self.last_activity_ms = 0
 
-    fn mark_active(mut self, now_ms: Int):
+    def mark_active(mut self, now_ms: Int):
         if now_ms < 0:
             self.last_activity_ms = 0
             return
         self.last_activity_ms = now_ms
 
-    fn needs_validation(self, now_ms: Int) -> Bool:
+    def needs_validation(self, now_ms: Int) -> Bool:
         if now_ms <= self.last_activity_ms:
             return False
         var idle_ms = now_ms - self.last_activity_ms
         return idle_ms > self.max_idle_before_check_ms
 
-    fn idle_duration_ms(self, now_ms: Int) -> Int:
+    def idle_duration_ms(self, now_ms: Int) -> Int:
         if now_ms <= self.last_activity_ms:
             return 0
         return now_ms - self.last_activity_ms
 
 
-fn _find_connection_index(connection_ids: List[String], connection_id: String) -> Int:
+def _find_connection_index(connection_ids: List[String], connection_id: String) -> Int:
     for i in range(len(connection_ids)):
         if connection_ids[i] == connection_id:
             return i
@@ -80,7 +79,7 @@ struct KeepaliveManager:
     var validation_counts: List[Int]
     var running: Bool
 
-    fn __init__(out self, config: KeepaliveConfig = KeepaliveConfig()):
+    def __init__(out self, config: KeepaliveConfig = KeepaliveConfig()):
         self.interval_ms = config.interval_ms
         self.max_idle_before_check_ms = config.max_idle_before_check_ms
         self.validation_timeout_ms = config.validation_timeout_ms
@@ -89,13 +88,13 @@ struct KeepaliveManager:
         self.validation_counts = List[Int]()
         self.running = False
 
-    fn start(mut self):
+    def start(mut self):
         self.running = True
 
-    fn stop(mut self):
+    def stop(mut self):
         self.running = False
 
-    fn register(mut self, connection_id: String, now_ms: Int = 0) -> Int:
+    def register(mut self, connection_id: String, now_ms: Int = 0) -> Int:
         var normalized_now = now_ms
         if normalized_now < 0:
             normalized_now = 0
@@ -110,7 +109,7 @@ struct KeepaliveManager:
 
         return len(self.connection_ids)
 
-    fn unregister(mut self, connection_id: String):
+    def unregister(mut self, connection_id: String):
         var index = _find_connection_index(self.connection_ids, connection_id)
         if index < 0:
             return
@@ -130,7 +129,7 @@ struct KeepaliveManager:
         self.last_activity_ms = kept_last^
         self.validation_counts = kept_counts^
 
-    fn mark_active(mut self, connection_id: String, now_ms: Int):
+    def mark_active(mut self, connection_id: String, now_ms: Int):
         var index = _find_connection_index(self.connection_ids, connection_id)
         if index < 0:
             return
@@ -139,7 +138,7 @@ struct KeepaliveManager:
             return
         self.last_activity_ms[index] = now_ms
 
-    fn due_for_validation(mut self, now_ms: Int) -> List[String]:
+    def due_for_validation(mut self, now_ms: Int) -> List[String]:
         var due = List[String]()
         for i in range(len(self.connection_ids)):
             var last_seen = self.last_activity_ms[i]
@@ -148,11 +147,11 @@ struct KeepaliveManager:
                 self.validation_counts[i] += 1
         return due^
 
-    fn validation_count(self, connection_id: String) -> Int:
+    def validation_count(self, connection_id: String) -> Int:
         var index = _find_connection_index(self.connection_ids, connection_id)
         if index < 0:
             return 0
         return self.validation_counts[index]
 
-    fn get_monitored_count(self) -> Int:
+    def get_monitored_count(self) -> Int:
         return len(self.connection_ids)

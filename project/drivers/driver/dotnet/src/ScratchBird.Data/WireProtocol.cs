@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using System.Buffers.Binary;
+using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -276,38 +277,57 @@ internal sealed class ParamValue
 
 internal static class ProtocolCodec
 {
+    private const int ConnectValueText = 1;
+    private const int P1RowDescriptionHeaderBytes = 72;
+    private const int P1CanonicalTypeRefBytes = 144;
+
     public static byte[] BuildStartupPayload(ulong features, IReadOnlyDictionary<string, string> parameters)
     {
-        var paramBytes = BuildParamList(parameters);
-        var payload = new byte[2 + 2 + 8 + paramBytes.Length];
-        payload[0] = ProtocolConstants.VersionMajor;
-        payload[1] = ProtocolConstants.VersionMinor;
-        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(2, 2), 0);
-        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(4, 8), features);
-        Buffer.BlockCopy(paramBytes, 0, payload, 12, paramBytes.Length);
+        using var paramStream = new MemoryStream();
+        foreach (var kvp in parameters.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+        {
+            WriteLengthPrefixedString(paramStream, kvp.Key);
+            Span<byte> format = stackalloc byte[2];
+            BinaryPrimitives.WriteUInt16LittleEndian(format, ConnectValueText);
+            paramStream.Write(format);
+            var value = Encoding.UTF8.GetBytes(kvp.Value);
+            Span<byte> valueLength = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(valueLength, (uint)value.Length);
+            paramStream.Write(valueLength);
+            paramStream.Write(value);
+        }
+
+        var paramBytes = paramStream.ToArray();
+        var payload = new byte[88 + paramBytes.Length];
+        var offset = 0;
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(offset, 2), ProtocolConstants.Version);
+        offset += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(offset, 2), ProtocolConstants.Version);
+        offset += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(offset, 4), 0);
+        offset += 4;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(offset, 8), features);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(offset, 8), 0);
+        offset += 8;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(offset, 8), 0);
+        offset += 8;
+        offset += 16 * 3;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(offset, 4), (uint)parameters.Count);
+        offset += 4;
+        Buffer.BlockCopy(paramBytes, 0, payload, offset, paramBytes.Length);
+        offset += paramBytes.Length;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(offset, 4), 0);
         return payload;
     }
 
-    private static byte[] BuildParamList(IReadOnlyDictionary<string, string> parameters)
+    private static void WriteLengthPrefixedString(Stream stream, string value)
     {
-        var parts = new List<byte[]>();
-        foreach (var kvp in parameters)
-        {
-            parts.Add(Encoding.UTF8.GetBytes(kvp.Key));
-            parts.Add(new byte[] { 0 });
-            parts.Add(Encoding.UTF8.GetBytes(kvp.Value));
-            parts.Add(new byte[] { 0 });
-        }
-        parts.Add(new byte[] { 0 });
-        var length = parts.Sum(part => part.Length);
-        var buffer = new byte[length];
-        var offset = 0;
-        foreach (var part in parts)
-        {
-            Buffer.BlockCopy(part, 0, buffer, offset, part.Length);
-            offset += part.Length;
-        }
-        return buffer;
+        var encoded = Encoding.UTF8.GetBytes(value);
+        Span<byte> length = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(length, (uint)encoded.Length);
+        stream.Write(length);
+        stream.Write(encoded);
     }
 
     public static (AuthMethod Method, byte[] Data) ParseAuthRequest(byte[] payload)
@@ -661,6 +681,19 @@ internal static class ProtocolCodec
 
     public static (byte Status, ulong TxnId, ulong Visibility) ParseReady(byte[] payload)
     {
+        if (payload.Length >= 76
+            && (payload[56] == (byte)'I'
+                || payload[56] == (byte)'T'
+                || payload[56] == (byte)'E'
+                || payload[56] == (byte)'R'
+                || payload[56] == (byte)'A'))
+        {
+            var p1TxnId = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(48, 8));
+            var p1Status = payload[56] == (byte)'T' || payload[56] == (byte)'E'
+                ? (byte)1
+                : (byte)0;
+            return (p1Status, p1TxnId, p1TxnId);
+        }
         if (payload.Length < 20)
         {
             throw new InvalidOperationException("Ready truncated");
@@ -685,23 +718,105 @@ internal static class ProtocolCodec
 
     public static (string Name, string Value) ParseParameterStatus(byte[] payload)
     {
+        var statuses = ParseParameterStatuses(payload);
+        if (statuses.Count == 0)
+        {
+            throw new InvalidOperationException("Parameter status truncated");
+        }
+        return statuses[0];
+    }
+
+    public static List<(string Name, string Value)> ParseParameterStatuses(byte[] payload)
+    {
         if (payload.Length < 8)
         {
             throw new InvalidOperationException("Parameter status truncated");
         }
+
+        var count = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(0, 4));
+        if (count > 0 && count <= 256)
+        {
+            try
+            {
+                var p1Offset = 4;
+                var statuses = new List<(string Name, string Value)>(count);
+                for (var index = 0; index < count; index++)
+                {
+                    if (p1Offset + 4 > payload.Length)
+                    {
+                        throw new InvalidOperationException("Parameter status truncated");
+                    }
+                    var p1NameLen = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(p1Offset, 4));
+                    p1Offset += 4;
+                    if (p1NameLen < 0 || p1Offset + p1NameLen + 7 > payload.Length)
+                    {
+                        throw new InvalidOperationException("Parameter status truncated");
+                    }
+                    var p1Name = Encoding.UTF8.GetString(payload, p1Offset, p1NameLen);
+                    p1Offset += p1NameLen;
+                    p1Offset += 3;
+                    var p1ValueLen = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(p1Offset, 4));
+                    p1Offset += 4;
+                    if (p1ValueLen < 0 || p1Offset + p1ValueLen > payload.Length)
+                    {
+                        throw new InvalidOperationException("Parameter status truncated");
+                    }
+                    var p1Value = Encoding.UTF8.GetString(payload, p1Offset, p1ValueLen);
+                    p1Offset += p1ValueLen;
+                    statuses.Add((p1Name, p1Value));
+                }
+                if (p1Offset == payload.Length)
+                {
+                    return statuses;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Fall through to the legacy single key/value payload shape.
+            }
+        }
+
         var offset = 0;
         var nameLen = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
         offset += 4;
+        if (nameLen > payload.Length - offset - 4)
+        {
+            throw new InvalidOperationException("Parameter status truncated");
+        }
         var name = Encoding.UTF8.GetString(payload, offset, (int)nameLen);
         offset += (int)nameLen;
         var valueLen = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset, 4));
         offset += 4;
+        if (valueLen > payload.Length - offset)
+        {
+            throw new InvalidOperationException("Parameter status truncated");
+        }
         var value = Encoding.UTF8.GetString(payload, offset, (int)valueLen);
-        return (name, value);
+        return new List<(string Name, string Value)> { (name, value) };
     }
 
     public static List<uint> ParseParameterDescription(byte[] payload)
     {
+        if (payload.Length >= P1RowDescriptionHeaderBytes
+            && BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(0, 2)) == 1
+            && payload[3] == 1)
+        {
+            var p1Count = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(68, 4));
+            var p1Types = new List<uint>((int)p1Count);
+            var p1Offset = P1RowDescriptionHeaderBytes;
+            for (var i = 0; i < p1Count; i++)
+            {
+                if (p1Offset + 4 + 4 + 8 + 8 + P1CanonicalTypeRefBytes + 4 + 5 > payload.Length)
+                {
+                    throw new InvalidOperationException("P1 parameter description truncated");
+                }
+                var typeOffset = p1Offset + 4 + 4 + 8 + 8;
+                p1Types.Add(OidFromCanonicalTypeRef(payload, typeOffset));
+                p1Offset = typeOffset + P1CanonicalTypeRefBytes + 4;
+                _ = ReadNullableText(payload, ref p1Offset);
+            }
+            return p1Types;
+        }
         if (payload.Length < 4)
         {
             throw new InvalidOperationException("Parameter description truncated");
@@ -723,6 +838,10 @@ internal static class ProtocolCodec
 
     public static List<ColumnInfo> ParseRowDescription(byte[] payload)
     {
+        if (IsP1RowDescription(payload))
+        {
+            return ParseP1RowDescription(payload);
+        }
         if (payload.Length < 4)
         {
             throw new InvalidOperationException("Row description truncated");
@@ -765,6 +884,121 @@ internal static class ProtocolCodec
             });
         }
         return cols;
+    }
+
+    private static bool IsP1RowDescription(byte[] payload)
+    {
+        return payload.Length >= P1RowDescriptionHeaderBytes
+            && BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(0, 2)) == 1
+            && payload[3] == 1;
+    }
+
+    private static List<ColumnInfo> ParseP1RowDescription(byte[] payload)
+    {
+        var count = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(4, 4));
+        if (count < 0)
+        {
+            throw new InvalidOperationException("P1 row description column count invalid");
+        }
+
+        var offset = P1RowDescriptionHeaderBytes;
+        var cols = new List<ColumnInfo>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var fixedColumnBytes = 4 + 4 + 8 + P1CanonicalTypeRefBytes + 56;
+            if (offset + fixedColumnBytes > payload.Length)
+            {
+                throw new InvalidOperationException("P1 row description truncated");
+            }
+
+            var ordinal = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(offset, 4));
+            offset += 4;
+            offset += 1;
+            var format = payload[offset++] == 1
+                ? (byte)TypeDecoder.FormatText
+                : (byte)TypeDecoder.FormatBinary;
+            var nullable = payload[offset++] == 1;
+            offset += 1;
+            offset += 8;
+            var typeOid = OidFromCanonicalTypeRef(payload, offset);
+            offset += P1CanonicalTypeRefBytes;
+            offset += 16 * 3;
+            offset += 4;
+            offset += 2;
+            offset += 2;
+
+            var name = ReadNullableText(payload, ref offset);
+            cols.Add(new ColumnInfo
+            {
+                Name = string.IsNullOrEmpty(name) ? $"column{i + 1}" : name,
+                TableOid = 0,
+                ColumnIndex = (ushort)(ordinal == 0 ? i : ordinal - 1),
+                TypeOid = typeOid,
+                TypeSize = TypeSizeForOid(typeOid),
+                TypeModifier = -1,
+                Format = format,
+                Nullable = nullable
+            });
+        }
+        return cols;
+    }
+
+    private static uint OidFromCanonicalTypeRef(byte[] payload, int offset)
+    {
+        if (offset + 4 > payload.Length)
+        {
+            return TypeDecoder.OidText;
+        }
+        var family = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(offset, 2));
+        var code = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(offset + 2, 2));
+        return (family, code) switch
+        {
+            (1, 1) => TypeDecoder.OidBool,
+            (2, 3) => TypeDecoder.OidInt4,
+            (2, 4) => TypeDecoder.OidInt8,
+            (4, 1) => TypeDecoder.OidNumeric,
+            (6, 2) => TypeDecoder.OidFloat8,
+            (8, 1) => TypeDecoder.OidText,
+            _ => TypeDecoder.OidText
+        };
+    }
+
+    private static short TypeSizeForOid(uint oid)
+    {
+        return oid switch
+        {
+            TypeDecoder.OidBool => 1,
+            TypeDecoder.OidInt4 => 4,
+            TypeDecoder.OidInt8 => 8,
+            TypeDecoder.OidFloat8 => 8,
+            _ => -1
+        };
+    }
+
+    private static string ReadNullableText(byte[] payload, ref int offset)
+    {
+        if (offset + 5 > payload.Length)
+        {
+            throw new InvalidOperationException("Nullable text truncated");
+        }
+        var tag = payload[offset++];
+        var length = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(offset, 4));
+        offset += 4;
+        if (length < 0)
+        {
+            throw new InvalidOperationException("Nullable text length invalid");
+        }
+        if (tag == 0)
+        {
+            return string.Empty;
+        }
+        if (offset + length > payload.Length)
+        {
+            throw new InvalidOperationException("Nullable text truncated");
+        }
+        var value = Encoding.UTF8.GetString(payload, offset, length);
+        offset += length;
+        return value;
     }
 
     public static List<ColumnValue> ParseDataRow(byte[] payload)

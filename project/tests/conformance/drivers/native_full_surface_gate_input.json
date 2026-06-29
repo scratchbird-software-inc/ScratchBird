@@ -59,6 +59,7 @@
     "timing-groups.json",
     "result-digests.json",
     "metadata-snapshots.json",
+    "route-environment.json",
     "process-metrics.jsonl",
     "security-refusals.json",
     "native-api-coverage.json",

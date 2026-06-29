@@ -570,6 +570,18 @@ ParserServerEventEngineContext EventEngineContextFromSession(
       if (database.database_open) {
         context.database_path = database.database_path;
         context.database_uuid.canonical = database.database_uuid;
+        context.database_page_size_bytes = database.page_size_bytes;
+        break;
+      }
+    }
+  } else {
+    for (const auto& database : engine_state.databases) {
+      if (!database.database_open) continue;
+      const bool path_matches = database.database_path == context.database_path;
+      const bool uuid_matches = !context.database_uuid.canonical.empty() &&
+                                database.database_uuid == context.database_uuid.canonical;
+      if (path_matches || uuid_matches) {
+        context.database_page_size_bytes = database.page_size_bytes;
         break;
       }
     }
@@ -974,7 +986,19 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
       if (!database.database_open) continue;
       context.database_path = database.database_path;
       context.database_uuid.canonical = database.database_uuid;
+      context.database_page_size_bytes = database.page_size_bytes;
       break;
+    }
+  } else {
+    for (const auto& database : engine_state.databases) {
+      if (!database.database_open) continue;
+      const bool path_matches = database.database_path == context.database_path;
+      const bool uuid_matches = !context.database_uuid.canonical.empty() &&
+                                database.database_uuid == context.database_uuid.canonical;
+      if (path_matches || uuid_matches) {
+        context.database_page_size_bytes = database.page_size_bytes;
+        break;
+      }
     }
   }
   context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
@@ -1159,6 +1183,7 @@ struct PsNameResolveRequest {
   std::string language;
   std::string search_path;
   std::string object_class;
+  bool bypass_cache = false;
 };
 
 std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
@@ -1172,6 +1197,9 @@ std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
   if (!PsNameReadString(payload, &offset, &request.language)) return std::nullopt;
   if (!PsNameReadString(payload, &offset, &request.search_path)) return std::nullopt;
   if (!PsNameReadString(payload, &offset, &request.object_class)) return std::nullopt;
+  if (offset < payload.size()) {
+    request.bypass_cache = payload[offset++] != 0;
+  }
   return request;
 }
 
@@ -1218,6 +1246,7 @@ void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
       << "\tcache_key=" << PsNameTraceField(cache_key)
       << "\tstable_cache_key=" << PsNameTraceField(stable_cache_key)
       << "\tquoted=" << (request.quoted ? "true" : "false")
+      << "\tbypass_cache=" << (request.bypass_cache ? "true" : "false")
       << "\tdialect=" << PsNameTraceField(request.dialect_profile)
       << "\tlanguage=" << PsNameTraceField(request.language)
       << "\tsearch_path=" << PsNameTraceField(request.search_path)
@@ -1677,75 +1706,77 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         PsNameResolutionCacheKey(*session, *decoded, identifier_profile);
     const std::string stable_cache_key =
         PsNameStableResolutionCacheKey(*session, *decoded, identifier_profile);
-    bool normal_cache_checked = true;
+    bool normal_cache_checked = !decoded->bypass_cache;
     bool normal_cache_hit = false;
     bool stable_cache_checked = false;
     bool stable_cache_hit = false;
-    if (const auto cached =
-            LookupPsNameCache(session_registry, *session, cache_key)) {
-      if (const auto object_uuid = PsNameUuidFromText(cached->object_uuid)) {
-        normal_cache_hit = true;
-        WritePsNameResolutionTrace(*decoded,
-                                   &*session,
-                                   "resolved",
-                                   "normal_cache",
-                                   cached->object_uuid,
-                                   cached->object_class,
-                                   cache_key,
-                                   stable_cache_key,
-                                   normal_cache_checked,
-                                   normal_cache_hit,
-                                   stable_cache_checked,
-                                   stable_cache_hit,
-                                   PsNameTraceElapsedMicros(trace_begin),
-                                   session_registry);
-        return PsNameResponseFrame(
-            frame,
-            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-            sbps::kSchemaResolveNameResultV1,
-            EncodePsNameResolvePayload("resolved",
-                                       *object_uuid,
-                                       cached->canonical_name,
-                                       cached->object_class,
-                                       cached->catalog_generation,
-                                       cached->security_epoch,
-                                       "server public name resolution cache"),
-            false);
+    if (!decoded->bypass_cache) {
+      if (const auto cached =
+              LookupPsNameCache(session_registry, *session, cache_key)) {
+        if (const auto object_uuid = PsNameUuidFromText(cached->object_uuid)) {
+          normal_cache_hit = true;
+          WritePsNameResolutionTrace(*decoded,
+                                     &*session,
+                                     "resolved",
+                                     "normal_cache",
+                                     cached->object_uuid,
+                                     cached->object_class,
+                                     cache_key,
+                                     stable_cache_key,
+                                     normal_cache_checked,
+                                     normal_cache_hit,
+                                     stable_cache_checked,
+                                     stable_cache_hit,
+                                     PsNameTraceElapsedMicros(trace_begin),
+                                     session_registry);
+          return PsNameResponseFrame(
+              frame,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+              sbps::kSchemaResolveNameResultV1,
+              EncodePsNameResolvePayload("resolved",
+                                         *object_uuid,
+                                         cached->canonical_name,
+                                         cached->object_class,
+                                         cached->catalog_generation,
+                                         cached->security_epoch,
+                                         "server public name resolution cache"),
+              false);
+        }
       }
-    }
-    stable_cache_checked = true;
-    if (const auto stable_cached = LookupPsNameStableCache(
-            session_registry,
-            *session,
-            stable_cache_key)) {
-      if (const auto object_uuid = PsNameUuidFromText(stable_cached->object_uuid)) {
-        stable_cache_hit = true;
-        WritePsNameResolutionTrace(*decoded,
-                                   &*session,
-                                   "resolved",
-                                   "stable_relation_cache",
-                                   stable_cached->object_uuid,
-                                   stable_cached->object_class,
-                                   cache_key,
-                                   stable_cache_key,
-                                   normal_cache_checked,
-                                   normal_cache_hit,
-                                   stable_cache_checked,
-                                   stable_cache_hit,
-                                   PsNameTraceElapsedMicros(trace_begin),
-                                   session_registry);
-        return PsNameResponseFrame(
-            frame,
-            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-            sbps::kSchemaResolveNameResultV1,
-            EncodePsNameResolvePayload("resolved",
-                                       *object_uuid,
-                                       stable_cached->canonical_name,
-                                       stable_cached->object_class,
-                                       session->catalog_generation,
-                                       session->security_epoch,
-                                       "server stable relation name resolution cache"),
-            false);
+      stable_cache_checked = true;
+      if (const auto stable_cached = LookupPsNameStableCache(
+              session_registry,
+              *session,
+              stable_cache_key)) {
+        if (const auto object_uuid = PsNameUuidFromText(stable_cached->object_uuid)) {
+          stable_cache_hit = true;
+          WritePsNameResolutionTrace(*decoded,
+                                     &*session,
+                                     "resolved",
+                                     "stable_relation_cache",
+                                     stable_cached->object_uuid,
+                                     stable_cached->object_class,
+                                     cache_key,
+                                     stable_cache_key,
+                                     normal_cache_checked,
+                                     normal_cache_hit,
+                                     stable_cache_checked,
+                                     stable_cache_hit,
+                                     PsNameTraceElapsedMicros(trace_begin),
+                                     session_registry);
+          return PsNameResponseFrame(
+              frame,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+              sbps::kSchemaResolveNameResultV1,
+              EncodePsNameResolvePayload("resolved",
+                                         *object_uuid,
+                                         stable_cached->canonical_name,
+                                         stable_cached->object_class,
+                                         session->catalog_generation,
+                                         session->security_epoch,
+                                         "server stable relation name resolution cache"),
+              false);
+        }
       }
     }
     engine_api::EngineResolveNameRequest request;
@@ -1776,7 +1807,8 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
             resolved.primary_object.object_kind.empty()
                 ? decoded->object_class
                 : resolved.primary_object.object_kind;
-        if (PsNameResolutionCacheable(request.context,
+        if (!decoded->bypass_cache &&
+            PsNameResolutionCacheable(request.context,
                                       resolved_object_class,
                                       resolved.primary_object.uuid.canonical)) {
           StorePsNameCacheVariants(session_registry,
@@ -1818,56 +1850,59 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
             false);
       }
     }
-    if (const auto registry_match = PsNameResolveUniqueRegistryLeaf(
-            request.context, parts->back(), decoded->object_class, identifier_profile);
-        registry_match &&
-        PsNameRegistryMatchVisibleForSession(request.context, *registry_match)) {
-      const auto object_uuid = PsNameUuidFromText(registry_match->object_uuid);
-      if (object_uuid) {
-        if (PsNameResolutionCacheable(request.context,
-                                      registry_match->object_class,
-                                      registry_match->object_uuid)) {
-          StorePsNameCacheVariants(session_registry,
-                                   *session,
-                                   *decoded,
-                                   identifier_profile,
-                                   request.context,
-                                   registry_match->object_uuid,
-                                   decoded->presented_name,
-                                   registry_match->object_class,
-                                   registry_match->catalog_generation_id == 0
-                                       ? session->catalog_generation
-                                       : registry_match->catalog_generation_id,
-                                   session->security_epoch);
+    if (parts->size() == 1) {
+      const auto registry_match = PsNameResolveUniqueRegistryLeaf(
+          request.context, parts->back(), decoded->object_class, identifier_profile);
+      if (registry_match &&
+          PsNameRegistryMatchVisibleForSession(request.context, *registry_match)) {
+        const auto object_uuid = PsNameUuidFromText(registry_match->object_uuid);
+        if (object_uuid) {
+          if (!decoded->bypass_cache &&
+              PsNameResolutionCacheable(request.context,
+                                        registry_match->object_class,
+                                        registry_match->object_uuid)) {
+            StorePsNameCacheVariants(session_registry,
+                                     *session,
+                                     *decoded,
+                                     identifier_profile,
+                                     request.context,
+                                     registry_match->object_uuid,
+                                     decoded->presented_name,
+                                     registry_match->object_class,
+                                     registry_match->catalog_generation_id == 0
+                                         ? session->catalog_generation
+                                         : registry_match->catalog_generation_id,
+                                     session->security_epoch);
+          }
+          WritePsNameResolutionTrace(*decoded,
+                                     &*session,
+                                     "resolved",
+                                     "engine_name_registry_resolver",
+                                     registry_match->object_uuid,
+                                     registry_match->object_class,
+                                     cache_key,
+                                     stable_cache_key,
+                                     normal_cache_checked,
+                                     normal_cache_hit,
+                                     stable_cache_checked,
+                                     stable_cache_hit,
+                                     PsNameTraceElapsedMicros(trace_begin),
+                                     session_registry);
+          return PsNameResponseFrame(
+              frame,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+              sbps::kSchemaResolveNameResultV1,
+              EncodePsNameResolvePayload("resolved",
+                                         *object_uuid,
+                                         decoded->presented_name,
+                                         registry_match->object_class,
+                                         registry_match->catalog_generation_id == 0
+                                             ? session->catalog_generation
+                                             : registry_match->catalog_generation_id,
+                                         session->security_epoch,
+                                         "engine name registry resolver"),
+              false);
         }
-        WritePsNameResolutionTrace(*decoded,
-                                   &*session,
-                                   "resolved",
-                                   "engine_name_registry_resolver",
-                                   registry_match->object_uuid,
-                                   registry_match->object_class,
-                                   cache_key,
-                                   stable_cache_key,
-                                   normal_cache_checked,
-                                   normal_cache_hit,
-                                   stable_cache_checked,
-                                   stable_cache_hit,
-                                   PsNameTraceElapsedMicros(trace_begin),
-                                   session_registry);
-        return PsNameResponseFrame(
-          frame,
-          static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-            sbps::kSchemaResolveNameResultV1,
-            EncodePsNameResolvePayload("resolved",
-                                       *object_uuid,
-                                       decoded->presented_name,
-                                       registry_match->object_class,
-                                       registry_match->catalog_generation_id == 0
-                                           ? session->catalog_generation
-                                           : registry_match->catalog_generation_id,
-                                       session->security_epoch,
-                                       "engine name registry resolver"),
-            false);
       }
     }
     WritePsNameResolutionTrace(*decoded,

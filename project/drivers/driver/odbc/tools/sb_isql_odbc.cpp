@@ -10,8 +10,10 @@
 
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -75,6 +77,8 @@ const std::set<std::string> kSupportedArgs{
     "--standard-english-fallback",
 };
 
+std::string diagnostic(SQLSMALLINT handleType, SQLHANDLE handle);
+
 int64_t nowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -106,6 +110,16 @@ bool networkRoute(const std::string& route) {
     return route == "listener-parser" || route == "manager-listener-parser";
 }
 
+uint32_t pageSizeBytesForLabel(const std::string& pageSize) {
+    if (pageSize == "4k") return 4096;
+    if (pageSize == "8k") return 8192;
+    if (pageSize == "16k") return 16384;
+    if (pageSize == "32k") return 32768;
+    if (pageSize == "64k") return 65536;
+    if (pageSize == "128k") return 131072;
+    return 0;
+}
+
 std::string transportModeForRoute(const std::string& route, const std::string& sslmode) {
     if (route == "embedded") return "embedded_no_network_transport";
     if (route == "ipc_local") return "local_ipc_no_tls";
@@ -133,6 +147,105 @@ std::string transportImplementationForRoute(const std::string& route) {
 std::string tlsPolicyForRoute(const std::string& route, const std::string& sslmode) {
     if (!networkRoute(route)) return "not_applicable_non_network_route";
     return sslmode == "disable" ? "explicit_non_tls_test_route" : "scratchbird_tls_1_3_floor";
+}
+
+json routeEnvironment(const std::map<std::string, std::string>& args,
+                      uint32_t actualPageSize,
+                      bool hasActualPageSize,
+                      const std::string& status,
+                      const std::string& reason = "") {
+    const std::string route = required(args, "--route");
+    const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
+    json record{{"run_id", valueOrDefault(args, "--run-id", "manual")},
+                {"driver", "odbc"},
+                {"route", route},
+                {"sslmode", sslmode},
+                {"parser_mode", required(args, "--parser-mode")},
+                {"concurrency_mode", "single"},
+                {"namespace", required(args, "--namespace")},
+                {"page_size", required(args, "--page-size")},
+                {"expected_page_size_bytes", pageSizeBytesForLabel(required(args, "--page-size"))},
+                {"actual_page_size_bytes", hasActualPageSize ? json(actualPageSize) : json(nullptr)},
+                {"page_size_verification_source", "SHOW DATABASE"},
+                {"page_size_verification_status", status},
+                {"transport_mode", transportModeForRoute(route, sslmode)},
+                {"transport_endpoint_kind", endpointKindForRoute(route)},
+                {"driver_transport_implementation", transportImplementationForRoute(route)}};
+    if (!reason.empty()) record["failure_reason"] = reason;
+    return record;
+}
+
+json probeRouteEnvironment(SQLHDBC dbc, std::map<std::string, int>& api, const std::map<std::string, std::string>& args) {
+    SQLHSTMT probe = SQL_NULL_HSTMT;
+    if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &probe) != SQL_SUCCESS) {
+        return routeEnvironment(args, 0, false, "fail", diagnostic(SQL_HANDLE_DBC, dbc));
+    }
+    api["SQLAllocHandle"]++;
+    const std::string sql = "SHOW DATABASE";
+    auto rc = SQLExecDirect(probe, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
+    api["SQLExecDirect"]++;
+    if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
+        const auto message = diagnostic(SQL_HANDLE_STMT, probe);
+        SQLFreeHandle(SQL_HANDLE_STMT, probe);
+        return routeEnvironment(args, 0, false, "fail", message);
+    }
+    SQLSMALLINT columnCount = 0;
+    rc = SQLNumResultCols(probe, &columnCount);
+    if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) || columnCount <= 0) {
+        SQLFreeHandle(SQL_HANDLE_STMT, probe);
+        return routeEnvironment(args, 0, false, "fail", "show_database_missing_columns");
+    }
+    SQLUSMALLINT pageSizeColumn = 0;
+    for (SQLUSMALLINT column = 1; column <= static_cast<SQLUSMALLINT>(columnCount); ++column) {
+        SQLCHAR name[128] = {};
+        SQLSMALLINT nameLength = 0;
+        SQLSMALLINT dataType = 0;
+        SQLULEN columnSize = 0;
+        SQLSMALLINT decimalDigits = 0;
+        SQLSMALLINT nullable = 0;
+        rc = SQLDescribeCol(probe, column, name, sizeof(name), &nameLength, &dataType,
+                            &columnSize, &decimalDigits, &nullable);
+        if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
+            continue;
+        }
+        std::string normalized(reinterpret_cast<char*>(name), static_cast<size_t>(nameLength));
+        for (char& ch : normalized) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        if (normalized == "page_size_bytes") {
+            pageSizeColumn = column;
+            break;
+        }
+    }
+    if (pageSizeColumn == 0) {
+        SQLFreeHandle(SQL_HANDLE_STMT, probe);
+        return routeEnvironment(args, 0, false, "fail", "show_database_missing_page_size_column");
+    }
+    rc = SQLFetch(probe);
+    api["SQLFetch"]++;
+    if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
+        SQLFreeHandle(SQL_HANDLE_STMT, probe);
+        return routeEnvironment(args, 0, false, "fail", "show_database_returned_no_rows");
+    }
+    SQLCHAR actualText[64] = {};
+    SQLLEN indicator = 0;
+    rc = SQLGetData(probe, pageSizeColumn, SQL_C_CHAR, actualText, sizeof(actualText), &indicator);
+    SQLFreeHandle(SQL_HANDLE_STMT, probe);
+    if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) || indicator == SQL_NULL_DATA) {
+        return routeEnvironment(args, 0, false, "fail", "show_database_missing_page_size_bytes");
+    }
+    uint32_t actualBytes = 0;
+    try {
+        actualBytes = static_cast<uint32_t>(std::stoul(reinterpret_cast<char*>(actualText)));
+    } catch (...) {
+        return routeEnvironment(args, 0, false, "fail", "show_database_invalid_page_size_bytes");
+    }
+    const auto expectedBytes = pageSizeBytesForLabel(required(args, "--page-size"));
+    return routeEnvironment(args,
+                            actualBytes,
+                            true,
+                            actualBytes == expectedBytes ? "pass" : "fail",
+                            actualBytes == expectedBytes ? "" : "actual_page_size_mismatch");
 }
 
 void writeText(const std::string& path, const std::string& text) {
@@ -259,8 +372,36 @@ std::string diagnostic(SQLSMALLINT handleType, SQLHANDLE handle) {
     return "ODBC operation failed";
 }
 
+std::string quotedIdentifier(const std::string& value) {
+    if (value.empty()) throw std::runtime_error("database identifier is empty");
+    std::string result = "\"";
+    for (char ch : value) {
+        if (ch == '"') result += "\"\"";
+        else result += ch;
+    }
+    result += '"';
+    return result;
+}
+
 void addTiming(std::map<std::string, int64_t>& timings, const std::string& group, int64_t started) {
     timings[group] += nowNs() - started;
+}
+
+json currentProcessMetrics() {
+    long long vsizeKb = 1;
+    long long rssKb = 1;
+    std::ifstream statm("/proc/self/statm");
+    long long sizePages = 0;
+    long long residentPages = 0;
+    if (statm >> sizePages >> residentPages) {
+        constexpr long long kPageKb = 4;
+        vsizeKb = std::max(1LL, sizePages * kPageKb);
+        rssKb = std::max(1LL, residentPages * kPageKb);
+    }
+    return {{"client", {{"max_rss_kb", rssKb},
+                        {"max_vsize_kb", vsizeKb},
+                        {"last_rss_kb", rssKb},
+                        {"last_vsize_kb", vsizeKb}}}};
 }
 
 } // namespace
@@ -276,6 +417,7 @@ int main(int argc, char** argv) {
                                                        {"timing", runRoot + "/timing-groups.json"},
                                                        {"digests", runRoot + "/result-digests.json"},
                                                        {"metadata", runRoot + "/metadata-snapshots.json"},
+                                                       {"route_env", runRoot + "/route-environment.json"},
                                                        {"refusals", runRoot + "/security-refusals.json"},
                                                        {"api", runRoot + "/native-api-coverage.json"},
                                                        {"review", runRoot + "/code-example-review.json"},
@@ -288,7 +430,8 @@ int main(int argc, char** argv) {
 
         std::map<std::string, int64_t> timings;
         std::map<std::string, int> api{{"SQLAllocHandle", 0}, {"SQLConnect", 0}, {"SQLDriverConnect", 0}, {"SQLPrepare", 0},
-                                       {"SQLBindParameter", 0}, {"SQLExecute", 0}, {"SQLFetch", 0}, {"SQLTables", 0}, {"SQLColumns", 0}};
+                                       {"SQLBindParameter", 0}, {"SQLExecute", 0}, {"SQLExecDirect", 0}, {"SQLFetch", 0},
+                                       {"SQLTables", 0}, {"SQLColumns", 0}};
         json failures = json::array();
         json testcases = json::array();
         json digests = json::array();
@@ -300,6 +443,7 @@ int main(int argc, char** argv) {
         const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
         const std::string transportMode = transportModeForRoute(route, sslmode);
         const std::string tlsPolicy = tlsPolicyForRoute(route, sslmode);
+        writeText(paths.at("route_env"), routeEnvironment(args, 0, false, "fail", "not_probed").dump(2) + "\n");
         const std::string languageResourcePack =
             valueOrDefault(args, "--language-resource-pack", "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack");
         const std::string languageResourceIdentity =
@@ -355,12 +499,61 @@ int main(int argc, char** argv) {
                                            {"parser_output_to_engine_required", true},
                                            {"engine_sql_text_execution", false}});
         } else {
-            failures.push_back({{"statement_id", "connect"}, {"message", diagnostic(SQL_HANDLE_DBC, dbc)}});
+            const auto message = diagnostic(SQL_HANDLE_DBC, dbc);
+            failures.push_back({{"statement_id", "connect"}, {"message", message}});
+            appendText(paths.at("stderr"), "connect: " + message + "\n");
+            appendText(required(args, "--error"), "connect: " + message + "\n");
+            appendJsonl(required(args, "--diagnostics"),
+                        {{"statement_id", "connect"}, {"sqlstate", "08001"}, {"message", message}});
         }
 
         if (failures.empty() && booleanArg(args, "--create-database", false)) {
-            failures.push_back({{"statement_id", "database_create"}, {"message", "--create-database is not implemented in the ODBC native tool yet"},
-                                {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
+            const auto createStarted = nowNs();
+            SQLHSTMT createStmt = SQL_NULL_HSTMT;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &createStmt) != SQL_SUCCESS) {
+                failures.push_back({{"statement_id", "database_create"}, {"message", diagnostic(SQL_HANDLE_DBC, dbc)}});
+            } else {
+                api["SQLAllocHandle"]++;
+                const std::string createSql = "CREATE DATABASE " + quotedIdentifier(required(args, "--database"));
+                auto rc = SQLExecDirect(createStmt,
+                                        reinterpret_cast<SQLCHAR*>(const_cast<char*>(createSql.c_str())),
+                                        SQL_NTS);
+                api["SQLExecDirect"]++;
+                if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+                    addTiming(timings, "database_create", createStarted);
+                    appendJsonl(paths.at("wire"), {{"event", "database_create"},
+                                                   {"driver", "odbc"},
+                                                   {"api", "SQLExecDirect"},
+                                                   {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")},
+                                                   {"parser_output_to_engine_required", true},
+                                                   {"engine_sql_text_execution", false},
+                                                   {"mga_authority", "engine"}});
+                } else {
+                    failures.push_back({{"statement_id", "database_create"},
+                                        {"message", diagnostic(SQL_HANDLE_STMT, createStmt)},
+                                        {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
+                }
+                SQLFreeHandle(SQL_HANDLE_STMT, createStmt);
+            }
+        }
+        if (failures.empty()) {
+            const auto routeEnv = probeRouteEnvironment(dbc, api, args);
+            writeText(paths.at("route_env"), routeEnv.dump(2) + "\n");
+            if (route != "embedded" && routeEnv.value("page_size_verification_status", "fail") != "pass") {
+                const auto message = std::string("route page-size verification failed");
+                failures.push_back({{"statement_id", "route_page_size"},
+                                    {"message", message},
+                                    {"expected_page_size_bytes", routeEnv.value("expected_page_size_bytes", 0)},
+                                    {"actual_page_size_bytes", routeEnv.value("actual_page_size_bytes", json(nullptr))}});
+                appendText(paths.at("stderr"), "route_page_size: " + message + "\n");
+                appendText(required(args, "--error"), "route_page_size: " + message + "\n");
+                appendJsonl(required(args, "--diagnostics"),
+                            {{"statement_id", "route_page_size"},
+                             {"sqlstate", "HY000"},
+                             {"message", message},
+                             {"expected_page_size_bytes", routeEnv.value("expected_page_size_bytes", 0)},
+                             {"actual_page_size_bytes", routeEnv.value("actual_page_size_bytes", json(nullptr))}});
+            }
         }
         if (failures.empty() && parserMode != "server-parser") {
             failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the ODBC native tool; it fails closed"}});
@@ -465,6 +658,7 @@ int main(int argc, char** argv) {
         if (env) SQLFreeHandle(SQL_HANDLE_ENV, env);
 
         timings["overall"] = nowNs() - started;
+        const json processMetrics = currentProcessMetrics();
         const json summary{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                            {"driver_name", "odbc"},
                            {"route", route},
@@ -488,11 +682,14 @@ int main(int argc, char** argv) {
                            {"status", failures.empty() ? "pass" : "fail"},
                            {"failure_count", failures.size()},
                            {"elapsed_ns", timings["overall"]},
+                           {"process_metrics", processMetrics},
                            {"server_revalidation_required", true},
                            {"driver_or_parser_finality", "forbidden"},
                            {"mga_authority", "engine"}};
         writeText(summaryPath, summary.dump() + "\n");
-        writeText(required(args, "--metrics"), json(timings).dump() + "\n");
+        writeText(required(args, "--metrics"), json({{"role", "client"},
+                                                     {"rss_kb", processMetrics["client"]["last_rss_kb"]},
+                                                     {"vsize_kb", processMetrics["client"]["last_vsize_kb"]}}).dump() + "\n");
         writeText(paths.at("timing"), json(timings).dump() + "\n");
         writeText(paths.at("digests"), digests.dump() + "\n");
         writeText(paths.at("refusals"), securityRefusals.dump() + "\n");

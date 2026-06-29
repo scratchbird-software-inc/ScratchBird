@@ -12,6 +12,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +24,12 @@ const (
 	protocolVer    = (protocolMajor << 8) | protocolMinor
 	headerSize     = 40
 	maxMessageSize = 1024 * 1024 * 1024
+)
+
+const (
+	connectValueText              = 1
+	p1RowDescriptionHeaderBytes   = 72
+	p1CanonicalTypeReferenceBytes = 144
 )
 
 const (
@@ -354,14 +362,57 @@ func readMessage(r io.Reader) (protocolMessage, error) {
 }
 
 func buildStartupPayload(features uint64, params map[string]string) []byte {
-	paramBytes := buildParamList(params)
-	payload := make([]byte, 2+2+8+len(paramBytes))
-	payload[0] = protocolMajor
-	payload[1] = protocolMinor
-	binary.LittleEndian.PutUint16(payload[2:4], 0)
-	binary.LittleEndian.PutUint64(payload[4:12], features)
-	copy(payload[12:], paramBytes)
+	paramBytes := buildP1ParamList(params)
+	payload := make([]byte, 88+len(paramBytes))
+	offset := 0
+	binary.LittleEndian.PutUint16(payload[offset:offset+2], uint16(protocolVer))
+	offset += 2
+	binary.LittleEndian.PutUint16(payload[offset:offset+2], uint16(protocolVer))
+	offset += 2
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], 0)
+	offset += 4
+	binary.LittleEndian.PutUint64(payload[offset:offset+8], features)
+	offset += 8
+	binary.LittleEndian.PutUint64(payload[offset:offset+8], 0)
+	offset += 8
+	binary.LittleEndian.PutUint64(payload[offset:offset+8], 0)
+	offset += 8
+	offset += 16 * 3
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], uint32(len(params)))
+	offset += 4
+	copy(payload[offset:offset+len(paramBytes)], paramBytes)
+	offset += len(paramBytes)
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], 0)
 	return payload
+}
+
+func buildP1ParamList(params map[string]string) []byte {
+	buf := make([]byte, 0, 128)
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := params[key]
+		buf = appendP1LengthPrefixedString(buf, key)
+		tail := make([]byte, 2+4)
+		binary.LittleEndian.PutUint16(tail[0:2], connectValueText)
+		valueBytes := []byte(value)
+		binary.LittleEndian.PutUint32(tail[2:6], uint32(len(valueBytes)))
+		buf = append(buf, tail...)
+		buf = append(buf, valueBytes...)
+	}
+	return buf
+}
+
+func appendP1LengthPrefixedString(buf []byte, value string) []byte {
+	valueBytes := []byte(value)
+	lenBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lenBytes, uint32(len(valueBytes)))
+	buf = append(buf, lenBytes...)
+	buf = append(buf, valueBytes...)
+	return buf
 }
 
 func buildParamList(params map[string]string) []byte {
@@ -684,6 +735,17 @@ func buildCancelPayload(cancelType uint32, targetSeq uint32) []byte {
 }
 
 func parseReady(payload []byte) (byte, uint64, uint64, error) {
+	if len(payload) >= 76 {
+		switch payload[56] {
+		case 'I', 'T', 'E', 'R', 'A':
+			txnID := binary.LittleEndian.Uint64(payload[48:56])
+			status := byte(0)
+			if payload[56] == 'T' || payload[56] == 'E' {
+				status = 1
+			}
+			return status, txnID, txnID, nil
+		}
+	}
 	if len(payload) < 1+3+8+8 {
 		return 0, 0, 0, errors.New("ready truncated")
 	}
@@ -702,28 +764,99 @@ func parseTxnStatus(payload []byte) (byte, uint64, error) {
 	return status, txnID, nil
 }
 
-func parseParameterStatus(payload []byte) (string, string, error) {
+type parameterStatus struct {
+	name  string
+	value string
+}
+
+func parseParameterStatuses(payload []byte) ([]parameterStatus, error) {
 	if len(payload) < 8 {
-		return "", "", errors.New("parameter status truncated")
+		return nil, errors.New("parameter status truncated")
 	}
+	count := int(int32(binary.LittleEndian.Uint32(payload[0:4])))
+	if count > 0 && count <= 256 {
+		offset := 4
+		statuses := make([]parameterStatus, 0, count)
+		ok := true
+		for i := 0; i < count; i++ {
+			if offset+4 > len(payload) {
+				ok = false
+				break
+			}
+			nameLen := int(int32(binary.LittleEndian.Uint32(payload[offset : offset+4])))
+			offset += 4
+			if nameLen < 0 || offset+nameLen+7 > len(payload) {
+				ok = false
+				break
+			}
+			name := string(payload[offset : offset+nameLen])
+			offset += nameLen
+			offset += 3
+			valueLen := int(int32(binary.LittleEndian.Uint32(payload[offset : offset+4])))
+			offset += 4
+			if valueLen < 0 || offset+valueLen > len(payload) {
+				ok = false
+				break
+			}
+			value := string(payload[offset : offset+valueLen])
+			offset += valueLen
+			statuses = append(statuses, parameterStatus{name: name, value: value})
+		}
+		if ok && offset == len(payload) {
+			return statuses, nil
+		}
+	}
+
 	offset := 0
 	nameLen := int(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 	offset += 4
 	if offset+nameLen+4 > len(payload) {
-		return "", "", errors.New("parameter status truncated")
+		return nil, errors.New("parameter status truncated")
 	}
 	name := string(payload[offset : offset+nameLen])
 	offset += nameLen
 	valueLen := int(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 	offset += 4
 	if offset+valueLen > len(payload) {
-		return "", "", errors.New("parameter status truncated")
+		return nil, errors.New("parameter status truncated")
 	}
 	value := string(payload[offset : offset+valueLen])
-	return name, value, nil
+	return []parameterStatus{{name: name, value: value}}, nil
+}
+
+func parseParameterStatus(payload []byte) (string, string, error) {
+	statuses, err := parseParameterStatuses(payload)
+	if err != nil {
+		return "", "", err
+	}
+	if len(statuses) == 0 {
+		return "", "", errors.New("parameter status truncated")
+	}
+	return statuses[0].name, statuses[0].value, nil
 }
 
 func parseParameterDescription(payload []byte) ([]uint32, error) {
+	if len(payload) >= p1RowDescriptionHeaderBytes &&
+		binary.LittleEndian.Uint16(payload[0:2]) == 1 &&
+		payload[3] == 1 {
+		count := int(binary.LittleEndian.Uint32(payload[68:72]))
+		pos := p1RowDescriptionHeaderBytes
+		types := make([]uint32, 0, count)
+		for i := 0; i < count; i++ {
+			if pos+4+4+8+8+p1CanonicalTypeReferenceBytes+4+5 > len(payload) {
+				return nil, errors.New("P1 parameter description truncated")
+			}
+			typeOffset := pos + 4 + 4 + 8 + 8
+			types = append(types, oidFromCanonicalTypeRef(payload, typeOffset))
+			pos = typeOffset + p1CanonicalTypeReferenceBytes + 4
+			_, next, err := readNullableText(payload, pos)
+			if err != nil {
+				return nil, err
+			}
+			pos = next
+		}
+		return types, nil
+	}
 	if len(payload) < 4 {
 		return nil, errors.New("parameter description truncated")
 	}
@@ -741,6 +874,9 @@ func parseParameterDescription(payload []byte) ([]uint32, error) {
 }
 
 func parseRowDescription(payload []byte) ([]columnInfo, error) {
+	if isP1RowDescription(payload) {
+		return parseP1RowDescription(payload)
+	}
 	if len(payload) < 4 {
 		return nil, errors.New("row description truncated")
 	}
@@ -786,6 +922,125 @@ func parseRowDescription(payload []byte) ([]columnInfo, error) {
 		})
 	}
 	return cols, nil
+}
+
+func isP1RowDescription(payload []byte) bool {
+	return len(payload) >= p1RowDescriptionHeaderBytes &&
+		binary.LittleEndian.Uint16(payload[0:2]) == 1 &&
+		payload[3] == 1
+}
+
+func parseP1RowDescription(payload []byte) ([]columnInfo, error) {
+	count := int(int32(binary.LittleEndian.Uint32(payload[4:8])))
+	if count < 0 {
+		return nil, errors.New("P1 row description column count invalid")
+	}
+	offset := p1RowDescriptionHeaderBytes
+	cols := make([]columnInfo, 0, count)
+	for i := 0; i < count; i++ {
+		fixedColumnBytes := 4 + 4 + 8 + p1CanonicalTypeReferenceBytes + 56
+		if offset+fixedColumnBytes > len(payload) {
+			return nil, errors.New("P1 row description truncated")
+		}
+		ordinal := int(int32(binary.LittleEndian.Uint32(payload[offset : offset+4])))
+		offset += 4
+		offset++
+		format := uint8(formatBinary)
+		if payload[offset] == 1 {
+			format = uint8(formatText)
+		}
+		offset++
+		nullable := payload[offset] == 1
+		offset++
+		offset++
+		offset += 8
+		typeOID := oidFromCanonicalTypeRef(payload, offset)
+		offset += p1CanonicalTypeReferenceBytes
+		offset += 16 * 3
+		offset += 4
+		offset += 2
+		offset += 2
+		name, nextOffset, err := readNullableText(payload, offset)
+		if err != nil {
+			return nil, err
+		}
+		offset = nextOffset
+		if name == "" {
+			name = "column" + strconv.Itoa(i+1)
+		}
+		columnIndex := uint16(i)
+		if ordinal > 0 {
+			columnIndex = uint16(ordinal - 1)
+		}
+		cols = append(cols, columnInfo{
+			name:         name,
+			tableOID:     0,
+			columnIndex:  columnIndex,
+			typeOID:      typeOID,
+			typeSize:     typeSizeForOID(typeOID),
+			typeModifier: -1,
+			format:       format,
+			nullable:     nullable,
+		})
+	}
+	return cols, nil
+}
+
+func oidFromCanonicalTypeRef(payload []byte, offset int) uint32 {
+	if offset+4 > len(payload) {
+		return oidText
+	}
+	family := binary.LittleEndian.Uint16(payload[offset : offset+2])
+	code := binary.LittleEndian.Uint16(payload[offset+2 : offset+4])
+	switch {
+	case family == 1 && code == 1:
+		return oidBool
+	case family == 2 && code == 3:
+		return oidInt4
+	case family == 2 && code == 4:
+		return oidInt8
+	case family == 4 && code == 1:
+		return oidNumeric
+	case family == 6 && code == 2:
+		return oidFloat8
+	case family == 8 && code == 1:
+		return oidText
+	default:
+		return oidText
+	}
+}
+
+func typeSizeForOID(oid uint32) int16 {
+	switch oid {
+	case oidBool:
+		return 1
+	case oidInt4:
+		return 4
+	case oidInt8, oidFloat8:
+		return 8
+	default:
+		return -1
+	}
+}
+
+func readNullableText(payload []byte, offset int) (string, int, error) {
+	if offset+5 > len(payload) {
+		return "", offset, errors.New("nullable text truncated")
+	}
+	tag := payload[offset]
+	offset++
+	length := int(int32(binary.LittleEndian.Uint32(payload[offset : offset+4])))
+	offset += 4
+	if length < 0 {
+		return "", offset, errors.New("nullable text length invalid")
+	}
+	if tag == 0 {
+		return "", offset, nil
+	}
+	if offset+length > len(payload) {
+		return "", offset, errors.New("nullable text truncated")
+	}
+	return string(payload[offset : offset+length]), offset + length, nil
 }
 
 func parseDataRow(payload []byte, columnCount int) ([]columnValue, error) {

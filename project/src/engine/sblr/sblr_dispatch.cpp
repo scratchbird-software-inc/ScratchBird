@@ -4459,6 +4459,10 @@ api::EngineSecurityCreatePolicyRequest TypedSecurityCreatePolicyRequest(
   }
   typed.policy_name = api::SecurityOptionValue(base, "policy_name:");
   if (typed.policy_name.empty()) { typed.policy_name = api::SecurityOptionValue(base, "name:"); }
+  typed.target_schema_uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema_uuid.empty()) {
+    typed.target_schema_uuid = api::SecurityOptionValue(base, "schema_uuid:");
+  }
   typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
   if (typed.target_object_uuid.empty()) { typed.target_object_uuid = base.target_schema.uuid.canonical; }
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");

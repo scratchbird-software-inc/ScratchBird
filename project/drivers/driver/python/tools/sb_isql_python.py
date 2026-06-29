@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import resource
 import sys
 import time
 import traceback
@@ -32,8 +33,37 @@ from scratchbird.sql import split_top_level_statements
 
 
 PAGE_SIZES = {"4k", "8k", "16k", "32k", "64k", "128k"}
+PAGE_SIZE_BYTES = {
+    "4k": 4096,
+    "8k": 8192,
+    "16k": 16384,
+    "32k": 32768,
+    "64k": 65536,
+    "128k": 131072,
+}
 ROUTES = {"embedded", "ipc_local", "listener-parser", "manager-listener-parser"}
 PARSER_MODES = {"server-parser", "standalone-parser", "driver-sblr-uuid"}
+
+
+def current_process_metrics() -> dict[str, dict[str, int]]:
+    rss_kb = max(1, int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+    vsize_kb = rss_kb
+    try:
+        statm = Path("/proc/self/statm").read_text(encoding="utf-8").split()
+        if len(statm) >= 2:
+            page_kb = max(1, os.sysconf("SC_PAGE_SIZE") // 1024)
+            vsize_kb = max(1, int(statm[0]) * page_kb)
+            rss_kb = max(1, int(statm[1]) * page_kb)
+    except (OSError, ValueError):
+        pass
+    return {
+        "client": {
+            "max_rss_kb": rss_kb,
+            "max_vsize_kb": vsize_kb,
+            "last_rss_kb": rss_kb,
+            "last_vsize_kb": vsize_kb,
+        }
+    }
 
 
 def bool_arg(value: str | None) -> bool:
@@ -221,6 +251,67 @@ def transport_implementation_for_route(route: str) -> str:
     return "native_python_tcp"
 
 
+def column_names(description: Any) -> list[str]:
+    names: list[str] = []
+    for column in description or []:
+        if isinstance(column, (list, tuple)) and column:
+            names.append(str(column[0]).lower())
+        elif isinstance(column, dict):
+            names.append(str(column.get("name", "")).lower())
+        else:
+            names.append(str(column).lower())
+    return names
+
+
+def route_environment(
+    args: argparse.Namespace,
+    *,
+    actual_page_size: int | None,
+    status: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "run_id": args.run_id,
+        "driver": "python",
+        "route": args.route,
+        "sslmode": args.sslmode,
+        "parser_mode": args.parser_mode,
+        "concurrency_mode": "single",
+        "namespace": args.namespace,
+        "page_size": args.page_size,
+        "expected_page_size_bytes": PAGE_SIZE_BYTES[args.page_size],
+        "actual_page_size_bytes": actual_page_size,
+        "page_size_verification_source": "SHOW DATABASE",
+        "page_size_verification_status": status,
+        "transport_mode": transport_mode_for_route(args.route, args.sslmode),
+        "transport_endpoint_kind": endpoint_kind_for_route(args.route),
+        "driver_transport_implementation": transport_implementation_for_route(args.route),
+    }
+    if reason:
+        record["failure_reason"] = reason
+    return record
+
+
+def probe_route_environment(conn: Any, args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SHOW DATABASE")
+        rows = cursor.fetchall()
+        names = column_names(getattr(cursor, "description", None))
+        page_index = names.index("page_size_bytes") if "page_size_bytes" in names else -1
+        actual: int | None = None
+        if rows and page_index >= 0:
+            row = rows[0]
+            raw = row.get("page_size_bytes") if isinstance(row, dict) else row[page_index]
+            actual = int(raw) if raw is not None else None
+        expected = PAGE_SIZE_BYTES[args.page_size]
+        status = "pass" if actual == expected else "fail"
+        reason = None if status == "pass" else "actual_page_size_mismatch"
+        return route_environment(args, actual_page_size=actual, status=status, reason=reason)
+    except Exception as exc:  # noqa: BLE001
+        return route_environment(args, actual_page_size=None, status="fail", reason=str(exc))
+
+
 def emit_metadata_snapshot(conn, path: Path, args: argparse.Namespace) -> None:
     snapshots: dict[str, Any] = {
         "driver": "python",
@@ -275,6 +366,7 @@ def run_script(args: argparse.Namespace) -> int:
     timing_groups_path = run_root / "timing-groups.json"
     result_digests_path = run_root / "result-digests.json"
     metadata_path = run_root / "metadata-snapshots.json"
+    route_environment_path = run_root / "route-environment.json"
     security_refusals_path = run_root / "security-refusals.json"
     native_api_path = run_root / "native-api-coverage.json"
     code_review_path = run_root / "code-example-review.json"
@@ -320,6 +412,8 @@ def run_script(args: argparse.Namespace) -> int:
 
     run_started = now_ns()
     conn = None
+    route_env = route_environment(args, actual_page_size=None, status="fail", reason="not_probed")
+    write_text(route_environment_path, json.dumps(route_env, indent=2, sort_keys=True) + "\n")
     try:
         connect_started = now_ns()
         conn = connect_with_public_api(args)
@@ -345,6 +439,18 @@ def run_script(args: argparse.Namespace) -> int:
             conn.attach_create(args.create_emulation_mode, args.database)
             api_hits["conn.attach_create"] += 1
             timing_groups["database_create"] = timing_groups.get("database_create", 0) + (now_ns() - create_started)
+
+        route_env = probe_route_environment(conn, args)
+        api_hits["cursor.execute"] += 1
+        api_hits["cursor.fetchall"] += 1
+        write_text(route_environment_path, json.dumps(route_env, indent=2, sort_keys=True) + "\n")
+        if args.route != "embedded" and route_env.get("page_size_verification_status") != "pass":
+            failures.append({
+                "statement_id": "route_page_size",
+                "message": "route page-size verification failed",
+                "expected_page_size_bytes": route_env.get("expected_page_size_bytes"),
+                "actual_page_size_bytes": route_env.get("actual_page_size_bytes"),
+            })
 
         if args.parser_mode != "server-parser":
             message = (
@@ -488,6 +594,7 @@ def run_script(args: argparse.Namespace) -> int:
     total_elapsed = now_ns() - run_started
     timing_groups["overall"] = total_elapsed
     transport_mode = transport_mode_for_route(args.route, args.sslmode)
+    process_metrics = current_process_metrics()
     summary = {
         "run_id": args.run_id,
         "driver_name": "python",
@@ -512,6 +619,7 @@ def run_script(args: argparse.Namespace) -> int:
         "statement_count": len(statements),
         "failure_count": len(failures),
         "elapsed_ns": total_elapsed,
+        "process_metrics": process_metrics,
         "server_revalidation_required": True,
         "driver_or_parser_finality": "forbidden",
         "mga_authority": "engine",
@@ -523,6 +631,7 @@ def run_script(args: argparse.Namespace) -> int:
             "timing-groups.json": str(timing_groups_path),
             "result-digests.json": str(result_digests_path),
             "metadata-snapshots.json": str(metadata_path),
+            "route-environment.json": str(route_environment_path),
             "security-refusals.json": str(security_refusals_path),
             "native-api-coverage.json": str(native_api_path),
             "code-example-review.json": str(code_review_path),
@@ -532,7 +641,17 @@ def run_script(args: argparse.Namespace) -> int:
         },
     }
     write_text(summary_path, json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n")
-    write_text(metrics_path, json.dumps(timing_groups, indent=2, sort_keys=True) + "\n")
+    write_text(
+        metrics_path,
+        json.dumps(
+            {
+                "role": "client",
+                "rss_kb": process_metrics["client"]["last_rss_kb"],
+                "vsize_kb": process_metrics["client"]["last_vsize_kb"],
+            },
+            sort_keys=True,
+        ) + "\n",
+    )
     write_text(timing_groups_path, json.dumps(timing_groups, indent=2, sort_keys=True) + "\n")
     write_text(result_digests_path, json.dumps(digests, indent=2, sort_keys=True) + "\n")
     write_text(security_refusals_path, json.dumps(security_refusals, indent=2, sort_keys=True) + "\n")

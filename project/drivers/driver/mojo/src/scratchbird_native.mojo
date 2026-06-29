@@ -9,7 +9,6 @@
 # ScratchBird Mojo Native Bootstrap Module
 # Copyright (c) 2025-2026 Dalton Calford
 
-from collections import List
 import circuit_breaker
 import keepalive
 import leak_detector
@@ -98,7 +97,7 @@ struct ScratchBirdConfig:
     var pipeline_auto_flush: Bool
     var pipeline_auto_flush_threshold: Int
 
-    fn __init__(out self, dsn: String):
+    def __init__(out self, dsn: String):
         self.dsn = dsn
         var user_keys = List[String]()
         user_keys.append("user")
@@ -421,7 +420,7 @@ struct ScratchBirdConnection:
     var ping_count: Int
     var is_closed: Bool
 
-    fn __init__(out self, config: ScratchBirdConfig) raises:
+    def __init__(out self, config: ScratchBirdConfig) raises:
         validate_connect_guards(config)
         self.user = config.user
         self.host = config.host
@@ -465,7 +464,7 @@ struct ScratchBirdConnection:
         self.ping_count = 0
         self.is_closed = False
 
-    fn query(mut self, sql: String) raises -> Int:
+    def query(mut self, sql: String) raises -> Int:
         self._require_open()
         self.cancel_requested = False
         self._prepare_operation()
@@ -479,7 +478,7 @@ struct ScratchBirdConnection:
             self._finish_operation("query", False)
             raise e^
 
-    fn query_with_params(mut self, sql: String, params: List[String]) raises -> Int:
+    def query_with_params(mut self, sql: String, params: List[String]) raises -> Int:
         self._require_open()
         self.cancel_requested = False
         self._prepare_operation()
@@ -492,32 +491,32 @@ struct ScratchBirdConnection:
             self._finish_operation("query_with_params", False)
             raise e^
 
-    fn prepare(mut self, sql: String) raises -> ScratchBirdStatement:
+    def prepare(mut self, sql: String) raises -> ScratchBirdStatement:
         self._require_open()
         return ScratchBirdStatement(sql)
 
-    fn begin(mut self) raises:
+    def begin(mut self) raises:
         self._require_open()
         if self.txn_active:
             raise Error("25001 transaction already active")
         self.txn_active = True
         self.savepoints = List[String]()
 
-    fn commit(mut self) raises:
+    def commit(mut self) raises:
         self._require_open()
         if not self.txn_active:
             return
         self.txn_active = False
         self.savepoints = List[String]()
 
-    fn rollback(mut self) raises:
+    def rollback(mut self) raises:
         self._require_open()
         if not self.txn_active:
             return
         self.txn_active = False
         self.savepoints = List[String]()
 
-    fn set_savepoint(mut self, name: String = "") raises -> String:
+    def set_savepoint(mut self, name: String = "") raises -> String:
         self._require_open()
         if not self.txn_active:
             raise Error("25000 transaction not active")
@@ -528,7 +527,7 @@ struct ScratchBirdConnection:
         self.savepoints.append(resolved)
         return resolved
 
-    fn release_savepoint(mut self, name: String) raises:
+    def release_savepoint(mut self, name: String) raises:
         self._require_open()
         if not self.txn_active:
             raise Error("25000 transaction not active")
@@ -544,7 +543,7 @@ struct ScratchBirdConnection:
                 retained.append(self.savepoints[i])
         self.savepoints = retained^
 
-    fn rollback_to_savepoint(mut self, name: String) raises:
+    def rollback_to_savepoint(mut self, name: String) raises:
         self._require_open()
         if not self.txn_active:
             raise Error("25000 transaction not active")
@@ -559,7 +558,7 @@ struct ScratchBirdConnection:
             retained.append(self.savepoints[i])
         self.savepoints = retained^
 
-    fn stream(mut self, sql: String, fetch_size: Int = 1) raises -> ScratchBirdStream:
+    def stream(mut self, sql: String, fetch_size: Int = 1) raises -> ScratchBirdStream:
         self._require_open()
         self.cancel_requested = False
         _ = fetch_size
@@ -582,11 +581,11 @@ struct ScratchBirdConnection:
             self._finish_operation("stream", False)
             raise e^
 
-    fn cancel(mut self) raises:
+    def cancel(mut self) raises:
         self._require_open()
         self.cancel_requested = True
 
-    fn close(mut self):
+    def close(mut self):
         if self.is_closed:
             return
         self.is_closed = True
@@ -602,7 +601,7 @@ struct ScratchBirdConnection:
             self.query_pipeline.flush()
         self.query_pipeline.stop()
 
-    fn _prepare_operation(mut self) raises:
+    def _prepare_operation(mut self) raises:
         self._require_open()
         if not self.circuit_breaker.allow_request(self.operation_clock_ms):
             raise Error("08006 Circuit breaker is OPEN")
@@ -610,14 +609,14 @@ struct ScratchBirdConnection:
             if not self.ping():
                 raise Error("08006 keepalive validation failed")
 
-    fn _queue_operation(mut self, operation_name: String, sql: String, params: List[String]) raises:
+    def _queue_operation(mut self, operation_name: String, sql: String, params: List[String]) raises:
         self._require_open()
         if self.query_pipeline.queue(sql, params):
             return
         self._finish_operation(operation_name, False)
         raise Error("54000 pipeline capacity exceeded")
 
-    fn _finish_operation(mut self, operation_name: String, success: Bool):
+    def _finish_operation(mut self, operation_name: String, success: Bool):
         var start_ms = self.operation_clock_ms
         self.operation_clock_ms += 1
         if success:
@@ -630,21 +629,21 @@ struct ScratchBirdConnection:
         var span = self.telemetry.start_span(operation_name, start_ms)
         self.telemetry.end_span(span, self.operation_clock_ms, success)
 
-    fn ping(mut self) -> Bool:
+    def ping(mut self) -> Bool:
         if self.is_closed:
             return False
         self.ping_count += 1
         return True
 
-    fn query_metadata(self, collection_name: String) raises -> String:
+    def query_metadata(self, collection_name: String) raises -> String:
         self._require_open()
         return resolve_metadata_collection_query(collection_name)
 
-    fn query_metadata_rows(mut self, collection_name: String) raises -> Int:
+    def query_metadata_rows(mut self, collection_name: String) raises -> Int:
         var sql = resolve_metadata_collection_query(collection_name)
         return self.query(sql)
 
-    fn query_metadata_restricted(
+    def query_metadata_restricted(
         self,
         collection_name: String,
         restriction_key: String = "",
@@ -657,7 +656,7 @@ struct ScratchBirdConnection:
             restriction_value,
         )
 
-    fn query_metadata_rows_restricted(
+    def query_metadata_rows_restricted(
         mut self,
         collection_name: String,
         restriction_key: String = "",
@@ -670,7 +669,7 @@ struct ScratchBirdConnection:
         )
         return self.query(sql)
 
-    fn query_metadata_restricted_multi(
+    def query_metadata_restricted_multi(
         self,
         collection_name: String,
         restriction_keys: List[String],
@@ -683,7 +682,7 @@ struct ScratchBirdConnection:
             restriction_values,
         )
 
-    fn query_metadata_rows_restricted_multi(
+    def query_metadata_rows_restricted_multi(
         mut self,
         collection_name: String,
         restriction_keys: List[String],
@@ -696,7 +695,7 @@ struct ScratchBirdConnection:
         )
         return self.query(sql)
 
-    fn _require_open(self) raises:
+    def _require_open(self) raises:
         if self.is_closed:
             raise Error("08003 connection is closed")
 
@@ -706,12 +705,12 @@ struct ScratchBirdStream:
     var index: Int
     var closed: Bool
 
-    fn __init__(out self, total_rows: Int):
+    def __init__(out self, total_rows: Int):
         self.total_rows = total_rows
         self.index = 0
         self.closed = False
 
-    fn next(mut self, conn: ScratchBirdConnection) raises -> Int:
+    def next(mut self, conn: ScratchBirdConnection) raises -> Int:
         if self.closed:
             raise Error("HY010 stream is closed")
         if conn.is_closed:
@@ -726,7 +725,7 @@ struct ScratchBirdStream:
         self.index += 1
         return self.index
 
-    fn close(mut self):
+    def close(mut self):
         self.closed = True
 
 
@@ -734,29 +733,29 @@ struct ScratchBirdStatement:
     var sql: String
     var closed: Bool
 
-    fn __init__(out self, sql: String):
+    def __init__(out self, sql: String):
         self.sql = sql
         self.closed = False
 
-    fn execute(mut self, params: List[String]) raises -> Int:
+    def execute(mut self, params: List[String]) raises -> Int:
         if self.closed:
             raise Error("HY010 statement is closed")
         return _query_result_from_sql_with_params(self.sql, params)
 
-    fn close(mut self):
+    def close(mut self):
         self.closed = True
 
 
-fn _as_bool(value: String) -> Bool:
+def _as_bool(value: String) -> Bool:
     var normalized = value.strip().lower()
     return normalized == "1" or normalized == "true" or normalized == "yes" or normalized == "on"
 
 
-fn _is_digit(ch: String) -> Bool:
+def _is_digit(ch: String) -> Bool:
     return ch >= "0" and ch <= "9"
 
 
-fn _digit_value(ch: String) -> Int:
+def _digit_value(ch: String) -> Int:
     if ch == "0":
         return 0
     if ch == "1":
@@ -780,7 +779,7 @@ fn _digit_value(ch: String) -> Int:
     return -1
 
 
-fn _expected_param_count(sql: String) -> Int:
+def _expected_param_count(sql: String) -> Int:
     var max_index: Int = 0
     var i: Int = 0
     while i < len(sql):
@@ -804,7 +803,7 @@ fn _expected_param_count(sql: String) -> Int:
     return max_index
 
 
-fn _find_savepoint_index(savepoints: List[String], target: String) -> Int:
+def _find_savepoint_index(savepoints: List[String], target: String) -> Int:
     var i = len(savepoints)
     while i > 0:
         i -= 1
@@ -813,7 +812,7 @@ fn _find_savepoint_index(savepoints: List[String], target: String) -> Int:
     return -1
 
 
-fn _matches_metadata_query(actual_sql: String, base_sql: String) -> Bool:
+def _matches_metadata_query(actual_sql: String, base_sql: String) -> Bool:
     var actual = actual_sql.strip().lower()
     var base = base_sql.strip().lower()
     if actual == base:
@@ -829,7 +828,7 @@ fn _matches_metadata_query(actual_sql: String, base_sql: String) -> Bool:
     return False
 
 
-fn _query_result_from_sql(sql: String) raises -> Int:
+def _query_result_from_sql(sql: String) raises -> Int:
     var normalized = sql.strip().lower()
     if normalized == "select 1":
         return 1
@@ -870,7 +869,7 @@ fn _query_result_from_sql(sql: String) raises -> Int:
     raise Error("0A000 unsupported query in native bootstrap")
 
 
-fn _query_result_from_sql_with_params(sql: String, params: List[String]) raises -> Int:
+def _query_result_from_sql_with_params(sql: String, params: List[String]) raises -> Int:
     var expected = _expected_param_count(sql)
     if expected != len(params):
         raise Error("07001 parameter count mismatch")
@@ -892,7 +891,7 @@ fn _query_result_from_sql_with_params(sql: String, params: List[String]) raises 
     raise Error("0A000 unsupported parameterized query in native bootstrap")
 
 
-fn _strip_scheme(dsn: String) -> String:
+def _strip_scheme(dsn: String) -> String:
     if "://" not in dsn:
         return dsn
     var parts = dsn.split("://", 1)
@@ -901,7 +900,7 @@ fn _strip_scheme(dsn: String) -> String:
     return dsn
 
 
-fn _strip_query(part: String) -> String:
+def _strip_query(part: String) -> String:
     if "?" not in part:
         return part
     var sections = part.split("?", 1)
@@ -910,7 +909,7 @@ fn _strip_query(part: String) -> String:
     return part
 
 
-fn _extract_user(dsn: String) -> String:
+def _extract_user(dsn: String) -> String:
     var body = _strip_query(_strip_scheme(dsn))
     if "@" not in body:
         return ""
@@ -927,7 +926,7 @@ fn _extract_user(dsn: String) -> String:
     return userinfo
 
 
-fn _extract_password(dsn: String) -> String:
+def _extract_password(dsn: String) -> String:
     var body = _strip_query(_strip_scheme(dsn))
     if "@" not in body:
         return ""
@@ -943,7 +942,7 @@ fn _extract_password(dsn: String) -> String:
     return String(uv[1])
 
 
-fn _extract_database(dsn: String) -> String:
+def _extract_database(dsn: String) -> String:
     var body = _strip_query(_strip_scheme(dsn))
     if "@" in body:
         var parts = body.split("@", 1)
@@ -957,7 +956,7 @@ fn _extract_database(dsn: String) -> String:
     return String(sections[1])
 
 
-fn _extract_host_port(dsn: String) -> String:
+def _extract_host_port(dsn: String) -> String:
     var body = _strip_query(_strip_scheme(dsn))
     if "@" in body:
         var parts = body.split("@", 1)
@@ -970,7 +969,7 @@ fn _extract_host_port(dsn: String) -> String:
     return body
 
 
-fn _extract_host(dsn: String) -> String:
+def _extract_host(dsn: String) -> String:
     var host_port = _extract_host_port(dsn)
     if host_port == "":
         return "localhost"
@@ -985,7 +984,7 @@ fn _extract_host(dsn: String) -> String:
     return host_port
 
 
-fn _extract_port(dsn: String) -> Int:
+def _extract_port(dsn: String) -> Int:
     var host_port = _extract_host_port(dsn)
     if host_port == "":
         return 3092
@@ -1024,7 +1023,7 @@ fn _extract_port(dsn: String) -> Int:
         return 3092
 
 
-fn _dsn_has_malformed_bracketed_ipv6_host(dsn: String) -> Bool:
+def _dsn_has_malformed_bracketed_ipv6_host(dsn: String) -> Bool:
     var host_port = _extract_host_port(dsn).strip()
     if host_port == "":
         return False
@@ -1056,12 +1055,12 @@ fn _dsn_has_malformed_bracketed_ipv6_host(dsn: String) -> Bool:
     return False
 
 
-fn _is_hex_digit(ch: String) -> Bool:
+def _is_hex_digit(ch: String) -> Bool:
     var value = ch.lower()
     return (value >= "0" and value <= "9") or (value >= "a" and value <= "f")
 
 
-fn _hex_digit_value(ch: String) -> Int:
+def _hex_digit_value(ch: String) -> Int:
     var value = ch.lower()
     if value == "0":
         return 0
@@ -1098,7 +1097,7 @@ fn _hex_digit_value(ch: String) -> Int:
     return -1
 
 
-fn _decode_query_component(value: String) -> String:
+def _decode_query_component(value: String) -> String:
     var decoded = String()
     var i = 0
     while i < len(value):
@@ -1127,7 +1126,7 @@ fn _decode_query_component(value: String) -> String:
     return decoded
 
 
-fn _has_malformed_percent_escape(value: String) -> Bool:
+def _has_malformed_percent_escape(value: String) -> Bool:
     var i = 0
     while i < len(value):
         if String(value[byte=i]) != "%":
@@ -1143,7 +1142,7 @@ fn _has_malformed_percent_escape(value: String) -> Bool:
     return False
 
 
-fn _dsn_has_malformed_query_escape(dsn: String) -> Bool:
+def _dsn_has_malformed_query_escape(dsn: String) -> Bool:
     if "?" not in dsn:
         return False
     var parts = dsn.split("?", 1)
@@ -1155,7 +1154,7 @@ fn _dsn_has_malformed_query_escape(dsn: String) -> Bool:
     return _has_malformed_percent_escape(query)
 
 
-fn _query_value(dsn: String, key: String, default_value: String) -> String:
+def _query_value(dsn: String, key: String, default_value: String) -> String:
     if "?" not in dsn:
         return default_value
     var parts = dsn.split("?", 1)
@@ -1181,7 +1180,7 @@ fn _query_value(dsn: String, key: String, default_value: String) -> String:
     return default_value
 
 
-fn _query_has_key(dsn: String, key: String) -> Bool:
+def _query_has_key(dsn: String, key: String) -> Bool:
     if "?" not in dsn:
         return False
     var parts = dsn.split("?", 1)
@@ -1207,7 +1206,7 @@ fn _query_has_key(dsn: String, key: String) -> Bool:
     return False
 
 
-fn _query_last_value_for_keys(
+def _query_last_value_for_keys(
     dsn: String,
     keys: List[String],
     default_value: String,
@@ -1248,7 +1247,7 @@ fn _query_last_value_for_keys(
     return default_value
 
 
-fn _query_last_int_for_keys(
+def _query_last_int_for_keys(
     dsn: String,
     keys: List[String],
     default_value: Int,
@@ -1263,7 +1262,7 @@ fn _query_last_int_for_keys(
         return default_value
 
 
-fn _query_int(dsn: String, key: String, default_value: Int) -> Int:
+def _query_int(dsn: String, key: String, default_value: Int) -> Int:
     var raw = _query_value(dsn, key, "")
     if raw.strip() == "":
         return default_value
@@ -1274,7 +1273,7 @@ fn _query_int(dsn: String, key: String, default_value: Int) -> Int:
         return default_value
 
 
-fn _is_valid_int_text(raw: String) -> Bool:
+def _is_valid_int_text(raw: String) -> Bool:
     if raw.strip() == "":
         return False
     try:
@@ -1285,13 +1284,13 @@ fn _is_valid_int_text(raw: String) -> Bool:
         return False
 
 
-fn _query_int_is_malformed(dsn: String, key: String) -> Bool:
+def _query_int_is_malformed(dsn: String, key: String) -> Bool:
     if not _query_has_key(dsn, key):
         return False
     return not _is_valid_int_text(_query_value(dsn, key, ""))
 
 
-fn _query_int_alias_is_malformed(
+def _query_int_alias_is_malformed(
     dsn: String,
     primary_key: String,
     alias_key: String,
@@ -1303,7 +1302,7 @@ fn _query_int_alias_is_malformed(
     return False
 
 
-fn _query_any_int_for_keys_is_malformed(dsn: String, keys: List[String]) -> Bool:
+def _query_any_int_for_keys_is_malformed(dsn: String, keys: List[String]) -> Bool:
     if "?" not in dsn:
         return False
     var parts = dsn.split("?", 1)
@@ -1337,7 +1336,7 @@ fn _query_any_int_for_keys_is_malformed(dsn: String, keys: List[String]) -> Bool
     return False
 
 
-fn _query_value_alias(
+def _query_value_alias(
     dsn: String,
     primary_key: String,
     alias_key: String,
@@ -1352,7 +1351,7 @@ fn _query_value_alias(
     return default_value
 
 
-fn _query_int_alias(
+def _query_int_alias(
     dsn: String,
     primary_key: String,
     alias_key: String,
@@ -1370,14 +1369,14 @@ fn _query_int_alias(
         return default_value
 
 
-fn _query_bool(dsn: String, key: String, default_value: Bool) -> Bool:
+def _query_bool(dsn: String, key: String, default_value: Bool) -> Bool:
     var raw = _query_value(dsn, key, "")
     if raw.strip() == "":
         return default_value
     return _as_bool(raw)
 
 
-fn _query_bool_alias(
+def _query_bool_alias(
     dsn: String,
     primary_key: String,
     alias_key: String,
@@ -1391,19 +1390,19 @@ fn _query_bool_alias(
     return _as_bool(raw)
 
 
-fn _clamp_non_negative(value: Int) -> Int:
+def _clamp_non_negative(value: Int) -> Int:
     if value < 0:
         return 0
     return value
 
 
-fn _clamp_positive(value: Int, fallback: Int) -> Int:
+def _clamp_positive(value: Int, fallback: Int) -> Int:
     if value <= 0:
         return fallback
     return value
 
 
-fn _connection_identity(
+def _connection_identity(
     user: String,
     host: String,
     port: Int,
@@ -1412,7 +1411,7 @@ fn _connection_identity(
     return user + "@" + host + ":" + String(port) + "/" + database
 
 
-fn _normalize_front_door_mode_value(value: String) -> String:
+def _normalize_front_door_mode_value(value: String) -> String:
     var normalized = value.strip().lower().replace("-", "_")
     if normalized == "managerproxy" or normalized == "managed":
         return "manager_proxy"
@@ -1421,7 +1420,7 @@ fn _normalize_front_door_mode_value(value: String) -> String:
     return normalized
 
 
-fn _normalize_protocol_value(value: String) -> String:
+def _normalize_protocol_value(value: String) -> String:
     var normalized = value.strip().lower().replace("-", "_")
     if normalized == "":
         return "native"
@@ -1430,21 +1429,21 @@ fn _normalize_protocol_value(value: String) -> String:
     return normalized
 
 
-fn _normalize_compression_value(value: String) -> String:
+def _normalize_compression_value(value: String) -> String:
     var normalized = value.strip().lower()
     if normalized == "" or normalized == "none":
         return "off"
     return normalized
 
 
-fn _normalize_logger_level(value: String) -> String:
+def _normalize_logger_level(value: String) -> String:
     var normalized = value.strip().upper()
     if normalized == "":
         return "OFF"
     return normalized
 
 
-fn _metadata_alias(value: String) -> String:
+def _metadata_alias(value: String) -> String:
     if value == "schema" or value == "schemas":
         return "schemas"
     if value == "table" or value == "tables":
@@ -1478,7 +1477,7 @@ fn _metadata_alias(value: String) -> String:
     return ""
 
 
-fn normalize_metadata_collection_name(collection_name: String) raises -> String:
+def normalize_metadata_collection_name(collection_name: String) raises -> String:
     var raw = collection_name
     var normalized = collection_name.strip().lower().replace("-", "_").replace(" ", "_")
     if normalized == "":
@@ -1491,7 +1490,7 @@ fn normalize_metadata_collection_name(collection_name: String) raises -> String:
     return resolved
 
 
-fn resolve_metadata_collection_query(collection_name: String) raises -> String:
+def resolve_metadata_collection_query(collection_name: String) raises -> String:
     var resolved = normalize_metadata_collection_name(collection_name)
     if resolved == "schemas":
         return METADATA_SCHEMAS_QUERY
@@ -1526,7 +1525,7 @@ fn resolve_metadata_collection_query(collection_name: String) raises -> String:
     raise Error("0A000 metadata collection '" + collection_name + "' is not supported")
 
 
-fn normalize_metadata_restriction_key(restriction_key: String) raises -> String:
+def normalize_metadata_restriction_key(restriction_key: String) raises -> String:
     var raw = restriction_key
     var normalized = restriction_key.strip().lower().replace("-", "_").replace(" ", "_")
     if normalized == "" or normalized == "none":
@@ -1552,7 +1551,7 @@ fn normalize_metadata_restriction_key(restriction_key: String) raises -> String:
     raise Error("0A000 metadata restriction '" + raw + "' is not supported")
 
 
-fn _comparison_predicate(column: String, restriction_value: String) -> String:
+def _comparison_predicate(column: String, restriction_value: String) -> String:
     if restriction_value.lower() == "null":
         return column + " IS NULL"
     var literal = "'" + _escape_sql_literal(restriction_value) + "'"
@@ -1561,27 +1560,27 @@ fn _comparison_predicate(column: String, restriction_value: String) -> String:
     return column + " = " + literal
 
 
-fn _table_filter_by_schema_name(restriction_value: String) -> String:
+def _table_filter_by_schema_name(restriction_value: String) -> String:
     return "table_id IN (SELECT t.table_id FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE " + _comparison_predicate("s.schema_name", restriction_value) + ")"
 
 
-fn _index_filter_by_schema_name(restriction_value: String) -> String:
+def _index_filter_by_schema_name(restriction_value: String) -> String:
     return "index_id IN (SELECT i.index_id FROM sys.indexes i JOIN sys.tables t ON t.table_id = i.table_id JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE " + _comparison_predicate("s.schema_name", restriction_value) + ")"
 
 
-fn _table_filter_by_table_name(restriction_value: String) -> String:
+def _table_filter_by_table_name(restriction_value: String) -> String:
     return "table_id IN (SELECT table_id FROM sys.tables WHERE " + _comparison_predicate("table_name", restriction_value) + ")"
 
 
-fn _index_filter_by_table_name(restriction_value: String) -> String:
+def _index_filter_by_table_name(restriction_value: String) -> String:
     return "index_id IN (SELECT i.index_id FROM sys.indexes i JOIN sys.tables t ON t.table_id = i.table_id WHERE " + _comparison_predicate("t.table_name", restriction_value) + ")"
 
 
-fn _index_filter_by_index_name(restriction_value: String) -> String:
+def _index_filter_by_index_name(restriction_value: String) -> String:
     return "index_id IN (SELECT index_id FROM sys.indexes WHERE " + _comparison_predicate("index_name", restriction_value) + ")"
 
 
-fn _metadata_restriction_predicate(
+def _metadata_restriction_predicate(
     collection_name: String,
     restriction_key: String,
     restriction_value: String,
@@ -1674,11 +1673,11 @@ fn _metadata_restriction_predicate(
     raise Error("0A000 metadata restriction '" + restriction_key + "' is not supported")
 
 
-fn _escape_sql_literal(value: String) -> String:
+def _escape_sql_literal(value: String) -> String:
     return value.replace("'", "''")
 
 
-fn _append_metadata_filter(sql: String, predicate: String) -> String:
+def _append_metadata_filter(sql: String, predicate: String) -> String:
     if " ORDER BY " in sql:
         var parts = sql.split(" ORDER BY ", 1)
         if len(parts) == 2:
@@ -1693,7 +1692,7 @@ fn _append_metadata_filter(sql: String, predicate: String) -> String:
     return sql + " WHERE " + predicate
 
 
-fn resolve_metadata_collection_query_restricted(
+def resolve_metadata_collection_query_restricted(
     collection_name: String,
     restriction_key: String = "",
     restriction_value: String = "",
@@ -1709,7 +1708,7 @@ fn resolve_metadata_collection_query_restricted(
     )
 
 
-fn resolve_metadata_collection_query_restricted_multi(
+def resolve_metadata_collection_query_restricted_multi(
     collection_name: String,
     restriction_keys: List[String],
     restriction_values: List[String],
@@ -1743,7 +1742,7 @@ fn resolve_metadata_collection_query_restricted_multi(
     return sql
 
 
-fn validate_connect_guards(config: ScratchBirdConfig) raises:
+def validate_connect_guards(config: ScratchBirdConfig) raises:
     if _dsn_has_malformed_query_escape(config.dsn):
         raise Error("22023 DSN query contains malformed percent-escape")
     if _dsn_has_malformed_bracketed_ipv6_host(config.dsn):
@@ -1890,17 +1889,17 @@ fn validate_connect_guards(config: ScratchBirdConfig) raises:
         raise Error("28P01 authentication failed")
 
 
-fn connect(config: ScratchBirdConfig) raises -> ScratchBirdConnection:
+def connect(config: ScratchBirdConfig) raises -> ScratchBirdConnection:
     return ScratchBirdConnection(config)
 
 
-fn _is_sqlstate_char(ch: String) -> Bool:
+def _is_sqlstate_char(ch: String) -> Bool:
     if _is_digit(ch):
         return True
     return ch >= "A" and ch <= "Z"
 
 
-fn extract_sqlstate(message: String) -> String:
+def extract_sqlstate(message: String) -> String:
     var text = message.strip()
     if len(text) < 5:
         return ""

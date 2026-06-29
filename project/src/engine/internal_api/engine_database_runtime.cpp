@@ -382,6 +382,7 @@ EngineOperationResult ExecuteShowDatabaseRuntime(const EngineDatabaseRuntimeStat
   EngineDatabaseInfo database;
   database.database_uuid = runtime.database.database_uuid;
   database.database_label = runtime.database.path.empty() ? "unnamed" : runtime.database.path;
+  database.page_size_bytes = runtime.database.header.page_size;
   database.cluster_authority_active = runtime.database.cluster_authority_active;
   return ExecuteShowDatabaseOperation(context, database);
 }

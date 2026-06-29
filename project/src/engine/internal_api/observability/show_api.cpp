@@ -1524,7 +1524,9 @@ EngineShowDatabaseResult EngineShowDatabase(const EngineShowDatabaseRequest& req
       request,
       "observability.show_database",
       {{"database_path", request.context.database_path},
-       {"database_uuid", request.context.database_uuid.canonical}},
+       {"database_uuid", request.context.database_uuid.canonical},
+       {"page_size_bytes", std::to_string(request.context.database_page_size_bytes)},
+       {"cluster_authority_active", BoolText(request.context.cluster_authority_available)}},
       "rs.show.database.v1");
 }
 

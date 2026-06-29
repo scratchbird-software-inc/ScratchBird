@@ -156,6 +156,7 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         "timing-groups.json",
         "result-digests.json",
         "metadata-snapshots.json",
+        "route-environment.json",
         "process-metrics.jsonl",
         "security-refusals.json",
         "native-api-coverage.json",
@@ -335,7 +336,7 @@ def validate_artifacts(
     if not run_dirs:
         return [f"artifact_schema:no_summary_json_under:{artifact_root}"]
     transport_by_driver: dict[str, set[str]] = {}
-    sslmode_by_driver: dict[str, set[str]] = {}
+    network_sslmode_by_driver: dict[str, set[str]] = {}
     for summary_path in run_dirs:
         run_root = summary_path.parent
         try:
@@ -369,6 +370,24 @@ def validate_artifacts(
                     if not isinstance(value, int) or value <= 0:
                         errors.append(f"artifact_schema:{summary_path}:process_metrics:{role}:{key}_invalid")
         driver_name = str(summary.get("driver_name") or run_root.name)
+        route_environment_path = run_root / "route-environment.json"
+        try:
+            route_environment = load_json(route_environment_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            route_environment = {}
+            errors.append(f"artifact_schema:{route_environment_path}:invalid_route_environment:{exc}")
+        if route_environment:
+            if route_environment.get("page_size") != summary.get("page_size"):
+                errors.append(f"artifact_schema:{summary_path}:route_environment_page_size_mismatch")
+            expected_page_size_bytes = route_environment.get("expected_page_size_bytes")
+            actual_page_size_bytes = route_environment.get("actual_page_size_bytes")
+            if not isinstance(expected_page_size_bytes, int) or expected_page_size_bytes <= 0:
+                errors.append(f"artifact_schema:{summary_path}:route_environment_expected_page_size_invalid")
+            if route_environment.get("route") in NETWORK_ROUTES | {"ipc_local"}:
+                if route_environment.get("page_size_verification_status") != "pass":
+                    errors.append(f"artifact_schema:{summary_path}:route_environment_page_size_not_verified")
+                if actual_page_size_bytes != expected_page_size_bytes:
+                    errors.append(f"artifact_schema:{summary_path}:route_environment_page_size_bytes_mismatch")
         if summary.get("language_resource_identity") != language.get("resource_identity"):
             errors.append(f"artifact_schema:{summary_path}:language_resource_identity_mismatch")
         if summary.get("language_resource_hash") != language.get("resource_hash"):
@@ -467,9 +486,9 @@ def validate_artifacts(
         if unknown_sslmodes:
             errors.append(f"artifact_schema:{summary_path}:unknown_sslmodes:{','.join(unknown_sslmodes)}")
         transport_by_driver.setdefault(driver_name, set()).update(transport_modes)
-        sslmode_by_driver.setdefault(driver_name, set()).update(sslmodes)
         if route in NETWORK_ROUTES:
             transport_by_driver.setdefault(f"{driver_name}:network", set()).update(transport_modes)
+            network_sslmode_by_driver.setdefault(driver_name, set()).update(sslmodes)
     for driver_name, observed in sorted(transport_by_driver.items()):
         if not require_complete_matrix:
             continue
@@ -485,7 +504,7 @@ def validate_artifacts(
             errors.append(
                 f"artifact_schema:{driver_name}:missing_tls_and_non_tls_transport_modes"
             )
-    for driver_name, observed in sorted(sslmode_by_driver.items()):
+    for driver_name, observed in sorted(network_sslmode_by_driver.items()):
         if not require_complete_matrix:
             continue
         if not {"require", "disable"}.issubset(observed):
@@ -550,6 +569,15 @@ def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dic
         "driver_transport_implementation": "native_cpp_tcp",
         "cpp_library_boundary": "native_cpp_driver",
     }
+    route_environment = {
+        "actual_page_size_bytes": 8192,
+        "expected_page_size_bytes": 8192,
+        "page_size": "8k",
+        "page_size_verification_source": "SHOW DATABASE",
+        "page_size_verification_status": "pass",
+        "route": "listener-parser",
+        "run_id": "fixture-run",
+    }
     command_event = {
         "actual_outcome": "success",
         "canonical_message_vector": [],
@@ -597,6 +625,8 @@ def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dic
                 write_jsonl(path, [{"fixture": True}])
         elif filename == "summary.json":
             write_json(path, summary)
+        elif filename == "route-environment.json":
+            write_json(path, route_environment)
         elif filename == "junit.xml":
             path.write_text(
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
