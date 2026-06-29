@@ -44,19 +44,24 @@ DEFAULT_STAGED_BIN_REL = Path("build/output/linux/bin")
 SBSQL_STAGED_REL = DEFAULT_STAGED_BIN_REL / "SBsql"
 RELEASE_BUCKETS = {"release_candidate", "release_supported", "supported"}
 STAGED_DRIVER_EXECUTABLES = {
+    "adbc": "sb_isql_adbc",
     "cpp": "sb_isql_cpp",
     "dart": "sb_isql_dart",
     "dotnet": "sb_isql_dotnet",
     "elixir": "sb_isql_elixir",
+    "flightsql": "sb_isql_flightsql",
     "go": "sb_isql_go",
     "jdbc": "sb_isql_jdbc",
+    "julia": "sb_isql_julia",
     "mojo": "sb_isql_mojo",
     "node": "sb_isql_node",
     "odbc": "sb_isql_odbc",
     "pascal": "sb_isql_pascal",
+    "perl": "sb_isql_perl",
     "php": "sb_isql_php",
     "python": "sb_isql_python",
     "r": "sb_isql_r",
+    "r2dbc": "sb_isql_r2dbc",
     "ruby": "sb_isql_ruby",
     "rust": "sb_isql_rust",
     "swift": "sb_isql_swift",
@@ -226,6 +231,16 @@ def command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path]:
         ], repo_root
     if driver == "python":
         return [sys.executable, str(repo_root / "project/drivers/driver/python/tools/sb_isql_python.py")], repo_root
+    if driver == "adbc":
+        return [sys.executable, str(repo_root / "project/drivers/driver/adbc/tools/sb_isql_adbc")], repo_root
+    if driver == "flightsql":
+        return [sys.executable, str(repo_root / "project/drivers/driver/flightsql/tools/sb_isql_flightsql")], repo_root
+    if driver == "r2dbc":
+        return [sys.executable, str(repo_root / "project/drivers/driver/r2dbc/tools/sb_isql_r2dbc")], repo_root
+    if driver == "julia":
+        return ["julia", "--project=" + str(repo_root / "project/drivers/driver/julia"), str(repo_root / "project/drivers/driver/julia/tools/sb_isql_julia.jl")], repo_root
+    if driver == "perl":
+        return ["perl", "-I" + str(repo_root / "project/drivers/driver/perl/lib"), str(repo_root / "project/drivers/driver/perl/tools/sb_isql_perl.pl")], repo_root
     if driver == "go":
         return ["go", "run", "./cmd/sb-isql-go"], repo_root / "project/drivers/driver/go"
     if driver == "rust":
@@ -309,6 +324,7 @@ def compile_suite(
     repo_root: Path,
     run_root: Path,
     *,
+    surface_profile: str,
     driver: str,
     run_id: str,
     route: str,
@@ -336,6 +352,8 @@ def compile_suite(
         parser_mode,
         "--page-size",
         page_size,
+        "--surface-profile",
+        surface_profile,
         "--artifact-root",
         str(run_root),
     ]
@@ -765,6 +783,7 @@ def execute_work_item(
         compiled = compile_suite(
             repo_root,
             item.run_root,
+            surface_profile=args.surface_profile,
             driver=item.driver,
             run_id=args.run_id,
             route=item.route_pair.route,
@@ -803,6 +822,20 @@ def selected(values: list[str], requested: list[str] | None) -> list[str]:
     return [value for value in values if value in requested_set]
 
 
+def selected_route_variants(
+    values: list[RouteVariant],
+    requested_sslmodes: list[str] | None,
+) -> list[RouteVariant]:
+    if not requested_sslmodes:
+        return values
+    available = {value.sslmode for value in values}
+    requested_set = set(requested_sslmodes)
+    missing = sorted(requested_set - available)
+    if missing:
+        raise ValueError("unknown requested sslmode value(s): " + ", ".join(missing))
+    return [value for value in values if value.sslmode in requested_set]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
@@ -811,6 +844,7 @@ def main() -> int:
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--driver", action="append")
     parser.add_argument("--route", action="append")
+    parser.add_argument("--sslmode", action="append")
     parser.add_argument("--page-size", action="append")
     parser.add_argument("--parser-mode", action="append")
     parser.add_argument("--concurrency-mode", action="append")
@@ -839,6 +873,15 @@ def main() -> int:
     parser.add_argument("--language-profile")
     parser.add_argument("--syntax-profile")
     parser.add_argument("--topology-profile")
+    parser.add_argument(
+        "--surface-profile",
+        choices=("non-cluster-beta", "cluster-release"),
+        default="non-cluster-beta",
+        help=(
+            "non-cluster-beta proves the current single-node driver release; "
+            "cluster-release also executes cluster-gated scripts."
+        ),
+    )
     parser.add_argument(
         "--lane-manifest",
         type=Path,
@@ -874,7 +917,7 @@ def main() -> int:
         args.driver,
     )
     routes = selected([str(value) for value in as_list(gate_input.get("required_routes"))], args.route)
-    route_pairs = [pair for pair in route_variants(routes)]
+    route_pairs = selected_route_variants(route_variants(routes), args.sslmode)
     page_sizes = selected([str(value) for value in as_list(gate_input.get("required_page_sizes"))], args.page_size)
     parser_modes = selected([str(value) for value in as_list(gate_input.get("required_parser_modes"))], args.parser_mode)
     concurrency_modes = selected(
@@ -891,6 +934,7 @@ def main() -> int:
         (
             args.driver,
             args.route,
+            args.sslmode,
             args.page_size,
             args.parser_mode,
             args.concurrency_mode,
@@ -1051,6 +1095,7 @@ def main() -> int:
         "language_profile": args.language_profile,
         "syntax_profile": args.syntax_profile,
         "topology_profile": args.topology_profile,
+        "surface_profile": args.surface_profile,
         "lane_manifest": str(args.lane_manifest.resolve()) if args.lane_manifest else None,
         "lane_count": len(lane_overrides),
         "combination_count": combination_count,

@@ -26,6 +26,8 @@ SUITE_ROOT = Path(__file__).resolve().parent
 MANIFEST_NAME = "manifest.json"
 EXPECTED_DIR = "expected"
 BUILTIN_FIXTURE_ROOT_REL = Path("project/tests/sbsql_parser_worker/generated/full_surface")
+DEFAULT_SURFACE_PROFILE = "non-cluster-beta"
+CLUSTER_RELEASE_ONLY_SCRIPT_IDS = {"SBDFS-099"}
 
 
 def repo_root_from_script() -> Path:
@@ -38,6 +40,16 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def identifier_segment(value: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    if not cleaned:
+        cleaned = "x"
+    if not (cleaned[0].isalpha() or cleaned[0] == "_"):
+        cleaned = f"p_{cleaned}"
+    return cleaned
 
 
 def ensure_output_policy(repo_root: Path, output_root: Path) -> None:
@@ -58,10 +70,27 @@ def substitution_map(args: argparse.Namespace) -> dict[str, str]:
     artifact_root = args.artifact_root
     if artifact_root is None:
         artifact_root = args.output_root / "artifacts"
+    lane_source = "|".join(
+        [
+            args.namespace,
+            args.driver,
+            args.run_id,
+            args.route,
+            args.parser_mode,
+            args.page_size,
+            str(artifact_root.resolve()),
+        ]
+    )
+    lane_id = identifier_segment(
+        f"{args.driver}_{args.run_id}_{args.route}_{args.parser_mode}_{args.page_size}_"
+        f"{sha256_text(lane_source)[:12]}"
+    )
     return {
         "__SB_NAMESPACE__": args.namespace,
         "__SB_DRIVER__": args.driver,
         "__SB_RUN_ID__": args.run_id,
+        "__SB_RUN_ID_IDENTIFIER__": identifier_segment(args.run_id),
+        "__SB_LANE_ID__": lane_id,
         "__SB_ROUTE__": args.route,
         "__SB_PARSER_MODE__": args.parser_mode,
         "__SB_PAGE_SIZE__": args.page_size,
@@ -243,6 +272,15 @@ def copy_builtin_fixture_csvs(repo_root: Path, output_root: Path) -> list[str]:
     return copied
 
 
+def include_manifest_script(item: dict[str, Any], surface_profile: str) -> bool:
+    script_id = str(item.get("script_id", ""))
+    if surface_profile == "cluster-release":
+        return True
+    if surface_profile == "non-cluster-beta":
+        return script_id not in CLUSTER_RELEASE_ONLY_SCRIPT_IDS
+    raise ValueError(f"unknown surface profile: {surface_profile}")
+
+
 def build_generated_builtin_fixture_script(
     *,
     namespace: str,
@@ -344,6 +382,7 @@ def compile_suite(
     output_root: Path,
     values: dict[str, str],
     namespace_ancestor_mode: str,
+    surface_profile: str,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     suite_root = suite_root.resolve()
@@ -387,9 +426,19 @@ def compile_suite(
 
     fixture_rows, fixture_sources = read_builtin_fixture_rows(repo_root)
     copied_fixture_csvs = copy_builtin_fixture_csvs(repo_root, output_root)
+    excluded_scripts: list[dict[str, Any]] = []
     for item in manifest.get("scripts", []):
         if not isinstance(item, dict):
             raise ValueError("manifest scripts must be objects")
+        if not include_manifest_script(item, surface_profile):
+            excluded_scripts.append(
+                {
+                    "script_id": item.get("script_id"),
+                    "path": item.get("path", item.get("generated_from", "")),
+                    "reason": f"excluded_by_surface_profile:{surface_profile}",
+                }
+            )
+            continue
         if "generated_from" in item:
             script_id = str(item.get("script_id", ""))
             if script_id != "SBDFS-055":
@@ -491,11 +540,13 @@ def compile_suite(
         "route": values["__SB_ROUTE__"],
         "parser_mode": values["__SB_PARSER_MODE__"],
         "page_size": values["__SB_PAGE_SIZE__"],
+        "surface_profile": surface_profile,
         "compiled_chain_path": str(chain_path),
         "compiled_chain_sha256": sha256_text(chain_text),
         "namespace_ancestor_statements": namespace_ancestor_statements,
         "compiled_chain_statement_ref_map": statement_ref_map,
         "compiled_scripts": compiled_scripts,
+        "excluded_scripts": excluded_scripts,
         "expected_files": expected_files,
         "builtin_fixture_csvs": copied_fixture_csvs,
         "builtin_fixture_sources": fixture_sources,
@@ -524,6 +575,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--route", required=True)
     parser.add_argument("--parser-mode", required=True)
     parser.add_argument("--page-size", required=True)
+    parser.add_argument(
+        "--surface-profile",
+        choices=("non-cluster-beta", "cluster-release"),
+        default=DEFAULT_SURFACE_PROFILE,
+        help=(
+            "non-cluster-beta excludes cluster-release-only scripts from the "
+            "default driver proof chain; cluster-release includes every script."
+        ),
+    )
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument(
         "--namespace-ancestor-mode",
@@ -546,6 +606,7 @@ def main() -> int:
         output_root=args.output_root,
         values=substitution_map(args),
         namespace_ancestor_mode=args.namespace_ancestor_mode,
+        surface_profile=args.surface_profile,
     )
     print(json.dumps(compiled, indent=2, sort_keys=True))
     return 0

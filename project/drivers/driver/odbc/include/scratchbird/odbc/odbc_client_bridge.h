@@ -53,6 +53,7 @@ private:
                                       uint8_t format);
 
     client::NetworkClient client_;
+    ConnectionParams params_{};
     core::Status last_status_{core::Status::OK};
     std::string last_error_;
     client::ResolvedAuthContext resolved_auth_context_{};

@@ -143,17 +143,6 @@ begin
 end;
 
 procedure TNativeScratchBirdTransport.ConnectPlain;
-{$IFDEF MSWINDOWS}
-begin
-  if UseIpcSocket then
-    raise EScratchbirdNotSupported.CreateWithInfo(
-      'Unix-domain socket IPC transport is not supported by this Pascal runtime',
-      '0A000', '', '');
-  raise EScratchbirdNotSupported.CreateWithInfo(
-    'native plain socket transport is not implemented for Windows Pascal builds',
-    '0A000', '', '');
-end;
-{$ELSE}
 var
   HostAddr: THostAddr;
   HostEntry: THostEntry;
@@ -205,7 +194,6 @@ begin
       '08001', '', '');
   end;
 end;
-{$ENDIF}
 
 procedure TNativeScratchBirdTransport.ConnectIpc;
 {$IFDEF MSWINDOWS}

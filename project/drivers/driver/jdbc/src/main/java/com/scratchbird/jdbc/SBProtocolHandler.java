@@ -487,6 +487,30 @@ public class SBProtocolHandler {
         }
     }
 
+    public synchronized SblrCompiledMessage compileSblr(String sql, int timeoutMs) throws SQLException {
+        ScheduledFuture<?> cancelTask = scheduleCancel(timeoutMs);
+        try {
+            lastSblr = null;
+            sendSimpleQuery(sql, 0, timeoutMs, QUERY_FLAG_RETURN_SBLR);
+            readQueryResult();
+            if (lastSblr == null || lastSblr.bytecode == null || lastSblr.bytecode.length == 0) {
+                throw createSQLException(
+                    "parser endpoint did not return SBLR for RETURN_SBLR request",
+                    "08P01");
+            }
+            return new SblrCompiledMessage(
+                lastSblr.hash,
+                lastSblr.version,
+                Arrays.copyOf(lastSblr.bytecode, lastSblr.bytecode.length));
+        } catch (IOException e) {
+            throw createSQLException("SBLR compile failed: " + e.getMessage(), "08006", e);
+        } finally {
+            if (cancelTask != null) {
+                cancelTask.cancel(false);
+            }
+        }
+    }
+
     public synchronized SBQueryResult executeStreaming(String sql, int pageSize, int timeoutMs) throws SQLException {
         return executeStreaming(sql, Collections.emptyList(), Collections.emptyList(), pageSize, timeoutMs);
     }
@@ -1254,7 +1278,7 @@ public class SBProtocolHandler {
                     }
                     if (request.method == AUTH_MD5) {
                         throw createSQLException(
-                            "admitted auth method MD5 is not implemented in the JDBC lane",
+                            "MD5 authentication is admitted by the server but not locally executable in the JDBC lane",
                             "0A000");
                     }
                     if (request.method == AUTH_PEER) {
@@ -1284,7 +1308,7 @@ public class SBProtocolHandler {
                         continue;
                     }
                     throw createSQLException(
-                        "admitted auth continuation " + authMethodName(cont.method) + " is not implemented in the JDBC lane",
+                        "admitted auth continuation " + authMethodName(cont.method) + " requires broker or external ceremony support in the JDBC lane",
                         "0A000");
                 }
                 case MSG_AUTH_OK: {

@@ -1381,6 +1381,31 @@ impl Client {
         result
     }
 
+    pub async fn compile_sblr(&mut self, sql: &str) -> Result<protocol::SblrCompiled> {
+        self.ensure_connected()?;
+        let span = self.begin_operation("compile_sblr").await?;
+        self.last_sblr = None;
+        self.send_simple_query_with_flags(sql, 0, 0, protocol::QUERY_FLAG_RETURN_SBLR)
+            .await?;
+        let drained = self.drain_until_ready().await;
+        if let Err(err) = drained {
+            self.end_operation(span, false).await;
+            return Err(err);
+        }
+        let Some(compiled) = self.last_sblr.clone() else {
+            self.end_operation(span, false).await;
+            return Err(Error::with_sqlstate(
+                ErrorKind::Connection,
+                "parser endpoint did not return SBLR for RETURN_SBLR request",
+                Some("08P01".to_string()),
+                None,
+                None,
+            ));
+        };
+        self.end_operation(span, true).await;
+        Ok(compiled)
+    }
+
     pub async fn stream_control(
         &mut self,
         control_type: u8,
@@ -2215,7 +2240,7 @@ impl Client {
                             return Err(Error::with_sqlstate(
                                 ErrorKind::NotSupported,
                                 format!(
-                                    "admitted auth continuation {} is not implemented in the Rust lane",
+                                    "admitted auth continuation {} requires broker or external ceremony support in the Rust lane",
                                     auth_method_name(method)
                                 ),
                                 Some("0A000".to_string()),
@@ -2524,11 +2549,22 @@ impl Client {
     }
 
     async fn send_simple_query(&mut self, sql: &str, max_rows: u32, timeout_ms: u32) -> Result<()> {
+        self.send_simple_query_with_flags(sql, max_rows, timeout_ms, 0)
+            .await
+    }
+
+    async fn send_simple_query_with_flags(
+        &mut self,
+        sql: &str,
+        max_rows: u32,
+        timeout_ms: u32,
+        extra_flags: u32,
+    ) -> Result<()> {
         let flags = if self.config.binary_transfer {
             QUERY_FLAG_BINARY_RESULT
         } else {
             0
-        };
+        } | extra_flags;
         let payload = protocol::build_query_payload(sql, flags, max_rows, timeout_ms);
         self.last_plan = None;
         self.last_sblr = None;

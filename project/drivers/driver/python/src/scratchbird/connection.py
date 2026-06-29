@@ -1427,6 +1427,17 @@ class Connection:
             raise
         return ResultStream(self, 0)
 
+    def compile_sblr(self, sql: str) -> Tuple[int, int, bytes]:
+        self._ensure_open()
+        self._last_sblr = None
+        stream = self._execute_query(sql, None, 0, QUERY_FLAG_RETURN_SBLR)
+        stream.prime_metadata()
+        while stream.read_row() is not None:
+            pass
+        if self._last_sblr is None:
+            raise errors.OperationalError("parser did not return compiled SBLR")
+        return self._last_sblr
+
     def stream_control(self, control_type: int, window_size: int, timeout_ms: int) -> None:
         self._ensure_open()
         payload = build_stream_control_payload(control_type, window_size, timeout_ms)
@@ -2283,9 +2294,9 @@ class Connection:
         if statement:
             self._execute_command(statement)
 
-    def _send_simple_query(self, sql: str, max_rows: int = 0) -> None:
+    def _send_simple_query(self, sql: str, max_rows: int = 0, extra_query_flags: int = 0) -> None:
         self._portal_resume_pending = False
-        flags = QUERY_FLAG_BINARY_RESULT if self._config.binary_transfer else 0
+        flags = (QUERY_FLAG_BINARY_RESULT if self._config.binary_transfer else 0) | int(extra_query_flags)
         payload = build_query_payload(sql, flags, max_rows, 0)
         self._send_message(MessageType.QUERY, payload)
 
@@ -2347,17 +2358,19 @@ class Connection:
         if max_rows == 0:
             self._send_message(MessageType.SYNC, b"")
 
-    def _execute_query(self, sql: str, params=None, max_rows: int = 0):
+    def _execute_query(self, sql: str, params=None, max_rows: int = 0, extra_query_flags: int = 0):
         try:
             normalized_sql, ordered = normalize_query(sql, params)
         except ValueError as exc:
             raise errors.ProgrammingError(str(exc)) from exc
+        if ordered and extra_query_flags:
+            raise errors.ProgrammingError("driver SBLR compile does not accept client-side parameters")
         span = self._begin_operation("execute_query", normalized_sql)
         try:
             if ordered:
                 self._send_extended_query(normalized_sql, ordered, max_rows)
             else:
-                self._send_simple_query(normalized_sql, max_rows)
+                self._send_simple_query(normalized_sql, max_rows, extra_query_flags)
             self._end_operation(span, True)
         except Exception:
             self._end_operation(span, False)

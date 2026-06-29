@@ -189,11 +189,6 @@ internal static class SBIsqlDotNet
                 });
                 throw new InvalidOperationException("route page-size verification failed");
             }
-            if (Required(args, "--parser-mode") != "server-parser")
-            {
-                throw new InvalidOperationException($"{Required(args, "--parser-mode")} is not yet implemented by the .NET native tool; it fails closed");
-            }
-
             var statements = SplitStatements(await ReadInputAsync(Required(args, "--input")));
             for (var index = 0; index < statements.Count; index++)
             {
@@ -215,6 +210,55 @@ internal static class SBIsqlDotNet
                         await RunTransactionAsync(connection, sql, apiHits);
                         rowCount = 0;
                         resultDigest = Sha256Text("transaction");
+                    }
+                    else if (Required(args, "--parser-mode") != "server-parser")
+                    {
+                        var sbConnection = (ScratchBirdConnection)connection;
+                        var timeoutMs = int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000"));
+                        var fetchSize = int.Parse(ValueOrDefault(args, "--fetch-size", "1000"));
+                        var compiled = sbConnection.CompileSblr(sql, timeoutMs);
+                        apiHits["ReturnSblr"] = apiHits.GetValueOrDefault("ReturnSblr") + 1;
+                        await AppendJsonlAsync(paths["wire"], new
+                        {
+                            @event = "driver_sblr_compile",
+                            driver = "dotnet",
+                            parser_mode = Required(args, "--parser-mode"),
+                            statement_id = statementId,
+                            sblr_hash = compiled.Hash.ToString(),
+                            sblr_version = compiled.Version,
+                            sblr_bytes = compiled.Bytecode.Length
+                        });
+
+                        var resultSets = sbConnection.ExecuteSblr(compiled, timeoutMs, fetchSize);
+                        apiHits["ExecuteSblr"] = apiHits.GetValueOrDefault("ExecuteSblr") + 1;
+                        await AppendJsonlAsync(paths["wire"], new
+                        {
+                            @event = "driver_sblr_execute",
+                            driver = "dotnet",
+                            parser_mode = Required(args, "--parser-mode"),
+                            statement_id = statementId,
+                            sblr_hash = compiled.Hash.ToString(),
+                            sblr_version = compiled.Version,
+                            sblr_bytes = compiled.Bytecode.Length,
+                            engine_sql_text_execution = false,
+                            mga_authority = "engine"
+                        });
+
+                        var rows = resultSets
+                            .SelectMany(result => result.Rows.Select(row => row.ToList()))
+                            .ToList();
+                        if (group is "query" or "metadata" || rows.Count > 0)
+                        {
+                            rowCount = rows.Count;
+                            resultDigest = Sha256Text(JsonSerializer.Serialize(rows));
+                            await AppendTextAsync(Required(args, "--output"), JsonSerializer.Serialize(new { statement_id = statementId, rows }) + "\n");
+                        }
+                        else
+                        {
+                            var affected = resultSets.Sum(result => result.RowCount > 0 ? result.RowCount : 0);
+                            rowCount = affected > int.MaxValue ? int.MaxValue : (int)affected;
+                            resultDigest = Sha256Text(rowCount.ToString());
+                        }
                     }
                     else
                     {
@@ -270,12 +314,12 @@ internal static class SBIsqlDotNet
                     }
                     if (!expectedRefusal && BooleanArg(args, "--stop-on-error", true))
                     {
-                        AddTiming(timings, group, statementStarted);
+                        AddTiming(timings, group, NowNs() - statementStarted);
                         break;
                     }
                 }
                 var elapsed = NowNs() - statementStarted;
-                AddTiming(timings, group, statementStarted);
+                AddTiming(timings, group, elapsed);
                 var ev = new Dictionary<string, object?>
                 {
                     ["run_id"] = ValueOrDefault(args, "--run-id", "manual"),

@@ -229,10 +229,6 @@ async function run(args: Args): Promise<number> {
       });
       throw new Error("route page-size verification failed");
     }
-    if (args.parserMode !== "server-parser") {
-      throw new Error(`${args.parserMode} is not yet implemented by the Node native tool; it fails closed`);
-    }
-
     const expectedRefusals = await loadExpectedRefusals(args.expectedRefusals);
     const script = await readInput(args.input);
     const statements = splitTopLevelStatements(script);
@@ -254,7 +250,7 @@ async function run(args: Args): Promise<number> {
           apiHits.transaction++;
           rowCount = 0;
           resultDigest = sha256("transaction");
-        } else {
+        } else if (args.parserMode === "server-parser") {
           const name = `sb_isql_node_${i + 1}`;
           await client.prepare(name, sql);
           apiHits.prepare++;
@@ -264,6 +260,41 @@ async function run(args: Args): Promise<number> {
           rowCount = result.rowCount;
           resultDigest = sha256(JSON.stringify(result.rows));
           await appendText(args.output, JSON.stringify({ statement_id: statementId, rows: result.rows }) + "\n");
+        } else {
+          const compiled = await client.compileSblr(sql, { timeoutMs: args.statementTimeoutMs });
+          apiHits.returnSblr = (apiHits.returnSblr ?? 0) + 1;
+          await appendJsonl(paths.wire, {
+            event: "driver_sblr_compile",
+            driver: "node",
+            parser_mode: args.parserMode,
+            statement_id: statementId,
+            sblr_hash: compiled.hash.toString(),
+            sblr_version: compiled.version,
+            sblr_bytes: compiled.bytecode.length,
+          });
+          const result: QueryResult = await client.executeSblr(compiled.hash, compiled.bytecode, undefined, {
+            maxRows: args.fetchSize,
+            timeoutMs: args.statementTimeoutMs,
+          });
+          apiHits.executeSblr = (apiHits.executeSblr ?? 0) + 1;
+          rowCount = result.rowCount;
+          if (group === "query" || group === "metadata" || result.rows.length > 0) {
+            resultDigest = sha256(JSON.stringify(result.rows));
+            await appendText(args.output, JSON.stringify({ statement_id: statementId, rows: result.rows }) + "\n");
+          } else {
+            resultDigest = sha256(String(rowCount));
+          }
+          await appendJsonl(paths.wire, {
+            event: "driver_sblr_execute",
+            driver: "node",
+            parser_mode: args.parserMode,
+            statement_id: statementId,
+            sblr_hash: compiled.hash.toString(),
+            sblr_version: compiled.version,
+            sblr_bytes: compiled.bytecode.length,
+            engine_sql_text_execution: false,
+            mga_authority: "engine",
+          });
         }
         if (expectedOutcome === "refusal") {
           outcome = "unexpected_success";

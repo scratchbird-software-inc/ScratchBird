@@ -9418,8 +9418,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                               std::to_string(row_ordinal)});
 	    result.evidence.push_back({"insert_select_generated_direct_route",
 	                               "physical_counter_projection"});
-		  } else {
-  if (native_bulk_native_packet_row_stage) {
+	  } else {
+	  if (native_bulk_native_packet_row_stage) {
     const auto& native_frame = *request.native_row_packet;
     for (std::size_t native_row_index = 0;
          native_row_index < static_cast<std::size_t>(native_frame.row_count);
@@ -9540,9 +9540,248 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       staged_rows.push_back(std::move(row_record));
       ++row_ordinal;
     }
-    result.evidence.push_back({"native_bulk_native_packet_row_stage",
-                               "enabled"});
-  } else if (native_bulk_typed_logical_batch_bypass) {
+	    result.evidence.push_back({"native_bulk_native_packet_row_stage",
+	                               "enabled"});
+	  } else if (native_row_packet_input &&
+	             request.borrowed_input_rows.empty() &&
+	             request.native_row_packet != nullptr &&
+	             request.native_row_packet->present) {
+	    const auto& native_frame = *request.native_row_packet;
+	    if (native_frame.field_order.size() != native_frame.column_count) {
+	      return DirectBulkFailure(
+	          request,
+	          MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+	                                       "native_row_packet_field_order_shape_mismatch"),
+	          "native_row_packet_field_order_shape_mismatch");
+	    }
+	    for (std::size_t native_row_index = 0;
+	         native_row_index < static_cast<std::size_t>(native_frame.row_count);
+	         ++native_row_index) {
+	      const bool store_row_trace =
+	          row_ordinal < direct_bulk_trace_rows_to_store;
+	      if (store_row_trace) {
+	        AddInsertTrace(&batch_context,
+	                       "direct_physical_bulk.row.convert",
+	                       "row",
+	                       std::to_string(batch_context.actual_row_count));
+	      }
+
+	      const auto convert_start = row_stage_timer_start();
+	      std::vector<std::pair<std::string, std::string>> values;
+	      values.reserve(native_frame.field_order.size());
+	      std::uint64_t encoded_bytes = 0;
+	      for (std::size_t field_index = 0;
+	           field_index < native_frame.field_order.size();
+	           ++field_index) {
+	        DirectNativePacketValueRef value_ref;
+	        if (!DirectNativePacketValueRefAt(native_frame,
+	                                          native_row_index,
+	                                          field_index,
+	                                          &value_ref)) {
+	          return DirectBulkFailure(
+	              request,
+	              MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+	                                           "native_row_packet_value_decode_failed"),
+	              "native_row_packet_value_decode_failed");
+	        }
+	        std::string value =
+	            DirectNativePacketPayloadText(native_frame, value_ref);
+	        encoded_bytes += native_frame.field_order[field_index].size() +
+	                         value.size();
+	        values.emplace_back(native_frame.field_order[field_index],
+	                            std::move(value));
+	      }
+	      add_row_stage_elapsed(row_stage_convert_us, convert_start);
+
+	      ConstraintDmlValidationOptions direct_constraint_options;
+	      direct_constraint_options.validate_unique_constraints = false;
+	      direct_constraint_options.validate_foreign_key_constraints = false;
+	      bool values_mutated_by_validation = false;
+	      const bool default_requested =
+	          std::any_of(values.begin(), values.end(), [](const auto& field) {
+	            return field.second == "<DEFAULT>";
+	          });
+	      if (has_default_validators || default_requested) {
+	        const auto validation_start = row_stage_timer_start();
+	        const auto default_validation =
+	            ApplyConstraintDefaultsForInsert(request.context, *table, values);
+	        if (!default_validation.ok) {
+	          return DirectBulkFailure(request,
+	                                   default_validation.diagnostic,
+	                                   "constraint_default_refused");
+	        }
+	        values = default_validation.values;
+	        values_mutated_by_validation = true;
+	        result.evidence.insert(result.evidence.end(),
+	                               default_validation.evidence.begin(),
+	                               default_validation.evidence.end());
+	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
+	      }
+	      if (has_domain_validators) {
+	        const auto validation_start = row_stage_timer_start();
+	        const auto domain_validation = ApplyDomainRulesToCrudValues(
+	            request.context,
+	            table->columns,
+	            values,
+	            request.context.local_transaction_id,
+	            &constraint_cache);
+	        if (!domain_validation.ok) {
+	          return DirectBulkFailure(request,
+	                                   domain_validation.diagnostic,
+	                                   "domain_validation_refused");
+	        }
+	        values = domain_validation.values;
+	        values_mutated_by_validation = true;
+	        result.evidence.insert(result.evidence.end(),
+	                               domain_validation.evidence.begin(),
+	                               domain_validation.evidence.end());
+	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
+	      }
+	      if (can_use_direct_not_null_validation) {
+	        const auto validation_start = row_stage_timer_start();
+	        const std::string not_null_failure =
+	            DirectNotNullValidationFailure(batch_context.row_encoder_plan,
+	                                           values);
+	        if (!not_null_failure.empty()) {
+	          return DirectBulkFailure(
+	              request,
+	              MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+	                                           "not_null_validation_refused"),
+	              "not_null_validation_refused:" + not_null_failure);
+	        }
+	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
+	      } else if (has_immediate_row_validators) {
+	        const auto validation_start = row_stage_timer_start();
+	        const auto constraint_validation =
+	            ValidateImmediateRowConstraintsWithOptions(
+	                request.context,
+	                *state,
+	                *table,
+	                uuid_batch.row_uuids[row_ordinal],
+	                values,
+	                "insert",
+	                direct_constraint_options,
+	                &constraint_cache);
+	        if (!constraint_validation.ok) {
+	          return DirectBulkFailure(request,
+	                                   constraint_validation.diagnostic,
+	                                   "constraint_validation_refused");
+	        }
+	        values = constraint_validation.values;
+	        values_mutated_by_validation = true;
+	        result.evidence.insert(result.evidence.end(),
+	                               constraint_validation.evidence.begin(),
+	                               constraint_validation.evidence.end());
+	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
+	      }
+	      if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {
+	        const auto security_recheck_start = row_stage_timer_start();
+	        std::vector<EngineEvidenceReference> security_recheck_evidence;
+	        const auto security_recheck =
+	            EvaluateDirectRuntimeInsertSecurityRecheck(
+	                request,
+	                request.target_table.uuid.canonical,
+	                values,
+	                &security_recheck_evidence);
+	        if (!security_recheck.ok || !security_recheck.admitted) {
+	          std::vector<EngineEvidenceReference> evidence = result.evidence;
+	          evidence.insert(evidence.end(),
+	                          security_recheck_evidence.begin(),
+	                          security_recheck_evidence.end());
+	          const EngineApiDiagnostic diagnostic =
+	              security_recheck.diagnostics.empty()
+	                  ? MakeInvalidRequestDiagnostic(
+	                        "dml.direct_physical_bulk_append",
+	                        "runtime_security_recheck_refused")
+	                  : security_recheck.diagnostics.front();
+	          return DirectBulkFailureWithEvidence(
+	              request,
+	              diagnostic,
+	              "runtime_security_recheck_refused",
+	              evidence,
+	              result.dml_summary);
+	        }
+	        result.evidence.insert(result.evidence.end(),
+	                               security_recheck_evidence.begin(),
+	                               security_recheck_evidence.end());
+	        add_row_stage_elapsed(row_stage_security_recheck_us,
+	                              security_recheck_start);
+	      }
+
+	      PreparedInsertRow prepared;
+	      prepared.row_uuid = uuid_batch.row_uuids[row_ordinal];
+	      prepared.values = std::move(values);
+	      prepared.encoded_bytes =
+	          static_cast<EngineApiU64>(EncodedValueBytes(prepared.values));
+	      if (!values_mutated_by_validation) {
+	        prepared.encoded_bytes =
+	            std::max<EngineApiU64>(prepared.encoded_bytes, encoded_bytes);
+	      }
+	      prepared.toast_required =
+	          prepared.encoded_bytes >
+	              batch_context.row_template.max_inline_encoded_bytes ||
+	          force_large_values_for_insert;
+	      const std::uint64_t projected_memory_bytes =
+	          prepared.toast_required
+	              ? batch_context.row_template.max_inline_encoded_bytes
+	              : prepared.encoded_bytes;
+	      if (!batch_context.memory_policy.spill_allowed &&
+	          projected_memory_bytes >
+	              batch_context.memory_policy.context_budget_bytes) {
+	        const auto validation_start = row_stage_timer_start();
+	        const auto memory_validation = ValidateInsertBatchMemoryBudget(
+	            batch_context,
+	            projected_memory_bytes);
+	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
+	        return DirectBulkFailure(request,
+	                                 memory_validation,
+	                                 "insert_batch_memory_budget_refused");
+	      }
+	      const auto validation_start = row_stage_timer_start();
+	      const auto batch_constraint =
+	          ValidateInsertBatchConstraints(batch_context, *state, prepared);
+	      if (batch_constraint.error) {
+	        return DirectBulkFailure(request,
+	                                 batch_constraint,
+	                                 "insert_batch_constraint_refused");
+	      }
+	      add_row_stage_elapsed(row_stage_validation_us, validation_start);
+
+	      CrudRowVersionRecord row_record;
+	      row_record.creator_tx = request.context.local_transaction_id;
+	      row_record.table_uuid = request.target_table.uuid.canonical;
+	      row_record.row_uuid = prepared.row_uuid;
+	      row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
+	      row_record.temporary_session_uuid =
+	          table->temporary ? request.context.session_uuid.canonical : "";
+	      row_record.deleted = false;
+	      const auto value_copy_start = row_stage_timer_start();
+	      row_record.values = prepared.values;
+	      add_row_stage_elapsed(row_stage_value_copy_us, value_copy_start);
+	      if (store_row_trace) {
+	        AddInsertTrace(&batch_context,
+	                       "direct_physical_bulk.row.stage",
+	                       "stage",
+	                       prepared.row_uuid);
+	      }
+	      const auto row_push_start = row_stage_timer_start();
+	      staged_rows.push_back(std::move(row_record));
+	      add_row_stage_elapsed(row_stage_row_push_us, row_push_start);
+	      const auto logical_batch_start = row_stage_timer_start();
+	      logical_value_batch.push_back(std::move(prepared.values));
+	      add_row_stage_elapsed(row_stage_logical_batch_us,
+	                            logical_batch_start);
+	      DmlIngestionPreallocationItem preallocation_item;
+	      preallocation_item.borrowed_logical_values = &logical_value_batch.back();
+	      preallocation_item.encoded_bytes = prepared.encoded_bytes;
+	      if (!queue_preallocation_item(std::move(preallocation_item))) {
+	        return preallocation_failure();
+	      }
+	      ++row_ordinal;
+	    }
+	    result.evidence.push_back({"native_bulk_native_packet_row_stage",
+	                               "generic_materialized"});
+	  } else if (native_bulk_typed_logical_batch_bypass) {
     for (const auto& input_row : request.borrowed_input_rows) {
       const bool store_row_trace =
           row_ordinal < direct_bulk_trace_rows_to_store;

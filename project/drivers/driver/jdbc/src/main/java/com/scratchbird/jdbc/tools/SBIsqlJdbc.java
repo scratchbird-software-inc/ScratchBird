@@ -36,6 +36,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.scratchbird.jdbc.SBConnection;
+import com.scratchbird.jdbc.SBProtocolHandler;
+import com.scratchbird.jdbc.SBQueryResult;
 
 /**
  * Native JDBC conformance shell and JDBC usage example.
@@ -165,6 +167,9 @@ public final class SBIsqlJdbc {
             conn = connect(args);
             apiHits.merge("DriverManager.getConnection", 1, Integer::sum);
             apiHits.merge("Connection", 1, Integer::sum);
+            SBConnection sbConnection = conn instanceof SBConnection
+                ? (SBConnection) conn
+                : conn.unwrap(SBConnection.class);
             addTiming(timings, "connection", System.nanoTime() - connectStarted);
             writeJsonl(transcript, mapOf(
                 "event", "connect",
@@ -180,9 +185,6 @@ public final class SBIsqlJdbc {
 
             if (args.booleanFlag("--create-database")) {
                 long createStarted = System.nanoTime();
-                SBConnection sbConnection = conn instanceof SBConnection
-                    ? (SBConnection) conn
-                    : conn.unwrap(SBConnection.class);
                 sbConnection.attachCreate(
                     args.valueOrDefault("--create-emulation-mode", "sbsql"),
                     args.required("--database"));
@@ -200,12 +202,6 @@ public final class SBIsqlJdbc {
                     "actual_page_size_bytes", routeEnvironment.get("actual_page_size_bytes")));
                 throw new SQLException("route page-size verification failed");
             }
-            if (!"server-parser".equals(args.required("--parser-mode"))) {
-                throw new UnsupportedOperationException(
-                    args.required("--parser-mode")
-                    + " is not yet implemented by the JDBC native tool; it fails closed");
-            }
-
             List<String> statements = splitStatements(readInput(args.required("--input")));
             int index = 0;
             for (String sql : statements) {
@@ -221,30 +217,71 @@ public final class SBIsqlJdbc {
                 int rowCount = -1;
                 String resultDigest = null;
                 boolean stopAfterStatement = false;
-                try (PreparedStatement statement = conn.prepareStatement(sql)) {
-                    apiHits.merge("PreparedStatement", 1, Integer::sum);
-                    boolean hasResult = statement.execute();
-                    if (hasResult) {
-                        try (ResultSet rs = statement.getResultSet()) {
-                            apiHits.merge("ResultSet", 1, Integer::sum);
-                            List<List<Object>> rows = readRows(rs);
+                try {
+                    if ("server-parser".equals(args.required("--parser-mode"))) {
+                        try (PreparedStatement statement = conn.prepareStatement(sql)) {
+                            apiHits.merge("PreparedStatement", 1, Integer::sum);
+                            boolean hasResult = statement.execute();
+                            if (hasResult) {
+                                try (ResultSet rs = statement.getResultSet()) {
+                                    apiHits.merge("ResultSet", 1, Integer::sum);
+                                    List<List<Object>> rows = readRows(rs);
+                                    rowCount = rows.size();
+                                    resultDigest = sha256(toJson(rows));
+                                    append(outputPath, toJson(mapOf(
+                                        "statement_id", statementId,
+                                        "rows", rows)) + "\n");
+                                }
+                            } else {
+                                rowCount = statement.getUpdateCount();
+                                resultDigest = sha256(String.valueOf(rowCount));
+                            }
+                            SQLWarning warning = statement.getWarnings();
+                            if (warning != null) {
+                                apiHits.merge("SQLWarning", 1, Integer::sum);
+                                writeJsonl(diagnostics, mapOf(
+                                    "statement_id", statementId,
+                                    "sqlstate", warning.getSQLState(),
+                                    "message", warning.getMessage()));
+                            }
+                        }
+                    } else {
+                        SBProtocolHandler.SblrCompiledMessage compiled =
+                            sbConnection.compileSblr(
+                                sql,
+                                Integer.parseInt(args.valueOrDefault("--statement-timeout-ms", "30000")));
+                        apiHits.merge("SBConnection.compileSblr", 1, Integer::sum);
+                        writeJsonl(wire, mapOf(
+                            "event", "driver_sblr_compile",
+                            "driver", "jdbc",
+                            "parser_mode", args.required("--parser-mode"),
+                            "statement_id", statementId,
+                            "sblr_hash", Long.toUnsignedString(compiled.hash),
+                            "sblr_version", compiled.version,
+                            "sblr_bytes", compiled.bytecode.length));
+                        SBQueryResult result = sbConnection.executeSblr(compiled.hash, compiled.bytecode);
+                        apiHits.merge("SBConnection.executeSblr", 1, Integer::sum);
+                        List<List<Object>> rows = queryResultRows(result);
+                        if (!rows.isEmpty()) {
                             rowCount = rows.size();
                             resultDigest = sha256(toJson(rows));
                             append(outputPath, toJson(mapOf(
                                 "statement_id", statementId,
                                 "rows", rows)) + "\n");
+                        } else {
+                            rowCount = (int) result.getUpdateCount();
+                            resultDigest = sha256(String.valueOf(rowCount));
                         }
-                    } else {
-                        rowCount = statement.getUpdateCount();
-                        resultDigest = sha256(String.valueOf(rowCount));
-                    }
-                    SQLWarning warning = statement.getWarnings();
-                    if (warning != null) {
-                        apiHits.merge("SQLWarning", 1, Integer::sum);
-                        writeJsonl(diagnostics, mapOf(
+                        writeJsonl(wire, mapOf(
+                            "event", "driver_sblr_execute",
+                            "driver", "jdbc",
+                            "parser_mode", args.required("--parser-mode"),
                             "statement_id", statementId,
-                            "sqlstate", warning.getSQLState(),
-                            "message", warning.getMessage()));
+                            "sblr_hash", Long.toUnsignedString(compiled.hash),
+                            "sblr_version", compiled.version,
+                            "sblr_bytes", compiled.bytecode.length,
+                            "engine_sql_text_execution", false,
+                            "mga_authority", "engine"));
                     }
                     if (expectedRefusal) {
                         outcome = "unexpected_success";
@@ -471,6 +508,17 @@ public final class SBIsqlJdbc {
                 row.add(rs.getObject(column));
             }
             rows.add(row);
+        }
+        return rows;
+    }
+
+    private static List<List<Object>> queryResultRows(SBQueryResult result) {
+        List<List<Object>> rows = new ArrayList<>();
+        if (result == null || result.getRows() == null) {
+            return rows;
+        }
+        for (Object[] row : result.getRows()) {
+            rows.add(Arrays.asList(row));
         }
         return rows;
     }

@@ -13,11 +13,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -254,14 +256,6 @@ func run(cfg config) error {
 		})
 		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
 	}
-	if cfg.ParserMode != "server-parser" {
-		failures = append(failures, map[string]any{
-			"statement_id": "parser_mode",
-			"message":      cfg.ParserMode + " is not yet implemented by the Go native tool; it fails closed",
-		})
-		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
-	}
-
 	expectedRefusals, err := loadExpectedRefusals(cfg.ExpectedRefusals)
 	if err != nil {
 		failures = append(failures, map[string]any{"statement_id": "expected_refusals", "message": err.Error()})
@@ -286,38 +280,92 @@ func run(cfg config) error {
 		var sqlState any
 		var diagnostic any
 		breakAfterEvent := false
-		stmt, err := conn.PrepareContext(ctx, statement)
-		apiHits["PrepareContext"]++
-		if err == nil {
-			defer stmt.Close()
-			if group == "query" || group == "metadata" {
-				var rows *sql.Rows
-				rows, err = stmt.QueryContext(ctx)
-				apiHits["QueryContext"]++
-				if err == nil {
-					apiHits["Rows"]++
-					values, readErr := readRows(rows)
-					rows.Close()
-					if readErr != nil {
-						err = readErr
-					} else {
-						rowCount = int64(len(values))
-						digest := sha256Text(jsonString(values))
-						resultDigest = digest
-						digests = append(digests, map[string]any{
-							"statement_id": statementID, "row_count": rowCount, "result_digest": digest,
-						})
-						appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": values})+"\n")
+		if cfg.ParserMode == "server-parser" {
+			stmt, prepareErr := conn.PrepareContext(ctx, statement)
+			apiHits["PrepareContext"]++
+			err = prepareErr
+			if err == nil {
+				defer stmt.Close()
+				if group == "query" || group == "metadata" {
+					var rows *sql.Rows
+					rows, err = stmt.QueryContext(ctx)
+					apiHits["QueryContext"]++
+					if err == nil {
+						apiHits["Rows"]++
+						values, readErr := readRows(rows)
+						rows.Close()
+						if readErr != nil {
+							err = readErr
+						} else {
+							rowCount = int64(len(values))
+							digest := sha256Text(jsonString(values))
+							resultDigest = digest
+							digests = append(digests, map[string]any{
+								"statement_id": statementID, "row_count": rowCount, "result_digest": digest,
+							})
+							appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": values})+"\n")
+						}
+					}
+				} else {
+					result, execErr := stmt.ExecContext(ctx)
+					err = execErr
+					if err == nil {
+						rowCount, _ = result.RowsAffected()
+						resultDigest = sha256Text(fmt.Sprint(rowCount))
 					}
 				}
-			} else {
-				result, execErr := stmt.ExecContext(ctx)
-				err = execErr
-				if err == nil {
+			}
+		} else {
+			err = conn.Raw(func(driverConn any) error {
+				sbConn, ok := driverConn.(*scratchbird.Conn)
+				if !ok {
+					return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
+				}
+				hash, bytecode, compileErr := sbConn.CompileSblr(ctx, statement)
+				if compileErr != nil {
+					return compileErr
+				}
+				apiHits["CompileSblr"]++
+				appendJSONL(cfg.Transcript, map[string]any{
+					"event": "driver_sblr_compile", "driver": "go",
+					"parser_mode": cfg.ParserMode, "statement_id": statementID,
+					"sblr_hash": fmt.Sprint(hash), "sblr_bytes": len(bytecode),
+				})
+				if group == "query" || group == "metadata" {
+					rows, queryErr := sbConn.QuerySblr(ctx, hash, bytecode, nil)
+					apiHits["QuerySblr"]++
+					if queryErr != nil {
+						return queryErr
+					}
+					defer rows.Close()
+					values, readErr := readDriverRows(rows)
+					if readErr != nil {
+						return readErr
+					}
+					rowCount = int64(len(values))
+					digest := sha256Text(jsonString(values))
+					resultDigest = digest
+					digests = append(digests, map[string]any{
+						"statement_id": statementID, "row_count": rowCount, "result_digest": digest,
+					})
+					appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": values})+"\n")
+				} else {
+					result, execErr := sbConn.ExecSblr(ctx, hash, bytecode, nil)
+					apiHits["ExecSblr"]++
+					if execErr != nil {
+						return execErr
+					}
 					rowCount, _ = result.RowsAffected()
 					resultDigest = sha256Text(fmt.Sprint(rowCount))
 				}
-			}
+				appendJSONL(cfg.Transcript, map[string]any{
+					"event": "driver_sblr_execute", "driver": "go",
+					"parser_mode": cfg.ParserMode, "statement_id": statementID,
+					"sblr_hash": fmt.Sprint(hash), "sblr_bytes": len(bytecode),
+					"engine_sql_text_execution": false, "mga_authority": "engine",
+				})
+				return nil
+			})
 		}
 		if err != nil {
 			outcome = "refusal"
@@ -744,6 +792,26 @@ func readRows(rows *sql.Rows) ([][]any, error) {
 		out = append(out, values)
 	}
 	return out, rows.Err()
+}
+
+func readDriverRows(rows driver.Rows) ([][]any, error) {
+	columns := rows.Columns()
+	out := [][]any{}
+	for {
+		values := make([]driver.Value, len(columns))
+		err := rows.Next(values)
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		row := make([]any, len(values))
+		for i, value := range values {
+			row[i] = value
+		}
+		out = append(out, row)
+	}
 }
 
 // splitStatements delegates to the canonical SET TERM- and comment-aware

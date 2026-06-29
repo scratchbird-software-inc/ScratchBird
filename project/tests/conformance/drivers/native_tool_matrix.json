@@ -1,6 +1,12 @@
 {
   "schema_version": 1,
   "transport_capability_by_driver": {
+    "adbc": {
+      "inet_required": true,
+      "native_ipc_supported": true,
+      "embedded_supported": false,
+      "embedded_boundary": "not_applicable_no_cpp_library_binding"
+    },
     "cpp": {
       "inet_required": true,
       "native_ipc_supported": true,
@@ -91,11 +97,35 @@
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
+    "flightsql": {
+      "inet_required": true,
+      "native_ipc_supported": false,
+      "embedded_supported": false,
+      "embedded_boundary": "not_applicable_no_cpp_library_binding"
+    },
+    "julia": {
+      "inet_required": true,
+      "native_ipc_supported": true,
+      "embedded_supported": false,
+      "embedded_boundary": "not_applicable_no_cpp_library_binding"
+    },
     "mojo": {
       "inet_required": true,
       "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_native_ipc_or_cpp_binding"
+    },
+    "perl": {
+      "inet_required": true,
+      "native_ipc_supported": true,
+      "embedded_supported": false,
+      "embedded_boundary": "not_applicable_no_cpp_library_binding"
+    },
+    "r2dbc": {
+      "inet_required": true,
+      "native_ipc_supported": false,
+      "embedded_supported": false,
+      "embedded_boundary": "not_applicable_no_cpp_library_binding"
     }
   },
   "driver_tools": [

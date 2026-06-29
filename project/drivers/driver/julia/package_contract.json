@@ -3,7 +3,7 @@
   "category": "driver",
   "name": "julia",
   "driver_family": "julia",
-  "status": "planned_not_implemented",
+  "status": "beta_2_native_transport_runner",
   "wire_protocol": "sbwp_v1_1",
   "auth_authority": "engine",
   "transaction_authority": "mga_engine",
@@ -37,6 +37,30 @@
     "cancellation"
   ],
   "package_files": [
-    "package_contract.json"
-  ]
+    "package_contract.json",
+    "Project.toml",
+    "src/ScratchBird.jl",
+    "tools/sb_isql_julia.jl",
+    "README.md",
+    "BASELINE_REQUIREMENT_MAPPING.md",
+    "test/runtests.jl"
+  ],
+  "runtime_dependency_policy": {
+    "required_packages": [
+      "DBInterface",
+      "MbedTLS",
+      "Tables"
+    ],
+    "missing_dependency_behavior": "fail_closed_with_diagnostics_and_complete_artifacts"
+  },
+  "runtime_boundaries": [
+    "embedded_cpp_library_boundary_absent_in_julia_lane",
+    "embedded_transport_available_only_when_a_cpp_library_boundary_is_exposed",
+    "tls_transport_requires_project_mbedtls_dependency",
+    "client_side_sql_finality_forbidden"
+  ],
+  "release_readiness": {
+    "package_status": "native_sbwp_executor_available",
+    "promotion_evidence_required": "julia_live_conformance"
+  }
 }

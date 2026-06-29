@@ -1176,16 +1176,39 @@ core::Status Connection::executeQuery(const std::string& sql,
 
 core::Status Connection::executeQuery(const std::string& sql,
                                       ResultSet* results,
-                                      uint8_t /*flags*/,
+                                      uint8_t flags,
                                       core::ErrorContext* ctx) {
     auto shared = std::make_shared<NetworkResultSet>();
-    core::Status status = impl_->client.executeQuery(sql, *shared, ctx);
+    core::Status status = impl_->client.executeQuery(sql, *shared, ctx, flags);
     impl_->last_error = impl_->client.lastError();
     populateResultSet(results ? results->impl_.get() : nullptr, shared);
     if (status == core::Status::OK) {
         markConnectedTransactionState(impl_.get());
     }
     return status;
+}
+
+core::Status Connection::executeSblr(uint64_t sblr_hash,
+                                     const std::vector<uint8_t>& sblr_bytecode,
+                                     ResultSet* results,
+                                     core::ErrorContext* ctx) {
+    auto shared = std::make_shared<NetworkResultSet>();
+    const std::vector<protocol::ParamValue> params;
+    core::Status status =
+        impl_->client.executeSblr(sblr_hash, sblr_bytecode, params, *shared, ctx);
+    impl_->last_error = impl_->client.lastError();
+    populateResultSet(results ? results->impl_.get() : nullptr, shared);
+    if (status == core::Status::OK) {
+        markConnectedTransactionState(impl_.get());
+    }
+    return status;
+}
+
+bool Connection::takeLastSblrCompiled(protocol::SblrCompiled* out) {
+    if (impl_ == nullptr || out == nullptr) {
+        return false;
+    }
+    return impl_->client.takeLastSblrCompiled(*out);
 }
 
 core::Status Connection::execute(const std::string& sql,

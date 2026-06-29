@@ -476,6 +476,7 @@ int main(int argc, char** argv) {
                                     ";SSLRootCert=" + valueOrDefault(args, "--sslrootcert", "") +
                                     ";SSLCert=" + valueOrDefault(args, "--sslcert", "") +
                                     ";SSLKey=" + valueOrDefault(args, "--sslkey", "") +
+                                    ";Parser_Mode=" + parserMode +
                                     ";Transport_Mode=" + driverTransportModeForRoute(route) +
                                     ";IPC_Method=unix" +
                                     ";IPC_Path=" + valueOrDefault(args, "--ipc-path", "") +
@@ -555,10 +556,6 @@ int main(int argc, char** argv) {
                              {"actual_page_size_bytes", routeEnv.value("actual_page_size_bytes", json(nullptr))}});
             }
         }
-        if (failures.empty() && parserMode != "server-parser") {
-            failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the ODBC native tool; it fails closed"}});
-        }
-
         if (failures.empty()) {
             if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) throw std::runtime_error("SQLAllocHandle stmt failed");
             api["SQLAllocHandle"]++;

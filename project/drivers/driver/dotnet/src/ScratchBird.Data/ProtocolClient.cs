@@ -601,6 +601,21 @@ internal sealed class ProtocolClient
         return new QueryStream(this, timeoutMs, maxRows);
     }
 
+    public (ulong Hash, uint Version, byte[] Bytecode) CompileSblr(string sql, int timeoutMs)
+    {
+        EnsureConnected();
+        _lastSblr = null;
+        SendSimpleQuery(sql, timeoutMs, 0, ProtocolConstants.QueryFlagReturnSblr);
+        DrainUntilReady();
+        if (_lastSblr is not { Bytecode.Length: > 0 } compiled)
+        {
+            throw new ScratchBirdConnectionException(
+                "parser endpoint did not return SBLR for RETURN_SBLR request",
+                "08P01");
+        }
+        return (compiled.Hash, compiled.Version, compiled.Bytecode.ToArray());
+    }
+
     public void StreamControl(byte controlType, uint windowSize, uint timeoutMs)
     {
         EnsureConnected();
@@ -1039,7 +1054,7 @@ internal sealed class ProtocolClient
                     if (parsed.Method is AuthMethod.MD5 or AuthMethod.PEER or AuthMethod.REATTACH)
                     {
                         throw new ScratchBirdNotSupportedException(
-                            $"admitted auth method {AuthMethodName(parsed.Method)} is not implemented in the .NET lane",
+                            $"admitted auth method {AuthMethodName(parsed.Method)} is not locally executable in the .NET lane",
                             "0A000");
                     }
 
@@ -1050,8 +1065,12 @@ internal sealed class ProtocolClient
                 case MessageType.AUTH_CONTINUE:
                 {
                     var parsed = ProtocolCodec.ParseAuthContinue(msg.Payload);
-                    if ((parsed.Method == AuthMethod.SCRAM_SHA_256 || parsed.Method == AuthMethod.SCRAM_SHA_512) && scram != null)
+                    if (parsed.Method == AuthMethod.SCRAM_SHA_256 || parsed.Method == AuthMethod.SCRAM_SHA_512)
                     {
+                        if (scram == null)
+                        {
+                            throw new ScratchBirdConnectionException("SCRAM state missing", "08001");
+                        }
                         var serverFirst = Encoding.UTF8.GetString(parsed.Data);
                         var clientFinal = scram.HandleServerFirst(config.Password ?? string.Empty, serverFirst);
                         SendMessage(MessageType.AUTH_RESPONSE, Encoding.UTF8.GetBytes(clientFinal), 0, true);
@@ -1065,7 +1084,7 @@ internal sealed class ProtocolClient
                     }
 
                     throw new ScratchBirdNotSupportedException(
-                        $"admitted auth continuation {AuthMethodName(parsed.Method)} is not implemented in the .NET lane",
+                        $"admitted auth continuation {AuthMethodName(parsed.Method)} requires broker or external ceremony support in the .NET lane",
                         "0A000");
                 }
                 case MessageType.AUTH_OK:
@@ -1112,8 +1131,14 @@ internal sealed class ProtocolClient
 
     private void SendSimpleQuery(string sql, int timeoutMs, int maxRows)
     {
+        SendSimpleQuery(sql, timeoutMs, maxRows, 0);
+    }
+
+    private void SendSimpleQuery(string sql, int timeoutMs, int maxRows, uint extraFlags)
+    {
         EnsureHealthy();
         var flags = ConfigBinaryTransfer() ? QueryFlagBinaryResult : 0;
+        flags |= extraFlags;
         var payload = ProtocolCodec.BuildQueryPayload(sql, flags, (uint)Math.Max(0, maxRows), (uint)Math.Max(0, timeoutMs));
         _lastQuerySequence = SendMessage(MessageType.QUERY, payload, 0, false);
     }

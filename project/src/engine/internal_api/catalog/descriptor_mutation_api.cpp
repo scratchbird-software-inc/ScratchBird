@@ -29,6 +29,21 @@ std::string MutationObjectKind(const EngineApiRequest& request) {
   return from_option.empty() ? "catalog_descriptor" : from_option;
 }
 
+bool DescriptorUsesRootNameScope(const std::string& object_kind) {
+  return object_kind == "filespace" || object_kind == "filespace_agent";
+}
+
+std::string DescriptorNameScopeUuid(const EngineCatalogDescriptorMutationRequest& request,
+                                    const std::string& object_kind) {
+  if (!request.target_schema.uuid.canonical.empty()) {
+    return request.target_schema.uuid.canonical;
+  }
+  if (DescriptorUsesRootNameScope(object_kind)) {
+    return {};
+  }
+  return request.target_object.uuid.canonical;
+}
+
 }  // namespace
 
 EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
@@ -87,18 +102,17 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
     return result;
   }
 
+  const std::string object_kind = MutationObjectKind(request);
   auto result = PersistedRecordResult<EngineCatalogDescriptorMutationResult>(
       request,
       operation_id,
-      MutationObjectKind(request),
+      object_kind,
       true,
       "descriptor_mutation_committed");
   if (!result.ok) return result;
 
-  const std::string fallback_name = ApiBehaviorPrimaryName(request, MutationObjectKind(request));
-  const std::string scope_uuid = request.target_schema.uuid.canonical.empty()
-                                     ? request.target_object.uuid.canonical
-                                     : request.target_schema.uuid.canonical;
+  const std::string fallback_name = ApiBehaviorPrimaryName(request, object_kind);
+  const std::string scope_uuid = DescriptorNameScopeUuid(request, object_kind);
   const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
                                                                 operation_id,
                                                                 result.primary_object.uuid.canonical,

@@ -452,13 +452,6 @@ def run_script(args: argparse.Namespace) -> int:
                 "actual_page_size_bytes": route_env.get("actual_page_size_bytes"),
             })
 
-        if args.parser_mode != "server-parser":
-            message = (
-                f"{args.parser_mode} is not yet implemented by the Python native tool; "
-                "the tool fails closed instead of silently using server-parser mode"
-            )
-            raise NotImplementedError(message)
-
         for index, statement in enumerate(statements, start=1):
             group = classify_statement(statement)
             statement_id = f"{Path(args.input).name}:{index}"
@@ -473,7 +466,30 @@ def run_script(args: argparse.Namespace) -> int:
             try:
                 # Public DB-API example: prepare/execute/fetch through cursor.
                 cursor = conn.cursor()
-                cursor.execute(statement)
+                if args.parser_mode != "server-parser" and group != "transaction":
+                    sblr_hash, sblr_version, sblr_bytecode = conn.compile_sblr(statement)
+                    stream = conn.execute_sblr(sblr_hash, sblr_bytecode)
+                    api_hits["conn.compile_sblr"] += 1
+                    api_hits["conn.execute_sblr"] += 1
+                    transcript_writer.write({
+                        "event": "driver_sblr_execute",
+                        "statement_id": statement_id,
+                        "parser_mode": args.parser_mode,
+                        "sblr_hash": sblr_hash,
+                        "sblr_version": sblr_version,
+                        "sblr_bytes": len(sblr_bytecode),
+                        "engine_sql_text_execution": False,
+                        "mga_authority": "engine",
+                    })
+                    cursor._stream = stream
+                    cursor._prime_stream_metadata(stream)
+                    cursor._results = []
+                    cursor._pos = 0
+                    cursor._update_description(stream)
+                    cursor.rowcount = -1
+                    cursor.statusmessage = None
+                else:
+                    cursor.execute(statement)
                 api_hits["cursor.execute"] += 1
                 rows = cursor.fetchall()
                 api_hits["cursor.fetchall"] += 1

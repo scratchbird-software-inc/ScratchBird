@@ -13,6 +13,7 @@
 #include "dml/insert_api.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "sblr_sequence_runtime.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -56,6 +57,9 @@ inline bool EndsWith(std::string_view value, std::string_view suffix) {
 
 inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
                                                       const std::string& presented_name);
+inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
+                                                       const std::string& presented_name,
+                                                       std::string expected_object_type);
 
 inline bool OptionPresent(const std::vector<std::string>& options,
                           std::string_view token) {
@@ -175,6 +179,85 @@ inline std::uint64_t NextAuditId(const CrudState& state,
   return max_audit_id + 1;
 }
 
+inline scratchbird::engine::sblr::SblrExecutionContext TriggerSblrContext(
+    const EngineRequestContext& context) {
+  scratchbird::engine::sblr::SblrExecutionContext out;
+  out.database_path = context.database_path;
+  out.database_uuid = context.database_uuid.canonical;
+  out.cluster_uuid = context.cluster_uuid.canonical;
+  out.node_uuid = context.node_uuid.canonical;
+  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.local_transaction_id = context.local_transaction_id;
+  out.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  out.transaction_isolation_level = context.transaction_isolation_level;
+  out.statement_uuid = context.statement_uuid.canonical;
+  out.session_uuid = context.session_uuid.canonical;
+  out.user_uuid = context.principal_uuid.canonical;
+  out.current_role_uuid = context.current_role_uuid.canonical;
+  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_timestamp = context.statement_timestamp;
+  out.transaction_timestamp = context.transaction_timestamp;
+  out.current_timestamp = context.current_timestamp;
+  out.current_monotonic_ns = context.current_monotonic_ns;
+  out.security_context_present = context.security_context_present;
+  out.transaction_context_present =
+      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+  out.cluster_authority_available = context.cluster_authority_available;
+  out.read_only_mode = context.read_only_mode;
+  return out;
+}
+
+inline bool NextSequenceAuditId(const EngineRequestContext& context,
+                                const std::string& sequence_uuid,
+                                std::uint64_t* audit_id,
+                                EngineApiDiagnostic* diagnostic) {
+  if (audit_id == nullptr) return false;
+  if (sequence_uuid.empty()) {
+    if (diagnostic != nullptr) {
+      *diagnostic = EngineApiDiagnostic{
+          "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
+          "trigger.runtime.sequence_unresolved",
+          "compiled trigger audit sequence could not be resolved",
+          true};
+    }
+    return false;
+  }
+  scratchbird::engine::sblr::SblrSequenceRequest request;
+  request.context = TriggerSblrContext(context);
+  request.sequence_uuid = LowerAscii(sequence_uuid);
+  request.result_descriptor_id = "int64";
+  const auto result = scratchbird::engine::sblr::NextSblrSequenceValue(
+      &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(), request);
+  if (!result.ok() || result.scalar_values.empty()) {
+    if (diagnostic != nullptr) {
+      const std::string detail =
+          result.diagnostics.empty()
+              ? "compiled trigger audit sequence did not return a value"
+              : result.diagnostics.front().detail;
+      *diagnostic = EngineApiDiagnostic{
+          "TRIGGER.RUNTIME.SEQUENCE_NEXT_FAILED",
+          "trigger.runtime.sequence_next_failed",
+          detail,
+          true};
+    }
+    return false;
+  }
+  const std::uint64_t parsed = ParseAuditId(result.scalar_values.front().encoded_value);
+  if (parsed == 0) {
+    if (diagnostic != nullptr) {
+      *diagnostic = EngineApiDiagnostic{
+          "TRIGGER.RUNTIME.SEQUENCE_VALUE_INVALID",
+          "trigger.runtime.sequence_value_invalid",
+          "compiled trigger audit sequence returned a non-positive or invalid audit id",
+          true};
+    }
+    return false;
+  }
+  *audit_id = parsed;
+  return true;
+}
+
 inline EngineRowValue AuditRow(std::uint64_t audit_id,
                                std::string event_kind,
                                std::string item_id,
@@ -246,6 +329,12 @@ inline EngineIdentifierAtom ResolverIdentifierAtom(std::string text) {
 
 inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext& context,
                                                       const std::string& presented_name) {
+  return ResolveVisibleObjectByPresentedName(context, presented_name, "table");
+}
+
+inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContext& context,
+                                                       const std::string& presented_name,
+                                                       std::string expected_object_type) {
   std::vector<std::string> parts;
   std::size_t offset = 0;
   while (offset <= presented_name.size()) {
@@ -260,7 +349,7 @@ inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext
   if (parts.empty()) return {};
   EngineResolveNameRequest request;
   request.context = context;
-  request.sql_object_reference.expected_object_type = "table";
+  request.sql_object_reference.expected_object_type = expected_object_type;
   request.sql_object_reference.path_type =
       parts.size() > 1 ? "qualified" : "unqualified";
   request.sql_object_reference.no_search_path = parts.size() > 1;
@@ -272,6 +361,11 @@ inline std::string ResolveVisibleTableByPresentedName(const EngineRequestContext
   const auto resolved = EngineResolveName(request);
   if (!resolved.ok) return {};
   return resolved.bound_object_identity.object_uuid.canonical;
+}
+
+inline std::string ResolveVisibleSequenceByPresentedName(const EngineRequestContext& context,
+                                                         const std::string& presented_name) {
+  return ResolveVisibleObjectByPresentedName(context, presented_name, "sequence");
 }
 
 inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& context,
@@ -287,6 +381,19 @@ inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& cont
     return {};
   }
   return FindVisibleTableByName(state, context, audit_table_leaf);
+}
+
+inline std::string ResolveTriggerAuditSequenceUuid(const EngineRequestContext& context,
+                                                   const EngineExecutableObjectRecord& trigger,
+                                                   std::string_view audit_sequence_leaf) {
+  const auto target_name =
+      LowerAscii(PayloadFieldValue(trigger.payload, "trigger_target_table_name:"));
+  if (!target_name.empty() && target_name.find('.') != std::string::npos) {
+    const std::string sibling_name = SiblingPresentedName(target_name, audit_sequence_leaf);
+    const std::string resolved = ResolveVisibleSequenceByPresentedName(context, sibling_name);
+    if (!resolved.empty()) return resolved;
+  }
+  return ResolveVisibleSequenceByPresentedName(context, std::string(audit_sequence_leaf));
 }
 
 inline std::string FindVisibleTableNameByUuid(const CrudState& state,
@@ -482,7 +589,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
   std::string audit_table_uuid;
-  std::uint64_t next_audit_id = 0;
+  std::string audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (!TriggerDescriptorMatches(trigger,
@@ -497,10 +604,26 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
     if (audit_table_uuid.empty()) {
       audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
       if (audit_table_uuid.empty()) return result;
-      next_audit_id = NextAuditId(trigger_state, audit_table_uuid, context);
+      audit_sequence_uuid =
+          ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
+      if (audit_sequence_uuid.empty()) {
+        result.ok = false;
+        result.diagnostic = EngineApiDiagnostic{
+            "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
+            "trigger.runtime.sequence_unresolved",
+            "compiled trigger audit sequence could not be resolved",
+            true};
+        return result;
+      }
+      result.evidence.push_back({"trigger_runtime_audit_sequence_uuid", audit_sequence_uuid});
     }
     for (const auto& row : inserted_rows) {
-      audit_rows.push_back(AuditRow(next_audit_id++,
+      std::uint64_t audit_id = 0;
+      if (!NextSequenceAuditId(context, audit_sequence_uuid, &audit_id, &result.diagnostic)) {
+        result.ok = false;
+        return result;
+      }
+      audit_rows.push_back(AuditRow(audit_id,
                                     "INSERT",
                                     ValueFor(row.values, "item_id"),
                                     {},
@@ -541,7 +664,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
   std::string audit_table_uuid;
-  std::uint64_t next_audit_id = 0;
+  std::string audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (TriggerDescriptorMatches(trigger,
@@ -554,10 +677,26 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
       if (audit_table_uuid.empty()) {
         audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
         if (audit_table_uuid.empty()) return result;
-        next_audit_id = NextAuditId(trigger_state, audit_table_uuid, context);
+        audit_sequence_uuid =
+            ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
+        if (audit_sequence_uuid.empty()) {
+          result.ok = false;
+          result.diagnostic = EngineApiDiagnostic{
+              "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
+              "trigger.runtime.sequence_unresolved",
+              "compiled trigger audit sequence could not be resolved",
+              true};
+          return result;
+        }
+        result.evidence.push_back({"trigger_runtime_audit_sequence_uuid", audit_sequence_uuid});
       }
       for (const auto& row : updated_rows) {
-        audit_rows.push_back(AuditRow(next_audit_id++,
+        std::uint64_t audit_id = 0;
+        if (!NextSequenceAuditId(context, audit_sequence_uuid, &audit_id, &result.diagnostic)) {
+          result.ok = false;
+          return result;
+        }
+        audit_rows.push_back(AuditRow(audit_id,
                                       "UPDATE",
                                       ValueFor(row.new_values, "item_id"),
                                       ValueFor(row.old_values, "item_price"),
@@ -577,9 +716,25 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
       if (audit_table_uuid.empty()) {
         audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
         if (audit_table_uuid.empty()) return result;
-        next_audit_id = NextAuditId(trigger_state, audit_table_uuid, context);
+        audit_sequence_uuid =
+            ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
+        if (audit_sequence_uuid.empty()) {
+          result.ok = false;
+          result.diagnostic = EngineApiDiagnostic{
+              "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
+              "trigger.runtime.sequence_unresolved",
+              "compiled trigger audit sequence could not be resolved",
+              true};
+          return result;
+        }
+        result.evidence.push_back({"trigger_runtime_audit_sequence_uuid", audit_sequence_uuid});
       }
-      audit_rows.push_back(AuditRow(next_audit_id++,
+      std::uint64_t audit_id = 0;
+      if (!NextSequenceAuditId(context, audit_sequence_uuid, &audit_id, &result.diagnostic)) {
+        result.ok = false;
+        return result;
+      }
+      audit_rows.push_back(AuditRow(audit_id,
                                     "UPDATE_STMT",
                                     {},
                                     {},
@@ -620,7 +775,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
   const std::string target_table_name =
       FindVisibleTableNameByUuid(trigger_state, context, target_table_uuid);
   std::string audit_table_uuid;
-  std::uint64_t next_audit_id = 0;
+  std::string audit_sequence_uuid;
   std::vector<EngineRowValue> audit_rows;
   for (const auto& trigger : executable_state.objects) {
     if (!TriggerDescriptorMatches(trigger,
@@ -635,10 +790,26 @@ inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
     if (audit_table_uuid.empty()) {
       audit_table_uuid = ResolveTriggerAuditTableUuid(context, trigger_state, trigger, "trig_audit");
       if (audit_table_uuid.empty()) return result;
-      next_audit_id = NextAuditId(trigger_state, audit_table_uuid, context);
+      audit_sequence_uuid =
+          ResolveTriggerAuditSequenceUuid(context, trigger, "trig_audit_seq");
+      if (audit_sequence_uuid.empty()) {
+        result.ok = false;
+        result.diagnostic = EngineApiDiagnostic{
+            "TRIGGER.RUNTIME.SEQUENCE_UNRESOLVED",
+            "trigger.runtime.sequence_unresolved",
+            "compiled trigger audit sequence could not be resolved",
+            true};
+        return result;
+      }
+      result.evidence.push_back({"trigger_runtime_audit_sequence_uuid", audit_sequence_uuid});
     }
     for (const auto& row : deleted_rows) {
-      audit_rows.push_back(AuditRow(next_audit_id++,
+      std::uint64_t audit_id = 0;
+      if (!NextSequenceAuditId(context, audit_sequence_uuid, &audit_id, &result.diagnostic)) {
+        result.ok = false;
+        return result;
+      }
+      audit_rows.push_back(AuditRow(audit_id,
                                     "DELETE",
                                     ValueFor(row.values, "item_id"),
                                     ValueFor(row.values, "item_price"),

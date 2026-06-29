@@ -15,6 +15,7 @@
 
 #include "scratchbird/core/type_extractor.h"
 #include "scratchbird/client/driver_config.h"
+#include "scratchbird/protocol/sbwp_protocol.h"
 
 namespace scratchbird {
 namespace odbc {
@@ -169,6 +170,7 @@ OdbcClientBridge::OdbcClientBridge() = default;
 OdbcClientBridge::~OdbcClientBridge() = default;
 
 SQLRETURN OdbcClientBridge::connect(const ConnectionParams& params, std::string& error) {
+    params_ = params;
     auto config = buildConfig(params);
     core::ErrorContext ctx;
     auto status = client_.connect(config, &ctx);
@@ -224,7 +226,27 @@ SQLRETURN OdbcClientBridge::executeSQL(const std::string& sql,
 
     client::NetworkResultSet net_results;
     core::ErrorContext ctx;
-    auto status = client_.executeQuery(sql, net_results, &ctx);
+    core::Status status = core::Status::OK;
+    if (params_.parser_mode == "server-parser" || params_.parser_mode.empty()) {
+        status = client_.executeQuery(sql, net_results, &ctx);
+    } else {
+        client::NetworkResultSet compile_results;
+        status = client_.executeQuery(
+            sql,
+            compile_results,
+            &ctx,
+            scratchbird::protocol::kQueryFlagReturnSblr);
+        if (status == core::Status::OK) {
+            protocol::SblrCompiled compiled;
+            if (!client_.takeLastSblrCompiled(compiled) || compiled.bytecode.empty()) {
+                status = core::Status::PROTOCOL_VIOLATION;
+                ctx.message = "parser endpoint did not return SBLR for RETURN_SBLR request";
+                ctx.sqlstate = "08P01";
+            } else {
+                status = client_.executeSblr(compiled.hash, compiled.bytecode, {}, net_results, &ctx);
+            }
+        }
+    }
     last_status_ = status;
     if (status != core::Status::OK) {
         last_error_ = ctx.message.empty() ? client_.lastError() : ctx.message;

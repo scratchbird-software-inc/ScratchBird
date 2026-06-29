@@ -231,6 +231,24 @@ public sealed class ScratchBirdConnection : DbConnection
         EnsureConnectedClient().AttachCreate(emulationMode, dbName);
     }
 
+    public SblrSummary CompileSblr(string sql, int timeoutMs = 0)
+    {
+        var compiled = EnsureConnectedClient().CompileSblr(sql, timeoutMs);
+        return new SblrSummary(compiled.Hash, compiled.Version, compiled.Bytecode);
+    }
+
+    public IReadOnlyList<ResultSetSummary> ExecuteSblr(SblrSummary compiled, int timeoutMs = 0, int maxRows = 0)
+    {
+        ArgumentNullException.ThrowIfNull(compiled);
+        var stream = EnsureConnectedClient().ExecuteSblr(
+            compiled.Hash,
+            compiled.Bytecode,
+            Array.Empty<ScratchBirdParameter>(),
+            timeoutMs,
+            maxRows);
+        return BufferQueryStream(stream);
+    }
+
     private void EnsureKeepaliveHealthy(ProtocolClient client)
     {
         bool validated;
@@ -1937,6 +1955,43 @@ public sealed class ScratchBirdConnection : DbConnection
 
     private static IReadOnlyList<string> SplitSqlStatements(string sql) =>
         SqlStatementSplitter.Split(sql);
+
+    private static IReadOnlyList<ResultSetSummary> BufferQueryStream(ProtocolClient.QueryStream stream)
+    {
+        var results = new List<ResultSetSummary>();
+        try
+        {
+            while (true)
+            {
+                var rows = new List<object?[]>();
+                object?[]? row;
+                while ((row = stream.ReadNextRow()) != null)
+                {
+                    rows.Add(row);
+                }
+
+                var fields = stream.Columns
+                    .Select(column => new FieldSummary(column.Name, column.TypeOid, column.Format, column.Nullable))
+                    .ToArray();
+                var rowCount = stream.RowsAffected >= 0 ? stream.RowsAffected : rows.Count;
+                results.Add(new ResultSetSummary(
+                    rows.ToArray(),
+                    rowCount,
+                    fields,
+                    stream.Command,
+                    0));
+
+                if (!stream.NextResult())
+                {
+                    return results;
+                }
+            }
+        }
+        finally
+        {
+            stream.Dispose();
+        }
+    }
 
     private IReadOnlyList<ResultSetSummary> ExecuteQueryMultiInternal(
         string sql,

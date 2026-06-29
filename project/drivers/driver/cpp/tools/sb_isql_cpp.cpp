@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "scratchbird/client/connection.h"
+#include "scratchbird/protocol/sbwp_protocol.h"
 #include "sb_statement_chunker.hpp"
 
 #include <openssl/sha.h>
@@ -840,10 +841,6 @@ int main(int argc, char** argv) {
                                      routeEnvironment.value("actual_page_size_bytes", json(nullptr))}});
             }
         }
-        if (failures.empty() && parserMode != "server-parser") {
-            failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the C++ native tool; it fails closed"}});
-        }
-
         if (failures.empty()) {
             const auto statements = sbchunk::splitStatements(readInput(required(args, "--input")));
             std::string scriptName = std::filesystem::path(required(args, "--input")).filename().string();
@@ -904,7 +901,46 @@ int main(int argc, char** argv) {
                         }
                         conn.setCopyOutputStream(&copyOutput);
                     }
-                    if (statementReturnsRows(sql)) {
+                    const bool useDriverSblrRoute =
+                        parserMode != "server-parser" && !copyStatement;
+                    if (useDriverSblrRoute) {
+                        scratchbird::client::ResultSet compileResults;
+                        status = conn.executeQuery(
+                            sql,
+                            &compileResults,
+                            static_cast<uint8_t>(scratchbird::protocol::kQueryFlagReturnSblr),
+                            &ctx);
+                        api["executeQuery"]++;
+                        api["returnSblr"]++;
+                        if (status == scratchbird::core::Status::OK) {
+                            scratchbird::protocol::SblrCompiled compiled;
+                            if (!conn.takeLastSblrCompiled(&compiled) ||
+                                compiled.bytecode.empty()) {
+                                status = scratchbird::core::Status::PROTOCOL_VIOLATION;
+                                ctx.sqlstate = scratchbird::core::SQLSTATE_PROTOCOL_VIOLATION;
+                                ctx.message =
+                                    "parser did not return compiled SBLR for " + parserMode;
+                            } else {
+                                status = conn.executeSblr(
+                                    compiled.hash,
+                                    compiled.bytecode,
+                                    &results,
+                                    &ctx);
+                                api["executeSblr"]++;
+                                api["execute"]++;
+                                rowsAffected = results.getRowsAffected();
+                                appendJsonl(paths.at("wire"),
+                                            {{"event", "driver_sblr_execute"},
+                                             {"statement_id", statementId},
+                                             {"parser_mode", parserMode},
+                                             {"sblr_hash", std::to_string(compiled.hash)},
+                                             {"sblr_version", compiled.version},
+                                             {"sblr_bytes", compiled.bytecode.size()},
+                                             {"engine_sql_text_execution", false},
+                                             {"mga_authority", "engine"}});
+                            }
+                        }
+                    } else if (statementReturnsRows(sql)) {
                         status = conn.executeQuery(sql, &results, &ctx);
                         api["executeQuery"]++;
                         api["execute"]++;

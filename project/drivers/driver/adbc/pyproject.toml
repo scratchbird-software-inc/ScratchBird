@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratchbird-adbc"
+version = "0.0.0"
+description = "ScratchBird ADBC host-route driver lane"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]

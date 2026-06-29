@@ -377,6 +377,7 @@ def validate_compiled_sample(
     suite_root: Path,
     output_root: Path,
     manifest: dict[str, Any],
+    surface_profile: str,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -394,6 +395,7 @@ def validate_compiled_sample(
                 "__SB_ARTIFACT_ROOT__": str((output_root / "artifacts").resolve()),
             },
             namespace_ancestor_mode="chain",
+            surface_profile=surface_profile,
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         return [f"compiler:sample_compile_failed:{exc}"]
@@ -485,6 +487,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suite-root", type=Path, default=SUITE_ROOT)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--surface-profile",
+        choices=("non-cluster-beta", "cluster-release"),
+        default="non-cluster-beta",
+    )
     return parser.parse_args()
 
 
@@ -525,7 +532,15 @@ def main() -> int:
             errors.extend(validate_language_manifest(language_manifest, manifest))
             errors.extend(validate_builtin_fixture_sources(repo_root, manifest, language_manifest))
         errors.extend(validate_exhaustive_sources(repo_root, manifest))
-        errors.extend(validate_compiled_sample(repo_root, suite_root, output_root, manifest))
+        errors.extend(
+            validate_compiled_sample(
+                repo_root,
+                suite_root,
+                output_root,
+                manifest,
+                args.surface_profile,
+            )
+        )
         if ipar_schema:
             errors.extend(validate_ipar_schema(ipar_schema, manifest))
             errors.extend(validate_ipar_jsonl_fixture(suite_root, ipar_schema))

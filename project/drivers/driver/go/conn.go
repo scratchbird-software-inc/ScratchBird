@@ -622,6 +622,15 @@ func (c *Conn) handleAuthContinue(method authMethod, data []byte, scram *scramCl
 			return nil, err
 		}
 		return scram, nil
+	case authToken:
+		payload, err := resolveTokenAuthPayload(c.config)
+		if err != nil {
+			return scram, err
+		}
+		if err := c.sendMessage(msgAuthResponse, payload, 0, true); err != nil {
+			return scram, err
+		}
+		return scram, nil
 	default:
 		return scram, &Error{Kind: ErrNotSupported, Message: "unsupported auth continuation", SQLState: "0A000"}
 	}
@@ -996,10 +1005,15 @@ func (c *Conn) sendSimpleQuery(sql string, ctx context.Context) error {
 }
 
 func (c *Conn) sendSimpleQueryWithMaxRows(sql string, ctx context.Context, maxRows uint32) error {
+	return c.sendSimpleQueryWithFlags(sql, ctx, maxRows, 0)
+}
+
+func (c *Conn) sendSimpleQueryWithFlags(sql string, ctx context.Context, maxRows uint32, extraFlags uint32) error {
 	flags := uint32(0)
 	if c.config.BinaryTransfer {
 		flags |= queryFlagBinaryResult
 	}
+	flags |= extraFlags
 	timeoutMs := uint32(0)
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
@@ -1274,6 +1288,40 @@ func (c *Conn) LastPlan() *queryPlan {
 
 func (c *Conn) LastSblr() *sblrCompiled {
 	return c.lastSblr
+}
+
+// CompileSblr asks the active ScratchBird parser endpoint to lower one SBSQL
+// statement into an admitted SBLR bytecode packet. It does not submit SQL to
+// the engine; callers must execute the returned SBLR through QuerySblr or
+// ExecSblr so the server can perform final admission and authorization.
+func (c *Conn) CompileSblr(ctx context.Context, sql string) (uint64, []byte, error) {
+	if err := c.ensureOpen(ctx); err != nil {
+		return 0, nil, err
+	}
+	span, err := c.beginOperation("compile_sblr", sql)
+	if err != nil {
+		return 0, nil, err
+	}
+	c.lastSblr = nil
+	if err := c.sendSimpleQueryWithFlags(sql, ctx, 0, queryFlagReturnSblr); err != nil {
+		c.endOperation(span, false)
+		return 0, nil, err
+	}
+	if _, _, _, err := c.drainUntilReady(ctx); err != nil {
+		c.endOperation(span, false)
+		return 0, nil, err
+	}
+	if c.lastSblr == nil || len(c.lastSblr.bytecode) == 0 {
+		c.endOperation(span, false)
+		return 0, nil, &Error{
+			Kind:     ErrConnection,
+			Message:  "parser endpoint did not return SBLR for RETURN_SBLR request",
+			SQLState: "08P01",
+		}
+	}
+	compiled := c.lastSblr
+	c.endOperation(span, true)
+	return compiled.hash, append([]byte(nil), compiled.bytecode...), nil
 }
 
 func (c *Conn) clearBorrowReuseState() {
