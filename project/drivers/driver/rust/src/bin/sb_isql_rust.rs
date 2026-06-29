@@ -259,13 +259,6 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             }));
         }
     }
-    if failures.is_empty() && args.parser_mode != "server-parser" {
-        failures.push(json!({
-            "statement_id": "parser_mode",
-            "message": format!("{} is not yet implemented by the Rust native tool; it fails closed", args.parser_mode)
-        }));
-    }
-
     if failures.is_empty() {
         let expected_refusals = load_expected_refusals(&args.expected_refusals)?;
         let script = read_input(&args.input)?;
@@ -300,6 +293,43 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                         row_count: 0,
                         command_tag: "TRANSACTION".to_string(),
                     })
+            } else if args.parser_mode != "server-parser" {
+                let compiled = client.compile_sblr(statement).await?;
+                *api_hits.entry("compile_sblr".to_string()).or_default() += 1;
+                append_jsonl(
+                    &args.transcript,
+                    json!({
+                        "event": "driver_sblr_compile",
+                        "driver": "rust",
+                        "parser_mode": args.parser_mode,
+                        "statement_id": statement_id,
+                        "sblr_hash": compiled.hash,
+                        "sblr_version": compiled.version,
+                        "sblr_bytes": compiled.bytecode.len()
+                    }),
+                )?;
+                let executed = client.execute_sblr(
+                    compiled.hash,
+                    &compiled.bytecode,
+                    &[],
+                ).await;
+                if executed.is_ok() {
+                    *api_hits.entry("execute_sblr".to_string()).or_default() += 1;
+                    append_jsonl(
+                        &args.transcript,
+                        json!({
+                            "event": "driver_sblr_execute",
+                            "driver": "rust",
+                            "parser_mode": args.parser_mode,
+                            "statement_id": statement_id,
+                            "sblr_hash": compiled.hash,
+                            "sblr_version": compiled.version,
+                            "engine_sql_text_execution": false,
+                            "mga_authority": "engine"
+                        }),
+                    )?;
+                }
+                executed
             } else {
                 *api_hits.entry("query_params".to_string()).or_default() += 1;
                 client

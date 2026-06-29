@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec julia --project=/home/dcalford/CliWork/ScratchBird/project/drivers/driver/julia /home/dcalford/CliWork/ScratchBird/project/drivers/driver/julia/tools/sb_isql_julia.jl "$@"

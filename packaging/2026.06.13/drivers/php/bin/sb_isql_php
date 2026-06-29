@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec php /home/dcalford/CliWork/ScratchBird/project/drivers/driver/php/tools/sb_isql_php.php "$@"

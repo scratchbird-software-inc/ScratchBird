@@ -251,6 +251,11 @@ public:
                               ResultSet* results,
                               uint8_t flags,
                               core::ErrorContext* ctx = nullptr);
+    core::Status executeSblr(uint64_t sblr_hash,
+                             const std::vector<uint8_t>& sblr_bytecode,
+                             ResultSet* results,
+                             core::ErrorContext* ctx = nullptr);
+    bool takeLastSblrCompiled(protocol::SblrCompiled* out);
     core::Status execute(const std::string& sql,
                          int64_t* rows_affected = nullptr,
                          core::ErrorContext* ctx = nullptr);

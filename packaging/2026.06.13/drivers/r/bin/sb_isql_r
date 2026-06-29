@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec Rscript /home/dcalford/CliWork/ScratchBird/project/drivers/driver/r/tools/sb_isql_r.R "$@"

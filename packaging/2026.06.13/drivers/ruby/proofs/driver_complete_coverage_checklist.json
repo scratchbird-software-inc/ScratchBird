@@ -1,0 +1,286 @@
+{
+  "command": "driver_complete_coverage_checklist_gate.py",
+  "drivers": [
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:adbc",
+      "driver": "adbc",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:cpp",
+      "driver": "cpp",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:dart",
+      "driver": "dart",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:dotnet",
+      "driver": "dotnet",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:elixir",
+      "driver": "elixir",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:flightsql",
+      "driver": "flightsql",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:go",
+      "driver": "go",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:jdbc",
+      "driver": "jdbc",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:julia",
+      "driver": "julia",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:mojo",
+      "driver": "mojo",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:node",
+      "driver": "node",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:odbc",
+      "driver": "odbc",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:pascal",
+      "driver": "pascal",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:perl",
+      "driver": "perl",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:php",
+      "driver": "php",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:python",
+      "driver": "python",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:r",
+      "driver": "r",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:r2dbc",
+      "driver": "r2dbc",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:ruby",
+      "driver": "ruby",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:rust",
+      "driver": "rust",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    },
+    {
+      "baseline_mapping_exists": true,
+      "comparison_status": "completed",
+      "component_id": "driver:swift",
+      "driver": "swift",
+      "issues": [],
+      "manifest_status": "beta_2",
+      "native_tool_entry_exists": true,
+      "native_tool_file_exists": true,
+      "release_bucket": "release_candidate",
+      "source_path_exists": true
+    }
+  ],
+  "gate_id": "BETA-DTA-GATE-032",
+  "issues": [],
+  "status": "pass",
+  "summary": {
+    "driver_rows_checked": 21,
+    "manifest_driver_rows": 21,
+    "matrix_rows": 21,
+    "status_summary": {
+      "comparison_status": {
+        "completed": 21
+      },
+      "delta_workplan_status": {
+        "completed": 21
+      },
+      "implementation_status": {
+        "verified": 21
+      },
+      "packaging_status": {
+        "verified": 21
+      },
+      "test_status": {
+        "pending": 20,
+        "verified_non_cluster_tls_profile8": 1
+      },
+      "wiki_doc_status": {
+        "completed": 21
+      }
+    }
+  }
+}

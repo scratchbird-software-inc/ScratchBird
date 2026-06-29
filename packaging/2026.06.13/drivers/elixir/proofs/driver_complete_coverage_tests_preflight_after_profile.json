@@ -1,0 +1,142 @@
+{
+  "command": "run_driver_complete_coverage_tests.py",
+  "gate_id": "BETA-DTA-GATE-034",
+  "results": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_native_workplan_coverage_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird"
+      ],
+      "name": "workplan_coverage",
+      "output_tail": [
+        "driver_native_workplan_coverage_gate: OK scripts=39 coverage=208 release_drivers=21"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/full_surface_scripts/validate_full_surface_script_suite.py",
+        "--output-root",
+        "/home/dcalford/CliWork/ScratchBird/build/reports/driver_complete_coverage_full_surface_validation"
+      ],
+      "name": "full_surface_script_suite",
+      "output_tail": [
+        "driver_full_surface_script_suite=passed"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_static_requirement_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--mode",
+        "sblr_uuid_bundle"
+      ],
+      "name": "static_requirement_sblr_uuid_bundle",
+      "output_tail": [
+        "driver_static_requirement_gate sblr_uuid_bundle: OK"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_static_requirement_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--mode",
+        "schema_path_resolution"
+      ],
+      "name": "static_requirement_schema_path_resolution",
+      "output_tail": [
+        "driver_static_requirement_gate schema_path_resolution: OK"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_static_requirement_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--mode",
+        "sblr_uuid_authorization"
+      ],
+      "name": "static_requirement_sblr_uuid_authorization",
+      "output_tail": [
+        "driver_static_requirement_gate sblr_uuid_authorization: OK"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_static_requirement_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--mode",
+        "cache_lifecycle"
+      ],
+      "name": "static_requirement_cache_lifecycle",
+      "output_tail": [
+        "driver_static_requirement_gate cache_lifecycle: OK"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/tests/conformance/drivers/driver_static_requirement_gate.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--mode",
+        "sbsql_language_resource"
+      ],
+      "name": "static_requirement_sbsql_language_resource",
+      "output_tail": [
+        "driver_static_requirement_gate sbsql_language_resource: OK"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    },
+    {
+      "command": [
+        "/usr/bin/python3",
+        "project/drivers/scripts/run_driver_native_full_surface_matrix.py",
+        "--repo-root",
+        "/home/dcalford/CliWork/ScratchBird",
+        "--output",
+        "/home/dcalford/CliWork/ScratchBird/build/reports/driver_complete_coverage_native_matrix.json",
+        "--plan-only",
+        "--surface-profile",
+        "non-cluster-beta"
+      ],
+      "name": "native_full_surface_matrix",
+      "output_tail": [
+        "driver_native_full_surface_matrix=pass drivers=21 combinations=11232 plan_only=True"
+      ],
+      "returncode": 0,
+      "status": "pass"
+    }
+  ],
+  "status": "preflight_pass",
+  "summary": {
+    "all_drivers": true,
+    "commands": 8,
+    "execute_matrix": false,
+    "failed": 0,
+    "no_skip": true,
+    "passed": 8
+  }
+}

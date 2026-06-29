@@ -3340,6 +3340,8 @@ SQLRETURN OdbcConnection::parseConnectionString(const std::string& conn_str) {
                 return SQL_ERROR;
             }
             params_.protocol = normalized;
+        } else if (key == "parser_mode" || key == "parsermode") {
+            params_.parser_mode = value;
         } else if (key == "transport_mode" || key == "transport" || key == "mode") {
             params_.transport_mode = value;
         } else if (key == "ipc_method" || key == "ipcmethod") {
@@ -3535,6 +3537,14 @@ SQLRETURN OdbcConnection::applyDsnConfig(const std::string& dsn_name) {
             return SQL_ERROR;
         }
         params_.protocol = normalized;
+    }
+
+    auto parser_mode = getEntry("parser_mode");
+    if (parser_mode.empty()) {
+        parser_mode = getEntry("parsermode");
+    }
+    if (!parser_mode.empty()) {
+        params_.parser_mode = parser_mode;
     }
 
     auto transport_mode = getEntry("transport_mode");

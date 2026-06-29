@@ -1121,6 +1121,16 @@ public class SBConnection implements Connection {
         protocol.attachCreate(emulationMode, dbName);
     }
 
+    public SBProtocolHandler.SblrCompiledMessage compileSblr(String sql, int timeoutMs) throws SQLException {
+        checkClosed();
+        return protocol.compileSblr(sql, timeoutMs);
+    }
+
+    public SBQueryResult executeSblr(long sblrHash, byte[] bytecode) throws SQLException {
+        checkClosed();
+        return protocol.executeSblr(sblrHash, bytecode, Collections.emptyList(), Collections.emptyList());
+    }
+
     public static SBAuthProbeResult probeAuthSurface(SBConnectionProperties props) throws SQLException {
         if (props == null) {
             throw new SQLException("Connection properties cannot be null", "08001");

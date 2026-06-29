@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST=""
+PASS_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --manifest)
+      if [[ -z "${2:-}" ]]; then
+        echo "error: --manifest requires a file path" >&2
+        exit 2
+      fi
+      MANIFEST="$2"
+      shift 2
+      ;;
+    *)
+      PASS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$MANIFEST" && -n "${SCRATCHBIRD_CONFORMANCE_MANIFEST:-}" ]]; then
+  MANIFEST="$SCRATCHBIRD_CONFORMANCE_MANIFEST"
+fi
+
+if [[ -n "$MANIFEST" ]]; then
+  export SCRATCHBIRD_CONFORMANCE_MANIFEST="$MANIFEST"
+fi
+
+MOJO_PIXI_MANIFEST="${MOJO_PIXI_MANIFEST:-${HOME}/mojo-work/sb-mojo}"
+if command -v pixi >/dev/null 2>&1 && [[ -d "$MOJO_PIXI_MANIFEST" ]]; then
+  MOJO_CMD=(pixi run -m "$MOJO_PIXI_MANIFEST" --executable mojo)
+elif [[ -n "${MOJO_BIN:-}" ]]; then
+  MOJO_CMD=("$MOJO_BIN")
+elif command -v mojo >/dev/null 2>&1; then
+  MOJO_CMD=("$(command -v mojo)")
+else
+  echo "error: mojo executable not found (set MOJO_PIXI_MANIFEST or MOJO_BIN)." >&2
+  exit 127
+fi
+
+if [[ ${#PASS_ARGS[@]} -eq 0 ]]; then
+  "${MOJO_CMD[@]}" run "$SCRIPT_DIR/sbdriver_conformance.mojo"
+else
+  "${MOJO_CMD[@]}" run "$SCRIPT_DIR/sbdriver_conformance.mojo" "${PASS_ARGS[@]}"
+fi

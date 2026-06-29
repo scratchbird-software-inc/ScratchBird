@@ -1,0 +1,11 @@
+{
+  "SBOM": "root-SBOM.json",
+  "component_id": "driver:ruby",
+  "driver": "ruby",
+  "hash": "4673680a6a9dc7a1224e40ea318c9849daf53698fd146e2ab4a8d4d7697f8d0c",
+  "license": "LICENSE.txt",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.driver_support_bundle_manifest.v1"
+}

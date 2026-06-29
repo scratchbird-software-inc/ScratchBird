@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+export PYTHONPATH=/home/dcalford/CliWork/ScratchBird/project/drivers/driver/flightsql/src${PYTHONPATH:+":$PYTHONPATH"}
+exec /usr/bin/python3 /home/dcalford/CliWork/ScratchBird/project/drivers/driver/flightsql/tools/sb_isql_flightsql "$@"

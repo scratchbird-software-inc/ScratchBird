@@ -61,6 +61,7 @@ namespace scratchbird::parser::sbsql {
 namespace {
 namespace datatypes = scratchbird::core::datatypes;
 constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
+constexpr std::uint32_t kQueryFlagReturnSblr = 0x10;
 constexpr std::uint32_t kQueryFlagScriptIngest = 0x80;
 constexpr std::uint32_t kQueryFlagScriptSizeHint = 0x100;
 constexpr std::uint32_t kQueryFlagScriptSummaryResult = 0x200;
@@ -153,6 +154,7 @@ enum Msg : std::uint8_t {
   kParseComplete = 0x4a,
   kBindComplete = 0x4b,
   kCloseComplete = 0x4c,
+  kSblrCompiled = 0x57,
   kParameterStatus = 0x4f,
   kParameterDescription = 0x50,
   kCopyInResponse = 0x51,
@@ -2279,11 +2281,19 @@ bool IsTriggerAwarePathRequiredDiagnostic(std::string_view diagnostic_code,
                                           std::string_view diagnostic_text) {
   return diagnostic_code.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
              std::string_view::npos ||
+         diagnostic_code.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_CANONICAL_ROWS_REQUIRED") !=
+             std::string_view::npos ||
          diagnostic_detail.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
+             std::string_view::npos ||
+         diagnostic_detail.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_CANONICAL_ROWS_REQUIRED") !=
              std::string_view::npos ||
          diagnostic_detail.find("trigger_aware_path_required") !=
              std::string_view::npos ||
+         diagnostic_detail.find("trigger_aware_canonical_rows_required") !=
+             std::string_view::npos ||
          diagnostic_text.find("trigger_aware_path_required") !=
+             std::string_view::npos ||
+         diagnostic_text.find("trigger_aware_canonical_rows_required") !=
              std::string_view::npos;
 }
 
@@ -4217,6 +4227,17 @@ std::vector<std::uint8_t> CommandCompletePayload(std::uint64_t rows, std::string
   return out;
 }
 
+std::vector<std::uint8_t> SblrCompiledPayload(const PipelineResult& result) {
+  std::vector<std::uint8_t> out;
+  const std::string_view payload = result.sblr_payload;
+  out.reserve(16 + payload.size());
+  PutU64(&out, result.statement_hash);
+  PutU32(&out, 3);
+  PutU32(&out, static_cast<std::uint32_t>(payload.size()));
+  out.insert(out.end(), payload.begin(), payload.end());
+  return out;
+}
+
 void PutCanonicalTypeRef(std::vector<std::uint8_t>* out, std::uint32_t oid) {
   std::uint16_t family = 0;
   std::uint16_t code = 0;
@@ -4730,12 +4751,9 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
         FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
     const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
     const std::string diagnostic_text = FirstDiagnosticText(result.messages);
-    if (diagnostic_code.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
-            std::string::npos ||
-        diagnostic_detail.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
-            std::string::npos ||
-        diagnostic_detail.find("trigger_aware_path_required") != std::string::npos ||
-        diagnostic_text.find("trigger_aware_path_required") != std::string::npos) {
+    if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
+                                             diagnostic_detail,
+                                             diagnostic_text)) {
       state->simple_insert_rowset_cache.erase(presented_shape_key);
       if (command_accepted != nullptr) *command_accepted = true;
       RefreshWireTransactionStateFromSession(*session, state);
@@ -5289,12 +5307,9 @@ std::optional<bool> ExecutePreparedInsertRowset(SbsqlTestWireSession* session,
         FirstDiagnosticCode(result.messages, "SBWP.PREPARED_ROWSET.EXECUTION_REJECTED");
     const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");
     const std::string diagnostic_text = FirstDiagnosticText(result.messages);
-    if (diagnostic_code.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
-            std::string::npos ||
-        diagnostic_detail.find("DML.NATIVE_BULK_INGEST.TRIGGER_AWARE_PATH_REQUIRED") !=
-            std::string::npos ||
-        diagnostic_detail.find("trigger_aware_path_required") != std::string::npos ||
-        diagnostic_text.find("trigger_aware_path_required") != std::string::npos) {
+    if (IsTriggerAwarePathRequiredDiagnostic(diagnostic_code,
+                                             diagnostic_detail,
+                                             diagnostic_text)) {
       RefreshWireTransactionStateFromSession(*session, state);
       const std::string trigger_aware_envelope =
           BuildInsertRowsExecuteEnvelope(rowset, 0, rowset.rows.size());
@@ -5666,6 +5681,48 @@ bool ExecuteScriptOrSql(SbsqlTestWireSession* session,
                                    0,
                                    QueryPayloadRequestsScriptIngest(query) ? "script_ingest"
                                                                            : "semicolon_detected");
+  }
+  if ((query.flags & kQueryFlagReturnSblr) != 0) {
+    if (statements.size() > 1) {
+      return SendError(io,
+                       state,
+                       "0A000",
+                       "SBWP.RETURN_SBLR.MULTI_STATEMENT_REFUSED",
+                       "RETURN_SBLR lowers exactly one statement; submit a chain as separate admitted SBLR frames") &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+    const std::string_view sql =
+        statements.empty() ? std::string_view(query.sql)
+                           : std::string_view(statements.front());
+    auto lowered = session->RunPipeline(sql, false, false, 0, false);
+    WriteParserPhaseTraceIfEnabled(phase_trace,
+                                   "execute_script_or_sql",
+                                   "return_sblr_lower_only",
+                                   total_started,
+                                   sql.size(),
+                                   1,
+                                   lowered.sblr_payload.size(),
+                                   lowered.accepted ? "accepted" : "rejected");
+    if (!lowered.accepted || lowered.messages.has_errors() ||
+        lowered.sblr_payload.empty()) {
+      return SendError(io,
+                       state,
+                       "42000",
+                       FirstDiagnosticText(lowered.messages),
+                       FirstDiagnosticCode(lowered.messages,
+                                           "SBWP.RETURN_SBLR.LOWERING_REJECTED")) &&
+             (!send_ready || SendReady(io, state, ReadyReason::kErrorRecovered));
+    }
+    if (!SendFrame(io, state, kSblrCompiled, SblrCompiledPayload(lowered))) {
+      return false;
+    }
+    if (!SendFrame(io,
+                   state,
+                   kCommandComplete,
+                   CommandCompletePayload(0, "SBLR_COMPILED"))) {
+      return false;
+    }
+    return !send_ready || SendReady(io, state, ReadyReason::kCommandComplete);
   }
   if (statements.size() <= 1) {
     const std::string_view sql =

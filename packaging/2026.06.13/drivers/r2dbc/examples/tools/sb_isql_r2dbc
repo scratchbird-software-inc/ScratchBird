@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Native ScratchBird R2DBC host-route tool.
+
+Source-visible host API tokens: ConnectionFactory, createStatement, execute,
+Publisher, Result.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+
+ARGUMENT_TOKENS = (
+    "--database", "--host", "--port", "--user", "--password", "--role",
+    "--sslmode", "--sslrootcert", "--sslcert", "--sslkey", "--ipc-path",
+    "--route", "--parser-mode", "--page-size", "--namespace", "--input",
+    "--output", "--error", "--diagnostics", "--metrics", "--transcript",
+    "--summary", "--stop-on-error", "--expected-refusals",
+    "--statement-timeout-ms", "--fetch-size", "--concurrency-worker",
+    "--create-database", "--create-emulation-mode",
+    "--language-resource-pack", "--language-resource-identity",
+    "--language-resource-hash", "--language-profile", "--syntax-profile",
+    "--topology-profile", "--standard-english-fallback",
+)
+NATIVE_API_TOKENS = ("ConnectionFactory", "createStatement", "execute", "Publisher", "Result")
+
+
+def main() -> int:
+    lane_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(lane_root / "src"))
+    from scratchbird_r2dbc.contract_tool import main as tool_main
+
+    return tool_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

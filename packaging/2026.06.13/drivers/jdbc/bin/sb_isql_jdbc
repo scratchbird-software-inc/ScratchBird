@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec java -cp /home/dcalford/CliWork/ScratchBird/project/drivers/driver/jdbc/build/classes/java/main com.scratchbird.jdbc.tools.SBIsqlJdbc "$@"

@@ -37,19 +37,24 @@ TOOL_MATRIX_REL = Path("project/tests/conformance/drivers/native_tool_matrix.jso
 DEFAULT_MANIFEST_REL = Path("build/reports/driver_native_tool_binaries.json")
 RELEASE_BUCKETS = {"release_candidate", "release_supported", "supported"}
 CORE_DRIVER_ORDER = [
+    "adbc",
     "cpp",
     "dart",
     "dotnet",
     "elixir",
+    "flightsql",
     "go",
     "jdbc",
+    "julia",
     "mojo",
     "node",
     "odbc",
     "pascal",
+    "perl",
     "php",
     "python",
     "r",
+    "r2dbc",
     "ruby",
     "rust",
     "swift",
@@ -160,6 +165,51 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
             repo_root,
             [Path(sys.executable).name],
             "python_launcher",
+        )
+    if driver == "adbc":
+        return DriverTool(
+            driver,
+            exe,
+            [sys.executable, str(repo_root / "project" / "drivers" / "driver" / "adbc" / "tools" / "sb_isql_adbc")],
+            repo_root,
+            [Path(sys.executable).name],
+            "python_launcher",
+        )
+    if driver == "flightsql":
+        return DriverTool(
+            driver,
+            exe,
+            [sys.executable, str(repo_root / "project" / "drivers" / "driver" / "flightsql" / "tools" / "sb_isql_flightsql")],
+            repo_root,
+            [Path(sys.executable).name],
+            "python_launcher",
+        )
+    if driver == "r2dbc":
+        return DriverTool(
+            driver,
+            exe,
+            [sys.executable, str(repo_root / "project" / "drivers" / "driver" / "r2dbc" / "tools" / "sb_isql_r2dbc")],
+            repo_root,
+            [Path(sys.executable).name],
+            "python_launcher",
+        )
+    if driver == "julia":
+        return DriverTool(
+            driver,
+            exe,
+            ["julia", "--project=" + str(repo_root / "project" / "drivers" / "driver" / "julia"), str(repo_root / "project" / "drivers" / "driver" / "julia" / "tools" / "sb_isql_julia.jl")],
+            repo_root,
+            ["julia"],
+            "julia_launcher",
+        )
+    if driver == "perl":
+        return DriverTool(
+            driver,
+            exe,
+            ["perl", "-I" + str(repo_root / "project" / "drivers" / "driver" / "perl" / "lib"), str(repo_root / "project" / "drivers" / "driver" / "perl" / "tools" / "sb_isql_perl.pl")],
+            repo_root,
+            ["perl"],
+            "perl_launcher",
         )
     if driver == "go":
         return DriverTool(
@@ -275,12 +325,17 @@ def write_launcher(path: Path, tool: DriverTool) -> None:
         f"cd {shlex.quote(str(tool.cwd))}",
     ]
     if tool.kind == "python_launcher":
-        python_src = tool.cwd / "project" / "drivers" / "driver" / "python" / "src"
+        python_driver = tool.driver if tool.driver in {"adbc", "flightsql", "r2dbc"} else "python"
+        python_src = tool.cwd / "project" / "drivers" / "driver" / python_driver / "src"
         body.append(
             "export PYTHONPATH="
             + shlex.quote(str(python_src))
             + '${PYTHONPATH:+":$PYTHONPATH"}'
         )
+    if tool.kind == "perl_launcher":
+        body.append('if [ -d "$HOME/perl5/lib/perl5" ]; then')
+        body.append('  export PERL5LIB="$HOME/perl5/lib/perl5${PERL5LIB:+:$PERL5LIB}"')
+        body.append("fi")
     body.extend(
         [
             f"exec {quote_command(tool.command)} \"$@\"",

@@ -1,0 +1,27 @@
+{
+  "binary": "bin/sb_isql_mojo",
+  "binary_sha256": "db507306ef6e7a05bc3006c2a47a50eeae08be570484c6ef82352ce900b9563c",
+  "component_id": "driver:mojo",
+  "driver": "mojo",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/proof_summary.json"
+  ],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.driver_release_package_manifest.v1",
+  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_path": "project/drivers/driver/mojo",
+  "support_materials": [
+    "support/README.md",
+    "support/BASELINE_REQUIREMENT_MAPPING.md",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0007-7000-8000-000000000007"
+}

@@ -1,0 +1,11 @@
+{
+  "SBOM": "root-SBOM.json",
+  "component_id": "driver:cpp",
+  "driver": "cpp",
+  "hash": "888b3b3273d4b69713e2afe4fe66231f0da35b552bc37d10aad018e280831466",
+  "license": "LICENSE.txt",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.driver_support_bundle_manifest.v1"
+}

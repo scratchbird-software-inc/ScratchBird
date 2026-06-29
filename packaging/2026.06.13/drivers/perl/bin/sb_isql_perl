@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+if [ -d "$HOME/perl5/lib/perl5" ]; then
+  export PERL5LIB="$HOME/perl5/lib/perl5${PERL5LIB:+:$PERL5LIB}"
+fi
+exec perl -I/home/dcalford/CliWork/ScratchBird/project/drivers/driver/perl/lib /home/dcalford/CliWork/ScratchBird/project/drivers/driver/perl/tools/sb_isql_perl.pl "$@"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec ruby /home/dcalford/CliWork/ScratchBird/project/drivers/driver/ruby/tools/sb_isql_ruby.rb "$@"

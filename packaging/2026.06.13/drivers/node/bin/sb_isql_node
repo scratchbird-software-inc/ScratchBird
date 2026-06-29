@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec node /home/dcalford/CliWork/ScratchBird/project/drivers/driver/node/dist/tools/sb-isql-node.js "$@"

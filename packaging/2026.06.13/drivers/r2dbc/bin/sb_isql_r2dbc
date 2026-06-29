@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+export PYTHONPATH=/home/dcalford/CliWork/ScratchBird/project/drivers/driver/r2dbc/src${PYTHONPATH:+":$PYTHONPATH"}
+exec /usr/bin/python3 /home/dcalford/CliWork/ScratchBird/project/drivers/driver/r2dbc/tools/sb_isql_r2dbc "$@"

@@ -1,0 +1,13 @@
+{
+  "component_id": "driver:pascal",
+  "coverage_proof_status": "preflight_pass",
+  "driver": "pascal",
+  "proof_files": [
+    "driver_complete_coverage_checklist.json",
+    "driver_complete_coverage_tests.json",
+    "driver_complete_coverage_tests_preflight_after_profile.json",
+    "driver_complete_delta_implementation.json",
+    "driver_wiki_documentation.json"
+  ],
+  "schema_id": "scratchbird.driver_package_proof_summary.v1"
+}

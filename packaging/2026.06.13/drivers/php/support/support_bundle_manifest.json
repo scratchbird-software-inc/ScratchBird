@@ -1,0 +1,11 @@
+{
+  "SBOM": "root-SBOM.json",
+  "component_id": "driver:php",
+  "driver": "php",
+  "hash": "e6296688fdbff9528d6760dcafd8e4c96a5c26b6d1280e63969f6189e5bf09bd",
+  "license": "LICENSE.txt",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.driver_support_bundle_manifest.v1"
+}

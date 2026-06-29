@@ -1,0 +1,15 @@
+name = "ScratchBird"
+uuid = "019e12a0-0027-7000-8000-000000000027"
+version = "0.1.0"
+
+[deps]
+DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
+MbedTLS = "739be429-bea8-5141-9913-cc70e7f3736d"
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+
+[compat]
+DBInterface = "2"
+MbedTLS = "1"
+Tables = "1"
+julia = "1.9"

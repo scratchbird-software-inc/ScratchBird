@@ -10,6 +10,8 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 
 namespace scratchbird::engine::internal_api {
@@ -19,9 +21,52 @@ namespace scratchbird::engine::internal_api {
 // behavior, but they cannot bypass security, UUID/catalog identity, SBLR, MGA,
 // transaction, or engine-owned execution authority.
 
-inline bool EngineExtensionOptionContains(const EngineApiRequest& request, const std::string& token) {
+inline std::string EngineExtensionLowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+inline bool EngineExtensionExplicitBoolOption(const std::string& option,
+                                              const std::string& key) {
+  const std::string lowered = EngineExtensionLowerAscii(option);
+  if (lowered == key) { return true; }
+  const std::string prefix = key + ":";
+  if (lowered.rfind(prefix, 0) != 0) { return false; }
+  const std::string value = lowered.substr(prefix.size());
+  return value == "true" || value == "1" || value == "yes" ||
+         value == "required" || value == "enabled";
+}
+
+inline bool EngineExtensionExplicitValueOption(const std::string& option,
+                                               const std::string& key,
+                                               const std::string& expected) {
+  const std::string lowered = EngineExtensionLowerAscii(option);
+  const std::string prefix = key + ":";
+  return lowered.rfind(prefix, 0) == 0 &&
+         lowered.substr(prefix.size()) == expected;
+}
+
+inline bool EngineExtensionOptionContains(const EngineApiRequest& request,
+                                          const std::string& token) {
+  const std::string key = EngineExtensionLowerAscii(token);
   for (const auto& option : request.option_envelopes) {
-    if (option.find(token) != std::string::npos) { return true; }
+    if (EngineExtensionExplicitBoolOption(option, key)) { return true; }
+    if (key == "cluster" &&
+        (EngineExtensionExplicitBoolOption(option, "requires_cluster_authority") ||
+         EngineExtensionExplicitBoolOption(option, "cluster_authority") ||
+         EngineExtensionExplicitValueOption(option, "scope", "cluster") ||
+         EngineExtensionExplicitValueOption(option, "authority_domain", "cluster") ||
+         EngineExtensionExplicitValueOption(option, "deployment_scope", "cluster") ||
+         EngineExtensionExplicitValueOption(option, "execution_scope", "cluster"))) {
+      return true;
+    }
+    if (key == "distributed" &&
+        (EngineExtensionExplicitBoolOption(option, "distributed_execution") ||
+         EngineExtensionExplicitValueOption(option, "execution_scope", "distributed"))) {
+      return true;
+    }
   }
   return false;
 }

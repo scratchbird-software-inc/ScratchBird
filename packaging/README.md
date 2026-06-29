@@ -37,3 +37,20 @@ Verification command:
 python3 project/tools/release/verify_prerelease_packaging_bundle.py \
   packaging/2026.06.13
 ```
+
+Driver promotion command:
+
+```bash
+export SB_DRIVER_BETA_MATRIX=/path/to/DRIVER_COMPLETE_COVERAGE_CHECKLIST_MATRIX.csv
+python3 packaging/scripts/promote_driver_release_artifacts.py \
+  --matrix "$SB_DRIVER_BETA_MATRIX"
+```
+
+Driver promotion verification:
+
+```bash
+export SB_DRIVER_BETA_MATRIX=/path/to/DRIVER_COMPLETE_COVERAGE_CHECKLIST_MATRIX.csv
+python3 packaging/scripts/promote_driver_release_artifacts.py \
+  --verify-only \
+  --matrix "$SB_DRIVER_BETA_MATRIX"
+```

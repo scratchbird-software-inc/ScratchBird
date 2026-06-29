@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec elixir /home/dcalford/CliWork/ScratchBird/project/drivers/driver/elixir/tools/sb_isql_elixir.exs "$@"

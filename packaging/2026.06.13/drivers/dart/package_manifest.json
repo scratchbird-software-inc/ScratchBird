@@ -1,0 +1,27 @@
+{
+  "binary": "bin/sb_isql_dart",
+  "binary_sha256": "418f3b9831903266520e70cda01b55ca56638341c05f10e4f0efcab2f18cd9c5",
+  "component_id": "driver:dart",
+  "driver": "dart",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/proof_summary.json"
+  ],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.driver_release_package_manifest.v1",
+  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_path": "project/drivers/driver/dart",
+  "support_materials": [
+    "support/README.md",
+    "support/BASELINE_REQUIREMENT_MAPPING.md",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0002-7000-8000-000000000002"
+}

@@ -26,13 +26,13 @@ SESSION SETTING TARGET search_path;
 SESSION SETTING STMT set;
 SHOW SESSIONS;
 
-CREATE DATABASE sbdfs093_lifecycle;
-OPEN DATABASE sbdfs093_lifecycle;
-ALTER DATABASE sbdfs093_lifecycle SET MAINTENANCE WITH EVIDENCE;
-MAINTENANCE DATABASE sbdfs093_lifecycle;
-REPAIR DATABASE sbdfs093_lifecycle WITH PLAN record_verified_repair_evidence;
-SHUTDOWN DATABASE sbdfs093_lifecycle;
-DROP DATABASE sbdfs093_lifecycle LOGICAL;
+CREATE DATABASE sbdfs093___SB_LANE_ID___lifecycle;
+OPEN DATABASE sbdfs093___SB_LANE_ID___lifecycle;
+ALTER DATABASE sbdfs093___SB_LANE_ID___lifecycle SET MAINTENANCE WITH EVIDENCE;
+MAINTENANCE DATABASE sbdfs093___SB_LANE_ID___lifecycle;
+REPAIR DATABASE sbdfs093___SB_LANE_ID___lifecycle WITH PLAN record_verified_repair_evidence;
+SHUTDOWN DATABASE sbdfs093___SB_LANE_ID___lifecycle;
+DROP DATABASE sbdfs093___SB_LANE_ID___lifecycle LOGICAL;
 
 MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack;
 SHOW MIGRATIONS;

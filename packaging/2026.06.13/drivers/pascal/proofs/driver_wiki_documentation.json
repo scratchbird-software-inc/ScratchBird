@@ -1,0 +1,35 @@
+{
+  "command": "verify_driver_wiki_documentation.py",
+  "gate_id": "BETA-DTA-GATE-035",
+  "issues": [],
+  "status": "pass",
+  "summary": {
+    "documentation_files_checked": [
+      "Driver-Baseline-Coverage.md",
+      "Client-Drivers.md"
+    ],
+    "manifest_driver_rows": 21,
+    "matrix_rows": 21,
+    "status_summary": {
+      "comparison_status": {
+        "completed": 21
+      },
+      "delta_workplan_status": {
+        "completed": 21
+      },
+      "implementation_status": {
+        "pending": 21
+      },
+      "packaging_status": {
+        "pending": 21
+      },
+      "test_status": {
+        "pending": 21
+      },
+      "wiki_doc_status": {
+        "completed": 21
+      }
+    },
+    "wiki_root": "/home/dcalford/CliWork/ScratchBird.wiki"
+  }
+}

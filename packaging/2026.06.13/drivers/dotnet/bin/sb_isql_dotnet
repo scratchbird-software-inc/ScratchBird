@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/dcalford/CliWork/ScratchBird
+exec dotnet /home/dcalford/CliWork/ScratchBird/build/drivers/driver/dotnet/publish/SBIsqlDotNet.dll "$@"

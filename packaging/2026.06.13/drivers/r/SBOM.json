@@ -1,0 +1,393 @@
+{
+  "component_id": "driver:r",
+  "components": [
+    {
+      "bytes": 172,
+      "path": "bin/sb_isql_r",
+      "sha256": "9851a2a41d130d2759870698cfa5dd39b97056c9cb3213336cee044418620107"
+    },
+    {
+      "bytes": 289,
+      "path": "examples/README.md",
+      "sha256": "4e66b3ac0263f42e930330b73867cfdbfae18c4059113b9a8d2473f4f9809edf"
+    },
+    {
+      "bytes": 7666,
+      "path": "examples/tests/testthat/test_auth_bootstrap.R",
+      "sha256": "c96f4b860fe706cd611fe245fec4287082ede16d1b36be8e8d4bdfbcd8a9b038"
+    },
+    {
+      "bytes": 3091,
+      "path": "examples/tests/testthat/test_config.R",
+      "sha256": "3ff9bfadfbf3a2be35896d7c274288e8cd6149cfcd0976826f54ddad16dd76fa"
+    },
+    {
+      "bytes": 4399,
+      "path": "examples/tests/testthat/test_conn_protocol.R",
+      "sha256": "a18733a841f53fcbb50684ee0dab180589c30ae4dcaf3777e469245c93ebeb10"
+    },
+    {
+      "bytes": 3410,
+      "path": "examples/tests/testthat/test_error_parity.R",
+      "sha256": "e32214947d80e04e7523ca4e0f1b234680fad4454d0e5d659b22c50d971955f7"
+    },
+    {
+      "bytes": 6926,
+      "path": "examples/tests/testthat/test_exec_lifecycle.R",
+      "sha256": "d21b54f6723a1a631408293006fe5d4b86d2cfc0c4e968feb44b5428da35548f"
+    },
+    {
+      "bytes": 8972,
+      "path": "examples/tests/testthat/test_integration.R",
+      "sha256": "cbe55df5ec6ae1408aebe4b948bd94ed923793f226684c4c43378a1b7fc95ba1"
+    },
+    {
+      "bytes": 5412,
+      "path": "examples/tests/testthat/test_metadata_execution.R",
+      "sha256": "508757914f0f78747d66e0d770df5717a7511f992310dc7facf48a88a0bb1d53"
+    },
+    {
+      "bytes": 2383,
+      "path": "examples/tests/testthat/test_metadata_recursive_schema.R",
+      "sha256": "9b39d0f8364fd0256ba0f1fa2099ba323a99c559334660ecee265b3539911b6d"
+    },
+    {
+      "bytes": 5820,
+      "path": "examples/tests/testthat/test_resilience_lifecycle.R",
+      "sha256": "68e322c5d2e9c90c9a72bdac21f0d0ad1cbe1ba8c81e9cb58111ea87f52c35be"
+    },
+    {
+      "bytes": 2069,
+      "path": "examples/tests/testthat/test_sql.R",
+      "sha256": "afe0c5c554a34992e238e723721cb0a1691d6658d3f5cc0c2c73551f05e69593"
+    },
+    {
+      "bytes": 661,
+      "path": "examples/tests/testthat/test_transport_tls.R",
+      "sha256": "b26967b89e6fd8a3faa5ec48381de5c00136610ec0cc2654c8d7479479514b15"
+    },
+    {
+      "bytes": 12456,
+      "path": "examples/tests/testthat/test_txn_exec_parity.R",
+      "sha256": "968857abcad117f600b300bd28fb753f0be5af0424742338b333b351ee35e7d4"
+    },
+    {
+      "bytes": 5774,
+      "path": "examples/tests/testthat/test_types.R",
+      "sha256": "0487b408148664c74cc3560b7954c6b1cd6511d390677c85bb321ebc04ffc433"
+    },
+    {
+      "bytes": 353,
+      "path": "examples/tests/testthat.R",
+      "sha256": "45f6965a9b6e03c5af7d640251f4e900144885d71accaedd7b66e5926b53e6c5"
+    },
+    {
+      "bytes": 23180,
+      "path": "examples/tools/sb_isql_r.R",
+      "sha256": "d25c81a5b2c2052d918a799cbc1e4942b3060e8aa736d662e241903cef1ba84d"
+    },
+    {
+      "bytes": 16726,
+      "path": "legal/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "legal/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 1864,
+      "path": "legal/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 935,
+      "path": "package_manifest.json",
+      "sha256": "cecacd0b9791a735c12b18b47eabfaa5dc155d4e31cd0093173de6d40331a6c5"
+    },
+    {
+      "bytes": 8384,
+      "path": "proofs/driver_complete_coverage_checklist.json",
+      "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
+    },
+    {
+      "bytes": 4101,
+      "path": "proofs/driver_complete_coverage_tests.json",
+      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+    },
+    {
+      "bytes": 4158,
+      "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
+      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+    },
+    {
+      "bytes": 10830,
+      "path": "proofs/driver_complete_delta_implementation.json",
+      "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
+    },
+    {
+      "bytes": 761,
+      "path": "proofs/driver_wiki_documentation.json",
+      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+    },
+    {
+      "bytes": 424,
+      "path": "proofs/proof_summary.json",
+      "sha256": "e468c6d304967ec1f1668432d0e9f7160c20271ea0f01a898680a2ecd20f95a3"
+    },
+    {
+      "bytes": 4992,
+      "path": "resources/sbsql-language-resource-pack/hashes.sha256",
+      "sha256": "4edfd9da5c482fe7d96545a992a179fb32ff2e824f4a07e29595ff314f3bd190"
+    },
+    {
+      "bytes": 9888,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+      "sha256": "a7a30e7650ad7d4f2402bf3ab502d37cb8ff8b0dde171752320ee288aaab9ec2"
+    },
+    {
+      "bytes": 621,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.sig",
+      "sha256": "d87565f20b39b465f18e464983255a0d61fec596edc6026ca43119750a10531f"
+    },
+    {
+      "bytes": 4413637,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.json",
+      "sha256": "45fa541bbbd94583109c357141e228a36a700a844ae30cfda7fca1a2878a1d4a"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.schema.json",
+      "sha256": "0b8544561fc29d692dec80b0201e2e5666fcad4c3205d15aee29bbbc15d6d741"
+    },
+    {
+      "bytes": 34811,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.json",
+      "sha256": "5006c7c7ee277f78faa90d578d7648a74f26b5adcb175c92ea7de7fc39ef0a85"
+    },
+    {
+      "bytes": 187,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.schema.json",
+      "sha256": "ea78ce9c707af7fe8891414c2b6c57428c3e29ce2388b231fa632cb555ed530c"
+    },
+    {
+      "bytes": 1734421,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.jsonl",
+      "sha256": "602455d771dd5d7d3fad3a55515c90fcb7de6514c1f19e3dc0a904987a7e7535"
+    },
+    {
+      "bytes": 216,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.schema.json",
+      "sha256": "a76f533f14a2c990b832acfcbfea9afccba451939d70278f2a1e87707535d0ad"
+    },
+    {
+      "bytes": 435,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-style-guide.en-US.json",
+      "sha256": "07c8cfabc34fdb961fc54f9cf4ca8e63228e425a9fea5502629193ded5122143"
+    },
+    {
+      "bytes": 787,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.json",
+      "sha256": "f3f77403977732ccf54db7325934d4a729c87927c5815f5d0aa6666f645e3f4c"
+    },
+    {
+      "bytes": 168,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.schema.json",
+      "sha256": "3cce77cf8740259bdedb0b20676f649639226a73e676dceec4889cb133a2c0b9"
+    },
+    {
+      "bytes": 18358,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.json",
+      "sha256": "69ea6801e45dcb95030bef66862e851a7b59eb429c4c93dfe3f3eb0037909179"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.schema.json",
+      "sha256": "dfb1f43eed7e1858e9f638bc08cdbe2c2e4bec00ec66d1eca9d9ddf7c36db832"
+    },
+    {
+      "bytes": 56283,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.json",
+      "sha256": "42beda9743aa8718a6ea7759bf81cdedb9b9aaccfe129b2dbfcac3e76582972e"
+    },
+    {
+      "bytes": 174,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.schema.json",
+      "sha256": "7dbc9080046e0edac31b79a7f9fd210d70974dbbfd11b6eb995b8f2ca7d6e985"
+    },
+    {
+      "bytes": 1190,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-messages.json",
+      "sha256": "b4db2b166510816dbe04da12fa78fcb74d90e3f1cda6fc9a52fd87e07079bc1e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-resource.schema.json",
+      "sha256": "6e400c4dc1599fd2d8aeadb0de7396eceaf7c8b113efcdd163a770173daf6d73"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/dialect-resource.schema.json",
+      "sha256": "863d4d7105cb26b25305b6c488cb803d01a172f200552031e4602d32dcc41455"
+    },
+    {
+      "bytes": 204,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/sbsql-v3-dialect-profile.json",
+      "sha256": "effa8cfbd163c0171bb353edd6d2248fcf9a5d9f3e920fc3cd497fb5899037dd"
+    },
+    {
+      "bytes": 1023749,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/de-DE/language-profile.json",
+      "sha256": "ffc513675f527dcc623f298033a9fda0d6b2e689007df70ffa33b84b6aa0e0ea"
+    },
+    {
+      "bytes": 881751,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-CA/language-profile.json",
+      "sha256": "eab8d6e62212cd7603e427424ab5895e61bda5e42bbb181dcc27e76aaca8c0be"
+    },
+    {
+      "bytes": 881699,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-US/language-profile.json",
+      "sha256": "a75964375e4813cd1451f4e99f1c866d38bf0b433b5d7e8e2034a683cf94850f"
+    },
+    {
+      "bytes": 1062818,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/es-ES/language-profile.json",
+      "sha256": "7052f4a7bacb17750bc2df8963edaa60ec644590de6bb8e91ec7fb2dfdfacf9f"
+    },
+    {
+      "bytes": 1061685,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-CA/language-profile.json",
+      "sha256": "04c20d723f029e11dcc8e358ce4657acf5db458ecff7c4e3dd4983ceeaf5fd80"
+    },
+    {
+      "bytes": 1061696,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-FR/language-profile.json",
+      "sha256": "298c84543566a75a0d908bfaf61d7427283d9d68494718d6c5fce3973a46f521"
+    },
+    {
+      "bytes": 1062582,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/it-IT/language-profile.json",
+      "sha256": "320dd593e44978b61d8232ab2d551cbf6227d415cb99b88d2819ba5159614204"
+    },
+    {
+      "bytes": 208,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/language-profile.schema.json",
+      "sha256": "788a8501cd9829ae045832682a094209dbc82d59723392c881bfbbd574f3523a"
+    },
+    {
+      "bytes": 162,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-resource.schema.json",
+      "sha256": "4eec3c766a496008c836fdfe892066ab71ba14f20730bef9e66004c49ee8e184"
+    },
+    {
+      "bytes": 544676,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-table.json",
+      "sha256": "edabb9045077bd5b3e33bb6986494acf169ced5e5d8ba52a7e44e6fc9c2e0d1c"
+    },
+    {
+      "bytes": 379026,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-grammar.json",
+      "sha256": "96328383c33cfa11fe96c2eef2e898a61f612feb317b4f285db6a23bfb40a74e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-resource.schema.json",
+      "sha256": "fbb5aceb9018fcc924df4ce4d013a1d611a951fa691637deceed02dfa6901828"
+    },
+    {
+      "bytes": 1309,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/native-review-status.json",
+      "sha256": "1678b6cbc25a7fa54acc6f0e3c178609983c4808c4f6716157d9a6725125ec41"
+    },
+    {
+      "bytes": 3237,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.json",
+      "sha256": "42ec0974a57782d86d006c1bf1d5cc97f8cb5f04880bb362ccdb1b9e60bd3a36"
+    },
+    {
+      "bytes": 160,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.schema.json",
+      "sha256": "9148aba1e23d1487c1638073ab94b3bbaf6688acb8b49cea29a7acef2095e6d7"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-resource.schema.json",
+      "sha256": "0ed31a799abf3fb73c676fa580d3f313fa987bc2886d580af4143f2635855be6"
+    },
+    {
+      "bytes": 2155,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-templates.json",
+      "sha256": "10d34d2727ac1dc7dd902cc5e010d104cf20e256589bf97f31360bc63837643e"
+    },
+    {
+      "bytes": 313,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-policy.json",
+      "sha256": "bb092258850c88f3e99ad032d2bb6a9e4221ba0d1ac53220ae1b4f62b282d14e"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-resource.schema.json",
+      "sha256": "16d3e367dcc032682d89d62472fda69e87896a3cb6be555cb9f21e9269b1bff7"
+    },
+    {
+      "bytes": 166,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profile.schema.json",
+      "sha256": "4f87e007054b5f7ecae71d7078ff523c4c01f17de2f4bc933f8f01a922003746"
+    },
+    {
+      "bytes": 11648,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profiles.json",
+      "sha256": "c7071321821a796a33726f9175f0b84d7cc7115c8b8df91a9c164963a69fa47d"
+    },
+    {
+      "bytes": 331,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.json",
+      "sha256": "5f83d357934d33c6927c39402362d453470143a830329664929b464dd81afab1"
+    },
+    {
+      "bytes": 164,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.schema.json",
+      "sha256": "53fdd80098f9938eda12c233e7f70d02582ca2328a3c6738ea40ac4105fd004a"
+    },
+    {
+      "bytes": 14286,
+      "path": "support/BASELINE_REQUIREMENT_MAPPING.md",
+      "sha256": "3766b46fb253b8e72f0acc767c84eed52c7a846b3959512d40bb77c075c568e5"
+    },
+    {
+      "bytes": 16726,
+      "path": "support/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "support/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 4341,
+      "path": "support/README.md",
+      "sha256": "8e6d63776f682e601a8992a885cbd87c6590b71a32e513f43784727b8b0409ad"
+    },
+    {
+      "bytes": 1864,
+      "path": "support/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 1931,
+      "path": "support/root-SBOM.json",
+      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+    },
+    {
+      "bytes": 469,
+      "path": "support/support_bundle_manifest.json",
+      "sha256": "4dffcff29cfd099f7ab09b7a40ebbe9ad3c89dd5f842ab0e49101c746dfcbb00"
+    }
+  ],
+  "driver": "r",
+  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "schema_id": "scratchbird.driver_package_sbom.v1"
+}

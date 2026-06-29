@@ -1240,6 +1240,25 @@ export class Client {
     });
   }
 
+  async compileSblr(text: string, options?: QueryOptions): Promise<SblrCompiledMessage> {
+    this.ensureConnected();
+    this.lastSblr = undefined;
+    await this.query(text, undefined, {
+      ...options,
+      returnSblr: true,
+      maxRows: 0,
+    });
+    const compiled: SblrCompiledMessage | undefined = this.getLastSblr();
+    if (!compiled || compiled.bytecode.length === 0) {
+      throw new ScratchbirdConnectionError("parser endpoint did not return SBLR for RETURN_SBLR request", "08P01");
+    }
+    return {
+      hash: compiled.hash,
+      version: compiled.version,
+      bytecode: Buffer.from(compiled.bytecode),
+    };
+  }
+
   async streamControl(controlType: number, windowSize: number, timeoutMs: number): Promise<void> {
     this.ensureConnected();
     const payload = buildStreamControlPayload(controlType, windowSize, timeoutMs);
@@ -1569,11 +1588,22 @@ export class Client {
         }
         case MessageType.AUTH_CONTINUE: {
           const { method, data } = parseAuthContinue(msg.payload);
-          if (
-            (method !== AuthMethod.SCRAM_SHA_256 && method !== AuthMethod.SCRAM_SHA_512) ||
-            !scram
-          ) {
+          if (method === AuthMethod.TOKEN) {
+            const tokenPayload = resolveTokenAuthPayload(this.config);
+            if (!tokenPayload) {
+              throw new ScratchbirdAuthError(
+                "TOKEN authentication requires authToken, authMethodPayload, authPayloadJson, authPayloadB64, workloadIdentityToken, or proxyPrincipalAssertion",
+                "28000",
+              );
+            }
+            await this.protocol.sendMessage(MessageType.AUTH_RESPONSE, tokenPayload, 0, true);
+            continue;
+          }
+          if (method !== AuthMethod.SCRAM_SHA_256 && method !== AuthMethod.SCRAM_SHA_512) {
             throw new ScratchbirdNotSupportedError("Unsupported auth continue", "0A000");
+          }
+          if (!scram) {
+            throw new ScratchbirdConnectionError("SCRAM state missing", "08001");
           }
           const clientFinal = scram.handleServerFirst(this.config.password ?? "", data.toString("utf8"));
           await this.protocol.sendMessage(MessageType.AUTH_RESPONSE, Buffer.from(clientFinal, "utf8"), 0, true);
