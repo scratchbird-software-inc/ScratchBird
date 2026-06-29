@@ -419,14 +419,15 @@ EngineApiDiagnostic PersistSecurityNameAliases(
     const std::string& object_uuid,
     const std::vector<std::string>& object_classes,
     const std::vector<EngineLocalizedName>& names,
-    const std::string& fallback_name) {
+    const std::string& fallback_name,
+    const std::string& scope_uuid = {}) {
   for (const auto& object_class : object_classes) {
     const auto persisted = PersistNameRegistryEntriesForObject(
         context,
         operation_id,
         object_uuid,
         object_class,
-        {},
+        scope_uuid,
         names,
         fallback_name);
     if (persisted.error) { return persisted; }
@@ -2031,13 +2032,18 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   if (effect.find("rls") != std::string::npos) {
     policy_classes.push_back("rls");
   }
+  std::string policy_name_scope_uuid = request.target_schema_uuid;
+  if (policy_name_scope_uuid.empty()) {
+    policy_name_scope_uuid = request.context.current_schema_uuid.canonical;
+  }
   const auto resolver = PersistSecurityNameAliases(
       request.context,
       kOperation,
       policy_uuid,
       policy_classes,
       request.localized_names,
-      policy_name.empty() ? policy_uuid : policy_name);
+      policy_name.empty() ? policy_uuid : policy_name,
+      policy_name_scope_uuid);
   if (resolver.error) {
     return DiagnosticResult<EngineSecurityCreatePolicyResult>(request.context,
                                                              kOperation,

@@ -615,6 +615,7 @@ struct SecurityPolicyRouteInfo {
   std::string lifecycle_state;
   std::string policy_uuid;
   std::string policy_name;
+  std::string target_schema_uuid;
   std::string target_object_uuid;
   std::string target_object_kind{"security_policy"};
   std::string policy_scope{"security_policy"};
@@ -27262,8 +27263,12 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       }
       info.policy_uuid = resolved_object_uuids[0];
       info.target_object_uuid = resolved_object_uuids[1];
-      if (resolved_object_uuids.size() >= 3) {
+      if (info.role_name_parts != 0 && resolved_object_uuids.size() >= 3) {
         info.role_uuid = resolved_object_uuids[2];
+      }
+      const std::size_t policy_schema_index = 2 + (info.role_name_parts != 0 ? 1 : 0);
+      if (info.policy_name_parts > 1 && resolved_object_uuids.size() > policy_schema_index) {
+        info.target_schema_uuid = resolved_object_uuids[policy_schema_index];
       }
       info.valid = true;
       return info;
@@ -27368,8 +27373,12 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       }
       info.policy_uuid = resolved_object_uuids[0];
       info.target_object_uuid = resolved_object_uuids[1];
-      if (resolved_object_uuids.size() >= 3) {
+      if (info.role_name_parts != 0 && resolved_object_uuids.size() >= 3) {
         info.role_uuid = resolved_object_uuids[2];
+      }
+      const std::size_t policy_schema_index = 2 + (info.role_name_parts != 0 ? 1 : 0);
+      if (info.policy_name_parts > 1 && resolved_object_uuids.size() > policy_schema_index) {
+        info.target_schema_uuid = resolved_object_uuids[policy_schema_index];
       }
       info.valid = true;
       return info;
@@ -32451,6 +32460,10 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
   }
   if (!info.policy_name.empty()) {
     out << "\"policy_name\":\"" << EscapeJson(info.policy_name) << "\",";
+  }
+  if (!info.target_schema_uuid.empty()) {
+    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
+        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
   }
   if (!info.target_object_uuid.empty()) {
     out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";

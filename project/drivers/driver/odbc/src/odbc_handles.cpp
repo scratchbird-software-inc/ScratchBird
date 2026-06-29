@@ -902,20 +902,20 @@ bool buildIsolationSql(SQLUINTEGER isolation, std::string& out_sql) {
     // standard SQL_ATTR_TXN_ISOLATION surface.
     switch (isolation) {
         case SQL_TXN_READ_UNCOMMITTED:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED ON CONFLICT COMMIT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED";
             return true;
         case SQL_TXN_READ_COMMITTED:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED ON CONFLICT COMMIT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED";
             return true;
         case SQL_TXN_REPEATABLE_READ:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ ON CONFLICT COMMIT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ";
             return true;
         case SQL_TXN_SERIALIZABLE:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE ON CONFLICT COMMIT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE";
             return true;
 #ifdef SQL_TXN_VERSIONING
         case SQL_TXN_VERSIONING:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL SNAPSHOT ON CONFLICT COMMIT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL SNAPSHOT";
             return true;
 #endif
         default:
@@ -3864,24 +3864,9 @@ SQLRETURN OdbcConnection::establishConnection() {
     auto_commit_ = params_.auto_commit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     login_timeout_ = params_.connect_timeout;
     in_transaction_ = (auto_commit_ == SQL_AUTOCOMMIT_OFF);
-
-    auto result = applyIsolationSetting();
-    if (result != SQL_SUCCESS && result != SQL_SUCCESS_WITH_INFO) {
-        if (client_bridge_) {
-            client_bridge_->disconnect();
-        }
-        connected_ = false;
-        return result;
-    }
-
-    result = applyAutocommitSetting();
-    if (result != SQL_SUCCESS && result != SQL_SUCCESS_WITH_INFO) {
-        if (client_bridge_) {
-            client_bridge_->disconnect();
-        }
-        connected_ = false;
-        return result;
-    }
+    // Do not emit implicit transaction-control SQL during connection setup.
+    // Explicit SQLSetConnectAttr calls still route through apply*Setting(), but
+    // an initial connection starts with the server-owned MGA defaults.
 
     registerResilience();
     return SQL_SUCCESS;

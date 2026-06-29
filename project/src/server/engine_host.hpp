@@ -38,6 +38,7 @@ struct HostedDatabaseSnapshot {
   std::string database_path;
   std::string database_uuid;
   std::string filespace_uuid;
+  std::uint64_t page_size_bytes = 0;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;
   bool database_created = false;

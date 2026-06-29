@@ -43,6 +43,7 @@ public sealed class ScratchBirdDataReader : DbDataReader
         _connection = connection;
         _firstResultCompletedCallback = firstResultCompletedCallback;
         _recordsAffected = -1;
+        _stream.PrimeMetadata();
     }
 
     internal ScratchBirdDataReader(
@@ -441,6 +442,12 @@ public sealed class ScratchBirdDataReader : DbDataReader
         base.Dispose(disposing);
     }
 
+    public override ValueTask DisposeAsync()
+    {
+        Close();
+        return ValueTask.CompletedTask;
+    }
+
     public override Guid GetGuid(int ordinal) => (Guid)GetValue(ordinal);
     public override short GetInt16(int ordinal) => Convert.ToInt16(GetValue(ordinal));
     public override int GetInt32(int ordinal) => Convert.ToInt32(GetValue(ordinal));
@@ -472,7 +479,7 @@ public sealed class ScratchBirdDataReader : DbDataReader
                 _done = true;
                 _resultComplete = true;
             }
-            else if (_behavior.HasFlag(CommandBehavior.SingleRow))
+            else
             {
                 try
                 {
@@ -493,10 +500,6 @@ public sealed class ScratchBirdDataReader : DbDataReader
                 {
                     _stream!.Cancel();
                 }
-            }
-            else
-            {
-                _stream?.Cancel();
             }
         }
         TryInvokeFirstResultCallback();

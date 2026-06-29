@@ -146,6 +146,7 @@ struct Args {
   std::filesystem::path output;
   std::filesystem::path manifest;
   std::filesystem::path resource_seed_pack_root;
+  scratchbird::core::platform::u32 page_size = kDriverFixturePageSize;
   bool overwrite = false;
 };
 
@@ -160,7 +161,21 @@ struct FixtureTable {
 
 void Usage() {
   std::cerr << "usage: public_driver_test_database_seed --output PATH --manifest PATH "
-               "--resource-seed-pack-root PATH [--overwrite]\n";
+               "--resource-seed-pack-root PATH [--page-size BYTES] [--overwrite]\n";
+}
+
+bool ParsePageSize(const std::string& value, scratchbird::core::platform::u32* out) {
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
+  if (end == value.c_str() || *end != '\0') {
+    return false;
+  }
+  if (parsed != 4096 && parsed != 8192 && parsed != 16384 &&
+      parsed != 32768 && parsed != 65536 && parsed != 131072) {
+    return false;
+  }
+  *out = static_cast<scratchbird::core::platform::u32>(parsed);
+  return true;
 }
 
 bool ParseArgs(int argc, char** argv, Args* args) {
@@ -180,6 +195,10 @@ bool ParseArgs(int argc, char** argv, Args* args) {
       args->manifest = value;
     } else if (key == "--resource-seed-pack-root") {
       args->resource_seed_pack_root = value;
+    } else if (key == "--page-size") {
+      if (!ParsePageSize(value, &args->page_size)) {
+        return false;
+      }
     } else {
       return false;
     }
@@ -253,19 +272,25 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& output) {
   static const std::vector<std::string> suffixes = {
       "",
       ".sb.api_events",
+      ".sb.catalog_object_events",
+      ".sb.event_sequence_allocator",
       ".sb.local_password_auth",
       ".sb.security_principal_events",
+      ".sb.owner.lock",
+      ".sb.route.owner.lock",
       ".sb.mga_index_entries",
       ".sb.mga_large_values",
       ".sb.mga_relation_descriptors",
       ".sb.mga_relation_metadata",
+      ".sb.mga_relation_scope",
       ".sb.mga_row_versions",
       ".sb.mga_savepoints",
+      ".sb.mga_event_sequence_allocator",
       ".sb.local_transaction_inventory",
   };
   for (const auto& suffix : suffixes) {
     std::error_code ignored;
-    std::filesystem::remove(output.string() + suffix, ignored);
+    std::filesystem::remove_all(output.string() + suffix, ignored);
   }
 }
 
@@ -385,7 +410,7 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
   create.path = args.output.string();
   create.database_uuid = database_uuid;
   create.filespace_uuid = filespace_uuid;
-  create.page_size = kDriverFixturePageSize;
+  create.page_size = args.page_size;
   create.creation_unix_epoch_millis = kDriverFixtureCreationMillis;
   create.resource_seed_pack_root = args.resource_seed_pack_root.string();
   create.require_resource_seed_pack = true;
@@ -565,7 +590,7 @@ void WriteManifest(const Args& args,
   out << "  \"schema_version\": \"scratchbird_public_driver_test_database_seed_v1\",\n";
   out << "  \"database\": \"" << args.output.filename().string() << "\",\n";
   out << "  \"database_uuid\": \"" << database_uuid << "\",\n";
-  out << "  \"page_size\": " << kDriverFixturePageSize << ",\n";
+  out << "  \"page_size\": " << args.page_size << ",\n";
   out << "  \"creation_unix_epoch_millis\": " << kDriverFixtureCreationMillis << ",\n";
   out << "  \"full_create_database\": true,\n";
   out << "  \"resource_seed_pack_active\": true,\n";

@@ -73,6 +73,7 @@ struct ServerBootstrapConfig {
   std::filesystem::path database_policy_seed_pack_root;
   std::string database_runtime_scope_id;
   bool database_auto_create = false;
+  std::uint64_t database_create_page_size_bytes = 16384;
   std::string database_open_mode = "normal";
   std::string database_daemon_scope = "shared";
   bool database_ownership_prelocked = false;

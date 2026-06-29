@@ -2250,8 +2250,9 @@ impl Client {
                     }
                 }
                 protocol::MSG_PARAMETER_STATUS => {
-                    let (name, value) = protocol::parse_parameter_status(&msg.payload)?;
-                    self.handle_parameter_status(name, value);
+                    for (name, value) in protocol::parse_parameter_statuses(&msg.payload)? {
+                        self.handle_parameter_status(name, value);
+                    }
                 }
                 protocol::MSG_READY => {
                     let (status, txn_id, _visibility) = protocol::parse_ready(&msg.payload)?;
@@ -2488,8 +2489,9 @@ impl Client {
     fn handle_async_message(&mut self, msg: &protocol::Message) -> Result<bool> {
         match msg.header.msg_type {
             protocol::MSG_PARAMETER_STATUS => {
-                let (name, value) = protocol::parse_parameter_status(&msg.payload)?;
-                self.handle_parameter_status(name, value);
+                for (name, value) in protocol::parse_parameter_statuses(&msg.payload)? {
+                    self.handle_parameter_status(name, value);
+                }
                 Ok(true)
             }
             protocol::MSG_NOTIFICATION => {

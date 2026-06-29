@@ -20,7 +20,7 @@ struct CircuitBreakerConfig:
     var success_threshold: Int
     var half_open_max_requests: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.failure_threshold = 5
         self.recovery_timeout_ms = 30000
         self.success_threshold = 3
@@ -30,7 +30,7 @@ struct CircuitBreakerConfig:
 struct CircuitBreakerError:
     var message: String
 
-    fn __init__(out self, message: String = "Circuit breaker is OPEN"):
+    def __init__(out self, message: String = "Circuit breaker is OPEN"):
         self.message = message
 
 
@@ -46,7 +46,7 @@ struct CircuitBreaker:
     var half_open_requests: Int
     var last_failure_time_ms: Int
 
-    fn __init__(out self, config: CircuitBreakerConfig = CircuitBreakerConfig(), name: String = "default"):
+    def __init__(out self, config: CircuitBreakerConfig = CircuitBreakerConfig(), name: String = "default"):
         self.failure_threshold = config.failure_threshold
         self.recovery_timeout_ms = config.recovery_timeout_ms
         self.success_threshold = config.success_threshold
@@ -58,10 +58,10 @@ struct CircuitBreaker:
         self.half_open_requests = 0
         self.last_failure_time_ms = 0
 
-    fn get_state(self) -> Int:
+    def get_state(self) -> Int:
         return self.state
 
-    fn allow_request(mut self, now_ms: Int = 0) -> Bool:
+    def allow_request(mut self, now_ms: Int = 0) -> Bool:
         if self.state == STATE_CLOSED:
             return True
 
@@ -80,13 +80,13 @@ struct CircuitBreaker:
 
         return self._allow_half_open()
 
-    fn _allow_half_open(mut self) -> Bool:
+    def _allow_half_open(mut self) -> Bool:
         if self.half_open_requests < self.half_open_max_requests:
             self.half_open_requests += 1
             return True
         return False
 
-    fn record_success(mut self):
+    def record_success(mut self):
         if self.state == STATE_CLOSED:
             self.failure_count = 0
             return
@@ -101,7 +101,7 @@ struct CircuitBreaker:
                 self.success_count = 0
                 self.half_open_requests = 0
 
-    fn record_failure(mut self, now_ms: Int = 0):
+    def record_failure(mut self, now_ms: Int = 0):
         if self.state == STATE_CLOSED:
             self.failure_count += 1
             if self.failure_count >= self.failure_threshold:
@@ -120,15 +120,15 @@ struct CircuitBreaker:
         if self.state == STATE_OPEN:
             self.last_failure_time_ms = now_ms
 
-    fn reset(mut self):
+    def reset(mut self):
         self.state = STATE_CLOSED
         self.failure_count = 0
         self.success_count = 0
         self.half_open_requests = 0
         self.last_failure_time_ms = 0
 
-    fn is_open(self) -> Bool:
+    def is_open(self) -> Bool:
         return self.state == STATE_OPEN
 
-    fn is_half_open(self) -> Bool:
+    def is_half_open(self) -> Bool:
         return self.state == STATE_HALF_OPEN

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -69,9 +70,10 @@ type config struct {
 type commandEvent map[string]any
 
 var (
-	pageSizes   = map[string]bool{"4k": true, "8k": true, "16k": true, "32k": true, "64k": true, "128k": true}
-	routes      = map[string]bool{"embedded": true, "ipc_local": true, "listener-parser": true, "manager-listener-parser": true}
-	parserModes = map[string]bool{"server-parser": true, "standalone-parser": true, "driver-sblr-uuid": true}
+	pageSizes     = map[string]bool{"4k": true, "8k": true, "16k": true, "32k": true, "64k": true, "128k": true}
+	pageSizeBytes = map[string]int{"4k": 4096, "8k": 8192, "16k": 16384, "32k": 32768, "64k": 65536, "128k": 131072}
+	routes        = map[string]bool{"embedded": true, "ipc_local": true, "listener-parser": true, "manager-listener-parser": true}
+	parserModes   = map[string]bool{"server-parser": true, "standalone-parser": true, "driver-sblr-uuid": true}
 )
 
 func main() {
@@ -172,7 +174,7 @@ func run(cfg config) error {
 	required := []string{
 		"command-events.jsonl", "diagnostics.jsonl", "wire-transcript.jsonl",
 		"timing-groups.json", "result-digests.json", "metadata-snapshots.json",
-		"security-refusals.json", "native-api-coverage.json", "code-example-review.json",
+		"route-environment.json", "security-refusals.json", "native-api-coverage.json", "code-example-review.json",
 		"junit.xml", "stdout.log", "stderr.log",
 	}
 	for _, name := range required {
@@ -195,6 +197,8 @@ func run(cfg config) error {
 	digests := []map[string]any{}
 	securityRefusals := []map[string]any{}
 	started := time.Now()
+	routeEnvPath := filepath.Join(runRoot, "route-environment.json")
+	writeText(routeEnvPath, jsonString(routeEnvironment(cfg, nil, "fail", "not_probed"))+"\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.StatementTimeoutMS)*time.Millisecond)
 	defer cancel()
@@ -238,6 +242,17 @@ func run(cfg config) error {
 		}
 		apiHits["AttachCreate"]++
 		addTiming(timings, "database_create", time.Since(createStarted))
+	}
+	routeEnv := probeRouteEnvironment(ctx, conn, cfg)
+	writeText(routeEnvPath, jsonString(routeEnv)+"\n")
+	if cfg.Route != "embedded" && routeEnv["page_size_verification_status"] != "pass" {
+		failures = append(failures, map[string]any{
+			"statement_id":             "route_page_size",
+			"message":                  "route page-size verification failed",
+			"expected_page_size_bytes": routeEnv["expected_page_size_bytes"],
+			"actual_page_size_bytes":   routeEnv["actual_page_size_bytes"],
+		})
+		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
 	}
 	if cfg.ParserMode != "server-parser" {
 		failures = append(failures, map[string]any{
@@ -446,6 +461,7 @@ func finish(
 	runRoot := filepath.Dir(cfg.Summary)
 	timings["overall"] = elapsed.Nanoseconds()
 	transportMode := transportModeForRoute(cfg.Route, cfg.SSLMode)
+	processMetrics := currentProcessMetrics()
 	summary := map[string]any{
 		"run_id": cfg.RunID, "driver_name": "go", "route": cfg.Route,
 		"parser_mode": cfg.ParserMode, "page_size": cfg.PageSize,
@@ -459,12 +475,17 @@ func finish(
 		"language_profile": cfg.LanguageProfile, "syntax_profile": cfg.SyntaxProfile,
 		"topology_profile": cfg.TopologyProfile, "standard_english_fallback": cfg.StandardEnglishFallback,
 		"failure_count": len(failures), "elapsed_ns": elapsed.Nanoseconds(),
+		"process_metrics":              processMetrics,
 		"server_revalidation_required": true,
 		"driver_or_parser_finality":    "forbidden",
 		"mga_authority":                "engine",
 	}
 	writeText(cfg.Summary, jsonString(summary)+"\n")
-	writeText(cfg.Metrics, jsonString(timings)+"\n")
+	writeText(cfg.Metrics, jsonString(map[string]any{
+		"role":     "client",
+		"rss_kb":   processMetrics["client"]["last_rss_kb"],
+		"vsize_kb": processMetrics["client"]["last_vsize_kb"],
+	})+"\n")
 	writeText(filepath.Join(runRoot, "timing-groups.json"), jsonString(timings)+"\n")
 	writeText(filepath.Join(runRoot, "result-digests.json"), jsonString(digests)+"\n")
 	writeText(filepath.Join(runRoot, "security-refusals.json"), jsonString(securityRefusals)+"\n")
@@ -487,6 +508,27 @@ func status(failures []map[string]any) string {
 		return "fail"
 	}
 	return "pass"
+}
+
+func currentProcessMetrics() map[string]map[string]int64 {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	rssKB := int64(mem.Sys / 1024)
+	if rssKB < 1 {
+		rssKB = 1
+	}
+	vsizeKB := int64((mem.Sys + mem.HeapSys + mem.StackSys) / 1024)
+	if vsizeKB < 1 {
+		vsizeKB = rssKB
+	}
+	return map[string]map[string]int64{
+		"client": {
+			"max_rss_kb":    rssKB,
+			"max_vsize_kb":  vsizeKB,
+			"last_rss_kb":   rssKB,
+			"last_vsize_kb": vsizeKB,
+		},
+	}
 }
 
 func validate(cfg config) error {
@@ -540,6 +582,108 @@ func transportImplementationForRoute(route string) string {
 		return "native_go_unix_domain_socket"
 	default:
 		return "native_go_tcp"
+	}
+}
+
+func routeEnvironment(cfg config, actual *int, status string, reason string) map[string]any {
+	record := map[string]any{
+		"run_id":                          cfg.RunID,
+		"driver":                          "go",
+		"route":                           cfg.Route,
+		"sslmode":                         cfg.SSLMode,
+		"parser_mode":                     cfg.ParserMode,
+		"concurrency_mode":                "single",
+		"namespace":                       cfg.Namespace,
+		"page_size":                       cfg.PageSize,
+		"expected_page_size_bytes":        pageSizeBytes[cfg.PageSize],
+		"actual_page_size_bytes":          nil,
+		"page_size_verification_source":   "SHOW DATABASE",
+		"page_size_verification_status":   status,
+		"transport_mode":                  transportModeForRoute(cfg.Route, cfg.SSLMode),
+		"transport_endpoint_kind":         endpointKindForRoute(cfg.Route),
+		"driver_transport_implementation": transportImplementationForRoute(cfg.Route),
+	}
+	if actual != nil {
+		record["actual_page_size_bytes"] = *actual
+	}
+	if reason != "" {
+		record["failure_reason"] = reason
+	}
+	return record
+}
+
+func probeRouteEnvironment(ctx context.Context, conn *sql.Conn, cfg config) map[string]any {
+	rows, err := conn.QueryContext(ctx, "SHOW DATABASE")
+	if err != nil {
+		return routeEnvironment(cfg, nil, "fail", err.Error())
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return routeEnvironment(cfg, nil, "fail", err.Error())
+	}
+	pageIndex := -1
+	for index, column := range columns {
+		if strings.EqualFold(column, "page_size_bytes") {
+			pageIndex = index
+			break
+		}
+	}
+	if pageIndex < 0 && len(columns) >= 3 {
+		pageIndex = 2
+	}
+	if pageIndex < 0 {
+		return routeEnvironment(cfg, nil, "fail", "show_database_missing_page_size_bytes")
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return routeEnvironment(cfg, nil, "fail", err.Error())
+		}
+		return routeEnvironment(cfg, nil, "fail", "show_database_returned_no_rows")
+	}
+	values := make([]any, len(columns))
+	ptrs := make([]any, len(columns))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return routeEnvironment(cfg, nil, "fail", err.Error())
+	}
+	actual, err := intValue(values[pageIndex])
+	if err != nil {
+		return routeEnvironment(cfg, nil, "fail", err.Error())
+	}
+	status := "fail"
+	reason := "actual_page_size_mismatch"
+	if actual == pageSizeBytes[cfg.PageSize] {
+		status = "pass"
+		reason = ""
+	}
+	return routeEnvironment(cfg, &actual, status, reason)
+}
+
+func intValue(value any) (int, error) {
+	switch typed := value.(type) {
+	case int:
+		return typed, nil
+	case int32:
+		return int(typed), nil
+	case int64:
+		return int(typed), nil
+	case []byte:
+		var parsed int
+		if _, err := fmt.Sscanf(string(typed), "%d", &parsed); err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	case string:
+		var parsed int
+		if _, err := fmt.Sscanf(typed, "%d", &parsed); err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("unsupported integer value type %T", value)
 	}
 }
 

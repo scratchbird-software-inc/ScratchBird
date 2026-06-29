@@ -72,6 +72,7 @@ struct sb_engine_handle_s {
   bool closed = false;
   std::string database_path;
   std::string database_uuid;
+  std::uint64_t database_page_size_bytes = 0;
   std::atomic<std::uint64_t> next_session_id{1};
 };
 
@@ -202,17 +203,26 @@ bool looks_like_sblr_operation_envelope(const scratchbird::engine::SblrExecution
          text.find("opcode=") != std::string_view::npos;
 }
 
-std::string database_uuid_from_header(std::string_view database_path) {
-  if (database_path.empty()) return {};
+struct DatabaseHeaderSnapshot {
+  std::string database_uuid;
+  std::uint64_t page_size_bytes = 0;
+};
+
+DatabaseHeaderSnapshot database_header_snapshot(std::string_view database_path) {
+  DatabaseHeaderSnapshot snapshot;
+  if (database_path.empty()) return snapshot;
   scratchbird::storage::disk::SerializedDatabaseHeader serialized{};
   std::ifstream in(std::string(database_path), std::ios::binary);
-  if (!in) return {};
+  if (!in) return snapshot;
   in.read(reinterpret_cast<char*>(serialized.data()),
           static_cast<std::streamsize>(serialized.size()));
-  if (in.gcount() != static_cast<std::streamsize>(serialized.size())) return {};
+  if (in.gcount() != static_cast<std::streamsize>(serialized.size())) return snapshot;
   const auto parsed = scratchbird::storage::disk::ParseDatabaseHeader(serialized);
-  if (!parsed.ok()) return {};
-  return scratchbird::core::uuid::UuidToString(parsed.header.database_uuid);
+  if (!parsed.ok()) return snapshot;
+  snapshot.database_uuid =
+      scratchbird::core::uuid::UuidToString(parsed.header.database_uuid);
+  snapshot.page_size_bytes = parsed.header.page_size;
+  return snapshot;
 }
 
 scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
@@ -225,6 +235,8 @@ scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
   internal.request_id = "public-abi-sblr-dispatch";
   internal.database_path = engine == nullptr ? std::string{} : engine->database_path;
   internal.database_uuid.canonical = engine == nullptr ? std::string{} : engine->database_uuid;
+  internal.database_page_size_bytes =
+      engine == nullptr ? 0 : engine->database_page_size_bytes;
   internal.principal_uuid.canonical = uuid_to_canonical(context.effective_user_uuid);
   internal.session_uuid.canonical = uuid_to_canonical(context.session_uuid);
   internal.transaction_uuid.canonical = {};
@@ -1263,7 +1275,9 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
   if (params->database_path_utf8 != nullptr && params->database_path_size != 0) {
     handle->database_path.assign(params->database_path_utf8,
                                  params->database_path_utf8 + params->database_path_size);
-    handle->database_uuid = database_uuid_from_header(handle->database_path);
+    const auto snapshot = database_header_snapshot(handle->database_path);
+    handle->database_uuid = snapshot.database_uuid;
+    handle->database_page_size_bytes = snapshot.page_size_bytes;
   }
   *out_engine = handle;
   return SB_ENGINE_STATUS_OK;

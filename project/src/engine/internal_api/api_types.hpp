@@ -306,6 +306,7 @@ struct EngineRequestContext {
   std::string request_id;
   std::string database_path;
   EngineUuid database_uuid;
+  EngineApiU64 database_page_size_bytes = 0;
   EngineUuid cluster_uuid;
   EngineUuid node_uuid;
   EngineUuid principal_uuid;

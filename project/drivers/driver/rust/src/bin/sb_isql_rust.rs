@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use scratchbird::sql::Params;
-use scratchbird::{Client, Config};
+use scratchbird::{Client, Config, Value};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
@@ -134,6 +134,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         &paths.timing,
         &paths.digests,
         &paths.metadata,
+        &paths.route_env,
         &paths.refusals,
         &paths.api,
         &paths.review,
@@ -145,6 +146,8 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     let started = Instant::now();
+    let mut route_env = route_environment(&args, None, "fail", Some("not_probed"));
+    write_text(&paths.route_env, &format!("{}\n", route_env))?;
     let mut timings = BTreeMap::<String, u128>::new();
     let mut api_hits = BTreeMap::<String, u64>::from([
         ("Client".to_string(), 0),
@@ -240,6 +243,20 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                 "statement_id": "database_create",
                 "message": err.to_string()
             })),
+        }
+    }
+    if failures.is_empty() {
+        route_env = probe_route_environment(&mut client, &args).await;
+        write_text(&paths.route_env, &format!("{}\n", route_env))?;
+        if args.route != "embedded"
+            && route_env["page_size_verification_status"].as_str() != Some("pass")
+        {
+            failures.push(json!({
+                "statement_id": "route_page_size",
+                "message": "route page-size verification failed",
+                "expected_page_size_bytes": route_env["expected_page_size_bytes"],
+                "actual_page_size_bytes": route_env["actual_page_size_bytes"]
+            }));
         }
     }
     if failures.is_empty() && args.parser_mode != "server-parser" {
@@ -406,6 +423,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
 
     timings.insert("overall".to_string(), started.elapsed().as_nanos());
     let transport_mode = transport_mode_for_route(&args.route, &args.sslmode);
+    let process_metrics = current_process_metrics();
     let summary = json!({
         "run_id": args.run_id,
         "driver_name": "rust",
@@ -429,6 +447,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         "status": if failures.is_empty() { "pass" } else { "fail" },
         "failure_count": failures.len(),
         "elapsed_ns": started.elapsed().as_nanos(),
+        "process_metrics": process_metrics.clone(),
         "server_revalidation_required": true,
         "driver_or_parser_finality": "forbidden",
         "mga_authority": "engine"
@@ -436,7 +455,14 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     write_text(&args.summary, &format!("{summary}\n"))?;
     write_text(
         &args.metrics,
-        &format!("{}\n", serde_json::to_string(&timings)?),
+        &format!(
+            "{}\n",
+            serde_json::to_string(&json!({
+                "role": "client",
+                "rss_kb": process_metrics["client"]["last_rss_kb"],
+                "vsize_kb": process_metrics["client"]["last_vsize_kb"]
+            }))?
+        ),
     )?;
     write_text(
         &paths.timing,
@@ -517,6 +543,7 @@ struct ArtifactPaths {
     timing: PathBuf,
     digests: PathBuf,
     metadata: PathBuf,
+    route_env: PathBuf,
     refusals: PathBuf,
     api: PathBuf,
     review: PathBuf,
@@ -533,6 +560,7 @@ impl ArtifactPaths {
             timing: root.join("timing-groups.json"),
             digests: root.join("result-digests.json"),
             metadata: root.join("metadata-snapshots.json"),
+            route_env: root.join("route-environment.json"),
             refusals: root.join("security-refusals.json"),
             api: root.join("native-api-coverage.json"),
             review: root.join("code-example-review.json"),
@@ -750,6 +778,115 @@ fn transport_implementation_for_route(route: &str) -> &'static str {
         "ipc_local" => "native_rust_unix_domain_socket",
         _ => "native_rust_tcp",
     }
+}
+
+fn page_size_bytes(label: &str) -> u32 {
+    match label {
+        "4k" => 4096,
+        "8k" => 8192,
+        "16k" => 16384,
+        "32k" => 32768,
+        "64k" => 65536,
+        "128k" => 131072,
+        _ => 0,
+    }
+}
+
+fn route_environment(
+    args: &Args,
+    actual_page_size: Option<u32>,
+    status: &str,
+    reason: Option<&str>,
+) -> JsonValue {
+    let mut record = json!({
+        "run_id": args.run_id,
+        "driver": "rust",
+        "route": args.route,
+        "sslmode": args.sslmode,
+        "parser_mode": args.parser_mode,
+        "concurrency_mode": "single",
+        "namespace": args.namespace,
+        "page_size": args.page_size,
+        "expected_page_size_bytes": page_size_bytes(&args.page_size),
+        "actual_page_size_bytes": actual_page_size,
+        "page_size_verification_source": "SHOW DATABASE",
+        "page_size_verification_status": status,
+        "transport_mode": transport_mode_for_route(&args.route, &args.sslmode),
+        "transport_endpoint_kind": endpoint_kind_for_route(&args.route),
+        "driver_transport_implementation": transport_implementation_for_route(&args.route),
+    });
+    if let Some(reason) = reason {
+        record["failure_reason"] = json!(reason);
+    }
+    record
+}
+
+async fn probe_route_environment(client: &mut Client, args: &Args) -> JsonValue {
+    let result = match client.query("SHOW DATABASE").await {
+        Ok(result) => result,
+        Err(err) => return route_environment(args, None, "fail", Some(&err.to_string())),
+    };
+    let mut page_index = result
+        .columns
+        .iter()
+        .position(|column| column.name.eq_ignore_ascii_case("page_size_bytes"));
+    if page_index.is_none() && result.columns.len() >= 3 {
+        page_index = Some(2);
+    }
+    let Some(page_index) = page_index else {
+        return route_environment(
+            args,
+            None,
+            "fail",
+            Some("show_database_missing_page_size_bytes"),
+        );
+    };
+    let Some(row) = result.rows.first() else {
+        return route_environment(args, None, "fail", Some("show_database_returned_no_rows"));
+    };
+    let actual = match row.get(page_index) {
+        Some(Value::Int16(value)) => Some(*value as u32),
+        Some(Value::Int32(value)) => Some(*value as u32),
+        Some(Value::Int64(value)) => Some(*value as u32),
+        Some(Value::String(value)) => value.parse::<u32>().ok(),
+        _ => None,
+    };
+    let status = if actual == Some(page_size_bytes(&args.page_size)) {
+        "pass"
+    } else {
+        "fail"
+    };
+    let reason = if status == "pass" {
+        None
+    } else {
+        Some("actual_page_size_mismatch")
+    };
+    route_environment(args, actual, status, reason)
+}
+
+fn current_process_metrics() -> JsonValue {
+    let mut vsize_kb: u64 = 1;
+    let mut rss_kb: u64 = 1;
+    if let Ok(statm) = fs::read_to_string("/proc/self/statm") {
+        let parts: Vec<&str> = statm.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let page_kb = 4;
+            if let Ok(size_pages) = parts[0].parse::<u64>() {
+                vsize_kb = std::cmp::max(1, size_pages.saturating_mul(page_kb));
+            }
+            if let Ok(resident_pages) = parts[1].parse::<u64>() {
+                rss_kb = std::cmp::max(1, resident_pages.saturating_mul(page_kb));
+            }
+        }
+    }
+    json!({
+        "client": {
+            "max_rss_kb": rss_kb,
+            "max_vsize_kb": vsize_kb,
+            "last_rss_kb": rss_kb,
+            "last_vsize_kb": vsize_kb
+        }
+    })
 }
 
 fn load_expected_refusals(path: &str) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {

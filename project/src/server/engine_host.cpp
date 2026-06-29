@@ -184,7 +184,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
     create.path = snapshot.database_path;
     create.database_uuid = database_uuid.value;
     create.filespace_uuid = filespace_uuid.value;
-    create.page_size = 16384;
+    create.page_size = static_cast<std::uint32_t>(config.database_create_page_size_bytes);
     create.creation_unix_epoch_millis = now;
     create.resource_seed_pack_root = config.database_resource_seed_pack_root.string();
     create.policy_seed_pack_root = config.database_policy_seed_pack_root.string();
@@ -270,6 +270,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
       scratchbird::core::uuid::UuidToString(lifecycle_open.state.database_uuid.value);
   snapshot.filespace_uuid =
       scratchbird::core::uuid::UuidToString(lifecycle_open.state.filespace_uuid.value);
+  snapshot.page_size_bytes = lifecycle_open.state.header.page_size;
   snapshot.state = StateForConfig(config);
   snapshot.startup_recovery_classification =
       lifecycle_open.state.startup_recovery_classification.empty()
@@ -352,6 +353,7 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
         << "\"database_path\":\"" << JsonEscape(database.database_path) << "\","
         << "\"database_uuid\":\"" << JsonEscape(database.database_uuid) << "\","
         << "\"filespace_uuid\":\"" << JsonEscape(database.filespace_uuid) << "\","
+        << "\"page_size_bytes\":" << database.page_size_bytes << ","
         << "\"database_created\":" << (database.database_created ? "true" : "false") << ","
         << "\"database_open\":" << (database.database_open ? "true" : "false") << ","
         << "\"read_only\":" << (database.read_only ? "true" : "false") << ","

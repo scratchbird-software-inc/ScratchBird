@@ -15,6 +15,7 @@ import argparse
 import csv
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,17 @@ def apply_substitutions(text: str, values: dict[str, str]) -> str:
     return rendered
 
 
+def namespace_ancestor_schema_statements(namespace: str) -> list[str]:
+    parts = [part for part in namespace.split(".") if part]
+    if len(parts) < 4:
+        return []
+    start = 3 if parts[:2] == ["users", "public"] else 1
+    statements: list[str] = []
+    for end in range(start, len(parts)):
+        statements.append("CREATE SCHEMA " + ".".join(parts[:end]) + ";")
+    return statements
+
+
 def copy_expected_files(suite_root: Path, output_root: Path) -> list[str]:
     expected_root = suite_root / EXPECTED_DIR
     output_expected = output_root / EXPECTED_DIR
@@ -101,6 +113,40 @@ def copy_generated_expected_files(suite_root: Path, output_root: Path) -> list[s
         target.write_bytes(source.read_bytes())
         copied.append(str(target))
     return copied
+
+
+def split_compiled_statements(repo_root: Path, text: str) -> list[str]:
+    python_driver_src = repo_root / "project" / "drivers" / "driver" / "python" / "src"
+    if str(python_driver_src) not in sys.path:
+        sys.path.insert(0, str(python_driver_src))
+    from scratchbird.sql import split_top_level_statements  # pylint: disable=import-error,import-outside-toplevel
+
+    return split_top_level_statements(text)
+
+
+def add_compiled_chain_expected_refusal_aliases(
+    *,
+    output_root: Path,
+    statement_ref_map: dict[str, str],
+) -> None:
+    expected_refusals = output_root / EXPECTED_DIR / "expected_refusals.json"
+    if not expected_refusals.is_file():
+        return
+    doc = load_json(expected_refusals)
+    diagnostics = doc.get("expected_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return
+    aliases: dict[str, str] = {}
+    for source_ref, chain_ref in sorted(statement_ref_map.items()):
+        if source_ref in diagnostics:
+            diagnostics.setdefault(chain_ref, diagnostics[source_ref])
+            aliases[source_ref] = chain_ref
+    if aliases:
+        doc["compiled_chain_statement_aliases"] = aliases
+        expected_refusals.write_text(
+            json.dumps(doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def generated_summary_from_manifest(repo_root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +343,7 @@ def compile_suite(
     suite_root: Path,
     output_root: Path,
     values: dict[str, str],
+    namespace_ancestor_mode: str,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     suite_root = suite_root.resolve()
@@ -310,6 +357,8 @@ def compile_suite(
     artifact_root.mkdir(parents=True, exist_ok=True)
 
     compiled_scripts: list[dict[str, Any]] = []
+    statement_ref_map: dict[str, str] = {}
+    chain_statement_index = 0
     chain_parts: list[str] = [
         "-- ScratchBird driver full-surface SBSQL chain",
         f"-- source_suite_id: {manifest.get('suite_id', '')}",
@@ -320,6 +369,21 @@ def compile_suite(
         f"-- page_size: {values['__SB_PAGE_SIZE__']}",
         "",
     ]
+    namespace_ancestor_statements = namespace_ancestor_schema_statements(
+        values["__SB_NAMESPACE__"]
+    )
+    if namespace_ancestor_statements and namespace_ancestor_mode == "chain":
+        chain_statement_index += len(
+            split_compiled_statements(repo_root, "\n".join(namespace_ancestor_statements))
+        )
+        chain_parts.extend(
+            [
+                "-- begin_namespace_ancestor_materialization",
+                *namespace_ancestor_statements,
+                "-- end_namespace_ancestor_materialization",
+                "",
+            ]
+        )
 
     fixture_rows, fixture_sources = read_builtin_fixture_rows(repo_root)
     copied_fixture_csvs = copy_builtin_fixture_csvs(repo_root, output_root)
@@ -338,6 +402,12 @@ def compile_suite(
             target = output_scripts / "055_builtin_fixture_manifest.sbsql"
             target.write_text(rendered, encoding="utf-8")
             digest = sha256_text(rendered)
+            rendered_statement_count = len(split_compiled_statements(repo_root, rendered))
+            for statement_index in range(1, rendered_statement_count + 1):
+                statement_ref_map[f"{target.name}:{statement_index}"] = (
+                    f"full_surface_chain.sbsql:{chain_statement_index + statement_index}"
+                )
+            chain_statement_index += rendered_statement_count
             compiled_scripts.append(
                 {
                     "script_id": item.get("script_id"),
@@ -369,6 +439,12 @@ def compile_suite(
         target = output_scripts / source.name
         target.write_text(rendered, encoding="utf-8")
         digest = sha256_text(rendered)
+        rendered_statement_count = len(split_compiled_statements(repo_root, rendered))
+        for statement_index in range(1, rendered_statement_count + 1):
+            statement_ref_map[f"{source.name}:{statement_index}"] = (
+                f"full_surface_chain.sbsql:{chain_statement_index + statement_index}"
+            )
+        chain_statement_index += rendered_statement_count
         compiled_scripts.append(
             {
                 "script_id": item.get("script_id"),
@@ -388,11 +464,22 @@ def compile_suite(
             ]
         )
 
+    # Native tools execute the concatenated chain with the same top-level
+    # splitter used for ordinary scripts. A final standalone end marker is a
+    # comment-only chunk in that mode and correctly lowers to an empty
+    # statement. Keep the marker for every interior script boundary, but let
+    # the defensive chain iterator flush the final script at EOF.
+    if len(chain_parts) >= 2 and str(chain_parts[-2]).startswith("-- end_script: "):
+        del chain_parts[-2]
     chain_text = "\n".join(chain_parts).rstrip() + "\n"
     chain_path = output_root / "full_surface_chain.sbsql"
     chain_path.write_text(chain_text, encoding="utf-8")
     expected_files = copy_expected_files(suite_root, output_root)
     expected_files.extend(copy_generated_expected_files(suite_root, output_root))
+    add_compiled_chain_expected_refusal_aliases(
+        output_root=output_root,
+        statement_ref_map=statement_ref_map,
+    )
 
     compiled_manifest = {
         "schema_version": 1,
@@ -406,6 +493,8 @@ def compile_suite(
         "page_size": values["__SB_PAGE_SIZE__"],
         "compiled_chain_path": str(chain_path),
         "compiled_chain_sha256": sha256_text(chain_text),
+        "namespace_ancestor_statements": namespace_ancestor_statements,
+        "compiled_chain_statement_ref_map": statement_ref_map,
         "compiled_scripts": compiled_scripts,
         "expected_files": expected_files,
         "builtin_fixture_csvs": copied_fixture_csvs,
@@ -436,6 +525,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parser-mode", required=True)
     parser.add_argument("--page-size", required=True)
     parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument(
+        "--namespace-ancestor-mode",
+        choices=("chain", "external", "none"),
+        default="chain",
+        help=(
+            "chain embeds parent-schema setup in the compiled script; external "
+            "records the parent schemas for the matrix runner to create before "
+            "driver execution; none records no setup statements"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -446,6 +545,7 @@ def main() -> int:
         suite_root=args.suite_root,
         output_root=args.output_root,
         values=substitution_map(args),
+        namespace_ancestor_mode=args.namespace_ancestor_mode,
     )
     print(json.dumps(compiled, indent=2, sort_keys=True))
     return 0

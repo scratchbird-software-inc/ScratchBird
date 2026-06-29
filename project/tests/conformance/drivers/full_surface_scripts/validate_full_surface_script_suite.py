@@ -393,6 +393,7 @@ def validate_compiled_sample(
                 "__SB_PAGE_SIZE__": "8k",
                 "__SB_ARTIFACT_ROOT__": str((output_root / "artifacts").resolve()),
             },
+            namespace_ancestor_mode="chain",
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         return [f"compiler:sample_compile_failed:{exc}"]

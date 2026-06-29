@@ -9,7 +9,6 @@
 # Current-syntax facade that keeps the lane-local `scratchbird` module on the
 # active native bootstrap runtime surface while transport cutover proceeds.
 
-from collections import List
 from scratchbird_native import ScratchBirdConfig
 from scratchbird_native import ScratchBirdConnection
 from scratchbird_native import ScratchBirdStatement
@@ -41,71 +40,71 @@ from scratchbird_native import METADATA_TYPE_INFO_QUERY
 comptime DEFAULT_METADATA_COLLECTION = "tables"
 
 
-fn schemas_query() -> String:
+def schemas_query() -> String:
     return METADATA_SCHEMAS_QUERY
 
 
-fn tables_query() -> String:
+def tables_query() -> String:
     return METADATA_TABLES_QUERY
 
 
-fn columns_query() -> String:
+def columns_query() -> String:
     return METADATA_COLUMNS_QUERY
 
 
-fn indexes_query() -> String:
+def indexes_query() -> String:
     return METADATA_INDEXES_QUERY
 
 
-fn index_columns_query() -> String:
+def index_columns_query() -> String:
     return METADATA_INDEX_COLUMNS_QUERY
 
 
-fn constraints_query() -> String:
+def constraints_query() -> String:
     return METADATA_CONSTRAINTS_QUERY
 
 
-fn procedures_query() -> String:
+def procedures_query() -> String:
     return METADATA_PROCEDURES_QUERY
 
 
-fn functions_query() -> String:
+def functions_query() -> String:
     return METADATA_FUNCTIONS_QUERY
 
 
-fn routines_query() -> String:
+def routines_query() -> String:
     return METADATA_ROUTINES_QUERY
 
 
-fn catalogs_query() -> String:
+def catalogs_query() -> String:
     return METADATA_CATALOGS_QUERY
 
 
-fn primary_keys_query() -> String:
+def primary_keys_query() -> String:
     return METADATA_PRIMARY_KEYS_QUERY
 
 
-fn foreign_keys_query() -> String:
+def foreign_keys_query() -> String:
     return METADATA_FOREIGN_KEYS_QUERY
 
 
-fn table_privileges_query() -> String:
+def table_privileges_query() -> String:
     return METADATA_TABLE_PRIVILEGES_QUERY
 
 
-fn column_privileges_query() -> String:
+def column_privileges_query() -> String:
     return METADATA_COLUMN_PRIVILEGES_QUERY
 
 
-fn type_info_query() -> String:
+def type_info_query() -> String:
     return METADATA_TYPE_INFO_QUERY
 
 
-fn metadata_query(collection_name: String = DEFAULT_METADATA_COLLECTION) raises -> String:
+def metadata_query(collection_name: String = DEFAULT_METADATA_COLLECTION) raises -> String:
     return resolve_metadata_collection_query(collection_name)
 
 
-fn metadata_query_restricted(
+def metadata_query_restricted(
     collection_name: String = DEFAULT_METADATA_COLLECTION,
     restriction_key: String = "",
     restriction_value: String = "",
@@ -117,7 +116,7 @@ fn metadata_query_restricted(
     )
 
 
-fn metadata_query_restricted_multi(
+def metadata_query_restricted_multi(
     collection_name: String,
     restriction_keys: List[String],
     restriction_values: List[String],

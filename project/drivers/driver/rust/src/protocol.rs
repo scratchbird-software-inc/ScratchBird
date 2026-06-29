@@ -9,12 +9,20 @@
 use std::collections::HashMap;
 
 use crate::errors::{Error, ErrorKind, Result};
+use crate::types::{
+    FORMAT_BINARY, FORMAT_TEXT, OID_BOOL, OID_FLOAT8, OID_INT4, OID_INT8, OID_NUMERIC, OID_TEXT,
+};
 
 pub const MAGIC_BYTES: [u8; 4] = *b"SBWP";
 pub const VERSION_MAJOR: u8 = 1;
 pub const VERSION_MINOR: u8 = 1;
+pub const PROTOCOL_VERSION: u16 = ((VERSION_MAJOR as u16) << 8) | VERSION_MINOR as u16;
 pub const HEADER_SIZE: usize = 40;
 pub const MAX_MESSAGE_SIZE: u32 = 1024 * 1024 * 1024;
+
+const CONNECT_VALUE_TEXT: u16 = 1;
+const P1_ROW_DESCRIPTION_HEADER_BYTES: usize = 72;
+const P1_CANONICAL_TYPE_REF_BYTES: usize = 144;
 
 pub const MSG_STARTUP: u8 = 0x01;
 pub const MSG_AUTH_RESPONSE: u8 = 0x02;
@@ -397,14 +405,40 @@ pub fn decode_header(data: &[u8]) -> Result<MessageHeader> {
 }
 
 pub fn build_startup_payload(features: u64, params: &HashMap<String, String>) -> Vec<u8> {
-    let param_bytes = build_param_list(params);
-    let mut out = Vec::with_capacity(2 + 2 + 8 + param_bytes.len());
-    out.push(VERSION_MAJOR);
-    out.push(VERSION_MINOR);
-    out.extend_from_slice(&0u16.to_le_bytes());
+    let param_bytes = build_p1_param_list(params);
+    let mut out = Vec::with_capacity(88 + param_bytes.len());
+    out.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    out.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&features.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&[0u8; 16]);
+    out.extend_from_slice(&[0u8; 16]);
+    out.extend_from_slice(&[0u8; 16]);
+    out.extend_from_slice(&(params.len() as u32).to_le_bytes());
     out.extend_from_slice(&param_bytes);
+    out.extend_from_slice(&0u32.to_le_bytes());
     out
+}
+
+fn build_p1_param_list(params: &HashMap<String, String>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut keys: Vec<&String> = params.keys().collect();
+    keys.sort();
+    for key in keys {
+        let value = params.get(key).map(String::as_str).unwrap_or("");
+        append_length_prefixed_string(&mut out, key);
+        out.extend_from_slice(&CONNECT_VALUE_TEXT.to_le_bytes());
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+    out
+}
+
+fn append_length_prefixed_string(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
 }
 
 fn build_param_list(params: &HashMap<String, String>) -> Vec<u8> {
@@ -840,6 +874,15 @@ pub fn parse_copy_fail(payload: &[u8]) -> Result<CopyFailInfo> {
 }
 
 pub fn parse_ready(payload: &[u8]) -> Result<(u8, u64, u64)> {
+    if payload.len() >= 76 && matches!(payload[56], b'I' | b'T' | b'E' | b'R' | b'A') {
+        let txn_id = u64::from_le_bytes(payload[48..56].try_into().unwrap_or([0u8; 8]));
+        let status = if matches!(payload[56], b'T' | b'E') {
+            1
+        } else {
+            0
+        };
+        return Ok((status, txn_id, txn_id));
+    }
     if payload.len() < 20 {
         return Err(Error::new(ErrorKind::Connection, "ready truncated"));
     }
@@ -858,13 +901,60 @@ pub fn parse_txn_status(payload: &[u8]) -> Result<(u8, u64)> {
     Ok((status, txn_id))
 }
 
-pub fn parse_parameter_status(payload: &[u8]) -> Result<(String, String)> {
+pub fn parse_parameter_statuses(payload: &[u8]) -> Result<Vec<(String, String)>> {
     if payload.len() < 8 {
         return Err(Error::new(
             ErrorKind::Connection,
             "parameter status truncated",
         ));
     }
+
+    let count = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    if count > 0 && count <= 256 {
+        let mut offset = 4usize;
+        let mut values = Vec::with_capacity(count as usize);
+        let mut ok = true;
+        for _ in 0..count {
+            if offset + 4 > payload.len() {
+                ok = false;
+                break;
+            }
+            let name_len = i32::from_le_bytes([
+                payload[offset],
+                payload[offset + 1],
+                payload[offset + 2],
+                payload[offset + 3],
+            ]);
+            offset += 4;
+            if name_len < 0 || offset + name_len as usize + 7 > payload.len() {
+                ok = false;
+                break;
+            }
+            let name_len = name_len as usize;
+            let name = String::from_utf8_lossy(&payload[offset..offset + name_len]).to_string();
+            offset += name_len;
+            offset += 3;
+            let value_len = i32::from_le_bytes([
+                payload[offset],
+                payload[offset + 1],
+                payload[offset + 2],
+                payload[offset + 3],
+            ]);
+            offset += 4;
+            if value_len < 0 || offset + value_len as usize > payload.len() {
+                ok = false;
+                break;
+            }
+            let value_len = value_len as usize;
+            let value = String::from_utf8_lossy(&payload[offset..offset + value_len]).to_string();
+            offset += value_len;
+            values.push((name, value));
+        }
+        if ok && offset == payload.len() {
+            return Ok(values);
+        }
+    }
+
     let name_len = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
     let name_start = 4;
     let name_end = name_start + name_len;
@@ -890,10 +980,41 @@ pub fn parse_parameter_status(payload: &[u8]) -> Result<(String, String)> {
         ));
     }
     let value = String::from_utf8_lossy(&payload[value_start..value_end]).to_string();
-    Ok((name, value))
+    Ok(vec![(name, value)])
+}
+
+pub fn parse_parameter_status(payload: &[u8]) -> Result<(String, String)> {
+    let statuses = parse_parameter_statuses(payload)?;
+    statuses
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::new(ErrorKind::Connection, "parameter status truncated"))
 }
 
 pub fn parse_parameter_description(payload: &[u8]) -> Result<Vec<u32>> {
+    if payload.len() >= P1_ROW_DESCRIPTION_HEADER_BYTES
+        && u16::from_le_bytes([payload[0], payload[1]]) == 1
+        && payload[3] == 1
+    {
+        let count =
+            u32::from_le_bytes([payload[68], payload[69], payload[70], payload[71]]) as usize;
+        let mut offset = P1_ROW_DESCRIPTION_HEADER_BYTES;
+        let mut types = Vec::with_capacity(count);
+        for _ in 0..count {
+            if offset + 4 + 4 + 8 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 4 + 5 > payload.len() {
+                return Err(Error::new(
+                    ErrorKind::Connection,
+                    "P1 parameter description truncated",
+                ));
+            }
+            let type_offset = offset + 4 + 4 + 8 + 8;
+            types.push(oid_from_canonical_type_ref(payload, type_offset));
+            offset = type_offset + P1_CANONICAL_TYPE_REF_BYTES + 4;
+            let (_, next_offset) = read_nullable_text(payload, offset)?;
+            offset = next_offset;
+        }
+        return Ok(types);
+    }
     if payload.len() < 4 {
         return Err(Error::new(
             ErrorKind::Connection,
@@ -922,6 +1043,9 @@ pub fn parse_parameter_description(payload: &[u8]) -> Result<Vec<u32>> {
 }
 
 pub fn parse_row_description(payload: &[u8]) -> Result<Vec<ColumnInfo>> {
+    if is_p1_row_description(payload) {
+        return parse_p1_row_description(payload);
+    }
     if payload.len() < 4 {
         return Err(Error::new(
             ErrorKind::Connection,
@@ -1001,6 +1125,137 @@ pub fn parse_row_description(payload: &[u8]) -> Result<Vec<ColumnInfo>> {
         });
     }
     Ok(columns)
+}
+
+fn is_p1_row_description(payload: &[u8]) -> bool {
+    payload.len() >= P1_ROW_DESCRIPTION_HEADER_BYTES
+        && u16::from_le_bytes([payload[0], payload[1]]) == 1
+        && payload[3] == 1
+}
+
+fn parse_p1_row_description(payload: &[u8]) -> Result<Vec<ColumnInfo>> {
+    let count = i32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    if count < 0 {
+        return Err(Error::new(
+            ErrorKind::Connection,
+            "P1 row description column count invalid",
+        ));
+    }
+    let count = count as usize;
+    let mut offset = P1_ROW_DESCRIPTION_HEADER_BYTES;
+    let mut columns = Vec::with_capacity(count);
+    for idx in 0..count {
+        let fixed_column_bytes = 4 + 4 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 56;
+        if offset + fixed_column_bytes > payload.len() {
+            return Err(Error::new(
+                ErrorKind::Connection,
+                "P1 row description truncated",
+            ));
+        }
+        let ordinal = i32::from_le_bytes([
+            payload[offset],
+            payload[offset + 1],
+            payload[offset + 2],
+            payload[offset + 3],
+        ]);
+        offset += 4;
+        offset += 1;
+        let format = if payload[offset] == 1 {
+            FORMAT_TEXT as u8
+        } else {
+            FORMAT_BINARY as u8
+        };
+        offset += 1;
+        let nullable = payload[offset] == 1;
+        offset += 1;
+        offset += 1;
+        offset += 8;
+        let type_oid = oid_from_canonical_type_ref(payload, offset);
+        offset += P1_CANONICAL_TYPE_REF_BYTES;
+        offset += 16 * 3;
+        offset += 4;
+        offset += 2;
+        offset += 2;
+        let (mut name, next_offset) = read_nullable_text(payload, offset)?;
+        offset = next_offset;
+        if name.is_empty() {
+            name = format!("column{}", idx + 1);
+        }
+        let column_index = if ordinal > 0 {
+            (ordinal - 1) as u16
+        } else {
+            idx as u16
+        };
+        columns.push(ColumnInfo {
+            name,
+            table_oid: 0,
+            column_index,
+            type_oid,
+            type_size: type_size_for_oid(type_oid),
+            type_modifier: -1,
+            format,
+            nullable,
+        });
+    }
+    Ok(columns)
+}
+
+fn oid_from_canonical_type_ref(payload: &[u8], offset: usize) -> u32 {
+    if offset + 4 > payload.len() {
+        return OID_TEXT;
+    }
+    let family = u16::from_le_bytes([payload[offset], payload[offset + 1]]);
+    let code = u16::from_le_bytes([payload[offset + 2], payload[offset + 3]]);
+    match (family, code) {
+        (1, 1) => OID_BOOL,
+        (2, 3) => OID_INT4,
+        (2, 4) => OID_INT8,
+        (4, 1) => OID_NUMERIC,
+        (6, 2) => OID_FLOAT8,
+        (8, 1) => OID_TEXT,
+        _ => OID_TEXT,
+    }
+}
+
+fn type_size_for_oid(type_oid: u32) -> i16 {
+    match type_oid {
+        OID_BOOL => 1,
+        OID_INT4 => 4,
+        OID_INT8 | OID_FLOAT8 => 8,
+        _ => -1,
+    }
+}
+
+fn read_nullable_text(payload: &[u8], mut offset: usize) -> Result<(String, usize)> {
+    if offset + 5 > payload.len() {
+        return Err(Error::new(ErrorKind::Connection, "nullable text truncated"));
+    }
+    let tag = payload[offset];
+    offset += 1;
+    let length = i32::from_le_bytes([
+        payload[offset],
+        payload[offset + 1],
+        payload[offset + 2],
+        payload[offset + 3],
+    ]);
+    offset += 4;
+    if length < 0 {
+        return Err(Error::new(
+            ErrorKind::Connection,
+            "nullable text length invalid",
+        ));
+    }
+    if tag == 0 {
+        return Ok((String::new(), offset));
+    }
+    let length = length as usize;
+    if offset + length > payload.len() {
+        return Err(Error::new(ErrorKind::Connection, "nullable text truncated"));
+    }
+    Ok((
+        String::from_utf8_lossy(&payload[offset..offset + length]).to_string(),
+        offset + length,
+    ))
 }
 
 pub fn parse_data_row(payload: &[u8], column_count: usize) -> Result<Vec<ColumnValue>> {

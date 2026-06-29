@@ -61,6 +61,7 @@ NATIVE_BINARY_KINDS = {
     "pascal_native_binary",
     "swift_native_binary",
     "dart_native_binary",
+    "mojo_native_binary",
 }
 
 
@@ -254,10 +255,10 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
         return DriverTool(
             driver,
             exe,
-            ["mojo", str(repo_root / "project" / "drivers" / "driver" / "mojo" / "tools" / "sb_isql_mojo.mojo")],
+            [str(build_root / "drivers" / "driver" / "mojo" / "bin" / "sb_isql_mojo")],
             repo_root,
-            ["mojo"],
-            "mojo_launcher",
+            [],
+            "mojo_native_binary",
         )
     raise KeyError(f"no driver tool contract for {driver}")
 
@@ -272,9 +273,20 @@ def write_launcher(path: Path, tool: DriverTool) -> None:
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         f"cd {shlex.quote(str(tool.cwd))}",
-        f"exec {quote_command(tool.command)} \"$@\"",
-        "",
     ]
+    if tool.kind == "python_launcher":
+        python_src = tool.cwd / "project" / "drivers" / "driver" / "python" / "src"
+        body.append(
+            "export PYTHONPATH="
+            + shlex.quote(str(python_src))
+            + '${PYTHONPATH:+":$PYTHONPATH"}'
+        )
+    body.extend(
+        [
+            f"exec {quote_command(tool.command)} \"$@\"",
+            "",
+        ]
+    )
     path.write_text("\n".join(body), encoding="utf-8")
     current = path.stat().st_mode
     path.chmod(current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -367,6 +379,37 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
                 "Release",
                 "-o",
                 str(out),
+            ],
+            repo_root,
+        )
+    if driver == "mojo" and shutil.which("mojo"):
+        bridge_build = run_command(
+            ["cmake", "--build", str(build_root), "--target", "scratchbird_mojo_client_bridge", "--parallel", "2"],
+            repo_root,
+        )
+        if bridge_build["returncode"] != 0:
+            return bridge_build
+        bridge_dir = build_root / "output" / "linux" / "lib"
+        bridge = bridge_dir / "libscratchbird_mojo_client_bridge.so"
+        out = build_root / "drivers" / "driver" / "mojo" / "bin" / "sb_isql_mojo"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return run_command(
+            [
+                "mojo",
+                "build",
+                "-I",
+                str(driver_root / "src"),
+                "-I",
+                str(driver_root / "src" / "scratchbird"),
+                "-Xlinker",
+                str(bridge),
+                "-Xlinker",
+                "-rpath",
+                "-Xlinker",
+                str(bridge_dir),
+                "-o",
+                str(out),
+                str(driver_root / "tools" / "sb_isql_mojo.mojo"),
             ],
             repo_root,
         )

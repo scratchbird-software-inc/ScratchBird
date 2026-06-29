@@ -9,7 +9,7 @@
 from python import Python
 
 
-fn main() raises:
+def main() raises:
     var os = Python.import_module("os")
     var runpy = Python.import_module("runpy")
     var candidates = Python.list()

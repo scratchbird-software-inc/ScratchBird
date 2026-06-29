@@ -76,6 +76,7 @@ internal static class SBIsqlDotNet
             ["timing"] = Path.Combine(runRoot, "timing-groups.json"),
             ["digests"] = Path.Combine(runRoot, "result-digests.json"),
             ["metadata"] = Path.Combine(runRoot, "metadata-snapshots.json"),
+            ["routeEnv"] = Path.Combine(runRoot, "route-environment.json"),
             ["refusals"] = Path.Combine(runRoot, "security-refusals.json"),
             ["api"] = Path.Combine(runRoot, "native-api-coverage.json"),
             ["review"] = Path.Combine(runRoot, "code-example-review.json"),
@@ -108,6 +109,8 @@ internal static class SBIsqlDotNet
         var securityRefusals = new List<Dictionary<string, object?>>();
         var started = NowNs();
         var expectedRefusals = LoadExpectedRefusals(ValueOrDefault(args, "--expected-refusals", ""));
+        await WriteTextAsync(paths["routeEnv"], JsonSerializer.Serialize(
+            RouteEnvironment(args, null, "fail", "not_probed")) + "\n");
 
         DbConnection? connection = null;
         try
@@ -172,6 +175,20 @@ internal static class SBIsqlDotNet
                 apiHits["AttachCreate"] = apiHits.GetValueOrDefault("AttachCreate") + 1;
                 AddTiming(timings, "database_create", createStarted);
             }
+            var routeEnvironment = await ProbeRouteEnvironmentAsync(connection, args);
+            await WriteTextAsync(paths["routeEnv"], JsonSerializer.Serialize(routeEnvironment) + "\n");
+            if (Required(args, "--route") != "embedded"
+                && routeEnvironment["page_size_verification_status"]?.ToString() != "pass")
+            {
+                failures.Add(new Dictionary<string, object?>
+                {
+                    ["statement_id"] = "route_page_size",
+                    ["message"] = "route page-size verification failed",
+                    ["expected_page_size_bytes"] = routeEnvironment["expected_page_size_bytes"],
+                    ["actual_page_size_bytes"] = routeEnvironment["actual_page_size_bytes"]
+                });
+                throw new InvalidOperationException("route page-size verification failed");
+            }
             if (Required(args, "--parser-mode") != "server-parser")
             {
                 throw new InvalidOperationException($"{Required(args, "--parser-mode")} is not yet implemented by the .NET native tool; it fails closed");
@@ -210,8 +227,8 @@ internal static class SBIsqlDotNet
                         {
                             command.Parameters.Add(parameter);
                             apiHits["DbParameter"]++;
+                            command.Prepare();
                         }
-                        command.Prepare();
                         await using var reader = await command.ExecuteReaderAsync();
                         apiHits["DbDataReader"]++;
                         var rows = new List<List<object?>>();
@@ -299,7 +316,7 @@ internal static class SBIsqlDotNet
             }
 
             var metadataStarted = NowNs();
-            var schema = connection.GetSchema("Tables");
+            var schema = connection.GetSchema("Schemas");
             apiHits["GetSchema"]++;
             await WriteTextAsync(paths["metadata"], JsonSerializer.Serialize(new
             {
@@ -325,6 +342,7 @@ internal static class SBIsqlDotNet
         timings["overall"] = elapsedTotal;
         var sslmode = ValueOrDefault(args, "--sslmode", "require");
         var transportMode = TransportModeForRoute(Required(args, "--route"), sslmode);
+        var processMetrics = CurrentProcessMetrics();
         var summary = new
         {
             run_id = ValueOrDefault(args, "--run-id", "manual"),
@@ -349,12 +367,19 @@ internal static class SBIsqlDotNet
             status = failures.Count == 0 ? "pass" : "fail",
             failure_count = failures.Count,
             elapsed_ns = elapsedTotal,
+            process_metrics = processMetrics,
             server_revalidation_required = true,
             driver_or_parser_finality = "forbidden",
             mga_authority = "engine"
         };
         await WriteTextAsync(Required(args, "--summary"), JsonSerializer.Serialize(summary) + "\n");
-        await WriteTextAsync(Required(args, "--metrics"), JsonSerializer.Serialize(timings) + "\n");
+        var clientMetrics = processMetrics["client"];
+        await WriteTextAsync(Required(args, "--metrics"), JsonSerializer.Serialize(new
+        {
+            role = "client",
+            rss_kb = clientMetrics["last_rss_kb"],
+            vsize_kb = clientMetrics["last_vsize_kb"]
+        }) + "\n");
         await WriteTextAsync(paths["timing"], JsonSerializer.Serialize(timings) + "\n");
         await WriteTextAsync(paths["digests"], JsonSerializer.Serialize(digests) + "\n");
         await WriteTextAsync(paths["refusals"], JsonSerializer.Serialize(securityRefusals) + "\n");
@@ -490,6 +515,93 @@ internal static class SBIsqlDotNet
             _ => "native_dotnet_tcp"
         };
 
+    private static int PageSizeBytes(string pageSize) =>
+        pageSize switch
+        {
+            "4k" => 4096,
+            "8k" => 8192,
+            "16k" => 16384,
+            "32k" => 32768,
+            "64k" => 65536,
+            "128k" => 131072,
+            _ => 0
+        };
+
+    private static Dictionary<string, object?> RouteEnvironment(
+        Dictionary<string, string> args,
+        int? actualPageSize,
+        string status,
+        string? reason = null)
+    {
+        var record = new Dictionary<string, object?>
+        {
+            ["run_id"] = ValueOrDefault(args, "--run-id", "manual"),
+            ["driver"] = "dotnet",
+            ["route"] = Required(args, "--route"),
+            ["sslmode"] = ValueOrDefault(args, "--sslmode", "require"),
+            ["parser_mode"] = Required(args, "--parser-mode"),
+            ["concurrency_mode"] = "single",
+            ["namespace"] = Required(args, "--namespace"),
+            ["page_size"] = Required(args, "--page-size"),
+            ["expected_page_size_bytes"] = PageSizeBytes(Required(args, "--page-size")),
+            ["actual_page_size_bytes"] = actualPageSize,
+            ["page_size_verification_source"] = "SHOW DATABASE",
+            ["page_size_verification_status"] = status,
+            ["transport_mode"] = TransportModeForRoute(Required(args, "--route"), ValueOrDefault(args, "--sslmode", "require")),
+            ["transport_endpoint_kind"] = EndpointKindForRoute(Required(args, "--route")),
+            ["driver_transport_implementation"] = TransportImplementationForRoute(Required(args, "--route"))
+        };
+        if (!string.IsNullOrWhiteSpace(reason))
+        {
+            record["failure_reason"] = reason;
+        }
+        return record;
+    }
+
+    private static async Task<Dictionary<string, object?>> ProbeRouteEnvironmentAsync(
+        DbConnection connection,
+        Dictionary<string, string> args)
+    {
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SHOW DATABASE";
+            await using var reader = await command.ExecuteReaderAsync();
+            var pageIndex = -1;
+            for (var index = 0; index < reader.FieldCount; index++)
+            {
+                if (string.Equals(reader.GetName(index), "page_size_bytes", StringComparison.OrdinalIgnoreCase))
+                {
+                    pageIndex = index;
+                    break;
+                }
+            }
+            if (pageIndex < 0 && reader.FieldCount >= 3)
+            {
+                pageIndex = 2;
+            }
+            if (pageIndex < 0)
+            {
+                return RouteEnvironment(args, null, "fail", "show_database_missing_page_size_bytes");
+            }
+            if (!await reader.ReadAsync())
+            {
+                return RouteEnvironment(args, null, "fail", "show_database_returned_no_rows");
+            }
+            var actual = Convert.ToInt32(reader.GetValue(pageIndex));
+            var expected = PageSizeBytes(Required(args, "--page-size"));
+            return RouteEnvironment(
+                args,
+                actual,
+                actual == expected ? "pass" : "fail",
+                actual == expected ? null : "actual_page_size_mismatch");
+        }
+        catch (Exception ex)
+        {
+            return RouteEnvironment(args, null, "fail", ex.Message);
+        }
+    }
+
     private static HashSet<string> LoadExpectedRefusals(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -551,6 +663,22 @@ internal static class SBIsqlDotNet
 
     private static void AddTiming(IDictionary<string, long> timings, string group, long started) =>
         timings[group] = (timings.TryGetValue(group, out var current) ? current : 0L) + (NowNs() - started);
+
+    private static Dictionary<string, Dictionary<string, long>> CurrentProcessMetrics()
+    {
+        var rssKb = Math.Max(1L, Environment.WorkingSet / 1024L);
+        var vsizeKb = Math.Max(rssKb, GC.GetTotalMemory(false) / 1024L);
+        return new Dictionary<string, Dictionary<string, long>>
+        {
+            ["client"] = new()
+            {
+                ["max_rss_kb"] = rssKb,
+                ["max_vsize_kb"] = vsizeKb,
+                ["last_rss_kb"] = rssKb,
+                ["last_vsize_kb"] = vsizeKb
+            }
+        };
+    }
 
     private static string Sha256Text(string text) =>
         "sha256:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();

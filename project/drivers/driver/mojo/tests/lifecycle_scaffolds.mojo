@@ -6,7 +6,6 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-from collections import List
 import circuit_breaker
 import keepalive
 import leak_detector
@@ -14,12 +13,12 @@ import pipeline
 import telemetry
 
 
-fn _require(condition: Bool, message: String) raises:
+def _require(condition: Bool, message: String) raises:
     if not condition:
         raise Error(message)
 
 
-fn main() raises:
+def main() raises:
     var keepalive_cfg = keepalive.KeepaliveConfig(100, 1000, 50)
     var tracker = keepalive.KeepaliveTracker(keepalive_cfg)
     tracker.mark_active(10)

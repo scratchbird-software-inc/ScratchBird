@@ -858,6 +858,28 @@ core::Status parseParameterStatuses(const std::vector<uint8_t>& payload,
 core::Status parseParameterDescription(const std::vector<uint8_t>& payload,
                                        std::vector<uint32_t>& param_types,
                                        core::ErrorContext* ctx) {
+    if (payload.size() >= 72 && readU16(payload.data()) == 1 && payload[3] == 1) {
+        const uint32_t count = readU32(payload.data() + 68);
+        size_t offset = 72;
+        param_types.clear();
+        param_types.reserve(count);
+        constexpr size_t kCanonicalTypeRefSize = 144;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (offset + 4 + 4 + 8 + 8 + kCanonicalTypeRefSize + 4 + 5 > payload.size()) {
+                setError(ctx, "P1 parameter description truncated");
+                return core::Status::PROTOCOL_VIOLATION;
+            }
+            const size_t type_offset = offset + 4 + 4 + 8 + 8;
+            param_types.push_back(oidFromCanonicalTypeRef(payload, type_offset));
+            offset = type_offset + kCanonicalTypeRefSize + 4;
+            std::string label;
+            if (!readNullableText(payload, offset, label)) {
+                setError(ctx, "P1 parameter description truncated");
+                return core::Status::PROTOCOL_VIOLATION;
+            }
+        }
+        return core::Status::OK;
+    }
     if (payload.size() < 4) {
         setError(ctx, "Parameter description truncated");
         return core::Status::PROTOCOL_VIOLATION;

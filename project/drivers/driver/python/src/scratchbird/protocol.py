@@ -136,6 +136,16 @@ FEATURE_SAVEPOINTS = 1 << 9
 COPY_FORMAT_TEXT = 0
 COPY_FORMAT_BINARY = 1
 
+_P1_ROW_DESCRIPTION_HEADER_BYTES = 72
+_P1_CANONICAL_TYPE_REF_BYTES = 144
+
+_OID_BOOL = 16
+_OID_INT4 = 23
+_OID_TEXT = 25
+_OID_INT8 = 20
+_OID_FLOAT8 = 701
+_OID_NUMERIC = 1700
+
 NATIVE_ROWSET_TYPE_TEXT = 1
 NATIVE_ROWSET_TYPE_INT64 = 2
 NATIVE_ROWSET_TYPE_BOOLEAN = 3
@@ -642,6 +652,22 @@ def parse_parameter_status(payload: bytes) -> Tuple[str, str]:
 
 
 def parse_parameter_description(payload: bytes) -> List[int]:
+    if (
+        len(payload) >= _P1_ROW_DESCRIPTION_HEADER_BYTES
+        and struct.unpack_from("<H", payload, 0)[0] == 1
+        and payload[3] == 1
+    ):
+        count = struct.unpack_from("<I", payload, 68)[0]
+        offset = _P1_ROW_DESCRIPTION_HEADER_BYTES
+        types: List[int] = []
+        for _ in range(count):
+            if offset + 4 + 4 + 8 + 8 + _P1_CANONICAL_TYPE_REF_BYTES + 4 + 5 > len(payload):
+                raise ValueError("P1 parameter description truncated")
+            type_offset = offset + 4 + 4 + 8 + 8
+            types.append(_oid_from_canonical_type_ref(payload, type_offset))
+            offset = type_offset + _P1_CANONICAL_TYPE_REF_BYTES + 4
+            _, offset = _read_nullable_text(payload, offset)
+        return types
     if len(payload) < 4:
         raise ValueError("parameter description truncated")
     count = struct.unpack_from("<H", payload, 0)[0]
@@ -656,6 +682,8 @@ def parse_parameter_description(payload: bytes) -> List[int]:
 
 
 def parse_row_description(payload: bytes) -> List[ColumnInfo]:
+    if _is_p1_row_description(payload):
+        return _parse_p1_row_description(payload)
     if len(payload) < 4:
         raise ValueError("row description truncated")
     count = struct.unpack_from("<H", payload, 0)[0]
@@ -689,6 +717,101 @@ def parse_row_description(payload: bytes) -> List[ColumnInfo]:
         offset += 2
         columns.append(ColumnInfo(name, table_oid, column_index, type_oid, type_size, type_modifier, fmt, nullable))
     return columns
+
+
+def _is_p1_row_description(payload: bytes) -> bool:
+    return (
+        len(payload) >= _P1_ROW_DESCRIPTION_HEADER_BYTES
+        and struct.unpack_from("<H", payload, 0)[0] == 1
+        and payload[3] == 1
+    )
+
+
+def _parse_p1_row_description(payload: bytes) -> List[ColumnInfo]:
+    count = struct.unpack_from("<i", payload, 4)[0]
+    if count < 0:
+        raise ValueError("P1 row description column count invalid")
+    offset = _P1_ROW_DESCRIPTION_HEADER_BYTES
+    columns: List[ColumnInfo] = []
+    for idx in range(count):
+        fixed_column_bytes = 4 + 4 + 8 + _P1_CANONICAL_TYPE_REF_BYTES + 56
+        if offset + fixed_column_bytes > len(payload):
+            raise ValueError("P1 row description truncated")
+        ordinal = struct.unpack_from("<i", payload, offset)[0]
+        offset += 4
+        offset += 1
+        fmt = COPY_FORMAT_TEXT if payload[offset] == 1 else COPY_FORMAT_BINARY
+        offset += 1
+        nullable = payload[offset] == 1
+        offset += 1
+        offset += 1
+        offset += 8
+        type_oid = _oid_from_canonical_type_ref(payload, offset)
+        offset += _P1_CANONICAL_TYPE_REF_BYTES
+        offset += 16 * 3
+        offset += 4
+        offset += 2
+        offset += 2
+        name, offset = _read_nullable_text(payload, offset)
+        columns.append(
+            ColumnInfo(
+                name or f"column{idx + 1}",
+                0,
+                idx if ordinal == 0 else ordinal - 1,
+                type_oid,
+                _type_size_for_oid(type_oid),
+                -1,
+                fmt,
+                nullable,
+            )
+        )
+    return columns
+
+
+def _oid_from_canonical_type_ref(payload: bytes, offset: int) -> int:
+    if offset + 4 > len(payload):
+        return _OID_TEXT
+    family = struct.unpack_from("<H", payload, offset)[0]
+    code = struct.unpack_from("<H", payload, offset + 2)[0]
+    if family == 1 and code == 1:
+        return _OID_BOOL
+    if family == 2 and code == 3:
+        return _OID_INT4
+    if family == 2 and code == 4:
+        return _OID_INT8
+    if family == 4 and code == 1:
+        return _OID_NUMERIC
+    if family == 6 and code == 2:
+        return _OID_FLOAT8
+    if family == 8 and code == 1:
+        return _OID_TEXT
+    return _OID_TEXT
+
+
+def _type_size_for_oid(type_oid: int) -> int:
+    if type_oid == _OID_BOOL:
+        return 1
+    if type_oid == _OID_INT4:
+        return 4
+    if type_oid in (_OID_INT8, _OID_FLOAT8):
+        return 8
+    return -1
+
+
+def _read_nullable_text(payload: bytes, offset: int) -> Tuple[str, int]:
+    if offset + 5 > len(payload):
+        raise ValueError("nullable text truncated")
+    tag = payload[offset]
+    offset += 1
+    length = struct.unpack_from("<i", payload, offset)[0]
+    offset += 4
+    if length < 0:
+        raise ValueError("nullable text length invalid")
+    if tag == 0:
+        return "", offset
+    if offset + length > len(payload):
+        raise ValueError("nullable text truncated")
+    return payload[offset : offset + length].decode("utf-8", errors="replace"), offset + length
 
 
 def parse_data_row(payload: bytes, column_count: int) -> List[ColumnValue]:

@@ -49,7 +49,8 @@ private:
     static SQLSMALLINT mapTypeOid(uint32_t type_oid);
     static std::string typeOidToString(uint32_t type_oid);
     static std::string stringifyValue(const protocol::ColumnValue& val,
-                                      uint32_t type_oid);
+                                      uint32_t type_oid,
+                                      uint8_t format);
 
     client::NetworkClient client_;
     core::Status last_status_{core::Status::OK};

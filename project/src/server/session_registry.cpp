@@ -307,6 +307,26 @@ const HostedDatabaseSnapshot* FirstOpenDatabase(const HostedEngineState& engine_
   return nullptr;
 }
 
+std::uint64_t FirstOpenDatabasePageSizeBytes(const HostedEngineState& engine_state) {
+  if (const auto* database = FirstOpenDatabase(engine_state); database != nullptr) {
+    return database->page_size_bytes;
+  }
+  return 0;
+}
+
+std::uint64_t DatabasePageSizeBytesForSession(const ServerSessionRecord& session,
+                                              const HostedEngineState& engine_state) {
+  for (const auto& database : engine_state.databases) {
+    if (!database.database_open) continue;
+    const bool path_matches = !session.database_path.empty() &&
+                              database.database_path == session.database_path;
+    const bool uuid_matches = !session.database_uuid.empty() &&
+                              database.database_uuid == session.database_uuid;
+    if (path_matches || uuid_matches) return database.page_size_bytes;
+  }
+  return FirstOpenDatabasePageSizeBytes(engine_state);
+}
+
 void ApplyDatabaseHealthToSession(ServerSessionRecord* session,
                                   const HostedDatabaseSnapshot& database) {
   if (session == nullptr) return;
@@ -479,6 +499,7 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
   context.request_id = UuidBytesToText(request.header.request_uuid);
   context.database_path = FirstOpenDatabasePath(engine_state);
   context.database_uuid.canonical = FirstOpenDatabaseUuid(engine_state);
+  context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
   context.statement_uuid.canonical = context.request_id;
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;
@@ -867,6 +888,7 @@ engine_api::EngineRequestContext EngineContextForSession(const ServerSessionReco
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
   context.database_uuid.canonical =
       session.database_uuid.empty() ? context.database_uuid.canonical : session.database_uuid;
+  context.database_page_size_bytes = DatabasePageSizeBytesForSession(session, engine_state);
   context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
   context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
   context.transaction_uuid.canonical = session.transaction_uuid;

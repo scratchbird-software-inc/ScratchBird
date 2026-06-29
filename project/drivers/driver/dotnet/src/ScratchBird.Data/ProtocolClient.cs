@@ -1090,8 +1090,10 @@ internal sealed class ProtocolClient
                 }
                 case MessageType.PARAMETER_STATUS:
                 {
-                    var status = ProtocolCodec.ParseParameterStatus(msg.Payload);
-                    _parameters[status.Name] = status.Value;
+                    foreach (var status in ProtocolCodec.ParseParameterStatuses(msg.Payload))
+                    {
+                        _parameters[status.Name] = status.Value;
+                    }
                     continue;
                 }
                 case MessageType.READY:
@@ -1476,15 +1478,17 @@ internal sealed class ProtocolClient
         {
             case MessageType.PARAMETER_STATUS:
             {
-                var status = ProtocolCodec.ParseParameterStatus(msg.Payload);
-                _parameters[status.Name] = status.Value;
-                if (status.Name == "attachment_id" && TryParseUuidBytes(status.Value, out var attachment))
+                foreach (var status in ProtocolCodec.ParseParameterStatuses(msg.Payload))
                 {
-                    _attachmentId = attachment;
-                }
-                if (status.Name == "current_txn_id" && TryParseUInt64(status.Value, out var txnId))
-                {
-                    ApplyRuntimeTxnId(txnId);
+                    _parameters[status.Name] = status.Value;
+                    if (status.Name == "attachment_id" && TryParseUuidBytes(status.Value, out var attachment))
+                    {
+                        _attachmentId = attachment;
+                    }
+                    if (status.Name == "current_txn_id" && TryParseUInt64(status.Value, out var txnId))
+                    {
+                        ApplyRuntimeTxnId(txnId);
+                    }
                 }
                 return true;
             }
@@ -1982,6 +1986,8 @@ internal sealed class ProtocolClient
         private bool _disposed;
         private bool _hasCurrentResult;
         private bool _currentResultComplete;
+        private bool _responseStarted;
+        private bool _ignoredStrayReady;
         private long _rowsReadInResult;
         private ProtocolMessage? _pendingMessage;
         private readonly Queue<object?[]> _pendingRows = new();
@@ -2043,6 +2049,11 @@ internal sealed class ProtocolClient
         public long RowsAffected => _rowsAffected;
         public string Command => _command;
         public bool IsDone => _done;
+
+        public bool PrimeMetadata()
+        {
+            return EnsureCurrentResult();
+        }
 
         public bool NextResult()
         {
@@ -2126,10 +2137,12 @@ internal sealed class ProtocolClient
                     case MessageType.ERROR:
                         throw _client.BuildQueryException(msg.Payload);
                     case MessageType.ROW_DESCRIPTION:
+                        _responseStarted = true;
                         _columns = ProtocolCodec.ParseRowDescription(msg.Payload);
                         break;
                     case MessageType.DATA_ROW:
                     {
+                        _responseStarted = true;
                         var values = ProtocolCodec.ParseDataRow(msg.Payload);
                         var row = new object?[values.Count];
                         for (var i = 0; i < values.Count; i++)
@@ -2143,6 +2156,7 @@ internal sealed class ProtocolClient
                     }
                     case MessageType.COMMAND_COMPLETE:
                     {
+                        _responseStarted = true;
                         ApplyCommandComplete(msg.Payload);
                         PrefetchBoundaryMessage();
                         break;
@@ -2155,6 +2169,12 @@ internal sealed class ProtocolClient
                     }
                     case MessageType.READY:
                     {
+                        if (!_responseStarted && !_ignoredStrayReady)
+                        {
+                            ApplyReadyStateOnly(msg.Payload);
+                            _ignoredStrayReady = true;
+                            continue;
+                        }
                         MarkReady(msg.Payload);
                         return null;
                     }
@@ -2196,11 +2216,13 @@ internal sealed class ProtocolClient
                     case MessageType.ERROR:
                         throw _client.BuildQueryException(msg.Payload);
                     case MessageType.ROW_DESCRIPTION:
+                        _responseStarted = true;
                         _columns = ProtocolCodec.ParseRowDescription(msg.Payload);
                         _hasCurrentResult = true;
                         return true;
                     case MessageType.DATA_ROW:
                     {
+                        _responseStarted = true;
                         _hasCurrentResult = true;
                         var values = ProtocolCodec.ParseDataRow(msg.Payload);
                         var row = new object?[values.Count];
@@ -2214,6 +2236,7 @@ internal sealed class ProtocolClient
                         return true;
                     }
                     case MessageType.COMMAND_COMPLETE:
+                        _responseStarted = true;
                         _hasCurrentResult = true;
                         ApplyCommandComplete(msg.Payload);
                         PrefetchBoundaryMessage();
@@ -2225,6 +2248,12 @@ internal sealed class ProtocolClient
                         break;
                     }
                     case MessageType.READY:
+                        if (!_responseStarted && !_ignoredStrayReady)
+                        {
+                            ApplyReadyStateOnly(msg.Payload);
+                            _ignoredStrayReady = true;
+                            continue;
+                        }
                         MarkReady(msg.Payload);
                         return false;
                     case MessageType.EMPTY_QUERY:
@@ -2255,12 +2284,15 @@ internal sealed class ProtocolClient
                     case MessageType.ERROR:
                         throw _client.BuildQueryException(msg.Payload);
                     case MessageType.ROW_DESCRIPTION:
+                        _responseStarted = true;
                         _columns = ProtocolCodec.ParseRowDescription(msg.Payload);
                         break;
                     case MessageType.DATA_ROW:
+                        _responseStarted = true;
                         _rowsReadInResult++;
                         break;
                     case MessageType.COMMAND_COMPLETE:
+                        _responseStarted = true;
                         ApplyCommandComplete(msg.Payload);
                         PrefetchBoundaryMessage();
                         return;
@@ -2271,6 +2303,12 @@ internal sealed class ProtocolClient
                         break;
                     }
                     case MessageType.READY:
+                        if (!_responseStarted && !_ignoredStrayReady)
+                        {
+                            ApplyReadyStateOnly(msg.Payload);
+                            _ignoredStrayReady = true;
+                            continue;
+                        }
                         MarkReady(msg.Payload);
                         return;
                     case MessageType.EMPTY_QUERY:
@@ -2331,11 +2369,15 @@ internal sealed class ProtocolClient
 
         private void MarkReady(byte[] payload)
         {
-            var ready = ProtocolCodec.ParseReady(payload);
-            _client.ApplyRuntimeReadyState(ready.Status, ready.TxnId);
+            ApplyReadyStateOnly(payload);
             _done = true;
             _currentResultComplete = true;
-            _timeoutCts?.Cancel();
+        }
+
+        private void ApplyReadyStateOnly(byte[] payload)
+        {
+            var ready = ProtocolCodec.ParseReady(payload);
+            _client.ApplyRuntimeReadyState(ready.Status, ready.TxnId);
         }
 
         private void ResetCurrentResultState()
@@ -2346,6 +2388,8 @@ internal sealed class ProtocolClient
             _rowsReadInResult = 0;
             _hasCurrentResult = false;
             _currentResultComplete = false;
+            _responseStarted = false;
+            _ignoredStrayReady = false;
             _pendingRows.Clear();
         }
     }

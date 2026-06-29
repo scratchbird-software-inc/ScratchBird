@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -83,6 +84,16 @@ int64_t nowNs() {
 
 bool networkRoute(const std::string& route) {
     return route == "listener-parser" || route == "manager-listener-parser";
+}
+
+uint32_t pageSizeBytesForLabel(const std::string& pageSize) {
+    if (pageSize == "4k") return 4096;
+    if (pageSize == "8k") return 8192;
+    if (pageSize == "16k") return 16384;
+    if (pageSize == "32k") return 32768;
+    if (pageSize == "64k") return 65536;
+    if (pageSize == "128k") return 131072;
+    return 0;
 }
 
 std::string transportModeForRoute(const std::string& route, const std::string& sslmode) {
@@ -287,6 +298,39 @@ std::string firstTokenLower(const std::string& sql) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return first;
+}
+
+std::vector<std::string> leadingTokensLower(const std::string& sql, std::size_t limit) {
+    std::istringstream in(stripLeadingTrivia(sql));
+    std::vector<std::string> tokens;
+    std::string token;
+    while (tokens.size() < limit && in >> token) {
+        for (char& ch : token) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+std::string savepointName(const std::string& sql) {
+    const auto tokens = leadingTokensLower(sql, 4);
+    if (tokens.empty()) {
+        return "";
+    }
+    if (tokens[0] == "savepoint" && tokens.size() >= 2) {
+        return tokens[1];
+    }
+    if (tokens[0] == "release" && tokens.size() >= 3 && tokens[1] == "savepoint") {
+        return tokens[2];
+    }
+    if (tokens[0] == "rollback" && tokens.size() >= 3 && tokens[1] == "to") {
+        if (tokens[2] == "savepoint" && tokens.size() >= 4) {
+            return tokens[3];
+        }
+        return tokens[2];
+    }
+    return "";
 }
 
 std::string lowerAscii(std::string value) {
@@ -531,7 +575,10 @@ std::string classify(const std::string& sql) {
     if (first == "session" || first == "connect" || first == "disconnect") return "session";
     if (first == "create" || first == "alter" || first == "drop") return "ddl";
     if (first == "insert" || first == "update" || first == "delete" || first == "merge" || first == "upsert") return "dml";
-    if (first == "commit" || first == "rollback" || first == "savepoint" || first == "begin" || first == "start") return "transaction";
+    if (first == "commit" || first == "rollback" || first == "savepoint" ||
+        first == "begin" || first == "start" || first == "release") {
+        return "transaction";
+    }
     if (first == "grant" || first == "revoke") return "security_refusal";
     if (first == "copy") return "copy";
     return sql.find("sys.") != std::string::npos ? "metadata" : "query";
@@ -547,6 +594,23 @@ bool statementReturnsRows(const std::string& sql) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return (" " + lowered + " ").find(" returning ") != std::string::npos;
+}
+
+json currentProcessMetrics() {
+    long long vsizeKb = 1;
+    long long rssKb = 1;
+    std::ifstream statm("/proc/self/statm");
+    long long sizePages = 0;
+    long long residentPages = 0;
+    if (statm >> sizePages >> residentPages) {
+        constexpr long long kPageKb = 4;
+        vsizeKb = std::max(1LL, sizePages * kPageKb);
+        rssKb = std::max(1LL, residentPages * kPageKb);
+    }
+    return {{"client", {{"max_rss_kb", rssKb},
+                        {"max_vsize_kb", vsizeKb},
+                        {"last_rss_kb", rssKb},
+                        {"last_vsize_kb", vsizeKb}}}};
 }
 
 std::map<std::string, std::string> parseArgs(int argc, char** argv) {
@@ -604,6 +668,7 @@ int main(int argc, char** argv) {
             {"timing", runRoot + "/timing-groups.json"},
             {"digests", runRoot + "/result-digests.json"},
             {"metadata", runRoot + "/metadata-snapshots.json"},
+            {"route_env", runRoot + "/route-environment.json"},
             {"refusals", runRoot + "/security-refusals.json"},
             {"api", runRoot + "/native-api-coverage.json"},
             {"review", runRoot + "/code-example-review.json"},
@@ -629,6 +694,7 @@ int main(int argc, char** argv) {
         const std::string route = required(args, "--route");
         const std::string parserMode = required(args, "--parser-mode");
         const std::string pageSize = required(args, "--page-size");
+        const uint32_t expectedPageSizeBytes = pageSizeBytesForLabel(pageSize);
         const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
         const std::string transportMode = transportModeForRoute(route, sslmode);
         const std::string tlsPolicy = tlsPolicyForRoute(route, sslmode);
@@ -702,6 +768,27 @@ int main(int argc, char** argv) {
             failures.push_back({{"statement_id", "connect"}, {"message", statusMessage(ctx)}});
         }
 
+        json routeEnvironment{{"run_id", valueOrDefault(args, "--run-id", "manual")},
+                              {"driver", "cpp"},
+                              {"route", route},
+                              {"sslmode", sslmode},
+                              {"parser_mode", parserMode},
+                              {"concurrency_mode", "single"},
+                              {"namespace", required(args, "--namespace")},
+                              {"page_size", pageSize},
+                              {"expected_page_size_bytes", expectedPageSizeBytes},
+                              {"actual_page_size_bytes", nullptr},
+                              {"page_size_verification_source", "SHOW DATABASE"},
+                              {"page_size_verification_status", "fail"},
+                              {"failure_reason", "not_probed"},
+                              {"transport_mode", transportMode},
+                              {"transport_endpoint_kind", endpointKindForRoute(route)},
+                              {"driver_transport_implementation", transportImplementationForRoute(route)}};
+        if (status != scratchbird::core::Status::OK) {
+            routeEnvironment["failure_reason"] = "connect_failed";
+        }
+        writeText(paths.at("route_env"), routeEnvironment.dump(2) + "\n");
+
         if (failures.empty() && booleanArg(args, "--create-database", false)) {
             const int64_t createStarted = nowNs();
             status = conn.attachCreate(valueOrDefault(args, "--create-emulation-mode", "sbsql"),
@@ -714,6 +801,43 @@ int main(int argc, char** argv) {
                 failures.push_back({{"statement_id", "database_create"},
                                     {"message", statusMessage(ctx)},
                                     {"create_emulation_mode", valueOrDefault(args, "--create-emulation-mode", "sbsql")}});
+            }
+        }
+
+        if (failures.empty()) {
+            scratchbird::client::ResultSet databaseInfo;
+            scratchbird::core::ErrorContext pageCtx;
+            const int64_t pageProbeStarted = nowNs();
+            const auto pageStatus = conn.executeQuery("SHOW DATABASE", &databaseInfo, &pageCtx);
+            api["executeQuery"]++;
+            api["execute"]++;
+            addTiming(timings, "metadata", pageProbeStarted);
+            if (pageStatus == scratchbird::core::Status::OK && databaseInfo.next()) {
+                api["ResultSet::next"]++;
+                const int pageSizeColumn = databaseInfo.getColumnIndex("page_size_bytes");
+                if (pageSizeColumn >= 0 && !databaseInfo.isNull(static_cast<size_t>(pageSizeColumn))) {
+                    const auto actual = static_cast<uint32_t>(
+                        databaseInfo.getInt32(static_cast<size_t>(pageSizeColumn)));
+                    routeEnvironment["actual_page_size_bytes"] = actual;
+                    routeEnvironment["page_size_verification_status"] =
+                        actual == expectedPageSizeBytes ? "pass" : "fail";
+                    if (actual != expectedPageSizeBytes) {
+                        routeEnvironment["failure_reason"] = "actual_page_size_mismatch";
+                    }
+                } else {
+                    routeEnvironment["failure_reason"] = "show_database_missing_page_size_bytes";
+                }
+            } else {
+                routeEnvironment["failure_reason"] = statusMessage(pageCtx);
+            }
+            writeText(paths.at("route_env"), routeEnvironment.dump(2) + "\n");
+            if (route != "embedded" &&
+                routeEnvironment.value("page_size_verification_status", "fail") != "pass") {
+                failures.push_back({{"statement_id", "route_page_size"},
+                                    {"message", "route page-size verification failed"},
+                                    {"expected_page_size_bytes", expectedPageSizeBytes},
+                                    {"actual_page_size_bytes",
+                                     routeEnvironment.value("actual_page_size_bytes", json(nullptr))}});
             }
         }
         if (failures.empty() && parserMode != "server-parser") {
@@ -740,12 +864,24 @@ int main(int argc, char** argv) {
                 std::string sqlState = "00000";
 
                 if (group == "transaction") {
-                    if (firstTokenLower(sql) == "commit") {
+                    const auto tokens = leadingTokensLower(sql, 4);
+                    const std::string first = tokens.empty() ? "" : tokens[0];
+                    const std::string second = tokens.size() > 1 ? tokens[1] : "";
+                    if (first == "commit") {
                         status = conn.commit(&ctx);
                         api["commit"]++;
-                    } else if (firstTokenLower(sql) == "rollback") {
+                    } else if (first == "rollback" && second != "to") {
                         status = conn.rollback(&ctx);
                         api["rollback"]++;
+                    } else if (first == "savepoint") {
+                        status = conn.savepoint(savepointName(sql), &ctx);
+                        api["savepoint"]++;
+                    } else if (first == "release" && second == "savepoint") {
+                        status = conn.releaseSavepoint(savepointName(sql), &ctx);
+                        api["releaseSavepoint"]++;
+                    } else if (first == "rollback" && second == "to") {
+                        status = conn.rollbackTo(savepointName(sql), &ctx);
+                        api["rollbackTo"]++;
                     } else {
                         status = conn.beginTransaction(&ctx);
                     }
@@ -898,6 +1034,7 @@ int main(int argc, char** argv) {
 
         conn.disconnect();
         timings["overall"] = nowNs() - started;
+        const json processMetrics = currentProcessMetrics();
         const json summaryJson{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                                {"driver_name", "cpp"},
                                {"route", route},
@@ -910,6 +1047,9 @@ int main(int argc, char** argv) {
                                {"driver_transport_implementation", transportImplementationForRoute(route)},
                                {"cpp_library_boundary", "native_cpp_driver"},
                                {"tls_policy", tlsPolicy},
+                               {"expected_page_size_bytes", expectedPageSizeBytes},
+                               {"actual_page_size_bytes", routeEnvironment.value("actual_page_size_bytes", json(nullptr))},
+                               {"page_size_verification_status", routeEnvironment.value("page_size_verification_status", "fail")},
                                {"language_resource_pack", languageResourcePack},
                                {"language_resource_identity", languageResourceIdentity},
                                {"language_resource_hash", languageResourceHash},
@@ -921,13 +1061,16 @@ int main(int argc, char** argv) {
                                {"status", failures.empty() ? "pass" : "fail"},
                                {"failure_count", failures.size()},
                                {"elapsed_ns", timings["overall"]},
+                               {"process_metrics", processMetrics},
                                {"server_revalidation_required", true},
                                {"parser_output_to_engine_required", true},
                                {"engine_sql_text_execution", false},
                                {"driver_or_parser_finality", "forbidden"},
                                {"mga_authority", "engine"}};
         writeText(summaryPath, summaryJson.dump() + "\n");
-        writeText(required(args, "--metrics"), json(timings).dump() + "\n");
+        writeText(required(args, "--metrics"), json({{"role", "client"},
+                                                     {"rss_kb", processMetrics["client"]["last_rss_kb"]},
+                                                     {"vsize_kb", processMetrics["client"]["last_vsize_kb"]}}).dump() + "\n");
         writeText(paths.at("timing"), json(timings).dump() + "\n");
         writeText(paths.at("digests"), digests.dump() + "\n");
         writeText(paths.at("refusals"), securityRefusals.dump() + "\n");

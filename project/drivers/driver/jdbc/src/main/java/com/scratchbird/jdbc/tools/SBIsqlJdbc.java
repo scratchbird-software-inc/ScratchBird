@@ -123,6 +123,7 @@ public final class SBIsqlJdbc {
         Path timingPath = runRoot.resolve("timing-groups.json");
         Path digestsPath = runRoot.resolve("result-digests.json");
         Path metadataPath = runRoot.resolve("metadata-snapshots.json");
+        Path routeEnvironmentPath = runRoot.resolve("route-environment.json");
         Path refusalsPath = runRoot.resolve("security-refusals.json");
         Path apiPath = runRoot.resolve("native-api-coverage.json");
         Path reviewPath = runRoot.resolve("code-example-review.json");
@@ -131,7 +132,9 @@ public final class SBIsqlJdbc {
         Path stderrLogPath = runRoot.resolve("stderr.log");
 
         initialize(outputPath, errorPath, diagnosticsPath, metricsPath, transcriptPath,
-            eventsPath, wirePath, stdoutLogPath, stderrLogPath);
+            eventsPath, wirePath, routeEnvironmentPath, stdoutLogPath, stderrLogPath);
+        writeText(routeEnvironmentPath, toJson(
+            routeEnvironment(args, null, "fail", "not_probed")) + "\n");
         Set<String> expectedRefusals =
             loadExpectedRefusals(args.valueOrDefault("--expected-refusals", ""));
 
@@ -185,6 +188,17 @@ public final class SBIsqlJdbc {
                     args.required("--database"));
                 apiHits.merge("SBConnection.attachCreate", 1, Integer::sum);
                 addTiming(timings, "database_create", System.nanoTime() - createStarted);
+            }
+            Map<String, Object> routeEnvironment = probeRouteEnvironment(conn, args);
+            writeText(routeEnvironmentPath, toJson(routeEnvironment) + "\n");
+            if (!"embedded".equals(args.required("--route"))
+                && !"pass".equals(routeEnvironment.get("page_size_verification_status"))) {
+                failures.add(mapOf(
+                    "statement_id", "route_page_size",
+                    "message", "route page-size verification failed",
+                    "expected_page_size_bytes", routeEnvironment.get("expected_page_size_bytes"),
+                    "actual_page_size_bytes", routeEnvironment.get("actual_page_size_bytes")));
+                throw new SQLException("route page-size verification failed");
             }
             if (!"server-parser".equals(args.required("--parser-mode"))) {
                 throw new UnsupportedOperationException(
@@ -333,6 +347,7 @@ public final class SBIsqlJdbc {
         timings.put("overall", elapsed);
         String sslmode = args.required("--sslmode");
         String transportMode = transportModeForRoute(args.required("--route"), sslmode);
+        Map<String, Object> processMetrics = currentProcessMetrics();
         Map<String, Object> summary = mapOf(
             "run_id", args.valueOrDefault("--run-id", "manual"),
             "driver_name", "jdbc",
@@ -357,11 +372,17 @@ public final class SBIsqlJdbc {
             "status", failures.isEmpty() ? "pass" : "fail",
             "failure_count", failures.size(),
             "elapsed_ns", elapsed,
+            "process_metrics", processMetrics,
             "server_revalidation_required", true,
             "driver_or_parser_finality", "forbidden",
             "mga_authority", "engine");
         writeText(summaryPath, toJson(summary) + "\n");
-        writeText(metricsPath, toJson(timings) + "\n");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> clientMetrics = (Map<String, Object>) processMetrics.get("client");
+        writeText(metricsPath, toJson(mapOf(
+            "role", "client",
+            "rss_kb", clientMetrics.get("last_rss_kb"),
+            "vsize_kb", clientMetrics.get("last_vsize_kb"))) + "\n");
         writeText(timingPath, toJson(timings) + "\n");
         writeText(digestsPath, toJson(digests) + "\n");
         writeText(refusalsPath, toJson(securityRefusals) + "\n");
@@ -407,6 +428,17 @@ public final class SBIsqlJdbc {
         props.setProperty("connectTimeout", String.valueOf(Math.max(1,
             Integer.parseInt(args.valueOrDefault("--statement-timeout-ms", "30000")) / 1000)));
         return DriverManager.getConnection(url, props);
+    }
+
+    private static Map<String, Object> currentProcessMetrics() {
+        Runtime runtime = Runtime.getRuntime();
+        long usedKb = Math.max(1L, (runtime.totalMemory() - runtime.freeMemory()) / 1024L);
+        long committedKb = Math.max(usedKb, runtime.totalMemory() / 1024L);
+        return mapOf("client", mapOf(
+            "max_rss_kb", usedKb,
+            "max_vsize_kb", committedKb,
+            "last_rss_kb", usedKb,
+            "last_vsize_kb", committedKb));
     }
 
     private static Map<String, Object> metadataSnapshot(Connection conn, Map<String, Integer> apiHits)
@@ -681,6 +713,74 @@ public final class SBIsqlJdbc {
             return "native_jdbc_unix_domain_socket";
         }
         return "native_jdbc_tcp";
+    }
+
+    private static int pageSizeBytes(String pageSize) {
+        return switch (pageSize) {
+            case "4k" -> 4096;
+            case "8k" -> 8192;
+            case "16k" -> 16384;
+            case "32k" -> 32768;
+            case "64k" -> 65536;
+            case "128k" -> 131072;
+            default -> 0;
+        };
+    }
+
+    private static Map<String, Object> routeEnvironment(
+        Args args,
+        Integer actualPageSize,
+        String status,
+        String reason) {
+        Map<String, Object> record = mapOf(
+            "run_id", args.valueOrDefault("--run-id", "manual"),
+            "driver", "jdbc",
+            "route", args.required("--route"),
+            "sslmode", args.valueOrDefault("--sslmode", "require"),
+            "parser_mode", args.required("--parser-mode"),
+            "concurrency_mode", "single",
+            "namespace", args.required("--namespace"),
+            "page_size", args.required("--page-size"),
+            "expected_page_size_bytes", pageSizeBytes(args.required("--page-size")),
+            "actual_page_size_bytes", actualPageSize,
+            "page_size_verification_source", "SHOW DATABASE",
+            "page_size_verification_status", status,
+            "transport_mode", transportModeForRoute(args.required("--route"), args.valueOrDefault("--sslmode", "require")),
+            "transport_endpoint_kind", endpointKindForRoute(args.required("--route")),
+            "driver_transport_implementation", transportImplementationForRoute(args.required("--route")));
+        if (reason != null && !reason.isBlank()) {
+            record.put("failure_reason", reason);
+        }
+        return record;
+    }
+
+    private static Map<String, Object> probeRouteEnvironment(Connection conn, Args args) {
+        try (PreparedStatement statement = conn.prepareStatement("SHOW DATABASE");
+             ResultSet rs = statement.executeQuery()) {
+            ResultSetMetaData metadata = rs.getMetaData();
+            int pageIndex = -1;
+            for (int index = 1; index <= metadata.getColumnCount(); index++) {
+                if ("page_size_bytes".equalsIgnoreCase(metadata.getColumnName(index))) {
+                    pageIndex = index;
+                    break;
+                }
+            }
+            if (pageIndex < 0) {
+                return routeEnvironment(args, null, "fail", "show_database_missing_page_size_bytes");
+            }
+            if (!rs.next()) {
+                return routeEnvironment(args, null, "fail", "show_database_returned_no_rows");
+            }
+            int actual = rs.getInt(pageIndex);
+            int expected = pageSizeBytes(args.required("--page-size"));
+            return routeEnvironment(
+                args,
+                actual,
+                actual == expected ? "pass" : "fail",
+                actual == expected ? null : "actual_page_size_mismatch");
+        } catch (SQLException ex) {
+            return routeEnvironment(args, null, "fail", ex.getMessage());
+        }
     }
 
     private static String tlsPolicyForRoute(String route, String sslmode) {

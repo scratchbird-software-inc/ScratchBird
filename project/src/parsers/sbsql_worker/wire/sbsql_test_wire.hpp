@@ -115,6 +115,9 @@ class SbsqlTestWireSession {
   PublicNameResolutionResult ResolveNameOnRoute(std::string_view presented_name,
                                                 bool quoted,
                                                 std::string_view object_class);
+  PublicNameResolutionResult ResolveNameOnRouteUncached(std::string_view presented_name,
+                                                        bool quoted,
+                                                        std::string_view object_class);
   void ClearNameResolutionCache(bool preserve_stable_relation_names = false);
   void RehydrateStableRelationNameResolutionCache();
   void StoreNameResolutionCacheEntry(std::string_view presented_name,

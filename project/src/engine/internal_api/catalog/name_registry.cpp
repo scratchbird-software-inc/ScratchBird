@@ -203,6 +203,25 @@ bool ObjectClassMatchesRequest(const std::string& entry_class,
            entry_class == "external_table" ||
            entry_class == "foreign_table";
   }
+  if (requested_class == "role") {
+    return entry_class == "security_role" || entry_class == "principal";
+  }
+  if (requested_class == "group") {
+    return entry_class == "security_group" || entry_class == "principal";
+  }
+  if (requested_class == "principal") {
+    return entry_class == "user" ||
+           entry_class == "security_role" ||
+           entry_class == "security_group" ||
+           entry_class == "role" ||
+           entry_class == "group";
+  }
+  if (requested_class == "policy") {
+    return entry_class == "security_policy";
+  }
+  if (requested_class == "mask" || requested_class == "rls") {
+    return entry_class == "security_policy";
+  }
   return false;
 }
 

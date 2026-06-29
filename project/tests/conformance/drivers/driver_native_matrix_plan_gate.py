@@ -53,9 +53,38 @@ def release_driver_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
-def namespace_for(driver: str, run_id: str, route: str, page_size: str, worker: str) -> str:
-    clean_route = route.replace("-", "_")
-    return f"users.public.examples.{driver}.{run_id}.{clean_route}.{page_size}.{worker}"
+def namespace_for(
+    driver: str,
+    run_id: str,
+    route: str,
+    page_size: str,
+    parser_mode: str,
+    concurrency_mode: str,
+    worker: str,
+) -> str:
+    def segment(value: str) -> str:
+        cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
+        cleaned = "_".join(part for part in cleaned.split("_") if part)
+        if not cleaned:
+            cleaned = "x"
+        if not (cleaned[0].isalpha() or cleaned[0] == "_"):
+            cleaned = f"p_{cleaned}"
+        return cleaned
+
+    return ".".join(
+        [
+            "users",
+            "public",
+            "examples",
+            segment(driver),
+            segment(run_id),
+            segment(route),
+            segment(page_size),
+            segment(parser_mode),
+            segment(concurrency_mode),
+            segment(worker),
+        ]
+    )
 
 
 def route_transport_variants(routes: list[str]) -> list[dict[str, str]]:
@@ -166,7 +195,15 @@ def validate_and_plan(repo_root: Path) -> tuple[list[str], dict[str, Any]]:
                                 "page_size": page_size,
                                 "parser_mode": parser_mode,
                                 "concurrency_mode": concurrency_mode,
-                                "namespace": namespace_for(driver, "RUNID", route_pair["route"], page_size, "w0"),
+                                "namespace": namespace_for(
+                                    driver,
+                                    "RUNID",
+                                    route_pair["route"],
+                                    page_size,
+                                    parser_mode,
+                                    concurrency_mode,
+                                    "w0",
+                                ),
                             })
 
     required_namespace_parts = ("users", "public", "examples")

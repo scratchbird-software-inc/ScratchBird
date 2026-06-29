@@ -169,6 +169,7 @@ const std::set<std::string>& KnownKeys() {
       "server.database.resource_seed_pack_root",
       "server.database.policy_seed_pack_root",
       "server.database.auto_create",
+      "server.database.create_page_size_bytes",
       "server.database.open_mode",
       "server.database.daemon_scope",
       "server.listener.native.enabled",
@@ -962,6 +963,16 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       config->database_policy_seed_pack_root = NormalizePath(value);
     } else if (key == "server.database.auto_create") {
       if (!ParseBool(value, &config->database_auto_create)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+    } else if (key == "server.database.create_page_size_bytes") {
+      if (!ParseUint64(value, &config->database_create_page_size_bytes) ||
+          (config->database_create_page_size_bytes != 4096 &&
+           config->database_create_page_size_bytes != 8192 &&
+           config->database_create_page_size_bytes != 16384 &&
+           config->database_create_page_size_bytes != 32768 &&
+           config->database_create_page_size_bytes != 65536 &&
+           config->database_create_page_size_bytes != 131072)) {
+        return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+      }
     } else if (key == "server.database.open_mode") {
       if (!EnumAllowed(lower, {"normal","read_only","maintenance","restricted","restricted_open"})) {
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
@@ -1106,6 +1117,9 @@ void ApplyCliOverrides(const ServerCliOptions& cli, ServerBootstrapConfig* confi
     config->database_open_mode = "restricted";
   }
   if (cli.create_if_missing) config->database_auto_create = true;
+  if (cli.create_page_size_bytes != 0) {
+    config->database_create_page_size_bytes = cli.create_page_size_bytes;
+  }
   if (!cli.control_dir.empty()) config->control_dir = NormalizePath(cli.control_dir);
   if (!cli.runtime_dir.empty()) config->data_dir = NormalizePath(cli.runtime_dir);
   if (!cli.database_ref.empty()) config->database_default_path = NormalizePath(cli.database_ref);

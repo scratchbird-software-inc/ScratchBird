@@ -354,6 +354,7 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
 struct EngineSecurityCreatePolicyRequest : EngineApiRequest {
   std::string policy_uuid;
   std::string policy_name;
+  std::string target_schema_uuid;
   std::string target_object_uuid;
   std::string target_object_kind = "object";
   std::string policy_effect = "row_filter";
