@@ -97,6 +97,7 @@ import {
 import {
   ScratchbirdAuthError,
   mapSqlState,
+  retryScopeForSqlState,
   ScratchbirdConnectionError,
   ScratchbirdError,
   ScratchbirdNotSupportedError,
@@ -1402,19 +1403,29 @@ export class Client {
       this.finishOperation(span, true);
       return result;
     } catch (err) {
-      this.finishOperation(span, false);
+      this.finishOperation(span, false, err);
       throw err;
     }
   }
 
-  private finishOperation(span: SpanContext | null, success: boolean): void {
+  private finishOperation(span: SpanContext | null, success: boolean, error?: unknown): void {
     if (success) {
       this.circuitBreaker.recordSuccess();
       this.keepaliveTracker?.markActive();
-    } else {
+    } else if (this.shouldRecordCircuitFailure(error)) {
       this.circuitBreaker.recordFailure();
     }
     this.telemetry.endSpan(span, success);
+  }
+
+  private shouldRecordCircuitFailure(error?: unknown): boolean {
+    if (error instanceof ScratchbirdConnectionError) {
+      return true;
+    }
+    if (error instanceof ScratchbirdError) {
+      return retryScopeForSqlState(error.code) === "reconnect";
+    }
+    return true;
   }
 
   private requestedFeatures(): bigint {
@@ -1990,7 +2001,7 @@ export class Client {
         await this.sendExtendedQuery(sql, params, options);
       }
     } catch (err) {
-      this.finishOperation(span, false);
+      this.finishOperation(span, false, err);
       throw err;
     }
 
@@ -1998,6 +2009,7 @@ export class Client {
     async function* iterator() {
       let columns: ReturnType<typeof parseRowDescription> = [];
       let success = false;
+      let operationError: unknown;
       try {
         while (true) {
           if (options?.signal?.aborted) {
@@ -2037,8 +2049,11 @@ export class Client {
               continue;
           }
         }
+      } catch (err) {
+        operationError = err;
+        throw err;
       } finally {
-        self.finishOperation(span, success);
+        self.finishOperation(span, success, operationError);
       }
     }
     return iterator();
