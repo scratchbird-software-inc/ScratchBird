@@ -55,6 +55,14 @@ source_driver("sql.R")
 source_driver("dbi.R")
 
 page_sizes <- c("4k", "8k", "16k", "32k", "64k", "128k")
+page_size_bytes <- list(
+  "4k" = 4096,
+  "8k" = 8192,
+  "16k" = 16384,
+  "32k" = 32768,
+  "64k" = 65536,
+  "128k" = 131072
+)
 routes <- c("embedded", "ipc_local", "listener-parser", "manager-listener-parser")
 parser_modes <- c("server-parser", "standalone-parser", "driver-sblr-uuid")
 ssl_modes <- c("allow", "disable", "prefer", "require", "verify-ca", "verify-full")
@@ -118,6 +126,7 @@ run_tool <- function(args) {
     refusals = file.path(run_root, "security-refusals.json"),
     api = file.path(run_root, "native-api-coverage.json"),
     review = file.path(run_root, "code-example-review.json"),
+    route_environment = file.path(run_root, "route-environment.json"),
     junit = file.path(run_root, "junit.xml"),
     stdout = file.path(run_root, "stdout.log"),
     stderr = file.path(run_root, "stderr.log")
@@ -147,6 +156,8 @@ run_tool <- function(args) {
   started <- nanotime()
   expected_refusals <- load_expected_refusals(value_or_default(args, "--expected-refusals", ""))
   conn <- NULL
+  route_env <- route_environment(args, NULL, "fail", "not_probed")
+  write_text(paths$route_environment, paste0(jsonlite::toJSON(route_env, auto_unbox = TRUE, null = "null"), "\n"))
 
   tryCatch({
     route <- required(args, "--route")
@@ -185,6 +196,17 @@ run_tool <- function(args) {
       topology_profile = value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1")
     ))
     append_jsonl(paths$wire, list(event = "server_admission_required", driver_or_parser_finality = "forbidden"))
+
+    route_env <- probe_route_environment(conn, args, api_hits)
+    write_text(paths$route_environment, paste0(jsonlite::toJSON(route_env, auto_unbox = TRUE, null = "null"), "\n"))
+    if (route != "embedded" && !identical(route_env$page_size_verification_status, "pass")) {
+      failures[[length(failures) + 1]] <- list(
+        statement_id = "route_page_size",
+        message = "route page-size verification failed",
+        expected_page_size_bytes = route_env$expected_page_size_bytes,
+        actual_page_size_bytes = route_env$actual_page_size_bytes
+      )
+    }
 
     if (isTRUE(args[["--create-database"]])) {
       create_started <- nanotime()
@@ -340,7 +362,8 @@ run_tool <- function(args) {
     process_metrics = process_metrics,
     server_revalidation_required = TRUE,
     driver_or_parser_finality = "forbidden",
-    mga_authority = "engine"
+    mga_authority = "engine",
+    route_environment = route_env
   )
   write_text(required(args, "--summary"), paste0(jsonlite::toJSON(summary, auto_unbox = TRUE), "\n"))
   write_text(required(args, "--metrics"), paste0(jsonlite::toJSON(timings, auto_unbox = TRUE), "\n"))
@@ -447,6 +470,67 @@ transport_implementation_for_route <- function(route) {
   if (identical(route, "embedded")) return("unsupported_no_cpp_library_boundary")
   if (identical(route, "ipc_local")) return("native_r_unix_socket")
   "native_r_tcp"
+}
+
+expected_page_size_bytes <- function(label) {
+  value <- page_size_bytes[[label]]
+  if (is.null(value)) stop(paste("unsupported page size:", label))
+  as.integer(value)
+}
+
+route_environment <- function(args, actual_page_size, status, reason = NULL) {
+  sslmode <- effective_sslmode_for_route(required(args, "--route"), value_or_default(args, "--sslmode", "require"))
+  list(
+    driver = "r",
+    route = required(args, "--route"),
+    parser_mode = required(args, "--parser-mode"),
+    page_size = required(args, "--page-size"),
+    expected_page_size_bytes = expected_page_size_bytes(required(args, "--page-size")),
+    actual_page_size_bytes = actual_page_size,
+    page_size_verification_source = "SHOW DATABASE",
+    page_size_verification_status = status,
+    failure_reason = reason,
+    sslmode = sslmode,
+    transport_mode = resolve_transport_mode(required(args, "--route"), sslmode),
+    transport_endpoint_kind = endpoint_kind_for_route(required(args, "--route"))
+  )
+}
+
+probe_route_environment <- function(conn, args, api_hits) {
+  tryCatch({
+    result <- DBI::dbSendQuery(conn, "SHOW DATABASE")
+    api_hits[["DBI::dbSendQuery"]] <- api_hits[["DBI::dbSendQuery"]] + 1
+    on.exit(try(DBI::dbClearResult(result), silent = TRUE), add = TRUE)
+    rows <- DBI::dbFetch(result, n = 1000)
+    api_hits[["DBI::dbFetch"]] <- api_hits[["DBI::dbFetch"]] + 1
+    actual <- extract_page_size_bytes(rows)
+    if (is.null(actual)) {
+      return(route_environment(args, NULL, "fail", "show_database_missing_page_size_bytes"))
+    }
+    expected <- expected_page_size_bytes(required(args, "--page-size"))
+    status <- if (identical(as.integer(actual), expected)) "pass" else "fail"
+    reason <- if (identical(status, "pass")) NULL else "actual_page_size_mismatch"
+    route_environment(args, as.integer(actual), status, reason)
+  }, error = function(e) {
+    route_environment(args, NULL, "fail", conditionMessage(e))
+  })
+}
+
+extract_page_size_bytes <- function(rows) {
+  if (!is.data.frame(rows) || nrow(rows) == 0) return(NULL)
+  lowered <- tolower(names(rows))
+  for (candidate in c("page_size_bytes", "page_size", "database_page_size", "default_page_size_bytes")) {
+    idx <- match(candidate, lowered, nomatch = 0L)
+    if (idx > 0) {
+      values <- rows[[idx]]
+      values <- values[!is.na(values)]
+      if (length(values) > 0) {
+        parsed <- suppressWarnings(as.integer(as.character(values[[1]])))
+        if (!is.na(parsed)) return(parsed)
+      }
+    }
+  }
+  NULL
 }
 
 load_expected_refusals <- function(path) {
