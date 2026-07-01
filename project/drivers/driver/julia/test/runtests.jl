@@ -64,6 +64,18 @@ end
     @test ScratchBird.MSG_COPY_BOTH_RESPONSE == 0x53
 end
 
+@testset "SBWP transaction savepoint frames" begin
+    @test ScratchBird.FEATURE_SAVEPOINTS == UInt64(1) << 9
+    @test (ScratchBird.DEFAULT_STARTUP_FEATURES & ScratchBird.FEATURE_SAVEPOINTS) != 0
+    @test ScratchBird.MSG_TXN_SAVEPOINT == 0x18
+    @test ScratchBird.MSG_TXN_RELEASE == 0x19
+    @test ScratchBird.MSG_TXN_ROLLBACK_TO == 0x1a
+    payload = ScratchBird.savepoint_payload("sp_keep")
+    @test payload[1:4] == reinterpret(UInt8, [UInt32(7)])
+    @test String(payload[5:end]) == "sp_keep"
+    @test_throws ScratchBird.ScratchBirdError ScratchBird.savepoint_payload("  ")
+end
+
 @testset "SBWP query payload builder" begin
     payload = ScratchBird.build_query_payload("COPY users.public.t FROM STDIN")
     @test length(payload) == 12 + length("COPY users.public.t FROM STDIN") + 1

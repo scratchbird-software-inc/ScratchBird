@@ -89,6 +89,9 @@ function run_tool(args::Dict{String,Any})::Int
         "ScratchBird.attach_create" => 0,
         "ScratchBird.commit!" => 0,
         "ScratchBird.rollback!" => 0,
+        "ScratchBird.savepoint!" => 0,
+        "ScratchBird.release_savepoint!" => 0,
+        "ScratchBird.rollback_to_savepoint!" => 0,
         "ScratchBird.copy_in" => 0,
     )
     testcases = Vector{Dict{String,Any}}()
@@ -140,6 +143,17 @@ function run_tool(args::Dict{String,Any})::Int
             "topology_profile" => value_or_default(args, "--topology-profile", "topology.sbsql.canonical.v1"),
         ))
         append_jsonl(paths["wire"], Dict("event" => "server_admission_required", "driver_or_parser_finality" => "forbidden"))
+
+        route_env = probe_route_environment(conn, args, api_hits)
+        write_json(paths["route_environment"], route_env)
+        if route != "embedded" && get(route_env, "page_size_verification_status", "fail") != "pass"
+            push!(failures, Dict(
+                "statement_id" => "route_page_size",
+                "message" => "route page-size verification failed",
+                "expected_page_size_bytes" => get(route_env, "expected_page_size_bytes", nothing),
+                "actual_page_size_bytes" => get(route_env, "actual_page_size_bytes", nothing),
+            ))
+        end
 
         if flag_enabled(args, "--create-database", false)
             throw(ScratchBird.ScratchBirdError("0A000", "ScratchBird Julia attach/create requires a live ScratchBird creation surface; refusing delegated database creation"))
@@ -420,14 +434,70 @@ function route_environment(args::Dict{String,Any}, actual_page_size, status::Str
     )
 end
 
+function probe_route_environment(conn, args::Dict{String,Any}, api_hits::Dict{String,Int})
+    try
+        stmt = DBInterface.prepare(conn, "SHOW DATABASE")
+        api_hits["DBInterface.prepare"] += 1
+        result = DBInterface.execute(stmt)
+        api_hits["DBInterface.execute"] += 1
+        rows = collect(Tables.rows(result))
+        api_hits["Tables.rows"] += 1
+        actual = first_page_size_bytes(rows)
+        expected = PAGE_SIZE_BYTES[required(args, "--page-size")]
+        status = actual == expected ? "pass" : "fail"
+        reason = status == "pass" ? nothing : "actual_page_size_mismatch"
+        return route_environment(args, actual, status, reason)
+    catch err
+        return route_environment(args, nothing, "fail", exception_message(err))
+    end
+end
+
+function first_page_size_bytes(rows)
+    isempty(rows) && error("SHOW DATABASE returned no rows")
+    row = first(rows)
+    if row isa NamedTuple
+        for key in keys(row)
+            lowercase(String(key)) == "page_size_bytes" && return parse_page_size_bytes(getfield(row, key))
+        end
+    elseif row isa AbstractDict
+        for (key, value) in row
+            lowercase(String(key)) == "page_size_bytes" && return parse_page_size_bytes(value)
+        end
+    elseif row isa Tuple || row isa AbstractVector
+        length(row) >= 3 && return parse_page_size_bytes(row[3])
+    end
+    error("SHOW DATABASE did not expose page_size_bytes")
+end
+
+function parse_page_size_bytes(value)::Int
+    value isa Integer && return Int(value)
+    value isa AbstractString && return parse(Int, strip(String(value)))
+    return parse(Int, string(value))
+end
+
 function run_transaction!(conn, sql::String, api_hits::Dict{String,Int})
-    first = first_token(sql)
+    tokens = leading_tokens(sql, 4)
+    first = isempty(tokens) ? "" : tokens[1]
+    second = length(tokens) >= 2 ? tokens[2] : ""
+    third = length(tokens) >= 3 ? tokens[3] : ""
+    fourth = length(tokens) >= 4 ? tokens[4] : ""
     if first == "commit"
         ScratchBird.commit!(conn)
         api_hits["ScratchBird.commit!"] += 1
+    elseif first == "rollback" && second == "to"
+        name = third == "savepoint" ? fourth : third
+        ScratchBird.rollback_to_savepoint!(conn, normalize_control_name(name))
+        api_hits["ScratchBird.rollback_to_savepoint!"] += 1
     elseif first == "rollback"
         ScratchBird.rollback!(conn)
         api_hits["ScratchBird.rollback!"] += 1
+    elseif first == "savepoint"
+        ScratchBird.savepoint!(conn, normalize_control_name(second))
+        api_hits["ScratchBird.savepoint!"] += 1
+    elseif first == "release"
+        name = second == "savepoint" ? third : second
+        ScratchBird.release_savepoint!(conn, normalize_control_name(name))
+        api_hits["ScratchBird.release_savepoint!"] += 1
     else
         ScratchBird.begin_transaction!(conn)
     end
@@ -548,7 +618,7 @@ function classify_statement(sql::String)::String
     first == "copy" && return "copy"
     in(first, ["create", "alter", "drop"]) && return "ddl"
     in(first, ["insert", "update", "delete", "merge", "upsert"]) && return "dml"
-    in(first, ["commit", "rollback", "savepoint", "begin", "start"]) && return "transaction"
+    in(first, ["commit", "rollback", "savepoint", "release", "begin", "start"]) && return "transaction"
     in(first, ["grant", "revoke"]) && return "security_refusal"
     occursin("sys.", lowercase(sql)) && return "metadata"
     return "query"
@@ -641,6 +711,20 @@ end
 function first_token(sql::String)::String
     parts = split(lowercase(strip(sql)))
     return isempty(parts) ? "" : parts[1]
+end
+
+function leading_tokens(sql::String, limit::Int)::Vector{String}
+    parts = split(lowercase(strip(sql)))
+    return String[replace(part, r";$" => "") for part in parts[1:min(limit, length(parts))]]
+end
+
+function normalize_control_name(name::String)::String
+    stripped = strip(replace(name, r";$" => ""))
+    isempty(stripped) && throw(ScratchBird.ScratchBirdError("42601", "savepoint name is required"))
+    if startswith(stripped, "\"") && endswith(stripped, "\"") && length(stripped) >= 2
+        stripped = replace(stripped[2:end - 1], "\"\"" => "\"")
+    end
+    return stripped
 end
 
 function current_process_metrics()

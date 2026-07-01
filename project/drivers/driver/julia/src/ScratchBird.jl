@@ -24,6 +24,9 @@ export ScratchBirdDriver,
     begin_transaction!,
     commit!,
     rollback!,
+    savepoint!,
+    release_savepoint!,
+    rollback_to_savepoint!,
     close
 
 struct ScratchBirdError <: Exception
@@ -83,6 +86,9 @@ const FEATURE_SBLR = UInt64(1) << 2
 const FEATURE_NOTIFICATIONS = UInt64(1) << 4
 const FEATURE_QUERY_PLAN = UInt64(1) << 5
 const FEATURE_STREAMING = UInt64(1) << 1
+const FEATURE_SAVEPOINTS = UInt64(1) << 9
+const DEFAULT_STARTUP_FEATURES =
+    FEATURE_SBLR | FEATURE_NOTIFICATIONS | FEATURE_QUERY_PLAN | FEATURE_STREAMING | FEATURE_SAVEPOINTS
 const QUERY_FLAG_BINARY_RESULT = UInt32(0x04)
 const QUERY_FLAG_RETURN_SBLR = UInt32(0x10)
 const MSG_STARTUP = UInt8(0x01)
@@ -97,6 +103,9 @@ const MSG_SBLR_EXECUTE = UInt8(0x10)
 const MSG_TXN_BEGIN = UInt8(0x15)
 const MSG_TXN_COMMIT = UInt8(0x16)
 const MSG_TXN_ROLLBACK = UInt8(0x17)
+const MSG_TXN_SAVEPOINT = UInt8(0x18)
+const MSG_TXN_RELEASE = UInt8(0x19)
+const MSG_TXN_ROLLBACK_TO = UInt8(0x1a)
 const MSG_AUTH_REQUEST = UInt8(0x40)
 const MSG_AUTH_OK = UInt8(0x41)
 const MSG_AUTH_CONTINUE = UInt8(0x42)
@@ -267,6 +276,37 @@ function rollback!(conn::ScratchBirdConnection)
     return nothing
 end
 
+function savepoint_payload(name::AbstractString)::Vector{UInt8}
+    normalized = String(name)
+    isempty(strip(normalized)) && throw(ScratchBirdError("42601", "savepoint name is required"))
+    name_bytes = Vector{UInt8}(codeunits(normalized))
+    payload = UInt8[]
+    append_le!(payload, UInt32(length(name_bytes)))
+    append!(payload, name_bytes)
+    return payload
+end
+
+function savepoint!(conn::ScratchBirdConnection, name::AbstractString)
+    ensure_open(conn)
+    send_message!(conn, MSG_TXN_SAVEPOINT, savepoint_payload(name))
+    drain_until_ready!(conn)
+    return nothing
+end
+
+function release_savepoint!(conn::ScratchBirdConnection, name::AbstractString)
+    ensure_open(conn)
+    send_message!(conn, MSG_TXN_RELEASE, savepoint_payload(name))
+    drain_until_ready!(conn)
+    return nothing
+end
+
+function rollback_to_savepoint!(conn::ScratchBirdConnection, name::AbstractString)
+    ensure_open(conn)
+    send_message!(conn, MSG_TXN_ROLLBACK_TO, savepoint_payload(name))
+    drain_until_ready!(conn)
+    return nothing
+end
+
 function query_metadata(conn::ScratchBirdConnection, collection::AbstractString)
     ensure_open(conn)
     sql = metadata_sql(String(collection))
@@ -320,7 +360,7 @@ function startup_and_auth!(conn::ScratchBirdConnection)
     if !isempty(conn.role)
         params["role"] = conn.role
     end
-    payload = build_startup_payload(FEATURE_SBLR | FEATURE_NOTIFICATIONS | FEATURE_QUERY_PLAN | FEATURE_STREAMING, UInt64(0), params)
+    payload = build_startup_payload(DEFAULT_STARTUP_FEATURES, UInt64(0), params)
     send_message!(conn, MSG_STARTUP, payload; force_zero = true)
     while true
         msg_type, _flags, _sequence, attachment, txn_id, payload = recv_message(conn)
