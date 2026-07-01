@@ -91,7 +91,7 @@ defmodule ScratchBird.Config do
     |> String.split(~r/\s+/, trim: true)
     |> Enum.reduce(%{}, fn part, acc ->
       case String.split(part, "=", parts: 2) do
-        [key, value] -> Map.put(acc, key, value)
+        [key, value] -> Map.merge(acc, normalize_keys(%{key => value}))
         _ -> acc
       end
     end)

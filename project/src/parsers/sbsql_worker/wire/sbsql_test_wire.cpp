@@ -100,10 +100,29 @@ std::string NewRowUuid() {
   return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
 }
 
-std::string NewObjectUuid() {
+UuidKind UuidKindForCreatedObjectClass(std::string_view object_class) {
+  std::string normalized;
+  normalized.reserve(object_class.size());
+  for (const char ch : object_class) {
+    normalized.push_back(static_cast<char>(
+        std::toupper(static_cast<unsigned char>(ch))));
+  }
+  if (normalized == "DATABASE") return UuidKind::database;
+  if (normalized == "CLUSTER") return UuidKind::cluster;
+  if (normalized == "FILESPACE") return UuidKind::filespace;
+  if (normalized == "SCHEMA") return UuidKind::schema;
+  if (normalized == "USER" || normalized == "PRINCIPAL" ||
+      normalized == "ROLE" || normalized == "GROUP") {
+    return UuidKind::principal;
+  }
+  return UuidKind::object;
+}
+
+std::string NewCreatedObjectUuid(std::string_view object_class) {
   static std::uint64_t sequence = 1000000;
   const auto generated =
-      uuid::GenerateEngineIdentityV7(UuidKind::object, CurrentUnixMillis() + (++sequence));
+      uuid::GenerateEngineIdentityV7(UuidKindForCreatedObjectClass(object_class),
+                                     CurrentUnixMillis() + (++sequence));
   return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
 }
 
@@ -203,14 +222,17 @@ bool ExecutionPreservesReferencedRelationNames(std::string_view operation_id) {
   return operation_id == "ddl.create_index" ||
          operation_id == "ddl.create_index_template" ||
          operation_id == "ddl.comment_on_object" ||
-         operation_id == "catalog.mutation.refresh_materialized_view";
+         operation_id == "catalog.mutation.refresh_materialized_view" ||
+         operation_id.rfind("catalog.mutation.create_", 0) == 0;
 }
 
 bool IsReferencedRelationNameClass(std::string_view object_class) {
   return object_class == "relation" ||
          object_class == "table" ||
          object_class == "view" ||
-         object_class == "materialized_view";
+         object_class == "materialized_view" ||
+         object_class == "filespace" ||
+         object_class == "filespace_agent";
 }
 
 struct ObjectReference {
@@ -4558,7 +4580,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           break;
         }
         resolved.resolved = true;
-        resolved.object_uuid = NewObjectUuid();
+        resolved.object_uuid = NewCreatedObjectUuid(ref.object_class);
         resolved.canonical_name = ref.presented_name;
         resolved.object_class = ref.object_class;
         resolved.catalog_epoch = session_.catalog_epoch;

@@ -3,7 +3,7 @@
   "category": "driver",
   "name": "adbc",
   "driver_family": "adbc",
-  "status": "beta_2_host_api_route_runner",
+  "status": "beta_2",
   "wire_protocol": "sbwp_v1_1",
   "auth_authority": "engine",
   "transaction_authority": "mga_engine",

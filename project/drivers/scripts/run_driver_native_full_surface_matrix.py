@@ -92,6 +92,7 @@ class MatrixWorkItem:
     page_size: str
     parser_mode: str
     concurrency_mode: str
+    proof_tier: str
     worker: str
     namespace: str
     run_root: Path
@@ -367,6 +368,85 @@ def compile_suite(
     }
 
 
+def compile_lane_smoke_suite(run_root: Path, namespace: str, item: MatrixWorkItem) -> dict[str, Path]:
+    compiled_root = run_root / "compiled"
+    expected_root = compiled_root / "expected"
+    compiled_root.mkdir(parents=True, exist_ok=True)
+    expected_root.mkdir(parents=True, exist_ok=True)
+    script_path = compiled_root / "lane_smoke_chain.sbsql"
+    expected_refusals = expected_root / "expected_refusals.json"
+    manifest = compiled_root / "compiled_manifest.json"
+    smoke_table = f"{namespace}.lane_smoke_probe"
+    script = f"""-- script_id: SBDFS-LANE-SMOKE
+-- Purpose: live route/page/parser/concurrency proof for the native driver matrix.
+CREATE SCHEMA {namespace};
+
+CREATE TABLE {smoke_table} (
+    id INTEGER,
+    route_name VARCHAR(64),
+    parser_name VARCHAR(64),
+    page_size_label VARCHAR(16),
+    proof_value INTEGER
+);
+
+INSERT INTO {smoke_table} (id, route_name, parser_name, page_size_label, proof_value)
+VALUES (1, '{item.route_pair.route}', '{item.parser_mode}', '{item.page_size}', 42);
+
+SELECT 'SBDFS-LANE-SMOKE-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM {smoke_table};
+
+SELECT 'SBDFS-LANE-SMOKE-002' AS assertion_id,
+       SUM(proof_value) AS actual_sum,
+       42 AS expected_sum
+FROM {smoke_table};
+
+DROP TABLE {smoke_table};
+"""
+    script_path.write_text(script, encoding="utf-8")
+    expected_refusals.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "statement_ids": [],
+                "expected_refusals": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "script_id": "SBDFS-LANE-SMOKE",
+                "proof_tier": "lane_smoke",
+                "driver": item.driver,
+                "route": item.route_pair.route,
+                "sslmode": item.route_pair.sslmode,
+                "page_size": item.page_size,
+                "parser_mode": item.parser_mode,
+                "concurrency_mode": item.concurrency_mode,
+                "namespace": namespace,
+                "input": str(script_path),
+                "expected_refusals": str(expected_refusals),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "input": script_path,
+        "expected_refusals": expected_refusals,
+        "manifest": manifest,
+    }
+
+
 def sbsql_base_command(args: argparse.Namespace, repo_root: Path, route: str, sslmode: str) -> list[str]:
     executable = repo_root / SBSQL_STAGED_REL
     if not executable.is_file():
@@ -556,6 +636,11 @@ def work_item_id(item: MatrixWorkItem) -> str:
     )
 
 
+def work_item_execution_key(item: MatrixWorkItem) -> tuple[int, str, int]:
+    proof_priority = 0 if item.proof_tier == "full_surface" else 1
+    return (proof_priority, item.driver, item.ordinal)
+
+
 def base_entry_for_item(args: argparse.Namespace, item: MatrixWorkItem) -> dict[str, Any]:
     return {
         "combination_id": work_item_id(item),
@@ -568,6 +653,7 @@ def base_entry_for_item(args: argparse.Namespace, item: MatrixWorkItem) -> dict[
         "expected_page_size_bytes": expected_page_size_bytes(item.page_size),
         "parser_mode": item.parser_mode,
         "concurrency_mode": item.concurrency_mode,
+        "proof_tier": item.proof_tier,
         "language_profile": args.language_profile,
         "language_resource_identity": args.language_resource_identity,
         "language_resource_hash": args.language_resource_hash,
@@ -780,17 +866,22 @@ def execute_work_item(
                 "namespace bootstrap failed: "
                 + json.dumps(bootstrap.get("failures", []), sort_keys=True)
             )
-        compiled = compile_suite(
-            repo_root,
-            item.run_root,
-            surface_profile=args.surface_profile,
-            driver=item.driver,
-            run_id=args.run_id,
-            route=item.route_pair.route,
-            parser_mode=item.parser_mode,
-            page_size=item.page_size,
-            namespace=item.namespace,
-        )
+        if item.proof_tier == "full_surface":
+            compiled = compile_suite(
+                repo_root,
+                item.run_root,
+                surface_profile=args.surface_profile,
+                driver=item.driver,
+                run_id=args.run_id,
+                route=item.route_pair.route,
+                parser_mode=item.parser_mode,
+                page_size=item.page_size,
+                namespace=item.namespace,
+            )
+        elif item.proof_tier == "lane_smoke":
+            compiled = compile_lane_smoke_suite(item.run_root, item.namespace, item)
+        else:
+            raise RuntimeError(f"unknown proof tier: {item.proof_tier}")
         tool_args = build_tool_args(
             effective_args,
             namespace=item.namespace,
@@ -806,6 +897,7 @@ def execute_work_item(
         entry["returncode"] = result.returncode
         entry["output_tail"] = result.stdout.splitlines()[-80:]
         entry["status"] = "pass" if result.returncode == 0 else "fail"
+        annotate_summary_with_proof_tier(item.run_root, item, args.proof_strategy)
     except Exception as exc:  # noqa: BLE001 - matrix report must preserve the failure.
         entry["status"] = "fail"
         entry["error"] = str(exc)
@@ -834,6 +926,70 @@ def selected_route_variants(
     if missing:
         raise ValueError("unknown requested sslmode value(s): " + ", ".join(missing))
     return [value for value in values if value.sslmode in requested_set]
+
+
+def proof_tier_for_item(
+    strategy: str,
+    *,
+    route_pair: RouteVariant,
+    page_size: str,
+    parser_mode: str,
+    concurrency_mode: str,
+) -> str:
+    if strategy == "exhaustive-matrix":
+        return "full_surface"
+    if strategy not in {"canonical-full-plus-lane-smoke", "canonical-full-plus-dimension-smoke"}:
+        raise ValueError(f"unknown proof strategy: {strategy}")
+    if (
+        route_pair.route == "listener-parser"
+        and route_pair.sslmode == "require"
+        and page_size == "16k"
+        and parser_mode == "server-parser"
+        and concurrency_mode == "single"
+    ):
+        return "full_surface"
+    return "lane_smoke"
+
+
+def include_item_for_proof_strategy(
+    strategy: str,
+    *,
+    route_pair: RouteVariant,
+    page_size: str,
+    parser_mode: str,
+    concurrency_mode: str,
+) -> bool:
+    if strategy in {"exhaustive-matrix", "canonical-full-plus-lane-smoke"}:
+        return True
+    if strategy != "canonical-full-plus-dimension-smoke":
+        raise ValueError(f"unknown proof strategy: {strategy}")
+    canonical_route = route_pair.route == "listener-parser" and route_pair.sslmode == "require"
+    canonical_page = page_size == "16k"
+    canonical_parser = parser_mode == "server-parser"
+    canonical_concurrency = concurrency_mode == "single"
+    if canonical_route and canonical_page and canonical_parser and canonical_concurrency:
+        return True
+    if canonical_parser and canonical_concurrency:
+        return True
+    if canonical_route and canonical_page and canonical_concurrency:
+        return True
+    if canonical_route and canonical_page and canonical_parser:
+        return True
+    return False
+
+
+def annotate_summary_with_proof_tier(run_root: Path, item: MatrixWorkItem, strategy: str) -> None:
+    summary_path = run_root / "summary.json"
+    if not summary_path.is_file():
+        return
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    summary["proof_tier"] = item.proof_tier
+    summary["proof_strategy"] = strategy
+    summary["full_surface_language_corpus_executed"] = item.proof_tier == "full_surface"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -880,6 +1036,23 @@ def main() -> int:
         help=(
             "non-cluster-beta proves the current single-node driver release; "
             "cluster-release also executes cluster-gated scripts."
+        ),
+    )
+    parser.add_argument(
+        "--proof-strategy",
+        choices=(
+            "exhaustive-matrix",
+            "canonical-full-plus-lane-smoke",
+            "canonical-full-plus-dimension-smoke",
+        ),
+        default="exhaustive-matrix",
+        help=(
+            "exhaustive-matrix runs the full SBDFS corpus in every selected cell; "
+            "canonical-full-plus-lane-smoke runs the full corpus once per driver "
+            "on listener-parser TLS 16k server-parser single, then runs a live "
+            "route/page/parser/concurrency smoke in the remaining cells; "
+            "canonical-full-plus-dimension-smoke proves the same dimensions without "
+            "multiplying every route/page/parser/concurrency value together."
         ),
     )
     parser.add_argument(
@@ -930,6 +1103,7 @@ def main() -> int:
     failures: list[dict[str, Any]] = []
     combination_count = 0
     selected_combination_count = 0
+    skipped_by_proof_strategy_count = 0
     complete_matrix_requested = not any(
         (
             args.driver,
@@ -982,6 +1156,15 @@ def main() -> int:
                         selected_combination_count += 1
                         if args.max_combinations and selected_combination_count > args.max_combinations:
                             continue
+                        if not include_item_for_proof_strategy(
+                            args.proof_strategy,
+                            route_pair=route_pair,
+                            page_size=page_size,
+                            parser_mode=parser_mode,
+                            concurrency_mode=concurrency_mode,
+                        ):
+                            skipped_by_proof_strategy_count += 1
+                            continue
                         worker = "w0"
                         namespace = namespace_for(
                             driver,
@@ -991,6 +1174,13 @@ def main() -> int:
                             parser_mode,
                             concurrency_mode,
                             worker,
+                        )
+                        proof_tier = proof_tier_for_item(
+                            args.proof_strategy,
+                            route_pair=route_pair,
+                            page_size=page_size,
+                            parser_mode=parser_mode,
+                            concurrency_mode=concurrency_mode,
                         )
                         run_root = (
                             artifact_root
@@ -1009,6 +1199,7 @@ def main() -> int:
                             page_size=page_size,
                             parser_mode=parser_mode,
                             concurrency_mode=concurrency_mode,
+                            proof_tier=proof_tier,
                             worker=worker,
                             namespace=namespace,
                             run_root=run_root,
@@ -1024,6 +1215,7 @@ def main() -> int:
                         work_items.append(item)
 
     if not args.plan_only:
+        work_items.sort(key=work_item_execution_key)
         if args.jobs == 1:
             for item in work_items:
                 entry = execute_work_item(item, args, repo_root, lane_overrides, required_artifacts)
@@ -1078,6 +1270,28 @@ def main() -> int:
         if gate_result.returncode != 0:
             failures.append({"status": "fail", "error": "artifact schema gate failed", "gate": artifact_gate})
 
+    proof_tier_counts: dict[str, int] = {}
+    full_surface_passes_by_driver: dict[str, int] = {}
+    for row in results:
+        tier = str(row.get("proof_tier") or "unknown")
+        proof_tier_counts[tier] = proof_tier_counts.get(tier, 0) + 1
+        if row.get("status") == "pass" and tier == "full_surface":
+            driver = str(row.get("driver") or "")
+            full_surface_passes_by_driver[driver] = full_surface_passes_by_driver.get(driver, 0) + 1
+    if not args.plan_only and args.proof_strategy in {
+        "canonical-full-plus-lane-smoke",
+        "canonical-full-plus-dimension-smoke",
+    }:
+        missing_full_surface = sorted(driver for driver in drivers if full_surface_passes_by_driver.get(driver, 0) < 1)
+        if missing_full_surface:
+            failures.append(
+                {
+                    "status": "fail",
+                    "error": "proof strategy requires one passing full_surface lane per driver",
+                    "missing_full_surface_drivers": missing_full_surface,
+                }
+            )
+
     report = {
         "command": "run_driver_native_full_surface_matrix.py",
         "status": "pass" if not failures else "fail",
@@ -1096,10 +1310,14 @@ def main() -> int:
         "syntax_profile": args.syntax_profile,
         "topology_profile": args.topology_profile,
         "surface_profile": args.surface_profile,
+        "proof_strategy": args.proof_strategy,
+        "proof_tier_counts": proof_tier_counts,
+        "full_surface_passes_by_driver": full_surface_passes_by_driver,
         "lane_manifest": str(args.lane_manifest.resolve()) if args.lane_manifest else None,
         "lane_count": len(lane_overrides),
         "combination_count": combination_count,
         "selected_combination_count": selected_combination_count,
+        "skipped_by_proof_strategy_count": skipped_by_proof_strategy_count,
         "work_item_count": len(work_items),
         "shard_count": args.shard_count,
         "shard_index": args.shard_index,

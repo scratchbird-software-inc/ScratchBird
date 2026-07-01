@@ -23,6 +23,7 @@ from typing import Any
 SCHEMA_ID = "scratchbird.prerelease_bundle_manifest.v1"
 RELEASE_DATE_RE = re.compile(r"^[0-9]{4}[.][0-9]{2}[.][0-9]{2}$")
 ALLOWED_TOP_LEVELS = {
+    "adapters",
     "docs",
     "drivers",
     "installers",

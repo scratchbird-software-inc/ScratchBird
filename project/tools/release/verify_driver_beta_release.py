@@ -94,6 +94,23 @@ def validate_sha256s(root: Path, issues: list[str], context: str) -> None:
             issues.append(f"release_output:{context}:sha256_mismatch:{rel}")
 
 
+def validate_component_metadata(issues: list[str], package_root: Path, component: str) -> None:
+    if not package_root.is_dir():
+        issues.append(f"release_output:missing_expected_output:{component}:{package_root}")
+        return
+    for rel in (
+        "artifact_manifest.json",
+        "SBOM.json",
+        "LICENSE.txt",
+        "VERSION.txt",
+        "SOURCE_COMMIT.txt",
+        "SHA256SUMS",
+    ):
+        if not (package_root / rel).is_file():
+            issues.append(f"release_output:{component}:missing_packaged_file:{rel}")
+    validate_sha256s(package_root, issues, component)
+
+
 def validate_driver_package(
     issues: list[str],
     package_root: Path,
@@ -190,13 +207,16 @@ def validate_release_metadata(release_root: Path, repo_root: Path, issues: list[
         issues.append(f"release_output:release_metadata:RELEASE_MANIFEST:{error}")
         return
     promoted_paths = set(manifest.get("promoted_paths", []))
-    driver_root = release_root / "drivers"
-    driver_paths = {
-        str(path.relative_to(repo_root))
-        for path in driver_root.iterdir()
-        if path.is_dir()
-    } if driver_root.is_dir() else set()
-    for rel in sorted(driver_paths - promoted_paths):
+    package_paths: set[str] = set()
+    for category in ("drivers", "adapters", "tools"):
+        root = release_root / category
+        if root.is_dir():
+            package_paths.update(
+                str(path.relative_to(repo_root))
+                for path in root.iterdir()
+                if path.is_dir()
+            )
+    for rel in sorted(package_paths - promoted_paths):
         issues.append(f"release_output:release_metadata:missing_promoted_path:{rel}")
     validate_sha256s(release_root, issues, "release_metadata")
 
@@ -274,7 +294,10 @@ def build_report(repo_root: Path, workplan_root: Path, output_root: Path) -> dic
     expected_components = {
         row["component_id"]
         for row in in_scope_manifest_rows(manifest_rows)
-        if row.get("category", "").strip() == "driver"
+    }
+    component_categories = {
+        row["component_id"]: row.get("category", "").strip()
+        for row in in_scope_manifest_rows(manifest_rows)
     }
     driver_names = {
         row["component_id"]: row.get("name", "").strip()
@@ -311,8 +334,10 @@ def build_report(repo_root: Path, workplan_root: Path, output_root: Path) -> dic
             continue
         if not output.exists():
             missing_outputs.append(f"{component}:{expected}")
-        else:
+        elif component_categories.get(component) == "driver":
             validate_driver_package(issues, output, component, driver_names.get(component, ""))
+        else:
+            validate_component_metadata(issues, output, component)
     issues.extend(f"release_output:missing_expected_output:{item}" for item in missing_outputs)
 
     for row in artifact_by_component.get("drivers:all", []):

@@ -34,6 +34,7 @@ from scratchbird.types import (
     OID_INT4_ARRAY,
     OID_INT4,
     OID_INT4RANGE,
+    OID_INT8,
     OID_INTERVAL,
     OID_JSONB,
     OID_NUMERIC,
@@ -75,6 +76,10 @@ def test_decode_int4():
 def test_decode_unknown_text_integer_outside_int64_returns_text():
     assert decode_value(0, b"9223372036854775808", FORMAT_TEXT) == "9223372036854775808"
     assert decode_value(0, b"-9223372036854775809", FORMAT_TEXT) == "-9223372036854775809"
+
+
+def test_decode_integer_text_hex_payload_recovers_binary_value():
+    assert decode_value(OID_INT8, b"00000001930a", FORMAT_TEXT) == bytes.fromhex("00000001930a")
 
 
 def test_decode_jsonb():
@@ -239,6 +244,12 @@ def test_decode_numeric_scalar_text_payloads():
     assert decode_value(OID_INT4, b"42", FORMAT_TEXT) == 42
     assert decode_value(OID_FLOAT8, b"3.5", FORMAT_TEXT) == 3.5
     assert decode_value(OID_NUMERIC, b"12.34", FORMAT_TEXT) == decimal.Decimal("12.34")
+
+
+def test_decode_text_null_sentinel_and_decimal_integer_payloads():
+    assert decode_value(OID_INT4, b"<NULL>", FORMAT_TEXT) is None
+    assert decode_value(OID_INT4, b"", FORMAT_TEXT) is None
+    assert decode_value(OID_INT8, b"226.00", FORMAT_TEXT) == decimal.Decimal("226.00")
 
 
 def test_decode_bool_scalar_text_non_true_tokens_map_to_false():

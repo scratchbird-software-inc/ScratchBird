@@ -238,7 +238,11 @@ func TestHandshakeIncludesAuthPluginSelectionParams(t *testing.T) {
 			errCh <- fmt.Errorf("startup payload too short: %d", len(msg.body))
 			return
 		}
-		params := parseStartupParams(msg.body[12:])
+		params, err := parseStartupParams(msg.body)
+		if err != nil {
+			errCh <- err
+			return
+		}
 		if params["client_flags"] != "257" {
 			errCh <- fmt.Errorf("unexpected client flags: %q", params["client_flags"])
 			return
@@ -605,18 +609,36 @@ func TestHandleAuthRequestFailsClosedForPeer(t *testing.T) {
 	}
 }
 
-func parseStartupParams(payload []byte) map[string]string {
+func parseStartupParams(payload []byte) (map[string]string, error) {
 	params := map[string]string{}
-	parts := strings.Split(string(payload), "\x00")
-	for i := 0; i+1 < len(parts); i += 2 {
-		key := parts[i]
-		value := parts[i+1]
-		if key == "" {
-			break
+	if len(payload) < 88 {
+		return nil, fmt.Errorf("startup payload too short: %d", len(payload))
+	}
+	count := int(binary.LittleEndian.Uint32(payload[80:84]))
+	offset := 84
+	for i := 0; i < count; i++ {
+		if offset+4 > len(payload) {
+			return nil, fmt.Errorf("startup parameter key length truncated")
 		}
+		keyLen := int(binary.LittleEndian.Uint32(payload[offset : offset+4]))
+		offset += 4
+		if keyLen < 0 || offset+keyLen+6 > len(payload) {
+			return nil, fmt.Errorf("startup parameter key truncated")
+		}
+		key := string(payload[offset : offset+keyLen])
+		offset += keyLen
+		_ = binary.LittleEndian.Uint16(payload[offset : offset+2])
+		offset += 2
+		valueLen := int(binary.LittleEndian.Uint32(payload[offset : offset+4]))
+		offset += 4
+		if valueLen < 0 || offset+valueLen > len(payload) {
+			return nil, fmt.Errorf("startup parameter value truncated")
+		}
+		value := string(payload[offset : offset+valueLen])
+		offset += valueLen
 		params[key] = value
 	}
-	return params
+	return params, nil
 }
 
 func makeAuthRequestPayload(method authMethod, data []byte) []byte {

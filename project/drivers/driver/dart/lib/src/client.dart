@@ -571,6 +571,73 @@ class ScratchBirdClient {
     });
   }
 
+  Future<int> copyIn(String sql, List<int> data) async {
+    if (sql.trim().isEmpty) {
+      throw ArgumentError.value(sql, 'sql', 'COPY SQL text must not be empty');
+    }
+    if (data.isEmpty) {
+      throw ArgumentError.value(
+          data, 'data', 'COPY input data must not be empty');
+    }
+    return _withResilience("copy_in", sql, () async {
+      await _sendSimpleQuery(sql, 0, 0);
+      var copyStarted = false;
+      var rowsCopied = 0;
+      while (true) {
+        final msg = await _recvMessage();
+        if (_handleAsyncMessage(msg)) {
+          continue;
+        }
+        switch (msg.header.type) {
+          case MessageType.copyInResponse:
+            copyStarted = true;
+            for (var offset = 0; offset < data.length; offset += 65536) {
+              final end = min(offset + 65536, data.length);
+              await _sendMessage(
+                MessageType.copyData,
+                Uint8List.fromList(data.sublist(offset, end)),
+              );
+            }
+            await _sendMessage(MessageType.copyDone, Uint8List(0));
+            break;
+          case MessageType.commandComplete:
+            if (msg.payload.length >= 12) {
+              rowsCopied = ByteData.sublistView(msg.payload, 4, 12)
+                  .getUint64(0, Endian.little);
+            }
+            break;
+          case MessageType.ready:
+            _applyReadyPayload(msg.payload);
+            _portalResumePending = false;
+            _lastQuerySequence = null;
+            if (!copyStarted) {
+              throw const ScratchBirdOperationalException(
+                'expected COPY IN response',
+                sqlState: 'HY000',
+              );
+            }
+            return rowsCopied;
+          case MessageType.error:
+            final error = _executionExceptionFromPayload(
+              msg.payload,
+              fallbackMessage: 'COPY failed',
+            );
+            await _drainReadyAfterError();
+            _portalResumePending = false;
+            _lastQuerySequence = null;
+            throw error;
+          case MessageType.copyFail:
+            throw const ScratchBirdOperationalException(
+              'COPY failed on server side',
+              sqlState: 'HY000',
+            );
+          default:
+            break;
+        }
+      }
+    });
+  }
+
   Future<ScratchBirdResult> queryMetadata([String collectionName = 'tables']) {
     final sql = resolveMetadataCollectionQuery(collectionName);
     return query(sql);
@@ -723,7 +790,7 @@ class ScratchBirdClient {
       await _sendSimpleQuery('COMMIT', 0, 0);
       await _collectResults();
     });
-    _transactionActive = true;
+    _clearRuntimeTransactionState();
     _explicitTransaction = false;
   }
 
@@ -733,7 +800,7 @@ class ScratchBirdClient {
       await _sendSimpleQuery('ROLLBACK', 0, 0);
       await _collectResults();
     });
-    _transactionActive = true;
+    _clearRuntimeTransactionState();
     _explicitTransaction = false;
   }
 
@@ -830,9 +897,7 @@ class ScratchBirdClient {
         return;
       }
       if (msg.header.type == MessageType.ready) {
-        _applyTxnState(
-          _readTxnId(msg.payload, fallback: msg.header.txnId, offset: 4),
-        );
+        _applyReadyPayload(msg.payload);
         return;
       }
       if (msg.header.type == MessageType.error) {
@@ -1063,9 +1128,7 @@ class ScratchBirdClient {
           _handleParameterStatus(msg.payload);
           continue;
         case MessageType.ready:
-          _applyTxnState(
-            _readTxnId(msg.payload, fallback: msg.header.txnId, offset: 4),
-          );
+          _applyReadyPayload(msg.payload);
           _resolvedAuthContext = _resolvedAuthContext.copyWith(attached: true);
           return;
         case MessageType.error:
@@ -1097,8 +1160,9 @@ class ScratchBirdClient {
             if (value == null) {
               decoded.add(null);
             } else {
-              decoded.add(
-                  decodeValue(columns[i].typeOid, value, columns[i].format));
+              final typeOid = i < columns.length ? columns[i].typeOid : 0;
+              final format = i < columns.length ? columns[i].format : 1;
+              decoded.add(decodeValue(typeOid, value, format));
             }
           }
           rows.add(decoded);
@@ -1110,9 +1174,7 @@ class ScratchBirdClient {
           );
           break;
         case MessageType.ready:
-          _applyTxnState(
-            _readTxnId(msg.payload, fallback: msg.header.txnId, offset: 4),
-          );
+          _applyReadyPayload(msg.payload);
           _portalResumePending = false;
           _lastQuerySequence = null;
           return ScratchBirdResult(rows, columns);
@@ -1178,13 +1240,12 @@ class ScratchBirdClient {
         _lastSblr = _parseSblrCompiled(msg.payload);
         return true;
       case MessageType.txnStatus:
-        _applyTxnState(
-          _readTxnId(
-            msg.payload,
-            fallback: msg.header.txnId,
-            offset: msg.payload.length >= 12 ? 4 : 0,
-          ),
-        );
+        final status = parseTxnStatus(msg.payload);
+        if (status.status == 'T') {
+          _applyTxnState(status.txnId);
+        } else {
+          _clearRuntimeTransactionState();
+        }
         return true;
       default:
         return false;
@@ -1316,9 +1377,7 @@ class ScratchBirdClient {
         continue;
       }
       if (msg.header.type == MessageType.ready) {
-        _applyTxnState(
-          _readTxnId(msg.payload, fallback: msg.header.txnId, offset: 4),
-        );
+        _applyReadyPayload(msg.payload);
         _portalResumePending = false;
         return;
       }
@@ -1338,9 +1397,7 @@ class ScratchBirdClient {
         continue;
       }
       if (msg.header.type == MessageType.ready) {
-        _applyTxnState(
-          _readTxnId(msg.payload, fallback: msg.header.txnId, offset: 4),
-        );
+        _applyReadyPayload(msg.payload);
         _portalResumePending = false;
         return;
       }
@@ -1376,15 +1433,6 @@ class ScratchBirdClient {
     );
   }
 
-  int _readTxnId(Uint8List payload,
-      {required int fallback, required int offset}) {
-    if (payload.length >= offset + 8) {
-      return ByteData.sublistView(payload, offset, offset + 8)
-          .getUint64(0, Endian.little);
-    }
-    return fallback;
-  }
-
   bool _hasActiveTransaction() {
     return _transactionActive;
   }
@@ -1409,8 +1457,26 @@ class ScratchBirdClient {
     }
   }
 
+  void _applyReadyPayload(Uint8List payload) {
+    final ready = parseReady(payload);
+    _applyRuntimeReadyState(ready.status, ready.txnId);
+  }
+
+  void _applyRuntimeReadyState(int status, int txnId) {
+    _txnId = txnId;
+    if (status != 0) {
+      _transactionActive = true;
+      return;
+    }
+    _clearRuntimeTransactionState();
+  }
+
+  void _clearRuntimeTransactionState() {
+    _txnId = 0;
+    _transactionActive = false;
+  }
+
   Future<void> _ensureImplicitTransaction() async {
-    _transactionActive = true;
     _explicitTransaction = false;
   }
 
@@ -1622,15 +1688,6 @@ class ScratchBirdClient {
     return out;
   }
 
-  _CStringResult _readCString(Uint8List buffer, int offset) {
-    var idx = offset;
-    while (idx < buffer.length && buffer[idx] != 0) {
-      idx += 1;
-    }
-    final name = utf8.decode(buffer.sublist(offset, idx));
-    return _CStringResult(name, idx + 1);
-  }
-
   _NormalizedQuery _normalizeQuery(String sql, List<dynamic> params) {
     if (params.isEmpty || !sql.contains('?')) {
       return _NormalizedQuery(sql, List<dynamic>.from(params));
@@ -1711,26 +1768,34 @@ class ScratchBirdClient {
       _finishOperation(span, true);
       return result;
     } catch (e) {
-      _finishOperation(span, false);
+      _finishOperation(
+        span,
+        false,
+        circuitFailure: _shouldTripCircuitBreaker(e),
+      );
       rethrow;
     }
   }
 
-  void _finishOperation(SpanContext? span, bool success) {
+  bool _shouldTripCircuitBreaker(Object error) {
+    return error is ScratchBirdConnectionException ||
+        error is ScratchBirdProtocolException ||
+        error is ScratchBirdAuthException;
+  }
+
+  void _finishOperation(
+    SpanContext? span,
+    bool success, {
+    bool circuitFailure = false,
+  }) {
     if (success) {
       _circuitBreaker.recordSuccess();
       _keepaliveTracker?.markActive();
-    } else {
+    } else if (circuitFailure) {
       _circuitBreaker.recordFailure();
     }
     _telemetry.endSpan(span, success);
   }
-}
-
-class _CStringResult {
-  final String item1;
-  final int item2;
-  _CStringResult(this.item1, this.item2);
 }
 
 class _NormalizedQuery {

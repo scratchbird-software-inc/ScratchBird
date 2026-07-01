@@ -252,12 +252,16 @@ def validate_release_metadata(release_root: Path, repo_root: Path, issues: list[
         issues.append(f"artifact_manifest:release_metadata:RELEASE_MANIFEST:{error}")
         return
     promoted_paths = set(manifest.get("promoted_paths", []))
-    driver_roots = {
-        str(path.relative_to(repo_root))
-        for path in (release_root / "drivers").iterdir()
-        if path.is_dir()
-    } if (release_root / "drivers").is_dir() else set()
-    for rel in sorted(driver_roots - promoted_paths):
+    package_roots: set[str] = set()
+    for category in ("drivers", "adapters", "tools"):
+        root = release_root / category
+        if root.is_dir():
+            package_roots.update(
+                str(path.relative_to(repo_root))
+                for path in root.iterdir()
+                if path.is_dir()
+            )
+    for rel in sorted(package_roots - promoted_paths):
         issues.append(f"artifact_manifest:release_metadata:missing_promoted_path:{rel}")
     validate_sha256s(release_root, issues, "release_metadata")
 
@@ -380,7 +384,6 @@ def build_report(repo_root: Path, workplan_root: Path, output_root: Path) -> dic
     expected_components = {
         row["component_id"]
         for row in in_scope_manifest_rows(manifest_rows)
-        if row.get("category", "").strip() == "driver"
     }
     manifest_category = {
         row["component_id"]: row.get("category", "").strip()

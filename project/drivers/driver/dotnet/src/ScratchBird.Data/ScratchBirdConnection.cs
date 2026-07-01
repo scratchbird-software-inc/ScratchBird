@@ -249,6 +249,13 @@ public sealed class ScratchBirdConnection : DbConnection
         return BufferQueryStream(stream);
     }
 
+    public long ExecuteCopyIn(string sql, byte[] payload, int timeoutMs = 0)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+        ArgumentNullException.ThrowIfNull(payload);
+        return EnsureConnectedClient().ExecuteCopyIn(sql, payload, timeoutMs);
+    }
+
     private void EnsureKeepaliveHealthy(ProtocolClient client)
     {
         bool validated;

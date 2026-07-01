@@ -7,7 +7,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+const JULIA_DRIVER_ROOT = normpath(joinpath(@__DIR__, ".."))
+pushfirst!(LOAD_PATH, JULIA_DRIVER_ROOT)
+
 using SHA
+import DBInterface
+import Tables
+include(joinpath(JULIA_DRIVER_ROOT, "src", "ScratchBird.jl"))
 
 const PAGE_SIZES = Set(["4k", "8k", "16k", "32k", "64k", "128k"])
 const PAGE_SIZE_BYTES = Dict("4k" => 4096, "8k" => 8192, "16k" => 16384, "32k" => 32768, "64k" => 65536, "128k" => 131072)
@@ -15,7 +21,7 @@ const ROUTES = Set(["embedded", "ipc_local", "listener-parser", "manager-listene
 const PARSER_MODES = Set(["server-parser", "standalone-parser", "driver-sblr-uuid"])
 const SSLMODES = Set(["allow", "disable", "prefer", "require", "verify-ca", "verify-full"])
 const BOOLEAN_ARGS = Set(["--stop-on-error", "--create-database", "--standard-english-fallback"])
-const REQUIRED_HOST_PACKAGES = ["DBInterface", "Tables"]
+const REQUIRED_HOST_PACKAGES = ["DBInterface", "Tables", "OpenSSL"]
 const SUPPORTED_ARGS = Set([
     "--database",
     "--host",
@@ -83,6 +89,7 @@ function run_tool(args::Dict{String,Any})::Int
         "ScratchBird.attach_create" => 0,
         "ScratchBird.commit!" => 0,
         "ScratchBird.rollback!" => 0,
+        "ScratchBird.copy_in" => 0,
     )
     testcases = Vector{Dict{String,Any}}()
     failures = Vector{Dict{String,Any}}()
@@ -96,10 +103,6 @@ function run_tool(args::Dict{String,Any})::Int
 
     try
         require_host_packages()
-        driver_root = normpath(joinpath(@__DIR__, ".."))
-        pushfirst!(LOAD_PATH, driver_root)
-        include(joinpath(driver_root, "src", "ScratchBird.jl"))
-
         statements = split_statements(read_input(required(args, "--input")))
         expected_refusals = load_expected_refusals(get(args, "--expected-refusals", ""))
         route = required(args, "--route")
@@ -114,6 +117,9 @@ function run_tool(args::Dict{String,Any})::Int
             password = required(args, "--password"),
             role = value_or_default(args, "--role", ""),
             sslmode = effective_sslmode_for_route(route, value_or_default(args, "--sslmode", "require")),
+            sslrootcert = value_or_default(args, "--sslrootcert", ""),
+            sslcert = value_or_default(args, "--sslcert", ""),
+            sslkey = value_or_default(args, "--sslkey", ""),
             transport = transport_config_for_route(route),
             ipc_path = value_or_default(args, "--ipc-path", ""),
             application_name = "SBIsqlJulia",
@@ -153,6 +159,15 @@ function run_tool(args::Dict{String,Any})::Int
                     run_transaction!(conn, sql, api_hits)
                     row_count = 0
                     result_digest = sha256_text("transaction")
+                elseif group == "copy" && is_copy_stdin_statement(sql)
+                    payload = copy_payload_for_statement(sql)
+                    isempty(payload) && throw(ScratchBird.ScratchBirdError("HY000", "COPY FROM STDIN requires SB_COPY_INPUT rows in the script"))
+                    rows_copied = execute_copy_in!(conn, executable_sql_without_copy_markers(sql), payload)
+                    api_hits["ScratchBird.copy_in"] += 1
+                    row_count = rows_copied
+                    result_digest = sha256_text("copy_in:$(rows_copied)")
+                    push!(digests, Dict("statement_id" => statement_id, "row_count" => row_count, "result_digest" => result_digest))
+                    append_text(paths["output"], json_value(Dict("statement_id" => statement_id, "rows" => [Dict("copy_in" => rows_copied)])) * "\n")
                 else
                     stmt = DBInterface.prepare(conn, sql)
                     api_hits["DBInterface.prepare"] += 1
@@ -389,7 +404,7 @@ effective_sslmode_for_route(route::String, sslmode::String)::String = route == "
 transport_config_for_route(route::String)::String = route == "ipc_local" ? "ipc" : route == "embedded" ? "embedded" : "inet"
 resolve_transport_mode(route::String, sslmode::String)::String = route == "embedded" ? "embedded_no_network_transport" : route == "ipc_local" ? "local_ipc_no_tls" : sslmode == "disable" ? "tls_disabled" : "tls_required"
 endpoint_kind_for_route(route::String)::String = route == "ipc_local" ? "unix_domain_socket" : route == "embedded" ? "embedded_bridge" : "tcp"
-transport_implementation_for_route(route::String)::String = route == "ipc_local" ? "native_julia_unix_socket" : route == "embedded" ? "unsupported_no_cpp_library_boundary" : "native_julia_tcp_or_mbedtls_tls"
+transport_implementation_for_route(route::String)::String = route == "ipc_local" ? "native_julia_unix_socket" : route == "embedded" ? "unsupported_no_cpp_library_boundary" : "native_julia_tcp_or_openssl_tls"
 
 function route_environment(args::Dict{String,Any}, actual_page_size, status::String, reason)
     expected = PAGE_SIZE_BYTES[required(args, "--page-size")]
@@ -491,7 +506,7 @@ function split_statements(script::String)::Vector{String}
         elseif ch == '"' && !single
             double = !double
         end
-        if !single && !double && startswith(script[i:end], term)
+        if !single && !double && matches_term_at(script, i, term)
             matched_len = length(term)
             flush_statement!(statements, String(take!(current)), term_ref)
             term = term_ref[]
@@ -503,6 +518,17 @@ function split_statements(script::String)::Vector{String}
     end
     flush_statement!(statements, String(take!(current)), term_ref)
     return statements
+end
+
+function matches_term_at(script::String, index::Int, term::String)::Bool
+    cursor = index
+    for expected in term
+        if cursor > lastindex(script) || script[cursor] != expected
+            return false
+        end
+        cursor = nextind(script, cursor)
+    end
+    return true
 end
 
 function flush_statement!(statements::Vector{String}, chunk::String, term_ref::Base.RefValue{String})
@@ -517,13 +543,99 @@ function flush_statement!(statements::Vector{String}, chunk::String, term_ref::B
 end
 
 function classify_statement(sql::String)::String
-    first = first_token(sql)
+    executable = executable_sql_without_copy_markers(sql)
+    first = first_token(executable)
+    first == "copy" && return "copy"
     in(first, ["create", "alter", "drop"]) && return "ddl"
     in(first, ["insert", "update", "delete", "merge", "upsert"]) && return "dml"
     in(first, ["commit", "rollback", "savepoint", "begin", "start"]) && return "transaction"
     in(first, ["grant", "revoke"]) && return "security_refusal"
     occursin("sys.", lowercase(sql)) && return "metadata"
     return "query"
+end
+
+function executable_sql_without_copy_markers(sql::String)::String
+    lines = split(sql, r"\r\n|\r|\n")
+    kept = [line for line in lines if !startswith(lstrip(line), "-- SB_COPY_INPUT ")]
+    return strip(join(kept, "\n"))
+end
+
+function copy_payload_for_statement(sql::String)::Vector{UInt8}
+    rows = String[]
+    for line in split(sql, r"\r\n|\r|\n")
+        stripped = lstrip(line)
+        if startswith(stripped, "-- SB_COPY_INPUT ")
+            push!(rows, stripped[length("-- SB_COPY_INPUT ") + 1:end])
+        end
+    end
+    isempty(rows) && return UInt8[]
+    return Vector{UInt8}(codeunits(join(rows, "\n") * "\n"))
+end
+
+function is_copy_stdin_statement(sql::String)::Bool
+    meaningful = String[]
+    for line in split(executable_sql_without_copy_markers(sql), r"\r\n|\r|\n")
+        stripped = lowercase(strip(line))
+        if !isempty(stripped) && !startswith(stripped, "--")
+            push!(meaningful, stripped)
+        end
+    end
+    executable = join(meaningful, " ")
+    return startswith(executable, "copy ") && occursin(" from stdin", executable)
+end
+
+function execute_copy_in!(conn, sql::String, payload::Vector{UInt8})::Int
+    ScratchBird.send_message!(conn, ScratchBird.MSG_QUERY, ScratchBird.build_query_payload(sql))
+    rows_copied = 0
+    copy_started = false
+    startup_messages = String[]
+    columns = Symbol[]
+    column_types = UInt32[]
+    first_data_row = nothing
+    while true
+        msg_type, _flags, _sequence, attachment, txn_id, body = ScratchBird.recv_message(conn)
+        if ScratchBird.handle_async!(conn, msg_type, attachment, txn_id, body)
+            continue
+        elseif msg_type == ScratchBird.MSG_COPY_IN_RESPONSE
+            copy_started = true
+            push!(startup_messages, "COPY_IN_RESPONSE")
+            ScratchBird.send_message!(conn, ScratchBird.MSG_COPY_DATA, payload)
+            ScratchBird.send_message!(conn, ScratchBird.MSG_COPY_DONE, UInt8[])
+        elseif msg_type == ScratchBird.MSG_COMMAND_COMPLETE
+            affected, _tag = ScratchBird.parse_command_complete(body)
+            rows_copied = Int(min(affected, UInt64(typemax(Int))))
+            push!(startup_messages, "COMMAND_COMPLETE")
+        elseif msg_type == ScratchBird.MSG_ROW_DESCRIPTION
+            names, types = ScratchBird.parse_row_description(body)
+            columns = Symbol.(names)
+            column_types = types
+            push!(startup_messages, "ROW_DESCRIPTION($(join(names, "|")))")
+        elseif msg_type == ScratchBird.MSG_DATA_ROW
+            values = ScratchBird.parse_data_row(body, length(columns), column_types)
+            first_data_row === nothing && (first_data_row = join([string(value) for value in values], "|"))
+            push!(startup_messages, "DATA_ROW")
+        elseif msg_type == ScratchBird.MSG_READY
+            ScratchBird.apply_ready!(conn, body)
+            detail = "COPY FROM STDIN did not enter COPY input mode; startup_messages=$(join(startup_messages, ","))"
+            first_data_row === nothing || (detail *= "; first_data_row=$(first_data_row)")
+            copy_started || throw(ScratchBird.ScratchBirdError("HY000", detail))
+            return rows_copied
+        elseif msg_type == ScratchBird.MSG_ERROR
+            err = ScratchBird.error_from_payload(body)
+            ScratchBird.drain_until_ready!(conn)
+            throw(err)
+        else
+            push!(startup_messages, copy_message_name(msg_type))
+        end
+    end
+end
+
+function copy_message_name(msg_type::UInt8)::String
+    msg_type == ScratchBird.MSG_ROW_DESCRIPTION && return "ROW_DESCRIPTION"
+    msg_type == ScratchBird.MSG_DATA_ROW && return "DATA_ROW"
+    msg_type == ScratchBird.MSG_NOTICE && return "NOTICE"
+    msg_type == ScratchBird.MSG_PARAMETER_STATUS && return "PARAMETER_STATUS"
+    return "0x" * lpad(string(Int(msg_type), base = 16), 2, '0')
 end
 
 function first_token(sql::String)::String

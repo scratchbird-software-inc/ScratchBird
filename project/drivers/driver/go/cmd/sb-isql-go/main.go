@@ -187,12 +187,14 @@ func run(cfg config) error {
 
 	timings := map[string]int64{}
 	apiHits := map[string]int{
-		"sql.Open":       0,
-		"db.Conn":        0,
-		"PrepareContext": 0,
-		"QueryContext":   0,
-		"Rows":           0,
-		"Tx":             0,
+		"sql.Open":        0,
+		"db.Conn":         0,
+		"PrepareContext":  0,
+		"QueryContext":    0,
+		"QueryAllContext": 0,
+		"Rows":            0,
+		"Tx":              0,
+		"CopyIn":          0,
 	}
 	failures := []map[string]any{}
 	testcases := []commandEvent{}
@@ -202,8 +204,9 @@ func run(cfg config) error {
 	routeEnvPath := filepath.Join(runRoot, "route-environment.json")
 	writeText(routeEnvPath, jsonString(routeEnvironment(cfg, nil, "fail", "not_probed"))+"\n")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.StatementTimeoutMS)*time.Millisecond)
-	defer cancel()
+	rootCtx := context.Background()
+	connectCtx, connectCancel := context.WithTimeout(rootCtx, time.Duration(cfg.StatementTimeoutMS)*time.Millisecond)
+	defer connectCancel()
 	db, err := openDB(cfg)
 	if err != nil {
 		failures = append(failures, map[string]any{"statement_id": "connect", "message": err.Error()})
@@ -213,7 +216,7 @@ func run(cfg config) error {
 	apiHits["sql.Open"]++
 
 	connStarted := time.Now()
-	conn, err := db.Conn(ctx)
+	conn, err := db.Conn(connectCtx)
 	if err != nil {
 		failures = append(failures, map[string]any{"statement_id": "connect", "message": err.Error()})
 		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
@@ -233,7 +236,7 @@ func run(cfg config) error {
 			if !ok {
 				return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
 			}
-			return sbConn.AttachCreate(ctx, cfg.CreateEmulation, cfg.Database)
+			return sbConn.AttachCreate(connectCtx, cfg.CreateEmulation, cfg.Database)
 		})
 		if err != nil {
 			failures = append(failures, map[string]any{
@@ -245,7 +248,7 @@ func run(cfg config) error {
 		apiHits["AttachCreate"]++
 		addTiming(timings, "database_create", time.Since(createStarted))
 	}
-	routeEnv := probeRouteEnvironment(ctx, conn, cfg)
+	routeEnv := probeRouteEnvironment(connectCtx, conn, cfg)
 	writeText(routeEnvPath, jsonString(routeEnv)+"\n")
 	if cfg.Route != "embedded" && routeEnv["page_size_verification_status"] != "pass" {
 		failures = append(failures, map[string]any{
@@ -267,6 +270,8 @@ func run(cfg config) error {
 		return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
 	}
 	for index, statement := range splitStatements(script) {
+		err = nil
+		ctx, cancelStatement := context.WithTimeout(rootCtx, time.Duration(cfg.StatementTimeoutMS)*time.Millisecond)
 		statementID := fmt.Sprintf("%s:%d", filepath.Base(cfg.Input), index+1)
 		group := classify(statement)
 		stmtStarted := time.Now()
@@ -274,46 +279,82 @@ func run(cfg config) error {
 		if expectedRefusals[statementID] {
 			expectedOutcome = "refusal"
 		}
+		if expectedOutcome == "refusal" || group == "copy" {
+			err = conn.Raw(func(driverConn any) error {
+				sbConn, ok := driverConn.(*scratchbird.Conn)
+				if !ok {
+					return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
+				}
+				return sbConn.DrainIdleResults(25 * time.Millisecond)
+			})
+		}
 		outcome := "success"
 		rowCount := int64(-1)
 		var resultDigest any
 		var sqlState any
 		var diagnostic any
 		breakAfterEvent := false
-		if cfg.ParserMode == "server-parser" {
-			stmt, prepareErr := conn.PrepareContext(ctx, statement)
-			apiHits["PrepareContext"]++
-			err = prepareErr
-			if err == nil {
-				defer stmt.Close()
-				if group == "query" || group == "metadata" {
-					var rows *sql.Rows
-					rows, err = stmt.QueryContext(ctx)
-					apiHits["QueryContext"]++
-					if err == nil {
-						apiHits["Rows"]++
-						values, readErr := readRows(rows)
-						rows.Close()
-						if readErr != nil {
-							err = readErr
-						} else {
-							rowCount = int64(len(values))
-							digest := sha256Text(jsonString(values))
-							resultDigest = digest
-							digests = append(digests, map[string]any{
-								"statement_id": statementID, "row_count": rowCount, "result_digest": digest,
-							})
-							appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": values})+"\n")
-						}
+		executableStatement := executableSQLWithoutCopyMarkers(statement)
+		copyPayload := copyPayloadForStatement(statement)
+		if err != nil {
+			// Boundary cleanup error is handled by the normal per-statement
+			// diagnostic path below.
+		} else if isCopyStdinStatement(statement) {
+			if len(copyPayload) == 0 {
+				err = errors.New("COPY FROM STDIN requires SB_COPY_INPUT rows in the script")
+			} else {
+				err = conn.Raw(func(driverConn any) error {
+					sbConn, ok := driverConn.(*scratchbird.Conn)
+					if !ok {
+						return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
 					}
-				} else {
-					result, execErr := stmt.ExecContext(ctx)
-					err = execErr
-					if err == nil {
-						rowCount, _ = result.RowsAffected()
-						resultDigest = sha256Text(fmt.Sprint(rowCount))
+					rowsCopied, copyErr := sbConn.CopyIn(ctx, executableStatement, copyPayload, 0)
+					if copyErr != nil {
+						return copyErr
 					}
+					apiHits["CopyIn"]++
+					rowCount = rowsCopied
+					rows := [][]any{{"copy_in", rowsCopied}}
+					resultDigest = sha256Text(jsonString(rows))
+					digests = append(digests, map[string]any{
+						"statement_id": statementID, "row_count": rowCount, "result_digest": resultDigest,
+					})
+					appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": rows})+"\n")
+					appendJSONL(filepath.Join(runRoot, "wire-transcript.jsonl"), map[string]any{
+						"event":                     "copy_in",
+						"statement_id":              statementID,
+						"parser_mode":               cfg.ParserMode,
+						"payload_bytes":             len(copyPayload),
+						"rows_copied":               rowsCopied,
+						"engine_sql_text_execution": false,
+						"mga_authority":             "engine",
+					})
+					return nil
+				})
+			}
+		} else if cfg.ParserMode == "server-parser" {
+			var values [][]any
+			err = conn.Raw(func(driverConn any) error {
+				sbConn, ok := driverConn.(*scratchbird.Conn)
+				if !ok {
+					return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
 				}
+				sets, queryErr := sbConn.QueryAllContext(ctx, statement, nil)
+				if queryErr != nil {
+					return queryErr
+				}
+				values = flattenResultSets(sets)
+				return nil
+			})
+			apiHits["QueryAllContext"]++
+			if err == nil {
+				rowCount = int64(len(values))
+				digest := sha256Text(jsonString(values))
+				resultDigest = digest
+				digests = append(digests, map[string]any{
+					"statement_id": statementID, "row_count": rowCount, "result_digest": digest,
+				})
+				appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": values})+"\n")
 			}
 		} else {
 			err = conn.Raw(func(driverConn any) error {
@@ -386,12 +427,36 @@ func run(cfg config) error {
 				breakAfterEvent = cfg.StopOnError
 			}
 		} else if expectedOutcome == "refusal" {
-			outcome = "unexpected_success"
-			failures = append(failures, map[string]any{
-				"statement_id": statementID,
-				"message":      "statement succeeded but was expected to refuse",
+			lateErr := conn.Raw(func(driverConn any) error {
+				sbConn, ok := driverConn.(*scratchbird.Conn)
+				if !ok {
+					return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
+				}
+				return sbConn.DrainIdleResults(50 * time.Millisecond)
 			})
-			breakAfterEvent = cfg.StopOnError
+			if lateErr != nil {
+				outcome = "refusal"
+				sqlState = "HY000"
+				diagnostic = lateErr.Error()
+				rowCount = -1
+				resultDigest = nil
+				appendJSONL(cfg.Diagnostics, map[string]any{
+					"statement_id": statementID, "sqlstate": sqlState, "message": diagnostic,
+				})
+				appendText(cfg.Error, statementID+": "+lateErr.Error()+"\n")
+				securityRefusals = append(securityRefusals, map[string]any{
+					"statement_id":    statementID,
+					"sqlstate":        sqlState,
+					"diagnostic_code": diagnostic,
+				})
+			} else {
+				outcome = "unexpected_success"
+				failures = append(failures, map[string]any{
+					"statement_id": statementID,
+					"message":      "statement succeeded but was expected to refuse",
+				})
+				breakAfterEvent = cfg.StopOnError
+			}
 		}
 		elapsed := time.Since(stmtStarted)
 		addTiming(timings, group, elapsed)
@@ -426,15 +491,18 @@ func run(cfg config) error {
 			"standard_english_fallback":  cfg.StandardEnglishFallback,
 			"mga_authority":              "engine",
 			"native_api_surface":         "database_sql",
-			"code_example_section":       "prepare_execute_fetch",
+			"code_example_section":       codeExampleSection(statement),
 		}
 		appendJSONL(filepath.Join(runRoot, "command-events.jsonl"), event)
 		testcases = append(testcases, event)
+		cancelStatement()
 		if breakAfterEvent {
 			break
 		}
 	}
-	writeMetadataSnapshot(ctx, conn, cfg, apiHits)
+	metadataCtx, metadataCancel := context.WithTimeout(rootCtx, time.Duration(cfg.StatementTimeoutMS)*time.Millisecond)
+	writeMetadataSnapshot(metadataCtx, conn, cfg, apiHits)
+	metadataCancel()
 	var tx *sql.Tx
 	apiHits["Tx"] += touchTx(tx)
 	return finish(cfg, timings, apiHits, failures, testcases, digests, securityRefusals, time.Since(started))
@@ -766,6 +834,13 @@ func collectExpectedRefusalIDs(expected map[string]bool, value any) {
 				expected[text] = true
 			}
 		}
+		if aliases, ok := typed["compiled_chain_statement_aliases"].(map[string]any); ok {
+			for _, alias := range aliases {
+				if text, ok := alias.(string); ok {
+					expected[text] = true
+				}
+			}
+		}
 		for _, key := range []string{"statement_ids", "statementIds", "expected_refusals", "expectedRefusals", "expected_diagnostics", "expectedDiagnostics"} {
 			if nested, ok := typed[key]; ok {
 				collectExpectedRefusalIDs(expected, nested)
@@ -775,21 +850,29 @@ func collectExpectedRefusalIDs(expected map[string]bool, value any) {
 }
 
 func readRows(rows *sql.Rows) ([][]any, error) {
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
 	out := [][]any{}
-	for rows.Next() {
-		values := make([]any, len(columns))
-		ptrs := make([]any, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
+	for {
+		columns, err := rows.Columns()
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, values)
+		for rows.Next() {
+			values := make([]any, len(columns))
+			ptrs := make([]any, len(columns))
+			for i := range values {
+				ptrs[i] = &values[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return nil, err
+			}
+			out = append(out, values)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if !rows.NextResultSet() {
+			break
+		}
 	}
 	return out, rows.Err()
 }
@@ -814,18 +897,77 @@ func readDriverRows(rows driver.Rows) ([][]any, error) {
 	}
 }
 
+func flattenResultSets(sets []scratchbird.ResultSetSummary) [][]any {
+	out := [][]any{}
+	for _, set := range sets {
+		for _, row := range set.Rows {
+			values := make([]any, len(row))
+			for index, value := range row {
+				values[index] = value
+			}
+			out = append(out, values)
+		}
+	}
+	return out
+}
+
 // splitStatements delegates to the canonical SET TERM- and comment-aware
 // statement chunker shared across the Go driver.
 func splitStatements(sqlText string) []string {
 	return scratchbird.SplitTopLevelStatements(sqlText)
 }
 
+func executableSQLWithoutCopyMarkers(sqlText string) string {
+	lines := []string{}
+	for _, raw := range strings.Split(sqlText, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(raw, " \t"), "-- SB_COPY_INPUT ") {
+			continue
+		}
+		lines = append(lines, raw)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func copyPayloadForStatement(sqlText string) []byte {
+	rows := []string{}
+	for _, raw := range strings.Split(sqlText, "\n") {
+		stripped := strings.TrimLeft(raw, " \t")
+		if strings.HasPrefix(stripped, "-- SB_COPY_INPUT ") {
+			rows = append(rows, strings.TrimSuffix(stripped[len("-- SB_COPY_INPUT "):], "\r"))
+		}
+	}
+	payload := strings.Join(rows, "\n")
+	if len(rows) > 0 {
+		payload += "\n"
+	}
+	return []byte(payload)
+}
+
+func isCopyStdinStatement(sqlText string) bool {
+	executable := strings.ToLower(strings.Join(nonCommentLines(sqlText), " "))
+	return strings.HasPrefix(executable, "copy ") && strings.Contains(executable, " from stdin")
+}
+
+func nonCommentLines(sqlText string) []string {
+	lines := []string{}
+	for _, raw := range strings.Split(sqlText, "\n") {
+		stripped := strings.TrimSpace(raw)
+		if stripped == "" || strings.HasPrefix(stripped, "--") {
+			continue
+		}
+		lines = append(lines, stripped)
+	}
+	return lines
+}
+
 func classify(sqlText string) string {
-	fields := strings.Fields(strings.ToLower(sqlText))
+	fields := strings.Fields(strings.ToLower(strings.Join(nonCommentLines(sqlText), " ")))
 	if len(fields) == 0 {
 		return "query"
 	}
 	switch fields[0] {
+	case "copy":
+		return "copy"
 	case "create", "alter", "drop":
 		return "ddl"
 	case "insert", "update", "delete", "merge", "upsert":
@@ -842,6 +984,13 @@ func classify(sqlText string) string {
 	default:
 		return "query"
 	}
+}
+
+func codeExampleSection(sqlText string) string {
+	if isCopyStdinStatement(sqlText) {
+		return "copy_in"
+	}
+	return "prepare_execute_fetch"
 }
 
 func touchTx(tx *sql.Tx) int {

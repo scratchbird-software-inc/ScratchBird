@@ -525,7 +525,11 @@ export function decodeValue(typeOid: number, data: Buffer | null, format: number
     return decodeUnknownBinary(data);
   }
   if (format === FORMAT_TEXT) {
-    return decodeTextTypedValue(typeOid, data);
+    try {
+      return decodeTextTypedValue(typeOid, data);
+    } catch {
+      return decodeTextValue(data);
+    }
   }
   return decodeBinaryValue(typeOid, data);
 }

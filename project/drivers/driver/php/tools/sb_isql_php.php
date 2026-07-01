@@ -11,6 +11,7 @@
 declare(strict_types=1);
 
 use ScratchBird\PDO\Connection;
+use ScratchBird\PDO\Protocol;
 use ScratchBird\PDO\ScratchBirdPDO;
 
 require_driver_sources(dirname(__DIR__));
@@ -114,6 +115,7 @@ function run_tool(array $args): int
         'attachCreate' => 0,
         'commit' => 0,
         'rollback' => 0,
+        'copy_in' => 0,
     ];
     $testcases = [];
     $failures = [];
@@ -193,6 +195,19 @@ function run_tool(array $args): int
                     run_transaction($pdo, $sql, $apiHits);
                     $rowCount = 0;
                     $resultDigest = sha256_text('transaction');
+                } elseif ($group === 'copy' && is_copy_stdin_statement($sql)) {
+                    $payload = copy_payload_for_statement($sql);
+                    if ($payload === '') {
+                        throw new RuntimeException('COPY FROM STDIN requires SB_COPY_INPUT rows in the script');
+                    }
+                    $rowsCopied = execute_copy_in(pdo_connection($pdo), executable_sql_without_copy_markers($sql), $payload);
+                    $apiHits['copy_in']++;
+                    $rowCount = $rowsCopied;
+                    $resultDigest = sha256_text('copy_in:' . (string) $rowsCopied);
+                    append_text(required($args, '--output'), json_encode([
+                        'statement_id' => $statementId,
+                        'rows' => [['copy_in' => $rowsCopied]],
+                    ], JSON_THROW_ON_ERROR) . PHP_EOL);
                 } else {
                     $stmt = $pdo->prepare($sql);
                     $apiHits['prepare']++;
@@ -285,10 +300,8 @@ function run_tool(array $args): int
         }
 
         $metadataStarted = hrtime(true);
-        $metadataStatement = $pdo->queryMetadata('tables');
+        $metadataRows = $pdo->getSchema('tables');
         $apiHits['queryMetadata']++;
-        $metadataRows = $metadataStatement->fetchAll(PDO::FETCH_ASSOC);
-        $apiHits['fetch']++;
         write_text($paths['metadata'], json_encode([
             'tables_digest' => sha256_text(json_encode($metadataRows, JSON_THROW_ON_ERROR)),
             'row_count' => count($metadataRows),
@@ -528,6 +541,9 @@ function load_expected_refusals(string $path): array
         if (isset($doc['expected_refusals']) && is_array($doc['expected_refusals'])) {
             $ids = array_merge($ids, $doc['expected_refusals']);
         }
+        if (isset($doc['expected_diagnostics']) && is_array($doc['expected_diagnostics'])) {
+            $ids = array_merge($ids, array_keys($doc['expected_diagnostics']));
+        }
     } else {
         throw new InvalidArgumentException('expected refusals must be a JSON object or array');
     }
@@ -633,8 +649,11 @@ function chunk_set_term(string $chunk): ?string
 
 function classify_statement(string $sql): string
 {
-    $trimmed = strtolower(trim($sql));
+    $trimmed = strtolower(trim(executable_sql_without_copy_markers($sql)));
     $first = strtok($trimmed, " \t\r\n") ?: '';
+    if ($first === 'copy') {
+        return 'copy';
+    }
     if (in_array($first, ['create', 'alter', 'drop'], true)) {
         return 'ddl';
     }
@@ -651,6 +670,86 @@ function classify_statement(string $sql): string
         return 'metadata';
     }
     return 'query';
+}
+
+function executable_sql_without_copy_markers(string $sql): string
+{
+    $lines = [];
+    foreach (preg_split('/\r\n|\r|\n/', $sql) as $line) {
+        if (str_starts_with(ltrim($line), '-- SB_COPY_INPUT ')) {
+            continue;
+        }
+        $lines[] = $line;
+    }
+    return trim(implode("\n", $lines));
+}
+
+function copy_payload_for_statement(string $sql): string
+{
+    $rows = [];
+    foreach (preg_split('/\r\n|\r|\n/', $sql) as $line) {
+        $stripped = ltrim($line);
+        if (str_starts_with($stripped, '-- SB_COPY_INPUT ')) {
+            $rows[] = substr($stripped, strlen('-- SB_COPY_INPUT '));
+        }
+    }
+    return $rows === [] ? '' : implode("\n", $rows) . "\n";
+}
+
+function is_copy_stdin_statement(string $sql): bool
+{
+    $parts = [];
+    foreach (preg_split('/\r\n|\r|\n/', executable_sql_without_copy_markers($sql)) as $line) {
+        $stripped = trim($line);
+        if ($stripped !== '' && !str_starts_with($stripped, '--')) {
+            $parts[] = strtolower($stripped);
+        }
+    }
+    $executable = implode(' ', $parts);
+    return str_starts_with($executable, 'copy ') && str_contains($executable, ' from stdin');
+}
+
+function pdo_connection(ScratchBirdPDO $pdo): Connection
+{
+    $prop = new ReflectionProperty($pdo, 'connection');
+    $prop->setAccessible(true);
+    return $prop->getValue($pdo);
+}
+
+function execute_copy_in(Connection $conn, string $sql, string $payload): int
+{
+    $conn->sendMessage(Protocol::MSG_QUERY, Protocol::buildQueryPayload($sql, 0, 0, 0), 0, false);
+    $rowsCopied = 0;
+    $copyStarted = false;
+    while (true) {
+        [$type, , $body] = $conn->receive();
+        if ($conn->handleAsyncMessage($type, $body)) {
+            continue;
+        }
+        if ($type === Protocol::MSG_COPY_IN_RESPONSE) {
+            $copyStarted = true;
+            $conn->sendMessage(Protocol::MSG_COPY_DATA, $payload, 0, false);
+            $conn->sendMessage(Protocol::MSG_COPY_DONE, '', 0, false);
+            continue;
+        }
+        if ($type === Protocol::MSG_COMMAND_COMPLETE) {
+            [, $rows] = Protocol::parseCommandComplete($body);
+            $rowsCopied = (int) $rows;
+            continue;
+        }
+        if ($type === Protocol::MSG_READY) {
+            [$status, $txnId] = Protocol::parseReady($body);
+            $conn->updateReadyState($status, $txnId);
+            if (!$copyStarted) {
+                throw new RuntimeException('COPY FROM STDIN did not enter COPY input mode');
+            }
+            return $rowsCopied;
+        }
+        if ($type === Protocol::MSG_ERROR) {
+            $err = Protocol::parseErrorMessage($body);
+            throw new RuntimeException((string) ($err['message'] ?? 'COPY failed'));
+        }
+    }
 }
 
 function run_transaction(ScratchBirdPDO $pdo, string $sql, array &$apiHits): void

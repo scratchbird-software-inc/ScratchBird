@@ -230,6 +230,7 @@ type
     procedure ExecSQLParams(const Sql: string; const Params: array of TScratchBirdParamInput);
     function ExecuteQuery(const Sql: string): TScratchBirdResultStream;
     function ExecuteQueryParams(const Sql: string; const Params: array of TScratchBirdParamInput): TScratchBirdResultStream;
+    function CopyIn(const Sql, PayloadText: string): Int64;
     function ExecuteBatch(const Statements: array of string): TScratchBirdBatchResults;
     function QueryMulti(const Statements: array of string): TScratchBirdRowsets;
     function QueryMetadata(const CollectionName: string = 'tables'): TScratchBirdResultStream;
@@ -1179,6 +1180,79 @@ begin
     end;
     Result := TScratchBirdResultStream.Create(Self);
     EndOperation(Span, True);
+  except
+    on E: Exception do
+    begin
+      EndOperation(Span, False);
+      raise;
+    end;
+  end;
+end;
+
+function TScratchBirdClient.CopyIn(const Sql, PayloadText: string): Int64;
+var
+  Span: TSpanContext;
+  SqlText: string;
+  PayloadBytes: TBytes;
+  Msg: TScratchBirdMessage;
+  CopyStarted: Boolean;
+  CommandType: Byte;
+  Rows, LastId, ReadyTxnId, Visibility: UInt64;
+  Tag: string;
+  Status: Byte;
+begin
+  SqlText := NormalizeSqlText(Sql);
+  if PayloadText = '' then
+    raise EScratchBirdError.CreateWithInfo(
+      'COPY input data must not be empty',
+      'HY000', '', ''
+    );
+  EnsureConnected;
+  Span := BeginOperation('copy_in', SqlText);
+  try
+    Result := 0;
+    CopyStarted := False;
+    PayloadBytes := TEncoding.UTF8.GetBytes(PayloadText);
+    SendSimpleQuery(SqlText, 0);
+    while True do
+    begin
+      Msg := ReceiveMessage;
+      if HandleAsyncMessage(Msg) then
+        Continue;
+      case Msg.MsgType of
+        MSG_COPY_IN_RESPONSE:
+          begin
+            CopyStarted := True;
+            SendMessage(MSG_COPY_DATA, PayloadBytes, 0, False);
+            SendMessage(MSG_COPY_DONE, nil, 0, False);
+          end;
+        MSG_COMMAND_COMPLETE:
+          begin
+            ParseCommandComplete(Msg.Payload, CommandType, Rows, LastId, Tag);
+            Result := Int64(Rows);
+          end;
+        MSG_READY:
+          begin
+            ParseReady(Msg.Payload, Status, ReadyTxnId, Visibility);
+            ApplyRuntimeReadyState(Status, ReadyTxnId);
+            FPortalResumePending := False;
+            if not CopyStarted then
+              raise EScratchBirdError.CreateWithInfo(
+                'expected COPY IN response',
+                'HY000', '', ''
+              );
+            EndOperation(Span, True);
+            Exit;
+          end;
+        MSG_COPY_FAIL:
+          raise EScratchBirdError.CreateWithInfo(
+            'COPY failed on server side',
+            'HY000', '', ''
+          );
+        MSG_ERROR:
+          raise BuildQueryError(Msg.Payload);
+      end;
+    end;
   except
     on E: Exception do
     begin

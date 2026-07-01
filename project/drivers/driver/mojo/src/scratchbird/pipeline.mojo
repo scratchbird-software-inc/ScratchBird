@@ -37,7 +37,21 @@ struct QueryPipeline:
     var completed_total: Int
     var failed_total: Int
 
-    def __init__(out self, config: PipelineConfig = PipelineConfig()):
+    def __init__(out self):
+        var config = PipelineConfig()
+        self.max_in_flight = config.max_in_flight
+        self.auto_flush = config.auto_flush
+        self.auto_flush_threshold = config.auto_flush_threshold
+        self.flush_timeout_ms = config.flush_timeout_ms
+        self.connection_id = ""
+        self.running = False
+        self.pending_sql = List[String]()
+        self.pending_param_count = List[Int]()
+        self.in_flight = 0
+        self.completed_total = 0
+        self.failed_total = 0
+
+    def __init__(out self, config: PipelineConfig):
         self.max_in_flight = config.max_in_flight
         self.auto_flush = config.auto_flush
         self.auto_flush_threshold = config.auto_flush_threshold

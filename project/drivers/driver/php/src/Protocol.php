@@ -17,6 +17,8 @@ final class Protocol
     public const VERSION = (self::VERSION_MAJOR << 8) | self::VERSION_MINOR;
     public const HEADER_SIZE = 40;
     public const MAX_MESSAGE_SIZE = 1073741824;
+    private const P1_ROW_DESCRIPTION_HEADER_BYTES = 72;
+    private const P1_CANONICAL_TYPE_REF_BYTES = 144;
 
     public const MSG_STARTUP = 0x01;
     public const MSG_AUTH_RESPONSE = 0x02;
@@ -192,19 +194,35 @@ final class Protocol
 
     public static function buildStartupPayload(int $features, array $parameters): string
     {
-        $payload = chr(self::VERSION_MAJOR) . chr(self::VERSION_MINOR) . self::writeUInt16LE(0);
+        $entries = $parameters;
+        ksort($entries, SORT_STRING);
+
+        $payload = self::writeUInt16LE(self::VERSION);
+        $payload .= self::writeUInt16LE(self::VERSION);
+        $payload .= self::writeUInt32LE(0);
         $payload .= self::writeUInt64LE($features);
-        $payload .= self::buildParamList($parameters);
+        $payload .= self::writeUInt64LE(0);
+        $payload .= self::writeUInt64LE(0);
+        $payload .= str_repeat(chr(0x11), 16);
+        $payload .= str_repeat("\0", 32);
+        $payload .= self::writeUInt32LE(count($entries));
+        $payload .= self::buildP1ParamList($entries);
+        $payload .= self::writeUInt32LE(0);
         return $payload;
     }
 
-    private static function buildParamList(array $parameters): string
+    private static function buildP1ParamList(array $parameters): string
     {
         $buffer = '';
         foreach ($parameters as $key => $value) {
-            $buffer .= $key . "\0" . $value . "\0";
+            $keyBytes = (string)$key;
+            $valueBytes = (string)$value;
+            $buffer .= self::writeUInt32LE(strlen($keyBytes));
+            $buffer .= $keyBytes;
+            $buffer .= chr(0x01) . chr(0x00);
+            $buffer .= self::writeUInt32LE(strlen($valueBytes));
+            $buffer .= $valueBytes;
         }
-        $buffer .= "\0";
         return $buffer;
     }
 
@@ -252,7 +270,7 @@ final class Protocol
         return self::writeUInt32LE($flags)
             . self::writeUInt32LE($maxRows)
             . self::writeUInt32LE($timeoutMs)
-            . $sql . "\0";
+            . $sql;
     }
 
     public static function buildParsePayload(string $statementName, string $sql, array $paramTypes): string
@@ -440,6 +458,14 @@ final class Protocol
 
     public static function parseReady(string $payload): array
     {
+        if (strlen($payload) >= 76) {
+            $runtimeStatus = ord($payload[56]);
+            if (in_array($runtimeStatus, [0x49, 0x54, 0x45, 0x52, 0x41], true)) {
+                $txnId = self::readUInt64LE(substr($payload, 48, 8));
+                $status = in_array($runtimeStatus, [0x54, 0x45], true) ? 1 : 0;
+                return [$status, $txnId, $txnId];
+            }
+        }
         if (strlen($payload) < 20) {
             throw new \RuntimeException('Ready truncated');
         }
@@ -477,6 +503,25 @@ final class Protocol
 
     public static function parseParameterDescription(string $payload): array
     {
+        if (self::isP1RowDescription($payload)) {
+            $count = self::readInt32LE(substr($payload, 4, 4));
+            if ($count < 0) {
+                throw new \RuntimeException('P1 parameter description column count invalid');
+            }
+            $offset = self::P1_ROW_DESCRIPTION_HEADER_BYTES;
+            $types = [];
+            for ($i = 0; $i < $count; $i++) {
+                $fixedColumnBytes = 4 + 4 + 8 + self::P1_CANONICAL_TYPE_REF_BYTES + 56;
+                if ($offset + $fixedColumnBytes > strlen($payload)) {
+                    throw new \RuntimeException('P1 parameter description truncated');
+                }
+                $offset += 4 + 4 + 8;
+                $types[] = self::oidFromCanonicalTypeRef($payload, $offset);
+                $offset += self::P1_CANONICAL_TYPE_REF_BYTES + 16 * 3 + 4 + 2 + 2;
+                [, $offset] = self::readNullableText($payload, $offset);
+            }
+            return $types;
+        }
         if (strlen($payload) < 4) {
             throw new \RuntimeException('Parameter description truncated');
         }
@@ -495,6 +540,9 @@ final class Protocol
 
     public static function parseRowDescription(string $payload): array
     {
+        if (self::isP1RowDescription($payload)) {
+            return self::parseP1RowDescription($payload);
+        }
         if (strlen($payload) < 4) {
             throw new \RuntimeException('Row description truncated');
         }
@@ -534,6 +582,120 @@ final class Protocol
             ];
         }
         return $columns;
+    }
+
+    private static function isP1RowDescription(string $payload): bool
+    {
+        return strlen($payload) >= self::P1_ROW_DESCRIPTION_HEADER_BYTES
+            && self::readUInt16LE(substr($payload, 0, 2)) === 1
+            && ord($payload[3]) === 1;
+    }
+
+    private static function parseP1RowDescription(string $payload): array
+    {
+        $count = self::readInt32LE(substr($payload, 4, 4));
+        if ($count < 0) {
+            throw new \RuntimeException('P1 row description column count invalid');
+        }
+        $offset = self::P1_ROW_DESCRIPTION_HEADER_BYTES;
+        $columns = [];
+        for ($i = 0; $i < $count; $i++) {
+            $fixedColumnBytes = 4 + 4 + 8 + self::P1_CANONICAL_TYPE_REF_BYTES + 56;
+            if ($offset + $fixedColumnBytes > strlen($payload)) {
+                throw new \RuntimeException('P1 row description truncated');
+            }
+            $ordinal = self::readInt32LE(substr($payload, $offset, 4));
+            $offset += 4;
+            $offset += 1;
+            $format = ord($payload[$offset]) === 1 ? TypeDecoder::FORMAT_TEXT : TypeDecoder::FORMAT_BINARY;
+            $offset += 1;
+            $nullable = ord($payload[$offset]) === 1;
+            $offset += 1;
+            $offset += 1;
+            $offset += 8;
+            $typeOid = self::oidFromCanonicalTypeRef($payload, $offset);
+            $offset += self::P1_CANONICAL_TYPE_REF_BYTES;
+            $offset += 16 * 3;
+            $offset += 4;
+            $offset += 2;
+            $offset += 2;
+            [$name, $offset] = self::readNullableText($payload, $offset);
+            if ($name === '') {
+                $name = 'column' . ($i + 1);
+            }
+            $columns[] = [
+                'name' => $name,
+                'tableOid' => 0,
+                'columnIndex' => $ordinal === 0 ? $i : $ordinal - 1,
+                'typeOid' => $typeOid,
+                'typeSize' => self::typeSizeForOid($typeOid),
+                'typeModifier' => -1,
+                'format' => $format,
+                'nullable' => $nullable,
+            ];
+        }
+        return $columns;
+    }
+
+    private static function oidFromCanonicalTypeRef(string $payload, int $offset): int
+    {
+        if ($offset + 4 > strlen($payload)) {
+            return TypeDecoder::OID_TEXT;
+        }
+        $family = self::readUInt16LE(substr($payload, $offset, 2));
+        $code = self::readUInt16LE(substr($payload, $offset + 2, 2));
+        if ($family === 1 && $code === 1) return TypeDecoder::OID_BOOL;
+        if ($family === 2 && $code === 3) return TypeDecoder::OID_INT4;
+        if ($family === 2 && $code === 4) return TypeDecoder::OID_INT8;
+        if ($family === 4 && $code === 1) return TypeDecoder::OID_NUMERIC;
+        if ($family === 6 && $code === 2) return TypeDecoder::OID_FLOAT8;
+        if ($family === 8 && $code === 1) return TypeDecoder::OID_TEXT;
+        if ($family === 9) return TypeDecoder::OID_BYTEA;
+        if ($family === 11) {
+            if ($code === 1) return TypeDecoder::OID_DATE;
+            if ($code === 2) return TypeDecoder::OID_TIME;
+            return TypeDecoder::OID_TIMESTAMP;
+        }
+        if ($family === 12) return TypeDecoder::OID_INTERVAL;
+        if ($family === 13) return TypeDecoder::OID_UUID;
+        if ($family === 19) {
+            if ($code === 3) return TypeDecoder::OID_MACADDR;
+            return TypeDecoder::OID_INET;
+        }
+        if ($family === 20) return TypeDecoder::OID_JSON;
+        return TypeDecoder::OID_TEXT;
+    }
+
+    private static function typeSizeForOid(int $typeOid): int
+    {
+        return match ($typeOid) {
+            TypeDecoder::OID_BOOL => 1,
+            TypeDecoder::OID_INT4 => 4,
+            TypeDecoder::OID_INT8, TypeDecoder::OID_FLOAT8 => 8,
+            TypeDecoder::OID_UUID => 16,
+            default => -1,
+        };
+    }
+
+    private static function readNullableText(string $payload, int $offset): array
+    {
+        if ($offset + 5 > strlen($payload)) {
+            throw new \RuntimeException('Nullable text truncated');
+        }
+        $tag = ord($payload[$offset]);
+        $offset += 1;
+        $length = self::readInt32LE(substr($payload, $offset, 4));
+        $offset += 4;
+        if ($length < 0) {
+            throw new \RuntimeException('Nullable text length invalid');
+        }
+        if ($tag === 0) {
+            return ['', $offset];
+        }
+        if ($offset + $length > strlen($payload)) {
+            throw new \RuntimeException('Nullable text truncated');
+        }
+        return [substr($payload, $offset, $length), $offset + $length];
     }
 
     public static function parseDataRow(string $payload): array

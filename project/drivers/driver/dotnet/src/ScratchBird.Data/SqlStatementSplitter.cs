@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Text;
 
 namespace ScratchBird.Data;
@@ -26,6 +27,13 @@ namespace ScratchBird.Data;
 /// </summary>
 public static class SqlStatementSplitter
 {
+    private static readonly Regex BeginScriptRegex = new(
+        @"^--\s*begin_script:\s*(\S.*?)\s*$",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex EndScriptRegex = new(
+        @"^--\s*end_script:\s*(\S.*?)\s*$",
+        RegexOptions.CultureInvariant);
+
     /// <summary>
     /// Split SQL into top-level statements on the active terminator.
     ///
@@ -42,6 +50,11 @@ public static class SqlStatementSplitter
         if (string.IsNullOrEmpty(sql))
         {
             return statements;
+        }
+        if (IsSingleProceduralCreatePayload(sql))
+        {
+            var trimmed = sql.Trim();
+            return trimmed.Length == 0 ? statements : [trimmed];
         }
 
         var term = ";";
@@ -113,6 +126,62 @@ public static class SqlStatementSplitter
         return statements;
     }
 
+    /// <summary>
+    /// Split a compiled full-surface chain into per-script statements.
+    /// </summary>
+    public static IReadOnlyList<ChainStatement> SplitChain(string chain)
+    {
+        var statements = new List<ChainStatement>();
+        if (string.IsNullOrEmpty(chain))
+        {
+            return statements;
+        }
+
+        string? currentName = null;
+        var buffer = new List<string>();
+        var capturing = false;
+
+        void Flush()
+        {
+            if (currentName == null)
+            {
+                return;
+            }
+            var index = 1;
+            foreach (var statement in Split(string.Join("\n", buffer)))
+            {
+                statements.Add(new ChainStatement(currentName, index, statement));
+                index++;
+            }
+        }
+
+        foreach (var line in chain.Replace("\r\n", "\n").Split('\n'))
+        {
+            var begin = BeginScriptRegex.Match(line);
+            if (begin.Success)
+            {
+                currentName = begin.Groups[1].Value;
+                buffer.Clear();
+                capturing = true;
+                continue;
+            }
+            if (capturing && EndScriptRegex.IsMatch(line))
+            {
+                Flush();
+                currentName = null;
+                buffer.Clear();
+                capturing = false;
+                continue;
+            }
+            if (capturing)
+            {
+                buffer.Add(line);
+            }
+        }
+
+        return statements;
+    }
+
     private static bool MatchesAt(string sql, int index, string term)
     {
         if (index + term.Length > sql.Length)
@@ -120,6 +189,58 @@ public static class SqlStatementSplitter
             return false;
         }
         return string.CompareOrdinal(sql, index, term, 0, term.Length) == 0;
+    }
+
+    private static bool IsSingleProceduralCreatePayload(string sql)
+    {
+        var trimmed = StripLeadingLineComments(sql).Trim();
+        if (!StartsWithWord(trimmed, "CREATE FUNCTION") &&
+            !StartsWithWord(trimmed, "CREATE PROCEDURE") &&
+            !StartsWithWord(trimmed, "CREATE TRIGGER"))
+        {
+            return false;
+        }
+        var upper = trimmed.ToUpperInvariant();
+        return upper.Contains("\nAS\nBEGIN") ||
+               upper.Contains("\nAS\r\nBEGIN") ||
+               upper.Contains("\nAS\nDECLARE") ||
+               upper.Contains("\nAS\r\nDECLARE") ||
+               upper.Contains(" AS BEGIN") ||
+               upper.Contains(" AS DECLARE") ||
+               upper.Contains("\nBEGIN") ||
+               upper.Contains(" BEGIN");
+    }
+
+    private static string StripLeadingLineComments(string sql)
+    {
+        var cursor = 0;
+        while (cursor < sql.Length)
+        {
+            while (cursor < sql.Length && char.IsWhiteSpace(sql[cursor]))
+            {
+                cursor++;
+            }
+            if (cursor + 1 >= sql.Length || sql[cursor] != '-' || sql[cursor + 1] != '-')
+            {
+                break;
+            }
+            var eol = sql.IndexOf('\n', cursor);
+            if (eol < 0)
+            {
+                return string.Empty;
+            }
+            cursor = eol + 1;
+        }
+        return sql[cursor..];
+    }
+
+    private static bool StartsWithWord(string text, string word)
+    {
+        if (!text.StartsWith(word, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return text.Length == word.Length || char.IsWhiteSpace(text[word.Length]);
     }
 
     /// <summary>
@@ -153,3 +274,5 @@ public static class SqlStatementSplitter
         return rest.Length > 0 ? rest : null;
     }
 }
+
+public sealed record ChainStatement(string ScriptName, int StatementIndex, string Sql);

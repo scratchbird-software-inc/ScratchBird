@@ -158,6 +158,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         ("commit".to_string(), 0),
         ("rollback".to_string(), 0),
         ("query_metadata".to_string(), 0),
+        ("copy_in".to_string(), 0),
     ]);
     let mut testcases = Vec::<JsonValue>::new();
     let mut failures = Vec::<JsonValue>::new();
@@ -284,7 +285,42 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             let mut sqlstate = JsonValue::Null;
             let mut diagnostic = JsonValue::Null;
             let mut break_after_event = false;
-            let result = if group == "transaction" {
+            let result = if is_copy_stdin_statement(statement) {
+                let payload = copy_payload_for_statement(statement);
+                if payload.is_empty() {
+                    Err(scratchbird::Error::new(
+                        scratchbird::ErrorKind::Data,
+                        "COPY FROM STDIN requires SB_COPY_INPUT rows in the script",
+                    ))
+                } else {
+                    let executable_sql = executable_sql_without_copy_markers(statement);
+                    let copied = client.copy_in(&executable_sql, payload, None).await;
+                    if let Ok(result) = &copied {
+                        *api_hits.entry("copy_in".to_string()).or_default() += 1;
+                        append_jsonl(
+                            &paths.wire,
+                            json!({
+                                "event": "copy_in",
+                                "statement_id": statement_id,
+                                "parser_mode": args.parser_mode,
+                                "payload_bytes": copy_payload_for_statement(statement).len(),
+                                "rows_copied": result.rows_affected,
+                                "engine_sql_text_execution": false,
+                                "mga_authority": "engine"
+                            }),
+                        )?;
+                    }
+                    copied.map(|copy| scratchbird::QueryResult {
+                        columns: Vec::new(),
+                        rows: vec![vec![
+                            Value::String("copy_in".to_string()),
+                            Value::Int64(copy.rows_affected as i64),
+                        ]],
+                        row_count: copy.rows_affected as i64,
+                        command_tag: copy.command_tag,
+                    })
+                }
+            } else if group == "transaction" {
                 run_transaction(&mut client, statement, &mut api_hits)
                     .await
                     .map(|_| scratchbird::QueryResult {
@@ -308,11 +344,9 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                         "sblr_bytes": compiled.bytecode.len()
                     }),
                 )?;
-                let executed = client.execute_sblr(
-                    compiled.hash,
-                    &compiled.bytecode,
-                    &[],
-                ).await;
+                let executed = client
+                    .execute_sblr(compiled.hash, &compiled.bytecode, &[])
+                    .await;
                 if executed.is_ok() {
                     *api_hits.entry("execute_sblr".to_string()).or_default() += 1;
                     append_jsonl(
@@ -420,7 +454,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
                 "transaction_id_observed": null,
                 "mga_authority": "engine",
                 "native_api_surface": "rust",
-                "code_example_section": "query_params_fetch"
+                "code_example_section": if is_copy_stdin_statement(statement) { "copy_in" } else { "query_params_fetch" }
             });
             append_jsonl(&paths.events, event.clone())?;
             testcases.push(event);
@@ -968,10 +1002,51 @@ fn split_statements(script: &str) -> Vec<String> {
     scratchbird::sql::split_top_level_statements(script)
 }
 
+fn executable_sql_without_copy_markers(sql: &str) -> String {
+    sql.lines()
+        .filter(|line| !line.trim_start().starts_with("-- SB_COPY_INPUT "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn copy_payload_for_statement(sql: &str) -> Vec<u8> {
+    let rows: Vec<String> = sql
+        .lines()
+        .filter_map(|line| {
+            let stripped = line.trim_start();
+            stripped
+                .strip_prefix("-- SB_COPY_INPUT ")
+                .map(|row| row.trim_end_matches('\r').to_string())
+        })
+        .collect();
+    let mut payload = rows.join("\n");
+    if !rows.is_empty() {
+        payload.push('\n');
+    }
+    payload.into_bytes()
+}
+
+fn is_copy_stdin_statement(sql: &str) -> bool {
+    let executable = non_comment_lines(sql).join(" ").to_ascii_lowercase();
+    executable.starts_with("copy ") && executable.contains(" from stdin")
+}
+
+fn non_comment_lines(sql: &str) -> Vec<String> {
+    sql.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("--"))
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn classify(sql: &str) -> String {
-    let trimmed = sql.trim().to_ascii_lowercase();
+    let trimmed = non_comment_lines(sql).join(" ").to_ascii_lowercase();
     let first = trimmed.split_whitespace().next().unwrap_or("");
-    if ["create", "alter", "drop"].contains(&first) {
+    if first == "copy" {
+        "copy".to_string()
+    } else if ["create", "alter", "drop"].contains(&first) {
         "ddl".to_string()
     } else if ["insert", "update", "delete", "merge", "upsert"].contains(&first) {
         "dml".to_string()

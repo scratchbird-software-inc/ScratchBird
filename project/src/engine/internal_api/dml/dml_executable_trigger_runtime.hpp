@@ -268,7 +268,6 @@ inline EngineRowValue AuditRow(std::uint64_t audit_id,
                                std::string note) {
   EngineRowValue row;
   const bool item_id_null = item_id.empty();
-  row.requested_row_uuid.canonical = "trigger-audit-row-" + std::to_string(audit_id);
   row.fields.push_back({"audit_id", TypedValue("integer", std::to_string(audit_id))});
   row.fields.push_back({"event_kind", TypedValue("varchar", std::move(event_kind))});
   row.fields.push_back({"item_id", TypedValue("integer", std::move(item_id), item_id_null)});

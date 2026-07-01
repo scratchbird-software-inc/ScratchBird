@@ -99,7 +99,8 @@ def run(args)
     "query_metadata" => 0,
     "attach_create" => 0,
     "commit" => 0,
-    "rollback" => 0
+    "rollback" => 0,
+    "copy_in" => 0
   }
   testcases = []
   failures = []
@@ -168,6 +169,15 @@ def run(args)
           run_transaction(client, sql, api_hits)
           row_count = 0
           result_digest = sha256_text("transaction")
+        elsif group == "copy" && copy_stdin_statement?(sql)
+          payload = copy_payload_for_statement(sql)
+          raise "COPY FROM STDIN requires SB_COPY_INPUT rows in the script" if payload.empty?
+
+          rows_copied = execute_copy_in(client, executable_sql_without_copy_markers(sql), payload)
+          api_hits["copy_in"] += 1
+          row_count = rows_copied
+          result_digest = sha256_text("copy_in:#{rows_copied}")
+          append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: [{ copy_in: rows_copied }]) + "\n")
         else
           name = "sb_isql_ruby_#{index + 1}"
           client.prepare(name, sql)
@@ -417,8 +427,9 @@ def split_statements(script)
 end
 
 def classify_statement(sql)
-  trimmed = sql.strip.downcase
+  trimmed = executable_sql_without_copy_markers(sql).strip.downcase
   first = trimmed.split(/\s+/, 2).first.to_s
+  return "copy" if first == "copy"
   return "ddl" if %w[create alter drop].include?(first)
   return "dml" if %w[insert update delete merge upsert].include?(first)
   return "transaction" if %w[commit rollback savepoint begin start].include?(first)
@@ -503,10 +514,10 @@ def load_expected_refusals(path)
   raise "expected refusal file not found: #{path}" unless File.file?(path)
   doc = JSON.parse(File.read(path))
   ids =
-    if doc.is_a?(Hash) && doc["statement_ids"].is_a?(Array)
-      doc["statement_ids"] + Array(doc["expected_refusals"])
-    elsif doc.is_a?(Hash) && doc["expected_refusals"].is_a?(Array)
-      doc["expected_refusals"]
+    if doc.is_a?(Hash)
+      Array(doc["statement_ids"]) +
+        Array(doc["expected_refusals"]) +
+        (doc["expected_diagnostics"].is_a?(Hash) ? doc["expected_diagnostics"].keys : [])
     elsif doc.is_a?(Array)
       doc
     else
@@ -539,6 +550,56 @@ end
 
 def read_input(path)
   path == "-" ? STDIN.read : File.read(path)
+end
+
+def executable_sql_without_copy_markers(sql)
+  sql.each_line.filter_map do |line|
+    line.lstrip.start_with?("-- SB_COPY_INPUT ") ? nil : line
+  end.join.strip
+end
+
+def copy_payload_for_statement(sql)
+  rows = []
+  sql.each_line do |line|
+    stripped = line.lstrip
+    rows << stripped.delete_suffix("\n").delete_suffix("\r").sub(/\A-- SB_COPY_INPUT /, "") if stripped.start_with?("-- SB_COPY_INPUT ")
+  end
+  rows.empty? ? "" : rows.join("\n") + "\n"
+end
+
+def copy_stdin_statement?(sql)
+  executable = executable_sql_without_copy_markers(sql).each_line.filter_map do |line|
+    stripped = line.strip.downcase
+    stripped.empty? || stripped.start_with?("--") ? nil : stripped
+  end.join(" ")
+  executable.start_with?("copy ") && executable.include?(" from stdin")
+end
+
+def execute_copy_in(client, sql, payload)
+  client.send(:send_simple_query, sql, nil)
+  rows_copied = 0
+  copy_started = false
+  loop do
+    type, _flags, body, _sequence, _attachment_id, _txn_id = client.send(:recv_message)
+    next if client.send(:handle_async_message, type, body)
+
+    case type
+    when Scratchbird::Protocol::MSG_COPY_IN_RESPONSE
+      copy_started = true
+      client.send(:send_message, Scratchbird::Protocol::MSG_COPY_DATA, payload, 0, false)
+      client.send(:send_message, Scratchbird::Protocol::MSG_COPY_DONE, +"", 0, false)
+    when Scratchbird::Protocol::MSG_COMMAND_COMPLETE
+      _command_type, rows_count, _last_id, _tag = Scratchbird::Protocol.parse_command_complete(body)
+      rows_copied = rows_count.to_i
+    when Scratchbird::Protocol::MSG_READY
+      status, txn_id = Scratchbird::Protocol.parse_ready(body)
+      client.send(:apply_runtime_ready_state, status, txn_id)
+      raise "COPY FROM STDIN did not enter COPY input mode" unless copy_started
+      return rows_copied
+    when Scratchbird::Protocol::MSG_ERROR
+      client.send(:handle_query_error, body)
+    end
+  end
 end
 
 def monotonic_ns

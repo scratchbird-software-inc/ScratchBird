@@ -31,12 +31,25 @@ class FakeCursor:
 
     def __init__(self):
         self.executed = []
+        self._rows = [(1,)]
 
     def execute(self, sql):
         self.executed.append(sql)
+        if sql.strip().upper() == "SHOW DATABASE":
+            self.description = [("page_size_bytes", 4, None, None, None, None, True)]
+            self._rows = [(8192,)]
+        else:
+            self.description = [("VALUE", 4, None, None, None, None, True)]
+            self._rows = [(1,)]
 
     def fetchall(self):
-        return [(1,)]
+        return self._rows
+
+    def _prime_stream_metadata(self, stream):
+        self.description = getattr(stream, "description", self.description)
+
+    def _update_description(self, stream):
+        self.description = getattr(stream, "description", self.description)
 
 
 class FakeConnection:
@@ -47,12 +60,27 @@ class FakeConnection:
         self.committed = False
         self.rolled_back = False
         self.closed = False
+        self.compiled = []
+        self.executed_sblr = []
 
     def cursor(self):
         return self.cursor_obj
 
     def query_metadata(self, collection):
         return FakeCursor()
+
+    def compile_sblr(self, sql):
+        self.compiled.append(sql)
+        return ("sha256:fake", 1, b"sblr")
+
+    def execute_sblr(self, sblr_hash, sblr_bytecode):
+        self.executed_sblr.append((sblr_hash, sblr_bytecode))
+        return types.SimpleNamespace(
+            description=[("VALUE", 4, None, None, None, None, True)],
+            rowcount=1,
+            lastrowid=None,
+            statusmessage="SELECT",
+        )
 
     def commit(self):
         self.committed = True
@@ -95,6 +123,13 @@ def args_for(tmp_path, parser_mode="server-parser"):
         run_id="pytest",
         create_database=False,
         create_emulation_mode="sbsql",
+        language_resource_pack="project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+        language_resource_identity="sbsql.common_resource_pack.v1",
+        language_resource_hash="sha256:test",
+        language_profile="en-US",
+        syntax_profile="sbsql.v3",
+        topology_profile="topology.sbsql.canonical.v1",
+        standard_english_fallback=True,
     )
 
 
@@ -128,22 +163,25 @@ def test_python_native_tool_routes_output_and_artifacts(tmp_path, monkeypatch):
 
     api_hits = json.loads((tmp_path / "run" / "native-api-coverage.json").read_text(encoding="utf-8"))
     assert api_hits["scratchbird.connect"] == 1
-    assert api_hits["cursor.execute"] == 1
-    assert api_hits["cursor.fetchall"] == 1
+    assert api_hits["cursor.execute"] == 2
+    assert api_hits["cursor.fetchall"] == 2
     assert api_hits["conn.query_metadata"] == 1
     assert fake.closed is True
 
 
-def test_python_native_tool_fails_closed_for_unimplemented_driver_sblr_mode(tmp_path, monkeypatch):
+def test_python_native_tool_executes_driver_sblr_mode(tmp_path, monkeypatch):
     tool = load_tool_module()
     fake = FakeConnection()
     monkeypatch.setattr(tool, "connect_with_public_api", lambda _: fake)
 
     rc = tool.run_script(args_for(tmp_path, parser_mode="driver-sblr-uuid"))
 
-    assert rc == 1
+    assert rc == 0
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
-    assert summary["status"] == "fail"
-    diagnostics = (tmp_path / "run" / "diagnostics.jsonl").read_text(encoding="utf-8")
-    assert "not yet implemented by the Python native tool" in diagnostics
-    assert fake.rolled_back is True
+    assert summary["status"] == "pass"
+    assert fake.compiled == ["SELECT 1"]
+    assert fake.executed_sblr == [("sha256:fake", b"sblr")]
+    api_hits = json.loads((tmp_path / "run" / "native-api-coverage.json").read_text(encoding="utf-8"))
+    assert api_hits["conn.compile_sblr"] == 1
+    assert api_hits["conn.execute_sblr"] == 1
+    assert fake.closed is True

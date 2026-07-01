@@ -65,6 +65,8 @@ target_include_directories(scratchbird_odbc
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/../cpp/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/../cpp/tools
 )
 
 target_include_directories(sb_isql_odbc
@@ -276,6 +278,7 @@ if (BUILD_TESTING)
             target_include_directories(scratchbird_odbc_tests PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${CMAKE_CURRENT_LIST_DIR}/../cpp/include
+                ${CMAKE_CURRENT_LIST_DIR}/../cpp/tools
             )
             target_link_libraries(scratchbird_odbc_tests
                 PRIVATE

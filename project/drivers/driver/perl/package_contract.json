@@ -3,7 +3,7 @@
   "category": "driver",
   "name": "perl",
   "driver_family": "perl",
-  "status": "beta_2_native_transport_runner",
+  "status": "beta_2",
   "wire_protocol": "sbwp_v1_1",
   "auth_authority": "engine",
   "transaction_authority": "mga_engine",

@@ -232,6 +232,27 @@ TEST_F(OdbcCatalogTest, TablesHonorsPatterns) {
     EXPECT_TRUE(stmt_.rows_.empty());
 }
 
+TEST_F(OdbcCatalogTest, ExecuteSqlClearsStaleConnectionDiagnostics) {
+    conn_.setError("42000", 1, "SBSQL_DOMAIN_CHECK_VIOLATION");
+    ASSERT_EQ(conn_.getDiagnosticCount(), 1);
+
+    std::vector<std::vector<std::string>> rows;
+    std::vector<ColumnMetadata> columns;
+    SQLLEN rows_affected = 0;
+    SQLRETURN rc = conn_.executeSQL("SHOW TABLES", rows, columns, rows_affected);
+    ASSERT_EQ(rc, SQL_SUCCESS);
+    EXPECT_EQ(conn_.getDiagnosticCount(), 0);
+
+    conn_.setError("42000", 1, "old domain diagnostic");
+    ASSERT_EQ(conn_.getDiagnosticCount(), 1);
+    rc = conn_.executeSQL("SELECT missing_object", rows, columns, rows_affected);
+    ASSERT_EQ(rc, SQL_ERROR);
+    ASSERT_EQ(conn_.getDiagnosticCount(), 1);
+    const auto* current = conn_.getDiagnostic(1);
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(current->message.find("old domain diagnostic"), std::string::npos);
+}
+
 TEST(OdbcRetryContractTest, StopsOnOperatorInterventionSqlState) {
     OdbcEnvironment env;
     OdbcConnection conn(&env);
@@ -646,10 +667,17 @@ public:
 
 class TransactionRecordingClientBridge : public RecordingClientBridge {
 public:
+    SQLRETURN begin_result{SQL_SUCCESS};
     SQLRETURN commit_result{SQL_SUCCESS};
     SQLRETURN rollback_result{SQL_SUCCESS};
+    int begin_calls{0};
     int commit_calls{0};
     int rollback_calls{0};
+
+    SQLRETURN beginTransaction() override {
+        ++begin_calls;
+        return begin_result;
+    }
 
     SQLRETURN commit() override {
         ++commit_calls;
@@ -705,6 +733,28 @@ private:
     std::string message_;
 };
 
+class FixedFailureClientBridge : public RecordingClientBridge {
+public:
+    explicit FixedFailureClientBridge(std::string message)
+        : message_(std::move(message)) {}
+
+    SQLRETURN executeSQL(const std::string& sql,
+                         std::vector<std::vector<std::string>>& results,
+                         std::vector<scratchbird::odbc::ColumnMetadata>& columns,
+                         SQLLEN& rows_affected) override {
+        (void)sql;
+        results.clear();
+        columns.clear();
+        rows_affected = 0;
+        last_status_ = scratchbird::core::Status::INVALID_ARGUMENT;
+        last_error_ = message_;
+        return SQL_ERROR;
+    }
+
+private:
+    std::string message_;
+};
+
 class DisconnectRecordingClientBridge : public RecordingClientBridge {
 public:
     int disconnect_calls{0};
@@ -738,11 +788,11 @@ public:
     }
 };
 
-TEST(OdbcAutocommitTest, SetAutocommitSendsConflictClause) {
+TEST(OdbcAutocommitTest, SetAutocommitUsesNativeTransactionBridge) {
     scratchbird::odbc::OdbcEnvironment env;
     scratchbird::odbc::OdbcConnection conn(&env);
 
-    auto bridge = std::make_unique<RecordingClientBridge>();
+    auto bridge = std::make_unique<TransactionRecordingClientBridge>();
     auto* bridge_ptr = bridge.get();
     conn.client_bridge_ = std::move(bridge);
     conn.connected_ = true;
@@ -754,8 +804,9 @@ TEST(OdbcAutocommitTest, SetAutocommitSendsConflictClause) {
     ASSERT_EQ(rc, SQL_SUCCESS);
     EXPECT_EQ(conn.auto_commit_, SQL_AUTOCOMMIT_OFF);
     EXPECT_TRUE(conn.in_transaction_);
-    ASSERT_EQ(bridge_ptr->sql_log.size(), 1u);
-    EXPECT_EQ(bridge_ptr->sql_log[0], "SET AUTOCOMMIT OFF ON CONFLICT KEEP");
+    EXPECT_EQ(bridge_ptr->begin_calls, 1);
+    EXPECT_EQ(bridge_ptr->commit_calls, 0);
+    EXPECT_TRUE(bridge_ptr->sql_log.empty());
 
     rc = conn.setAttribute(SQL_ATTR_AUTOCOMMIT,
                            reinterpret_cast<SQLPOINTER>(
@@ -764,8 +815,9 @@ TEST(OdbcAutocommitTest, SetAutocommitSendsConflictClause) {
     ASSERT_EQ(rc, SQL_SUCCESS);
     EXPECT_EQ(conn.auto_commit_, SQL_AUTOCOMMIT_ON);
     EXPECT_FALSE(conn.in_transaction_);
-    ASSERT_EQ(bridge_ptr->sql_log.size(), 2u);
-    EXPECT_EQ(bridge_ptr->sql_log[1], "SET AUTOCOMMIT ON ON CONFLICT COMMIT");
+    EXPECT_EQ(bridge_ptr->begin_calls, 1);
+    EXPECT_EQ(bridge_ptr->commit_calls, 1);
+    EXPECT_TRUE(bridge_ptr->sql_log.empty());
 }
 
 TEST(OdbcLifecycleTest, DisconnectClearsAbandonedSessionState) {
@@ -857,10 +909,9 @@ TEST(OdbcAutocommitTest, IsolationMappingUsesSetTransaction) {
                                      0);
     ASSERT_EQ(rc, SQL_SUCCESS);
     EXPECT_EQ(conn.txn_isolation_, SQL_TXN_SERIALIZABLE);
-    ASSERT_EQ(bridge_ptr->sql_log.size(), 2u);
+    ASSERT_EQ(bridge_ptr->sql_log.size(), 1u);
     EXPECT_EQ(bridge_ptr->sql_log[0],
               "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE ON CONFLICT COMMIT");
-    EXPECT_EQ(bridge_ptr->sql_log[1], "SET AUTOCOMMIT ON ON CONFLICT COMMIT");
 }
 
 TEST(OdbcAutocommitTest, IsolationSqlDocumentsCanonicalAliasSurface) {
@@ -1040,6 +1091,26 @@ TEST(OdbcSqlStateMappingTest, MapsGranularStatusesToSpecificSqlStates) {
     }
 }
 
+TEST(OdbcStatementDiagnosticsTest, ExecuteSqlStatementsClearsStaleStatementDiagnostics) {
+    scratchbird::odbc::OdbcEnvironment env;
+    scratchbird::odbc::OdbcConnection conn(&env);
+    scratchbird::odbc::OdbcStatement stmt(&conn);
+    conn.connected_ = true;
+    conn.client_bridge_ = std::make_unique<FixedFailureClientBridge>("current statement failure");
+
+    stmt.setError("42000", 1, "old domain diagnostic");
+    ASSERT_EQ(stmt.getDiagnosticCount(), 1);
+
+    SQLRETURN rc = stmt.executeSqlStatements("SELECT missing_object");
+    ASSERT_EQ(rc, SQL_ERROR);
+    ASSERT_EQ(stmt.getDiagnosticCount(), 1);
+    const auto* current = stmt.getDiagnostic(1);
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(current->sqlstate, "HY009");
+    EXPECT_EQ(current->message.find("current statement failure"), 0u);
+    EXPECT_EQ(current->message.find("old domain diagnostic"), std::string::npos);
+}
+
 TEST(OdbcFetchTest, BindAndFetchPopulateBuffers) {
     scratchbird::odbc::OdbcEnvironment env;
     scratchbird::odbc::OdbcConnection conn(&env);
@@ -1093,10 +1164,7 @@ TEST(OdbcSmokeTest, ConnectExecFetch) {
     SQLRETURN rc = conn.connect(nullptr, 0, nullptr, 0, nullptr, 0);
     ASSERT_EQ(rc, SQL_SUCCESS);
     ASSERT_TRUE(conn.connected_);
-    ASSERT_GE(bridge_ptr->sql_log.size(), 2u);
-    EXPECT_EQ(bridge_ptr->sql_log[0],
-              "SET TRANSACTION ISOLATION LEVEL READ COMMITTED ON CONFLICT COMMIT");
-    EXPECT_EQ(bridge_ptr->sql_log[1], "SET AUTOCOMMIT ON ON CONFLICT COMMIT");
+    EXPECT_TRUE(bridge_ptr->sql_log.empty());
 
     auto* stmt = conn.createStatement();
     ASSERT_NE(stmt, nullptr);
@@ -1109,6 +1177,62 @@ TEST(OdbcSmokeTest, ConnectExecFetch) {
     rc = stmt->fetch();
     ASSERT_EQ(rc, SQL_SUCCESS);
     EXPECT_EQ(out_value, 1);
+}
+
+TEST(OdbcStatementChunkingTest, ExecDirectUsesCanonicalCommentAwareSplitter) {
+    scratchbird::odbc::OdbcEnvironment env;
+    scratchbird::odbc::OdbcConnection conn(&env);
+
+    auto bridge = std::make_unique<RecordingClientBridge>();
+    auto* bridge_ptr = bridge.get();
+    conn.client_bridge_ = std::move(bridge);
+    conn.connected_ = true;
+
+    auto* stmt = conn.createStatement();
+    ASSERT_NE(stmt, nullptr);
+
+    const std::string sql =
+        "-- dept rows: semicolon in comment must not split; still one statement\n"
+        "INSERT INTO users.public.examples.odbc.t.dept VALUES\n"
+        "    (1, 'Engineering'),\n"
+        "    (2, 'Finance')";
+
+    ASSERT_EQ(stmt->execDirect(reinterpret_cast<const SQLCHAR*>(sql.c_str()), SQL_NTS),
+              SQL_SUCCESS);
+    ASSERT_EQ(bridge_ptr->sql_log.size(), 1u);
+    EXPECT_NE(bridge_ptr->sql_log[0].find("INSERT INTO"), std::string::npos);
+    EXPECT_NE(bridge_ptr->sql_log[0].find("still one statement"), std::string::npos);
+}
+
+TEST(OdbcStatementChunkingTest, ProceduralDdlBodyIsNotSplitOnInternalSemicolons) {
+    scratchbird::odbc::OdbcEnvironment env;
+    scratchbird::odbc::OdbcConnection conn(&env);
+
+    auto bridge = std::make_unique<RecordingClientBridge>();
+    auto* bridge_ptr = bridge.get();
+    conn.client_bridge_ = std::move(bridge);
+    conn.connected_ = true;
+
+    auto* stmt = conn.createStatement();
+    ASSERT_NE(stmt, nullptr);
+
+    const std::string sql =
+        "-- already chunked by the driver tool\n"
+        "CREATE TRIGGER users.public.examples.odbc.t.trig_items_ai\n"
+        "AFTER INSERT\n"
+        "ON TABLE users.public.examples.odbc.t.trig_items\n"
+        "FOR EACH ROW\n"
+        "AS\n"
+        "BEGIN\n"
+        "  INSERT INTO users.public.examples.odbc.t.trig_audit (event_kind)\n"
+        "  VALUES ('INSERT');\n"
+        "END";
+
+    ASSERT_EQ(stmt->execDirect(reinterpret_cast<const SQLCHAR*>(sql.c_str()), SQL_NTS),
+              SQL_SUCCESS);
+    ASSERT_EQ(bridge_ptr->sql_log.size(), 1u);
+    EXPECT_NE(bridge_ptr->sql_log[0].find("VALUES ('INSERT');"), std::string::npos);
+    EXPECT_NE(bridge_ptr->sql_log[0].find("\nEND"), std::string::npos);
 }
 
 } // namespace

@@ -145,7 +145,10 @@ def load_script(path: str) -> str:
 
 
 def classify_statement(sql: str) -> str:
-    first = sql.strip().split(None, 1)[0].lower() if sql.strip() else ""
+    executable_lines = non_comment_lines(sql)
+    first = executable_lines[0].strip().split(None, 1)[0].lower() if executable_lines else ""
+    if first == "copy":
+        return "copy"
     if first in {"create", "alter", "drop"}:
         return "ddl"
     if first in {"insert", "update", "delete", "merge", "upsert"}:
@@ -160,6 +163,46 @@ def classify_statement(sql: str) -> str:
     if first in {"grant", "revoke"}:
         return "security_refusal"
     return "query"
+
+
+def non_comment_lines(sql: str) -> list[str]:
+    lines: list[str] = []
+    for raw in sql.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        lines.append(raw)
+    return lines
+
+
+def executable_sql_without_copy_markers(sql: str) -> str:
+    marker = "-- SB_COPY_INPUT "
+    lines: list[str] = []
+    for raw in sql.splitlines():
+        stripped = raw.lstrip()
+        if stripped.startswith(marker):
+            continue
+        lines.append(raw)
+    return "\n".join(lines).strip()
+
+
+def copy_payload_for_statement(sql: str) -> bytes:
+    marker = "-- SB_COPY_INPUT "
+    rows: list[str] = []
+    for raw in sql.splitlines():
+        stripped = raw.lstrip()
+        if not stripped.startswith(marker):
+            continue
+        row = stripped[len(marker):]
+        if row.endswith("\r"):
+            row = row[:-1]
+        rows.append(row)
+    return ("\n".join(rows) + ("\n" if rows else "")).encode("utf-8")
+
+
+def is_copy_stdin_statement(sql: str) -> bool:
+    executable = " ".join(line.strip().lower() for line in non_comment_lines(sql))
+    return executable.startswith("copy ") and " from stdin" in executable
 
 
 def write_text(path: Path, text: str) -> None:
@@ -407,7 +450,9 @@ def run_script(args: argparse.Namespace) -> int:
         "conn.rollback": 0,
         "conn.query_metadata": 0,
         "conn.attach_create": 0,
+        "conn.compile_sblr": 0,
         "conn.execute_sblr": 0,
+        "conn.copy_in": 0,
     }
 
     run_started = now_ns()
@@ -463,38 +508,62 @@ def run_script(args: argparse.Namespace) -> int:
             diagnostic_code = None
             row_count = -1
             result_digest = None
+            code_example_section = "execute_fetch"
             try:
                 # Public DB-API example: prepare/execute/fetch through cursor.
                 cursor = conn.cursor()
-                if args.parser_mode != "server-parser" and group != "transaction":
-                    sblr_hash, sblr_version, sblr_bytecode = conn.compile_sblr(statement)
-                    stream = conn.execute_sblr(sblr_hash, sblr_bytecode)
-                    api_hits["conn.compile_sblr"] += 1
-                    api_hits["conn.execute_sblr"] += 1
+                if group == "copy" and is_copy_stdin_statement(statement):
+                    payload = copy_payload_for_statement(statement)
+                    if not payload:
+                        raise scratchbird.ProgrammingError(
+                            "COPY FROM STDIN requires SB_COPY_INPUT rows in the script"
+                        )
+                    executable_sql = executable_sql_without_copy_markers(statement)
+                    rows_copied = conn.copy_in(executable_sql, payload)
+                    api_hits["conn.copy_in"] += 1
+                    rows = [["copy_in", rows_copied]]
+                    row_count = int(rows_copied)
+                    result_digest = digest_rows(rows)
+                    code_example_section = "copy_in"
                     transcript_writer.write({
-                        "event": "driver_sblr_execute",
+                        "event": "copy_in",
                         "statement_id": statement_id,
                         "parser_mode": args.parser_mode,
-                        "sblr_hash": sblr_hash,
-                        "sblr_version": sblr_version,
-                        "sblr_bytes": len(sblr_bytecode),
+                        "payload_bytes": len(payload),
+                        "rows_copied": rows_copied,
                         "engine_sql_text_execution": False,
                         "mga_authority": "engine",
                     })
-                    cursor._stream = stream
-                    cursor._prime_stream_metadata(stream)
-                    cursor._results = []
-                    cursor._pos = 0
-                    cursor._update_description(stream)
-                    cursor.rowcount = -1
-                    cursor.statusmessage = None
                 else:
-                    cursor.execute(statement)
-                api_hits["cursor.execute"] += 1
-                rows = cursor.fetchall()
-                api_hits["cursor.fetchall"] += 1
-                row_count = len(rows)
-                result_digest = digest_rows(rows)
+                    if args.parser_mode != "server-parser" and group != "transaction":
+                        sblr_hash, sblr_version, sblr_bytecode = conn.compile_sblr(statement)
+                        stream = conn.execute_sblr(sblr_hash, sblr_bytecode)
+                        api_hits["conn.compile_sblr"] += 1
+                        api_hits["conn.execute_sblr"] += 1
+                        transcript_writer.write({
+                            "event": "driver_sblr_execute",
+                            "statement_id": statement_id,
+                            "parser_mode": args.parser_mode,
+                            "sblr_hash": sblr_hash,
+                            "sblr_version": sblr_version,
+                            "sblr_bytes": len(sblr_bytecode),
+                            "engine_sql_text_execution": False,
+                            "mga_authority": "engine",
+                        })
+                        cursor._stream = stream
+                        cursor._prime_stream_metadata(stream)
+                        cursor._results = []
+                        cursor._pos = 0
+                        cursor._update_description(stream)
+                        cursor.rowcount = -1
+                        cursor.statusmessage = None
+                    else:
+                        cursor.execute(statement)
+                        api_hits["cursor.execute"] += 1
+                    rows = cursor.fetchall()
+                    api_hits["cursor.fetchall"] += 1
+                    row_count = len(rows)
+                    result_digest = digest_rows(rows)
                 digests.append({
                     "statement_id": statement_id,
                     "row_count": row_count,
@@ -570,7 +639,7 @@ def run_script(args: argparse.Namespace) -> int:
                 "transaction_id_observed": None,
                 "mga_authority": "engine",
                 "native_api_surface": "python_dbapi_2",
-                "code_example_section": "execute_fetch",
+                "code_example_section": code_example_section,
             }
             event_writer.write(event)
             testcases.append(event)
@@ -609,6 +678,25 @@ def run_script(args: argparse.Namespace) -> int:
 
     total_elapsed = now_ns() - run_started
     timing_groups["overall"] = total_elapsed
+    if not metadata_path.is_file():
+        write_text(
+            metadata_path,
+            json.dumps(
+                {
+                    "driver": "python",
+                    "route": args.route,
+                    "parser_mode": args.parser_mode,
+                    "page_size": args.page_size,
+                    "namespace": args.namespace,
+                    "status": "not_collected",
+                    "collections": {},
+                },
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+        )
     transport_mode = transport_mode_for_route(args.route, args.sslmode)
     process_metrics = current_process_metrics()
     summary = {

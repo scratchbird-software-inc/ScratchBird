@@ -172,6 +172,11 @@ def add_compiled_chain_expected_refusal_aliases(
             aliases[source_ref] = chain_ref
     if aliases:
         doc["compiled_chain_statement_aliases"] = aliases
+        statement_ids = doc.get("statement_ids")
+        if isinstance(statement_ids, list):
+            merged = {str(value) for value in statement_ids}
+            merged.update(aliases.values())
+            doc["statement_ids"] = sorted(merged)
         expected_refusals.write_text(
             json.dumps(doc, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

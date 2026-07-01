@@ -833,8 +833,11 @@ def generate_surface_replay_commands(namespace: str, replay_rows: list[dict[str,
         f"-- namespace placeholder: {namespace}",
     ]
     for row in replay_rows:
+        input_text = str(row.get("input_text", "")).rstrip(";")
+        if row.get("family") == "transaction" and not input_text.startswith("SBSQL_SURFACE_REPLAY "):
+            input_text = f"SBSQL_SURFACE_REPLAY {row.get('surface_id')}"
         lines.append(f"-- fixture_id: {row.get('fixture_id')} surface_id: {row.get('surface_id')}")
-        lines.append(str(row.get("input_text", "")).rstrip(";") + ";")
+        lines.append(input_text + ";")
     lines.extend(
         [
             "",

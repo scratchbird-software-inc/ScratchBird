@@ -225,10 +225,25 @@ decode_header <- function(data) {
 }
 
 build_startup_payload <- function(features, params) {
-  buf <- c(pack_u8(SB_VERSION_MAJOR), pack_u8(SB_VERSION_MINOR), pack_u16(0))
-  buf <- c(buf, pack_u64(features))
-  buf <- c(buf, build_param_list(params))
-  buf
+  protocol_version <- bitwShiftL(SB_VERSION_MAJOR, 8L) + SB_VERSION_MINOR
+  buf <- c(pack_u16(protocol_version), pack_u16(protocol_version), pack_u32(0))
+  buf <- c(buf, pack_u64(features), pack_u64(0), pack_u64(0))
+  buf <- c(buf, rep(as.raw(0x11), 16), raw(32))
+  entries <- sort(names(params))
+  buf <- c(buf, pack_u32(length(entries)))
+  for (key in entries) {
+    key_bytes <- charToRaw(enc2utf8(key))
+    value_bytes <- charToRaw(enc2utf8(as.character(params[[key]])))
+    buf <- c(
+      buf,
+      pack_u32(length(key_bytes)),
+      key_bytes,
+      pack_u16(1),
+      pack_u32(length(value_bytes)),
+      value_bytes
+    )
+  }
+  c(buf, pack_u32(0))
 }
 
 build_param_list <- function(params) {
@@ -428,6 +443,11 @@ build_attach_create_payload <- function(emulation_mode, db_name) {
 }
 
 parse_ready <- function(payload) {
+  if (length(payload) >= 76 && rawToChar(payload[57]) %in% c("I", "T", "E", "R", "A")) {
+    txn_id <- read_u64(payload, 49)
+    status <- if (rawToChar(payload[57]) %in% c("T", "E")) 1L else 0L
+    return(list(status = status, txn_id = txn_id, visibility = txn_id))
+  }
   if (length(payload) < 20) stop("Ready truncated")
   status <- payload[1]
   txn_id <- read_u64(payload, 5)
@@ -443,16 +463,40 @@ parse_txn_status <- function(payload) {
 }
 
 parse_parameter_status <- function(payload) {
-  if (length(payload) < 8) stop("Parameter status truncated")
+  if (length(payload) < 4) stop("Parameter status truncated")
   offset <- 1
-  name_len <- read_u32(payload, offset)
+  count <- read_u32(payload, offset)
   offset <- offset + 4
-  name <- rawToChar(payload[offset:(offset + name_len - 1)])
-  offset <- offset + name_len
-  value_len <- read_u32(payload, offset)
-  offset <- offset + 4
-  value <- rawToChar(payload[offset:(offset + value_len - 1)])
-  list(name = name, value = value)
+  entries <- list()
+  if (count > 0 && count <= 256) {
+    for (idx in seq_len(count)) {
+      if (offset + 3 > length(payload)) stop("Parameter status truncated")
+      name_len <- read_u32(payload, offset)
+      offset <- offset + 4
+      if (offset + name_len - 1 > length(payload)) stop("Parameter status truncated")
+      name <- if (name_len == 0) "" else rawToChar(payload[offset:(offset + name_len - 1)])
+      offset <- offset + name_len
+      if (offset + 6 > length(payload)) stop("Parameter status truncated")
+      value_type <- read_u16(payload, offset)
+      offset <- offset + 2
+      defaulted <- as.integer(payload[offset]) != 0L
+      offset <- offset + 1
+      value_len <- read_u32(payload, offset)
+      offset <- offset + 4
+      if (offset + value_len - 1 > length(payload)) stop("Parameter status truncated")
+      value <- if (value_len == 0) "" else rawToChar(payload[offset:(offset + value_len - 1)])
+      offset <- offset + value_len
+      entries[[length(entries) + 1]] <- list(
+        name = name,
+        value = value,
+        value_type = value_type,
+        defaulted = defaulted
+      )
+    }
+    first <- if (length(entries) > 0) entries[[1]] else list(name = "", value = "")
+    return(list(name = first$name, value = first$value, entries = entries))
+  }
+  stop("Parameter status entry count is invalid")
 }
 
 parse_parameter_description <- function(payload) {

@@ -232,3 +232,7 @@ test("decodeValue unknown-type heuristics parse text and arrays", () => {
   assert.equal(decodeValue(0, Buffer.from("9007199254740993", "utf8"), FORMAT_TEXT), 9007199254740993n);
   assert.deepEqual(decodeValue(0, lengthPrefixed("{1,2,3}"), FORMAT_BINARY), [1, 2, 3]);
 });
+
+test("decodeValue preserves server text payload when typed text metadata is imprecise", () => {
+  assert.equal(decodeValue(OID_INT8, Buffer.from("1251.00", "utf8"), FORMAT_TEXT), "1251.00");
+});

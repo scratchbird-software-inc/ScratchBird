@@ -116,6 +116,137 @@ func (c *Conn) QueryMultiContext(ctx context.Context, query string, args []drive
 	return summaries, nil
 }
 
+func (c *Conn) QueryAllContext(ctx context.Context, query string, args []driver.NamedValue) ([]ResultSetSummary, error) {
+	if err := c.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeQuery(query, args)
+	if err != nil {
+		return nil, err
+	}
+	if len(normalized.args) != 0 {
+		return c.QueryMultiContext(ctx, normalized.sql, normalized.args)
+	}
+	span, err := c.beginOperation("query_all", normalized.sql)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.sendSimpleQuery(normalized.sql, ctx); err != nil {
+		c.endOperation(span, false)
+		return nil, err
+	}
+
+	sets := make([]ResultSetSummary, 0, 1)
+	current := ResultSetSummary{}
+	columns := []columnInfo{}
+	haveCurrent := false
+	appendCurrent := func() {
+		if !haveCurrent {
+			return
+		}
+		sets = append(sets, current)
+		current = ResultSetSummary{}
+		columns = nil
+		haveCurrent = false
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = c.sendMessage(msgCancel, buildCancelPayload(0, 0), msgFlagUrgent, false)
+			c.endOperation(span, false)
+			return nil, ctx.Err()
+		default:
+		}
+		msg, err := c.receive()
+		if err != nil {
+			c.endOperation(span, false)
+			return nil, err
+		}
+		if c.handleAsyncMessage(msg) {
+			continue
+		}
+		switch msg.header.typ {
+		case msgError:
+			queryErr := buildProtocolError(msg.body)
+			_, _, _, _ = c.drainUntilReady(ctx)
+			c.endOperationWithError(span, queryErr)
+			return nil, queryErr
+		case msgRowDescription:
+			parsed, err := parseRowDescription(msg.body)
+			if err != nil {
+				c.endOperation(span, false)
+				return nil, err
+			}
+			if haveCurrent && (len(current.Rows) > 0 || current.Command != "" || current.RowCount != 0) {
+				appendCurrent()
+			}
+			columns = parsed
+			current.Fields = summarizeFields(columns)
+			haveCurrent = true
+		case msgDataRow:
+			if !haveCurrent {
+				haveCurrent = true
+			}
+			values, err := parseDataRow(msg.body, len(columns))
+			if err != nil {
+				c.endOperation(span, false)
+				return nil, err
+			}
+			row := make([]driver.Value, len(values))
+			for index, value := range values {
+				if value.null {
+					row[index] = nil
+					continue
+				}
+				col := columnInfo{}
+				if index < len(columns) {
+					col = columns[index]
+				}
+				decoded, err := decodeColumnValue(col, value.data)
+				if err != nil {
+					c.endOperation(span, false)
+					return nil, err
+				}
+				row[index] = decoded
+			}
+			current.Rows = append(current.Rows, row)
+		case msgCommandComplete:
+			_, affected, lastID, tag, err := parseCommandComplete(msg.body)
+			if err != nil {
+				c.endOperation(span, false)
+				return nil, err
+			}
+			if !haveCurrent {
+				haveCurrent = true
+			}
+			current.RowCount = int64(affected)
+			current.Command = tag
+			current.LastInsertID = int64(lastID)
+			appendCurrent()
+		case msgParseComplete, msgBindComplete, msgCloseComplete, msgNoData, msgParameterDescription:
+			continue
+		case msgPortalSuspended:
+			if err := c.sendMessage(msgExecute, buildExecutePayload("", c.config.FetchSize), 0, false); err != nil {
+				c.endOperation(span, false)
+				return nil, err
+			}
+		case msgReady:
+			status, txnID, _, err := parseReady(msg.body)
+			if err != nil {
+				c.endOperation(span, false)
+				return nil, err
+			}
+			c.applyRuntimeReadyState(status, txnID)
+			appendCurrent()
+			c.endOperation(span, true)
+			return sets, nil
+		default:
+			continue
+		}
+	}
+}
+
 func (c *Conn) ExecuteMultiContext(ctx context.Context, query string, args []driver.NamedValue) ([]ResultSetSummary, error) {
 	return c.QueryMultiContext(ctx, query, args)
 }

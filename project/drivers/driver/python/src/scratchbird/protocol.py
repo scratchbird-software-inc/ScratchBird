@@ -145,6 +145,15 @@ _OID_TEXT = 25
 _OID_INT8 = 20
 _OID_FLOAT8 = 701
 _OID_NUMERIC = 1700
+_OID_BYTEA = 17
+_OID_DATE = 1082
+_OID_TIME = 1083
+_OID_TIMESTAMP = 1114
+_OID_INTERVAL = 1186
+_OID_UUID = 2950
+_OID_JSON = 114
+_OID_INET = 869
+_OID_MACADDR = 829
 
 NATIVE_ROWSET_TYPE_TEXT = 1
 NATIVE_ROWSET_TYPE_INT64 = 2
@@ -785,6 +794,24 @@ def _oid_from_canonical_type_ref(payload: bytes, offset: int) -> int:
         return _OID_FLOAT8
     if family == 8 and code == 1:
         return _OID_TEXT
+    if family == 9:
+        return _OID_BYTEA
+    if family == 11:
+        if code == 1:
+            return _OID_DATE
+        if code == 2:
+            return _OID_TIME
+        return _OID_TIMESTAMP
+    if family == 12:
+        return _OID_INTERVAL
+    if family == 13:
+        return _OID_UUID
+    if family == 19:
+        if code == 3:
+            return _OID_MACADDR
+        return _OID_INET
+    if family == 20:
+        return _OID_JSON
     return _OID_TEXT
 
 
@@ -795,6 +822,8 @@ def _type_size_for_oid(type_oid: int) -> int:
         return 4
     if type_oid in (_OID_INT8, _OID_FLOAT8):
         return 8
+    if type_oid == _OID_UUID:
+        return 16
     return -1
 
 
