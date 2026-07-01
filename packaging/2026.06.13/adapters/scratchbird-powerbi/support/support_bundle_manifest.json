@@ -1,0 +1,10 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-powerbi",
+  "hash": "e59d52853e02f7b872a2daa070753a643e355a0f08641ab9d0454dac2cfacb0c",
+  "name": "scratchbird-powerbi",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1"
+}

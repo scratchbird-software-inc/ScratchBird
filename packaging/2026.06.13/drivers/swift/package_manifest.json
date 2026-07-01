@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_swift",
-  "binary_sha256": "a812c10e44cfa9bae349e3b01679f5aa4ae42ac608819006b71eadea73c9dc18",
+  "binary_sha256": "3d5bcb4e44e4be388e82f3e2b004c40d775bb7f64df90809e005a7a2fa918c88",
   "component_id": "driver:swift",
   "driver": "swift",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/swift",
   "support_materials": [
     "support/README.md",

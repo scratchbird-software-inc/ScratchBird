@@ -133,7 +133,8 @@ defmodule SBIsqlElixir do
         "ScratchBird.Connection.begin" => 0,
         "ScratchBird.Connection.commit" => 0,
         "ScratchBird.Connection.rollback" => 0,
-        "ScratchBird.Connection.close" => 0
+        "ScratchBird.Connection.close" => 0,
+        "ScratchBird.Connection.copy_in" => 0
       },
       testcases: [],
       failures: [],
@@ -529,6 +530,27 @@ defmodule SBIsqlElixir do
     end
   end
 
+  defp execute_statement(state, sql, "copy") do
+    if copy_stdin_statement?(sql) do
+      payload = copy_payload_for_statement(sql)
+
+      if payload == "" do
+        {:error, "COPY FROM STDIN requires SB_COPY_INPUT rows in the script", state}
+      else
+        case execute_copy_in(state.connection, executable_sql_without_copy_markers(sql), payload) do
+          {:ok, rows_copied, conn} ->
+            {:ok, %{rows: [%{copy_in: rows_copied}]},
+             %{state | connection: conn} |> bump_api("ScratchBird.Connection.copy_in")}
+
+          {:error, reason, conn} ->
+            {:error, reason, %{state | connection: conn}}
+        end
+      end
+    else
+      execute_statement(state, sql, "query")
+    end
+  end
+
   defp execute_statement(state, sql, _group) do
     case ScratchBird.Connection.query(state.connection, sql, []) do
       {:ok, result, conn} ->
@@ -741,10 +763,11 @@ defmodule SBIsqlElixir do
   end
 
   defp classify(sql) do
-    trimmed = String.downcase(String.trim(sql))
+    trimmed = sql |> executable_sql_without_copy_markers() |> String.trim() |> String.downcase()
     first = trimmed |> String.split(~r/\s+/, parts: 2) |> hd()
 
     cond do
+      first == "copy" -> "copy"
       first in ["create", "alter", "drop"] -> "ddl"
       first in ["insert", "update", "delete", "merge", "upsert"] -> "dml"
       first in ["commit", "rollback", "savepoint", "begin", "start"] -> "transaction"
@@ -752,6 +775,166 @@ defmodule SBIsqlElixir do
       String.contains?(trimmed, "sys.") -> "metadata"
       true -> "query"
     end
+  end
+
+  defp executable_sql_without_copy_markers(sql) do
+    sql
+    |> String.split(~r/\r\n|\r|\n/)
+    |> Enum.reject(fn line -> String.starts_with?(String.trim_leading(line), "-- SB_COPY_INPUT ") end)
+    |> Enum.join("\n")
+    |> String.trim()
+  end
+
+  defp copy_payload_for_statement(sql) do
+    rows =
+      sql
+      |> String.split(~r/\r\n|\r|\n/)
+      |> Enum.flat_map(fn line ->
+        stripped = String.trim_leading(line)
+
+        if String.starts_with?(stripped, "-- SB_COPY_INPUT ") do
+          [String.replace_prefix(stripped, "-- SB_COPY_INPUT ", "")]
+        else
+          []
+        end
+      end)
+
+    if rows == [], do: "", else: Enum.join(rows, "\n") <> "\n"
+  end
+
+  defp copy_stdin_statement?(sql) do
+    executable =
+      sql
+      |> executable_sql_without_copy_markers()
+      |> String.split(~r/\r\n|\r|\n/)
+      |> Enum.map(&(String.trim(&1) |> String.downcase()))
+      |> Enum.reject(fn line -> line == "" or String.starts_with?(line, "--") end)
+      |> Enum.join(" ")
+
+    String.starts_with?(executable, "copy ") and String.contains?(executable, " from stdin")
+  end
+
+  defp execute_copy_in(conn, sql, payload) do
+    conn =
+      copy_send_message(
+        conn,
+        ScratchBird.Protocol.message_type(:query),
+        ScratchBird.Protocol.build_query_payload(sql, 0, 0, 0)
+      )
+
+    copy_loop(conn, false, 0, payload)
+  end
+
+  defp copy_loop(conn, copy_started, rows_copied, payload) do
+    case copy_recv_message(conn) do
+      {:ok, msg} ->
+        case copy_handle_async(conn, msg) do
+          {:handled, new_conn} ->
+            copy_loop(new_conn, copy_started, rows_copied, payload)
+
+          {:ok, new_conn} ->
+            cond do
+              msg.type == ScratchBird.Protocol.message_type(:copy_in_response) ->
+                new_conn =
+                  new_conn
+                  |> copy_send_message(ScratchBird.Protocol.message_type(:copy_data), payload)
+                  |> copy_send_message(ScratchBird.Protocol.message_type(:copy_done), <<>>)
+
+                copy_loop(new_conn, true, rows_copied, payload)
+
+              msg.type == ScratchBird.Protocol.message_type(:command_complete) ->
+                complete = ScratchBird.Protocol.parse_command_complete(msg.payload)
+                copy_loop(new_conn, copy_started, complete.rows, payload)
+
+              msg.type == ScratchBird.Protocol.message_type(:ready) ->
+                {:ok, status, txn_id} = ScratchBird.Protocol.parse_ready(msg.payload)
+                new_conn = %{new_conn | txn_id: txn_id, runtime_txn_active: status != 0}
+
+                if copy_started do
+                  {:ok, rows_copied, new_conn}
+                else
+                  {:error, "COPY FROM STDIN did not enter COPY input mode", new_conn}
+                end
+
+              msg.type == ScratchBird.Protocol.message_type(:error) ->
+                {:error, copy_error_message(msg.payload), new_conn}
+
+              true ->
+                copy_loop(new_conn, copy_started, rows_copied, payload)
+            end
+        end
+
+      {:error, reason} ->
+        {:error, inspect(reason), conn}
+    end
+  end
+
+  defp copy_send_message(conn, type, payload) do
+    header = %{
+      type: type,
+      flags: 0,
+      length: byte_size(payload),
+      sequence: conn.sequence,
+      attachment_id: conn.attachment_id,
+      txn_id: conn.txn_id
+    }
+
+    data = ScratchBird.Protocol.encode_message(header, payload)
+
+    case conn.transport do
+      :ssl -> :ssl.send(conn.socket, data)
+      :tcp -> :gen_tcp.send(conn.socket, data)
+      :ipc -> :gen_tcp.send(conn.socket, data)
+    end
+
+    %{conn | sequence: conn.sequence + 1}
+  end
+
+  defp copy_recv_message(conn) do
+    with {:ok, header_bin} <- copy_recv_exact(conn, ScratchBird.Protocol.header_size()),
+         {:ok, header} <- ScratchBird.Protocol.decode_header(header_bin),
+         {:ok, payload} <- copy_recv_exact(conn, header.length) do
+      {:ok, Map.put(header, :payload, payload)}
+    end
+  end
+
+  defp copy_recv_exact(_conn, 0), do: {:ok, <<>>}
+
+  defp copy_recv_exact(conn, bytes) do
+    case conn.transport do
+      :ssl -> :ssl.recv(conn.socket, bytes)
+      :tcp -> :gen_tcp.recv(conn.socket, bytes)
+      :ipc -> :gen_tcp.recv(conn.socket, bytes)
+    end
+  end
+
+  defp copy_handle_async(conn, msg) do
+    cond do
+      msg.type == ScratchBird.Protocol.message_type(:parameter_status) ->
+        {:ok, name, value} = ScratchBird.Protocol.parse_parameter_status(msg.payload)
+        params = Map.put(conn.params, name, value)
+        {:handled, %{conn | params: params}}
+
+      msg.type == ScratchBird.Protocol.message_type(:txn_status) ->
+        {:ok, status, txn_id} = ScratchBird.Protocol.parse_txn_status(msg.payload)
+        {:handled, %{conn | txn_id: txn_id, runtime_txn_active: status == ?T}}
+
+      msg.type in [
+        ScratchBird.Protocol.message_type(:notification),
+        ScratchBird.Protocol.message_type(:query_plan),
+        ScratchBird.Protocol.message_type(:sblr_compiled)
+      ] ->
+        {:handled, conn}
+
+      true ->
+        {:ok, conn}
+    end
+  end
+
+  defp copy_error_message(payload) do
+    payload
+    |> ScratchBird.Protocol.parse_error()
+    |> Map.get(:message, "COPY failed")
   end
 
   defp transport_mode_for_route("embedded", _sslmode), do: "embedded_no_network_transport"
@@ -800,6 +983,12 @@ defmodule SBIsqlElixir do
           capture: :all_but_first
         )
         |> Enum.map(fn [body] -> body end)
+        |> Kernel.++(
+          Regex.scan(~r/"expected_diagnostics"\s*:\s*\{(.*?)\n\s*\}/s, text,
+            capture: :all_but_first
+          )
+          |> Enum.map(fn [body] -> body end)
+        )
       end
 
     bodies

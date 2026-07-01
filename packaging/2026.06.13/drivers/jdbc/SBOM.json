@@ -2,9 +2,9 @@
   "component_id": "driver:jdbc",
   "components": [
     {
-      "bytes": 220,
+      "bytes": 224,
       "path": "bin/sb_isql_jdbc",
-      "sha256": "890cf8a066e5f7e9b99eae1e1a2e68c6b9a028fbb44d838dedaa1c6ec81b81e4"
+      "sha256": "c0c1f6bab6211a90b2395d370b7898775f8cdc908739bc54810e764c64a30d8d"
     },
     {
       "bytes": 295,
@@ -29,7 +29,7 @@
     {
       "bytes": 947,
       "path": "package_manifest.json",
-      "sha256": "54d3f65aeddaa2b03fdbf2ff0fc0ad46cb43da04e97fac62cc323dfd1d96c434"
+      "sha256": "863501f5c7ed2fa04cf05c60bb75f4eee0ea899b90d34d32d956e2d85ee52a80"
     },
     {
       "bytes": 8384,
@@ -37,14 +37,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -52,9 +52,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 430,
@@ -309,10 +309,10 @@
     {
       "bytes": 475,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "dd9b38314d99d43bf240ada59337b9b2ee1e7aabf27c6f338a2ae87a8d832991"
+      "sha256": "40e583b3b99b876fba1f442db72b4c895766fa8a5577295de5e7fc74f3e54e72"
     }
   ],
   "driver": "jdbc",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:04+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

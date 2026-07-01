@@ -1,0 +1,13 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-hibernate-dialect",
+  "name": "scratchbird-hibernate-dialect",
+  "proof_files": [
+    "driver_complete_coverage_checklist.json",
+    "driver_complete_coverage_tests.json",
+    "driver_complete_coverage_tests_preflight_after_profile.json",
+    "driver_complete_delta_implementation.json",
+    "driver_wiki_documentation.json"
+  ],
+  "schema_id": "scratchbird.component_package_proof_summary.v1"
+}

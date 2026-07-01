@@ -2,9 +2,9 @@
   "component_id": "driver:swift",
   "components": [
     {
-      "bytes": 39337360,
+      "bytes": 39562040,
       "path": "bin/sb_isql_swift",
-      "sha256": "a812c10e44cfa9bae349e3b01679f5aa4ae42ac608819006b71eadea73c9dc18"
+      "sha256": "3d5bcb4e44e4be388e82f3e2b004c40d775bb7f64df90809e005a7a2fa918c88"
     },
     {
       "bytes": 297,
@@ -12,9 +12,9 @@
       "sha256": "1135400698be9715e1a790ed5a37fcc8ee0ebe897137040efc3b1db7f03265b6"
     },
     {
-      "bytes": 27553,
+      "bytes": 30060,
       "path": "examples/swift-sb-isql/main.swift",
-      "sha256": "601b10ec6f7b9326a9f459e40caf6db9fd3042fc5ee24e9c95600be71eea6196"
+      "sha256": "9c624a3084c048b916707379dff0ac30325b4306cf1a69cbce1cfcbd11b8ff77"
     },
     {
       "bytes": 16726,
@@ -34,7 +34,7 @@
     {
       "bytes": 951,
       "path": "package_manifest.json",
-      "sha256": "f7c545617225033095baa1672f20b75ea50a131391f446ef1ee47211d9bd9053"
+      "sha256": "f9011d5b809210b00989e60c65bc29423bfabbd6a294cffec7e9753a057c688b"
     },
     {
       "bytes": 8384,
@@ -42,14 +42,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -57,9 +57,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 432,
@@ -324,10 +324,10 @@
     {
       "bytes": 477,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "2193f65ff4bb98b56ac6ea4cea8f95a8f5508ac1fbdc0a68dfe843d6badd5e8f"
+      "sha256": "7323241e6d892d5506fa85927a11ef325870db41e66be3ef00da8d2eef83405e"
     }
   ],
   "driver": "swift",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:07+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

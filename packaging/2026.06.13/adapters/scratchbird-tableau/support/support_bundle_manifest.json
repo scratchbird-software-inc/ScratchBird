@@ -1,0 +1,10 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-tableau",
+  "hash": "8682f4f0c6c692d34ce0ccaab623461d4655500e2c9b6a8eff9311cf289c52b2",
+  "name": "scratchbird-tableau",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1"
+}

@@ -2,7 +2,7 @@
   "SBOM": "root-SBOM.json",
   "component_id": "driver:odbc",
   "driver": "odbc",
-  "hash": "d06b1fb3dc302e932e12031badb1c6432f76c4bb71cdfac5a3d71fc93f94894b",
+  "hash": "3d8a80ee9f682cff5766fb65f8a64a010f06d781be254c566c2799047f012c9d",
   "license": "LICENSE.txt",
   "proof_summary": "../proofs/proof_summary.json",
   "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",

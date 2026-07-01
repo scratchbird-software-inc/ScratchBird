@@ -213,7 +213,7 @@ decode_binary_value <- function(type_oid, data) {
     return(readBin(data, numeric(), size = 8, endian = "little"))
   }
   if (type_oid == SB_OID_NUMERIC) {
-    text <- rawToChar(strip_length_prefixed(data))
+    text <- raw_to_display_text(strip_length_prefixed(data))
     num <- suppressWarnings(as.numeric(text))
     return(ifelse(is.na(num), text, num))
   }
@@ -222,7 +222,7 @@ decode_binary_value <- function(type_oid, data) {
     return(cents / 100)
   }
   if (type_oid %in% c(SB_OID_TEXT, SB_OID_VARCHAR, SB_OID_CHAR, SB_OID_BPCHAR, SB_OID_JSON, SB_OID_XML, SB_OID_TSVECTOR, SB_OID_TSQUERY, SB_OID_INET, SB_OID_CIDR, SB_OID_MACADDR, SB_OID_MACADDR8)) {
-    return(rawToChar(strip_length_prefixed(data)))
+    return(raw_to_display_text(strip_length_prefixed(data)))
   }
   if (type_oid == SB_OID_JSONB) {
     return(sb_jsonb(raw = strip_length_prefixed(data)))
@@ -258,7 +258,9 @@ decode_binary_value <- function(type_oid, data) {
     return(decode_range(type_oid, data))
   }
   if (type_oid == SB_OID_SB_VECTOR) {
-    return(parse_vector_literal(rawToChar(strip_length_prefixed(data))))
+    payload <- strip_length_prefixed(data)
+    if (contains_nul_byte(payload)) return(hex_encode_raw(payload))
+    return(parse_vector_literal(rawToChar(payload)))
   }
   if (type_oid %in% c(SB_OID_POINT, SB_OID_LSEG, SB_OID_PATH, SB_OID_BOX, SB_OID_POLYGON, SB_OID_LINE, SB_OID_CIRCLE)) {
     return(sb_geometry(strip_length_prefixed(data)))
@@ -273,15 +275,15 @@ decode_text_value <- function(data) {
   if (length(data) >= 4) {
     len <- readBin(data[1:4], integer(), size = 4, endian = "little", signed = FALSE)
     if (len <= length(data) - 4) {
-      return(rawToChar(data[5:(4 + len)]))
+      return(raw_to_display_text(data[5:(4 + len)]))
     }
   }
-  rawToChar(data)
+  raw_to_display_text(data)
 }
 
 decode_unknown_binary <- function(data) {
   trimmed <- strip_trailing_nulls(data)
-  if (length(trimmed) > 0 && looks_like_text(trimmed)) {
+  if (length(trimmed) > 0 && !contains_nul_byte(trimmed) && looks_like_text(trimmed)) {
     return(parse_unknown_text(rawToChar(trimmed)))
   }
   len <- length(data)
@@ -289,7 +291,7 @@ decode_unknown_binary <- function(data) {
   if (len == 2) return(readBin(data, integer(), size = 2, endian = "little"))
   if (len == 4) return(readBin(data, integer(), size = 4, endian = "little"))
   if (len == 8) return(read_i64_numeric(data))
-  data
+  paste0("0x", paste(sprintf("%02x", as.integer(data)), collapse = ""))
 }
 
 parse_unknown_text <- function(text) {
@@ -316,6 +318,20 @@ strip_trailing_nulls <- function(data) {
   }
   if (end == 0) return(raw())
   data[1:end]
+}
+
+contains_nul_byte <- function(data) {
+  any(as.integer(data) == 0L)
+}
+
+hex_encode_raw <- function(data) {
+  paste0("0x", paste(sprintf("%02x", as.integer(data)), collapse = ""))
+}
+
+raw_to_display_text <- function(data) {
+  if (length(data) == 0) return("")
+  if (contains_nul_byte(data)) return(hex_encode_raw(data))
+  rawToChar(data)
 }
 
 looks_like_text <- function(data) {
@@ -444,7 +460,7 @@ decode_range_bound <- function(range_oid, data) {
     return(read_i64_numeric(data))
   }
   if (range_oid == SB_OID_NUMRANGE) {
-    text <- rawToChar(strip_length_prefixed(data))
+    text <- raw_to_display_text(strip_length_prefixed(data))
     num <- suppressWarnings(as.numeric(text))
     return(ifelse(is.na(num), text, num))
   }
@@ -454,7 +470,7 @@ decode_range_bound <- function(range_oid, data) {
   if (range_oid == SB_OID_DATERANGE) {
     return(decode_binary_value(SB_OID_DATE, strip_length_prefixed(data)))
   }
-  rawToChar(strip_length_prefixed(data))
+  raw_to_display_text(strip_length_prefixed(data))
 }
 
 encode_composite <- function(value) {

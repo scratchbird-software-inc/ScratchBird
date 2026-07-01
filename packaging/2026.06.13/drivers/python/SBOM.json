@@ -57,9 +57,9 @@
       "sha256": "51e728828523b0aecfa3036f4b4b7702f8a53687d66cd038eb00ea8b09479a9a"
     },
     {
-      "bytes": 4605,
+      "bytes": 6183,
       "path": "examples/tests/test_sb_isql_python_tool.py",
-      "sha256": "beee5de4d570e6c67d24a76964fe9f655542e46c901bf67e55d721280a5e71cd"
+      "sha256": "b1c352ef2bb4c041757616a50cd9e13bdfe8e957365781266a1d1952199dce40"
     },
     {
       "bytes": 2037,
@@ -67,19 +67,19 @@
       "sha256": "b28682065cc1650ad15e8596dd39b8a015f1b36520c1b1090f62bf1b85261756"
     },
     {
-      "bytes": 52686,
+      "bytes": 52702,
       "path": "examples/tests/test_txn_exec_parity.py",
-      "sha256": "e26cc082214d2813d92bc1a5ec1e5715ab73b7b8dba174e2ad15037e99b906a8"
+      "sha256": "d148b8406af1808ac22fdafce00eb0fe1fd89071c9e12cc2b8474b336dd8362a"
     },
     {
-      "bytes": 17333,
+      "bytes": 17794,
       "path": "examples/tests/test_types.py",
-      "sha256": "4ebcc6dfe8baf6b03c28793d77e7ee87d9938979cde4ed83e5014b3108c3faf6"
+      "sha256": "6155fa5d7dd39a19caa2cf010129d36fb296b1f64ae3cb74d2c6f5536bfbc21e"
     },
     {
-      "bytes": 30429,
+      "bytes": 33803,
       "path": "examples/tools/sb_isql_python.py",
-      "sha256": "b8755133c7bb900ae01c10a4eae441c3e48c9c2b48b5e9f633e3d08f02639501"
+      "sha256": "6294b15d417a5de21e74e2ee8251929f8c7e9171524c9552bbcd95917763c607"
     },
     {
       "bytes": 16726,
@@ -99,7 +99,7 @@
     {
       "bytes": 955,
       "path": "package_manifest.json",
-      "sha256": "b0e1fd478e6c30ccf763a1c712a7524674af9cdad6d4c1eea86722d5bc23ac1e"
+      "sha256": "eb895f251f1527d9c2add4c0655cecda1660fc30a6758461bb96405ca09cff4b"
     },
     {
       "bytes": 8384,
@@ -107,14 +107,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -122,9 +122,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 434,
@@ -388,6 +388,6 @@
     }
   ],
   "driver": "python",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:06+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

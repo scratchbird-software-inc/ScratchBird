@@ -1,0 +1,473 @@
+{
+  "command": "driver_complete_delta_implementation_gate.py",
+  "drivers": [
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:adbc",
+      "driver": "adbc",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:cpp",
+      "driver": "cpp",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:dart",
+      "driver": "dart",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:dotnet",
+      "driver": "dotnet",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:elixir",
+      "driver": "elixir",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:flightsql",
+      "driver": "flightsql",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:go",
+      "driver": "go",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:jdbc",
+      "driver": "jdbc",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:julia",
+      "driver": "julia",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:mojo",
+      "driver": "mojo",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:node",
+      "driver": "node",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:odbc",
+      "driver": "odbc",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:pascal",
+      "driver": "pascal",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:perl",
+      "driver": "perl",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:php",
+      "driver": "php",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:python",
+      "driver": "python",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:r",
+      "driver": "r",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:r2dbc",
+      "driver": "r2dbc",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:ruby",
+      "driver": "ruby",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:rust",
+      "driver": "rust",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    },
+    {
+      "baseline_markers": [
+        "CONN",
+        "TXN",
+        "EXEC",
+        "META",
+        "TYPE",
+        "ERR",
+        "RES"
+      ],
+      "component_id": "driver:swift",
+      "driver": "swift",
+      "driver_status": "beta_2",
+      "issues": [],
+      "matrix_statuses": {
+        "comparison_status": "completed",
+        "delta_workplan_status": "completed",
+        "implementation_status": "verified"
+      },
+      "release_bucket": "release_candidate"
+    }
+  ],
+  "gate_id": "BETA-DTA-GATE-033",
+  "issues": [],
+  "status": "pass",
+  "summary": {
+    "driver_rows_checked": 21,
+    "status_summary": {
+      "comparison_status": {
+        "completed": 21
+      },
+      "delta_workplan_status": {
+        "completed": 21
+      },
+      "implementation_status": {
+        "verified": 21
+      },
+      "packaging_status": {
+        "verified": 21
+      },
+      "test_status": {
+        "pending": 20,
+        "verified_non_cluster_tls_profile8": 1
+      },
+      "wiki_doc_status": {
+        "completed": 21
+      }
+    }
+  }
+}

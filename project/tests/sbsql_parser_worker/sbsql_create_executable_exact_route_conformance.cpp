@@ -77,6 +77,12 @@ const std::vector<Case>& Cases() {
        "ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
        "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30003",
        "replay_trigger", "", "", ""},
+      {"CREATE TRIGGER trig_items_ai AFTER INSERT ON TABLE trig_items FOR EACH ROW AS BEGIN INSERT INTO trig_audit (audit_id, event_kind, item_id, old_price, new_price, audit_note) VALUES (NEXT VALUE FOR trig_audit_seq, 'INSERT', new.item_id, NULL, new.item_price, 'item inserted'); END",
+       "SBSQL-5127560F8031",
+       "create_trigger_stmt", "SBSQL-SURFACE-B1C95C652651",
+       "ddl.create_trigger", "SBLR_DDL_CREATE_TRIGGER", "trigger",
+       "sys.catalog.trigger", "019f0000-0000-7000-8000-000000e30004",
+       "trig_items_ai", "", "", ""},
   };
   return cases;
 }
@@ -252,8 +258,20 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
           "CREATE executable payload overclaimed signature descriptor");
   Require(Contains(artifacts.envelope.payload, "\"body_text_included\":false"),
           "CREATE executable payload embedded body text");
-  Require(Contains(artifacts.envelope.payload, "\"body_compilation_included\":false"),
-          "CREATE executable payload overclaimed body compilation");
+  const bool expects_body_compilation =
+      Contains(route.sql, " AS BEGIN ") || Contains(route.sql, "\nAS\nBEGIN");
+  if (expects_body_compilation) {
+    Require(Contains(artifacts.envelope.payload, "\"body_compilation_included\":true"),
+            "CREATE executable payload missing compiled body descriptor");
+    Require(Contains(artifacts.envelope.payload,
+                     "\"compiled_body_provenance\":\"sbsql_udr_lowering\""),
+            "CREATE executable payload missing SBSQL UDR lowering provenance");
+    Require(Contains(artifacts.envelope.payload, "\"executor\":\"internal_procedure\""),
+            "CREATE executable payload missing internal procedure executor descriptor");
+  } else {
+    Require(Contains(artifacts.envelope.payload, "\"body_compilation_included\":false"),
+            "CREATE executable payload overclaimed body compilation");
+  }
   Require(Contains(artifacts.envelope.payload, "\"runtime_invocation_included\":false"),
           "CREATE executable payload overclaimed runtime invocation");
   Require(Contains(artifacts.envelope.payload, route.surface_id),

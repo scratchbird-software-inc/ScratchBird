@@ -352,20 +352,90 @@ MessageHeader decodeHeader(Uint8List data) {
   );
 }
 
+({int status, int txnId, int visibility}) parseReady(Uint8List payload) {
+  if (payload.length >= 76) {
+    final statusByte = payload[56];
+    if (statusByte == 0x49 ||
+        statusByte == 0x54 ||
+        statusByte == 0x45 ||
+        statusByte == 0x52 ||
+        statusByte == 0x41) {
+      final txnId =
+          ByteData.sublistView(payload, 48, 56).getUint64(0, Endian.little);
+      final status = statusByte == 0x54 || statusByte == 0x45 ? 1 : 0;
+      return (status: status, txnId: txnId, visibility: txnId);
+    }
+  }
+  if (payload.length < 20) {
+    throw const ScratchBirdProtocolException('Ready truncated');
+  }
+  final status = payload[0];
+  final txnId =
+      ByteData.sublistView(payload, 4, 12).getUint64(0, Endian.little);
+  final visibility =
+      ByteData.sublistView(payload, 12, 20).getUint64(0, Endian.little);
+  return (status: status, txnId: txnId, visibility: visibility);
+}
+
+({String status, int txnId}) parseTxnStatus(Uint8List payload) {
+  if (payload.length < 12) {
+    throw const ScratchBirdProtocolException('Txn status truncated');
+  }
+  final status = String.fromCharCode(payload[0]);
+  final txnId =
+      ByteData.sublistView(payload, 4, 12).getUint64(0, Endian.little);
+  return (status: status, txnId: txnId);
+}
+
 Uint8List buildStartupPayload(int features, Map<String, String> params) {
-  final paramBytes = buildParamList(params);
-  final payload = ByteData(12 + paramBytes.length);
-  payload.setUint8(0, protocolMajor);
-  payload.setUint8(1, protocolMinor);
-  payload.setUint16(2, 0, Endian.little);
-  payload.setUint64(4, features, Endian.little);
+  final paramBytes = buildP1ParamList(params);
+  final payload = ByteData(88 + paramBytes.length);
+  var offset = 0;
+  payload.setUint16(
+      offset, (protocolMajor << 8) | protocolMinor, Endian.little);
+  offset += 2;
+  payload.setUint16(
+      offset, (protocolMajor << 8) | protocolMinor, Endian.little);
+  offset += 2;
+  payload.setUint32(offset, 0, Endian.little);
+  offset += 4;
+  payload.setUint64(offset, features, Endian.little);
+  offset += 8;
+  payload.setUint64(offset, 0, Endian.little);
+  offset += 8;
+  payload.setUint64(offset, 0, Endian.little);
+  offset += 8;
+  offset += 16 * 3;
+  payload.setUint32(offset, params.length, Endian.little);
+  offset += 4;
   final bytes = payload.buffer.asUint8List();
-  bytes.setAll(12, paramBytes);
+  bytes.setAll(offset, paramBytes);
+  offset += paramBytes.length;
+  ByteData.sublistView(bytes).setUint32(offset, 0, Endian.little);
   return bytes;
 }
 
+Uint8List buildP1ParamList(Map<String, String> params) {
+  final bytes = BytesBuilder(copy: false);
+  final keys = params.keys.toList()..sort();
+  for (final key in keys) {
+    _appendP1LengthPrefixedString(bytes, key);
+    bytes.add(_u16(1));
+    final valueBytes = utf8.encode(params[key] ?? '');
+    bytes.add(_u32(valueBytes.length));
+    bytes.add(valueBytes);
+  }
+  return bytes.toBytes();
+}
+
+void _appendP1LengthPrefixedString(BytesBuilder bytes, String value) {
+  final valueBytes = utf8.encode(value);
+  bytes.add(_u32(valueBytes.length));
+  bytes.add(valueBytes);
+}
+
 Uint8List buildQueryPayload(String sql, int flags, int maxRows, int timeoutMs) {
-  final sqlBytes = Uint8List.fromList('${sql}\u0000'.codeUnits);
+  final sqlBytes = Uint8List.fromList(utf8.encode(sql));
   final payload = ByteData(12 + sqlBytes.length);
   payload.setUint32(0, flags, Endian.little);
   payload.setUint32(4, maxRows, Endian.little);
@@ -377,8 +447,8 @@ Uint8List buildQueryPayload(String sql, int flags, int maxRows, int timeoutMs) {
 
 Uint8List buildParsePayload(
     String statementName, String sql, List<int> paramTypes) {
-  final nameBytes = Uint8List.fromList(statementName.codeUnits);
-  final sqlBytes = Uint8List.fromList(sql.codeUnits);
+  final nameBytes = Uint8List.fromList(utf8.encode(statementName));
+  final sqlBytes = Uint8List.fromList(utf8.encode(sql));
   final payload = BytesBuilder();
   payload.add(_u32(nameBytes.length));
   payload.add(nameBytes);
@@ -394,8 +464,8 @@ Uint8List buildParsePayload(
 
 Uint8List buildBindPayload(String portalName, String statementName,
     List<ParamValue> params, List<int> resultFormats) {
-  final portalBytes = Uint8List.fromList(portalName.codeUnits);
-  final stmtBytes = Uint8List.fromList(statementName.codeUnits);
+  final portalBytes = Uint8List.fromList(utf8.encode(portalName));
+  final stmtBytes = Uint8List.fromList(utf8.encode(statementName));
   final payload = BytesBuilder();
   payload.add(_u32(portalBytes.length));
   payload.add(portalBytes);
@@ -424,7 +494,7 @@ Uint8List buildBindPayload(String portalName, String statementName,
 }
 
 Uint8List buildDescribePayload(int kind, String name) {
-  final nameBytes = Uint8List.fromList(name.codeUnits);
+  final nameBytes = Uint8List.fromList(utf8.encode(name));
   final payload = BytesBuilder();
   payload.add(Uint8List.fromList([kind, 0, 0, 0]));
   payload.add(_u32(nameBytes.length));
@@ -433,7 +503,7 @@ Uint8List buildDescribePayload(int kind, String name) {
 }
 
 Uint8List buildExecutePayload(String portalName, int maxRows) {
-  final portalBytes = Uint8List.fromList(portalName.codeUnits);
+  final portalBytes = Uint8List.fromList(utf8.encode(portalName));
   final payload = BytesBuilder();
   payload.add(_u32(portalBytes.length));
   payload.add(portalBytes);
@@ -474,8 +544,8 @@ Uint8List buildSblrExecutePayload(
 
 Uint8List buildSubscribePayload(
     int subscribeType, String channel, String filterExpr) {
-  final channelBytes = Uint8List.fromList(channel.codeUnits);
-  final filterBytes = Uint8List.fromList(filterExpr.codeUnits);
+  final channelBytes = Uint8List.fromList(utf8.encode(channel));
+  final filterBytes = Uint8List.fromList(utf8.encode(filterExpr));
   final payload = BytesBuilder();
   payload.add(Uint8List.fromList([subscribeType, 0, 0, 0]));
   payload.add(_u32(channelBytes.length));
@@ -486,7 +556,7 @@ Uint8List buildSubscribePayload(
 }
 
 Uint8List buildUnsubscribePayload(String channel) {
-  final channelBytes = Uint8List.fromList(channel.codeUnits);
+  final channelBytes = Uint8List.fromList(utf8.encode(channel));
   final payload = BytesBuilder();
   payload.add(_u32(channelBytes.length));
   payload.add(channelBytes);
@@ -530,7 +600,7 @@ Uint8List buildTxnRollbackPayload(int flags) {
 }
 
 Uint8List buildTxnSavepointPayload(String name) {
-  final nameBytes = Uint8List.fromList(name.codeUnits);
+  final nameBytes = Uint8List.fromList(utf8.encode(name));
   final payload = BytesBuilder();
   payload.add(_u32(nameBytes.length));
   payload.add(nameBytes);
@@ -543,8 +613,8 @@ Uint8List buildTxnRollbackToPayload(String name) =>
     buildTxnSavepointPayload(name);
 
 Uint8List buildSetOptionPayload(String name, String value) {
-  final nameBytes = Uint8List.fromList(name.codeUnits);
-  final valueBytes = Uint8List.fromList(value.codeUnits);
+  final nameBytes = Uint8List.fromList(utf8.encode(name));
+  final valueBytes = Uint8List.fromList(utf8.encode(value));
   final payload = BytesBuilder();
   payload.add(_u32(nameBytes.length));
   payload.add(nameBytes);
@@ -563,8 +633,8 @@ Uint8List buildStreamControlPayload(
 }
 
 Uint8List buildAttachCreatePayload(String emulationMode, String dbName) {
-  final modeBytes = Uint8List.fromList(emulationMode.codeUnits);
-  final dbBytes = Uint8List.fromList(dbName.codeUnits);
+  final modeBytes = Uint8List.fromList(utf8.encode(emulationMode));
+  final dbBytes = Uint8List.fromList(utf8.encode(dbName));
   final payload = BytesBuilder();
   payload.add(_u32(modeBytes.length));
   payload.add(modeBytes);
@@ -576,9 +646,9 @@ Uint8List buildAttachCreatePayload(String emulationMode, String dbName) {
 Uint8List buildParamList(Map<String, String> params) {
   final payload = BytesBuilder();
   params.forEach((key, value) {
-    payload.add(Uint8List.fromList(key.codeUnits));
+    payload.add(Uint8List.fromList(utf8.encode(key)));
     payload.add(Uint8List.fromList([0]));
-    payload.add(Uint8List.fromList(value.codeUnits));
+    payload.add(Uint8List.fromList(utf8.encode(value)));
     payload.add(Uint8List.fromList([0]));
   });
   payload.add(Uint8List.fromList([0]));

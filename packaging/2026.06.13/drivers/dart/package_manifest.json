@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_dart",
-  "binary_sha256": "418f3b9831903266520e70cda01b55ca56638341c05f10e4f0efcab2f18cd9c5",
+  "binary_sha256": "57acc288937f140a7812703a3d9d7c2e7487f9aa409d31e41b2202c202ef2916",
   "component_id": "driver:dart",
   "driver": "dart",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/dart",
   "support_materials": [
     "support/README.md",

@@ -28,6 +28,14 @@ const sslModes = {
   'verify-ca',
   'verify-full',
 };
+const pageSizeBytes = {
+  '4k': 4096,
+  '8k': 8192,
+  '16k': 16384,
+  '32k': 32768,
+  '64k': 65536,
+  '128k': 131072,
+};
 const supportedArgs = {
   '--database',
   '--host',
@@ -72,10 +80,10 @@ Future<void> main(List<String> raw) async {
   try {
     final args = parseArgs(raw);
     final code = await runTool(args);
-    exitCode = code;
+    exit(code);
   } catch (error) {
     stderr.writeln(error);
-    exitCode = 1;
+    exit(1);
   }
 }
 
@@ -89,6 +97,7 @@ Future<int> runTool(Map<String, String> args) async {
     'timing': '$runRoot/timing-groups.json',
     'digests': '$runRoot/result-digests.json',
     'metadata': '$runRoot/metadata-snapshots.json',
+    'route_environment': '$runRoot/route-environment.json',
     'process': '$runRoot/process-metrics.jsonl',
     'refusals': '$runRoot/security-refusals.json',
     'api': '$runRoot/native-api-coverage.json',
@@ -121,6 +130,7 @@ Future<int> runTool(Map<String, String> args) async {
     'commit': 0,
     'rollback': 0,
     'close': 0,
+    'copy_in': 0,
   };
   final testcases = <Map<String, Object?>>[];
   final failures = <Map<String, Object?>>[];
@@ -132,6 +142,18 @@ Future<int> runTool(Map<String, String> args) async {
   );
   final route = required(args, '--route');
   final sslmode = effectiveSslMode(route, args['--sslmode'] ?? 'require');
+  Map<String, Object?> routeEnvironment = buildRouteEnvironment(
+    args,
+    route: route,
+    sslmode: sslmode,
+    actualPageSize: null,
+    status: 'fail',
+    reason: 'not_probed',
+  );
+  await writeText(
+    paths['route_environment']!,
+    '${jsonEncode(routeEnvironment)}\n',
+  );
   ScratchBirdClient? client;
 
   try {
@@ -171,6 +193,21 @@ Future<int> runTool(Map<String, String> args) async {
       'driver_or_parser_finality': 'forbidden',
     });
 
+    routeEnvironment =
+        await probeRouteEnvironment(client, args, route, sslmode);
+    await writeText(
+      paths['route_environment']!,
+      '${jsonEncode(routeEnvironment)}\n',
+    );
+    if (route != 'embedded' &&
+        routeEnvironment['page_size_verification_status'] != 'pass') {
+      throw StateError(
+        'route page-size verification failed: expected '
+        '${routeEnvironment['expected_page_size_bytes']} actual '
+        '${routeEnvironment['actual_page_size_bytes']}',
+      );
+    }
+
     if (flagEnabled(args, '--create-database')) {
       final createStarted = monotonicNs();
       await client.attachCreate(
@@ -186,13 +223,12 @@ Future<int> runTool(Map<String, String> args) async {
       );
     }
 
-    final statements = splitStatements(
-      await readInput(required(args, '--input')),
-    );
-    for (var index = 0; index < statements.length; index++) {
-      final sql = statements[index];
-      final statementId =
-          '${File(required(args, '--input')).uri.pathSegments.last}:${index + 1}';
+    final inputPath = required(args, '--input');
+    final inputText = await readInput(inputPath);
+    final statements = splitInputStatements(inputPath, inputText);
+    for (final statement in statements) {
+      final sql = statement.sql;
+      final statementId = '${statement.scriptName}:${statement.statementIndex}';
       final expectedOutcome =
           expectedRefusals.contains(statementId) ? 'refusal' : 'success';
       final group = classifyStatement(sql);
@@ -207,17 +243,36 @@ Future<int> runTool(Map<String, String> args) async {
           await runTransaction(client, sql, apiHits);
           rowCount = 0;
           resultDigest = sha256Text('transaction');
+        } else if (group == 'copy' && isCopyStdinStatement(sql)) {
+          final payload = copyPayloadForStatement(sql);
+          if (payload.isEmpty) {
+            throw StateError(
+              'COPY FROM STDIN requires SB_COPY_INPUT rows in the script',
+            );
+          }
+          final rowsCopied = await client.copyIn(
+            executableSqlWithoutCopyMarkers(sql),
+            utf8.encode(payload),
+          );
+          apiHits['copy_in'] = apiHits['copy_in']! + 1;
+          rowCount = rowsCopied;
+          final rows = [
+            ['copy_in', rowsCopied]
+          ];
+          resultDigest = sha256Text(jsonEncode(rows));
+          await appendText(
+            required(args, '--output'),
+            '${jsonEncode({'statement_id': statementId, 'rows': rows})}\n',
+          );
         } else {
           final result = await client.query(sql);
           apiHits['query'] = apiHits['query']! + 1;
           rowCount = result.rows.length;
-          resultDigest = sha256Text(jsonEncode(result.rows));
+          final rows = jsonSafeRows(result.rows);
+          resultDigest = sha256Text(jsonEncode(rows));
           await appendText(
             required(args, '--output'),
-            '${jsonEncode({
-                  'statement_id': statementId,
-                  'rows': result.rows
-                })}\n',
+            '${jsonEncode({'statement_id': statementId, 'rows': rows})}\n',
           );
         }
         digests.add({
@@ -271,7 +326,7 @@ Future<int> runTool(Map<String, String> args) async {
         'page_size': required(args, '--page-size'),
         'namespace': required(args, '--namespace'),
         'script': required(args, '--input'),
-        'statement_index': index + 1,
+        'statement_index': statement.statementIndex,
         'statement_id': statementId,
         'command_group': group,
         'sql_hash': sha256Text(sql),
@@ -366,6 +421,7 @@ Future<int> runTool(Map<String, String> args) async {
       '--standard-english-fallback',
       true,
     ),
+    'actual_page_size_bytes': routeEnvironment['actual_page_size_bytes'],
     'status': failures.isEmpty ? 'pass' : 'fail',
     'failure_count': failures.length,
     'elapsed_ns': elapsed,
@@ -418,17 +474,185 @@ Future<void> runTransaction(
   String sql,
   Map<String, int> apiHits,
 ) async {
-  final first = sql.trim().split(RegExp(r'\s+')).first.toLowerCase();
+  final executable = executableSqlWithoutCopyMarkers(sql)
+      .split(RegExp(r'\r\n|\r|\n'))
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty && !line.startsWith('--'))
+      .join(' ');
+  final tokens = executable.split(RegExp(r'\s+'));
+  if (tokens.isEmpty || tokens.first.isEmpty) return;
+  final first = tokens.first.toLowerCase();
   if (first == 'commit') {
     await client.commit();
     apiHits['commit'] = apiHits['commit']! + 1;
+  } else if (first == 'rollback' &&
+      tokens.length >= 4 &&
+      tokens[1].toLowerCase() == 'to' &&
+      tokens[2].toLowerCase() == 'savepoint') {
+    await client.rollbackToSavepoint(normalizeControlName(tokens[3]));
   } else if (first == 'rollback') {
     await client.rollback();
     apiHits['rollback'] = apiHits['rollback']! + 1;
+  } else if (first == 'savepoint' && tokens.length >= 2) {
+    await client.savepoint(normalizeControlName(tokens[1]));
+  } else if (first == 'release' &&
+      tokens.length >= 3 &&
+      tokens[1].toLowerCase() == 'savepoint') {
+    await client.releaseSavepoint(normalizeControlName(tokens[2]));
+  } else if (first == 'release' && tokens.length >= 2) {
+    await client.releaseSavepoint(normalizeControlName(tokens[1]));
   } else {
     await client.begin();
     apiHits['begin'] = apiHits['begin']! + 1;
   }
+}
+
+Map<String, Object?> buildRouteEnvironment(
+  Map<String, String> args, {
+  required String route,
+  required String sslmode,
+  required int? actualPageSize,
+  required String status,
+  String? reason,
+}) {
+  final pageSize = required(args, '--page-size');
+  final record = <String, Object?>{
+    'run_id': args['--run-id'] ?? 'manual',
+    'driver': 'dart',
+    'route': route,
+    'sslmode': sslmode,
+    'parser_mode': required(args, '--parser-mode'),
+    'concurrency_mode': 'single',
+    'namespace': required(args, '--namespace'),
+    'page_size': pageSize,
+    'expected_page_size_bytes': pageSizeBytes[pageSize],
+    'actual_page_size_bytes': actualPageSize,
+    'page_size_verification_source': 'SHOW DATABASE',
+    'page_size_verification_status': status,
+    'transport_mode': resolveTransportMode(route, sslmode),
+    'transport_endpoint_kind': endpointKindForRoute(route),
+    'driver_transport_implementation': transportImplementationForRoute(route),
+  };
+  if (reason != null && reason.isNotEmpty) {
+    record['failure_reason'] = reason;
+  }
+  return record;
+}
+
+Future<Map<String, Object?>> probeRouteEnvironment(
+  ScratchBirdClient client,
+  Map<String, String> args,
+  String route,
+  String sslmode,
+) async {
+  try {
+    final result = await client.query('SHOW DATABASE');
+    final actual = pageSizeFromShowDatabase(result);
+    if (actual == null) {
+      return buildRouteEnvironment(
+        args,
+        route: route,
+        sslmode: sslmode,
+        actualPageSize: null,
+        status: 'fail',
+        reason: 'show_database_missing_page_size_bytes',
+      );
+    }
+    final expected = pageSizeBytes[required(args, '--page-size')];
+    final status = actual == expected ? 'pass' : 'fail';
+    return buildRouteEnvironment(
+      args,
+      route: route,
+      sslmode: sslmode,
+      actualPageSize: actual,
+      status: status,
+      reason: status == 'pass' ? null : 'actual_page_size_mismatch',
+    );
+  } catch (error) {
+    return buildRouteEnvironment(
+      args,
+      route: route,
+      sslmode: sslmode,
+      actualPageSize: null,
+      status: 'fail',
+      reason: error.toString(),
+    );
+  }
+}
+
+int? pageSizeFromShowDatabase(ScratchBirdResult result) {
+  var pageIndex = result.columns
+      .indexWhere((column) => column.name.toLowerCase() == 'page_size_bytes');
+  if (pageIndex < 0 && result.columns.length >= 3) {
+    pageIndex = 2;
+  }
+  if (pageIndex < 0 &&
+      result.rows.isNotEmpty &&
+      result.rows.first.length >= 3) {
+    pageIndex = 2;
+  }
+  if (pageIndex >= 0 && result.rows.isNotEmpty) {
+    final row = result.rows.first;
+    if (pageIndex < row.length) {
+      final value = intValue(row[pageIndex]);
+      if (value != null) return value;
+    }
+  }
+  for (final row in result.rows) {
+    for (var index = 0; index < row.length; index++) {
+      final text = '${row[index]}'.trim();
+      final lower = text.toLowerCase();
+      if (lower == 'page_size_bytes' && index + 1 < row.length) {
+        final value = intValue(row[index + 1]);
+        if (value != null) return value;
+      }
+      final match =
+          RegExp(r'page_size_bytes\s*[:=]\s*(\d+)', caseSensitive: false)
+              .firstMatch(text);
+      if (match != null) {
+        return int.parse(match.group(1)!);
+      }
+    }
+  }
+  return null;
+}
+
+int? intValue(dynamic value) {
+  if (value == null) return null;
+  if (value is int) return value;
+  if (value is double && value.isFinite) return value.toInt();
+  return int.tryParse('$value'.trim());
+}
+
+String normalizeControlName(String token) =>
+    token.replaceAll(RegExp(r'[;]$'), '').trim();
+
+List<List<Object?>> jsonSafeRows(List<List<dynamic>> rows) => [
+      for (final row in rows) [for (final value in row) jsonSafeValue(value)]
+    ];
+
+Object? jsonSafeValue(dynamic value) {
+  if (value == null || value is bool || value is String || value is int) {
+    return value;
+  }
+  if (value is double) {
+    if (value.isNaN) return 'NaN';
+    if (value == double.infinity) return 'Infinity';
+    if (value == double.negativeInfinity) return '-Infinity';
+    return value;
+  }
+  if (value is BigInt) return value.toString();
+  if (value is DateTime) return value.toUtc().toIso8601String();
+  if (value is Iterable) {
+    return [for (final item in value) jsonSafeValue(item)];
+  }
+  if (value is Map) {
+    return {
+      for (final entry in value.entries)
+        '${entry.key}': jsonSafeValue(entry.value)
+    };
+  }
+  return value.toString();
 }
 
 Map<String, String> parseArgs(List<String> raw) {
@@ -502,8 +726,14 @@ String transportImplementationForRoute(String route) {
 }
 
 String classifyStatement(String sql) {
-  final trimmed = sql.trim().toLowerCase();
+  final trimmed = executableSqlWithoutCopyMarkers(sql)
+      .split(RegExp(r'\r\n|\r|\n'))
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty && !line.startsWith('--'))
+      .join(' ')
+      .toLowerCase();
   final first = trimmed.split(RegExp(r'\s+')).first;
+  if (first == 'copy') return 'copy';
   if (const {'create', 'alter', 'drop'}.contains(first)) return 'ddl';
   if (const {'insert', 'update', 'delete', 'merge', 'upsert'}.contains(first))
     return 'dml';
@@ -513,10 +743,65 @@ String classifyStatement(String sql) {
     'savepoint',
     'begin',
     'start',
+    'release',
   }.contains(first)) return 'transaction';
   if (const {'grant', 'revoke'}.contains(first)) return 'security_refusal';
   if (trimmed.contains('sys.')) return 'metadata';
   return 'query';
+}
+
+class ToolStatement {
+  final String scriptName;
+  final int statementIndex;
+  final String sql;
+
+  const ToolStatement(this.scriptName, this.statementIndex, this.sql);
+}
+
+List<ToolStatement> splitInputStatements(String inputPath, String inputText) {
+  final chain = splitChainStatements(inputText);
+  if (chain.isNotEmpty) {
+    return [
+      for (final statement in chain)
+        ToolStatement(
+          statement.scriptName,
+          statement.statementIndex,
+          statement.sql,
+        ),
+    ];
+  }
+  final fileName = File(inputPath).uri.pathSegments.last;
+  final split = splitStatements(inputText);
+  return [
+    for (var i = 0; i < split.length; i++)
+      ToolStatement(fileName, i + 1, split[i]),
+  ];
+}
+
+String executableSqlWithoutCopyMarkers(String sql) => sql
+    .split(RegExp(r'\r\n|\r|\n'))
+    .where((line) => !line.trimLeft().startsWith('-- SB_COPY_INPUT '))
+    .join('\n')
+    .trim();
+
+String copyPayloadForStatement(String sql) {
+  final rows = <String>[];
+  for (final line in sql.split(RegExp(r'\r\n|\r|\n'))) {
+    final stripped = line.trimLeft();
+    if (stripped.startsWith('-- SB_COPY_INPUT ')) {
+      rows.add(stripped.substring('-- SB_COPY_INPUT '.length));
+    }
+  }
+  return rows.isEmpty ? '' : '${rows.join('\n')}\n';
+}
+
+bool isCopyStdinStatement(String sql) {
+  final executable = executableSqlWithoutCopyMarkers(sql)
+      .split(RegExp(r'\r\n|\r|\n'))
+      .map((line) => line.trim().toLowerCase())
+      .where((line) => line.isNotEmpty && !line.startsWith('--'))
+      .join(' ');
+  return executable.startsWith('copy ') && executable.contains(' from stdin');
 }
 
 String required(Map<String, String> args, String key) {
@@ -543,6 +828,9 @@ Future<Set<String>> loadExpectedRefusals(String? path) async {
     if (statementIds is List) ids.addAll(statementIds.map((value) => '$value'));
     final expected = decoded['expected_refusals'];
     if (expected is List) ids.addAll(expected.map((value) => '$value'));
+    final diagnostics = decoded['expected_diagnostics'];
+    if (diagnostics is Map)
+      ids.addAll(diagnostics.keys.map((value) => '$value'));
     return ids;
   }
   if (decoded is List) return decoded.map((value) => '$value').toSet();

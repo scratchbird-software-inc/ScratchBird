@@ -313,6 +313,25 @@ std::string readInput(const std::string& path) {
 }
 
 void addExpectedRefusalIds(const json& value, std::set<std::string>& ids) {
+    if (value.is_string()) {
+        ids.insert(value.get<std::string>());
+        return;
+    }
+    if (value.is_object()) {
+        for (const auto* key : {"statement_id", "statementId", "id"}) {
+            if (value.contains(key) && value[key].is_string()) {
+                ids.insert(value[key].get<std::string>());
+            }
+        }
+        for (const auto* key : {"statement_ids", "statementIds", "expected_refusals",
+                                "expectedRefusals", "expected_diagnostics",
+                                "expectedDiagnostics"}) {
+            if (value.contains(key)) {
+                addExpectedRefusalIds(value[key], ids);
+            }
+        }
+        return;
+    }
     if (!value.is_array()) return;
     for (const auto& item : value) {
         if (item.is_string()) {
@@ -340,34 +359,116 @@ std::set<std::string> loadExpectedRefusals(const std::string& path) {
     if (doc.contains("expected_diagnostics") && doc["expected_diagnostics"].is_object()) {
         for (const auto& item : doc["expected_diagnostics"].items()) ids.insert(item.key());
     }
+    if (doc.contains("compiled_chain_statement_aliases") &&
+        doc["compiled_chain_statement_aliases"].is_object()) {
+        for (const auto& item : doc["compiled_chain_statement_aliases"].items()) {
+            if (item.value().is_string() && ids.count(item.key()) != 0) {
+                ids.insert(item.value().get<std::string>());
+            }
+        }
+    }
     return ids;
 }
 
 std::string firstTokenLower(const std::string& sql) {
-    std::istringstream in(sql);
+    size_t offset = 0;
+    while (offset < sql.size()) {
+        while (offset < sql.size() &&
+               std::isspace(static_cast<unsigned char>(sql[offset]))) {
+            ++offset;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '-' && sql[offset + 1] == '-') {
+            offset += 2;
+            while (offset < sql.size() && sql[offset] != '\n') ++offset;
+            continue;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '/' && sql[offset + 1] == '*') {
+            offset += 2;
+            while (offset + 1 < sql.size() &&
+                   !(sql[offset] == '*' && sql[offset + 1] == '/')) {
+                ++offset;
+            }
+            if (offset + 1 < sql.size()) offset += 2;
+            continue;
+        }
+        break;
+    }
     std::string first;
-    in >> first;
+    while (offset < sql.size() &&
+           !std::isspace(static_cast<unsigned char>(sql[offset]))) {
+        first.push_back(sql[offset++]);
+    }
     for (char& ch : first) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return first;
+}
+
+std::vector<std::string> leadingTokensLower(const std::string& sql, size_t limit) {
+    std::vector<std::string> tokens;
+    size_t offset = 0;
+    while (offset < sql.size() && tokens.size() < limit) {
+        while (offset < sql.size() &&
+               std::isspace(static_cast<unsigned char>(sql[offset]))) {
+            ++offset;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '-' && sql[offset + 1] == '-') {
+            offset += 2;
+            while (offset < sql.size() && sql[offset] != '\n') ++offset;
+            continue;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '/' && sql[offset + 1] == '*') {
+            offset += 2;
+            while (offset + 1 < sql.size() &&
+                   !(sql[offset] == '*' && sql[offset + 1] == '/')) {
+                ++offset;
+            }
+            if (offset + 1 < sql.size()) offset += 2;
+            continue;
+        }
+        if (offset >= sql.size()) break;
+        std::string token;
+        while (offset < sql.size() &&
+               !std::isspace(static_cast<unsigned char>(sql[offset])) &&
+               sql[offset] != ';') {
+            token.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(sql[offset++]))));
+        }
+        if (!token.empty()) tokens.push_back(std::move(token));
+    }
+    return tokens;
 }
 
 std::string classify(const std::string& sql) {
     const auto first = firstTokenLower(sql);
     if (first == "create" || first == "alter" || first == "drop") return "ddl";
     if (first == "insert" || first == "update" || first == "delete" || first == "merge" || first == "upsert") return "dml";
-    if (first == "commit" || first == "rollback" || first == "savepoint" || first == "begin" || first == "start") return "transaction";
+    if (first == "commit" || first == "rollback" || first == "savepoint" ||
+        first == "release" || first == "begin" || first == "start") return "transaction";
     if (first == "grant" || first == "revoke") return "security_refusal";
     return sql.find("sys.") != std::string::npos ? "metadata" : "query";
 }
 
 std::string diagnostic(SQLSMALLINT handleType, SQLHANDLE handle) {
-    SQLCHAR state[6] = {};
-    SQLINTEGER native = 0;
-    SQLCHAR message[512] = {};
-    SQLSMALLINT len = 0;
-    auto rc = SQLGetDiagRec(handleType, handle, 1, state, &native, message, sizeof(message), &len);
-    if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
-        return std::string(reinterpret_cast<char*>(message), static_cast<size_t>(len));
+    std::vector<std::string> records;
+    for (SQLSMALLINT rec = 1;; ++rec) {
+        SQLCHAR state[6] = {};
+        SQLINTEGER native = 0;
+        SQLCHAR message[512] = {};
+        SQLSMALLINT len = 0;
+        auto rc = SQLGetDiagRec(handleType, handle, rec, state, &native, message, sizeof(message), &len);
+        if (rc == SQL_NO_DATA) break;
+        if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) break;
+        std::ostringstream out;
+        out << reinterpret_cast<char*>(state) << ":" << native << ":"
+            << std::string(reinterpret_cast<char*>(message), static_cast<size_t>(len));
+        records.push_back(out.str());
+    }
+    if (!records.empty()) {
+        std::ostringstream out;
+        for (size_t i = 0; i < records.size(); ++i) {
+            if (i != 0) out << " | ";
+            out << records[i];
+        }
+        return out.str();
     }
     return "ODBC operation failed";
 }
@@ -459,7 +560,6 @@ int main(int argc, char** argv) {
 
         SQLHENV env = SQL_NULL_HENV;
         SQLHDBC dbc = SQL_NULL_HDBC;
-        SQLHSTMT stmt = SQL_NULL_HSTMT;
 
         if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env) != SQL_SUCCESS) throw std::runtime_error("SQLAllocHandle env failed");
         api["SQLAllocHandle"]++;
@@ -557,8 +657,6 @@ int main(int argc, char** argv) {
             }
         }
         if (failures.empty()) {
-            if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) throw std::runtime_error("SQLAllocHandle stmt failed");
-            api["SQLAllocHandle"]++;
             const auto statements = sbchunk::splitStatements(readInput(required(args, "--input")));
             std::string scriptName = std::filesystem::path(required(args, "--input")).filename().string();
             if (scriptName.empty()) scriptName = required(args, "--input");
@@ -574,33 +672,114 @@ int main(int argc, char** argv) {
                 std::string sqlState = "00000";
                 int64_t rowCount = 0;
                 bool statementSucceeded = false;
-                rc = SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
-                api["SQLPrepare"]++;
-                if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
-                    rc = SQLExecute(stmt);
-                    api["SQLExecute"]++;
-                }
-                if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
-                    statementSucceeded = true;
-                    while ((rc = SQLFetch(stmt)) == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
-                        api["SQLFetch"]++;
-                        ++rowCount;
+                bool breakAfterEvent = false;
+                SQLHSTMT stmt = SQL_NULL_HSTMT;
+                const auto tokens = leadingTokensLower(sql, 4);
+                const std::string first = tokens.empty() ? "" : tokens[0];
+                const std::string second = tokens.size() > 1 ? tokens[1] : "";
+                const bool nativeBegin = group == "transaction" &&
+                                         (first == "begin" || first == "start");
+                const bool nativeCommit = group == "transaction" && first == "commit";
+                const bool nativeRollback = group == "transaction" && first == "rollback" &&
+                                            second != "to";
+                const bool savepointSql = group == "transaction" &&
+                                          (first == "savepoint" ||
+                                           (first == "release" && second == "savepoint") ||
+                                           (first == "rollback" && second == "to"));
+                if (nativeBegin) {
+                    rc = SQLSetConnectAttr(
+                        dbc,
+                        SQL_ATTR_AUTOCOMMIT,
+                        reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),
+                        0);
+                    api["SQLSetConnectAttr"]++;
+                    if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+                        statementSucceeded = true;
+                    } else {
+                        outcome = "refusal";
+                        message = diagnostic(SQL_HANDLE_DBC, dbc);
+                        sqlState = "HY000";
+                        appendText(required(args, "--error"), statementId + ": " + message + "\n");
+                        appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", message}});
+                        failures.push_back({{"statement_id", statementId}, {"message", message}});
+                        breakAfterEvent = booleanArg(args, "--stop-on-error", true);
                     }
-                    digests.push_back({{"row_count", rowCount}, {"result_digest", sha256Text(std::to_string(rowCount))}});
-                } else {
+                } else if (nativeCommit || nativeRollback) {
+                    rc = SQLEndTran(SQL_HANDLE_DBC, dbc, nativeCommit ? SQL_COMMIT : SQL_ROLLBACK);
+                    api["SQLEndTran"]++;
+                    if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+                        statementSucceeded = true;
+                        SQLRETURN autoRc = SQLSetConnectAttr(
+                            dbc,
+                            SQL_ATTR_AUTOCOMMIT,
+                            reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON),
+                            0);
+                        api["SQLSetConnectAttr"]++;
+                        if (autoRc != SQL_SUCCESS && autoRc != SQL_SUCCESS_WITH_INFO) {
+                            statementSucceeded = false;
+                            outcome = "refusal";
+                            message = diagnostic(SQL_HANDLE_DBC, dbc);
+                            sqlState = "HY000";
+                            appendText(required(args, "--error"), statementId + ": " + message + "\n");
+                            appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", message}});
+                            failures.push_back({{"statement_id", statementId}, {"message", message}});
+                            breakAfterEvent = booleanArg(args, "--stop-on-error", true);
+                        }
+                    } else {
+                        outcome = "refusal";
+                        message = diagnostic(SQL_HANDLE_DBC, dbc);
+                        sqlState = "HY000";
+                        appendText(required(args, "--error"), statementId + ": " + message + "\n");
+                        appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", message}});
+                        failures.push_back({{"statement_id", statementId}, {"message", message}});
+                        breakAfterEvent = booleanArg(args, "--stop-on-error", true);
+                    }
+                } else if (savepointSql &&
+                           (api["SQLSetConnectAttr"]++,
+                            rc = SQLSetConnectAttr(
+                                dbc,
+                                SQL_ATTR_AUTOCOMMIT,
+                                reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),
+                                0),
+                            rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO)) {
                     outcome = "refusal";
-                    message = diagnostic(SQL_HANDLE_STMT, stmt);
+                    message = diagnostic(SQL_HANDLE_DBC, dbc);
                     sqlState = "HY000";
                     appendText(required(args, "--error"), statementId + ": " + message + "\n");
                     appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", message}});
-                    if (expectedRefusal) {
-                        securityRefusals.push_back({{"statement_id", statementId}, {"sqlstate", sqlState}, {"diagnostic_code", message}});
+                    failures.push_back({{"statement_id", statementId}, {"message", message}});
+                    breakAfterEvent = booleanArg(args, "--stop-on-error", true);
+                } else if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) {
+                    outcome = "refusal";
+                    message = diagnostic(SQL_HANDLE_DBC, dbc);
+                    sqlState = "HY000";
+                    failures.push_back({{"statement_id", statementId}, {"message", message}});
+                    breakAfterEvent = true;
+                } else {
+                    api["SQLAllocHandle"]++;
+                    rc = SQLExecDirect(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
+                    api["SQLExecDirect"]++;
+                    if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+                        statementSucceeded = true;
+                        while ((rc = SQLFetch(stmt)) == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+                            api["SQLFetch"]++;
+                            ++rowCount;
+                        }
+                        digests.push_back({{"row_count", rowCount}, {"result_digest", sha256Text(std::to_string(rowCount))}});
                     } else {
-                        failures.push_back({{"statement_id", statementId}, {"message", message}});
-                    }
-                    if (!expectedRefusal && booleanArg(args, "--stop-on-error", true)) {
-                        addTiming(timings, group, statementStarted);
-                        break;
+                        outcome = "refusal";
+                        message = diagnostic(SQL_HANDLE_STMT, stmt);
+                        sqlState = "HY000";
+                        appendText(required(args, "--error"), statementId + ": " + message + "\n");
+                        appendJsonl(required(args, "--diagnostics"), {{"statement_id", statementId}, {"sqlstate", sqlState}, {"message", message}});
+                        if (expectedRefusal) {
+                            securityRefusals.push_back({{"statement_id", statementId}, {"sqlstate", sqlState}, {"diagnostic_code", message}});
+                        } else {
+                            failures.push_back({{"statement_id", statementId}, {"message", message}});
+                        }
+                        if (!expectedRefusal && booleanArg(args, "--stop-on-error", true)) {
+                            breakAfterEvent = true;
+                        }
                     }
                 }
                 if (statementSucceeded) {
@@ -638,16 +817,24 @@ int main(int argc, char** argv) {
                                  {"native_api_surface", "odbc"}};
                 appendJsonl(paths.at("events"), event);
                 testcases.push_back(event);
-                SQLCloseCursor(stmt);
+                if (stmt) {
+                    SQLCloseCursor(stmt);
+                    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+                }
+                if (breakAfterEvent) break;
             }
-            rc = SQLTables(stmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
-            api["SQLTables"]++;
-            rc = SQLColumns(stmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
-            api["SQLColumns"]++;
+            SQLHSTMT metadataStmt = SQL_NULL_HSTMT;
+            if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &metadataStmt) == SQL_SUCCESS) {
+                api["SQLAllocHandle"]++;
+                rc = SQLTables(metadataStmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
+                api["SQLTables"]++;
+                rc = SQLColumns(metadataStmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
+                api["SQLColumns"]++;
+                SQLFreeHandle(SQL_HANDLE_STMT, metadataStmt);
+            }
             writeText(paths.at("metadata"), json({{"tables_digest", sha256Text("odbc-catalog")}, {"row_count", 0}}).dump() + "\n");
         }
 
-        if (stmt) SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         if (dbc) {
             SQLDisconnect(dbc);
             SQLFreeHandle(SQL_HANDLE_DBC, dbc);

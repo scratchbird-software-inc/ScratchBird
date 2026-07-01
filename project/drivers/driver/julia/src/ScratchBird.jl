@@ -10,6 +10,7 @@ module ScratchBird
 
 import DBInterface
 import Tables
+import OpenSSL
 using Sockets
 
 export ScratchBirdDriver,
@@ -76,6 +77,8 @@ end
 const PROTOCOL_MAGIC = UInt8[0x53, 0x42, 0x57, 0x50]
 const PROTOCOL_VERSION = UInt16(0x0101)
 const HEADER_SIZE = 40
+const P1_ROW_DESCRIPTION_HEADER_BYTES = 72
+const P1_CANONICAL_TYPE_REF_BYTES = 144
 const FEATURE_SBLR = UInt64(1) << 2
 const FEATURE_NOTIFICATIONS = UInt64(1) << 4
 const FEATURE_QUERY_PLAN = UInt64(1) << 5
@@ -87,6 +90,9 @@ const MSG_AUTH_RESPONSE = UInt8(0x02)
 const MSG_QUERY = UInt8(0x03)
 const MSG_SYNC = UInt8(0x09)
 const MSG_TERMINATE = UInt8(0x0c)
+const MSG_COPY_DATA = UInt8(0x0d)
+const MSG_COPY_DONE = UInt8(0x0e)
+const MSG_COPY_FAIL = UInt8(0x0f)
 const MSG_SBLR_EXECUTE = UInt8(0x10)
 const MSG_TXN_BEGIN = UInt8(0x15)
 const MSG_TXN_COMMIT = UInt8(0x16)
@@ -101,6 +107,9 @@ const MSG_COMMAND_COMPLETE = UInt8(0x46)
 const MSG_ERROR = UInt8(0x48)
 const MSG_NOTICE = UInt8(0x49)
 const MSG_PARAMETER_STATUS = UInt8(0x4f)
+const MSG_COPY_IN_RESPONSE = UInt8(0x51)
+const MSG_COPY_OUT_RESPONSE = UInt8(0x52)
+const MSG_COPY_BOTH_RESPONSE = UInt8(0x53)
 const MSG_SBLR_COMPILED = UInt8(0x57)
 const MSG_TXN_STATUS = UInt8(0x5c)
 const AUTH_OK = UInt8(0)
@@ -123,13 +132,25 @@ function DBInterface.connect(
     port::Integer = 3092,
     role::AbstractString = "",
     sslmode::AbstractString = "require",
+    sslrootcert::AbstractString = "",
+    sslcert::AbstractString = "",
+    sslkey::AbstractString = "",
     transport::AbstractString = "inet",
     ipc_path::AbstractString = "",
     application_name::AbstractString = "ScratchBirdJulia",
     parser_mode::AbstractString = "server-parser",
     kwargs...,
 )
-    io = open_transport(String(transport), String(host), Int(port), String(ipc_path), String(sslmode))
+    io = open_transport(
+        String(transport),
+        String(host),
+        Int(port),
+        String(ipc_path),
+        String(sslmode),
+        String(sslrootcert),
+        String(sslcert),
+        String(sslkey),
+    )
     conn = ScratchBirdConnection(
         String(host),
         Int(port),
@@ -154,7 +175,7 @@ function DBInterface.connect(
     return conn
 end
 
-function open_transport(transport::String, host::String, port::Int, ipc_path::String, sslmode::String)
+function open_transport(transport::String, host::String, port::Int, ipc_path::String, sslmode::String, sslrootcert::String, sslcert::String, sslkey::String)
     if transport == "embedded"
         throw(ScratchBirdError("0A000", "embedded transport is unavailable in the Julia lane because no ScratchBird C++ library boundary is exposed"))
     elseif transport == "ipc"
@@ -162,28 +183,41 @@ function open_transport(transport::String, host::String, port::Int, ipc_path::St
         return Sockets.connect(ipc_path)
     elseif transport == "inet"
         if sslmode != "disable"
-            return open_tls_transport(host, port, sslmode)
+            return open_tls_transport(host, port, sslmode, sslrootcert, sslcert, sslkey)
         end
         return Sockets.connect(host, port)
     end
     throw(ScratchBirdError("08001", "unsupported ScratchBird transport: $(transport)"))
 end
 
-function open_tls_transport(host::String, port::Int, sslmode::String)
-    try
-        Base.eval(Main, :(import MbedTLS))
-    catch err
-        throw(ScratchBirdError("0A000", "Julia TLS requires MbedTLS from project/drivers/driver/julia/Project.toml: $(sprint(Base.showerror, err))"))
-    end
+function open_tls_transport(host::String, port::Int, sslmode::String, sslrootcert::String, sslcert::String, sslkey::String)
     socket = Sockets.connect(host, port)
     try
-        return Main.MbedTLS.SSLContext(socket, host)
-    catch
+        verify_peer = sslmode == "verify-ca" || sslmode == "verify-full"
+        if !isempty(sslcert) || !isempty(sslkey)
+            (!isempty(sslcert) && !isempty(sslkey)) || throw(ScratchBirdError("08001", "sslcert and sslkey must be supplied together"))
+        end
+        verify_file = isempty(sslrootcert) ? "" : sslrootcert
+        ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), verify_file)
+        OpenSSL.ssl_set_min_protocol_version(ctx, OpenSSL.TLS1_3_VERSION)
+        OpenSSL.ssl_set_options(ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
+        if !isempty(sslcert)
+            OpenSSL.ssl_use_certificate(ctx, OpenSSL.X509Certificate(read(sslcert)))
+            OpenSSL.ssl_use_private_key(ctx, OpenSSL.EvpPKey(read(sslkey)))
+        end
+        tls = OpenSSL.SSLStream(ctx, socket)
+        OpenSSL.hostname!(tls, host)
+        Sockets.connect(tls; require_ssl_verification = verify_peer)
+        return tls
+    catch err
         try
-            close(socket)
+            Base.close(socket)
         catch
         end
-        throw(ScratchBirdError("08001", "Julia TLS context creation failed for sslmode=$(sslmode); instantiate MbedTLS and verify listener TLS settings"))
+        if err isa ScratchBirdError
+            throw(err)
+        end
+        throw(ScratchBirdError("08001", "Julia TLS context creation failed for sslmode=$(sslmode): $(sprint(Base.showerror, err))"))
     end
 end
 
@@ -317,15 +351,19 @@ function startup_and_auth!(conn::ScratchBirdConnection)
 end
 
 function execute_query!(conn::ScratchBirdConnection, sql::String; extra_flags::UInt32 = UInt32(0))
+    send_message!(conn, MSG_QUERY, build_query_payload(sql; extra_flags = extra_flags))
+    return read_result!(conn)
+end
+
+function build_query_payload(sql::String; extra_flags::UInt32 = UInt32(0), max_rows::UInt32 = UInt32(0), timeout_ms::UInt32 = UInt32(0))::Vector{UInt8}
     flags = QUERY_FLAG_BINARY_RESULT | extra_flags
     payload = UInt8[]
     append_le!(payload, flags)
-    append_le!(payload, UInt32(0))
-    append_le!(payload, UInt32(0))
+    append_le!(payload, max_rows)
+    append_le!(payload, timeout_ms)
     append!(payload, Vector{UInt8}(codeunits(sql)))
     push!(payload, 0)
-    send_message!(conn, MSG_QUERY, payload)
-    return read_result!(conn)
+    return payload
 end
 
 function compile_sblr!(conn::ScratchBirdConnection, sql::String)::SblrCompiled
@@ -383,7 +421,9 @@ function read_result!(conn::ScratchBirdConnection)::ScratchBirdResult
             apply_ready!(conn, payload)
             return ScratchBirdResult(columns, rows, rowcount < 0 ? length(rows) : rowcount, command_tag)
         elseif msg_type == MSG_ERROR
-            raise_error(payload)
+            err = error_from_payload(payload)
+            drain_until_ready!(conn)
+            throw(err)
         end
     end
 end
@@ -434,8 +474,15 @@ end
 function read_exact(io, n::Int)::Vector{UInt8}
     out = UInt8[]
     while length(out) < n
-        chunk = read(io, n - length(out))
-        isempty(chunk) && throw(ScratchBirdError("08006", "connection closed while reading from ScratchBird"))
+        chunk = Vector{UInt8}(undef, n - length(out))
+        try
+            GC.@preserve chunk unsafe_read(io, pointer(chunk), UInt(length(chunk)))
+        catch err
+            if err isa EOFError
+                throw(ScratchBirdError("08006", "connection closed while reading from ScratchBird"))
+            end
+            rethrow()
+        end
         append!(out, chunk)
     end
     return out
@@ -522,6 +569,9 @@ function parse_parameter_status(payload::Vector{UInt8})
 end
 
 function parse_row_description(payload::Vector{UInt8})
+    if is_p1_row_description(payload)
+        return parse_p1_row_description(payload)
+    end
     length(payload) >= 4 || throw(ScratchBirdError("08006", "row description is truncated"))
     count = Int(read_u16(payload, 1))
     offset = 5
@@ -542,6 +592,83 @@ function parse_row_description(payload::Vector{UInt8})
         push!(names, isempty(name) ? "column$(length(names) + 1)" : name)
     end
     return names, types
+end
+
+function is_p1_row_description(payload::Vector{UInt8})::Bool
+    return length(payload) >= P1_ROW_DESCRIPTION_HEADER_BYTES &&
+        read_u16(payload, 1) == UInt16(1) &&
+        payload[4] == UInt8(1)
+end
+
+function parse_p1_row_description(payload::Vector{UInt8})
+    count = Int(read_i32(payload, 5))
+    count >= 0 || throw(ScratchBirdError("08006", "P1 row description column count is invalid"))
+    offset = P1_ROW_DESCRIPTION_HEADER_BYTES + 1
+    names = String[]
+    types = UInt32[]
+    fixed_column_bytes = 4 + 4 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 56
+    for idx in 1:count
+        offset + fixed_column_bytes - 1 <= length(payload) || throw(ScratchBirdError("08006", "P1 row description is truncated"))
+        offset += 4
+        offset += 1
+        offset += 1
+        offset += 1
+        offset += 1
+        offset += 8
+        type_oid = oid_from_canonical_type_ref(payload, offset)
+        offset += P1_CANONICAL_TYPE_REF_BYTES
+        offset += 16 * 3
+        offset += 4
+        offset += 2
+        offset += 2
+        name, offset = read_nullable_text(payload, offset)
+        push!(names, isempty(name) ? "column$(idx)" : name)
+        push!(types, type_oid)
+    end
+    return names, types
+end
+
+function oid_from_canonical_type_ref(payload::Vector{UInt8}, offset::Int)::UInt32
+    offset + 3 <= length(payload) || return UInt32(25)
+    family = read_u16(payload, offset)
+    code = read_u16(payload, offset + 2)
+    if family == 1 && code == 1
+        return UInt32(16)
+    elseif family == 2 && code == 3
+        return UInt32(23)
+    elseif family == 2 && code == 4
+        return UInt32(20)
+    elseif family == 4 && code == 1
+        return UInt32(1700)
+    elseif family == 6 && code == 2
+        return UInt32(701)
+    elseif family == 8 && code == 1
+        return UInt32(25)
+    elseif family == 9
+        return UInt32(17)
+    elseif family == 11
+        return code == 1 ? UInt32(1082) : (code == 2 ? UInt32(1083) : UInt32(1114))
+    elseif family == 12
+        return UInt32(1186)
+    elseif family == 13
+        return UInt32(2950)
+    elseif family == 19
+        return code == 3 ? UInt32(829) : UInt32(869)
+    elseif family == 20
+        return UInt32(114)
+    end
+    return UInt32(25)
+end
+
+function read_nullable_text(payload::Vector{UInt8}, offset::Int)
+    offset + 4 <= length(payload) || throw(ScratchBirdError("08006", "nullable text is truncated"))
+    tag = payload[offset]
+    length_value = Int(read_i32(payload, offset + 1))
+    length_value >= 0 || throw(ScratchBirdError("08006", "nullable text length is invalid"))
+    offset += 5
+    tag == 0 && return "", offset
+    offset + length_value - 1 <= length(payload) || throw(ScratchBirdError("08006", "nullable text is truncated"))
+    return String(payload[offset:offset + length_value - 1]), offset + length_value
 end
 
 function parse_data_row(payload::Vector{UInt8}, expected_count::Int, column_types::Vector{UInt32})
@@ -610,15 +737,25 @@ function parse_sblr_compiled(payload::Vector{UInt8})
 end
 
 function apply_ready!(conn::ScratchBirdConnection, payload::Vector{UInt8})
-    if length(payload) >= 20
-        status = payload[1]
-        txn = read_u64(payload, 5)
-        conn.txn_id = status == 0 ? UInt64(0) : txn
-        conn.current_txn_id = status == 0 ? nothing : string(txn)
-    end
+    status, txn = parse_ready(payload)
+    conn.txn_id = status == 0 ? UInt64(0) : txn
+    conn.current_txn_id = status == 0 ? nothing : string(txn)
 end
 
-function raise_error(payload::Vector{UInt8})
+function parse_ready(payload::Vector{UInt8})
+    if length(payload) >= 76
+        status_byte = payload[57]
+        if status_byte in UInt8[0x49, 0x54, 0x45, 0x52, 0x41]
+            txn = read_u64(payload, 49)
+            status = (status_byte == 0x54 || status_byte == 0x45) ? UInt8(1) : UInt8(0)
+            return status, txn
+        end
+    end
+    length(payload) >= 20 || throw(ScratchBirdError("08006", "ready message is truncated"))
+    return payload[1], read_u64(payload, 5)
+end
+
+function error_from_payload(payload::Vector{UInt8})::ScratchBirdError
     sqlstate = "HY000"
     message = "ScratchBird server returned an error"
     offset = 1
@@ -638,7 +775,11 @@ function raise_error(payload::Vector{UInt8})
         end
         offset = nextnul + 1
     end
-    throw(ScratchBirdError(sqlstate, message))
+    return ScratchBirdError(sqlstate, message)
+end
+
+function raise_error(payload::Vector{UInt8})
+    throw(error_from_payload(payload))
 end
 
 function append_lprefixed!(out::Vector{UInt8}, value::String)

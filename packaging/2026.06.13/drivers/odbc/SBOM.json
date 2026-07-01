@@ -2,9 +2,9 @@
   "component_id": "driver:odbc",
   "components": [
     {
-      "bytes": 376504,
+      "bytes": 399432,
       "path": "bin/sb_isql_odbc",
-      "sha256": "d06b1fb3dc302e932e12031badb1c6432f76c4bb71cdfac5a3d71fc93f94894b"
+      "sha256": "3d8a80ee9f682cff5766fb65f8a64a010f06d781be254c566c2799047f012c9d"
     },
     {
       "bytes": 295,
@@ -27,9 +27,9 @@
       "sha256": "973408c8f4231d921c8d0f7cab75379ef39b48d354ca5cd23453f46dc39681c6"
     },
     {
-      "bytes": 41697,
+      "bytes": 46260,
       "path": "examples/tests/test_odbc_catalog_and_types.cpp",
-      "sha256": "80125985d51b6c10187a8d094889b78df39ddc22fcd80db72fe6cec9187d4d3a"
+      "sha256": "dae639e5cc98d2062aeae615fd74917add73568d88cf65e55874a56c9bacd976"
     },
     {
       "bytes": 8610,
@@ -67,9 +67,9 @@
       "sha256": "99a0567ac74efda8c3e0d80f81df94f6d81652ba2c704597da3cbcdc9dacf1e9"
     },
     {
-      "bytes": 36633,
+      "bytes": 46157,
       "path": "examples/tools/sb_isql_odbc.cpp",
-      "sha256": "33c2385b5f55beb42fc65deff1a2cdce5a753ef7a3308662eb249aaca02a3379"
+      "sha256": "bf806cbfb6f0f30e2b681fb93296fdcc86b27ee92d2aa2547d666c367f9d613e"
     },
     {
       "bytes": 16726,
@@ -89,7 +89,7 @@
     {
       "bytes": 947,
       "path": "package_manifest.json",
-      "sha256": "7f15887e58ca691e6179f56ea515d39ef356463c00dcbdb226ae0210bdc851e4"
+      "sha256": "9f407cb7685a404c0c721d23acb7a90a9ec051ce40ae3f6d4d42e56d20c3423b"
     },
     {
       "bytes": 8384,
@@ -97,14 +97,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -112,9 +112,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 430,
@@ -369,10 +369,10 @@
     {
       "bytes": 475,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "553de73e6e6089977e57002d6f2f81fd15ddb123e8a2073a90226842984be0a3"
+      "sha256": "ed87bb8ce0227c3f448fb8c2b2ee1c5091f52756d5a1ddc386bd7c86d41c2676"
     }
   ],
   "driver": "odbc",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:05+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

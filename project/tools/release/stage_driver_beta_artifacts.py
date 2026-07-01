@@ -111,6 +111,39 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def write_output_release_metadata(
+    repo_root: Path,
+    output_root: Path,
+    staged: list[dict[str, Any]],
+    source_commit: str,
+    dirty: bool,
+) -> None:
+    promoted_paths = [entry["artifact_dir"] for entry in staged]
+    manifest = {
+        "schema_id": "scratchbird_driver_beta_output_manifest_v1",
+        "release_state": "beta_driver_tool_adapter_output_stage",
+        "source_commit": source_commit,
+        "source_tree_dirty": dirty,
+        "dbeaver_excluded": True,
+        "promoted_paths": promoted_paths,
+        "components": [
+            {
+                "component_id": entry["component_id"],
+                "path": entry["artifact_dir"],
+                "source_sha256": entry["source_sha256"],
+                "source_file_count": entry["source_file_count"],
+            }
+            for entry in staged
+        ],
+    }
+    write_json(output_root / "RELEASE_MANIFEST.json", manifest)
+    sha_lines = []
+    for path in sorted(output_root.iterdir()):
+        if path.is_file() and path.name != "SHA256SUMS":
+            sha_lines.append(f"{hash_file(path)}  {path.name}")
+    (output_root / "SHA256SUMS").write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
+
+
 def stage_component(
     repo_root: Path,
     output_root: Path,
@@ -185,6 +218,7 @@ def main() -> int:
         if row.get("component_id", "").strip() == DBEAVER_COMPONENT_ID:
             continue
         staged.append(stage_component(repo_root, output_root, row, source_commit, dirty))
+    write_output_release_metadata(repo_root, output_root, staged, source_commit, dirty)
     report = {
         "command": "stage_driver_beta_artifacts.py",
         "status": "pass",

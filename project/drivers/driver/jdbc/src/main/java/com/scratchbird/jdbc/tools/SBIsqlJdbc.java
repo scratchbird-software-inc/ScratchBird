@@ -10,7 +10,12 @@ package com.scratchbird.jdbc.tools;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -149,7 +154,8 @@ public final class SBIsqlJdbc {
             "ResultSet",
             "DatabaseMetaData",
             "SQLException",
-            "SQLWarning")) {
+            "SQLWarning",
+            "SBWP_COPY")) {
             apiHits.put(key, 0);
         }
         List<Map<String, Object>> testcases = new ArrayList<>();
@@ -218,7 +224,35 @@ public final class SBIsqlJdbc {
                 String resultDigest = null;
                 boolean stopAfterStatement = false;
                 try {
-                    if ("server-parser".equals(args.required("--parser-mode"))) {
+                    String executableSql = executableSqlWithoutCopyMarkers(sql);
+                    byte[] copyPayload = copyPayloadForStatement(sql);
+                    if (isCopyStdinStatement(sql)) {
+                        if (copyPayload.length == 0) {
+                            throw new SQLException(
+                                "COPY FROM STDIN requires SB_COPY_INPUT rows in the script",
+                                "22023");
+                        }
+                        long rowsCopied = executeCopyIn(sbConnection, executableSql, copyPayload,
+                            Integer.parseInt(args.valueOrDefault("--statement-timeout-ms", "30000")));
+                        apiHits.merge("SBWP_COPY", 1, Integer::sum);
+                        List<Object> row = new ArrayList<>();
+                        row.add("copy_in");
+                        row.add(rowsCopied);
+                        List<List<Object>> rows = List.of(row);
+                        rowCount = (int) Math.min(Integer.MAX_VALUE, rowsCopied);
+                        resultDigest = sha256(toJson(rows));
+                        append(outputPath, toJson(mapOf(
+                            "statement_id", statementId,
+                            "rows", rows)) + "\n");
+                        writeJsonl(wire, mapOf(
+                            "event", "copy_in",
+                            "statement_id", statementId,
+                            "parser_mode", args.required("--parser-mode"),
+                            "payload_bytes", copyPayload.length,
+                            "rows_copied", rowsCopied,
+                            "engine_sql_text_execution", false,
+                            "mga_authority", "engine"));
+                    } else if ("server-parser".equals(args.required("--parser-mode"))) {
                         try (PreparedStatement statement = conn.prepareStatement(sql)) {
                             apiHits.merge("PreparedStatement", 1, Integer::sum);
                             boolean hasResult = statement.execute();
@@ -342,7 +376,7 @@ public final class SBIsqlJdbc {
                     "transaction_id_observed", null,
                     "mga_authority", "engine",
                     "native_api_surface", "jdbc_4_x",
-                    "code_example_section", "prepared_execute_fetch");
+                    "code_example_section", isCopyStdinStatement(sql) ? "copy_in" : "prepared_execute_fetch");
                 writeJsonl(events, event);
                 testcases.add(event);
                 digests.add(mapOf(
@@ -435,6 +469,199 @@ public final class SBIsqlJdbc {
         return failures.isEmpty() ? 0 : 1;
     }
 
+    private static String executableSqlWithoutCopyMarkers(String sql) {
+        List<String> lines = new ArrayList<>();
+        for (String raw : sql.split("\\R", -1)) {
+            String stripped = raw.stripLeading();
+            if (stripped.startsWith("-- SB_COPY_INPUT ")) {
+                continue;
+            }
+            lines.add(raw);
+        }
+        return String.join("\n", lines).trim();
+    }
+
+    private static byte[] copyPayloadForStatement(String sql) {
+        List<String> rows = new ArrayList<>();
+        for (String raw : sql.split("\\R", -1)) {
+            String stripped = raw.stripLeading();
+            if (stripped.startsWith("-- SB_COPY_INPUT ")) {
+                rows.add(stripped.substring("-- SB_COPY_INPUT ".length()));
+            }
+        }
+        String payload = String.join("\n", rows) + (rows.isEmpty() ? "" : "\n");
+        return payload.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static boolean isCopyStdinStatement(String sql) {
+        String executable = String.join(" ", nonCommentLines(sql)).trim().toLowerCase(Locale.ROOT);
+        return executable.startsWith("copy ") && executable.contains(" from stdin");
+    }
+
+    private static List<String> nonCommentLines(String sql) {
+        List<String> lines = new ArrayList<>();
+        for (String raw : sql.split("\\R", -1)) {
+            String stripped = raw.trim();
+            if (stripped.isEmpty() || stripped.startsWith("--")) {
+                continue;
+            }
+            lines.add(stripped);
+        }
+        return lines;
+    }
+
+    private static long executeCopyIn(SBConnection connection, String sql, byte[] payload, int timeoutMs)
+        throws SQLException {
+        try {
+            Object protocol = protocolHandler(connection);
+            Class<?> protocolClass = protocol.getClass();
+            Method sendSimpleQuery = accessibleMethod(protocolClass,
+                "sendSimpleQuery", String.class, int.class, int.class, int.class);
+            Method sendMessage = accessibleMethod(protocolClass,
+                "sendMessage", byte.class, byte[].class, byte.class, boolean.class);
+            Method readMessage = accessibleMethod(protocolClass, "readMessage");
+            Method handleAsyncMessage = accessibleMethod(protocolClass, "handleAsyncMessage", readMessage.getReturnType());
+            Method parseReady = accessibleMethod(protocolClass, "parseReady", byte[].class);
+            Method applyRuntimeReadyState = accessibleMethod(protocolClass,
+                "applyRuntimeReadyState", parseReady.getReturnType());
+            Method createSQLException = accessibleMethod(protocolClass,
+                "createSQLException", String.class, String.class);
+
+            synchronized (protocol) {
+                sendSimpleQuery.invoke(protocol, sql, 0, timeoutMs, 0);
+                while (true) {
+                    Object msg = readMessage.invoke(protocol);
+                    if (Boolean.TRUE.equals(handleAsyncMessage.invoke(protocol, msg))) {
+                        continue;
+                    }
+                    byte type = messageType(msg);
+                    if (type == 0x48) {
+                        throw protocolException(protocol, createSQLException, messagePayload(msg));
+                    }
+                    if (type == 0x51) {
+                        break;
+                    }
+                    if (type == 0x43) {
+                        Object ready = parseReady.invoke(protocol, messagePayload(msg));
+                        applyRuntimeReadyState.invoke(protocol, ready);
+                        throw new SQLException("expected COPY IN response", "08P01");
+                    }
+                }
+
+                for (int offset = 0; offset < payload.length; offset += 65_536) {
+                    int end = Math.min(payload.length, offset + 65_536);
+                    sendMessage.invoke(protocol, (byte) 0x0D, Arrays.copyOfRange(payload, offset, end), (byte) 0, false);
+                }
+                sendMessage.invoke(protocol, (byte) 0x0E, new byte[0], (byte) 0, false);
+
+                long rowsCopied = 0;
+                while (true) {
+                    Object msg = readMessage.invoke(protocol);
+                    if (Boolean.TRUE.equals(handleAsyncMessage.invoke(protocol, msg))) {
+                        continue;
+                    }
+                    byte type = messageType(msg);
+                    byte[] body = messagePayload(msg);
+                    if (type == 0x46) {
+                        rowsCopied = commandCompleteRows(body);
+                        continue;
+                    }
+                    if (type == 0x43) {
+                        Object ready = parseReady.invoke(protocol, body);
+                        applyRuntimeReadyState.invoke(protocol, ready);
+                        return rowsCopied;
+                    }
+                    if (type == 0x48) {
+                        throw protocolException(protocol, createSQLException, body);
+                    }
+                    if (type == 0x0F) {
+                        throw new SQLException("COPY failed on server side", "57014");
+                    }
+                }
+            }
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof SQLException sqlEx) {
+                throw sqlEx;
+            }
+            throw new SQLException(cause == null ? ex.getMessage() : cause.getMessage(), "HY000", cause);
+        } catch (ReflectiveOperationException ex) {
+            throw new SQLException("JDBC COPY protocol path unavailable: " + ex.getMessage(), "0A000", ex);
+        }
+    }
+
+    private static Object protocolHandler(SBConnection connection) throws ReflectiveOperationException {
+        Field field = SBConnection.class.getDeclaredField("protocol");
+        field.setAccessible(true);
+        Object protocol = field.get(connection);
+        if (protocol == null) {
+            throw new IllegalStateException("Protocol handler is not available");
+        }
+        return protocol;
+    }
+
+    private static Method accessibleMethod(Class<?> type, String name, Class<?>... parameterTypes)
+        throws NoSuchMethodException {
+        Method method = type.getDeclaredMethod(name, parameterTypes);
+        method.setAccessible(true);
+        return method;
+    }
+
+    private static byte messageType(Object msg) throws ReflectiveOperationException {
+        Field field = msg.getClass().getDeclaredField("type");
+        field.setAccessible(true);
+        return field.getByte(msg);
+    }
+
+    private static byte[] messagePayload(Object msg) throws ReflectiveOperationException {
+        Field field = msg.getClass().getDeclaredField("payload");
+        field.setAccessible(true);
+        return (byte[]) field.get(msg);
+    }
+
+    private static SQLException protocolException(Object protocol, Method createSQLException, byte[] payload)
+        throws ReflectiveOperationException {
+        String message = "query failed";
+        String sqlState = "HY000";
+        int pos = 0;
+        while (pos < payload.length) {
+            byte field = payload[pos++];
+            if (field == 0) {
+                break;
+            }
+            int start = pos;
+            while (pos < payload.length && payload[pos] != 0) {
+                pos++;
+            }
+            if (pos >= payload.length) {
+                break;
+            }
+            String value = new String(payload, start, pos - start, StandardCharsets.UTF_8);
+            pos++;
+            if (field == 'C') {
+                sqlState = value;
+            } else if (field == 'M') {
+                message = value;
+            }
+        }
+        try {
+            return (SQLException) createSQLException.invoke(protocol, message, sqlState);
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof SQLException sqlEx) {
+                return sqlEx;
+            }
+            return new SQLException(message, sqlState, cause);
+        }
+    }
+
+    private static long commandCompleteRows(byte[] payload) {
+        if (payload.length < 20) {
+            return 0;
+        }
+        return ByteBuffer.wrap(payload, 4, 8).order(ByteOrder.LITTLE_ENDIAN).getLong();
+    }
+
     private static Connection connect(Args args) throws SQLException, ClassNotFoundException {
         Class.forName("com.scratchbird.jdbc.SBDriver");
         String url = "jdbc:scratchbird://" + args.required("--host") + ":"
@@ -524,11 +751,14 @@ public final class SBIsqlJdbc {
     }
 
     private static String classifyStatement(String sql) {
-        String trimmed = sql.trim();
+        String trimmed = String.join(" ", nonCommentLines(sql)).trim();
         if (trimmed.isEmpty()) {
             return "query";
         }
         String first = trimmed.split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+        if ("copy".equals(first)) {
+            return "copy";
+        }
         if (List.of("create", "alter", "drop").contains(first)) {
             return "ddl";
         }

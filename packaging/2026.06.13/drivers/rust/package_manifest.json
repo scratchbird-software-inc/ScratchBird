@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_rust",
-  "binary_sha256": "cd8ace552f97890404539431d1765e66252dc15c17e59e7a18be81e2cfe0d7c3",
+  "binary_sha256": "6655113129160705c7d4f484a7add2fdf4ec11caedf84eaf929223b3db48f88e",
   "component_id": "driver:rust",
   "driver": "rust",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/rust",
   "support_materials": [
     "support/README.md",

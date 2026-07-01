@@ -359,6 +359,17 @@ function makeParameterStatusPayload(name, value) {
   return payload;
 }
 
+function makeErrorPayload(fields) {
+  const parts = [];
+  for (const [tag, value] of Object.entries(fields)) {
+    parts.push(Buffer.from(tag, "ascii"));
+    parts.push(Buffer.from(String(value), "utf8"));
+    parts.push(Buffer.from([0]));
+  }
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+
 function createQueuedProtocol(queueEntries = []) {
   const queue = [...queueEntries];
   const sent = [];
@@ -814,6 +825,22 @@ test("TXN_STATUS updates can mark and clear active native boundaries", () => {
   assert.equal(idleHandled, true);
   assert.equal(client.transactionActive, false);
   assert.equal(client.protocol.getTxnId(), 0n);
+});
+
+test("drainUntilReady consumes replacement READY after ERROR before throwing", async () => {
+  const client = new Client({ user: "me", database: "db" });
+  const protocol = createQueuedProtocol([
+    {
+      header: { type: MessageType.ERROR },
+      payload: makeErrorPayload({ C: "HY000", M: "statement refused" }),
+    },
+    makeReadyMessage(123n),
+  ]);
+  client.protocol = protocol;
+
+  await assert.rejects(() => client.drainUntilReady(), /statement refused/);
+  assert.equal(protocol.getTxnId(), 123n);
+  assert.equal(client.transactionActive, true);
 });
 
 test("autocommit toggle drives implicit begin and commit", async () => {

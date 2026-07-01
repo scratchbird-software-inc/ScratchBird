@@ -30,6 +30,6 @@
         "completed": 21
       }
     },
-    "wiki_root": "/home/dcalford/CliWork/ScratchBird.wiki"
+    "wiki_root": "${SCRATCHBIRD_REPO}.wiki"
   }
 }

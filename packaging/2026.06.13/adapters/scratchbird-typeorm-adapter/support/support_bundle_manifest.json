@@ -1,0 +1,10 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-typeorm-adapter",
+  "hash": "bf790072676099012e38d038d401e840f9c004f7ed2e62bca031f5a17b33c2a4",
+  "name": "scratchbird-typeorm-adapter",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1"
+}

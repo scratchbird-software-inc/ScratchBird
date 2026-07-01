@@ -1702,6 +1702,7 @@ export class Client {
       }
       switch (msg.header.type) {
         case MessageType.ERROR:
+          await this.drainReadyAfterError();
           throw this.raiseProtocolError(msg.payload);
         case MessageType.ROW_DESCRIPTION:
           columns = parseRowDescription(msg.payload);
@@ -2009,6 +2010,7 @@ export class Client {
           }
           switch (msg.header.type) {
             case MessageType.ERROR:
+              await self.drainReadyAfterError();
               throw self.raiseProtocolError(msg.payload);
             case MessageType.ROW_DESCRIPTION:
               columns = parseRowDescription(msg.payload);
@@ -2117,6 +2119,7 @@ export class Client {
       }
       switch (msg.header.type) {
         case MessageType.ERROR:
+          await this.drainReadyAfterError();
           throw this.raiseProtocolError(msg.payload);
         case MessageType.PARAMETER_DESCRIPTION:
           paramCount = parseParameterDescription(msg.payload).length;
@@ -2143,8 +2146,11 @@ export class Client {
         continue;
       }
       switch (msg.header.type) {
-        case MessageType.ERROR:
-          throw this.raiseProtocolError(msg.payload);
+        case MessageType.ERROR: {
+          const error = this.raiseProtocolError(msg.payload);
+          await this.drainReadyAfterError();
+          throw error;
+        }
         case MessageType.READY: {
           const { status, txnId } = parseReady(msg.payload);
           this.applyRuntimeReadyState(status, txnId);
@@ -2152,6 +2158,23 @@ export class Client {
         }
         default:
           continue;
+      }
+    }
+  }
+
+  private async drainReadyAfterError(): Promise<void> {
+    while (true) {
+      const msg = await this.protocol.recv();
+      if (this.handleAsyncMessage(msg)) {
+        continue;
+      }
+      if (msg.header.type === MessageType.READY) {
+        const { status, txnId } = parseReady(msg.payload);
+        this.applyRuntimeReadyState(status, txnId);
+        return;
+      }
+      if (msg.header.type === MessageType.ERROR) {
+        continue;
       }
     }
   }
@@ -2377,7 +2400,8 @@ function parseBigInt(value: string): bigint | null {
 
 function buildRow(columns: Array<{ name: string; typeOid: number; format: number }>, values: { data: Buffer | null }[]): Record<string, any> {
   const row: Record<string, any> = {};
-  for (let i = 0; i < values.length; i++) {
+  const limit = Math.min(values.length, columns.length);
+  for (let i = 0; i < limit; i++) {
     const column = columns[i];
     const data = values[i];
     const decoded = decodeValue(column.typeOid, data.data, column.format);

@@ -70,7 +70,9 @@ func (r *Rows) primeColumns() error {
 		}
 		switch msg.header.typ {
 		case msgError:
-			return buildProtocolError(msg.body)
+			queryErr := buildProtocolError(msg.body)
+			_, _, _, _ = r.conn.drainUntilReady(r.ctx)
+			return queryErr
 		case msgRowDescription:
 			cols, err := parseRowDescription(msg.body)
 			if err != nil {
@@ -190,7 +192,9 @@ func (r *Rows) nextRow() ([]driver.Value, error) {
 		}
 		switch msg.header.typ {
 		case msgError:
-			return nil, buildProtocolError(msg.body)
+			queryErr := buildProtocolError(msg.body)
+			_, _, _, _ = r.conn.drainUntilReady(r.ctx)
+			return nil, queryErr
 		case msgRowDescription:
 			cols, err := parseRowDescription(msg.body)
 			if err != nil {

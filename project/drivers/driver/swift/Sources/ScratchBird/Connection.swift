@@ -251,6 +251,78 @@ public final class ScratchBirdConnection {
         }.value
     }
 
+    public func copyIn(_ sql: String, data: Data) async throws -> UInt64 {
+        return try await Task.detached { () -> UInt64 in
+            return try await self.withResilience(operation: "copy_in", sql: sql) {
+                if sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw ScratchBirdOperationalException(
+                        message: "COPY SQL text must not be empty",
+                        sqlState: "42601"
+                    )
+                }
+                if data.isEmpty {
+                    throw ScratchBirdOperationalException(
+                        message: "COPY input data must not be empty",
+                        sqlState: "HY000"
+                    )
+                }
+                try self.sendSimpleQuery(sql, maxRows: 0, timeoutMs: 0)
+                var copyStarted = false
+                var rowsCopied: UInt64 = 0
+                while true {
+                    let msg = try self.recvMessage()
+                    if self.handleAsyncMessage(msg) {
+                        continue
+                    }
+                    switch msg.header.type {
+                    case .copyInResponse:
+                        copyStarted = true
+                        var offset = 0
+                        while offset < data.count {
+                            let end = min(offset + 65536, data.count)
+                            try self.sendMessage(type: .copyData, payload: data.subdata(in: offset..<end))
+                            offset = end
+                        }
+                        try self.sendMessage(type: .copyDone, payload: Data())
+                    case .commandComplete:
+                        if msg.payload.count >= 12 {
+                            rowsCopied = self.readUInt64LE(msg.payload, 4)
+                        }
+                    case .ready:
+                        let ready = self.parseReadyState(msg.payload, fallback: msg.header.txnId)
+                        self.applyRuntimeReadyState(status: ready.status, txnId: ready.txnId)
+                        self.portalResumePending = false
+                        self.lastQuerySequence = 0
+                        if !copyStarted {
+                            throw ScratchBirdOperationalException(
+                                message: "expected COPY IN response",
+                                sqlState: "HY000"
+                            )
+                        }
+                        return rowsCopied
+                    case .error:
+                        let error = buildScratchBirdError(
+                            from: msg.payload,
+                            fallbackMessage: "COPY failed",
+                            defaultSqlState: "42000"
+                        )
+                        self.portalResumePending = false
+                        try self.drainReadyAfterError()
+                        self.lastQuerySequence = 0
+                        throw error
+                    case .copyFail:
+                        throw ScratchBirdOperationalException(
+                            message: "COPY failed on server side",
+                            sqlState: "HY000"
+                        )
+                    default:
+                        continue
+                    }
+                }
+            }
+        }.value
+    }
+
     public func executeBatch(_ sql: String, _ paramsBatch: [[Any?]]) async throws -> [ScratchBirdResult] {
         var results: [ScratchBirdResult] = []
         results.reserveCapacity(paramsBatch.count)

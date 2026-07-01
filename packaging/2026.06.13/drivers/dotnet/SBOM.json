@@ -22,9 +22,9 @@
       "sha256": "c7b40a5aaf7ad8e3b2dbe8ab2baafbb4695c5de10e11d276c47da90657e22e73"
     },
     {
-      "bytes": 3144,
+      "bytes": 6334,
       "path": "examples/tests/ScratchBird.Data.Tests/ChunkerConformanceTests.cs",
-      "sha256": "c50f5175935788f22b2b6933ea1174c25f3e883ca41f58afdadab5aa47f6d5ac"
+      "sha256": "1044e7a13c1fe316ef43b781ec1702f8312005d7e898f86d5232794e1aa8d3eb"
     },
     {
       "bytes": 1797,
@@ -137,9 +137,9 @@
       "sha256": "1350075d0aa7e267bafa37675ed9a7bd363b5c2445c1db5edd1a71536f4bd245"
     },
     {
-      "bytes": 29562,
+      "bytes": 29968,
       "path": "examples/tests/ScratchBird.Data.Tests/TransactionExecutionParityTests.cs",
-      "sha256": "081fcf264742beb05bd32abebe61fda7fc08b2f7f72a3751c17fc5e0da099c0a"
+      "sha256": "2b6639b49b43d8f1b5f7e95191036220c0bf528888ac34058ba58c3b6428a8f4"
     },
     {
       "bytes": 9712,
@@ -147,9 +147,9 @@
       "sha256": "4a8da1e042ba8ae053e4c945e1db1036dd6fc732882f915fdb56a505e747375c"
     },
     {
-      "bytes": 36808,
+      "bytes": 44392,
       "path": "examples/tools/SBIsqlDotNet/Program.cs",
-      "sha256": "aa7b75a0b92145aba6078d5b300fff19c9c5f410b667b050d38bf9c98ce5f007"
+      "sha256": "2e3349d7ddf7f472920c8cab2766bc82c69f90406bf44f53198ec3f0aedebdf0"
     },
     {
       "bytes": 390,
@@ -174,7 +174,7 @@
     {
       "bytes": 955,
       "path": "package_manifest.json",
-      "sha256": "6de1f8132319ea22a54280b239302759d3149805e24a40502854fd8a573ebfcf"
+      "sha256": "1c3e0dd42901bfe16ab1e2e2f52a4e366864bf228d54435c99da53236a75db7c"
     },
     {
       "bytes": 8384,
@@ -182,14 +182,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -197,9 +197,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 434,
@@ -458,6 +458,6 @@
     }
   ],
   "driver": "dotnet",
-  "generated_at_utc": "2026-06-29T20:56:27+00:00",
+  "generated_at_utc": "2026-07-01T10:26:04+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

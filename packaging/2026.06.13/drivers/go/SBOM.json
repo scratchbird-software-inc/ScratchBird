@@ -2,9 +2,9 @@
   "component_id": "driver:go",
   "components": [
     {
-      "bytes": 6959813,
+      "bytes": 6977451,
       "path": "bin/sb_isql_go",
-      "sha256": "78734fb96de86e1b871f6549d886fb347860bae000ad2a48ba10ef28eeff3924"
+      "sha256": "26bb61f79a26b6448f4fec47e5df2f2d1523743e98cd6b60db6cafbd107af26b"
     },
     {
       "bytes": 291,
@@ -12,9 +12,9 @@
       "sha256": "6d4eea00c8405684f365e600875bdcfdbda0dfa28868565d5f45fd4b6053bc70"
     },
     {
-      "bytes": 31865,
+      "bytes": 36615,
       "path": "examples/cmd/sb-isql-go/main.go",
-      "sha256": "dfd162ceafd87d758122ee2b5aa6e4b7be9affd860191727561067b971de4193"
+      "sha256": "ec08cf2ddf76bddc21bc67a92a10a95fc05c2899134b3d464763a2e97f1d9541"
     },
     {
       "bytes": 16726,
@@ -34,7 +34,7 @@
     {
       "bytes": 939,
       "path": "package_manifest.json",
-      "sha256": "981b9ed685d82b5922f8ae2d64d23eacdb47ffb4a9cd4a95428c21d90ba184fc"
+      "sha256": "7531c32dac18be998cca214548e1dbfe37fe38ab27648845987d868bb31d71d7"
     },
     {
       "bytes": 8384,
@@ -42,14 +42,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -57,9 +57,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 426,
@@ -314,10 +314,10 @@
     {
       "bytes": 471,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "1da95ad16a22922cafdad21a502437fd65d5ce2f32d8cc2c9dd05eae9d4d228a"
+      "sha256": "4440e8867ecf142d0b878747b49fe31944b414a5fbde9d9e11a8c9e0742fc7d9"
     }
   ],
   "driver": "go",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:04+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

@@ -375,6 +375,74 @@ internal sealed class ProtocolClient
         }
     }
 
+    public long ExecuteCopyIn(string sql, byte[] payload, int timeoutMs)
+    {
+        ArgumentNullException.ThrowIfNull(sql);
+        ArgumentNullException.ThrowIfNull(payload);
+        EnsureConnected();
+
+        SendSimpleQuery(sql, timeoutMs, 0);
+        while (true)
+        {
+            var msg = Receive();
+            if (HandleAsyncMessage(msg))
+            {
+                continue;
+            }
+
+            switch ((MessageType)msg.Header.Type)
+            {
+                case MessageType.ERROR:
+                    throw BuildQueryException(msg.Payload);
+                case MessageType.COPY_IN_RESPONSE:
+                    goto sendPayload;
+                case MessageType.READY:
+                {
+                    var ready = ProtocolCodec.ParseReady(msg.Payload);
+                    ApplyRuntimeReadyState(ready.Status, ready.TxnId);
+                    throw new InvalidOperationException("expected COPY IN response");
+                }
+            }
+        }
+
+sendPayload:
+        for (var offset = 0; offset < payload.Length; offset += 65536)
+        {
+            var length = Math.Min(65536, payload.Length - offset);
+            var chunk = new byte[length];
+            Buffer.BlockCopy(payload, offset, chunk, 0, length);
+            SendMessage(MessageType.COPY_DATA, chunk, 0, false);
+        }
+        SendMessage(MessageType.COPY_DONE, Array.Empty<byte>(), 0, false);
+
+        ulong rowsCopied = 0;
+        while (true)
+        {
+            var msg = Receive();
+            if (HandleAsyncMessage(msg))
+            {
+                continue;
+            }
+
+            switch ((MessageType)msg.Header.Type)
+            {
+                case MessageType.COMMAND_COMPLETE:
+                    rowsCopied = ProtocolCodec.ParseCommandComplete(msg.Payload).Rows;
+                    break;
+                case MessageType.READY:
+                {
+                    var ready = ProtocolCodec.ParseReady(msg.Payload);
+                    ApplyRuntimeReadyState(ready.Status, ready.TxnId);
+                    return SaturatingUlongToLong(rowsCopied);
+                }
+                case MessageType.ERROR:
+                    throw BuildQueryException(msg.Payload);
+                case MessageType.COPY_FAIL:
+                    throw new InvalidOperationException("COPY failed on server side");
+            }
+        }
+    }
+
     internal int PreparedStatementCount => _preparedStatements.Count;
 
     internal void EnsurePreparedStatement(string sql, IReadOnlyList<ScratchBirdParameter> parameters)
@@ -912,17 +980,7 @@ internal sealed class ProtocolClient
 
     private ScratchBirdAuthProbeResult ProbeDirectAuthSurface(ScratchBirdConfig config)
     {
-        var features = 0UL;
-        if (string.Equals(config.Compression, "zstd", StringComparison.OrdinalIgnoreCase))
-        {
-            features |= ProtocolConstants.FeatureCompression;
-        }
-        if (config.BinaryTransfer)
-        {
-            features |= ProtocolConstants.FeatureStreaming;
-        }
-
-        var startup = ProtocolCodec.BuildStartupPayload(features, BuildStartupParameters(config));
+        var startup = ProtocolCodec.BuildStartupPayload(BuildStartupFeatures(config), BuildStartupParameters(config));
         SendMessage(MessageType.STARTUP, startup, 0, true);
 
         while (true)
@@ -993,17 +1051,7 @@ internal sealed class ProtocolClient
 
     private void Handshake(ScratchBirdConfig config)
     {
-        var features = 0UL;
-        if (string.Equals(config.Compression, "zstd", StringComparison.OrdinalIgnoreCase))
-        {
-            features |= ProtocolConstants.FeatureCompression;
-        }
-        if (config.BinaryTransfer)
-        {
-            features |= ProtocolConstants.FeatureStreaming;
-        }
-
-        var startup = ProtocolCodec.BuildStartupPayload(features, BuildStartupParameters(config));
+        var startup = ProtocolCodec.BuildStartupPayload(BuildStartupFeatures(config), BuildStartupParameters(config));
         SendMessage(MessageType.STARTUP, startup, 0, true);
 
         ScramClient? scram = null;
@@ -1127,6 +1175,23 @@ internal sealed class ProtocolClient
                     continue;
             }
         }
+    }
+
+    private static ulong BuildStartupFeatures(ScratchBirdConfig config)
+    {
+        var features = ProtocolConstants.FeatureSblr |
+                       ProtocolConstants.FeatureNotifications |
+                       ProtocolConstants.FeatureSavepoints |
+                       ProtocolConstants.FeatureQueryPlan;
+        if (string.Equals(config.Compression, "zstd", StringComparison.OrdinalIgnoreCase))
+        {
+            features |= ProtocolConstants.FeatureCompression;
+        }
+        if (config.BinaryTransfer)
+        {
+            features |= ProtocolConstants.FeatureStreaming;
+        }
+        return features;
     }
 
     private void SendSimpleQuery(string sql, int timeoutMs, int maxRows)

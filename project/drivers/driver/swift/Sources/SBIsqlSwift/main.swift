@@ -107,7 +107,8 @@ struct SBIsqlSwift {
             "begin": 0,
             "commit": 0,
             "rollback": 0,
-            "close": 0
+            "close": 0,
+            "copy_in": 0
         ]
         var testcases: [[String: Any?]] = []
         var failures: [[String: Any?]] = []
@@ -180,6 +181,23 @@ struct SBIsqlSwift {
                         try await runTransaction(connection!, sql, &api)
                         rowCount = 0
                         resultDigest = sha256Text("transaction")
+                    } else if group == "copy" && isCopyStdinStatement(sql) {
+                        let payload = copyPayloadForStatement(sql)
+                        if payload.isEmpty {
+                            throw RuntimeError("COPY FROM STDIN requires SB_COPY_INPUT rows in the script")
+                        }
+                        let rowsCopied = try await connection!.copyIn(
+                            executableSqlWithoutCopyMarkers(sql),
+                            data: Data(payload.utf8)
+                        )
+                        api["copy_in", default: 0] += 1
+                        rowCount = Int(rowsCopied)
+                        let rows = [["copy_in", String(rowsCopied)]]
+                        resultDigest = sha256Text(String(describing: rows))
+                        try appendText(
+                            try required(args, "--output"),
+                            "\(jsonLine(["statement_id": statementId, "rows": String(describing: rows)]))\n"
+                        )
                     } else {
                         let result = try await connection!.query(sql)
                         api["query", default: 0] += 1
@@ -390,6 +408,9 @@ func loadExpectedRefusals(_ path: String) throws -> Set<String> {
         if let expected = object["expected_refusals"] as? [Any] {
             for item in expected { ids.insert(String(describing: item)) }
         }
+        if let diagnostics = object["expected_diagnostics"] as? [String: Any] {
+            for key in diagnostics.keys { ids.insert(key) }
+        }
         return ids
     }
     throw RuntimeError("expected refusals must be a JSON object or array")
@@ -518,13 +539,39 @@ func splitStatements(_ script: String) -> [String] {
 }
 
 func classify(_ sql: String) -> String {
-    let trimmed = sql.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let trimmed = executableSqlWithoutCopyMarkers(sql).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let first = trimmed.split(separator: " ").first.map(String.init) ?? ""
+    if first == "copy" { return "copy" }
     if ["create", "alter", "drop"].contains(first) { return "ddl" }
     if ["insert", "update", "delete", "merge", "upsert"].contains(first) { return "dml" }
     if ["commit", "rollback", "savepoint", "begin", "start"].contains(first) { return "transaction" }
     if ["grant", "revoke"].contains(first) { return "security_refusal" }
     return trimmed.contains("sys.") ? "metadata" : "query"
+}
+
+func executableSqlWithoutCopyMarkers(_ sql: String) -> String {
+    sql.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("-- SB_COPY_INPUT ") }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func copyPayloadForStatement(_ sql: String) -> String {
+    let rows = sql.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).compactMap { line -> String? in
+        let stripped = String(line).trimmingCharacters(in: .whitespaces)
+        guard stripped.hasPrefix("-- SB_COPY_INPUT ") else { return nil }
+        return String(stripped.dropFirst("-- SB_COPY_INPUT ".count))
+    }
+    return rows.isEmpty ? "" : rows.joined(separator: "\n") + "\n"
+}
+
+func isCopyStdinStatement(_ sql: String) -> Bool {
+    let executable = executableSqlWithoutCopyMarkers(sql)
+        .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        .filter { !$0.isEmpty && !$0.hasPrefix("--") }
+        .joined(separator: " ")
+    return executable.hasPrefix("copy ") && executable.contains(" from stdin")
 }
 
 func readInput(_ path: String) throws -> String {

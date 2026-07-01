@@ -4747,6 +4747,7 @@ std::optional<bool> TryExecuteSimpleInsertRowsetFastPath(SbsqlTestWireSession* s
                                  result.accepted ? "accepted" : "rejected");
   if (!result.accepted || result.messages.has_errors()) {
     if (command_accepted != nullptr) *command_accepted = false;
+    state->simple_insert_rowset_cache.erase(presented_shape_key);
     const std::string diagnostic_code =
         FirstDiagnosticCode(result.messages, "SBSQL.INSERT_ROWSET_FAST_PATH.REJECTED");
     const std::string diagnostic_detail = DiagnosticFieldValue(result.messages, "detail");

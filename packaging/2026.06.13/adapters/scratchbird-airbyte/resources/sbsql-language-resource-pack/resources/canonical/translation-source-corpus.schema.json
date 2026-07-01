@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":true,"required":["record_id","source_family","source_id","source_text"],"title":"SBsql translation source corpus row","type":"object"}

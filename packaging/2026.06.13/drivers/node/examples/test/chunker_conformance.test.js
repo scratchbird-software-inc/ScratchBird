@@ -18,10 +18,22 @@ const path = require("node:path");
 
 const { splitTopLevelStatements } = require("../dist/sql.js");
 
-const CASES_PATH = path.resolve(
-  __dirname,
-  "../../../../tests/conformance/drivers/chunker_conformance/cases.json",
-);
+function findConformanceFixture() {
+  const candidates = [
+    path.resolve(__dirname, "../../../../tests/conformance/drivers/chunker_conformance/cases.json"),
+    path.resolve(__dirname, "../../../../../project/tests/conformance/drivers/chunker_conformance/cases.json"),
+    path.resolve(__dirname, "../../../../../../project/tests/conformance/drivers/chunker_conformance/cases.json"),
+    path.resolve(process.cwd(), "project/tests/conformance/drivers/chunker_conformance/cases.json"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`chunker conformance fixture not found: ${candidates.join(", ")}`);
+}
+
+const CASES_PATH = findConformanceFixture();
 
 const fixture = JSON.parse(fs.readFileSync(CASES_PATH, "utf8"));
 

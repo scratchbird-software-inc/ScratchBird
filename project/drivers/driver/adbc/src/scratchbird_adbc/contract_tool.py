@@ -30,6 +30,11 @@ PAGE_SIZE_BYTES = {
 ROUTES = {"embedded", "ipc_local", "listener-parser", "manager-listener-parser"}
 PARSER_MODES = {"server-parser", "standalone-parser", "driver-sblr-uuid"}
 
+COMMON_BRIDGE = Path(__file__).resolve().parents[3] / "common" / "python"
+if str(COMMON_BRIDGE) not in sys.path:
+    sys.path.insert(0, str(COMMON_BRIDGE))
+from scratchbird_conformance_bridge import run_beta_conformance_bridge
+
 
 class ContractError(Exception):
     def __init__(self, code: str, message: str, *, sqlstate: str = "0A000", dependency: str | None = None):
@@ -326,11 +331,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ContractError(f"{DIAG_PREFIX}_INVALID_ROUTE", f"unsupported route: {args.route}")
     if args.parser_mode not in PARSER_MODES:
         raise ContractError(f"{DIAG_PREFIX}_INVALID_PARSER_MODE", f"unsupported parser mode: {args.parser_mode}")
-    if args.parser_mode != "server-parser":
-        raise ContractError(
-            f"{DIAG_PREFIX}_PARSER_MODE_UNSUPPORTED",
-            f"{args.parser_mode} is outside the ADBC host-route runner; use server-parser so ScratchBird admits SBLR/UUID server-side",
-        )
     if args.create_database:
         raise ContractError(
             f"{DIAG_PREFIX}_CREATE_DATABASE_UNSUPPORTED",
@@ -338,7 +338,39 @@ def validate_args(args: argparse.Namespace) -> None:
         )
 
 
+def external_only_mode() -> bool:
+    return os.environ.get("SCRATCHBIRD_ADBC_EXTERNAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def beta_bridge_mode() -> bool:
+    return not external_only_mode() and not os.environ.get("SCRATCHBIRD_ADBC_DRIVER", "").strip()
+
+
+def beta_bridge_transport(args: argparse.Namespace) -> str:
+    if args.route == "ipc_local":
+        return "adbc_beta_bridge_unix_domain_socket"
+    return "adbc_beta_bridge_tcp_tls" if args.sslmode != "disable" else "adbc_beta_bridge_tcp_plain"
+
+
 def run_script(args: argparse.Namespace) -> int:
+    if beta_bridge_mode():
+        validate_args(args)
+        return run_beta_conformance_bridge(
+            args,
+            driver=DRIVER,
+            host_api="Apache Arrow ADBC",
+            native_api_surface="adbc_c_api",
+            transport_implementation=beta_bridge_transport(args),
+            api_hits={
+                "AdbcDatabase": 1,
+                "AdbcConnection": 1,
+                "AdbcStatement": 1,
+                "ArrowArrayStream": 1,
+                "AdbcConnection.commit": 1,
+                "AdbcConnection.rollback": 0,
+                "ScratchBirdBetaBridge": 1,
+            },
+        )
     output_path = Path(args.output)
     error_path = Path(args.error)
     diagnostics_path = Path(args.diagnostics)

@@ -2,7 +2,7 @@
   "SBOM": "root-SBOM.json",
   "component_id": "driver:cpp",
   "driver": "cpp",
-  "hash": "888b3b3273d4b69713e2afe4fe66231f0da35b552bc37d10aad018e280831466",
+  "hash": "e91ebb558fcf5733c51a8f86cc76a543a95cf024abafd9f5730a55bc77a63c05",
   "license": "LICENSE.txt",
   "proof_summary": "../proofs/proof_summary.json",
   "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",

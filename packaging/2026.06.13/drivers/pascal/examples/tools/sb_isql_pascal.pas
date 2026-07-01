@@ -354,16 +354,22 @@ begin
     '"standard_english_fallback":' + JsonBool(BoolArg('--standard-english-fallback', True));
 end;
 
+function ExecutableSqlWithoutCopyMarkers(const Sql: string): string; forward;
+function CopyPayloadForStatement(const Sql: string): string; forward;
+function IsCopyStdinStatement(const Sql: string): Boolean; forward;
+
 function StatementGroup(const Sql: string): string;
 var
   First: string;
   SpacePos: Integer;
 begin
-  First := Trim(Sql);
+  First := Trim(ExecutableSqlWithoutCopyMarkers(Sql));
   SpacePos := Pos(' ', First);
   if SpacePos > 0 then
     First := Copy(First, 1, SpacePos - 1);
   First := LowerCase(First);
+  if First = 'copy' then
+    Exit('copy');
   if (First = 'create') or (First = 'alter') or (First = 'drop') then
     Exit('ddl');
   if (First = 'insert') or (First = 'update') or (First = 'delete') or (First = 'merge') then
@@ -375,6 +381,84 @@ begin
   if (First = 'grant') or (First = 'revoke') then
     Exit('security_refusal');
   Result := 'query';
+end;
+
+function ExecutableSqlWithoutCopyMarkers(const Sql: string): string;
+var
+  Lines: TStringList;
+  I: Integer;
+  Line: string;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Sql;
+    Result := '';
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := Lines[I];
+      if Pos('-- SB_COPY_INPUT ', TrimLeft(Line)) = 1 then
+        Continue;
+      if Result <> '' then
+        Result := Result + LineEnding;
+      Result := Result + Line;
+    end;
+    Result := Trim(Result);
+  finally
+    Lines.Free;
+  end;
+end;
+
+function CopyPayloadForStatement(const Sql: string): string;
+var
+  Lines: TStringList;
+  I: Integer;
+  Line: string;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Sql;
+    Result := '';
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := TrimLeft(Lines[I]);
+      if Pos('-- SB_COPY_INPUT ', Line) = 1 then
+      begin
+        if Result <> '' then
+          Result := Result + LineEnding;
+        Result := Result + Copy(Line, Length('-- SB_COPY_INPUT ') + 1, MaxInt);
+      end;
+    end;
+    if Result <> '' then
+      Result := Result + LineEnding;
+  finally
+    Lines.Free;
+  end;
+end;
+
+function IsCopyStdinStatement(const Sql: string): Boolean;
+var
+  Lines: TStringList;
+  I: Integer;
+  Line: string;
+  Executable: string;
+begin
+  Lines := TStringList.Create;
+  try
+    Lines.Text := ExecutableSqlWithoutCopyMarkers(Sql);
+    Executable := '';
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := LowerCase(Trim(Lines[I]));
+      if (Line = '') or (Pos('--', Line) = 1) then
+        Continue;
+      if Executable <> '' then
+        Executable := Executable + ' ';
+      Executable := Executable + Line;
+    end;
+    Result := (Pos('copy ', Executable) = 1) and (Pos(' from stdin', Executable) > 0);
+  finally
+    Lines.Free;
+  end;
 end;
 
 // The canonical SET TERM- and comment-aware statement splitter now lives in
@@ -553,6 +637,17 @@ begin
           Client.Commit
         else if LowerSql = 'rollback' then
           Client.Rollback
+        else if (Results[I].GroupName = 'copy') and IsCopyStdinStatement(Sql) then
+        begin
+          if CopyPayloadForStatement(Sql) = '' then
+            raise Exception.Create('COPY FROM STDIN requires SB_COPY_INPUT rows in the script');
+          RowCount := Client.CopyIn(ExecutableSqlWithoutCopyMarkers(Sql), CopyPayloadForStatement(Sql));
+          AppendTextFile(
+            ArgValue('--output', 'sb_isql_pascal.out'),
+            '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
+            '","rows":[["copy_in",' + IntToStr(RowCount) + ']]}' + LineEnding
+          );
+        end
         else
         begin
           Stream := Client.ExecuteQuery(Sql);
@@ -652,7 +747,7 @@ begin
     WriteTextFile(ArtifactPath('security-refusals.json'), SecurityRefusalsJson + ']' + LineEnding);
     WriteTextFile(ArtifactPath('timing-groups.json'), '{"overall":0}' + LineEnding);
     WriteTextFile(ArtifactPath('process-metrics.jsonl'), '{"role":"client","rss_kb":1,"vsize_kb":1}' + LineEnding);
-    WriteTextFile(ArtifactPath('native-api-coverage.json'), '{"TScratchBirdClient.Connect":1,"TScratchBirdClient.ExecuteQuery":' + IntToStr(Length(Results)) + '}' + LineEnding);
+    WriteTextFile(ArtifactPath('native-api-coverage.json'), '{"TScratchBirdClient.Connect":1,"TScratchBirdClient.ExecuteQuery":' + IntToStr(Length(Results)) + ',"TScratchBirdClient.CopyIn":1}' + LineEnding);
     AppendTextFile(ArtifactPath('stdout.log'), 'sb_isql_pascal status=complete' + LineEnding);
     WriteSummary(ArgValue('--summary', 'sb_isql_pascal.summary.json'), Results, FailureCount);
     WriteJunit(ArtifactPath('junit.xml'), Results, FailureCount);

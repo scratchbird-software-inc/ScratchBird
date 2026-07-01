@@ -1,0 +1,31 @@
+{
+  "binaries": [],
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-superset-driver",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "name": "scratchbird-superset-driver",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/driver_complete_coverage_checklist.json",
+    "proofs/driver_complete_coverage_tests.json",
+    "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
+    "proofs/driver_complete_delta_implementation.json",
+    "proofs/driver_wiki_documentation.json"
+  ],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.component_release_package_manifest.v1",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
+  "source_path": "project/drivers/adaptor/scratchbird-superset-driver",
+  "source_sha256": "62e5aea673a8111de588a4df23a949056eb1369858ed684a0f07c57e83dbc963",
+  "support_materials": [
+    "support/source",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0022-7000-8000-000000000022"
+}

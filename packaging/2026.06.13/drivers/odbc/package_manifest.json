@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_odbc",
-  "binary_sha256": "d06b1fb3dc302e932e12031badb1c6432f76c4bb71cdfac5a3d71fc93f94894b",
+  "binary_sha256": "3d8a80ee9f682cff5766fb65f8a64a010f06d781be254c566c2799047f012c9d",
   "component_id": "driver:odbc",
   "driver": "odbc",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/odbc",
   "support_materials": [
     "support/README.md",

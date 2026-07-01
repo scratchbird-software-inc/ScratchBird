@@ -1,0 +1,10 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-dbt-adapter",
+  "hash": "401c4900c2f77bbed268416b081f448c520578231d6212565c1f52243c772be8",
+  "name": "scratchbird-dbt-adapter",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1"
+}

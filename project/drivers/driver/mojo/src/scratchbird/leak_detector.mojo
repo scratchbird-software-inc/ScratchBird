@@ -46,7 +46,19 @@ struct LeakDetector:
     var metadata_entries: List[String]
     var warnings: List[String]
 
-    def __init__(out self, config: LeakDetectionConfig = LeakDetectionConfig()):
+    def __init__(out self):
+        var config = LeakDetectionConfig()
+        self.threshold_ms = config.threshold_ms
+        self.capture_stack_trace = config.capture_stack_trace
+        self.check_interval_ms = config.check_interval_ms
+        self.log_level = config.log_level
+        self.running = False
+        self.connection_ids = List[String]()
+        self.checkout_times_ms = List[Int]()
+        self.metadata_entries = List[String]()
+        self.warnings = List[String]()
+
+    def __init__(out self, config: LeakDetectionConfig):
         self.threshold_ms = config.threshold_ms
         self.capture_stack_trace = config.capture_stack_trace
         self.check_interval_ms = config.check_interval_ms

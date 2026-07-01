@@ -1,0 +1,1443 @@
+{
+  "component_id": "tool:cli",
+  "components": [
+    {
+      "bytes": 46791648,
+      "path": "bin/SBParser",
+      "sha256": "ee195f9713ca297ac42c0395d95dc4adb4e1a17e93e57081b7b25a803285ae83"
+    },
+    {
+      "bytes": 47666592,
+      "path": "bin/SBadm",
+      "sha256": "3dd9952358d62998c67a5082870b08e29ee145249f4a6b84e503cb3cf9b592b6"
+    },
+    {
+      "bytes": 47539880,
+      "path": "bin/SBbak",
+      "sha256": "6e9754ade2b2c0dda06e71ba38aa381d02cf00cf1a8f4b63d09f7f3c79308724"
+    },
+    {
+      "bytes": 47868616,
+      "path": "bin/SBcop",
+      "sha256": "1621a9d9f34861e7ad4beb09d43a04fda889660d851922c91696552d73fc9512"
+    },
+    {
+      "bytes": 47552432,
+      "path": "bin/SBdoc",
+      "sha256": "5f865b3acf5c4f020665937ae3a2bdac4b59b21e5b5b0dfac372dbac31a4430b"
+    },
+    {
+      "bytes": 47628936,
+      "path": "bin/SBsec",
+      "sha256": "fa4dfdf5d351043e5677476857160b41abc5b52dca89f5341892e4663acf2cb8"
+    },
+    {
+      "bytes": 47845848,
+      "path": "bin/SBsql",
+      "sha256": "2f73deda70501f2fa63a40ea187e42ebe33193012066c59a7786973bf983c418"
+    },
+    {
+      "bytes": 182,
+      "path": "examples/README.md",
+      "sha256": "71c206aed2008bc4aed2fe300b268d9b20f78c7305699a8e6373b589aa0f87ac"
+    },
+    {
+      "bytes": 16726,
+      "path": "legal/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "legal/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 1864,
+      "path": "legal/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 1269,
+      "path": "package_manifest.json",
+      "sha256": "255c850bcf16015e1b0329cf2845d2f277167d995c6825d8ad1dc2491f533758"
+    },
+    {
+      "bytes": 8384,
+      "path": "proofs/driver_complete_coverage_checklist.json",
+      "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
+    },
+    {
+      "bytes": 4074,
+      "path": "proofs/driver_complete_coverage_tests.json",
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
+    },
+    {
+      "bytes": 4023,
+      "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
+    },
+    {
+      "bytes": 10830,
+      "path": "proofs/driver_complete_delta_implementation.json",
+      "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
+    },
+    {
+      "bytes": 746,
+      "path": "proofs/driver_wiki_documentation.json",
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
+    },
+    {
+      "bytes": 404,
+      "path": "proofs/proof_summary.json",
+      "sha256": "d88ff0c2686e0c8a408667830c92013770f6472baa1ae53e4aff7ee577d7909d"
+    },
+    {
+      "bytes": 4992,
+      "path": "resources/sbsql-language-resource-pack/hashes.sha256",
+      "sha256": "4edfd9da5c482fe7d96545a992a179fb32ff2e824f4a07e29595ff314f3bd190"
+    },
+    {
+      "bytes": 9888,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+      "sha256": "a7a30e7650ad7d4f2402bf3ab502d37cb8ff8b0dde171752320ee288aaab9ec2"
+    },
+    {
+      "bytes": 621,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.sig",
+      "sha256": "d87565f20b39b465f18e464983255a0d61fec596edc6026ca43119750a10531f"
+    },
+    {
+      "bytes": 4413637,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.json",
+      "sha256": "45fa541bbbd94583109c357141e228a36a700a844ae30cfda7fca1a2878a1d4a"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.schema.json",
+      "sha256": "0b8544561fc29d692dec80b0201e2e5666fcad4c3205d15aee29bbbc15d6d741"
+    },
+    {
+      "bytes": 34811,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.json",
+      "sha256": "5006c7c7ee277f78faa90d578d7648a74f26b5adcb175c92ea7de7fc39ef0a85"
+    },
+    {
+      "bytes": 187,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.schema.json",
+      "sha256": "ea78ce9c707af7fe8891414c2b6c57428c3e29ce2388b231fa632cb555ed530c"
+    },
+    {
+      "bytes": 1734421,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.jsonl",
+      "sha256": "602455d771dd5d7d3fad3a55515c90fcb7de6514c1f19e3dc0a904987a7e7535"
+    },
+    {
+      "bytes": 216,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.schema.json",
+      "sha256": "a76f533f14a2c990b832acfcbfea9afccba451939d70278f2a1e87707535d0ad"
+    },
+    {
+      "bytes": 435,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-style-guide.en-US.json",
+      "sha256": "07c8cfabc34fdb961fc54f9cf4ca8e63228e425a9fea5502629193ded5122143"
+    },
+    {
+      "bytes": 787,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.json",
+      "sha256": "f3f77403977732ccf54db7325934d4a729c87927c5815f5d0aa6666f645e3f4c"
+    },
+    {
+      "bytes": 168,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.schema.json",
+      "sha256": "3cce77cf8740259bdedb0b20676f649639226a73e676dceec4889cb133a2c0b9"
+    },
+    {
+      "bytes": 18358,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.json",
+      "sha256": "69ea6801e45dcb95030bef66862e851a7b59eb429c4c93dfe3f3eb0037909179"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.schema.json",
+      "sha256": "dfb1f43eed7e1858e9f638bc08cdbe2c2e4bec00ec66d1eca9d9ddf7c36db832"
+    },
+    {
+      "bytes": 56283,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.json",
+      "sha256": "42beda9743aa8718a6ea7759bf81cdedb9b9aaccfe129b2dbfcac3e76582972e"
+    },
+    {
+      "bytes": 174,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.schema.json",
+      "sha256": "7dbc9080046e0edac31b79a7f9fd210d70974dbbfd11b6eb995b8f2ca7d6e985"
+    },
+    {
+      "bytes": 1190,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-messages.json",
+      "sha256": "b4db2b166510816dbe04da12fa78fcb74d90e3f1cda6fc9a52fd87e07079bc1e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-resource.schema.json",
+      "sha256": "6e400c4dc1599fd2d8aeadb0de7396eceaf7c8b113efcdd163a770173daf6d73"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/dialect-resource.schema.json",
+      "sha256": "863d4d7105cb26b25305b6c488cb803d01a172f200552031e4602d32dcc41455"
+    },
+    {
+      "bytes": 204,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/sbsql-v3-dialect-profile.json",
+      "sha256": "effa8cfbd163c0171bb353edd6d2248fcf9a5d9f3e920fc3cd497fb5899037dd"
+    },
+    {
+      "bytes": 1023749,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/de-DE/language-profile.json",
+      "sha256": "ffc513675f527dcc623f298033a9fda0d6b2e689007df70ffa33b84b6aa0e0ea"
+    },
+    {
+      "bytes": 881751,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-CA/language-profile.json",
+      "sha256": "eab8d6e62212cd7603e427424ab5895e61bda5e42bbb181dcc27e76aaca8c0be"
+    },
+    {
+      "bytes": 881699,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-US/language-profile.json",
+      "sha256": "a75964375e4813cd1451f4e99f1c866d38bf0b433b5d7e8e2034a683cf94850f"
+    },
+    {
+      "bytes": 1062818,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/es-ES/language-profile.json",
+      "sha256": "7052f4a7bacb17750bc2df8963edaa60ec644590de6bb8e91ec7fb2dfdfacf9f"
+    },
+    {
+      "bytes": 1061685,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-CA/language-profile.json",
+      "sha256": "04c20d723f029e11dcc8e358ce4657acf5db458ecff7c4e3dd4983ceeaf5fd80"
+    },
+    {
+      "bytes": 1061696,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-FR/language-profile.json",
+      "sha256": "298c84543566a75a0d908bfaf61d7427283d9d68494718d6c5fce3973a46f521"
+    },
+    {
+      "bytes": 1062582,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/it-IT/language-profile.json",
+      "sha256": "320dd593e44978b61d8232ab2d551cbf6227d415cb99b88d2819ba5159614204"
+    },
+    {
+      "bytes": 208,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/language-profile.schema.json",
+      "sha256": "788a8501cd9829ae045832682a094209dbc82d59723392c881bfbbd574f3523a"
+    },
+    {
+      "bytes": 162,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-resource.schema.json",
+      "sha256": "4eec3c766a496008c836fdfe892066ab71ba14f20730bef9e66004c49ee8e184"
+    },
+    {
+      "bytes": 544676,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-table.json",
+      "sha256": "edabb9045077bd5b3e33bb6986494acf169ced5e5d8ba52a7e44e6fc9c2e0d1c"
+    },
+    {
+      "bytes": 379026,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-grammar.json",
+      "sha256": "96328383c33cfa11fe96c2eef2e898a61f612feb317b4f285db6a23bfb40a74e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-resource.schema.json",
+      "sha256": "fbb5aceb9018fcc924df4ce4d013a1d611a951fa691637deceed02dfa6901828"
+    },
+    {
+      "bytes": 1309,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/native-review-status.json",
+      "sha256": "1678b6cbc25a7fa54acc6f0e3c178609983c4808c4f6716157d9a6725125ec41"
+    },
+    {
+      "bytes": 3237,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.json",
+      "sha256": "42ec0974a57782d86d006c1bf1d5cc97f8cb5f04880bb362ccdb1b9e60bd3a36"
+    },
+    {
+      "bytes": 160,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.schema.json",
+      "sha256": "9148aba1e23d1487c1638073ab94b3bbaf6688acb8b49cea29a7acef2095e6d7"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-resource.schema.json",
+      "sha256": "0ed31a799abf3fb73c676fa580d3f313fa987bc2886d580af4143f2635855be6"
+    },
+    {
+      "bytes": 2155,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-templates.json",
+      "sha256": "10d34d2727ac1dc7dd902cc5e010d104cf20e256589bf97f31360bc63837643e"
+    },
+    {
+      "bytes": 313,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-policy.json",
+      "sha256": "bb092258850c88f3e99ad032d2bb6a9e4221ba0d1ac53220ae1b4f62b282d14e"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-resource.schema.json",
+      "sha256": "16d3e367dcc032682d89d62472fda69e87896a3cb6be555cb9f21e9269b1bff7"
+    },
+    {
+      "bytes": 166,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profile.schema.json",
+      "sha256": "4f87e007054b5f7ecae71d7078ff523c4c01f17de2f4bc933f8f01a922003746"
+    },
+    {
+      "bytes": 11648,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profiles.json",
+      "sha256": "c7071321821a796a33726f9175f0b84d7cc7115c8b8df91a9c164963a69fa47d"
+    },
+    {
+      "bytes": 331,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.json",
+      "sha256": "5f83d357934d33c6927c39402362d453470143a830329664929b464dd81afab1"
+    },
+    {
+      "bytes": 164,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.schema.json",
+      "sha256": "53fdd80098f9938eda12c233e7f70d02582ca2328a3c6738ea40ac4105fd004a"
+    },
+    {
+      "bytes": 11079,
+      "path": "support/BASELINE_REQUIREMENT_MAPPING.md",
+      "sha256": "ef34f418b8ad4a06f42b8782deb4707fc9f069f1f6ce4f4adbb4c8aab8db18b7"
+    },
+    {
+      "bytes": 16726,
+      "path": "support/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "support/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 4891,
+      "path": "support/README.md",
+      "sha256": "aaeecd134d6772e953645ee9372c7c908a1ca85ef36036c33cecf841d334570a"
+    },
+    {
+      "bytes": 1864,
+      "path": "support/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 3195,
+      "path": "support/package_contract.json",
+      "sha256": "d0f51235c5b7e81fba21af65980eedb311c2bf25d5f11e0fc16b2613bd43b026"
+    },
+    {
+      "bytes": 1931,
+      "path": "support/root-SBOM.json",
+      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+    },
+    {
+      "bytes": 11079,
+      "path": "support/source/BASELINE_REQUIREMENT_MAPPING.md",
+      "sha256": "ef34f418b8ad4a06f42b8782deb4707fc9f069f1f6ce4f4adbb4c8aab8db18b7"
+    },
+    {
+      "bytes": 11580,
+      "path": "support/source/CMakeLists.txt",
+      "sha256": "35d32b2748fac6aaf85f9dec4bbf7c265b5462a20554a169a03c93971c25aa1f"
+    },
+    {
+      "bytes": 4891,
+      "path": "support/source/README.md",
+      "sha256": "aaeecd134d6772e953645ee9372c7c908a1ca85ef36036c33cecf841d334570a"
+    },
+    {
+      "bytes": 10627,
+      "path": "support/source/cli_auth_bootstrap.cpp",
+      "sha256": "5ff6f726d051c2fa0339939644b069d0fe6888d453306c5f812beb92dc2dc987"
+    },
+    {
+      "bytes": 2313,
+      "path": "support/source/cli_auth_bootstrap.h",
+      "sha256": "8f60b86fd7ec4bef3a26b5724bedcd70ad72da9e0535eabcf6f643ab3dcacf55"
+    },
+    {
+      "bytes": 5662,
+      "path": "support/source/cli_auth_bootstrap_test.cpp",
+      "sha256": "f82f606ae0c2062bfec7192e20e7561960674c98938924eb2fbafadc62c240ba"
+    },
+    {
+      "bytes": 2682,
+      "path": "support/source/cli_public_branding_smoke.py",
+      "sha256": "76ec56ebaf24dde9667ca7d441098a309eae68336fdffa9c5e1df51c973d0894"
+    },
+    {
+      "bytes": 2770,
+      "path": "support/source/conformance/run_sbdriver_conformance_sample.sh",
+      "sha256": "ae205bee40523099a414920135de02619382f193c835bea6e0f876805ffbf4bb"
+    },
+    {
+      "bytes": 1709,
+      "path": "support/source/conformance/sbwp_conformance_manifest.sample.json",
+      "sha256": "bfa5d9a7c5eebd41b7409f5c30d23629b71be26d5cf36bcc6734876b93a24ed4"
+    },
+    {
+      "bytes": 8836,
+      "path": "support/source/conformance_assertions.cpp",
+      "sha256": "f07af745deaf564041b9dce55e61810dfc3ae09a2ff8b4678665943f0afd50e5"
+    },
+    {
+      "bytes": 877,
+      "path": "support/source/conformance_assertions.h",
+      "sha256": "ca24713a0c30fce01892e161e3fd8e09c359b88a2c5932a0f8b4337414e22de8"
+    },
+    {
+      "bytes": 3606,
+      "path": "support/source/conformance_assertions_test.cpp",
+      "sha256": "ed4ea8e45652e5927227cbe519452e12f880003fd3ba4105694308955811e599"
+    },
+    {
+      "bytes": 816,
+      "path": "support/source/crc32c.cpp",
+      "sha256": "5a8ee28313e669f129058ad1a7b03d148b4a95701923e1210c89aaf5628eee4e"
+    },
+    {
+      "bytes": 919975,
+      "path": "support/source/include/nlohmann/json.hpp",
+      "sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
+    },
+    {
+      "bytes": 5998,
+      "path": "support/source/include/scratchbird/core/array.h",
+      "sha256": "ce9ac4bdbe599b0491802fd5c27e00ad11e46f48919c046d56bf50b0b5564124"
+    },
+    {
+      "bytes": 10064,
+      "path": "support/source/include/scratchbird/core/audit_logger.h",
+      "sha256": "5847e241fe747587495c3cf9697b341c0db5bdda2e86b283a940dbe936e37720"
+    },
+    {
+      "bytes": 13249,
+      "path": "support/source/include/scratchbird/core/auth_provider.h",
+      "sha256": "267887d0b487f9399b9ea4117fb5271591c08fcc2f9eac7d4c6dde2226a841d3"
+    },
+    {
+      "bytes": 13144,
+      "path": "support/source/include/scratchbird/core/backup_manager.h",
+      "sha256": "d3593733f74ad5d54c3a59140bc731e35e0285588e753ec0cf5388c23d212d49"
+    },
+    {
+      "bytes": 24567,
+      "path": "support/source/include/scratchbird/core/bitmap_index.h",
+      "sha256": "71dee69f3237f0666b5fd2939501aacddb2eaa3d8011ef4b5283bec658222622"
+    },
+    {
+      "bytes": 3471,
+      "path": "support/source/include/scratchbird/core/bloom_filter.h",
+      "sha256": "d0f54b6e0787e3e738542ba089031dbe59ee039543da7d02067b997675bf16fc"
+    },
+    {
+      "bytes": 20186,
+      "path": "support/source/include/scratchbird/core/brin_index.h",
+      "sha256": "8a1d0af16ce90ec66e0b2f31554f23aecf198c99dcde2e6317340e9fee45ce46"
+    },
+    {
+      "bytes": 4125,
+      "path": "support/source/include/scratchbird/core/brin_minmax_ops.h",
+      "sha256": "cd0408b0ba594a973fe841292648eb44371d83864a0b56055c2961953c7f818f"
+    },
+    {
+      "bytes": 20883,
+      "path": "support/source/include/scratchbird/core/btree.h",
+      "sha256": "69c3c9c280ead59287dbb9fbaba03e08265d38b28c2fe531440124501c842629"
+    },
+    {
+      "bytes": 2339,
+      "path": "support/source/include/scratchbird/core/btree_page.h",
+      "sha256": "f8ff31c8e3df49af8979aeabc921d38481430099060ca57cc86ef57608a9be61"
+    },
+    {
+      "bytes": 24134,
+      "path": "support/source/include/scratchbird/core/buffer_pool.h",
+      "sha256": "2c0c9db31d7ecb0500309c25f69999ea9ceb90223f98cef289505077e1aafafe"
+    },
+    {
+      "bytes": 4362,
+      "path": "support/source/include/scratchbird/core/buffer_pool_guard.h",
+      "sha256": "470a0c0695a49252acc59c5a25da3990fdf7c2da10e3899e5b8ab69d855ef2b3"
+    },
+    {
+      "bytes": 233770,
+      "path": "support/source/include/scratchbird/core/catalog_manager.h",
+      "sha256": "ba69ac64fc2183a42ed04797867ae58f54bc8b870254aa80a17e79d016530702"
+    },
+    {
+      "bytes": 8318,
+      "path": "support/source/include/scratchbird/core/charset.h",
+      "sha256": "99c653e98b5469911039b394c37b115cccfa7711076b6d85b42814b8b5320c2f"
+    },
+    {
+      "bytes": 2249,
+      "path": "support/source/include/scratchbird/core/charset_loader.h",
+      "sha256": "2402a1f468345db47ccc538e5228299c6fde80b170dca82c97c2fff617d0665f"
+    },
+    {
+      "bytes": 3555,
+      "path": "support/source/include/scratchbird/core/charset_parser.h",
+      "sha256": "f46d3182ee6289fd746689f89ca0b80fa3ff0f44e307075d4ef140ae1e2ac57e"
+    },
+    {
+      "bytes": 4685,
+      "path": "support/source/include/scratchbird/core/clog.h",
+      "sha256": "3a5ba43b460f429e200f7746c41f27baa1206f56d19d3ba2a5bc4aeda386ebf0"
+    },
+    {
+      "bytes": 24368,
+      "path": "support/source/include/scratchbird/core/columnstore.h",
+      "sha256": "30878eb75f658f7c0ea3f1cd7def1b967bd8218142a4ae2b618693a6b7728f3f"
+    },
+    {
+      "bytes": 7103,
+      "path": "support/source/include/scratchbird/core/columnstore_index.h",
+      "sha256": "c0b7d08d12a0e1f0e4827cf6b9229b20934e20033ee3e031ed8d13ad2b1f89d1"
+    },
+    {
+      "bytes": 4582,
+      "path": "support/source/include/scratchbird/core/composite.h",
+      "sha256": "a2391f29bd4400134f23bf63d5a31cac4cc51588e38dca9e9ff97a1f54b3732d"
+    },
+    {
+      "bytes": 2235,
+      "path": "support/source/include/scratchbird/core/compressed_page_manager.h",
+      "sha256": "d0b39e88e317c9b21f0228ff58a295c91202f1fe0667e7c7a83c58b99f1b5d1e"
+    },
+    {
+      "bytes": 4792,
+      "path": "support/source/include/scratchbird/core/compression.h",
+      "sha256": "debc72f7b80af0d25bafc8002e5af812ee528ecea272df8aa84b9ff10f6eadff"
+    },
+    {
+      "bytes": 10464,
+      "path": "support/source/include/scratchbird/core/config.h",
+      "sha256": "ce77bbb6ece165f894aa58fa7636b0086f354f54430ab7202e93245f7fe5971d"
+    },
+    {
+      "bytes": 33586,
+      "path": "support/source/include/scratchbird/core/connection_context.h",
+      "sha256": "cbd4e8bc0ff1223bfcebda97bd59db8a94641e836cb586ad7043298cdbf0720e"
+    },
+    {
+      "bytes": 6720,
+      "path": "support/source/include/scratchbird/core/connection_pool.h",
+      "sha256": "233e4e3f2b7973d736ac1188448ca8d6d6a837f6980ff122649aeffb1f1022a7"
+    },
+    {
+      "bytes": 2659,
+      "path": "support/source/include/scratchbird/core/data_encryption.h",
+      "sha256": "ce7e2552d7a23d0afd7a962da819667d9e6708af01d06ac27d009c850f793fc7"
+    },
+    {
+      "bytes": 2079,
+      "path": "support/source/include/scratchbird/core/data_masking.h",
+      "sha256": "68e6e815dec4459713e458e0b1183856b32f761901db6b1493c38345320a79ee"
+    },
+    {
+      "bytes": 26902,
+      "path": "support/source/include/scratchbird/core/database.h",
+      "sha256": "d5b46553b25c96d4c222bba62c3d2dee596a97ae21ca180443a926ef18285b8b"
+    },
+    {
+      "bytes": 1697,
+      "path": "support/source/include/scratchbird/core/debug.h",
+      "sha256": "6d7bab35e6da51ed96f769bb413191fb4d65f3bb81395afd7a3946e37a16e99f"
+    },
+    {
+      "bytes": 2855,
+      "path": "support/source/include/scratchbird/core/decfloat.h",
+      "sha256": "0e19f87b1427e40f4b701530a5f7cb22b5cbc8e18708c2378cc5be9d748a1d61"
+    },
+    {
+      "bytes": 8392,
+      "path": "support/source/include/scratchbird/core/decimal.h",
+      "sha256": "6f451a9949ae462af2d039d78b23c1228e33ff393953ecde525c8d88d5f2f256"
+    },
+    {
+      "bytes": 5212,
+      "path": "support/source/include/scratchbird/core/decimal_arithmetic.h",
+      "sha256": "b5367b2f04086af22f1265375c2546a71565ec562aa773e514d1d9641d35c1ab"
+    },
+    {
+      "bytes": 26952,
+      "path": "support/source/include/scratchbird/core/domain_manager.h",
+      "sha256": "aa011afdb2d1a1aaf8e5a4ba2a71ba651b02ea5c3294f7f1f31086624fd07dea"
+    },
+    {
+      "bytes": 1232,
+      "path": "support/source/include/scratchbird/core/domain_validation.h",
+      "sha256": "5599b3cb0faba8ac7d0dfe40184add96dae1461544e8bdb7554b4924cc1993ac"
+    },
+    {
+      "bytes": 4293,
+      "path": "support/source/include/scratchbird/core/encryption_key_manager.h",
+      "sha256": "53edce95e903a588ff6877ff62e4b496b714ea13dce765735affa7365272c8a8"
+    },
+    {
+      "bytes": 11168,
+      "path": "support/source/include/scratchbird/core/error_context.h",
+      "sha256": "3cfca4a372c9ac61ff29739bc3545745ebd33cc42ec2c4e8661d99303f4896b0"
+    },
+    {
+      "bytes": 10356,
+      "path": "support/source/include/scratchbird/core/expression.h",
+      "sha256": "7c293561d902a1d4227d843567056bd0f01985d3e2e49dbea7d4048b3ab9f730"
+    },
+    {
+      "bytes": 6202,
+      "path": "support/source/include/scratchbird/core/expression_serializer.h",
+      "sha256": "6902b8fe909364c5275271a65828c0b099a1e1cfee001bc40edcaf79c968c9c2"
+    },
+    {
+      "bytes": 9791,
+      "path": "support/source/include/scratchbird/core/firebird_datetime.h",
+      "sha256": "f8bb753fc79cbaccc24a6407a9b2b0aefc5201e9c045a2930b0647d17c1712f4"
+    },
+    {
+      "bytes": 8092,
+      "path": "support/source/include/scratchbird/core/fulltext_index.h",
+      "sha256": "5bcabea3f87b062ba18f25702fe339c69722742cc0044219dfdfe7069313f08a"
+    },
+    {
+      "bytes": 928,
+      "path": "support/source/include/scratchbird/core/function_invoker.h",
+      "sha256": "77fbe81a979f06fc9465e62c3a7ed2798724b2f4b73893cecc34d28a860fb519"
+    },
+    {
+      "bytes": 10346,
+      "path": "support/source/include/scratchbird/core/garbage_collector.h",
+      "sha256": "96f3cd1033eb9a1860841652c9a9457ac434686ebbb8b6f1947cf98a0bdf19fd"
+    },
+    {
+      "bytes": 3578,
+      "path": "support/source/include/scratchbird/core/gc_manager.h",
+      "sha256": "6686840191d3ac508af01e0335e36751f6d2eda7ec73cab611e9f860d774fe69"
+    },
+    {
+      "bytes": 6550,
+      "path": "support/source/include/scratchbird/core/gin_compression.h",
+      "sha256": "18eda275207d632507e411ec5c195d7f1eb34faa12e85d48fc103b84ebd7c26b"
+    },
+    {
+      "bytes": 41729,
+      "path": "support/source/include/scratchbird/core/gin_index.h",
+      "sha256": "9b631a4dcf95d80a7b45409894ddb65c1b5c6217018a5fb9ca36846ca7a2bf72"
+    },
+    {
+      "bytes": 6173,
+      "path": "support/source/include/scratchbird/core/gin_tsvector_ops.h",
+      "sha256": "c358ce54cdd9a90d04b15158059b67e333ad4d7264e9ecbda594b3f6202dbd11"
+    },
+    {
+      "bytes": 8591,
+      "path": "support/source/include/scratchbird/core/gist_box_ops.h",
+      "sha256": "cd70622c824f8ecdb1d496461d68da1f1812ce418fbc4ae10c2a8f121a96589d"
+    },
+    {
+      "bytes": 21664,
+      "path": "support/source/include/scratchbird/core/gist_index.h",
+      "sha256": "bd6c4bbc62ddc2b1b269cdd9e42e811ee53530d88af47de41a5119fc9e09014a"
+    },
+    {
+      "bytes": 3706,
+      "path": "support/source/include/scratchbird/core/global_uniqueness_index.h",
+      "sha256": "c9204a275f933783c4c9dc2d91289845a9703a3dd2312c74ac00b3c926ef39b0"
+    },
+    {
+      "bytes": 8080,
+      "path": "support/source/include/scratchbird/core/gpid.h",
+      "sha256": "4177b270f46937e72ee0e5400825d2f36a806a7dc3d361f493655db577b62758"
+    },
+    {
+      "bytes": 1507,
+      "path": "support/source/include/scratchbird/core/hash_functions.h",
+      "sha256": "7d13312a769a8b14daafe640d40edd84e105f6f8f64647b1035ed3f3d1781070"
+    },
+    {
+      "bytes": 12214,
+      "path": "support/source/include/scratchbird/core/hash_index.h",
+      "sha256": "d7253ac9d3be07c0eb8237dd6fe105c69cd4e69b5a0003164faf41a6979c0791"
+    },
+    {
+      "bytes": 15128,
+      "path": "support/source/include/scratchbird/core/heap_page.h",
+      "sha256": "e0623d66d0a6545675e808995f97499aa68f6196d2e62016fd5501f99f0fca9e"
+    },
+    {
+      "bytes": 20656,
+      "path": "support/source/include/scratchbird/core/hnsw_index.h",
+      "sha256": "e4b77c5fd014eae090385631670a714ab3ddd8aa064d79870c9d120c30b8a097"
+    },
+    {
+      "bytes": 3624,
+      "path": "support/source/include/scratchbird/core/index_factory.h",
+      "sha256": "f08192de2eb88699a1ce2d46d7579802b6025a26f5bad63ac1e92613a872002e"
+    },
+    {
+      "bytes": 5091,
+      "path": "support/source/include/scratchbird/core/index_gc_interface.h",
+      "sha256": "b144c3d1d62fcc7bd3facb96420c6bdae074f09b3dff0b6172b10ad3499d6c4a"
+    },
+    {
+      "bytes": 5992,
+      "path": "support/source/include/scratchbird/core/index_key_extractor.h",
+      "sha256": "d8dceb71854b03cd2ff841264fec803e304abc73f8f13c86970a28031c136c0c"
+    },
+    {
+      "bytes": 837,
+      "path": "support/source/include/scratchbird/core/index_params.h",
+      "sha256": "d19775fa8c59a1c0382223b9b0c2d6b3e7b17fbc4c7b1fc66279ccca0c523aa1"
+    },
+    {
+      "bytes": 11192,
+      "path": "support/source/include/scratchbird/core/inverted_index.h",
+      "sha256": "383dd96f3ff3ef76a2cf4c42c07db00939ffbe616b087255eb483fe935d0bf0c"
+    },
+    {
+      "bytes": 3564,
+      "path": "support/source/include/scratchbird/core/job_scheduler.h",
+      "sha256": "5964b79cffe4d08fcfdd8c092f4204d5f67936dcc601cf5ed26b5e17ad3ee5cb"
+    },
+    {
+      "bytes": 1698,
+      "path": "support/source/include/scratchbird/core/job_scheduler_utils.h",
+      "sha256": "748d16c8b8c98a3e3ca232d41b90168e3ebeb02367119bcc1d2a237ac9df33ba"
+    },
+    {
+      "bytes": 5715,
+      "path": "support/source/include/scratchbird/core/jsonb.h",
+      "sha256": "40ec3f927740c50b9a6a37eaebfeff8edd91595c661b4dfe5c1fe138e38514a8"
+    },
+    {
+      "bytes": 8589,
+      "path": "support/source/include/scratchbird/core/lock_manager.h",
+      "sha256": "54785f830bf640dfc6cf67258fc9331b7f928573cd201f6ada1b2086575983fa"
+    },
+    {
+      "bytes": 6148,
+      "path": "support/source/include/scratchbird/core/logger.h",
+      "sha256": "ed5762735274289f595176e4601ecd8cb0518b75e403e6cf338c36c6465310a0"
+    },
+    {
+      "bytes": 5182,
+      "path": "support/source/include/scratchbird/core/login_attempt_tracker.h",
+      "sha256": "aeee8a6da926a8e1c3cc07c73703441f166e3655a5cfc9ba1b559e2ec22dbb0a"
+    },
+    {
+      "bytes": 4573,
+      "path": "support/source/include/scratchbird/core/long_transaction_monitor.h",
+      "sha256": "2188da5d76505526d4ec1fd0c0df4dead8ffa3a57637931e2957e8ce4acf1522"
+    },
+    {
+      "bytes": 5167,
+      "path": "support/source/include/scratchbird/core/lsm_block_cache.h",
+      "sha256": "1dcaffb0582ae29d54e5d4082bf5ebe53393d12afa11de196f5403a082570add"
+    },
+    {
+      "bytes": 4590,
+      "path": "support/source/include/scratchbird/core/lsm_bloom_filter.h",
+      "sha256": "71239d23378d686e3b7e34e7b935027518a24bd474f005341109e2df8ded9428"
+    },
+    {
+      "bytes": 5648,
+      "path": "support/source/include/scratchbird/core/lsm_compression.h",
+      "sha256": "b83e762be83e150f01d1f87df40a77cff26047cee80ae65744ca9f14e0bb7a5c"
+    },
+    {
+      "bytes": 4630,
+      "path": "support/source/include/scratchbird/core/lsm_thread_pool.h",
+      "sha256": "65d02e2324248188a5d3634a65645a60b1000e1a574d9eb721b5164807b6a977"
+    },
+    {
+      "bytes": 5315,
+      "path": "support/source/include/scratchbird/core/lsm_tree.h",
+      "sha256": "e1388fd0c34c1671563ffd5f55b0ae17bd7ddbcda21d745ed5b46bf127e49136"
+    },
+    {
+      "bytes": 20673,
+      "path": "support/source/include/scratchbird/core/lsm_tree_index.h",
+      "sha256": "1099092d3aa53717a59420e25579c96f9825187f7ae8a1dc6d0c4907bc06195f"
+    },
+    {
+      "bytes": 3990,
+      "path": "support/source/include/scratchbird/core/monitoring_stats.h",
+      "sha256": "71ed6950621ab286d920379c78e82e765606dca1dc270eeeb9eec4192f94f415"
+    },
+    {
+      "bytes": 11859,
+      "path": "support/source/include/scratchbird/core/network.h",
+      "sha256": "24c00ec54f6be5aee35b4de5b3db5cac453457516c269fc3eb7cbcf01b647567"
+    },
+    {
+      "bytes": 2750,
+      "path": "support/source/include/scratchbird/core/normalization.h",
+      "sha256": "7ac52c156168209218562e9555c24136604b68bbe3a990dfca721e87955b79a0"
+    },
+    {
+      "bytes": 4886,
+      "path": "support/source/include/scratchbird/core/ondisk.h",
+      "sha256": "d77faf90eb85b3fcacbf16a6f23658a62f6ab94169b7fa814014608023a90c66"
+    },
+    {
+      "bytes": 16865,
+      "path": "support/source/include/scratchbird/core/page_manager.h",
+      "sha256": "70900976fc037c651fe68981538225f09f47a689993c1359699e7540f7db4fbe"
+    },
+    {
+      "bytes": 2081,
+      "path": "support/source/include/scratchbird/core/password_hash.h",
+      "sha256": "2322e8f0bd334e1de3e0e1192a611625049b108c2e4c589c7679c6945706d5e5"
+    },
+    {
+      "bytes": 2252,
+      "path": "support/source/include/scratchbird/core/password_policy.h",
+      "sha256": "0717a28cc57648096435e64e9d1f5feee417b39ca63b5d2d62849e4170f2a080"
+    },
+    {
+      "bytes": 9870,
+      "path": "support/source/include/scratchbird/core/permission_cache.h",
+      "sha256": "edf967fff59dfb36fe154d0c50e7426a320cdce01fc73ee356c9e2d346bc5dab"
+    },
+    {
+      "bytes": 28423,
+      "path": "support/source/include/scratchbird/core/plain_value_reader.h",
+      "sha256": "ca5ea205c70b2a06667dd85da8b6526d37761e11da0e8a996d6b70291d28fd8d"
+    },
+    {
+      "bytes": 7346,
+      "path": "support/source/include/scratchbird/core/proc_array.h",
+      "sha256": "7f8f79d1e143b2697114f2886b7a37e59a5ed43bdaf53d7389b6d8e09898bc15"
+    },
+    {
+      "bytes": 2359,
+      "path": "support/source/include/scratchbird/core/quality_pipeline.h",
+      "sha256": "ccd3ea91ecc778d6bb9ff57a113bf60ad0c9de3724b5d19fef2937c09cf701d7"
+    },
+    {
+      "bytes": 24497,
+      "path": "support/source/include/scratchbird/core/range.h",
+      "sha256": "a42c8853768c5bf9eb385b1989744c93a2f656ea7c56db64c851e70659007e21"
+    },
+    {
+      "bytes": 3645,
+      "path": "support/source/include/scratchbird/core/range_functions.h",
+      "sha256": "e9e7ec74983d1d9f3c8f2dd67e1c5183b4fc3d9cc1c671ed98d3f2763bc4c186"
+    },
+    {
+      "bytes": 17015,
+      "path": "support/source/include/scratchbird/core/rtree.h",
+      "sha256": "759b468e54755261d4e3dd956751b2028bf28cfa09653121bd25f44efc93d00a"
+    },
+    {
+      "bytes": 3779,
+      "path": "support/source/include/scratchbird/core/rtree_index.h",
+      "sha256": "6be29b92bf7430cfbe43f166c59877d01cc5fa1e99c8c1f63ff7526fb8a0e34c"
+    },
+    {
+      "bytes": 6505,
+      "path": "support/source/include/scratchbird/core/rtree_node.h",
+      "sha256": "0e6ad9e385ab274c67c0227ee7dbc330660e03905dcbae569419e34092608df0"
+    },
+    {
+      "bytes": 6466,
+      "path": "support/source/include/scratchbird/core/safe_arithmetic.h",
+      "sha256": "eb6dd8e6946a8a424efeacb2cc5801eab1b20237168efba36ab5ea2c8229f2d4"
+    },
+    {
+      "bytes": 1375,
+      "path": "support/source/include/scratchbird/core/security_quorum.h",
+      "sha256": "a8056e751c7b2f3b93b90fbbc87e6d67cd1b4bccb19c13d848917641d286301d"
+    },
+    {
+      "bytes": 12512,
+      "path": "support/source/include/scratchbird/core/simd_vector.h",
+      "sha256": "81071366417c196d2017a6f1ede4cdc7cd72f66082604d8eb8898575840a6483"
+    },
+    {
+      "bytes": 18849,
+      "path": "support/source/include/scratchbird/core/spgist_index.h",
+      "sha256": "71b48b6cbd939e4005117eb3cf5eb6906f4a8cff1cb61022c1f8a776bfe67a25"
+    },
+    {
+      "bytes": 7087,
+      "path": "support/source/include/scratchbird/core/spgist_quad_ops.h",
+      "sha256": "829a5d171b8758c934f8d4e7ccedf57a32c4b31356498a3f11f8370eb2857200"
+    },
+    {
+      "bytes": 8003,
+      "path": "support/source/include/scratchbird/core/spgist_text_ops.h",
+      "sha256": "239f2ea1fa3fe059ae927070a31a1d094a069b90ab961f31004b4c41777e4a52"
+    },
+    {
+      "bytes": 31333,
+      "path": "support/source/include/scratchbird/core/sqlstate.h",
+      "sha256": "34b7e7aa3e52f1a46eaebe026d65c2f73b87744871f36cb48ff962178c9049ce"
+    },
+    {
+      "bytes": 5502,
+      "path": "support/source/include/scratchbird/core/status.h",
+      "sha256": "ed666ab6380e68929682d971e09804a660a98bf306d5124c87178aa0eefaae56"
+    },
+    {
+      "bytes": 9259,
+      "path": "support/source/include/scratchbird/core/storage_engine.h",
+      "sha256": "61fe1833a9a93d62457254432e124fcc7497ff591c0a8ac26095dd96d6c0ebd3"
+    },
+    {
+      "bytes": 7865,
+      "path": "support/source/include/scratchbird/core/structured_logger.h",
+      "sha256": "0e8aed31a1903366c7949e9de20f3dc159b78b32b85ad28b4fb8d670afd033c0"
+    },
+    {
+      "bytes": 3852,
+      "path": "support/source/include/scratchbird/core/sweep_manager.h",
+      "sha256": "1ec8073924b4e70117dd474339767906b2a1ecd5343cdbe0c86923c858d26a3f"
+    },
+    {
+      "bytes": 3961,
+      "path": "support/source/include/scratchbird/core/table_stats_manager.h",
+      "sha256": "00f58743211b4aaa8879b7714296929d9290e84d260c4679c7ec5a28efb81c90"
+    },
+    {
+      "bytes": 13834,
+      "path": "support/source/include/scratchbird/core/tablespace.h",
+      "sha256": "6f37db1680b75746781e7b0982867d203b231fbdc22d7aa4266d7d71481df8ff"
+    },
+    {
+      "bytes": 11561,
+      "path": "support/source/include/scratchbird/core/telemetry.h",
+      "sha256": "5d39632ff348c61247b6a63fd8310140fcc85b87ca1bd089babb0c02cc15234e"
+    },
+    {
+      "bytes": 7125,
+      "path": "support/source/include/scratchbird/core/tid.h",
+      "sha256": "cada4ea43fc6f951ef0d2a94b88574eef5643d4ea803a7ee378fcc3714835bf4"
+    },
+    {
+      "bytes": 6807,
+      "path": "support/source/include/scratchbird/core/tid_resolver.h",
+      "sha256": "93ad7351fdfc48a9fb60b0858f09d4b51cb1dc2903ca348ca4d3767efb9f2ae1"
+    },
+    {
+      "bytes": 6380,
+      "path": "support/source/include/scratchbird/core/timezone.h",
+      "sha256": "7a53ec02d2285bd8b93828acc765ab1fe94cac4c45e3707955d603227cc9be27"
+    },
+    {
+      "bytes": 6113,
+      "path": "support/source/include/scratchbird/core/timezone_loader.h",
+      "sha256": "59186e413a1704ad9ca6d5aaa3a158972a792dec0d5e6f1491ee3c79816b2e3d"
+    },
+    {
+      "bytes": 7292,
+      "path": "support/source/include/scratchbird/core/tip_compaction.h",
+      "sha256": "c0b15342dbeecd43a71ae3322fe8496451dc8026e56416291ba0674ecf3cf444"
+    },
+    {
+      "bytes": 12788,
+      "path": "support/source/include/scratchbird/core/toast.h",
+      "sha256": "19e1ef9d9f4dade7476b633f8335df5ebff3e081f61cf899725d3d60b6b37aeb"
+    },
+    {
+      "bytes": 3007,
+      "path": "support/source/include/scratchbird/core/toast_visibility.h",
+      "sha256": "08a84a62f6707b3ca7756522a2617ec3a065adfc555aa3778246fd15a5c657f9"
+    },
+    {
+      "bytes": 23471,
+      "path": "support/source/include/scratchbird/core/transaction_manager.h",
+      "sha256": "0638ff2194fafb6db6042526699165c5d34b97179a86f0d6fc291f670e6e5ea9"
+    },
+    {
+      "bytes": 4968,
+      "path": "support/source/include/scratchbird/core/ts_config.h",
+      "sha256": "8337121b5bd4575a3beca7c4c3fbe1aa613f954bb19caf256e0d6daafa5251e7"
+    },
+    {
+      "bytes": 3611,
+      "path": "support/source/include/scratchbird/core/ts_functions.h",
+      "sha256": "ce7f0eaa5ea80a1ce2856ebb0d162f49e23818b0c0cfeb3e09ffcbb08313522b"
+    },
+    {
+      "bytes": 4413,
+      "path": "support/source/include/scratchbird/core/ts_operations.h",
+      "sha256": "8cf86b9e2287a13f5bfb73974d485ae5641d13b27413471699857879c6973465"
+    },
+    {
+      "bytes": 7561,
+      "path": "support/source/include/scratchbird/core/tsquery.h",
+      "sha256": "18a50796706776241386fdb41f178eaf387f8049caf73cecd5ee42855d2ce2cb"
+    },
+    {
+      "bytes": 7592,
+      "path": "support/source/include/scratchbird/core/tsvector.h",
+      "sha256": "541e0bb4f7d4af5405e24293d28e158a9b7115d2405cd4dab50cee8d1c3ef958"
+    },
+    {
+      "bytes": 3164,
+      "path": "support/source/include/scratchbird/core/type_extractor.h",
+      "sha256": "625c7e0b8e59dd00d08bedd02500b135a795bf41ecfeb40e99c485c874c37ce7"
+    },
+    {
+      "bytes": 1472,
+      "path": "support/source/include/scratchbird/core/type_serialization.h",
+      "sha256": "e02e55d12d208eb0addf934820d82841e4518ee41e514a793a2e55e8dfeb742c"
+    },
+    {
+      "bytes": 21917,
+      "path": "support/source/include/scratchbird/core/typed_value.h",
+      "sha256": "f31e7223bd8cfefa80788cc7a088b819e0f1af18cf3fdf7c8e079b61eafc203d"
+    },
+    {
+      "bytes": 17101,
+      "path": "support/source/include/scratchbird/core/types.h",
+      "sha256": "08b8b4d96a29026ac61d0875d48890a48eaa47f4f4dc819b2f146975688db047"
+    },
+    {
+      "bytes": 6794,
+      "path": "support/source/include/scratchbird/core/tzfile_parser.h",
+      "sha256": "5efef6ffdd6464d29aaf0f715f0404289bf895a669a4ac5136e977f1b817a060"
+    },
+    {
+      "bytes": 6321,
+      "path": "support/source/include/scratchbird/core/utf8_utils.h",
+      "sha256": "ba1f80b12b973e648dfe722046daffc076f53dcebc0abd90e92b03e1659b3c7f"
+    },
+    {
+      "bytes": 2397,
+      "path": "support/source/include/scratchbird/core/uuidv7.h",
+      "sha256": "b7b1ec4ea6a658d963ffa8d49eadabd60ae6ba68aef4ed7565754f494c46b8fb"
+    },
+    {
+      "bytes": 4521,
+      "path": "support/source/include/scratchbird/core/vector.h",
+      "sha256": "95d48aeccf34290f15d74782bd19bca0cdb7628751b81c3afb7963d320ee576b"
+    },
+    {
+      "bytes": 3195,
+      "path": "support/source/include/scratchbird/core/xml.h",
+      "sha256": "c559c7ac5714659791ecbcac257eb76226abecdfdf63cb752d757c5c940e61ca"
+    },
+    {
+      "bytes": 20690,
+      "path": "support/source/include/scratchbird/fdw/fdw_types.h",
+      "sha256": "fddfd2d089763eba1bc8fd128ad6e85d707b9d14d476261ceec9f91ea48de075"
+    },
+    {
+      "bytes": 5946,
+      "path": "support/source/include/scratchbird/fdw/firebird_adapter.h",
+      "sha256": "37ee7c9dce0f7f8a8775fb1b6faf390dbe444964497f345003253366f8c2da85"
+    },
+    {
+      "bytes": 6206,
+      "path": "support/source/include/scratchbird/fdw/mysql_adapter.h",
+      "sha256": "9b5f8671afb348fbd1790a5076de0c55b0caa2b136ecfd5a753c661771b9cb83"
+    },
+    {
+      "bytes": 6265,
+      "path": "support/source/include/scratchbird/fdw/postgresql_adapter.h",
+      "sha256": "25fe5ff4e4c64093aa0db6cf7bba41786452b4a4bcf75eb8ef3f32acf6e48949"
+    },
+    {
+      "bytes": 13969,
+      "path": "support/source/include/scratchbird/fdw/protocol_adapter.h",
+      "sha256": "dcbee275dc4c3ed0e322fb9531e9ec2e6a19bfbfc9167475a5e92ea7756b1a71"
+    },
+    {
+      "bytes": 18828,
+      "path": "support/source/include/scratchbird/fdw/remote_connection_pool.h",
+      "sha256": "d4f2bc12dceb1cac5675b289c4830577da9f56d50f05833e3cc537b91df04903"
+    },
+    {
+      "bytes": 17974,
+      "path": "support/source/include/scratchbird/network/connection_handler.h",
+      "sha256": "ba68e900bd49405504b710c01aad3f6f9c863858028d0a4c457f2bfe313b162c"
+    },
+    {
+      "bytes": 2903,
+      "path": "support/source/include/scratchbird/network/control_plane.h",
+      "sha256": "720de6522cabf01f5840ed5f9da77d22ff196a204cf23c74aa795941fbd1f70e"
+    },
+    {
+      "bytes": 12246,
+      "path": "support/source/include/scratchbird/network/event_loop.h",
+      "sha256": "cb87c230a64ae24ab618e9d6c35f82aee7d36052db8d83886469762cbcd0ed37"
+    },
+    {
+      "bytes": 2244,
+      "path": "support/source/include/scratchbird/network/network.h",
+      "sha256": "76170fa954aa876d5c0a99c38c059a6c06acf3ceba2e5123388c18b8ae6285c9"
+    },
+    {
+      "bytes": 12212,
+      "path": "support/source/include/scratchbird/network/socket.h",
+      "sha256": "9d4a9d64b28b64aa297c6918aea0feb7ad268a9216460e707df332ec2ed7a406"
+    },
+    {
+      "bytes": 13871,
+      "path": "support/source/include/scratchbird/network/socket_types.h",
+      "sha256": "423a354ad127dac0ed0c5c477c9c0db422a917ba2d3d82ee08eb8a125cb1d157"
+    },
+    {
+      "bytes": 13926,
+      "path": "support/source/include/scratchbird/network/thread_pool.h",
+      "sha256": "e15b68f876a50f6cc885685c0c78edb070857bee78dffd6c75a038d67f7fc7a9"
+    },
+    {
+      "bytes": 105768,
+      "path": "support/source/include/scratchbird/parser/ast_v2.h",
+      "sha256": "1108bdaee1d8f32eeae947d8b41c223eaf7782eec7036c42c515da78686c1d30"
+    },
+    {
+      "bytes": 5106,
+      "path": "support/source/include/scratchbird/parser/firebird/firebird_lexer.h",
+      "sha256": "eefbcaf1d1e60b4ab3ef6263bc5cc33af1504f0d35437ac491b1802c149f253e"
+    },
+    {
+      "bytes": 12786,
+      "path": "support/source/include/scratchbird/parser/firebird/firebird_parser.h",
+      "sha256": "8cc8028e41368d96577ed1f91e112b23be8f2cfd6cbbca14baafd518b43f85cd"
+    },
+    {
+      "bytes": 14303,
+      "path": "support/source/include/scratchbird/parser/firebird/firebird_token.h",
+      "sha256": "9a66d38df08aa5d09422c31e506bab7bed78a8b03a73575bbe4b4748fcfe9946"
+    },
+    {
+      "bytes": 14321,
+      "path": "support/source/include/scratchbird/parser/lexer_v2.h",
+      "sha256": "30e4ffb4336c847716d0f6e9dcc9962742f32e8409b2d684a87c20ee71074d09"
+    },
+    {
+      "bytes": 5604,
+      "path": "support/source/include/scratchbird/parser/mysql/mysql_lexer.h",
+      "sha256": "781b63a004025340d5d7a8369c948eeee06d7bc81875976cd4fc2d05da4cf28a"
+    },
+    {
+      "bytes": 15291,
+      "path": "support/source/include/scratchbird/parser/mysql/mysql_parser.h",
+      "sha256": "eb30e0a0e80d30a18141befc16b5a8f71705cd7180d6b8ae34ceb601abab6bcc"
+    },
+    {
+      "bytes": 11119,
+      "path": "support/source/include/scratchbird/parser/mysql/mysql_token.h",
+      "sha256": "ee16ea3a22bfe54cb28043ef5ed05a1cc39b37467ad684b28dc749ccd553e75d"
+    },
+    {
+      "bytes": 6845,
+      "path": "support/source/include/scratchbird/parser/parser_state_v2.h",
+      "sha256": "11a5659efaf722862a6b604df8683aa53f6dae210054457fc680804579d72b88"
+    },
+    {
+      "bytes": 16358,
+      "path": "support/source/include/scratchbird/parser/parser_v2.h",
+      "sha256": "72350c9dedbcb66331e6c10d6d9d1f4cc6fc44048d4aa0c512096229bac4f428"
+    },
+    {
+      "bytes": 5619,
+      "path": "support/source/include/scratchbird/parser/postgresql/pg_lexer.h",
+      "sha256": "a1bc232ab173c544c8bb323e48ef0f8d74a335e4592ef4ba0a10b50a5a716a0e"
+    },
+    {
+      "bytes": 11929,
+      "path": "support/source/include/scratchbird/parser/postgresql/pg_parser.h",
+      "sha256": "1637ebe381bb0e7aedbe5aa37fabb145092760714e27603eeebfd005b1b00ef0"
+    },
+    {
+      "bytes": 16154,
+      "path": "support/source/include/scratchbird/parser/postgresql/pg_token.h",
+      "sha256": "7fb4981a9fc374285413d42c463598881a7c1897b5d7d46a0713c5ff6fe5c26d"
+    },
+    {
+      "bytes": 7508,
+      "path": "support/source/include/scratchbird/parser/schema_path_v2.h",
+      "sha256": "bdf7bc8b31411e8faaf50652afdebd0a4fae7e3ed588cb028050312151179ca6"
+    },
+    {
+      "bytes": 8148,
+      "path": "support/source/include/scratchbird/parser/shared_types.h",
+      "sha256": "06c0ef8a345610d77d139c2d8cee23fe399ef6b20109ea46187a5c64b3558445"
+    },
+    {
+      "bytes": 26174,
+      "path": "support/source/include/scratchbird/protocol/adapters/firebird_adapter.h",
+      "sha256": "820286318b8330a094152276dcb37fc197519e923918ae3a1cd64ee15aacccee"
+    },
+    {
+      "bytes": 21135,
+      "path": "support/source/include/scratchbird/protocol/adapters/mysql_adapter.h",
+      "sha256": "291cc984a024b4a5f48932e9ca0b5df38f286c772d5a241d664ee2d325616538"
+    },
+    {
+      "bytes": 13978,
+      "path": "support/source/include/scratchbird/protocol/adapters/native_adapter.h",
+      "sha256": "07722a753d5ae8b6980adbebf39be4aefa45a6f9592914c1fc750ea4ba47edf9"
+    },
+    {
+      "bytes": 22124,
+      "path": "support/source/include/scratchbird/protocol/adapters/postgresql_adapter.h",
+      "sha256": "10b8ce3420366b7b6e0c213c281041204249ab1adb5541853869d1b73abc0a20"
+    },
+    {
+      "bytes": 14750,
+      "path": "support/source/include/scratchbird/protocol/adapters/protocol_adapter.h",
+      "sha256": "e7312c633bad12261aee22239587a0e778ad883a23cecbfd8c68b19ec9751f33"
+    },
+    {
+      "bytes": 15761,
+      "path": "support/source/include/scratchbird/protocol/sbwp_protocol.h",
+      "sha256": "c65b59b35c764489a58fcb09eafd40713b4faafa11a19adcea206e336ac20752"
+    },
+    {
+      "bytes": 3991,
+      "path": "support/source/include/scratchbird/protocol/translation_cache.h",
+      "sha256": "ae45377bcd38632afc8e307ead973fd4fcc449b9ce8a7767d70f0b108405b5ca"
+    },
+    {
+      "bytes": 40905,
+      "path": "support/source/include/scratchbird/protocol/wire_protocol.h",
+      "sha256": "121725204fc0e29225d6605efc5235ae07b2f118ecd6abcb291fe3b3024e5df1"
+    },
+    {
+      "bytes": 15941,
+      "path": "support/source/include/scratchbird/sblr/bytecode_generator_v2.h",
+      "sha256": "49a294f888fc3961e3c272300dc49513ccebd395c63ed2821d3d0a33ea68df05"
+    },
+    {
+      "bytes": 715,
+      "path": "support/source/include/scratchbird/sblr/bytecode_validator.h",
+      "sha256": "b11d68fd088501b4fc513796beddca78a6a5150a61e1764785c6af341e9aed0f"
+    },
+    {
+      "bytes": 72102,
+      "path": "support/source/include/scratchbird/sblr/executor.h",
+      "sha256": "beb79cea874d0e22df7298bfe49fdbf30336830931d78c1d6d00832ea1ede794"
+    },
+    {
+      "bytes": 6902,
+      "path": "support/source/include/scratchbird/sblr/expression_evaluator.h",
+      "sha256": "a8495a59292295222093090dad3db3eafc46dbe89512eb88e0ff08cf0277ba48"
+    },
+    {
+      "bytes": 770,
+      "path": "support/source/include/scratchbird/sblr/extract_element_catalog.h",
+      "sha256": "cf45733a1d06c902ea10365201716cf0ba289e3719cd9682e50eeb9112ebd08b"
+    },
+    {
+      "bytes": 1093,
+      "path": "support/source/include/scratchbird/sblr/extract_element_ops.h",
+      "sha256": "ce2a2ed7bfdc41d414e0e9a12f51a77cc42c17a70b1d670fe921744e082d48e1"
+    },
+    {
+      "bytes": 4603,
+      "path": "support/source/include/scratchbird/sblr/firebird_query_compiler.h",
+      "sha256": "58fd2a09cf537423b094a69a091d142c2c27b1372af36f1b030ba75c7c1dbdb8"
+    },
+    {
+      "bytes": 2079,
+      "path": "support/source/include/scratchbird/sblr/gin_extractors.h",
+      "sha256": "5a4a202e39af5818a85780e3d47529e036910cf203ba62fec9d7696ba67017fc"
+    },
+    {
+      "bytes": 4708,
+      "path": "support/source/include/scratchbird/sblr/index_cache.h",
+      "sha256": "e93688c54b049c8d923a7de396105d543aa0970021f64725ba58f825ab01b557"
+    },
+    {
+      "bytes": 2916,
+      "path": "support/source/include/scratchbird/sblr/mysql_query_compiler.h",
+      "sha256": "93f32ea1d57d3f1c01f32f8aa1c90d3ec5318cab561d0f41d3a4f660332e3753"
+    },
+    {
+      "bytes": 117127,
+      "path": "support/source/include/scratchbird/sblr/opcodes.h",
+      "sha256": "6b48389ec7bbf6562e72636bcdd5ed2cc595541e839568238a00f422bc5b3592"
+    },
+    {
+      "bytes": 5082,
+      "path": "support/source/include/scratchbird/sblr/postgresql_query_compiler.h",
+      "sha256": "3c73ccf213b1e4c92d984183d5b1e6c81394ccc70346e123172ee3a5264d673f"
+    },
+    {
+      "bytes": 7258,
+      "path": "support/source/include/scratchbird/sblr/query_compiler_v2.h",
+      "sha256": "60b0403343413dd52c1250945d6365975e93a09e6ceeaf6d63cca6669a9a7533"
+    },
+    {
+      "bytes": 2285,
+      "path": "support/source/include/scratchbird/sblr/query_limits.h",
+      "sha256": "e4b254ce9b65937c9d8b624368cb212bd2071919775ac8bce054fc1936e24bcf"
+    },
+    {
+      "bytes": 8497,
+      "path": "support/source/include/scratchbird/sblr/query_result_cache.h",
+      "sha256": "32edc622e8f4a2069a45434ad9cd95358b54578da59dc9062f8ce929069bf575"
+    },
+    {
+      "bytes": 61675,
+      "path": "support/source/include/scratchbird/sblr/resolved_ast_v2.h",
+      "sha256": "d08dc0bd5cf907e9b40b34c99366c860a9683d85f6f219fb3cfbef0c48b255cb"
+    },
+    {
+      "bytes": 21496,
+      "path": "support/source/include/scratchbird/sblr/semantic_analyzer_v2.h",
+      "sha256": "39a3a10b30f5c41105728915f9a19047bcd6abaed66e61e27e6c04599b740c80"
+    },
+    {
+      "bytes": 12876,
+      "path": "support/source/include/scratchbird/server/config_parser.h",
+      "sha256": "5b7162b3862511c525a0d60461b5706af3b1c4939ec6b4f3b5b89db15dc39512"
+    },
+    {
+      "bytes": 12575,
+      "path": "support/source/include/scratchbird/server/daemon.h",
+      "sha256": "6844d3b2bc2b34ad05202f0dda908d2aa7c0159cc037e96a9aad5a73fe6c6a96"
+    },
+    {
+      "bytes": 13450,
+      "path": "support/source/include/scratchbird/server/ipc_server.h",
+      "sha256": "bcd93b528bd9264f9b9d4d9ea4c024693c92c3227e4003c47ae1b1ecea524ed2"
+    },
+    {
+      "bytes": 9424,
+      "path": "support/source/include/scratchbird/server/scratchbird_server.h",
+      "sha256": "e766adf48534498b0aa9ac13e1124b6a5fcb755fae7bd33abcae0ab9a39e852b"
+    },
+    {
+      "bytes": 13437,
+      "path": "support/source/include/scratchbird/server/server_session.h",
+      "sha256": "e31b8e11cf12865199112c7a9e027c0a66131130e16ca1f12217eaaeb4e3ac60"
+    },
+    {
+      "bytes": 17437,
+      "path": "support/source/include/scratchbird/server/service_controller.h",
+      "sha256": "67d185756e54d70d8dc60ef69c1d11494e3b5fcc0631f6b6f42320ba08029158"
+    },
+    {
+      "bytes": 9332,
+      "path": "support/source/isql_common.h",
+      "sha256": "9ad28447f4e8b5b4f498433ab328dea03d014798e132b7c227f9f96aa0c25e5d"
+    },
+    {
+      "bytes": 7684,
+      "path": "support/source/metadata_shaping.cpp",
+      "sha256": "58edd9a21973396b2c1053accb23c46560e622d4fef40249614610005332fcfc"
+    },
+    {
+      "bytes": 1584,
+      "path": "support/source/metadata_shaping.h",
+      "sha256": "860fb7965980b62c87141679b48d785d9c690c091b97f013d4adfaf448c84693"
+    },
+    {
+      "bytes": 4590,
+      "path": "support/source/metadata_shaping_test.cpp",
+      "sha256": "7a5cb26fb22190d642c8ed1210a04977028e23a4549cb2c60f2aed53b9c41575"
+    },
+    {
+      "bytes": 3195,
+      "path": "support/source/package_contract.json",
+      "sha256": "d0f51235c5b7e81fba21af65980eedb311c2bf25d5f11e0fc16b2613bd43b026"
+    },
+    {
+      "bytes": 2161,
+      "path": "support/source/package_contract_smoke.py",
+      "sha256": "6b226519f5b831ff55e62d7699ce3c6c838e4fa10c84ed995d9aeb8595da8c03"
+    },
+    {
+      "bytes": 7899,
+      "path": "support/source/res_lifecycle_parity.cpp",
+      "sha256": "7d17201b50c6664d6304a9bf4738c34a6cad8c2839d6accd68c5d17188555d9b"
+    },
+    {
+      "bytes": 2012,
+      "path": "support/source/res_lifecycle_parity.h",
+      "sha256": "b4f7c612f8655c59a9a60343eb3a2ebd261d9a43e295384accb389da846739cf"
+    },
+    {
+      "bytes": 7276,
+      "path": "support/source/res_lifecycle_parity_test.cpp",
+      "sha256": "cfc07f95aa936cc4db96787e7b2aaaaebd5626c569098dd5c5056cac8cae6242"
+    },
+    {
+      "bytes": 35358,
+      "path": "support/source/sb_admin.cpp",
+      "sha256": "52395adc3721f72046001dd4f2058ba567b4bc38509944f962c5102042565a8c"
+    },
+    {
+      "bytes": 22766,
+      "path": "support/source/sb_backup.cpp",
+      "sha256": "b3160678402f3c27921c97c8a32289f5f8476e5b69a19268b5907e7499337829"
+    },
+    {
+      "bytes": 43133,
+      "path": "support/source/sb_fb_isql.cpp",
+      "sha256": "317bdafa05339434b10b3e50c00d3f9e7c0f9d80db99e534ee4072e50e285d4e"
+    },
+    {
+      "bytes": 175653,
+      "path": "support/source/sb_isql.cpp",
+      "sha256": "aa2a2906552b0ac7ba63ea0d30c4762031a66bbde8f9d2170c170f69b0b753f7"
+    },
+    {
+      "bytes": 8543,
+      "path": "support/source/sb_my_isql.cpp",
+      "sha256": "0442ba70636c1f7cc6a5195f6b71968341615f94876b5a8ab8a0d9605a9b7d24"
+    },
+    {
+      "bytes": 8564,
+      "path": "support/source/sb_pg_isql.cpp",
+      "sha256": "30ab48f97e1c9bda37b0332dd668b51c103aa33bb9c5a6c353ccb969b029bae2"
+    },
+    {
+      "bytes": 45710,
+      "path": "support/source/sb_security.cpp",
+      "sha256": "1dfbd078f1f6389c5bddaf4f2643823549f3a572e8bf1601a94296ba9b3afd21"
+    },
+    {
+      "bytes": 15886,
+      "path": "support/source/sb_verify.cpp",
+      "sha256": "467f7ae75d605ec0e732e7362301b2927355865fbc125a33b18ae6b26f4091d2"
+    },
+    {
+      "bytes": 63574,
+      "path": "support/source/sbdriver_conformance.cpp",
+      "sha256": "e8b780f1381c7ccf0eccd172f450b58efb1cc7f7c5ca90feb42c00f29acf6e92"
+    },
+    {
+      "bytes": 14774,
+      "path": "support/source/txn_exec_parity.cpp",
+      "sha256": "dd9abf9ddd75103ac5600951a29bd343986647131b04b7b14cdcdefde0968de8"
+    },
+    {
+      "bytes": 2629,
+      "path": "support/source/txn_exec_parity.h",
+      "sha256": "04fee2967740816404d171521cee5d28c28c907ed2998d95c67a2ea4140e9489"
+    },
+    {
+      "bytes": 15744,
+      "path": "support/source/txn_exec_parity_test.cpp",
+      "sha256": "b422915c747444159c4343e70ade18012d91f1f38718ff1b470a3be12caf6953"
+    },
+    {
+      "bytes": 441,
+      "path": "support/support_bundle_manifest.json",
+      "sha256": "8b2045a62925375c8e3b07351fde8dd7187e4ec37b8f8b33634cfb2b65f37b1a"
+    }
+  ],
+  "driver": "cli",
+  "generated_at_utc": "2026-07-01T10:26:11+00:00",
+  "schema_id": "scratchbird.driver_package_sbom.v1"
+}

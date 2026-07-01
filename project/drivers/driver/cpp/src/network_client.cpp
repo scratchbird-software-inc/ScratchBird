@@ -390,20 +390,6 @@ bool canAdoptFreshNativeBoundary(const NetworkClient::TransactionOptions& option
            options.timeout_ms == 0;
 }
 
-bool querySupportsServerAutocommit(std::string_view sql) {
-    const std::string token = firstSqlTokenUpper(sql);
-    if (token == "BEGIN" ||
-        token == "COMMIT" ||
-        token == "COPY" ||
-        token == "RELEASE" ||
-        token == "ROLLBACK" ||
-        token == "SAVEPOINT" ||
-        token == "START") {
-        return false;
-    }
-    return !token.empty();
-}
-
 std::vector<uint32_t> inferParameterTypesFromSql(std::string_view sql) {
     std::size_t question_count = 0;
     std::size_t max_dollar_index = 0;
@@ -2865,10 +2851,6 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
         }
     }
     uint32_t query_flags = protocol::kQueryFlagBinaryResult | extra_query_flags;
-    if (config_.autocommit && !explicit_transaction_active_ &&
-        querySupportsServerAutocommit(sql)) {
-        query_flags |= protocol::kQueryFlagAutocommit;
-    }
     const uint32_t estimated_statement_count = estimateTopLevelStatementCount(sql);
     protocol::QueryScriptMetadata script_metadata{};
     const protocol::QueryScriptMetadata* script_metadata_ptr = nullptr;
@@ -3257,10 +3239,6 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
         return status;
     }
     uint32_t execute_flags = 0;
-    if (config_.autocommit && !explicit_transaction_active_ &&
-        querySupportsServerAutocommit(stmt.sql_)) {
-        execute_flags |= protocol::kExecuteFlagAutocommit;
-    }
     auto exec_payload = protocol::buildExecutePayload(portal_name, 0, execute_flags);
     uint32_t seq = 0;
     traceWireEvent("execute_prepared_execute_send", protocol::MessageType::Execute, next_sequence_, in_transaction_);
@@ -3426,10 +3404,6 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
         return status;
     }
     uint32_t execute_flags = 0;
-    if (config_.autocommit && !explicit_transaction_active_ && max_rows == 0 &&
-        querySupportsServerAutocommit(it->second.sql_)) {
-        execute_flags |= protocol::kExecuteFlagAutocommit;
-    }
     auto exec_payload = protocol::buildExecutePayload(portal_name, max_rows, execute_flags);
     uint32_t seq = 0;
     status = sendMessage(protocol::MessageType::Execute, exec_payload, 0, false, &seq, ctx);
@@ -5214,6 +5188,16 @@ core::Status NetworkClient::errorAfterStatement(const protocol::ProtocolMessage&
     const bool server_finality_requested = serverAutocommitRequested();
     const uint64_t transaction_before_error = current_txn_id_;
     const core::Status statement_status = handleErrorResponse(msg, ctx);
+    core::Status statement_code = core::Status::OK;
+    std::string statement_sqlstate;
+    std::string statement_message;
+    std::string statement_hint;
+    if (ctx != nullptr) {
+        statement_code = ctx->code;
+        statement_sqlstate = ctx->sqlstate == nullptr ? "" : ctx->sqlstate;
+        statement_message = ctx->message;
+        statement_hint = ctx->hint;
+    }
     const bool server_finality_completed =
         server_finality_requested && current_txn_id_ != transaction_before_error;
     if (server_finality_requested && !server_finality_completed) {
@@ -5223,6 +5207,25 @@ core::Status NetworkClient::errorAfterStatement(const protocol::ProtocolMessage&
     if (server_finality_requested) {
         server_autocommit_requested_ = false;
         last_query_sequence_ = 0;
+    }
+    if (finality_status != core::Status::OK && statement_status != core::Status::OK) {
+        if (ctx != nullptr) {
+            const std::string finality_message = ctx->message;
+            ctx->code = statement_code;
+            ctx->message = statement_message;
+            if (!statement_sqlstate.empty()) {
+                ctx->setSQLState(statement_sqlstate.c_str());
+            }
+            ctx->hint = statement_hint;
+            if (!finality_message.empty()) {
+                if (!ctx->hint.empty()) {
+                    ctx->hint += "; ";
+                }
+                ctx->hint += "autocommit rollback after statement error also failed: " +
+                             finality_message;
+            }
+        }
+        return statement_status;
     }
     return finality_status == core::Status::OK ? statement_status : finality_status;
 }

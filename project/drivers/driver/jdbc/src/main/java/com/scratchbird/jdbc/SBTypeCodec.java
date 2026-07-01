@@ -14,6 +14,7 @@ package com.scratchbird.jdbc;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -547,7 +548,7 @@ public final class SBTypeCodec {
             case OID_INT4:
                 return Integer.parseInt(text);
             case OID_INT8:
-                return Long.parseLong(text);
+                return parseIntegerLikeText(text);
             case OID_FLOAT4:
                 return Float.parseFloat(text);
             case OID_FLOAT8:
@@ -570,6 +571,22 @@ public final class SBTypeCodec {
                 return UUID.fromString(text);
             default:
                 return text;
+        }
+    }
+
+    private static Object parseIntegerLikeText(String text) {
+        String trimmed = text.trim();
+        if (!trimmed.matches("[+-]?\\d+")) {
+            try {
+                return new BigDecimal(trimmed);
+            } catch (NumberFormatException ex) {
+                return text;
+            }
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException ex) {
+            return new BigInteger(trimmed);
         }
     }
 
@@ -1149,7 +1166,7 @@ public final class SBTypeCodec {
             case "integer":
                 return Integer.parseInt(text);
             case "bigint":
-                return Long.parseLong(text);
+                return parseIntegerLikeText(text);
             case "real":
                 return Float.parseFloat(text);
             case "double precision":

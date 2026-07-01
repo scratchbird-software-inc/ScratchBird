@@ -17,16 +17,25 @@ use ScratchBird\PDO\Sql;
  */
 final class SqlChunkerConformanceTest extends TestCase
 {
-    private const FIXTURE =
-        __DIR__ . '/../../../../tests/conformance/drivers/chunker_conformance/cases.json';
+    private const FIXTURES = [
+        __DIR__ . '/../../../../tests/conformance/drivers/chunker_conformance/cases.json',
+        __DIR__ . '/../../../../../project/tests/conformance/drivers/chunker_conformance/cases.json',
+        __DIR__ . '/../../../../../../project/tests/conformance/drivers/chunker_conformance/cases.json',
+    ];
 
     /**
      * @return array<int, mixed>
      */
     private function cases(): array
     {
-        $path = realpath(self::FIXTURE);
-        $this->assertNotFalse($path, 'conformance fixture not found: ' . self::FIXTURE);
+        $path = false;
+        foreach (self::FIXTURES as $fixture) {
+            $path = realpath($fixture);
+            if ($path !== false) {
+                break;
+            }
+        }
+        $this->assertNotFalse($path, 'conformance fixture not found');
         $data = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
         return $data['cases'];
     }

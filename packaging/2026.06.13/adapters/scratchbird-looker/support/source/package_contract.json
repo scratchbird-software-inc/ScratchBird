@@ -1,0 +1,90 @@
+{
+  "component_id": "adaptor:scratchbird-looker",
+  "category": "adaptor",
+  "name": "scratchbird-looker",
+  "driver_family": "looker",
+  "status": "beta_2",
+  "release_scope": "in_scope_required",
+  "release_bucket": "release_candidate",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "server_revalidation_required": true,
+  "driver_local_authority": "advisory_only",
+  "api_surface": [
+    "connection_profile",
+    "sql_runner",
+    "lookml_sql_table_name",
+    "explore_metadata",
+    "persistent_derived_table"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "delegation_posture": {
+    "mode": "delegates_to_jdbc",
+    "target_component": "driver:jdbc",
+    "host_runtime": "Looker JDBC integration",
+    "authority_boundaries": [
+      "adapter may shape LookML connection and PDT metadata requests",
+      "JDBC driver handles transport and protocol binding",
+      "server revalidates authentication, authorization, SBLR, UUID, cache, schema, and transaction claims",
+      "MGA transaction finality remains engine-owned"
+    ],
+    "lane_specific_proof": [
+      "looker_jdbc_profile_smoke",
+      "looker_sql_runner_metadata_smoke",
+      "package_contract_gate"
+    ]
+  },
+  "artifact_verification": {
+    "package_type": "looker_jdbc_adapter_bundle",
+    "build_command": "python3 project/drivers/scripts/driver_component_runner.py --component adaptor:scratchbird-looker",
+    "install_smoke": "Looker profile metadata smoke using delegated JDBC driver",
+    "expected_outputs": [
+      "package_contract.json"
+    ],
+    "sbom": "release_gate_required",
+    "signing": "release_gate_required",
+    "license": "MPL-2.0"
+  },
+  "best_in_class_deltas": [
+    {
+      "comparator": "looker-postgresql-jdbc",
+      "delta": "connection profile, SQL Runner, LookML table naming, explore metadata, and PDT behavior",
+      "proof": "looker_adapter_lane_native_smoke_or_exact_refusal"
+    },
+    {
+      "comparator": "looker-postgresql-jdbc",
+      "delta": "PDT and metadata operations keep server-side authorization and transaction boundaries",
+      "proof": "authorization_shared_suite"
+    }
+  ],
+  "dbeaver_exclusion": {
+    "excluded_component_id": "adaptor:scratchbird-dbeaver-driver",
+    "excluded_source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+    "release_controller_status": "separate_controller_out_of_scope",
+    "this_artifact_includes_dbeaver": false
+  },
+  "package_files": [
+    "package_contract.json"
+  ]
+}

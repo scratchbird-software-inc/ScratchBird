@@ -53,7 +53,13 @@ const {
   validateLanguageResourceState,
   validatePreparedBundleReuse,
 } = require("../dist/index.js");
-const { AuthMethod, MessageType, applyAuthPluginSelection } = require("../dist/protocol.js");
+const {
+  AuthMethod,
+  MessageType,
+  QUERY_FLAG_BINARY_RESULT,
+  applyAuthPluginSelection,
+  buildQueryPayload,
+} = require("../dist/protocol.js");
 const packageMetadata = require("../package.json");
 
 test("parseDsn supports uri", () => {
@@ -140,6 +146,14 @@ test("language resources fall back to standard English and reject stale epochs",
 test("package smoke reports MPL license", () => {
   assert.equal(packageMetadata.name, "scratchbird");
   assert.equal(packageMetadata.license, "MPL-2.0");
+});
+
+test("copy query payload can use binary-result framing", () => {
+  const payload = buildQueryPayload("COPY users.public.t FROM STDIN", QUERY_FLAG_BINARY_RESULT, 0, 0);
+  assert.equal(payload.readUInt32LE(0), QUERY_FLAG_BINARY_RESULT);
+  assert.equal(payload.readUInt32LE(4), 0);
+  assert.equal(payload.readUInt32LE(8), 0);
+  assert.equal(payload.subarray(12).toString("utf8"), "COPY users.public.t FROM STDIN");
 });
 
 test("parseDsn supports key-value", () => {
@@ -357,6 +371,17 @@ function makeParameterStatusPayload(name, value) {
   payload.writeUInt32LE(valueBuffer.length, 4 + nameBuffer.length);
   valueBuffer.copy(payload, 8 + nameBuffer.length);
   return payload;
+}
+
+function makeErrorPayload(fields) {
+  const parts = [];
+  for (const [tag, value] of Object.entries(fields)) {
+    parts.push(Buffer.from(tag, "ascii"));
+    parts.push(Buffer.from(String(value), "utf8"));
+    parts.push(Buffer.from([0]));
+  }
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
 }
 
 function createQueuedProtocol(queueEntries = []) {
@@ -814,6 +839,22 @@ test("TXN_STATUS updates can mark and clear active native boundaries", () => {
   assert.equal(idleHandled, true);
   assert.equal(client.transactionActive, false);
   assert.equal(client.protocol.getTxnId(), 0n);
+});
+
+test("drainUntilReady consumes replacement READY after ERROR before throwing", async () => {
+  const client = new Client({ user: "me", database: "db" });
+  const protocol = createQueuedProtocol([
+    {
+      header: { type: MessageType.ERROR },
+      payload: makeErrorPayload({ C: "HY000", M: "statement refused" }),
+    },
+    makeReadyMessage(123n),
+  ]);
+  client.protocol = protocol;
+
+  await assert.rejects(() => client.drainUntilReady(), /statement refused/);
+  assert.equal(protocol.getTxnId(), 123n);
+  assert.equal(client.transactionActive, true);
 });
 
 test("autocommit toggle drives implicit begin and commit", async () => {

@@ -38,65 +38,74 @@ chunk_set_term <- function(chunk) {
 split_top_level_statements <- function(sql) {
   statements <- list()
   term <- ";"
-  chars <- strsplit(sql, "", fixed = TRUE)[[1]]
-  length_chars <- length(chars)
-  term_chars <- strsplit(term, "", fixed = TRUE)[[1]]
-  buf <- character(0)
+  lines <- strsplit(sql, "\n", fixed = TRUE)[[1]]
+  if (length(lines) == 0) return(character())
   in_single <- FALSE
   in_double <- FALSE
-  i <- 1
+  buf <- character(0)
 
-  matches_term <- function(pos) {
-    tl <- length(term_chars)
-    if (tl == 0 || pos + tl - 1 > length_chars) return(FALSE)
-    all(chars[pos:(pos + tl - 1)] == term_chars)
+  append_piece <- function(piece) {
+    if (nzchar(piece)) {
+      buf[[length(buf) + 1]] <<- piece
+    }
   }
 
   flush <- function() {
     chunk <- trimws(paste(buf, collapse = ""))
+    buf <<- character(0)
     if (!nzchar(chunk)) return(invisible(NULL))
     new_term <- chunk_set_term(chunk)
     if (!is.null(new_term)) {
       term <<- new_term
-      term_chars <<- strsplit(term, "", fixed = TRUE)[[1]]
       return(invisible(NULL))
     }
     statements[[length(statements) + 1]] <<- chunk
     invisible(NULL)
   }
 
-  while (i <= length_chars) {
-    ch <- chars[i]
-    if (!in_single && !in_double && ch == "-" && i + 1 <= length_chars && chars[i + 1] == "-") {
-      # `--` line comment: consume to end of line verbatim, without scanning for
-      # the terminator or quotes inside it.
-      eol <- i
-      while (eol <= length_chars && chars[eol] != "\n") eol <- eol + 1
-      buf <- c(buf, chars[i:(eol - 1)])
-      i <- eol
-      next
-    }
-    if (ch == "'" && !in_double) {
-      in_single <- !in_single
-      buf <- c(buf, ch)
+  for (line_index in seq_along(lines)) {
+    line <- lines[[line_index]]
+    n <- nchar(line, type = "chars", allowNA = FALSE, keepNA = FALSE)
+    i <- 1
+    segment_start <- 1
+    while (i <= n) {
+      ch <- substr(line, i, i)
+      if (!in_single && !in_double && ch == "-" && i + 1 <= n && substr(line, i + 1, i + 1) == "-") {
+        append_piece(substr(line, segment_start, n))
+        segment_start <- n + 1
+        i <- n + 1
+        break
+      }
+      if (ch == "'" && !in_double) {
+        in_single <- !in_single
+        i <- i + 1
+        next
+      }
+      if (ch == '"' && !in_single) {
+        in_double <- !in_double
+        i <- i + 1
+        next
+      }
+      term_len <- nchar(term, type = "chars", allowNA = FALSE, keepNA = FALSE)
+      if (!in_single && !in_double && term_len > 0 &&
+          i + term_len - 1 <= n &&
+          identical(substr(line, i, i + term_len - 1), term)) {
+        if (i > segment_start) {
+          append_piece(substr(line, segment_start, i - 1))
+        }
+        flush()
+        i <- i + term_len
+        segment_start <- i
+        next
+      }
       i <- i + 1
-      next
     }
-    if (ch == '"' && !in_single) {
-      in_double <- !in_double
-      buf <- c(buf, ch)
-      i <- i + 1
-      next
+    if (segment_start <= n) {
+      append_piece(substr(line, segment_start, n))
     }
-    if (!in_single && !in_double && matches_term(i)) {
-      matched_len <- length(term_chars)  # capture before flush(), which may change term
-      flush()
-      buf <- character(0)
-      i <- i + matched_len
-      next
+    if (line_index < length(lines) && length(buf) > 0) {
+      append_piece("\n")
     }
-    buf <- c(buf, ch)
-    i <- i + 1
   }
   flush()
   vapply(statements, identity, character(1))

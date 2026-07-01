@@ -37,6 +37,7 @@ type Config struct {
 	ConnectTimeout              time.Duration
 	SocketTimeout               time.Duration
 	Application                 string
+	Autocommit                  bool
 	BinaryTransfer              bool
 	Compression                 string
 	FetchSize                   uint32
@@ -74,6 +75,7 @@ func defaultConfig() Config {
 		ConnectTimeout:           30 * time.Second,
 		SocketTimeout:            0,
 		Application:              "scratchbird_go",
+		Autocommit:               true,
 		BinaryTransfer:           true,
 		Compression:              "off",
 		FetchSize:                0,
@@ -280,6 +282,8 @@ func applyParam(cfg *Config, key, value string) error {
 		}
 	case "application_name", "applicationname":
 		cfg.Application = value
+	case "autocommit", "auto_commit", "auto-commit":
+		cfg.Autocommit = parseBoolParam(value)
 	case "binary_transfer", "binarytransfer":
 		cfg.BinaryTransfer = parseBoolParam(value)
 	case "compression":

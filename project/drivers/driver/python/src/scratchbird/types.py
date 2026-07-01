@@ -374,14 +374,16 @@ def _decode_text_value(data: bytes) -> str:
 def _decode_text_typed_value(type_oid: int, data: bytes) -> Any:
     text = _decode_text_value(data)
     stripped = text.strip()
+    if stripped == "" or stripped.upper() in {"<NULL>", "NULL"}:
+        return None
     if type_oid == OID_BOOL:
         return stripped.lower() in ("t", "true")
     if type_oid == OID_INT2:
-        return int(stripped)
+        return _decode_text_integer(stripped)
     if type_oid == OID_INT4:
-        return int(stripped)
+        return _decode_text_integer(stripped)
     if type_oid == OID_INT8:
-        return int(stripped)
+        return _decode_text_integer(stripped)
     if type_oid == OID_FLOAT4:
         return float(stripped)
     if type_oid == OID_FLOAT8:
@@ -421,6 +423,31 @@ def _decode_text_typed_value(type_oid: int, data: bytes) -> Any:
     if type_oid == OID_SB_VECTOR:
         return _parse_vector_literal(stripped)
     return text
+
+
+def _decode_text_integer(stripped: str) -> int | _decimal.Decimal:
+    try:
+        return int(stripped)
+    except ValueError:
+        if _looks_decimal_text(stripped):
+            return _decimal.Decimal(stripped)
+        if _looks_hex_byte_text(stripped):
+            return _decode_bytea_text(stripped)
+        raise
+
+
+def _looks_decimal_text(value: str) -> bool:
+    return re.fullmatch(r"[+-]?(?:\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?", value) is not None
+
+
+def _looks_hex_byte_text(value: str) -> bool:
+    hex_text = value[2:] if value.startswith(("0x", "\\x")) else value
+    return (
+        len(hex_text) > 0
+        and (len(hex_text) % 2 == 0)
+        and re.search(r"(?i)[a-f]", hex_text) is not None
+        and re.fullmatch(r"(?i)[0-9a-f]+", hex_text) is not None
+    )
 
 
 def _normalize_temporal_text(value: str) -> str:

@@ -18,6 +18,7 @@
 #include "scratchbird/odbc/metadata_helpers.h"
 #include "scratchbird/odbc/odbc_client_bridge.h"
 #include "scratchbird/core/status.h"
+#include "sb_statement_chunker.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -459,71 +460,57 @@ std::string quoteSqlLiteral(const std::string& value) {
     return quoted;
 }
 
+std::vector<std::string> leadingSqlTokens(const std::string& sql, size_t limit) {
+    std::vector<std::string> tokens;
+    size_t i = 0;
+    while (i < sql.size() && tokens.size() < limit) {
+        while (i < sql.size() && std::isspace(static_cast<unsigned char>(sql[i]))) {
+            ++i;
+        }
+        if (i + 1 < sql.size() && sql[i] == '-' && sql[i + 1] == '-') {
+            i = sql.find('\n', i);
+            if (i == std::string::npos) {
+                break;
+            }
+            continue;
+        }
+        if (i >= sql.size()) {
+            break;
+        }
+        if (!(std::isalpha(static_cast<unsigned char>(sql[i])) || sql[i] == '_')) {
+            ++i;
+            continue;
+        }
+        const size_t begin = i;
+        while (i < sql.size() &&
+               (std::isalnum(static_cast<unsigned char>(sql[i])) || sql[i] == '_' || sql[i] == '$')) {
+            ++i;
+        }
+        std::string token = sql.substr(begin, i - begin);
+        for (char& ch : token) {
+            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        }
+        tokens.push_back(std::move(token));
+    }
+    return tokens;
+}
+
+bool isSingleStatementProceduralDdl(const std::string& sql) {
+    const auto tokens = leadingSqlTokens(sql, 4);
+    if (tokens.size() < 2 || tokens[0] != "CREATE") {
+        return false;
+    }
+    const std::string& family = tokens[1];
+    return family == "TRIGGER" || family == "FUNCTION" || family == "PROCEDURE" ||
+           family == "PACKAGE";
+}
+
 std::vector<std::string> splitSqlStatements(const std::string& sql) {
-    std::vector<std::string> statements;
-    std::string current;
-    current.reserve(sql.size());
-
-    bool in_single = false;
-    bool in_double = false;
-
-    for (size_t i = 0; i < sql.size(); ++i) {
-        char ch = sql[i];
-
-        if (in_single) {
-            current.push_back(ch);
-            if (ch == '\'') {
-                if (i + 1 < sql.size() && sql[i + 1] == '\'') {
-                    current.push_back(sql[++i]);
-                } else {
-                    in_single = false;
-                }
-            }
-            continue;
-        }
-
-        if (in_double) {
-            current.push_back(ch);
-            if (ch == '"') {
-                if (i + 1 < sql.size() && sql[i + 1] == '"') {
-                    current.push_back(sql[++i]);
-                } else {
-                    in_double = false;
-                }
-            }
-            continue;
-        }
-
-        if (ch == '\'') {
-            in_single = true;
-            current.push_back(ch);
-            continue;
-        }
-
-        if (ch == '"') {
-            in_double = true;
-            current.push_back(ch);
-            continue;
-        }
-
-        if (ch == ';') {
-            std::string trimmed = trimString(current);
-            if (!trimmed.empty()) {
-                statements.push_back(std::move(trimmed));
-            }
-            current.clear();
-            continue;
-        }
-
-        current.push_back(ch);
+    if (isSingleStatementProceduralDdl(sql)) {
+        const std::string trimmed = trimString(sql);
+        return trimmed.empty() ? std::vector<std::string>{} : std::vector<std::string>{trimmed};
     }
-
-    std::string trimmed = trimString(current);
-    if (!trimmed.empty()) {
-        statements.push_back(std::move(trimmed));
-    }
-
-    return statements;
+    return sbchunk::splitStatements(sql);
 }
 
 std::string toUpper(std::string value) {
@@ -902,20 +889,20 @@ bool buildIsolationSql(SQLUINTEGER isolation, std::string& out_sql) {
     // standard SQL_ATTR_TXN_ISOLATION surface.
     switch (isolation) {
         case SQL_TXN_READ_UNCOMMITTED:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED ON CONFLICT COMMIT";
             return true;
         case SQL_TXN_READ_COMMITTED:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED ON CONFLICT COMMIT";
             return true;
         case SQL_TXN_REPEATABLE_READ:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ ON CONFLICT COMMIT";
             return true;
         case SQL_TXN_SERIALIZABLE:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE ON CONFLICT COMMIT";
             return true;
 #ifdef SQL_TXN_VERSIONING
         case SQL_TXN_VERSIONING:
-            out_sql = "SET TRANSACTION ISOLATION LEVEL SNAPSHOT";
+            out_sql = "SET TRANSACTION ISOLATION LEVEL SNAPSHOT ON CONFLICT COMMIT";
             return true;
 #endif
         default:
@@ -3945,11 +3932,13 @@ SQLRETURN OdbcConnection::applyAutocommitSetting() {
         return SQL_ERROR;
     }
 
-    std::vector<std::vector<std::string>> results;
-    std::vector<ColumnMetadata> columns;
-    SQLLEN rows_affected = 0;
-    std::string sql = buildAutocommitSql(auto_commit_);
-    return executeSQL(sql, results, columns, rows_affected);
+    if (auto_commit_ == SQL_AUTOCOMMIT_OFF) {
+        return beginTransaction();
+    }
+    if (in_transaction_) {
+        return endTransaction(SQL_COMMIT);
+    }
+    return SQL_SUCCESS;
 }
 
 SQLRETURN OdbcConnection::applyIsolationSetting() {
@@ -3974,6 +3963,8 @@ SQLRETURN OdbcConnection::executeSQL(const std::string& sql,
                                       std::vector<std::vector<std::string>>& results,
                                       std::vector<ColumnMetadata>& columns,
                                       SQLLEN& rows_affected) {
+    clearDiagnostics();
+
     if (!client_bridge_) {
         setError("08003", 0, "Connection not open");
         return SQL_ERROR;
@@ -6478,6 +6469,7 @@ void OdbcStatement::setCatalogResult(std::vector<ColumnMetadata> columns,
 }
 
 SQLRETURN OdbcStatement::executeSqlStatements(const std::string& sql) {
+    clearDiagnostics();
     resetResults();
 
     if (!conn_) {
@@ -6498,6 +6490,11 @@ SQLRETURN OdbcStatement::executeSqlStatements(const std::string& sql) {
         SQLLEN rows_affected = 0;
         auto status = conn_->executeSQL(statement, rs.rows, rs.columns, rows_affected);
         if (status != SQL_SUCCESS && status != SQL_SUCCESS_WITH_INFO) {
+            if (const auto* diag = conn_->getDiagnostic(1)) {
+                setError(diag->sqlstate, diag->native_error, diag->message);
+            } else {
+                setError("HY000", 0, "Statement execution failed");
+            }
             return status;
         }
         if (status == SQL_SUCCESS_WITH_INFO) {

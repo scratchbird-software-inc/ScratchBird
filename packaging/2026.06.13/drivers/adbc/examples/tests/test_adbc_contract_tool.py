@@ -16,6 +16,7 @@ def test_adbc_tool_fails_closed_and_writes_artifacts(tmp_path: Path) -> None:
     script.write_text("select 1;\n", encoding="utf-8")
     env = os.environ.copy()
     env.pop("SCRATCHBIRD_ADBC_DRIVER", None)
+    env["SCRATCHBIRD_ADBC_EXTERNAL_ONLY"] = "true"
     command = [
         sys.executable,
         str(TOOL),

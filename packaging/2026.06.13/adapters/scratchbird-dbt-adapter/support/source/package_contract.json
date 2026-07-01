@@ -1,0 +1,92 @@
+{
+  "component_id": "adaptor:scratchbird-dbt-adapter",
+  "category": "adaptor",
+  "name": "scratchbird-dbt-adapter",
+  "driver_family": "dbt",
+  "status": "beta_2",
+  "release_scope": "in_scope_required",
+  "release_bucket": "release_candidate",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "server_revalidation_required": true,
+  "driver_local_authority": "advisory_only",
+  "api_surface": [
+    "ConnectionManager",
+    "AdapterPlugin",
+    "relation",
+    "column",
+    "materialization_table",
+    "materialization_view",
+    "incremental_strategy"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "delegation_posture": {
+    "mode": "delegates_to_python",
+    "target_component": "driver:python",
+    "host_runtime": "dbt adapter plugin",
+    "authority_boundaries": [
+      "adapter may compile dbt relation and materialization requests",
+      "Python driver handles transport and protocol binding",
+      "server revalidates authentication, authorization, SBLR, UUID, cache, schema, and transaction claims",
+      "MGA transaction finality remains engine-owned"
+    ],
+    "lane_specific_proof": [
+      "dbt_connection_manager_smoke",
+      "dbt_materialization_macro_smoke",
+      "package_contract_gate"
+    ]
+  },
+  "artifact_verification": {
+    "package_type": "python_wheel",
+    "build_command": "python3 -m build",
+    "install_smoke": "python3 -m pytest tests",
+    "expected_outputs": [
+      "package_contract.json"
+    ],
+    "sbom": "release_gate_required",
+    "signing": "release_gate_required",
+    "license": "MPL-2.0"
+  },
+  "best_in_class_deltas": [
+    {
+      "comparator": "dbt-postgres",
+      "delta": "relation, column, materialization, incremental strategy, and adapter response surfaces",
+      "proof": "dbt_adapter_lane_native_smoke_or_exact_refusal"
+    },
+    {
+      "comparator": "dbt-postgres",
+      "delta": "schema metadata uses authorization-filtered ScratchBird sys.information views",
+      "proof": "metadata_shared_suite"
+    }
+  ],
+  "dbeaver_exclusion": {
+    "excluded_component_id": "adaptor:scratchbird-dbeaver-driver",
+    "excluded_source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+    "release_controller_status": "separate_controller_out_of_scope",
+    "this_artifact_includes_dbeaver": false
+  },
+  "package_files": [
+    "package_contract.json"
+  ]
+}

@@ -57,9 +57,9 @@
       "sha256": "5342224d102e1f0224365db0488b1c459e39189396ff1781b19a2164a16833c5"
     },
     {
-      "bytes": 1833,
+      "bytes": 2183,
       "path": "examples/tests/SqlChunkerConformanceTest.php",
-      "sha256": "ee443f5497b8174101c906a32e234560da9983963af7346f5e5d5b00b00b7570"
+      "sha256": "7fbb332e03930f1fb13d71e8a6478033ac95f1af30b5aa8927002e60b0197505"
     },
     {
       "bytes": 2540,
@@ -82,9 +82,9 @@
       "sha256": "2835fde9bc2bf50119cf41c60f03860c0676121729cf3939a5fb97b3fdafd9df"
     },
     {
-      "bytes": 27547,
+      "bytes": 31369,
       "path": "examples/tools/sb_isql_php.php",
-      "sha256": "f8f2e0fa346f5296a19a6d178d15ef5de75e9aa353c1860d7e95b7c3c55ccb3f"
+      "sha256": "a39c96e170d68fdd0bffd493006af6fcf0434afe1019a40b8cedebe1c25989c8"
     },
     {
       "bytes": 16726,
@@ -104,7 +104,7 @@
     {
       "bytes": 943,
       "path": "package_manifest.json",
-      "sha256": "ed7af47e3c463199c9dde77bd2a23753e0ff0bdb485acd19cb5eab7eacea2d85"
+      "sha256": "0533336b0a7370b2f46ddbc8c94093e0382338fd3b1b0f1e7eb13c304e8a73a7"
     },
     {
       "bytes": 8384,
@@ -112,14 +112,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -127,9 +127,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 428,
@@ -388,6 +388,6 @@
     }
   ],
   "driver": "php",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:05+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

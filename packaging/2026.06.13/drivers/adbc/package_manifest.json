@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/adbc",
   "support_materials": [
     "support/README.md",

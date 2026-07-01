@@ -7,6 +7,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { Buffer } from "node:buffer";
+import {
+  FORMAT_BINARY,
+  FORMAT_TEXT,
+  OID_BOOL,
+  OID_BYTEA,
+  OID_DATE,
+  OID_FLOAT8,
+  OID_INET,
+  OID_INT4,
+  OID_INT8,
+  OID_INTERVAL,
+  OID_JSON,
+  OID_MACADDR,
+  OID_NUMERIC,
+  OID_TEXT,
+  OID_TIME,
+  OID_TIMESTAMP,
+  OID_UUID,
+} from "./types";
 
 export const PROTOCOL_MAGIC_BYTES = Buffer.from("SBWP");
 export const PROTOCOL_VERSION_MAJOR = 1;
@@ -14,6 +33,8 @@ export const PROTOCOL_VERSION_MINOR = 1;
 export const PROTOCOL_VERSION = (PROTOCOL_VERSION_MAJOR << 8) | PROTOCOL_VERSION_MINOR;
 export const HEADER_SIZE = 40;
 export const MAX_MESSAGE_SIZE = 1024 * 1024 * 1024;
+const P1_ROW_DESCRIPTION_HEADER_BYTES = 72;
+const P1_CANONICAL_TYPE_REF_BYTES = 144;
 
 export enum MessageType {
   STARTUP = 0x01,
@@ -315,25 +336,50 @@ export function decodeHeader(data: Buffer): MessageHeader {
 }
 
 export function buildStartupPayload(features: bigint, params: Record<string, string>): Buffer {
-  const paramBytes = buildParamList(params);
-  const payload = Buffer.alloc(2 + 2 + 8 + paramBytes.length);
-  payload.writeUInt8(PROTOCOL_VERSION_MAJOR, 0);
-  payload.writeUInt8(PROTOCOL_VERSION_MINOR, 1);
-  payload.writeUInt16LE(0, 2);
-  payload.writeBigUInt64LE(features, 4);
-  paramBytes.copy(payload, 12);
+  const paramBytes = buildP1ParamList(params);
+  const payload = Buffer.alloc(88 + paramBytes.length);
+  let offset = 0;
+  payload.writeUInt16LE(PROTOCOL_VERSION, offset);
+  offset += 2;
+  payload.writeUInt16LE(PROTOCOL_VERSION, offset);
+  offset += 2;
+  payload.writeUInt32LE(0, offset);
+  offset += 4;
+  payload.writeBigUInt64LE(features, offset);
+  offset += 8;
+  payload.writeBigUInt64LE(0n, offset);
+  offset += 8;
+  payload.writeBigUInt64LE(0n, offset);
+  offset += 8;
+  payload.fill(0x11, offset, offset + 16);
+  offset += 16;
+  payload.fill(0, offset, offset + 32);
+  offset += 32;
+  const entries = Object.entries(params).sort(([left], [right]) => left.localeCompare(right));
+  payload.writeUInt32LE(entries.length, offset);
+  offset += 4;
+  paramBytes.copy(payload, offset);
+  offset += paramBytes.length;
+  payload.writeUInt32LE(0, offset);
   return payload;
 }
 
-function buildParamList(params: Record<string, string>): Buffer {
+function buildP1ParamList(params: Record<string, string>): Buffer {
   const parts: Buffer[] = [];
-  for (const [key, value] of Object.entries(params)) {
-    parts.push(Buffer.from(key, "utf8"));
-    parts.push(Buffer.from([0]));
-    parts.push(Buffer.from(value, "utf8"));
-    parts.push(Buffer.from([0]));
+  const entries = Object.entries(params).sort(([left], [right]) => left.localeCompare(right));
+  for (const [key, value] of entries) {
+    const keyBytes = Buffer.from(key, "utf8");
+    const valueBytes = Buffer.from(value, "utf8");
+    const keyLength = Buffer.alloc(4);
+    keyLength.writeUInt32LE(keyBytes.length, 0);
+    const valueLength = Buffer.alloc(4);
+    valueLength.writeUInt32LE(valueBytes.length, 0);
+    parts.push(keyLength);
+    parts.push(keyBytes);
+    parts.push(Buffer.from([0x01, 0x00]));
+    parts.push(valueLength);
+    parts.push(valueBytes);
   }
-  parts.push(Buffer.from([0]));
   return Buffer.concat(parts);
 }
 
@@ -362,7 +408,7 @@ export function parseAuthOk(payload: Buffer): { sessionId: Buffer; serverInfo: B
 }
 
 export function buildQueryPayload(sql: string, flags: number, maxRows: number, timeoutMs: number): Buffer {
-  const sqlBytes = Buffer.from(sql + "\0", "utf8");
+  const sqlBytes = Buffer.from(sql, "utf8");
   const payload = Buffer.alloc(12 + sqlBytes.length);
   payload.writeUInt32LE(flags, 0);
   payload.writeUInt32LE(maxRows, 4);
@@ -653,6 +699,20 @@ export function buildAttachCreatePayload(mode: string, dbName: string): Buffer {
 }
 
 export function parseReady(payload: Buffer): { status: number; txnId: bigint; visibility: bigint } {
+  if (payload.length >= 76) {
+    const statusByte = payload.readUInt8(56);
+    if (
+      statusByte === 0x49 ||
+      statusByte === 0x54 ||
+      statusByte === 0x45 ||
+      statusByte === 0x52 ||
+      statusByte === 0x41
+    ) {
+      const txnId = payload.readBigUInt64LE(48);
+      const status = statusByte === 0x54 || statusByte === 0x45 ? 1 : 0;
+      return { status, txnId, visibility: txnId };
+    }
+  }
   if (payload.length < 20) throw new Error("Ready truncated");
   const status = payload.readUInt8(0);
   const txnId = payload.readBigUInt64LE(4);
@@ -681,6 +741,21 @@ export function parseParameterStatus(payload: Buffer): { name: string; value: st
 }
 
 export function parseParameterDescription(payload: Buffer): number[] {
+  if (isP1RowDescription(payload)) {
+    const count = payload.readUInt32LE(68);
+    let offset = P1_ROW_DESCRIPTION_HEADER_BYTES;
+    const types: number[] = [];
+    for (let i = 0; i < count; i++) {
+      if (offset + 4 + 4 + 8 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 4 + 5 > payload.length) {
+        throw new Error("P1 parameter description truncated");
+      }
+      const typeOffset = offset + 4 + 4 + 8 + 8;
+      types.push(oidFromCanonicalTypeRef(payload, typeOffset));
+      offset = typeOffset + P1_CANONICAL_TYPE_REF_BYTES + 4;
+      offset = readNullableText(payload, offset).offset;
+    }
+    return types;
+  }
   if (payload.length < 4) throw new Error("Parameter description truncated");
   let offset = 0;
   const count = payload.readUInt16LE(offset);
@@ -695,6 +770,7 @@ export function parseParameterDescription(payload: Buffer): number[] {
 }
 
 export function parseRowDescription(payload: Buffer): ColumnInfo[] {
+  if (isP1RowDescription(payload)) return parseP1RowDescription(payload);
   if (payload.length < 4) throw new Error("Row description truncated");
   let offset = 0;
   const count = payload.readUInt16LE(offset);
@@ -725,6 +801,100 @@ export function parseRowDescription(payload: Buffer): ColumnInfo[] {
   return cols;
 }
 
+function isP1RowDescription(payload: Buffer): boolean {
+  return (
+    payload.length >= P1_ROW_DESCRIPTION_HEADER_BYTES &&
+    payload.readUInt16LE(0) === 1 &&
+    payload.readUInt8(3) === 1
+  );
+}
+
+function parseP1RowDescription(payload: Buffer): ColumnInfo[] {
+  const count = payload.readInt32LE(4);
+  if (count < 0) throw new Error("P1 row description column count invalid");
+  let offset = P1_ROW_DESCRIPTION_HEADER_BYTES;
+  const cols: ColumnInfo[] = [];
+  for (let i = 0; i < count; i++) {
+    const fixedColumnBytes = 4 + 4 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 56;
+    if (offset + fixedColumnBytes > payload.length) throw new Error("P1 row description truncated");
+    const ordinal = payload.readInt32LE(offset);
+    offset += 4;
+    offset += 1;
+    const format = payload.readUInt8(offset) === 1 ? FORMAT_TEXT : FORMAT_BINARY;
+    offset += 1;
+    const nullable = payload.readUInt8(offset) === 1;
+    offset += 1;
+    offset += 1;
+    offset += 8;
+    const typeOid = oidFromCanonicalTypeRef(payload, offset);
+    offset += P1_CANONICAL_TYPE_REF_BYTES;
+    offset += 16 * 3;
+    offset += 4;
+    offset += 2;
+    offset += 2;
+    const text = readNullableText(payload, offset);
+    offset = text.offset;
+    const name = text.value || `column${i + 1}`;
+    cols.push({
+      name,
+      tableOid: 0,
+      columnIndex: ordinal === 0 ? i : ordinal - 1,
+      typeOid,
+      typeSize: typeSizeForOid(typeOid),
+      typeModifier: -1,
+      format,
+      nullable,
+    });
+  }
+  return cols;
+}
+
+function oidFromCanonicalTypeRef(payload: Buffer, offset: number): number {
+  if (offset + 4 > payload.length) return OID_TEXT;
+  const family = payload.readUInt16LE(offset);
+  const code = payload.readUInt16LE(offset + 2);
+  if (family === 1 && code === 1) return OID_BOOL;
+  if (family === 2 && code === 3) return OID_INT4;
+  if (family === 2 && code === 4) return OID_INT8;
+  if (family === 4 && code === 1) return OID_NUMERIC;
+  if (family === 6 && code === 2) return OID_FLOAT8;
+  if (family === 8 && code === 1) return OID_TEXT;
+  if (family === 9) return OID_BYTEA;
+  if (family === 11) {
+    if (code === 1) return OID_DATE;
+    if (code === 2) return OID_TIME;
+    return OID_TIMESTAMP;
+  }
+  if (family === 12) return OID_INTERVAL;
+  if (family === 13) return OID_UUID;
+  if (family === 19) {
+    if (code === 3) return OID_MACADDR;
+    return OID_INET;
+  }
+  if (family === 20) return OID_JSON;
+  return OID_TEXT;
+}
+
+function typeSizeForOid(typeOid: number): number {
+  if (typeOid === OID_BOOL) return 1;
+  if (typeOid === OID_INT4) return 4;
+  if (typeOid === OID_INT8 || typeOid === OID_FLOAT8) return 8;
+  if (typeOid === OID_UUID) return 16;
+  return -1;
+}
+
+function readNullableText(payload: Buffer, offset: number): { value: string; offset: number } {
+  if (offset + 5 > payload.length) throw new Error("nullable text truncated");
+  const tag = payload.readUInt8(offset);
+  offset += 1;
+  const length = payload.readInt32LE(offset);
+  offset += 4;
+  if (length < 0) throw new Error("nullable text length invalid");
+  if (tag === 0) return { value: "", offset };
+  if (offset + length > payload.length) throw new Error("nullable text truncated");
+  return { value: payload.subarray(offset, offset + length).toString("utf8"), offset: offset + length };
+}
+
 export function parseDataRow(payload: Buffer, columnCount: number): ColumnValue[] {
   if (payload.length < 4) throw new Error("Row data truncated");
   let offset = 0;
@@ -732,7 +902,7 @@ export function parseDataRow(payload: Buffer, columnCount: number): ColumnValue[
   offset += 2;
   const nullBytes = payload.readUInt16LE(offset);
   offset += 2;
-  if (count !== columnCount) throw new Error("Row data column count mismatch");
+  if (count < columnCount) throw new Error("Row data column count mismatch");
   const nullBitmap = payload.subarray(offset, offset + nullBytes);
   offset += nullBytes;
   const values: ColumnValue[] = [];

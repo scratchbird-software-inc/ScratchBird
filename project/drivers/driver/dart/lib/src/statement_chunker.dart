@@ -44,6 +44,17 @@ String? _setTermDirective(String chunk) {
   return match.group(1)!.trim();
 }
 
+final _beginScriptRegex = RegExp(r'^--\s*begin_script:\s*(\S.*?)\s*$');
+final _endScriptRegex = RegExp(r'^--\s*end_script:\s*(\S.*?)\s*$');
+
+class ChainStatement {
+  final String scriptName;
+  final int statementIndex;
+  final String sql;
+
+  const ChainStatement(this.scriptName, this.statementIndex, this.sql);
+}
+
 /// Split SQL into top-level statements on the active terminator.
 ///
 /// Quote-aware (single/double quotes) and `--` comment-aware. Honors the
@@ -123,5 +134,51 @@ List<String> splitStatements(String script) {
     i += 1;
   }
   flush();
+  return statements;
+}
+
+/// Split a compiled full-surface chain into original per-script statements.
+///
+/// Each `-- begin_script:` marker resets the active terminator to `;` and the
+/// emitted statement index to 1. Content outside marker pairs is ignored.
+List<ChainStatement> splitChainStatements(String chain) {
+  final statements = <ChainStatement>[];
+  String? currentName;
+  var buffer = <String>[];
+  var capturing = false;
+
+  void flush() {
+    final name = currentName;
+    if (name == null) {
+      return;
+    }
+    final split = splitStatements(buffer.join('\n'));
+    for (var i = 0; i < split.length; i++) {
+      statements.add(ChainStatement(name, i + 1, split[i]));
+    }
+  }
+
+  for (final line in chain.replaceAll('\r\n', '\n').split('\n')) {
+    final begin = _beginScriptRegex.firstMatch(line);
+    if (begin != null) {
+      currentName = begin.group(1);
+      buffer = <String>[];
+      capturing = true;
+      continue;
+    }
+    if (capturing && _endScriptRegex.hasMatch(line)) {
+      flush();
+      currentName = null;
+      buffer = <String>[];
+      capturing = false;
+      continue;
+    }
+    if (capturing) {
+      buffer.add(line);
+    }
+  }
+  if (capturing) {
+    flush();
+  }
   return statements;
 }

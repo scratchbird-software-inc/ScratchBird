@@ -185,6 +185,24 @@ func (c *Conn) endOperation(span *SpanContext, success bool) {
 	}
 }
 
+func (c *Conn) endOperationWithError(span *SpanContext, err error) {
+	c.endOperation(span, !isCircuitBreakerHealthFailure(err))
+}
+
+func isCircuitBreakerHealthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var sbErr *Error
+	if errors.As(err, &sbErr) {
+		return sbErr.Kind == ErrConnection || sbErr.Kind == ErrSystem || sbErr.Kind == ErrInternal
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return true
+}
+
 func (c *Conn) applyTLS(ctx context.Context) error {
 	mode := strings.ToLower(strings.TrimSpace(c.config.SSLMode))
 	if mode == "" {
@@ -1936,10 +1954,58 @@ func (c *Conn) drainImmediateReopenBoundary() error {
 	}
 }
 
+// DrainIdleResults consumes late result frames that arrive after a statement
+// stream has reported READY. It is intended for host-native tools that need a
+// clean conformance boundary after DDL commands that publish catalog event
+// rows; it never commits, rolls back, or changes MGA authority.
+func (c *Conn) DrainIdleResults(idle time.Duration) error {
+	if c.raw == nil {
+		return nil
+	}
+	if idle <= 0 {
+		idle = 2 * time.Millisecond
+	}
+	_ = c.raw.SetReadDeadline(time.Now().Add(idle))
+	defer func() {
+		_ = c.raw.SetReadDeadline(time.Time{})
+	}()
+	for {
+		msg, err := c.receive()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return nil
+			}
+			return err
+		}
+		if c.handleAsyncMessage(msg) {
+			continue
+		}
+		switch msg.header.typ {
+		case msgError:
+			return buildProtocolError(msg.body)
+		case msgReady:
+			status, txnID, _, err := parseReady(msg.body)
+			if err != nil {
+				return err
+			}
+			c.applyRuntimeReadyState(status, txnID)
+		case msgRowDescription, msgDataRow, msgCommandComplete, msgParseComplete, msgBindComplete, msgCloseComplete, msgNoData, msgParameterDescription:
+			// Late non-authority result material has already missed the
+			// statement result boundary. Discard it so the next statement
+			// starts from a clean protocol frame.
+		default:
+			c.queue(msg)
+			return nil
+		}
+		_ = c.raw.SetReadDeadline(time.Now().Add(idle))
+	}
+}
+
 func (c *Conn) drainUntilReady(ctx context.Context) (string, uint64, uint64, error) {
 	var tag string
 	var rows uint64
 	var lastID uint64
+	var firstErr error
 	for {
 		select {
 		case <-ctx.Done():
@@ -1956,8 +2022,13 @@ func (c *Conn) drainUntilReady(ctx context.Context) (string, uint64, uint64, err
 		}
 		switch msg.header.typ {
 		case msgError:
-			return "", 0, 0, buildProtocolError(msg.body)
+			if firstErr == nil {
+				firstErr = buildProtocolError(msg.body)
+			}
 		case msgCommandComplete:
+			if firstErr != nil {
+				continue
+			}
 			_, rows, lastID, tag, err = parseCommandComplete(msg.body)
 			if err != nil {
 				return "", 0, 0, err
@@ -1966,6 +2037,9 @@ func (c *Conn) drainUntilReady(ctx context.Context) (string, uint64, uint64, err
 			status, txnID, _, err := parseReady(msg.body)
 			if err == nil {
 				c.applyRuntimeReadyState(status, txnID)
+			}
+			if firstErr != nil {
+				return "", 0, 0, firstErr
 			}
 			return tag, rows, lastID, nil
 		default:

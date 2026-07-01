@@ -2,9 +2,9 @@
   "component_id": "driver:node",
   "components": [
     {
-      "bytes": 181,
+      "bytes": 185,
       "path": "bin/sb_isql_node",
-      "sha256": "81717a971367ae30831fbc7b040b50149d2bcacc3d0d22c62b8866d50d24c06d"
+      "sha256": "420252dab9c9405867662dd2cfd280b89eaac3a23e4e6f4e58ab165edce410ec"
     },
     {
       "bytes": 295,
@@ -12,14 +12,14 @@
       "sha256": "163e2e92a01345839444a80cff19ba49d68e1d83fee6833600e33eb61bf0d872"
     },
     {
-      "bytes": 26507,
+      "bytes": 36345,
       "path": "examples/src-tools/sb-isql-node.ts",
-      "sha256": "ee6961630354e91fba232eaeeb4e73ecf5bb1badb029081d362141ccaa707c31"
+      "sha256": "bc59f9f26c82d18cbb7cdea4a3eadc5ec8397a3a78cbf14c1fe33f6d0d927963"
     },
     {
-      "bytes": 1220,
+      "bytes": 1834,
       "path": "examples/test/chunker_conformance.test.js",
-      "sha256": "31fdc8a2564e7fe437ca8b3a164590833db2c657b31dc0ae9b8f4f2cf410af0f"
+      "sha256": "afabf44716378ae9a40354f8ad0178efec98a727e502ca47545f776ad87f688c"
     },
     {
       "bytes": 3271,
@@ -32,14 +32,14 @@
       "sha256": "31c2c404ea3d8436041e743204718849faa05e547b78817c3a6dd90fae777056"
     },
     {
-      "bytes": 9119,
+      "bytes": 9315,
       "path": "examples/test/types_parity.test.js",
-      "sha256": "bbac8572f050a85b8b5cf3206685fa630b209df759587b92f4467419a95428b6"
+      "sha256": "9f0245aaa11b74d49fd653c1b077de8a24f72e85655c70f39461b7fce3b02506"
     },
     {
-      "bytes": 58299,
+      "bytes": 59172,
       "path": "examples/test/unit.test.js",
-      "sha256": "a4af223d72382110fa0afc3c02b78654227c934f552db3a0914083d11fef8dd7"
+      "sha256": "d3d7439c8dcd40be97c6e1e45dcc668810bc9b81043f32daf3e0cc7e33f28707"
     },
     {
       "bytes": 16726,
@@ -59,7 +59,7 @@
     {
       "bytes": 947,
       "path": "package_manifest.json",
-      "sha256": "711bb5995276ba4159ebbe21f4c1f1e85611b9b6f58a06ac0a534ffe40e7bcdd"
+      "sha256": "d91d08e3dfd8ef6c4e785a43ea4df5aa64da7009ee0ef84318b98b9be30e3c7b"
     },
     {
       "bytes": 8384,
@@ -67,14 +67,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -82,9 +82,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 430,
@@ -344,10 +344,10 @@
     {
       "bytes": 475,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "495457d3de9f87cbdd7004af136b0005706c6b4ec5f966511a4b3a44a83fbe66"
+      "sha256": "e81e784d6bc0d90c8b28d70f321c291b8f20158a2622a967b993ec5c6c1feeea"
     }
   ],
   "driver": "node",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:05+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

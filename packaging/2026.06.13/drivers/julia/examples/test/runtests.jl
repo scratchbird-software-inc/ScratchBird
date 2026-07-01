@@ -7,6 +7,23 @@
 # SPDX-License-Identifier: MPL-2.0
 
 using Test
+using ScratchBird
+
+@testset "SBWP READY transaction state" begin
+    compact = zeros(UInt8, 20)
+    compact[1] = 0x01
+    compact[5:12] = reinterpret(UInt8, [UInt64(77)])
+    compact_status, compact_txn = ScratchBird.parse_ready(compact)
+    @test compact_status == 0x01
+    @test compact_txn == UInt64(77)
+
+    extended = zeros(UInt8, 76)
+    extended[49:56] = reinterpret(UInt8, [UInt64(88)])
+    extended[57] = UInt8('T')
+    extended_status, extended_txn = ScratchBird.parse_ready(extended)
+    @test extended_status == 0x01
+    @test extended_txn == UInt64(88)
+end
 
 @testset "sb_isql_julia fail-closed artifacts" begin
     driver_root = normpath(joinpath(@__DIR__, ".."))
@@ -16,9 +33,10 @@ using Test
         write(input, "SELECT 1;\n")
         run_root = joinpath(dir, "run")
         mkpath(run_root)
-        command = Cmd(vcat(Base.julia_cmd().exec, [
+        command = Cmd(vcat([Base.julia_cmd().exec[1]], [
             "--startup-file=no",
             "--history-file=no",
+            "--project=$(driver_root)",
             tool,
             "--database", "contract.sbdb",
             "--host", "127.0.0.1",
@@ -43,9 +61,19 @@ using Test
             "--transcript", joinpath(run_root, "wire-transcript.jsonl"),
             "--summary", joinpath(run_root, "summary.json"),
         ]))
-        process = run(pipeline(command, stdout = devnull, stderr = devnull); wait = false)
+        child_stdout = joinpath(run_root, "child_stdout.log")
+        child_stderr = joinpath(run_root, "child_stderr.log")
+        process = run(pipeline(command, stdout = child_stdout, stderr = child_stderr); wait = false)
         wait(process)
         @test process.exitcode != 0
+        if !isfile(joinpath(run_root, "summary.json"))
+            println("sb_isql_julia child stdout:")
+            isfile(child_stdout) && println(read(child_stdout, String))
+            println("sb_isql_julia child stderr:")
+            isfile(child_stderr) && println(read(child_stderr, String))
+            println("sb_isql_julia child command:")
+            println(command)
+        end
         for name in [
             "summary.json",
             "diagnostics.jsonl",
@@ -71,6 +99,7 @@ using Test
         @test occursin("\"status\":\"fail\"", summary)
         @test occursin("missing Julia package", diagnostics) ||
               occursin("no TLS transport implementation", diagnostics) ||
-              occursin("TCP connect failed", diagnostics)
+              occursin("TCP connect failed", diagnostics) ||
+              occursin("connection refused", diagnostics)
     end
 end

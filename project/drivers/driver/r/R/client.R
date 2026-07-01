@@ -848,7 +848,7 @@ sb_startup_and_auth <- function(client) {
       next
     } else if (type == SB_MSG_PARAMETER_STATUS) {
       parsed <- parse_parameter_status(payload)
-      sb_handle_parameter_status(client, parsed$name, parsed$value)
+      for (entry in parsed$entries) sb_handle_parameter_status(client, entry$name, entry$value)
       next
     } else if (type == SB_MSG_READY) {
       parsed <- parse_ready(payload)
@@ -973,7 +973,7 @@ sb_prime_result_metadata <- function(result) {
       result$rowcount <- parsed$rows
     } else if (type == SB_MSG_PARAMETER_STATUS) {
       parsed <- parse_parameter_status(payload)
-      sb_handle_parameter_status(client, parsed$name, parsed$value)
+      for (entry in parsed$entries) sb_handle_parameter_status(client, entry$name, entry$value)
     } else if (type == SB_MSG_PORTAL_SUSPENDED) {
       sb_allow_portal_resume(client)
       client$last_query_sequence <- sb_resume_suspended_portal(client, result$page_size)
@@ -1045,7 +1045,7 @@ sb_result_next_row <- function(result) {
       result$rowcount <- parsed$rows
     } else if (type == SB_MSG_PARAMETER_STATUS) {
       parsed <- parse_parameter_status(payload)
-      sb_handle_parameter_status(client, parsed$name, parsed$value)
+      for (entry in parsed$entries) sb_handle_parameter_status(client, entry$name, entry$value)
     } else if (type == SB_MSG_PORTAL_SUSPENDED) {
       sb_allow_portal_resume(client)
       client$last_query_sequence <- sb_resume_suspended_portal(client, result$page_size)
@@ -1212,7 +1212,7 @@ sb_handle_parameter_status <- function(client, name, value) {
 sb_handle_async <- function(client, type, payload) {
   if (type == SB_MSG_PARAMETER_STATUS) {
     parsed <- parse_parameter_status(payload)
-    sb_handle_parameter_status(client, parsed$name, parsed$value)
+    for (entry in parsed$entries) sb_handle_parameter_status(client, entry$name, entry$value)
     return(TRUE)
   }
   if (type == SB_MSG_NOTIFICATION) {

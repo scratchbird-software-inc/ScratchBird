@@ -46,7 +46,20 @@ struct CircuitBreaker:
     var half_open_requests: Int
     var last_failure_time_ms: Int
 
-    def __init__(out self, config: CircuitBreakerConfig = CircuitBreakerConfig(), name: String = "default"):
+    def __init__(out self):
+        var config = CircuitBreakerConfig()
+        self.failure_threshold = config.failure_threshold
+        self.recovery_timeout_ms = config.recovery_timeout_ms
+        self.success_threshold = config.success_threshold
+        self.half_open_max_requests = config.half_open_max_requests
+        self.name = "default"
+        self.state = STATE_CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.half_open_requests = 0
+        self.last_failure_time_ms = 0
+
+    def __init__(out self, config: CircuitBreakerConfig, name: String = "default"):
         self.failure_threshold = config.failure_threshold
         self.recovery_timeout_ms = config.recovery_timeout_ms
         self.success_threshold = config.success_threshold

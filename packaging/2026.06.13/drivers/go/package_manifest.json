@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_go",
-  "binary_sha256": "78734fb96de86e1b871f6549d886fb347860bae000ad2a48ba10ef28eeff3924",
+  "binary_sha256": "26bb61f79a26b6448f4fec47e5df2f2d1523743e98cd6b60db6cafbd107af26b",
   "component_id": "driver:go",
   "driver": "go",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/go",
   "support_materials": [
     "support/README.md",

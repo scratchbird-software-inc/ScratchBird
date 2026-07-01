@@ -69,6 +69,23 @@ NATIVE_BINARY_KINDS = {
     "mojo_native_binary",
 }
 
+GENERATED_STAGE_EXCLUDES = {
+    ".build",
+    ".dart_tool",
+    ".gradle",
+    ".pytest_cache",
+    "_build",
+    "__pycache__",
+    "bin",
+    "build",
+    "deps",
+    "dist",
+    "node_modules",
+    "obj",
+    "target",
+    "vendor",
+}
+
 
 @dataclass(frozen=True)
 class DriverTool:
@@ -145,7 +162,7 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
             "cmake_native_binary",
         )
     if driver == "jdbc":
-        cp = repo_root / "project" / "drivers" / "driver" / "jdbc" / "build" / "classes" / "java" / "main"
+        cp = build_root / "drivers" / "driver" / "jdbc" / "stage" / "build" / "classes" / "java" / "main"
         return DriverTool(
             driver,
             exe,
@@ -194,10 +211,13 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
             "python_launcher",
         )
     if driver == "julia":
+        julia_root = build_root / "drivers" / "driver" / "julia" / "stage"
+        if not julia_root.exists():
+            julia_root = repo_root / "project" / "drivers" / "driver" / "julia"
         return DriverTool(
             driver,
             exe,
-            ["julia", "--project=" + str(repo_root / "project" / "drivers" / "driver" / "julia"), str(repo_root / "project" / "drivers" / "driver" / "julia" / "tools" / "sb_isql_julia.jl")],
+            ["julia", "--project=" + str(julia_root), str(julia_root / "tools" / "sb_isql_julia.jl")],
             repo_root,
             ["julia"],
             "julia_launcher",
@@ -233,7 +253,7 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
         return DriverTool(
             driver,
             exe,
-            ["node", str(repo_root / "project" / "drivers" / "driver" / "node" / "dist" / "tools" / "sb-isql-node.js")],
+            ["node", str(build_root / "drivers" / "driver" / "node" / "stage" / "dist" / "tools" / "sb-isql-node.js")],
             repo_root,
             ["node"],
             "node_launcher",
@@ -380,6 +400,23 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
     }
 
 
+def stage_driver_source(repo_root: Path, build_root: Path, driver: str) -> Path:
+    source = repo_root / "project" / "drivers" / "driver" / driver
+    stage = build_root / "drivers" / "driver" / driver / "stage"
+    if stage.exists():
+        shutil.rmtree(stage)
+
+    def ignore(_: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if name in GENERATED_STAGE_EXCLUDES or name.endswith(".egg-info")
+        }
+
+    shutil.copytree(source, stage, ignore=ignore)
+    return stage
+
+
 def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[str, Any] | None:
     driver_root = repo_root / "project" / "drivers" / "driver" / driver
     if driver in {"cpp", "odbc"} and shutil.which("cmake"):
@@ -468,10 +505,29 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
             ],
             repo_root,
         )
+    if driver == "julia" and shutil.which("julia"):
+        stage = stage_driver_source(repo_root, build_root, driver)
+        env = os.environ.copy()
+        env.setdefault("JULIA_PKG_PRECOMPILE_AUTO", "0")
+        return run_command(
+            [
+                "julia",
+                "--project=" + str(stage),
+                "-e",
+                "using Pkg; Pkg.instantiate(); Pkg.precompile(); import DBInterface; import Tables; import OpenSSL",
+            ],
+            stage,
+            env=env,
+        )
     if driver == "node" and shutil.which("npm"):
-        return run_command(["npm", "run", "build"], driver_root)
+        stage = stage_driver_source(repo_root, build_root, driver)
+        install = run_command(["npm", "ci"], stage)
+        if install["returncode"] != 0:
+            return install
+        return run_command(["npm", "run", "build"], stage)
     if driver == "jdbc" and (driver_root / "gradlew").exists():
-        return run_command(["bash", str(driver_root / "gradlew"), "classes"], driver_root)
+        stage = stage_driver_source(repo_root, build_root, driver)
+        return run_command(["bash", str(stage / "gradlew"), "classes"], stage)
     return None
 
 
@@ -489,6 +545,8 @@ def stage_tool(
     build_result = None
     if build_compiled:
         build_result = build_compiled_tool(repo_root, build_root, driver)
+        if driver == "julia" and build_result is not None and build_result["returncode"] == 0:
+            tool = command_for_driver(repo_root, build_root, driver)
 
     copied_native_binary = False
     if tool.kind in NATIVE_BINARY_KINDS:

@@ -2,7 +2,7 @@
   "SBOM": "root-SBOM.json",
   "component_id": "driver:node",
   "driver": "node",
-  "hash": "81717a971367ae30831fbc7b040b50149d2bcacc3d0d22c62b8866d50d24c06d",
+  "hash": "420252dab9c9405867662dd2cfd280b89eaac3a23e4e6f4e58ab165edce410ec",
   "license": "LICENSE.txt",
   "proof_summary": "../proofs/proof_summary.json",
   "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",

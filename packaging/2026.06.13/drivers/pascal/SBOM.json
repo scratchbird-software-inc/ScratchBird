@@ -2,9 +2,9 @@
   "component_id": "driver:pascal",
   "components": [
     {
-      "bytes": 1477560,
+      "bytes": 1481704,
       "path": "bin/sb_isql_pascal",
-      "sha256": "99843d73a55bb1075517fc7abe62481f855b8672da8160201a2ff93e62ec15be"
+      "sha256": "986d1f2c2a691e9f2009bca3f393ff82ffab869c907bced634dff24f96a486c4"
     },
     {
       "bytes": 299,
@@ -117,9 +117,9 @@
       "sha256": "40833b4d65822f2b95a09a8fd4d222e0f09ea696b507d65c9f9dc512fce64b18"
     },
     {
-      "bytes": 25076,
+      "bytes": 27810,
       "path": "examples/tools/sb_isql_pascal.pas",
-      "sha256": "6c50b17c6fea0a7a1536b7b6516be038bcf328bce47dce80a1275928e7ae84c8"
+      "sha256": "dcf2be6bdfccbf35df12d04ba1924026fb96c53806722d52278affad9f282b66"
     },
     {
       "bytes": 16726,
@@ -139,7 +139,7 @@
     {
       "bytes": 955,
       "path": "package_manifest.json",
-      "sha256": "4314433874f3d64f349df0df0e620819ab64151fce782893724d21594fc9a06d"
+      "sha256": "5ac60cb6a1a66f3195999d834c18c42fe70959f7c67c2713af30874101640950"
     },
     {
       "bytes": 8384,
@@ -147,14 +147,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -162,9 +162,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 434,
@@ -419,10 +419,10 @@
     {
       "bytes": 479,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "698a3b2ffae2c86e5d31439ad9415cf10e9750fe90a6ef62c190e6f9b1f69f7e"
+      "sha256": "ce94e3d2071688d19f2a65799b75ee482c57ea2f80825fb27f4b88b6ba6c77e7"
     }
   ],
   "driver": "pascal",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:05+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

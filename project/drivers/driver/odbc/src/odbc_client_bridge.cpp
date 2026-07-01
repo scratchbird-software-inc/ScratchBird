@@ -43,6 +43,194 @@ std::string trimAscii(const std::string& value) {
     return value.substr(start, end - start);
 }
 
+std::string firstSqlTokenUpper(std::string_view sql) {
+    size_t offset = 0;
+    while (offset < sql.size()) {
+        while (offset < sql.size() &&
+               std::isspace(static_cast<unsigned char>(sql[offset])) != 0) {
+            ++offset;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '-' && sql[offset + 1] == '-') {
+            offset += 2;
+            while (offset < sql.size() && sql[offset] != '\n') {
+                ++offset;
+            }
+            continue;
+        }
+        if (offset + 1 < sql.size() && sql[offset] == '/' && sql[offset + 1] == '*') {
+            offset += 2;
+            while (offset + 1 < sql.size() &&
+                   !(sql[offset] == '*' && sql[offset + 1] == '/')) {
+                ++offset;
+            }
+            if (offset + 1 < sql.size()) {
+                offset += 2;
+            }
+            continue;
+        }
+        break;
+    }
+
+    std::string token;
+    while (offset < sql.size() &&
+           (std::isalnum(static_cast<unsigned char>(sql[offset])) != 0 ||
+            sql[offset] == '_')) {
+        token.push_back(static_cast<char>(
+            std::toupper(static_cast<unsigned char>(sql[offset]))));
+        ++offset;
+    }
+    return token;
+}
+
+bool containsKeywordOutsideSql(std::string_view sql, std::string_view keyword) {
+    bool in_single = false;
+    bool in_double = false;
+    bool in_line_comment = false;
+    bool in_block_comment = false;
+
+    auto is_word_boundary = [](char ch) {
+        return std::isalnum(static_cast<unsigned char>(ch)) == 0 && ch != '_';
+    };
+
+    for (size_t i = 0; i < sql.size(); ++i) {
+        const char ch = sql[i];
+        const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+
+        if (in_line_comment) {
+            if (ch == '\n') {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                ++i;
+            }
+            continue;
+        }
+        if (in_single) {
+            if (ch == '\'') {
+                if (next == '\'') {
+                    ++i;
+                } else {
+                    in_single = false;
+                }
+            }
+            continue;
+        }
+        if (in_double) {
+            if (ch == '"') {
+                if (next == '"') {
+                    ++i;
+                } else {
+                    in_double = false;
+                }
+            }
+            continue;
+        }
+
+        if (ch == '-' && next == '-') {
+            in_line_comment = true;
+            ++i;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            in_block_comment = true;
+            ++i;
+            continue;
+        }
+        if (ch == '\'') {
+            in_single = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_double = true;
+            continue;
+        }
+
+        if (i + keyword.size() <= sql.size()) {
+            bool match = true;
+            for (size_t j = 0; j < keyword.size(); ++j) {
+                if (std::toupper(static_cast<unsigned char>(sql[i + j])) !=
+                    std::toupper(static_cast<unsigned char>(keyword[j]))) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                const bool left_ok = i == 0 || is_word_boundary(sql[i - 1]);
+                const bool right_ok = i + keyword.size() == sql.size() ||
+                                      is_word_boundary(sql[i + keyword.size()]);
+                if (left_ok && right_ok) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+uint32_t queryFlagsForOdbcSql(std::string_view sql) {
+    const std::string token = firstSqlTokenUpper(sql);
+    if (token == "INSERT" || token == "UPDATE" || token == "DELETE" ||
+        token == "MERGE" || token == "UPSERT") {
+        return containsKeywordOutsideSql(sql, "RETURNING")
+                   ? 0
+                   : scratchbird::protocol::kQueryFlagScriptSummaryResult;
+    }
+    if (token == "CREATE" || token == "ALTER" || token == "DROP" ||
+        token == "GRANT" || token == "REVOKE" || token == "SET" ||
+        token == "SAVEPOINT" || token == "COMMIT" || token == "ROLLBACK" ||
+        token == "BEGIN" || token == "START" || token == "COPY" ||
+        token == "TRUNCATE" || token == "COMMENT" || token == "REFRESH") {
+        return scratchbird::protocol::kQueryFlagScriptSummaryResult;
+    }
+    return 0;
+}
+
+struct CopyInputExtraction {
+    std::string executable_sql;
+    std::string payload;
+};
+
+CopyInputExtraction extractInBandCopyInput(const std::string& sql) {
+    CopyInputExtraction extracted;
+    std::istringstream input(sql);
+    std::ostringstream executable;
+    std::ostringstream payload;
+    std::string line;
+    bool saw_copy_input = false;
+    bool first_executable_line = true;
+    constexpr std::string_view kMarker = "-- SB_COPY_INPUT ";
+
+    while (std::getline(input, line)) {
+        std::string stripped = line;
+        if (!stripped.empty() && stripped.back() == '\r') {
+            stripped.pop_back();
+        }
+        const std::string left = trimAscii(stripped);
+        if (left.rfind(std::string(kMarker), 0) == 0) {
+            saw_copy_input = true;
+            payload << left.substr(kMarker.size()) << '\n';
+            continue;
+        }
+        if (!first_executable_line) {
+            executable << '\n';
+        }
+        executable << line;
+        first_executable_line = false;
+    }
+
+    if (!saw_copy_input) {
+        extracted.executable_sql = sql;
+        return extracted;
+    }
+    extracted.executable_sql = trimAscii(executable.str());
+    extracted.payload = payload.str();
+    return extracted;
+}
+
 std::vector<std::string> splitMethodList(const std::string& csv) {
     std::vector<std::string> out;
     std::stringstream ss(csv);
@@ -227,15 +415,33 @@ SQLRETURN OdbcClientBridge::executeSQL(const std::string& sql,
     client::NetworkResultSet net_results;
     core::ErrorContext ctx;
     core::Status status = core::Status::OK;
+    const auto copy_input = extractInBandCopyInput(sql);
+    const std::string& executable_sql =
+        copy_input.executable_sql.empty() ? sql : copy_input.executable_sql;
+    std::istringstream copy_stream(copy_input.payload);
+    if (!copy_input.payload.empty()) {
+        client_.setCopyInputStream(&copy_stream);
+        client_.setCopyInputSizeHintBytes(copy_input.payload.size());
+    }
+    struct CopyStreamGuard {
+        client::NetworkClient* client{nullptr};
+        ~CopyStreamGuard() {
+            if (client) {
+                client->setCopyInputStream(nullptr);
+                client->setCopyInputSizeHintBytes(0);
+            }
+        }
+    } copy_guard{copy_input.payload.empty() ? nullptr : &client_};
+    const uint32_t query_flags = queryFlagsForOdbcSql(executable_sql);
     if (params_.parser_mode == "server-parser" || params_.parser_mode.empty()) {
-        status = client_.executeQuery(sql, net_results, &ctx);
+        status = client_.executeQuery(executable_sql, net_results, &ctx, query_flags);
     } else {
         client::NetworkResultSet compile_results;
         status = client_.executeQuery(
-            sql,
+            executable_sql,
             compile_results,
             &ctx,
-            scratchbird::protocol::kQueryFlagReturnSblr);
+            scratchbird::protocol::kQueryFlagReturnSblr | query_flags);
         if (status == core::Status::OK) {
             protocol::SblrCompiled compiled;
             if (!client_.takeLastSblrCompiled(compiled) || compiled.bytecode.empty()) {
@@ -321,6 +527,7 @@ client::NetworkClientConfig OdbcClientBridge::buildConfig(const ConnectionParams
     cfg.username = params.user;
     cfg.password = params.password;
     cfg.schema = params.schema.empty() ? kDefaultSessionSchema : params.schema;
+    cfg.autocommit = params.auto_commit;
     cfg.protocol = params.protocol.empty() ? "native" : params.protocol;
     cfg.transport_mode = params.transport_mode.empty() ? "inet_listener" : params.transport_mode;
     cfg.ipc_method = params.ipc_method.empty() ? "auto" : params.ipc_method;
@@ -335,6 +542,7 @@ client::NetworkClientConfig OdbcClientBridge::buildConfig(const ConnectionParams
     cfg.ssl_cert = params.ssl_cert;
     cfg.ssl_key = params.ssl_key;
     cfg.ssl_root_cert = params.ssl_root_cert;
+    cfg.enable_copy_streaming = true;
     cfg.front_door_mode = params.front_door_mode;
     cfg.manager_auth_token = params.manager_auth_token;
     cfg.manager_username = params.manager_username;

@@ -2,9 +2,9 @@
   "component_id": "driver:cpp",
   "components": [
     {
-      "bytes": 47842320,
+      "bytes": 47867912,
       "path": "bin/sb_isql_cpp",
-      "sha256": "888b3b3273d4b69713e2afe4fe66231f0da35b552bc37d10aad018e280831466"
+      "sha256": "e91ebb558fcf5733c51a8f86cc76a543a95cf024abafd9f5730a55bc77a63c05"
     },
     {
       "bytes": 293,
@@ -84,7 +84,7 @@
     {
       "bytes": 943,
       "path": "package_manifest.json",
-      "sha256": "7f3cc4ae83b8157fb4926692fc193c62372053a9982006128ab779ac6b1e1964"
+      "sha256": "d804cccff48deaa536cff2b940a1b5d2b5bcf5dee4a8be1e8be17228107b8375"
     },
     {
       "bytes": 8384,
@@ -92,14 +92,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -107,9 +107,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 428,
@@ -364,10 +364,10 @@
     {
       "bytes": 473,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "6b6b295afe20c6ab88aa41d1bd7594033f71d77d6b066ca6429dc99f172477e7"
+      "sha256": "ac585b7fb26e7a1158ffc97f20611d177e8f613cbccf38386eb70b616e87689a"
     }
   ],
   "driver": "cpp",
-  "generated_at_utc": "2026-06-29T20:56:27+00:00",
+  "generated_at_utc": "2026-07-01T10:26:03+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

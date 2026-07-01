@@ -19,6 +19,29 @@ suppressPackageStartupMessages({
 script_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)[1] %||% "tools/sb_isql_r.R"
 script_path <- sub("^--file=", "", script_arg)
 driver_root <- normalizePath(file.path(dirname(script_path), ".."), mustWork = FALSE)
+repo_root <- normalizePath(file.path(driver_root, "../../../.."), mustWork = FALSE)
+native_lib_candidates <- unique(c(
+  Sys.getenv("SCRATCHBIRD_R_NATIVE_LIB", unset = ""),
+  file.path(repo_root, "build", "drivers", "driver", "r", "stage", "src", "scratchbird.so"),
+  file.path(driver_root, "src", "scratchbird.so")
+))
+native_lib <- native_lib_candidates[nzchar(native_lib_candidates) & file.exists(native_lib_candidates)][1] %||% ""
+if (nzchar(native_lib) && !is.loaded("C_sb_tls_connect")) {
+  dyn.load(native_lib)
+}
+if (nzchar(native_lib)) {
+  for (symbol_name in c(
+    "C_sb_tls_connect",
+    "C_sb_ipc_connect",
+    "C_sb_tls_write",
+    "C_sb_tls_read_exact",
+    "C_sb_tls_close"
+  )) {
+    if (is.loaded(symbol_name) && !exists(symbol_name, inherits = TRUE)) {
+      assign(symbol_name, getNativeSymbolInfo(symbol_name), envir = globalenv())
+    }
+  }
+}
 source_driver <- function(name) source(file.path(driver_root, "R", name), local = globalenv())
 source_driver("config.R")
 source_driver("types.R")
@@ -114,7 +137,8 @@ run_tool <- function(args) {
     "DBI::dbListTables" = 0,
     "sb_attach_create" = 0,
     "DBI::dbCommit" = 0,
-    "DBI::dbRollback" = 0
+    "DBI::dbRollback" = 0,
+    "sb_copy_in" = 0
   )
   testcases <- list()
   failures <- list()
@@ -189,6 +213,15 @@ run_tool <- function(args) {
           api_hits <- run_transaction(conn, sql, api_hits)
           row_count <- 0
           result_digest <- sha256_text("transaction")
+        } else if (group == "copy" && is_copy_stdin_statement(sql)) {
+          payload <- copy_payload_for_statement(sql)
+          if (identical(payload, raw(0))) {
+            stop("COPY FROM STDIN requires SB_COPY_INPUT rows in the script")
+          }
+          row_count <- sb_isql_copy_in(conn@ptr$client, executable_sql_without_copy_markers(sql), payload)
+          api_hits[["sb_copy_in"]] <- api_hits[["sb_copy_in"]] + 1
+          result_digest <- sha256_text(paste0("copy_in:", row_count))
+          append_text(required(args, "--output"), paste0(jsonlite::toJSON(list(statement_id = statement_id, rows = list(list(copy_in = row_count))), auto_unbox = TRUE), "\n"))
         } else if (group %in% c("ddl", "dml", "security_refusal")) {
           row_count <- DBI::dbExecute(conn, sql)
           api_hits[["DBI::dbExecute"]] <- api_hits[["DBI::dbExecute"]] + 1
@@ -203,7 +236,7 @@ run_tool <- function(args) {
           result_digest <- sha256_text(jsonlite::toJSON(rows, dataframe = "rows", auto_unbox = TRUE))
           append_text(required(args, "--output"), paste0(jsonlite::toJSON(list(statement_id = statement_id, rows = rows), auto_unbox = TRUE), "\n"))
         }
-        digests[[length(digests) + 1]] <<- list(statement_id = statement_id, row_count = row_count, result_digest = result_digest)
+        digests[[length(digests) + 1]] <- list(statement_id = statement_id, row_count = row_count, result_digest = result_digest)
         if (identical(expected_outcome, "refusal")) {
           outcome <- "unexpected_success"
           failures[[length(failures) + 1]] <- list(statement_id = statement_id, message = "statement succeeded but was expected to refuse")
@@ -421,11 +454,16 @@ load_expected_refusals <- function(path) {
   if (!file.exists(path)) stop(paste("expected refusal file not found:", path))
   doc <- jsonlite::fromJSON(path, simplifyVector = FALSE)
   ids <- NULL
-  if (is.list(doc) && !is.null(names(doc)) && "statement_ids" %in% names(doc)) {
-    ids <- doc$statement_ids
+  if (is.list(doc) && !is.null(names(doc))) {
+    if ("statement_ids" %in% names(doc)) ids <- c(ids, doc$statement_ids)
     if ("expected_refusals" %in% names(doc)) ids <- c(ids, doc$expected_refusals)
-  } else if (is.list(doc) && !is.null(names(doc)) && "expected_refusals" %in% names(doc)) {
-    ids <- doc$expected_refusals
+    if ("expected_diagnostics" %in% names(doc) && !is.null(names(doc$expected_diagnostics))) {
+      ids <- c(ids, names(doc$expected_diagnostics))
+    }
+    if ("compiled_chain_statement_aliases" %in% names(doc) &&
+        !is.null(doc$compiled_chain_statement_aliases)) {
+      ids <- c(ids, unname(unlist(doc$compiled_chain_statement_aliases, use.names = FALSE)))
+    }
   } else if (is.list(doc) && is.null(names(doc))) {
     ids <- doc
   } else if (is.atomic(doc)) {
@@ -455,8 +493,9 @@ split_statements <- function(script) {
 }
 
 classify_statement <- function(sql) {
-  trimmed <- tolower(trimws(sql))
+  trimmed <- tolower(trimws(executable_sql_without_copy_markers(sql)))
   first <- strsplit(trimmed, "\\s+")[[1]][[1]]
+  if (first == "copy") return("copy")
   if (first %in% c("create", "alter", "drop")) return("ddl")
   if (first %in% c("insert", "update", "delete", "merge", "upsert")) return("dml")
   if (first %in% c("commit", "rollback", "savepoint", "begin", "start")) return("transaction")
@@ -465,16 +504,74 @@ classify_statement <- function(sql) {
   "query"
 }
 
+executable_sql_without_copy_markers <- function(sql) {
+  lines <- strsplit(sql, "\r\n|\r|\n", perl = TRUE)[[1]]
+  keep <- !startsWith(trimws(lines, which = "left"), "-- SB_COPY_INPUT ")
+  trimws(paste(lines[keep], collapse = "\n"))
+}
+
+copy_payload_for_statement <- function(sql) {
+  rows <- character()
+  for (line in strsplit(sql, "\r\n|\r|\n", perl = TRUE)[[1]]) {
+    stripped <- trimws(line, which = "left")
+    if (startsWith(stripped, "-- SB_COPY_INPUT ")) {
+      rows <- c(rows, substring(stripped, nchar("-- SB_COPY_INPUT ") + 1L))
+    }
+  }
+  if (length(rows) == 0) return(raw(0))
+  charToRaw(paste0(paste(rows, collapse = "\n"), "\n"))
+}
+
+is_copy_stdin_statement <- function(sql) {
+  lines <- strsplit(executable_sql_without_copy_markers(sql), "\r\n|\r|\n", perl = TRUE)[[1]]
+  meaningful <- tolower(trimws(lines))
+  meaningful <- meaningful[meaningful != "" & !startsWith(meaningful, "--")]
+  executable <- paste(meaningful, collapse = " ")
+  startsWith(executable, "copy ") && grepl(" from stdin", executable, fixed = TRUE)
+}
+
+sb_isql_copy_in <- function(client, sql, payload) {
+  sb_send_simple_query(client, sql, 0L)
+  rows_copied <- 0L
+  copy_started <- FALSE
+  repeat {
+    response <- sb_recv_message(client)
+    type <- response$type
+    body <- response$payload
+    if (sb_handle_async(client, type, body)) next
+    if (type == SB_MSG_COPY_IN_RESPONSE) {
+      copy_started <- TRUE
+      sb_send_message(client, SB_MSG_COPY_DATA, payload, 0L, FALSE)
+      sb_send_message(client, SB_MSG_COPY_DONE, raw(), 0L, FALSE)
+    } else if (type == SB_MSG_COMMAND_COMPLETE) {
+      parsed <- parse_command_complete(body)
+      rows_copied <- as.integer(parsed$rows)
+    } else if (type == SB_MSG_READY) {
+      parsed <- parse_ready(body)
+      sb_apply_runtime_ready_state(client, parsed$status, parsed$txn_id)
+      if (!copy_started) stop("COPY FROM STDIN did not enter COPY input mode")
+      return(rows_copied)
+    } else if (type == SB_MSG_ERROR) {
+      sb_raise_query_error(body)
+    }
+  }
+}
+
 run_transaction <- function(conn, sql, api_hits) {
-  first <- strsplit(tolower(trimws(sql)), "\\s+")[[1]][[1]]
+  tokens <- strsplit(tolower(trimws(sql)), "\\s+")[[1]]
+  first <- tokens[[1]]
+  second <- if (length(tokens) >= 2) tokens[[2]] else ""
   if (identical(first, "commit")) {
     DBI::dbCommit(conn)
     api_hits[["DBI::dbCommit"]] <- api_hits[["DBI::dbCommit"]] + 1
-  } else if (identical(first, "rollback")) {
+  } else if (identical(first, "rollback") && !identical(second, "to")) {
     DBI::dbRollback(conn)
     api_hits[["DBI::dbRollback"]] <- api_hits[["DBI::dbRollback"]] + 1
-  } else {
+  } else if (identical(first, "begin") || identical(first, "start")) {
     DBI::dbBegin(conn)
+  } else {
+    DBI::dbExecute(conn, sql)
+    api_hits[["DBI::dbExecute"]] <- api_hits[["DBI::dbExecute"]] + 1
   }
   api_hits
 }

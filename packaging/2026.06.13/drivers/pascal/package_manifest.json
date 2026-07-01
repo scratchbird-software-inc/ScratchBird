@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_pascal",
-  "binary_sha256": "99843d73a55bb1075517fc7abe62481f855b8672da8160201a2ff93e62ec15be",
+  "binary_sha256": "986d1f2c2a691e9f2009bca3f393ff82ffab869c907bced634dff24f96a486c4",
   "component_id": "driver:pascal",
   "driver": "pascal",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/pascal",
   "support_materials": [
     "support/README.md",

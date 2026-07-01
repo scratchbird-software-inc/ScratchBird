@@ -578,8 +578,8 @@ func TestRuntimeGateManagerProxyTxnExecWithoutEnv(t *testing.T) {
 	}
 
 	features := server.StartupFeatures()
-	if features&featureCompression == 0 {
-		t.Fatalf("expected compression feature bit set")
+	if features&featureCompression != 0 {
+		t.Fatalf("expected compression feature bit cleared until server admission")
 	}
 	if features&featureStreaming != 0 {
 		t.Fatalf("expected streaming feature bit cleared when binary transfer is disabled")

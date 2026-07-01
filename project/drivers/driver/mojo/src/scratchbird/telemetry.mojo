@@ -104,7 +104,32 @@ struct TelemetryCollector:
     var operation_error_counts: List[Int]
     var slow_query_logs: List[String]
 
-    def __init__(out self, config: TelemetryConfig = TelemetryConfig()):
+    def __init__(out self):
+        var config = TelemetryConfig()
+        self.enable_tracing = config.enable_tracing
+        self.enable_metrics = config.enable_metrics
+        self.enable_slow_query_log = config.enable_slow_query_log
+        self.slow_query_threshold_ms = config.slow_query_threshold_ms
+        self.sanitize_queries_enabled = config.sanitize_queries
+        self.sample_rate = config.sample_rate
+        self.next_trace_id = 1
+        self.next_span_id = 1
+        self.total_queries = 0
+        self.successful_queries = 0
+        self.failed_queries = 0
+        self.total_query_time_ms = 0
+        self.bucket_0_10 = 0
+        self.bucket_10_100 = 0
+        self.bucket_100_1000 = 0
+        self.bucket_1000_10000 = 0
+        self.bucket_over_10000 = 0
+        self.operation_names = List[String]()
+        self.operation_counts = List[Int]()
+        self.operation_total_times = List[Int]()
+        self.operation_error_counts = List[Int]()
+        self.slow_query_logs = List[String]()
+
+    def __init__(out self, config: TelemetryConfig):
         self.enable_tracing = config.enable_tracing
         self.enable_metrics = config.enable_metrics
         self.enable_slow_query_log = config.enable_slow_query_log

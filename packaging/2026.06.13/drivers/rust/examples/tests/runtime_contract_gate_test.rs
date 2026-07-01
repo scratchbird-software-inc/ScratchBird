@@ -1450,7 +1450,7 @@ async fn runtime_gate_manager_proxy_and_capability_parity() {
     let snapshot = server.snapshot();
     server.finish().await;
 
-    assert!(snapshot.startup_features & protocol::FEATURE_COMPRESSION != 0);
+    assert_eq!(snapshot.startup_features & protocol::FEATURE_COMPRESSION, 0);
     assert!(snapshot.startup_features & protocol::FEATURE_STREAMING == 0);
     for flags in snapshot.query_flags {
         assert_eq!(flags & protocol::QUERY_FLAG_BINARY_RESULT, 0);

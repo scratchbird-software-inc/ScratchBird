@@ -2,9 +2,9 @@
   "component_id": "driver:dart",
   "components": [
     {
-      "bytes": 7447728,
+      "bytes": 7511144,
       "path": "bin/sb_isql_dart",
-      "sha256": "418f3b9831903266520e70cda01b55ca56638341c05f10e4f0efcab2f18cd9c5"
+      "sha256": "57acc288937f140a7812703a3d9d7c2e7487f9aa409d31e41b2202c202ef2916"
     },
     {
       "bytes": 295,
@@ -17,9 +17,9 @@
       "sha256": "e9c395134c9d64e5011182515e03913fbce3a8d706e9320d8a8687cae73fddf7"
     },
     {
-      "bytes": 1945,
+      "bytes": 3311,
       "path": "examples/test/chunker_conformance_test.dart",
-      "sha256": "4b5c31255583803cdac90707ccb0aa3a4162b89162307b1af31768533128fb94"
+      "sha256": "414fbbf95a392da7dd5074026e5dc475d62bfa9839cf188b1e623c1aa4002597"
     },
     {
       "bytes": 3033,
@@ -57,14 +57,19 @@
       "sha256": "f159c29c2d000a466265cb1692a2a1c8cc831ddd5781759058d66e0263b8dc6a"
     },
     {
+      "bytes": 2034,
+      "path": "examples/test/protocol_ready_state_test.dart",
+      "sha256": "26aa9031ac9495c17166220ffbe6401f2cf51b82bbca7f34ecf1f7537593a588"
+    },
+    {
       "bytes": 1227,
       "path": "examples/test/scram_error_test.dart",
       "sha256": "a644b0fde0c9595022bb4fc319cea04264c6ea9c049d1aa0c4da58c3c633394b"
     },
     {
-      "bytes": 10464,
+      "bytes": 10698,
       "path": "examples/test/txn_exec_parity_test.dart",
-      "sha256": "4218eb6c39eb6636632a9c4c1ed446426e568f2a836abd894d19deaaf60d4280"
+      "sha256": "d161cdccfce048e99535c01992c4c28ceec94cbc1e0950710055f76eba09e037"
     },
     {
       "bytes": 7054,
@@ -89,7 +94,7 @@
     {
       "bytes": 947,
       "path": "package_manifest.json",
-      "sha256": "24d246938d9c7023474488fff6878bcc40da0d85485c45bc4608448ffb14874a"
+      "sha256": "a1c0a5b09ea1e7f3346615a732f8b1f11990b564a09707c7d644996136ab01f3"
     },
     {
       "bytes": 8384,
@@ -97,14 +102,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -112,9 +117,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 430,
@@ -369,10 +374,10 @@
     {
       "bytes": 475,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "65b776f7b85a5d5d45c2e8efbca27865faf23b9bda4f63673bf8933ec985eede"
+      "sha256": "0f3ee9f6238af0405a0517edfde2acb2363cdca250a6621f4bf7ee5cfe8a0320"
     }
   ],
   "driver": "dart",
-  "generated_at_utc": "2026-06-29T20:56:27+00:00",
+  "generated_at_utc": "2026-07-01T10:26:03+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

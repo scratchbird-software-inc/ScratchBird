@@ -2,7 +2,7 @@
   "SBOM": "root-SBOM.json",
   "component_id": "driver:pascal",
   "driver": "pascal",
-  "hash": "99843d73a55bb1075517fc7abe62481f855b8672da8160201a2ff93e62ec15be",
+  "hash": "986d1f2c2a691e9f2009bca3f393ff82ffab869c907bced634dff24f96a486c4",
   "license": "LICENSE.txt",
   "proof_summary": "../proofs/proof_summary.json",
   "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",

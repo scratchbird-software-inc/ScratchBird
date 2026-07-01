@@ -1,0 +1,10 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-metabase-driver",
+  "hash": "7a546c37a1fcd0150832b2bb9c559cc02026dad679d5674bd0ea528f4a29f5be",
+  "name": "scratchbird-metabase-driver",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+  "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1"
+}

@@ -3,7 +3,7 @@
   "category": "driver",
   "name": "julia",
   "driver_family": "julia",
-  "status": "beta_2_native_transport_runner",
+  "status": "beta_2",
   "wire_protocol": "sbwp_v1_1",
   "auth_authority": "engine",
   "transaction_authority": "mga_engine",
@@ -48,7 +48,7 @@
   "runtime_dependency_policy": {
     "required_packages": [
       "DBInterface",
-      "MbedTLS",
+      "OpenSSL",
       "Tables"
     ],
     "missing_dependency_behavior": "fail_closed_with_diagnostics_and_complete_artifacts"
@@ -56,7 +56,7 @@
   "runtime_boundaries": [
     "embedded_cpp_library_boundary_absent_in_julia_lane",
     "embedded_transport_available_only_when_a_cpp_library_boundary_is_exposed",
-    "tls_transport_requires_project_mbedtls_dependency",
+    "tls_transport_requires_project_openssl_dependency",
     "client_side_sql_finality_forbidden"
   ],
   "release_readiness": {

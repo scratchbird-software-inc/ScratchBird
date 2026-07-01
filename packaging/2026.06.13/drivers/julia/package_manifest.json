@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_julia",
-  "binary_sha256": "2bca3b07b9db3ac819c1b9736cfb50d8f5a7aded659ef8ad71617b6f40406903",
+  "binary_sha256": "81fac7057a5cf8b3ee01f5dd52912037d32775c95b1de953010c61959bee1ab8",
   "component_id": "driver:julia",
   "driver": "julia",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/julia",
   "support_materials": [
     "support/README.md",

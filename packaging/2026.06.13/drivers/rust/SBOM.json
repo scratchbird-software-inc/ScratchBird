@@ -2,9 +2,9 @@
   "component_id": "driver:rust",
   "components": [
     {
-      "bytes": 45087568,
+      "bytes": 45440664,
       "path": "bin/sb_isql_rust",
-      "sha256": "cd8ace552f97890404539431d1765e66252dc15c17e59e7a18be81e2cfe0d7c3"
+      "sha256": "6655113129160705c7d4f484a7add2fdf4ec11caedf84eaf929223b3db48f88e"
     },
     {
       "bytes": 295,
@@ -32,9 +32,9 @@
       "sha256": "32cc16cc04b18cc75620e47396da7d868ef6d1021f8a57a06598003c8f794b74"
     },
     {
-      "bytes": 58739,
+      "bytes": 58740,
       "path": "examples/tests/runtime_contract_gate_test.rs",
-      "sha256": "95d5bcbf43e0630acd906bf4ff118f6d6b88e082d5a670750c772c57f0b82879"
+      "sha256": "1da30540e6160762ef4b82dda55dfcc329de24315988ce382cb3e39dfd87ab1d"
     },
     {
       "bytes": 3273,
@@ -64,7 +64,7 @@
     {
       "bytes": 947,
       "path": "package_manifest.json",
-      "sha256": "1bdfb4ce97d3c0e05806708dc2f61f8419cec4a9bbb5fe8e9228efa012eac836"
+      "sha256": "db612161744e878f7cb440ceaeb158c224619738470bf72f1b0c9d45cafa4445"
     },
     {
       "bytes": 8384,
@@ -72,14 +72,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -87,9 +87,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 430,
@@ -344,10 +344,10 @@
     {
       "bytes": 475,
       "path": "support/support_bundle_manifest.json",
-      "sha256": "bd011d05b0eaa1d78783865725a770a476af1382380d6fb2e2aefa5a2c6c4b08"
+      "sha256": "abc8942cc1e4a7c3780f7aa8166e7cd2b57f6bf77c9cd0e5450aa78fd3e0b589"
     }
   ],
   "driver": "rust",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:07+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

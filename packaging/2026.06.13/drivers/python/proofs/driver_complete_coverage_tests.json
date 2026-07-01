@@ -7,7 +7,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_native_workplan_coverage_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird"
+        "${SCRATCHBIRD_REPO}"
       ],
       "name": "workplan_coverage",
       "output_tail": [
@@ -21,7 +21,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/full_surface_scripts/validate_full_surface_script_suite.py",
         "--output-root",
-        "/home/dcalford/CliWork/ScratchBird/build/reports/driver_complete_coverage_full_surface_validation"
+        "${SCRATCHBIRD_REPO}/build/reports/driver_complete_coverage_full_surface_validation"
       ],
       "name": "full_surface_script_suite",
       "output_tail": [
@@ -35,7 +35,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_static_requirement_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--mode",
         "sblr_uuid_bundle"
       ],
@@ -51,7 +51,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_static_requirement_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--mode",
         "schema_path_resolution"
       ],
@@ -67,7 +67,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_static_requirement_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--mode",
         "sblr_uuid_authorization"
       ],
@@ -83,7 +83,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_static_requirement_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--mode",
         "cache_lifecycle"
       ],
@@ -99,7 +99,7 @@
         "/usr/bin/python3",
         "project/tests/conformance/drivers/driver_static_requirement_gate.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--mode",
         "sbsql_language_resource"
       ],
@@ -115,14 +115,17 @@
         "/usr/bin/python3",
         "project/drivers/scripts/run_driver_native_full_surface_matrix.py",
         "--repo-root",
-        "/home/dcalford/CliWork/ScratchBird",
+        "${SCRATCHBIRD_REPO}",
         "--output",
-        "/home/dcalford/CliWork/ScratchBird/build/reports/driver_complete_coverage_native_matrix.json",
-        "--plan-only"
+        "${SCRATCHBIRD_REPO}/build/reports/driver_complete_coverage_native_matrix.json",
+        "--plan-only",
+        "--proof-strategy",
+        "canonical-full-plus-dimension-smoke",
+        "--require-staged-tools"
       ],
       "name": "native_full_surface_matrix",
       "output_tail": [
-        "driver_native_full_surface_matrix=pass drivers=21 combinations=11232 plan_only=True"
+        "driver_native_full_surface_matrix=pass drivers=21 combinations=9288 plan_only=True"
       ],
       "returncode": 0,
       "status": "pass"

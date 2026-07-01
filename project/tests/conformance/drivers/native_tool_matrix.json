@@ -3,97 +3,97 @@
   "transport_capability_by_driver": {
     "adbc": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "cpp": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": true,
       "embedded_boundary": "native_cpp_library"
     },
     "odbc": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": true,
       "embedded_boundary": "cpp_driver_library_boundary"
     },
     "jdbc": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "dotnet": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "python": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "go": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "rust": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "node": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "php": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "r": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "ruby": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "pascal": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "swift": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "dart": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
     "elixir": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
@@ -105,7 +105,7 @@
     },
     "julia": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },
@@ -117,7 +117,7 @@
     },
     "perl": {
       "inet_required": true,
-      "native_ipc_supported": true,
+      "native_ipc_supported": false,
       "embedded_supported": false,
       "embedded_boundary": "not_applicable_no_cpp_library_binding"
     },

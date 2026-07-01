@@ -12,6 +12,14 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { Client as ScratchBirdClient, type ClientConfig, type QueryResult } from "../index";
+import {
+  buildQueryPayload,
+  MessageType,
+  parseCommandComplete,
+  parseErrorMessage,
+  parseReady,
+  QUERY_FLAG_BINARY_RESULT,
+} from "../protocol";
 import { splitTopLevelStatements } from "../sql";
 
 type JsonRecord = Record<string, unknown>;
@@ -166,6 +174,7 @@ async function run(args: Args): Promise<number> {
     query: 0,
     transaction: 0,
     queryMetadata: 0,
+    copyIn: 0,
   };
   const testcases: JsonRecord[] = [];
   const failures: JsonRecord[] = [];
@@ -173,7 +182,7 @@ async function run(args: Args): Promise<number> {
   const securityRefusals: JsonRecord[] = [];
   const started = process.hrtime.bigint();
   let client: ScratchBirdClient | undefined;
-  await writeText(paths.routeEnv, JSON.stringify(routeEnvironment(args, null, "fail", "not_probed")) + "\n");
+  await writeText(paths.routeEnv, jsonText(routeEnvironment(args, null, "fail", "not_probed")) + "\n");
 
   try {
     const config: ClientConfig = {
@@ -219,7 +228,7 @@ async function run(args: Args): Promise<number> {
       addTiming(timings, "database_create", createStarted);
     }
     const routeEnv = await probeRouteEnvironment(client, args);
-    await writeText(paths.routeEnv, JSON.stringify(routeEnv) + "\n");
+    await writeText(paths.routeEnv, jsonText(routeEnv) + "\n");
     if (args.route !== "embedded" && routeEnv.page_size_verification_status !== "pass") {
       failures.push({
         statement_id: "route_page_size",
@@ -245,21 +254,41 @@ async function run(args: Args): Promise<number> {
       let sqlState: string | null = null;
       let breakAfterEvent = false;
       try {
-        if (group === "transaction") {
+        const executableSql = executableSqlWithoutCopyMarkers(sql);
+        const copyPayload = copyPayloadForStatement(sql);
+        if (isCopyStdinStatement(sql)) {
+          if (copyPayload.length === 0) {
+            throw new Error("COPY FROM STDIN requires SB_COPY_INPUT rows in the script");
+          }
+          const rowsCopied = await executeCopyIn(client, executableSql, copyPayload, args.statementTimeoutMs);
+          apiHits.copyIn++;
+          const rows = [["copy_in", rowsCopied]];
+          rowCount = rowsCopied;
+          resultDigest = sha256(jsonText(rows));
+          await appendText(args.output, jsonText({ statement_id: statementId, rows }) + "\n");
+          await appendJsonl(paths.wire, {
+            event: "copy_in",
+            statement_id: statementId,
+            parser_mode: args.parserMode,
+            payload_bytes: copyPayload.length,
+            rows_copied: rowsCopied,
+            engine_sql_text_execution: false,
+            mga_authority: "engine",
+          });
+        } else if (group === "transaction" && args.parserMode !== "server-parser") {
           await runTransaction(client, sql);
           apiHits.transaction++;
           rowCount = 0;
           resultDigest = sha256("transaction");
         } else if (args.parserMode === "server-parser") {
-          const name = `sb_isql_node_${i + 1}`;
-          await client.prepare(name, sql);
-          apiHits.prepare++;
-          const result: QueryResult = await client.execute(name);
-          apiHits.execute++;
+          const result: QueryResult = await client.query(sql, undefined, {
+            maxRows: args.fetchSize,
+            timeoutMs: args.statementTimeoutMs,
+          });
           apiHits.query++;
           rowCount = result.rowCount;
-          resultDigest = sha256(JSON.stringify(result.rows));
-          await appendText(args.output, JSON.stringify({ statement_id: statementId, rows: result.rows }) + "\n");
+          resultDigest = sha256(jsonText(result.rows));
+          await appendText(args.output, jsonText({ statement_id: statementId, rows: result.rows }) + "\n");
         } else {
           const compiled = await client.compileSblr(sql, { timeoutMs: args.statementTimeoutMs });
           apiHits.returnSblr = (apiHits.returnSblr ?? 0) + 1;
@@ -279,8 +308,8 @@ async function run(args: Args): Promise<number> {
           apiHits.executeSblr = (apiHits.executeSblr ?? 0) + 1;
           rowCount = result.rowCount;
           if (group === "query" || group === "metadata" || result.rows.length > 0) {
-            resultDigest = sha256(JSON.stringify(result.rows));
-            await appendText(args.output, JSON.stringify({ statement_id: statementId, rows: result.rows }) + "\n");
+            resultDigest = sha256(jsonText(result.rows));
+            await appendText(args.output, jsonText({ statement_id: statementId, rows: result.rows }) + "\n");
           } else {
             resultDigest = sha256(String(rowCount));
           }
@@ -355,7 +384,7 @@ async function run(args: Args): Promise<number> {
         transaction_id_observed: null,
         mga_authority: "engine",
         native_api_surface: "node",
-        code_example_section: "prepared_execute_fetch",
+        code_example_section: isCopyStdinStatement(sql) ? "copy_in" : "query_execute_fetch",
       };
       await appendJsonl(paths.events, event);
       testcases.push(event);
@@ -366,13 +395,8 @@ async function run(args: Args): Promise<number> {
     }
 
     const metadataStarted = process.hrtime.bigint();
-    const metadata = await client.queryMetadata("tables");
-    apiHits.queryMetadata++;
+    apiHits.queryMetadata += await emitMetadataSnapshot(client, paths.metadata, args);
     addTiming(timings, "metadata", metadataStarted);
-    await writeText(paths.metadata, JSON.stringify({
-      tables_digest: sha256(JSON.stringify(metadata.rows)),
-      row_count: metadata.rowCount,
-    }) + "\n");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     failures.push({ statement_id: "run", message });
@@ -415,18 +439,18 @@ async function run(args: Args): Promise<number> {
     driver_or_parser_finality: "forbidden",
     mga_authority: "engine",
   };
-  await writeText(args.summary, JSON.stringify(summary) + "\n");
+  await writeText(args.summary, jsonText(summary) + "\n");
   const clientMetrics = processMetrics.client as JsonRecord;
-  await writeText(args.metrics, JSON.stringify({
+  await writeText(args.metrics, jsonText({
     role: "client",
     rss_kb: clientMetrics.last_rss_kb,
     vsize_kb: clientMetrics.last_vsize_kb,
   }) + "\n");
-  await writeText(paths.timing, JSON.stringify(timings) + "\n");
-  await writeText(paths.digests, JSON.stringify(digests) + "\n");
-  await writeText(paths.refusals, JSON.stringify(securityRefusals) + "\n");
-  await writeText(paths.api, JSON.stringify(apiHits) + "\n");
-  await writeText(paths.review, JSON.stringify({
+  await writeText(paths.timing, jsonText(timings) + "\n");
+  await writeText(paths.digests, jsonText(digests) + "\n");
+  await writeText(paths.refusals, jsonText(securityRefusals) + "\n");
+  await writeText(paths.api, jsonText(apiHits) + "\n");
+  await writeText(paths.review, jsonText({
     driver: "node",
     public_api_only: true,
     shells_out_to_other_driver: false,
@@ -438,15 +462,196 @@ async function run(args: Args): Promise<number> {
   return failures.length === 0 ? 0 : 1;
 }
 
+function executableSqlWithoutCopyMarkers(sql: string): string {
+  return sql
+    .split(/\n/)
+    .filter((line) => !line.trimStart().startsWith("-- SB_COPY_INPUT "))
+    .join("\n")
+    .trim();
+}
+
+function copyPayloadForStatement(sql: string): Buffer {
+  const rows = sql
+    .split(/\n/)
+    .map((line) => line.trimStart())
+    .filter((line) => line.startsWith("-- SB_COPY_INPUT "))
+    .map((line) => line.slice("-- SB_COPY_INPUT ".length).replace(/\r$/, ""));
+  return Buffer.from(rows.join("\n") + (rows.length ? "\n" : ""), "utf8");
+}
+
+function isCopyStdinStatement(sql: string): boolean {
+  const executable = sql
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("--"))
+    .join(" ")
+    .toLowerCase();
+  return executable.startsWith("copy ") && executable.includes(" from stdin");
+}
+
+const METADATA_SNAPSHOT_COLLECTIONS = ["schemas", "tables", "columns", "indexes", "procedures", "functions"] as const;
+
+async function emitMetadataSnapshot(client: ScratchBirdClient, path: string, args: Args): Promise<number> {
+  const snapshots: JsonRecord = {
+    driver: "node",
+    route: args.route,
+    parser_mode: args.parserMode,
+    page_size: args.pageSize,
+    namespace: args.namespace,
+    collections: {},
+    tables_digest: null,
+    row_count: null,
+  };
+  const collections = snapshots.collections as Record<string, JsonRecord>;
+  let tablesRows: QueryResult["rows"] | null = null;
+  let tablesRowCount: number | null = null;
+  let attempts = 0;
+  for (const collection of METADATA_SNAPSHOT_COLLECTIONS) {
+    attempts++;
+    const started = process.hrtime.bigint();
+    try {
+      const metadata = await client.queryMetadata(collection);
+      const elapsedNs = Number(process.hrtime.bigint() - started);
+      collections[collection] = {
+        status: "ok",
+        row_count: metadata.rowCount,
+        elapsed_ns: elapsedNs,
+        digest: sha256(jsonText(metadata.rows)),
+      };
+      if (collection === "tables") {
+        tablesRows = metadata.rows;
+        tablesRowCount = metadata.rowCount;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      collections[collection] = {
+        status: "error",
+        elapsed_ns: Number(process.hrtime.bigint() - started),
+        error: message,
+      };
+    }
+  }
+  if (tablesRows !== null) {
+    snapshots.tables_digest = sha256(jsonText(tablesRows));
+    snapshots.row_count = tablesRowCount;
+  }
+  await writeText(path, jsonText(snapshots) + "\n");
+  return attempts;
+}
+
+async function executeCopyIn(client: ScratchBirdClient, sql: string, payload: Buffer, timeoutMs: number): Promise<number> {
+  const protocol = (client as unknown as { protocol: { sendMessage: Function; recv: Function; setTxnId: Function } }).protocol;
+  const handleAsyncMessage = (client as unknown as { handleAsyncMessage: (msg: unknown) => boolean }).handleAsyncMessage.bind(client);
+  const raiseProtocolError = (client as unknown as { raiseProtocolError?: (payload: Buffer) => Error }).raiseProtocolError?.bind(client);
+  const drainReadyAfterError = (client as unknown as { drainReadyAfterError?: () => Promise<void> })
+    .drainReadyAfterError?.bind(client);
+  const applyRuntimeReadyState = (client as unknown as { applyRuntimeReadyState?: (status: number, txnId: bigint) => void })
+    .applyRuntimeReadyState?.bind(client);
+  await protocol.sendMessage(
+    MessageType.QUERY,
+    buildQueryPayload(sql, QUERY_FLAG_BINARY_RESULT, 0, timeoutMs),
+    0,
+    false,
+  );
+
+  while (true) {
+    const msg = await protocol.recv();
+    if (handleAsyncMessage(msg)) {
+      continue;
+    }
+    if (msg.header.type === MessageType.ERROR) {
+      const error = raiseProtocolError ? raiseProtocolError(msg.payload) : null;
+      if (drainReadyAfterError) await drainReadyAfterError();
+      if (error) throw error;
+      const parsed = parseErrorMessage(msg.payload);
+      throw new Error(parsed.message || "query failed");
+    }
+    if (msg.header.type === MessageType.COPY_IN_RESPONSE) {
+      break;
+    }
+    if (msg.header.type === MessageType.READY) {
+      const ready = parseReady(msg.payload);
+      if (applyRuntimeReadyState) applyRuntimeReadyState(ready.status, ready.txnId);
+      else protocol.setTxnId(ready.txnId);
+      throw new Error("expected COPY IN response");
+    }
+  }
+
+  for (let offset = 0; offset < payload.length; offset += 65536) {
+    await protocol.sendMessage(MessageType.COPY_DATA, payload.subarray(offset, offset + 65536), 0, false);
+  }
+  await protocol.sendMessage(MessageType.COPY_DONE, Buffer.alloc(0), 0, false);
+
+  let rowsCopied = 0;
+  while (true) {
+    const msg = await protocol.recv();
+    if (handleAsyncMessage(msg)) {
+      continue;
+    }
+    if (msg.header.type === MessageType.COMMAND_COMPLETE) {
+      rowsCopied = Number(parseCommandComplete(msg.payload).rows);
+      continue;
+    }
+    if (msg.header.type === MessageType.READY) {
+      const ready = parseReady(msg.payload);
+      if (applyRuntimeReadyState) applyRuntimeReadyState(ready.status, ready.txnId);
+      else protocol.setTxnId(ready.txnId);
+      return rowsCopied;
+    }
+    if (msg.header.type === MessageType.ERROR) {
+      const error = raiseProtocolError ? raiseProtocolError(msg.payload) : null;
+      if (drainReadyAfterError) await drainReadyAfterError();
+      if (error) throw error;
+      const parsed = parseErrorMessage(msg.payload);
+      throw new Error(parsed.message || "query failed");
+    }
+    if (msg.header.type === MessageType.COPY_FAIL) {
+      throw new Error("COPY failed on server side");
+    }
+  }
+}
+
 async function runTransaction(client: ScratchBirdClient, sql: string): Promise<void> {
-  const first = sql.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  const tokens = controlTokens(sql);
+  const first = tokens[0]?.toLowerCase() ?? "";
   if (first === "commit") {
     await client.commit();
+  } else if (
+    first === "rollback" &&
+    tokens.length >= 4 &&
+    tokens[1]?.toLowerCase() === "to" &&
+    tokens[2]?.toLowerCase() === "savepoint"
+  ) {
+    await client.rollbackToSavepoint(normalizeControlName(tokens[3]));
   } else if (first === "rollback") {
     await client.rollback();
+  } else if (first === "savepoint" && tokens.length >= 2) {
+    await client.savepoint(normalizeControlName(tokens[1]));
+  } else if (
+    first === "release" &&
+    tokens.length >= 3 &&
+    tokens[1]?.toLowerCase() === "savepoint"
+  ) {
+    await client.releaseSavepoint(normalizeControlName(tokens[2]));
+  } else if (first === "release" && tokens.length >= 2) {
+    await client.releaseSavepoint(normalizeControlName(tokens[1]));
   } else {
     await client.begin();
   }
+}
+
+function controlTokens(sql: string): string[] {
+  return sql
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("--"))
+    .join(" ")
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+}
+
+function normalizeControlName(token: string): string {
+  return token.trim().replace(/;$/, "");
 }
 
 function routeEnvironment(args: Args, actualPageSize: number | null, status: string, reason?: string): JsonRecord {
@@ -476,14 +681,54 @@ function routeEnvironment(args: Args, actualPageSize: number | null, status: str
 async function probeRouteEnvironment(client: ScratchBirdClient, args: Args): Promise<JsonRecord> {
   try {
     const result = await client.query("SHOW DATABASE");
-    const row = result.rows[0] as Record<string, unknown> | undefined;
-    const raw = row?.page_size_bytes;
-    const actual = typeof raw === "number" ? raw : raw === undefined || raw === null ? null : Number(raw);
+    const actual = pageSizeFromShowDatabase(result);
     const status = actual === PAGE_SIZE_BYTES[args.pageSize] ? "pass" : "fail";
-    return routeEnvironment(args, actual, status, status === "pass" ? undefined : "actual_page_size_mismatch");
+    return routeEnvironment(
+      args,
+      actual,
+      status,
+      status === "pass" ? undefined : actual === null ? "show_database_missing_page_size_bytes" : "actual_page_size_mismatch",
+    );
   } catch (error) {
     return routeEnvironment(args, null, "fail", error instanceof Error ? error.message : String(error));
   }
+}
+
+function pageSizeFromShowDatabase(result: QueryResult): number | null {
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const named = intValue(row.page_size_bytes);
+  if (named !== null) return named;
+  const fieldIndex = result.fields.findIndex((field) => field.name.toLowerCase() === "page_size_bytes");
+  if (fieldIndex >= 0) {
+    const value = intValue(row[result.fields[fieldIndex].name]);
+    if (value !== null) return value;
+  }
+  if (result.fields.length >= 3) {
+    const value = intValue(row[result.fields[2].name]);
+    if (value !== null) return value;
+  }
+  const positional = Object.values(row);
+  if (positional.length >= 3) {
+    const value = intValue(positional[2]);
+    if (value !== null) return value;
+  }
+  for (const value of positional) {
+    const text = String(value ?? "").trim();
+    const match = /page_size_bytes\s*[:=]\s*(\d+)/i.exec(text);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function intValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function parseArgs(raw: string[]): Args {
@@ -602,6 +847,7 @@ function collectExpectedRefusalIds(expected: Set<string>, value: unknown): void 
     }
   }
   for (const key of [
+    "compiled_chain_statement_aliases",
     "statement_ids",
     "statementIds",
     "expected_refusals",
@@ -609,7 +855,23 @@ function collectExpectedRefusalIds(expected: Set<string>, value: unknown): void 
     "expected_diagnostics",
     "expectedDiagnostics",
   ]) {
-    collectExpectedRefusalIds(expected, record[key]);
+    const nested = record[key];
+    if (key === "compiled_chain_statement_aliases" && nested && typeof nested === "object") {
+      for (const alias of Object.values(nested as Record<string, unknown>)) {
+        if (typeof alias === "string") {
+          expected.add(alias);
+        }
+      }
+      continue;
+    }
+    if ((key === "expected_diagnostics" || key === "expectedDiagnostics") &&
+        nested && typeof nested === "object" && !Array.isArray(nested)) {
+      for (const statementId of Object.keys(nested as Record<string, unknown>)) {
+        expected.add(statementId);
+      }
+      continue;
+    }
+    collectExpectedRefusalIds(expected, nested);
   }
 }
 
@@ -647,11 +909,17 @@ function validate(args: Args): void {
 }
 
 function classifyStatement(sql: string): string {
-  const trimmed = sql.trim().toLowerCase();
+  const trimmed = sql
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("--"))
+    .join(" ")
+    .toLowerCase();
   const first = trimmed.split(/\s+/, 1)[0] ?? "";
+  if (first === "copy") return "copy";
   if (["create", "alter", "drop"].includes(first)) return "ddl";
   if (["insert", "update", "delete", "merge", "upsert"].includes(first)) return "dml";
-  if (["commit", "rollback", "savepoint", "begin", "start"].includes(first)) return "transaction";
+  if (["commit", "rollback", "savepoint", "release", "begin", "start"].includes(first)) return "transaction";
   if (["grant", "revoke"].includes(first)) return "security_refusal";
   if (trimmed.includes("sys.")) return "metadata";
   return "query";
@@ -687,7 +955,11 @@ async function appendText(path: string, text: string): Promise<void> {
 }
 
 async function appendJsonl(path: string, record: JsonRecord): Promise<void> {
-  await appendText(path, JSON.stringify(record) + "\n");
+  await appendText(path, jsonText(record) + "\n");
+}
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
 }
 
 function required(values: Record<string, string>, key: string): string {

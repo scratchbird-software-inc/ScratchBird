@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+import 'dart:convert';
 import 'dart:mirrors';
 import 'dart:typed_data';
 
@@ -98,11 +99,13 @@ void main() {
       await client.commitPrepared('gid-1');
       await client.rollbackPrepared("gid'2");
 
-      expect(client.recordedSql, equals([
-        "PREPARE TRANSACTION 'gid-1'",
-        "COMMIT PREPARED 'gid-1'",
-        "ROLLBACK PREPARED 'gid''2'",
-      ]));
+      expect(
+          client.recordedSql,
+          equals([
+            "PREPARE TRANSACTION 'gid-1'",
+            "COMMIT PREPARED 'gid-1'",
+            "ROLLBACK PREPARED 'gid''2'",
+          ]));
     });
 
     test('prepared transaction helpers reject blank gid', () async {
@@ -292,7 +295,8 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                contains('Portal resume requires an explicit suspended result state'),
+                contains(
+                    'Portal resume requires an explicit suspended result state'),
               ),
         ),
       );
@@ -314,12 +318,14 @@ void main() {
       );
       expect(data.getUint32(4, Endian.little), equals(25));
       expect(data.getUint32(8, Endian.little), equals(900));
-      final sql = payload.sublist(12);
-      expect(sql.last, equals(0));
+      expect(String.fromCharCodes(payload.sublist(12)), equals('SELECT 42'));
+    });
+
+    test('query payload uses UTF-8 without NUL termination', () {
+      final payload =
+          wire.buildQueryPayload('-- box \u2500\nSELECT 42', 0, 0, 0);
       expect(
-        String.fromCharCodes(sql.sublist(0, sql.length - 1)),
-        equals('SELECT 42'),
-      );
+          payload.sublist(12), equals(utf8.encode('-- box \u2500\nSELECT 42')));
     });
 
     test('execute payload encodes portal and max rows', () {

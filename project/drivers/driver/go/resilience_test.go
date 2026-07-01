@@ -218,6 +218,22 @@ func TestCircuitBreakerTransitionsAndExecuteOpenGuard(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerHealthFailureClassifierIgnoresExpectedSqlRefusals(t *testing.T) {
+	refusal := &Error{Kind: ErrSyntax, SQLState: "42000", Message: "statement refused by parser"}
+	if isCircuitBreakerHealthFailure(refusal) {
+		t.Fatalf("expected parser/SQL refusal to remain a healthy protocol outcome")
+	}
+
+	connection := &Error{Kind: ErrConnection, SQLState: "08006", Message: "socket failed"}
+	if !isCircuitBreakerHealthFailure(connection) {
+		t.Fatalf("expected connection error to be a circuit-breaker health failure")
+	}
+
+	if !isCircuitBreakerHealthFailure(errors.New("opaque driver failure")) {
+		t.Fatalf("expected opaque driver failure to be guarded conservatively")
+	}
+}
+
 func TestTelemetryCollectorRecordsMetricsAndSlowQueries(t *testing.T) {
 	cfg := TelemetryConfig{
 		EnableTracing:        true,

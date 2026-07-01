@@ -985,11 +985,11 @@ def test_execute_query_selects_simple_or_extended_path(monkeypatch):
     calls = []
     monkeypatch.setattr(conn, "_begin_operation", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(conn, "_end_operation", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(conn, "_send_simple_query", lambda sql, max_rows=0: calls.append(("simple", sql, max_rows)))
+    monkeypatch.setattr(conn, "_send_simple_query", lambda sql, max_rows=0, *_args: calls.append(("simple", sql, max_rows)))
     monkeypatch.setattr(
         conn,
         "_send_extended_query",
-        lambda sql, params, max_rows=0: calls.append(("extended", sql, list(params), max_rows)),
+        lambda sql, params, max_rows=0, *_args: calls.append(("extended", sql, list(params), max_rows)),
     )
 
     conn._execute_query("SELECT 1")

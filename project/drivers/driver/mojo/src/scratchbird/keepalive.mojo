@@ -79,7 +79,17 @@ struct KeepaliveManager:
     var validation_counts: List[Int]
     var running: Bool
 
-    def __init__(out self, config: KeepaliveConfig = KeepaliveConfig()):
+    def __init__(out self):
+        var config = KeepaliveConfig()
+        self.interval_ms = config.interval_ms
+        self.max_idle_before_check_ms = config.max_idle_before_check_ms
+        self.validation_timeout_ms = config.validation_timeout_ms
+        self.connection_ids = List[String]()
+        self.last_activity_ms = List[Int]()
+        self.validation_counts = List[Int]()
+        self.running = False
+
+    def __init__(out self, config: KeepaliveConfig):
         self.interval_ms = config.interval_ms
         self.max_idle_before_check_ms = config.max_idle_before_check_ms
         self.validation_timeout_ms = config.validation_timeout_ms

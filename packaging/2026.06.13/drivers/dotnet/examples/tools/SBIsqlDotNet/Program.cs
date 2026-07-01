@@ -101,7 +101,8 @@ internal static class SBIsqlDotNet
             ["DbParameter"] = 0,
             ["DbDataReader"] = 0,
             ["DbTransaction"] = 0,
-            ["GetSchema"] = 0
+            ["GetSchema"] = 0,
+            ["SBWP_COPY"] = 0
         };
         var testcases = new List<Dictionary<string, object?>>();
         var failures = new List<Dictionary<string, object?>>();
@@ -113,6 +114,7 @@ internal static class SBIsqlDotNet
             RouteEnvironment(args, null, "fail", "not_probed")) + "\n");
 
         DbConnection? connection = null;
+        ScratchBirdTransaction? activeTransaction = null;
         try
         {
             var builder = new ScratchBirdConnectionStringBuilder
@@ -189,11 +191,12 @@ internal static class SBIsqlDotNet
                 });
                 throw new InvalidOperationException("route page-size verification failed");
             }
-            var statements = SplitStatements(await ReadInputAsync(Required(args, "--input")));
-            for (var index = 0; index < statements.Count; index++)
+            var inputPath = Required(args, "--input");
+            var statements = SplitStatements(inputPath, await ReadInputAsync(inputPath));
+            foreach (var statement in statements)
             {
-                var sql = statements[index];
-                var statementId = $"{Path.GetFileName(Required(args, "--input"))}:{index + 1}";
+                var sql = statement.Sql;
+                var statementId = $"{statement.ScriptName}:{statement.StatementIndex}";
                 var expectedRefusal = expectedRefusals.Contains(statementId);
                 var expectedOutcome = expectedRefusal ? "refusal" : "success";
                 var group = Classify(sql);
@@ -205,9 +208,35 @@ internal static class SBIsqlDotNet
                 string? diagnostic = null;
                 try
                 {
-                    if (group == "transaction")
+                    var executableSql = ExecutableSqlWithoutCopyMarkers(sql);
+                    var copyPayload = CopyPayloadForStatement(sql);
+                    if (IsCopyStdinStatement(sql))
                     {
-                        await RunTransactionAsync(connection, sql, apiHits);
+                        if (copyPayload.Length == 0)
+                        {
+                            throw new InvalidOperationException("COPY FROM STDIN requires SB_COPY_INPUT rows in the script");
+                        }
+                        var rowsCopied = ((ScratchBirdConnection)connection).ExecuteCopyIn(executableSql, copyPayload,
+                            int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")));
+                        apiHits["SBWP_COPY"]++;
+                        var rows = new List<List<object?>> { new() { "copy_in", rowsCopied } };
+                        rowCount = rowsCopied > int.MaxValue ? int.MaxValue : (int)rowsCopied;
+                        resultDigest = Sha256Text(JsonSerializer.Serialize(rows));
+                        await AppendTextAsync(Required(args, "--output"), JsonSerializer.Serialize(new { statement_id = statementId, rows }) + "\n");
+                        await AppendJsonlAsync(paths["wire"], new
+                        {
+                            @event = "copy_in",
+                            statement_id = statementId,
+                            parser_mode = Required(args, "--parser-mode"),
+                            payload_bytes = copyPayload.Length,
+                            rows_copied = rowsCopied,
+                            engine_sql_text_execution = false,
+                            mga_authority = "engine"
+                        });
+                    }
+                    else if (group == "transaction")
+                    {
+                        activeTransaction = await RunTransactionAsync(connection, activeTransaction, sql, apiHits);
                         rowCount = 0;
                         resultDigest = Sha256Text("transaction");
                     }
@@ -266,6 +295,10 @@ internal static class SBIsqlDotNet
                         apiHits["DbCommand"]++;
                         command.CommandText = sql;
                         command.CommandTimeout = int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")) / 1000;
+                        if (activeTransaction != null)
+                        {
+                            command.Transaction = activeTransaction;
+                        }
                         DbParameter? parameter = null;
                         if (parameter != null)
                         {
@@ -330,7 +363,7 @@ internal static class SBIsqlDotNet
                     ["page_size"] = Required(args, "--page-size"),
                     ["namespace"] = Required(args, "--namespace"),
                     ["script"] = Required(args, "--input"),
-                    ["statement_index"] = index + 1,
+                    ["statement_index"] = statement.StatementIndex,
                     ["statement_id"] = statementId,
                     ["command_group"] = group,
                     ["sql_hash"] = Sha256Text(sql),
@@ -353,7 +386,7 @@ internal static class SBIsqlDotNet
                     ["transaction_id_observed"] = null,
                     ["mga_authority"] = "engine",
                     ["native_api_surface"] = "ado_net",
-                    ["code_example_section"] = "dbcommand_reader"
+                    ["code_example_section"] = IsCopyStdinStatement(sql) ? "copy_in" : "dbcommand_reader"
                 };
                 await AppendJsonlAsync(paths["events"], ev);
                 testcases.Add(ev);
@@ -376,6 +409,7 @@ internal static class SBIsqlDotNet
         }
         finally
         {
+            activeTransaction?.Dispose();
             if (connection != null)
             {
                 await connection.DisposeAsync();
@@ -441,19 +475,117 @@ internal static class SBIsqlDotNet
         return failures.Count == 0 ? 0 : 1;
     }
 
-    private static async Task RunTransactionAsync(DbConnection connection, string sql, Dictionary<string, int> apiHits)
+    private static async Task<ScratchBirdTransaction?> RunTransactionAsync(
+        DbConnection connection,
+        ScratchBirdTransaction? activeTransaction,
+        string sql,
+        Dictionary<string, int> apiHits)
     {
-        var first = sql.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToLowerInvariant() ?? "";
-        if (first == "commit" || first == "rollback")
+        var tokens = SqlWithoutLineComments(sql)
+            .Trim()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var first = tokens.FirstOrDefault()?.ToLowerInvariant() ?? "";
+        if (first is "begin" or "start")
         {
-            await using var command = connection.CreateCommand();
-            command.CommandText = first.ToUpperInvariant();
-            await command.ExecuteNonQueryAsync();
-            return;
+            if (activeTransaction != null)
+            {
+                throw new InvalidOperationException("transaction already active");
+            }
+            var transaction = (ScratchBirdTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            apiHits["DbTransaction"]++;
+            return transaction;
         }
-        await using DbTransaction transaction = await connection.BeginTransactionAsync();
-        apiHits["DbTransaction"]++;
-        await transaction.CommitAsync();
+        if (first == "commit")
+        {
+            if (activeTransaction == null)
+            {
+                throw new InvalidOperationException("COMMIT requires an active transaction");
+            }
+            activeTransaction.Commit();
+            activeTransaction.Dispose();
+            apiHits["DbTransactionCommit"] = apiHits.GetValueOrDefault("DbTransactionCommit") + 1;
+            return null;
+        }
+        if (first == "rollback")
+        {
+            if (activeTransaction == null)
+            {
+                throw new InvalidOperationException("ROLLBACK requires an active transaction");
+            }
+            if (tokens.Length >= 4 &&
+                string.Equals(tokens[1], "to", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(tokens[2], "savepoint", StringComparison.OrdinalIgnoreCase))
+            {
+                activeTransaction.Rollback(NormalizeTerminator(tokens[3]));
+                apiHits["DbTransactionRollbackToSavepoint"] = apiHits.GetValueOrDefault("DbTransactionRollbackToSavepoint") + 1;
+                return activeTransaction;
+            }
+            activeTransaction.Rollback();
+            activeTransaction.Dispose();
+            apiHits["DbTransactionRollback"] = apiHits.GetValueOrDefault("DbTransactionRollback") + 1;
+            return null;
+        }
+        if (first == "savepoint")
+        {
+            if (activeTransaction == null)
+            {
+                throw new InvalidOperationException("SAVEPOINT requires an active transaction");
+            }
+            if (tokens.Length < 2)
+            {
+                throw new InvalidOperationException("SAVEPOINT requires a name");
+            }
+            activeTransaction.Save(NormalizeTerminator(tokens[1]));
+            apiHits["DbTransactionSavepoint"] = apiHits.GetValueOrDefault("DbTransactionSavepoint") + 1;
+            return activeTransaction;
+        }
+        if (first == "release")
+        {
+            if (activeTransaction == null)
+            {
+                throw new InvalidOperationException("RELEASE SAVEPOINT requires an active transaction");
+            }
+            if (tokens.Length < 3 || !string.Equals(tokens[1], "savepoint", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("only RELEASE SAVEPOINT is supported in this runner");
+            }
+            activeTransaction.Release(NormalizeTerminator(tokens[2]));
+            apiHits["DbTransactionReleaseSavepoint"] = apiHits.GetValueOrDefault("DbTransactionReleaseSavepoint") + 1;
+            return activeTransaction;
+        }
+        throw new InvalidOperationException($"unsupported transaction statement: {sql}");
+    }
+
+    private static string NormalizeTerminator(string token) => token.TrimEnd(';');
+
+    private static string SqlWithoutLineComments(string sql) =>
+        string.Join("\n", sql.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith("--", StringComparison.Ordinal)));
+
+    private static string ExecutableSqlWithoutCopyMarkers(string sql) =>
+        string.Join("\n", sql.Split('\n')
+            .Where(line => !line.TrimStart().StartsWith("-- SB_COPY_INPUT ", StringComparison.Ordinal)))
+            .Trim();
+
+    private static byte[] CopyPayloadForStatement(string sql)
+    {
+        var rows = sql.Split('\n')
+            .Select(line => line.TrimStart())
+            .Where(line => line.StartsWith("-- SB_COPY_INPUT ", StringComparison.Ordinal))
+            .Select(line => line["-- SB_COPY_INPUT ".Length..].TrimEnd('\r'))
+            .ToList();
+        return Encoding.UTF8.GetBytes(string.Join("\n", rows) + (rows.Count == 0 ? "" : "\n"));
+    }
+
+    private static bool IsCopyStdinStatement(string sql)
+    {
+        var executable = string.Join(" ", sql.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith("--", StringComparison.Ordinal)))
+            .ToLowerInvariant();
+        return executable.StartsWith("copy ", StringComparison.Ordinal) &&
+            executable.Contains(" from stdin", StringComparison.Ordinal);
     }
 
     private static Dictionary<string, string> ParseArgs(string[] raw)
@@ -499,16 +631,32 @@ internal static class SBIsqlDotNet
         if (!ParserModes.Contains(Required(args, "--parser-mode"))) throw new ArgumentException($"unsupported parser mode: {Required(args, "--parser-mode")}");
     }
 
-    private static List<string> SplitStatements(string script) =>
-        SqlStatementSplitter.Split(script).ToList();
+    private static List<StatementChunk> SplitStatements(string inputPath, string script)
+    {
+        var chain = SqlStatementSplitter.SplitChain(script);
+        if (chain.Count > 0)
+        {
+            return chain
+                .Select(statement =>
+                    new StatementChunk(statement.ScriptName, statement.StatementIndex, statement.Sql))
+                .ToList();
+        }
+        return SqlStatementSplitter.Split(script)
+            .Select((sql, index) => new StatementChunk(Path.GetFileName(inputPath), index + 1, sql))
+            .ToList();
+    }
 
     private static string Classify(string sql)
     {
-        var trimmed = sql.Trim().ToLowerInvariant();
+        var trimmed = string.Join(" ", sql.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith("--", StringComparison.Ordinal)))
+            .ToLowerInvariant();
         var first = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        if (first == "copy") return "copy";
         if (new[] { "create", "alter", "drop" }.Contains(first)) return "ddl";
         if (new[] { "insert", "update", "delete", "merge", "upsert" }.Contains(first)) return "dml";
-        if (new[] { "commit", "rollback", "savepoint", "begin", "start" }.Contains(first)) return "transaction";
+        if (new[] { "commit", "rollback", "savepoint", "begin", "start", "release" }.Contains(first)) return "transaction";
         if (new[] { "grant", "revoke" }.Contains(first)) return "security_refusal";
         return trimmed.Contains("sys.", StringComparison.Ordinal) ? "metadata" : "query";
     }
@@ -675,6 +823,14 @@ internal static class SBIsqlDotNet
         {
             AddExpectedRefusals(expected, ids);
         }
+        if (doc.RootElement.TryGetProperty("expected_diagnostics", out var expectedDiagnostics) &&
+            expectedDiagnostics.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var item in expectedDiagnostics.EnumerateObject())
+            {
+                ids.Add(item.Name);
+            }
+        }
         return ids;
     }
 
@@ -757,3 +913,5 @@ internal static class SBIsqlDotNet
     private static string EscapeXml(string text) =>
         text.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;").Replace(">", "&gt;");
 }
+
+internal sealed record StatementChunk(string ScriptName, int StatementIndex, string Sql);

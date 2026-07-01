@@ -54,4 +54,47 @@ void main() {
       });
     }
   });
+
+  const chainFixtureSuffix =
+      'project/tests/conformance/drivers/chunker_conformance/chain_cases.json';
+  File? chainFixture;
+  for (var dir = Directory.current;; dir = dir.parent) {
+    final candidate = File('${dir.path}/$chainFixtureSuffix');
+    if (candidate.existsSync()) {
+      chainFixture = candidate;
+      break;
+    }
+    if (dir.path == dir.parent.path) {
+      break;
+    }
+  }
+  if (chainFixture == null) {
+    fail('could not locate $chainFixtureSuffix from ${Directory.current.path}');
+  }
+
+  final chainRaw = chainFixture.readAsStringSync();
+  final chainCases =
+      (jsonDecode(chainRaw) as Map<String, Object?>)['cases'] as List<Object?>;
+
+  group('chain chunker conformance', () {
+    for (final entry in chainCases) {
+      final case_ = entry as Map<String, Object?>;
+      final name = case_['name'] as String;
+      final input = case_['input'] as String;
+      final expected = (case_['expected'] as List<Object?>)
+          .map((row) => (row as List<Object?>).cast<Object?>())
+          .toList();
+
+      test(name, () {
+        final actual = splitChainStatements(input)
+            .map((statement) => [
+                  statement.scriptName,
+                  statement.statementIndex,
+                  statement.sql,
+                ])
+            .toList();
+        expect(actual, equals(expected));
+      });
+    }
+  });
 }

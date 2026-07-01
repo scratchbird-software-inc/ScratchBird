@@ -31,6 +31,7 @@ from typing import Any, Iterable
 
 REPORT_NAME = "driver_packaging_promotion.json"
 MANIFEST_REL = Path("project/drivers/DriverPackageManifest.csv")
+DBEAVER_COMPONENT_ID = "adaptor:scratchbird-dbeaver-driver"
 DEFAULT_BUILD_BIN_REL = Path("build/output/linux/bin")
 DEFAULT_PROOF_REL = Path("build/reports")
 DEFAULT_LANGUAGE_PACK_REL = Path(
@@ -85,6 +86,20 @@ EXCLUDED_COPY_PARTS = {
 }
 EXCLUDED_COPY_SUFFIXES = {".pyc", ".o", ".obj", ".class"}
 ROOT_METADATA = {"RELEASE_MANIFEST.json", "SHA256SUMS"}
+PACKAGE_DIR_BY_CATEGORY = {
+    "driver": "drivers",
+    "adaptor": "adapters",
+    "tool": "tools",
+}
+CLI_TOOL_BINARIES = (
+    "SBsql",
+    "SBadm",
+    "SBbak",
+    "SBsec",
+    "SBcop",
+    "SBdoc",
+    "SBParser",
+)
 
 
 def repo_root_from_script() -> Path:
@@ -130,6 +145,13 @@ def driver_rows(repo_root: Path) -> list[dict[str, str]]:
     return [row for row in read_csv(repo_root / MANIFEST_REL) if row.get("category") == "driver"]
 
 
+def component_rows(repo_root: Path) -> list[dict[str, str]]:
+    return [
+        row for row in read_csv(repo_root / MANIFEST_REL)
+        if row.get("component_id", "").strip() != DBEAVER_COMPONENT_ID
+    ]
+
+
 def source_path(repo_root: Path, manifest: dict[str, str]) -> Path:
     rel = manifest.get("source_path", "").strip()
     return repo_root / rel
@@ -150,6 +172,35 @@ def write_text(path: Path, content: str, verify_only: bool) -> bool:
         return path.is_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+    return True
+
+
+def sanitized_text(text: str, repo_root: Path) -> str:
+    replacements = (
+        (str(repo_root), "${SCRATCHBIRD_REPO}"),
+        ("/home/dcalford/CliWork/ScratchBird-Private", "${SCRATCHBIRD_PRIVATE_REPO}"),
+        ("ScratchBird-Private", "SCRATCHBIRD_PRIVATE_REPO"),
+        ("/home/dcalford", "${HOME}"),
+        ("local_work", "LOCAL_WORKSPACE"),
+    )
+    result = text
+    for old, new in replacements:
+        result = result.replace(old, new)
+    return result
+
+
+def copy_sanitized_artifact(src: Path, dst: Path, repo_root: Path, verify_only: bool) -> bool:
+    if not src.is_file():
+        return False
+    if verify_only:
+        return dst.is_file()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        text = src.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        shutil.copy2(src, dst)
+        return True
+    dst.write_text(sanitized_text(text, repo_root), encoding="utf-8")
     return True
 
 
@@ -315,6 +366,14 @@ def write_release_manifest(
     return True
 
 
+def package_category_dir(manifest: dict[str, str]) -> str:
+    category = manifest.get("category", "").strip()
+    try:
+        return PACKAGE_DIR_BY_CATEGORY[category]
+    except KeyError as exc:
+        raise ValueError(f"unknown package category: {category}") from exc
+
+
 def build_driver_package(
     repo_root: Path,
     release_root: Path,
@@ -383,7 +442,7 @@ def build_driver_package(
 
     proof_files = proof_sources(repo_root)
     for proof in proof_files:
-        copy_file(proof, driver_root / "proofs" / proof.name, verify_only)
+        copy_sanitized_artifact(proof, driver_root / "proofs" / proof.name, repo_root, verify_only)
     if not proof_files and not verify_only:
         issues.append("missing_driver_proof_summary_source")
     if verify_only and not (driver_root / "proofs").is_dir():
@@ -512,6 +571,161 @@ def build_driver_package(
     )
 
 
+def build_component_package(
+    repo_root: Path,
+    release_root: Path,
+    manifest: dict[str, str],
+    verify_only: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    component = manifest.get("component_id", "").strip()
+    name = manifest.get("name", "").strip()
+    category = manifest.get("category", "").strip()
+    package_root = release_root / package_category_dir(manifest) / name
+    src_root = source_path(repo_root, manifest)
+    issues: list[str] = []
+
+    if not verify_only and package_root.exists():
+        shutil.rmtree(package_root)
+
+    package_root.mkdir(parents=True, exist_ok=True)
+    copy_tree(src_root, package_root / "support" / "source", verify_only)
+    copy_file(src_root / "README.md", package_root / "support" / "README.md", verify_only)
+    copy_file(src_root / "BASELINE_REQUIREMENT_MAPPING.md", package_root / "support" / "BASELINE_REQUIREMENT_MAPPING.md", verify_only)
+    for filename in OPTIONAL_SUPPORT_FILES:
+        copy_file(src_root / filename, package_root / "support" / filename, verify_only)
+
+    binaries: list[str] = []
+    if category == "tool":
+        for binary in CLI_TOOL_BINARIES:
+            src = repo_root / DEFAULT_BUILD_BIN_REL / binary
+            dst = package_root / "bin" / binary
+            if copy_file(src, dst, verify_only):
+                binaries.append(f"bin/{binary}")
+            else:
+                issues.append(f"missing_tool_binary:{src.relative_to(repo_root)}")
+    elif category == "adaptor":
+        write_text(
+            package_root / "bin" / "README.md",
+            (
+                f"# ScratchBird {name} adapter\n\n"
+                "This adapter package carries the adapter contract and support materials. "
+                "Runtime execution delegates to the ScratchBird driver named by the adapter contract.\n"
+            ),
+            verify_only,
+        )
+
+    for label, path in example_roots(src_root):
+        copy_tree(path, package_root / "examples" / label, verify_only)
+    write_text(
+        package_root / "examples" / "README.md",
+        (
+            f"# ScratchBird {name} {category} examples\n\n"
+            "Examples and support files in this package use the shared ScratchBird beta driver "
+            "contract and must preserve engine-owned MGA transaction authority.\n"
+        ),
+        verify_only,
+    )
+
+    language_pack_src = repo_root / DEFAULT_LANGUAGE_PACK_REL
+    if not copy_tree(language_pack_src, package_root / "resources" / "sbsql-language-resource-pack", verify_only):
+        issues.append(f"missing_language_resource_pack:{DEFAULT_LANGUAGE_PACK_REL.as_posix()}")
+
+    for filename in LEGAL_SOURCE_FILES:
+        src = repo_root / filename
+        dst_name = "LICENSE.txt" if filename == "LICENSE" else filename
+        if not copy_file(src, package_root / "legal" / dst_name, verify_only):
+            issues.append(f"missing_legal_material:{filename}")
+        copy_file(src, package_root / "support" / dst_name, verify_only)
+    copy_file(repo_root / ROOT_SBOM_REL, package_root / "support" / "root-SBOM.json", verify_only)
+
+    proof_files = proof_sources(repo_root)
+    for proof in proof_files:
+        copy_sanitized_artifact(proof, package_root / "proofs" / proof.name, repo_root, verify_only)
+
+    source_digest_value = directory_digest(src_root) if src_root.is_dir() else ""
+    language_digest = directory_digest(language_pack_src) if language_pack_src.is_dir() else ""
+    package_manifest = {
+        "schema_id": "scratchbird.component_release_package_manifest.v1",
+        "component_id": component,
+        "category": category,
+        "name": name,
+        "source_path": manifest.get("source_path", ""),
+        "source_commit": git_text(repo_root, "rev-parse", "HEAD"),
+        "source_sha256": source_digest_value,
+        "binaries": binaries,
+        "language_resource_pack": "resources/sbsql-language-resource-pack",
+        "language_resource_pack_sha256": language_digest,
+        "support_materials": ["support/source", "support/root-SBOM.json"],
+        "examples": ["examples/README.md"],
+        "proofs": sorted(f"proofs/{path.name}" for path in proof_files),
+        "license": "legal/LICENSE.txt",
+        "notice": "legal/NOTICE",
+        "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+        "sbom": "SBOM.json",
+        "version": manifest.get("driver_package_uuid", ""),
+    }
+    write_text(
+        package_root / "package_manifest.json",
+        json.dumps(package_manifest, indent=2, sort_keys=True) + "\n",
+        verify_only,
+    )
+    support_bundle_manifest = {
+        "schema_id": "scratchbird.component_support_bundle_manifest.v1",
+        "component_id": component,
+        "category": category,
+        "name": name,
+        "hash": source_digest_value,
+        "resource_pack_digest": language_digest,
+        "support_bundle_schema": "scratchbird.component_support_bundle_manifest.v1",
+        "proof_summary": "../proofs/proof_summary.json",
+    }
+    write_text(
+        package_root / "support" / "support_bundle_manifest.json",
+        json.dumps(support_bundle_manifest, indent=2, sort_keys=True) + "\n",
+        verify_only,
+    )
+    proof_summary = {
+        "schema_id": "scratchbird.component_package_proof_summary.v1",
+        "component_id": component,
+        "category": category,
+        "name": name,
+        "proof_files": sorted(path.name for path in proof_files),
+    }
+    write_text(
+        package_root / "proofs" / "proof_summary.json",
+        json.dumps(proof_summary, indent=2, sort_keys=True) + "\n",
+        verify_only,
+    )
+    write_driver_sbom(package_root, name, component, verify_only)
+    write_sha256s(package_root, verify_only)
+
+    for required_rel in (
+        "SBOM.json",
+        "SHA256SUMS",
+        "package_manifest.json",
+        "examples/README.md",
+        "proofs/proof_summary.json",
+        "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+        "legal/LICENSE.txt",
+        "support/support_bundle_manifest.json",
+    ):
+        if verify_only and not (package_root / required_rel).is_file():
+            issues.append(f"missing_packaged_file:{required_rel}")
+
+    return (
+        {
+            "component_id": component,
+            "category": category,
+            "name": name,
+            "release_path": str(package_root.relative_to(repo_root)),
+            "source_sha256": source_digest_value,
+            "language_resource_pack_sha256": language_digest,
+            "issues": issues,
+        },
+        issues,
+    )
+
+
 def build_report(
     repo_root: Path,
     matrix_path: Path,
@@ -526,11 +740,15 @@ def build_report(
     issues: list[str] = []
     promoted: list[dict[str, Any]] = []
     promoted_paths: list[str] = []
-    for manifest in driver_rows(repo_root):
+    for manifest in component_rows(repo_root):
         component = manifest.get("component_id", "").strip()
-        if component not in matrix_rows:
+        category = manifest.get("category", "").strip()
+        if category == "driver" and component not in matrix_rows:
             issues.append(f"{component}:missing_complete_coverage_matrix_row")
-        package, row_issues = build_driver_package(repo_root, release_root, manifest, verify_only)
+        if category == "driver":
+            package, row_issues = build_driver_package(repo_root, release_root, manifest, verify_only)
+        else:
+            package, row_issues = build_component_package(repo_root, release_root, manifest, verify_only)
         issues.extend(f"{component}:{issue}" for issue in row_issues)
         promoted.append(package)
         promoted_paths.append(package["release_path"])
@@ -555,10 +773,13 @@ def build_report(
         "summary": {
             "verify_only": verify_only,
             "release_root": str(release_root.relative_to(repo_root)),
-            "drivers": len(promoted),
+            "components": len(promoted),
+            "drivers": sum(1 for item in promoted if item.get("category", "driver") == "driver"),
+            "adapters": sum(1 for item in promoted if item.get("category") == "adaptor"),
+            "tools": sum(1 for item in promoted if item.get("category") == "tool"),
             "issues": len(issues),
         },
-        "drivers": promoted,
+        "components": promoted,
         "issues": issues,
     }
 

@@ -1,6 +1,6 @@
 {
   "binary": "bin/sb_isql_node",
-  "binary_sha256": "81717a971367ae30831fbc7b040b50149d2bcacc3d0d22c62b8866d50d24c06d",
+  "binary_sha256": "420252dab9c9405867662dd2cfd280b89eaac3a23e4e6f4e58ab165edce410ec",
   "component_id": "driver:node",
   "driver": "node",
   "examples": [
@@ -15,7 +15,7 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.driver_release_package_manifest.v1",
-  "source_commit": "b2d5ba61f8ac50ce6515a1023302d16ac066907b",
+  "source_commit": "491c2477ba681828170fe31a7f3b2d9ad284227a",
   "source_path": "project/drivers/driver/node",
   "support_materials": [
     "support/README.md",

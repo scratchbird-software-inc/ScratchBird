@@ -1,0 +1,48 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+
+namespace scratchbird
+{
+    namespace core
+    {
+        // MurmurHash3 64-bit hash function
+        // This is a public domain implementation based on Austin Appleby's MurmurHash3
+        // https://github.com/aappleby/smhasher
+
+        // Hash a block of data with optional seed
+        // Returns a 64-bit hash value
+        uint64_t MurmurHash64(const void *key, size_t len, uint64_t seed = 0x9747b28c);
+
+        // Convenience wrappers for common types
+        inline uint64_t hash_int32(int32_t value, uint64_t seed = 0x9747b28c)
+        {
+            return MurmurHash64(&value, sizeof(int32_t), seed);
+        }
+
+        inline uint64_t hash_int64(int64_t value, uint64_t seed = 0x9747b28c)
+        {
+            return MurmurHash64(&value, sizeof(int64_t), seed);
+        }
+
+        inline uint64_t hash_double(double value, uint64_t seed = 0x9747b28c)
+        {
+            return MurmurHash64(&value, sizeof(double), seed);
+        }
+
+        inline uint64_t hash_string(const char *str, size_t len, uint64_t seed = 0x9747b28c)
+        {
+            return MurmurHash64(str, len, seed);
+        }
+
+    } // namespace core
+} // namespace scratchbird

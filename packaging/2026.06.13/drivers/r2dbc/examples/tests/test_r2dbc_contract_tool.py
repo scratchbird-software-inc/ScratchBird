@@ -17,6 +17,7 @@ def test_r2dbc_tool_fails_closed_without_classpath(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.pop("SCRATCHBIRD_R2DBC_CLASSPATH", None)
     env.pop("CLASSPATH", None)
+    env["SCRATCHBIRD_R2DBC_EXTERNAL_ONLY"] = "true"
     command = [
         sys.executable,
         str(TOOL),

@@ -90,7 +90,9 @@ final class ResultStream
                 case Protocol::MSG_DATA_ROW:
                     $values = Protocol::parseDataRow($payload);
                     $row = [];
-                    foreach ($values as $index => $value) {
+                    $materializedCount = min(count($values), count($this->columns));
+                    for ($index = 0; $index < $materializedCount; $index++) {
+                        $value = $values[$index];
                         $typeOid = $this->columns[$index]['typeOid'] ?? 0;
                         $format = $this->columns[$index]['format'] ?? TypeDecoder::FORMAT_BINARY;
                         $row[] = TypeDecoder::decode($typeOid, $value['data'], $format);

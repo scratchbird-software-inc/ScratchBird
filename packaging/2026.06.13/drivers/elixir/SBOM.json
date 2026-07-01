@@ -62,9 +62,9 @@
       "sha256": "d122e2844ae98e606c3b15a41f6f26044936f392d14be8b4bb4a2db2a35e770b"
     },
     {
-      "bytes": 29918,
+      "bytes": 36162,
       "path": "examples/tools/sb_isql_elixir.exs",
-      "sha256": "baf1f3b7c2440852e94e3357d924556716dbdcbdd5f59ba203481db276daebb0"
+      "sha256": "8e50a304d13b76994eda9fa2470acb946fe23ae7d9fc337c66b6783dfa0e4db8"
     },
     {
       "bytes": 16726,
@@ -84,7 +84,7 @@
     {
       "bytes": 955,
       "path": "package_manifest.json",
-      "sha256": "20091ab2fde167b864e291bbbb82aabc1835ff4348392d0bda2fbaa15e3f17b2"
+      "sha256": "dba84f9dc8c65c021278056abee3b99c381137f6ff0d9476fee99fe2c504687f"
     },
     {
       "bytes": 8384,
@@ -92,14 +92,14 @@
       "sha256": "1c7e1ad8edcf69af8263d5e2deba5f57e9a90886f44a16ba7a95a97fb310ac47"
     },
     {
-      "bytes": 4101,
+      "bytes": 4074,
       "path": "proofs/driver_complete_coverage_tests.json",
-      "sha256": "243b1ca9da72a228adae9e0f17b3b7968b616f4b91dd7a1e6ba98372db897253"
+      "sha256": "c4a1d8e8f106b791d91a736858a0d606fef0d03f9d00eb4822349e3b95267cbd"
     },
     {
-      "bytes": 4158,
+      "bytes": 4023,
       "path": "proofs/driver_complete_coverage_tests_preflight_after_profile.json",
-      "sha256": "5ecdad2a2e88c14eabe2e36205162ee490c5d74bdc25f26772904f7e53c7b548"
+      "sha256": "21515fcdc79f3331b752c83928ead0c2af4e79f35e997d491b9478016307e363"
     },
     {
       "bytes": 10830,
@@ -107,9 +107,9 @@
       "sha256": "44a2850cc67f711f8116cb18ded7c8b8cfdfb53103558db56a27505589c4e764"
     },
     {
-      "bytes": 761,
+      "bytes": 746,
       "path": "proofs/driver_wiki_documentation.json",
-      "sha256": "f96e79b373c5db567c11d230f49b95a63d658356aabb5c3b3dbf34f7d1451382"
+      "sha256": "74ff2bf64a7febbf8ca4180c9d3f4ef0c8c8bef298f4c375ee5e7cc6899f28b3"
     },
     {
       "bytes": 434,
@@ -368,6 +368,6 @@
     }
   ],
   "driver": "elixir",
-  "generated_at_utc": "2026-06-29T20:56:28+00:00",
+  "generated_at_utc": "2026-07-01T10:26:04+00:00",
   "schema_id": "scratchbird.driver_package_sbom.v1"
 }

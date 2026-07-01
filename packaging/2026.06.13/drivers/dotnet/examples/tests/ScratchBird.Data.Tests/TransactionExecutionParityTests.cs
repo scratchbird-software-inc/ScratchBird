@@ -502,6 +502,11 @@ public class TransactionExecutionParityTests
         var messages = ParseWrittenMessages(stream.WrittenBytes);
         Assert.Single(messages);
         Assert.Equal(MessageType.STARTUP, (MessageType)messages[0].Header.Type);
+        var features = BinaryPrimitives.ReadUInt64LittleEndian(messages[0].Payload.AsSpan(8, 8));
+        Assert.NotEqual(0UL, features & ProtocolConstants.FeatureSblr);
+        Assert.NotEqual(0UL, features & ProtocolConstants.FeatureNotifications);
+        Assert.NotEqual(0UL, features & ProtocolConstants.FeatureSavepoints);
+        Assert.NotEqual(0UL, features & ProtocolConstants.FeatureQueryPlan);
         var startupText = Encoding.UTF8.GetString(messages[0].Payload);
         Assert.Contains("dormant_id", startupText, StringComparison.Ordinal);
         Assert.Contains("dormant_reattach_token", startupText, StringComparison.Ordinal);

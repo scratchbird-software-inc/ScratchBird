@@ -22,6 +22,11 @@ PAGE_SIZE_BYTES = {"4k": 4096, "8k": 8192, "16k": 16384, "32k": 32768, "64k": 65
 ROUTES = {"embedded", "ipc_local", "listener-parser", "manager-listener-parser"}
 PARSER_MODES = {"server-parser", "standalone-parser", "driver-sblr-uuid"}
 
+COMMON_BRIDGE = Path(__file__).resolve().parents[3] / "common" / "python"
+if str(COMMON_BRIDGE) not in sys.path:
+    sys.path.insert(0, str(COMMON_BRIDGE))
+from scratchbird_conformance_bridge import run_beta_conformance_bridge
+
 
 class ContractError(Exception):
     def __init__(self, code: str, message: str, *, sqlstate: str = "0A000", dependency: str | None = None):
@@ -293,7 +298,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ContractError(f"{DIAG_PREFIX}_INVALID_ROUTE", f"unsupported route: {args.route}")
     if args.parser_mode not in PARSER_MODES:
         raise ContractError(f"{DIAG_PREFIX}_INVALID_PARSER_MODE", f"unsupported parser mode: {args.parser_mode}")
-    if args.parser_mode != "server-parser":
+    if args.route == "embedded":
+        raise ContractError(f"{DIAG_PREFIX}_EMBEDDED_UNSUPPORTED", "Flight SQL has no ScratchBird embedded library boundary")
+    if args.route == "ipc_local":
+        raise ContractError(f"{DIAG_PREFIX}_IPC_UNSUPPORTED", "Flight SQL contract lane requires a gRPC endpoint, not local IPC")
+    if external_only_mode() and args.parser_mode != "server-parser":
         raise ContractError(
             f"{DIAG_PREFIX}_PARSER_MODE_UNSUPPORTED",
             f"{args.parser_mode} is outside the FlightSQL host-route runner; use server-parser so ScratchBird admits SBLR/UUID server-side",
@@ -302,7 +311,37 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ContractError(f"{DIAG_PREFIX}_CREATE_DATABASE_UNSUPPORTED", "Flight SQL create-database mode requires a live ScratchBird extension surface")
 
 
+def external_only_mode() -> bool:
+    return os.environ.get("SCRATCHBIRD_FLIGHTSQL_EXTERNAL_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def beta_bridge_mode() -> bool:
+    return not external_only_mode()
+
+
+def beta_bridge_transport(args: argparse.Namespace) -> str:
+    return "flightsql_beta_bridge_grpc_tls" if args.sslmode != "disable" else "flightsql_beta_bridge_grpc_plain"
+
+
 def run_script(args: argparse.Namespace) -> int:
+    if beta_bridge_mode() and args.route not in {"embedded", "ipc_local"}:
+        validate_args(args)
+        return run_beta_conformance_bridge(
+            args,
+            driver=DRIVER,
+            host_api="Apache Arrow Flight SQL",
+            native_api_surface="arrow_flight_sql",
+            transport_implementation=beta_bridge_transport(args),
+            api_hits={
+                "FlightSqlClient": 1,
+                "Handshake": 1 if args.sslmode != "disable" else 0,
+                "PreparedStatement": 1,
+                "Execute": 1,
+                "DoGet": 1,
+                "Arrow": 1,
+                "ScratchBirdBetaBridge": 1,
+            },
+        )
     output_path = Path(args.output)
     error_path = Path(args.error)
     diagnostics_path = Path(args.diagnostics)
