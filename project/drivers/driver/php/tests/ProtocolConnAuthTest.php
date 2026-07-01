@@ -22,10 +22,11 @@ final class ProtocolConnAuthTest extends TestCase
         );
         $this->assertSame(Protocol::VERSION_MAJOR, ord($payload[0]));
         $this->assertSame(Protocol::VERSION_MINOR, ord($payload[1]));
-        $parts = unpack('Vlow/Vhigh', substr($payload, 4, 8));
-        $features = (int)($parts['low'] + ($parts['high'] << 32));
-        $this->assertSame(Protocol::FEATURE_STREAMING, $features);
-        $this->assertStringContainsString("database\0demo\0user\0app\0\0", substr($payload, 12));
+        $this->assertSame(Protocol::FEATURE_STREAMING, $this->readUInt64Le(substr($payload, 8, 8)));
+        $this->assertSame(
+            ['database' => 'demo', 'user' => 'app'],
+            $this->parseStartupParams($payload)
+        );
     }
 
     public function testParseAuthRequestScramPayload(): void
@@ -65,5 +66,49 @@ final class ProtocolConnAuthTest extends TestCase
         [$parsedSessionId, $parsedInfo] = Protocol::parseAuthOk($payload);
         $this->assertSame($sessionId, $parsedSessionId);
         $this->assertSame($info, $parsedInfo);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function parseStartupParams(string $payload): array
+    {
+        $offset = 84;
+        if (strlen($payload) < $offset) {
+            $this->fail('startup payload truncated before params');
+        }
+        $params = [];
+        while ($offset + 4 <= strlen($payload)) {
+            $keyLen = $this->readUInt32Le(substr($payload, $offset, 4));
+            $offset += 4;
+            if ($keyLen === 0) {
+                break;
+            }
+            if ($offset + $keyLen + 2 + 4 > strlen($payload)) {
+                $this->fail('startup parameter key truncated');
+            }
+            $key = substr($payload, $offset, $keyLen);
+            $offset += $keyLen + 2;
+            $valueLen = $this->readUInt32Le(substr($payload, $offset, 4));
+            $offset += 4;
+            if ($offset + $valueLen > strlen($payload)) {
+                $this->fail('startup parameter value truncated');
+            }
+            $params[$key] = substr($payload, $offset, $valueLen);
+            $offset += $valueLen;
+        }
+        return $params;
+    }
+
+    private function readUInt32Le(string $bytes): int
+    {
+        $parts = unpack('Vvalue', $bytes);
+        return (int) $parts['value'];
+    }
+
+    private function readUInt64Le(string $bytes): int
+    {
+        $parts = unpack('Vlow/Vhigh', $bytes);
+        return (int) ($parts['low'] + ($parts['high'] << 32));
     }
 }
