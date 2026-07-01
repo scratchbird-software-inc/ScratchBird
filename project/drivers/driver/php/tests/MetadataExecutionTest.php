@@ -289,12 +289,7 @@ final class MetadataExecutionTest extends TestCase
         if (strlen($payload) < 13) {
             $this->fail('query payload truncated');
         }
-        $sqlPayload = substr($payload, 12);
-        $terminator = strpos($sqlPayload, "\0");
-        if ($terminator === false) {
-            $this->fail('query payload missing terminator');
-        }
-        return substr($sqlPayload, 0, $terminator);
+        return substr($payload, 12);
     }
 
     private function queueReady($server, int $txnId): void

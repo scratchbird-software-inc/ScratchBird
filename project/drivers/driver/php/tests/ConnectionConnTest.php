@@ -626,19 +626,37 @@ final class ConnectionConnTest extends TestCase
 
     private function parseStartupParams(string $payload): array
     {
-        $params = [];
-        if (strlen($payload) <= 12) {
-            return $params;
+        $offset = 84;
+        if (strlen($payload) < $offset) {
+            $this->fail('startup payload truncated before params');
         }
-        $items = explode("\0", substr($payload, 12));
-        for ($i = 0; $i + 1 < count($items); $i += 2) {
-            $key = $items[$i];
-            if ($key === '') {
+        $params = [];
+        while ($offset + 4 <= strlen($payload)) {
+            $keyLen = $this->readUInt32Le(substr($payload, $offset, 4));
+            $offset += 4;
+            if ($keyLen === 0) {
                 break;
             }
-            $params[$key] = $items[$i + 1];
+            if ($offset + $keyLen + 2 + 4 > strlen($payload)) {
+                $this->fail('startup parameter key truncated');
+            }
+            $key = substr($payload, $offset, $keyLen);
+            $offset += $keyLen + 2;
+            $valueLen = $this->readUInt32Le(substr($payload, $offset, 4));
+            $offset += 4;
+            if ($offset + $valueLen > strlen($payload)) {
+                $this->fail('startup parameter value truncated');
+            }
+            $params[$key] = substr($payload, $offset, $valueLen);
+            $offset += $valueLen;
         }
         return $params;
+    }
+
+    private function readUInt32Le(string $bytes): int
+    {
+        $parts = unpack('Vvalue', $bytes);
+        return (int) $parts['value'];
     }
 
     private function managerAuthPayloadSuccess(): string
