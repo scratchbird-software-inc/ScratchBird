@@ -118,6 +118,77 @@ test_that("auth/protocol parsers reject truncated payloads", {
   expect_error(parse_auth_ok(raw(19)), "Auth ok truncated")
 })
 
+test_that("ready parser accepts long fallback payloads with nul status marker byte", {
+  payload <- raw(128)
+  payload[1] <- as.raw(1L)
+  payload[5:12] <- pack_u64(42)
+  payload[13:20] <- pack_u64(7)
+
+  parsed <- parse_ready(payload)
+
+  expect_equal(parsed$status, 1L)
+  expect_equal(parsed$txn_id, 42)
+  expect_equal(parsed$visibility, 7)
+})
+
+test_that("protocol text fields render embedded nul bytes as hex", {
+  name <- charToRaw("binary_status")
+  value <- as.raw(c(0x41, 0x00, 0x42))
+  payload <- c(
+    pack_u32(1L),
+    pack_u32(length(name)),
+    name,
+    pack_u16(1L),
+    pack_u8(0L),
+    pack_u32(length(value)),
+    value
+  )
+
+  parsed <- parse_parameter_status(payload)
+
+  expect_equal(parsed$name, "binary_status")
+  expect_equal(parsed$value, "0x410042")
+})
+
+test_that("P1 row descriptions decode column names and canonical type refs", {
+  name <- charToRaw("page_size_bytes")
+  type_ref <- c(pack_u16(2L), pack_u16(3L), raw(SB_P1_CANONICAL_TYPE_REF_BYTES - 4L))
+  column <- c(
+    pack_i32(1L),
+    pack_u8(0L),
+    pack_u8(1L),
+    pack_u8(0L),
+    pack_u8(0L),
+    raw(8),
+    type_ref,
+    raw(16L * 3L),
+    pack_u32(0L),
+    pack_u16(0L),
+    pack_u16(0L),
+    pack_u8(1L),
+    pack_i32(length(name)),
+    name
+  )
+  payload <- c(
+    pack_u16(1L),
+    pack_u8(0L),
+    pack_u8(1L),
+    pack_i32(1L),
+    raw(SB_P1_ROW_DESCRIPTION_HEADER_BYTES - 8L),
+    column
+  )
+
+  cols <- parse_row_description(payload)
+
+  expect_equal(length(cols), 1L)
+  expect_equal(cols[[1]]$name, "page_size_bytes")
+  expect_equal(cols[[1]]$column_index, 0L)
+  expect_equal(cols[[1]]$type_oid, SB_OID_INT4)
+  expect_equal(cols[[1]]$type_size, 4L)
+  expect_equal(cols[[1]]$format, SB_FORMAT_TEXT)
+  expect_false(cols[[1]]$nullable)
+})
+
 test_that("sb_open_socket allows sslmode=disable and delegates to native transport", {
   cfg <- sb_config("scratchbird://user:pass@localhost:3092/mydb?sslmode=disable")
   seen_sslmode <- NULL

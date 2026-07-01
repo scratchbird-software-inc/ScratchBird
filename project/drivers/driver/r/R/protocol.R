@@ -145,6 +145,9 @@ SB_SUB_TYPE_TABLE <- 1L
 SB_SUB_TYPE_QUERY <- 2L
 SB_SUB_TYPE_EVENT <- 3L
 
+SB_P1_ROW_DESCRIPTION_HEADER_BYTES <- 72L
+SB_P1_CANONICAL_TYPE_REF_BYTES <- 144L
+
 pack_u64 <- function(x) {
   value <- as.numeric(x)
   if (!is.finite(value) || value < 0) stop("u64 value must be a finite non-negative number")
@@ -184,6 +187,16 @@ read_u16 <- function(data, offset) {
 
 read_u8 <- function(data, offset) {
   as.integer(readBin(data[offset], integer(), size = 1, signed = FALSE))
+}
+
+protocol_hex_encode_raw <- function(data) {
+  paste0("0x", paste(sprintf("%02x", as.integer(data)), collapse = ""))
+}
+
+protocol_raw_to_text <- function(data) {
+  if (length(data) == 0) return("")
+  if (any(as.integer(data) == 0L)) return(protocol_hex_encode_raw(data))
+  rawToChar(data)
 }
 
 read_i32 <- function(data, offset) {
@@ -443,10 +456,13 @@ build_attach_create_payload <- function(emulation_mode, db_name) {
 }
 
 parse_ready <- function(payload) {
-  if (length(payload) >= 76 && rawToChar(payload[57]) %in% c("I", "T", "E", "R", "A")) {
-    txn_id <- read_u64(payload, 49)
-    status <- if (rawToChar(payload[57]) %in% c("T", "E")) 1L else 0L
-    return(list(status = status, txn_id = txn_id, visibility = txn_id))
+  if (length(payload) >= 76) {
+    status_byte <- as.integer(payload[57])
+    if (status_byte %in% c(0x49, 0x54, 0x45, 0x52, 0x41)) {
+      txn_id <- read_u64(payload, 49)
+      status <- if (status_byte %in% c(0x54, 0x45)) 1L else 0L
+      return(list(status = status, txn_id = txn_id, visibility = txn_id))
+    }
   }
   if (length(payload) < 20) stop("Ready truncated")
   status <- payload[1]
@@ -457,7 +473,7 @@ parse_ready <- function(payload) {
 
 parse_txn_status <- function(payload) {
   if (length(payload) < 12) stop("Txn status truncated")
-  status <- rawToChar(payload[1])
+  status <- protocol_raw_to_text(payload[1])
   txn_id <- read_u64(payload, 5)
   list(status = status, txn_id = txn_id)
 }
@@ -474,7 +490,7 @@ parse_parameter_status <- function(payload) {
       name_len <- read_u32(payload, offset)
       offset <- offset + 4
       if (offset + name_len - 1 > length(payload)) stop("Parameter status truncated")
-      name <- if (name_len == 0) "" else rawToChar(payload[offset:(offset + name_len - 1)])
+      name <- if (name_len == 0) "" else protocol_raw_to_text(payload[offset:(offset + name_len - 1)])
       offset <- offset + name_len
       if (offset + 6 > length(payload)) stop("Parameter status truncated")
       value_type <- read_u16(payload, offset)
@@ -484,7 +500,7 @@ parse_parameter_status <- function(payload) {
       value_len <- read_u32(payload, offset)
       offset <- offset + 4
       if (offset + value_len - 1 > length(payload)) stop("Parameter status truncated")
-      value <- if (value_len == 0) "" else rawToChar(payload[offset:(offset + value_len - 1)])
+      value <- if (value_len == 0) "" else protocol_raw_to_text(payload[offset:(offset + value_len - 1)])
       offset <- offset + value_len
       entries[[length(entries) + 1]] <- list(
         name = name,
@@ -500,6 +516,23 @@ parse_parameter_status <- function(payload) {
 }
 
 parse_parameter_description <- function(payload) {
+  if (is_p1_row_description(payload)) {
+    count <- read_i32(payload, 69)
+    if (count < 0) stop("P1 parameter description column count invalid")
+    offset <- SB_P1_ROW_DESCRIPTION_HEADER_BYTES + 1L
+    types <- integer()
+    for (idx in seq_len(count)) {
+      if (offset + 4 + 4 + 8 + 8 + SB_P1_CANONICAL_TYPE_REF_BYTES + 4 + 5 - 1 > length(payload)) {
+        stop("P1 parameter description truncated")
+      }
+      type_offset <- offset + 4 + 4 + 8 + 8
+      types <- c(types, oid_from_canonical_type_ref(payload, type_offset))
+      offset <- type_offset + SB_P1_CANONICAL_TYPE_REF_BYTES + 4
+      read <- read_nullable_text(payload, offset)
+      offset <- read$offset
+    }
+    return(types)
+  }
   if (length(payload) < 4) stop("Parameter description truncated")
   offset <- 1
   count <- read_u16(payload, offset)
@@ -514,6 +547,9 @@ parse_parameter_description <- function(payload) {
 }
 
 parse_row_description <- function(payload) {
+  if (is_p1_row_description(payload)) {
+    return(parse_p1_row_description(payload))
+  }
   if (length(payload) < 4) stop("Row description truncated")
   offset <- 1
   count <- read_u16(payload, offset)
@@ -522,7 +558,7 @@ parse_row_description <- function(payload) {
   for (idx in seq_len(count)) {
     name_len <- read_u32(payload, offset)
     offset <- offset + 4
-    name <- rawToChar(payload[offset:(offset + name_len - 1)])
+    name <- if (name_len == 0) "" else protocol_raw_to_text(payload[offset:(offset + name_len - 1)])
     offset <- offset + name_len
     table_oid <- read_u32(payload, offset)
     offset <- offset + 4
@@ -551,6 +587,97 @@ parse_row_description <- function(payload) {
     )
   }
   columns
+}
+
+is_p1_row_description <- function(payload) {
+  length(payload) >= SB_P1_ROW_DESCRIPTION_HEADER_BYTES &&
+    read_u16(payload, 1) == 1L &&
+    as.integer(payload[4]) == 1L
+}
+
+parse_p1_row_description <- function(payload) {
+  count <- read_i32(payload, 5)
+  if (count < 0) stop("P1 row description column count invalid")
+  offset <- SB_P1_ROW_DESCRIPTION_HEADER_BYTES + 1L
+  columns <- vector("list", count)
+  fixed_column_bytes <- 4 + 4 + 8 + SB_P1_CANONICAL_TYPE_REF_BYTES + 56
+  for (idx in seq_len(count)) {
+    if (offset + fixed_column_bytes - 1 > length(payload)) stop("P1 row description truncated")
+    ordinal <- read_i32(payload, offset)
+    offset <- offset + 4
+    offset <- offset + 1
+    format <- if (as.integer(payload[offset]) == 1L) SB_FORMAT_TEXT else SB_FORMAT_BINARY
+    offset <- offset + 1
+    nullable <- as.integer(payload[offset]) == 1L
+    offset <- offset + 1
+    offset <- offset + 1
+    offset <- offset + 8
+    type_oid <- oid_from_canonical_type_ref(payload, offset)
+    offset <- offset + SB_P1_CANONICAL_TYPE_REF_BYTES
+    offset <- offset + 16 * 3
+    offset <- offset + 4
+    offset <- offset + 2
+    offset <- offset + 2
+    read <- read_nullable_text(payload, offset)
+    offset <- read$offset
+    name <- read$text
+    if (!nzchar(name)) name <- paste0("column", idx)
+    column_index <- if (ordinal == 0L) idx - 1L else ordinal - 1L
+    columns[[idx]] <- list(
+      name = name,
+      table_oid = 0L,
+      column_index = as.integer(column_index),
+      type_oid = as.integer(type_oid),
+      type_size = type_size_for_oid(type_oid),
+      type_modifier = -1L,
+      format = format,
+      nullable = nullable
+    )
+  }
+  columns
+}
+
+oid_from_canonical_type_ref <- function(payload, offset) {
+  if (offset + 3 > length(payload)) return(SB_OID_TEXT)
+  family <- read_u16(payload, offset)
+  code <- read_u16(payload, offset + 2)
+  if (family == 1L && code == 1L) return(SB_OID_BOOL)
+  if (family == 2L && code == 3L) return(SB_OID_INT4)
+  if (family == 2L && code == 4L) return(SB_OID_INT8)
+  if (family == 4L && code == 1L) return(SB_OID_NUMERIC)
+  if (family == 6L && code == 2L) return(SB_OID_FLOAT8)
+  if (family == 8L && code == 1L) return(SB_OID_TEXT)
+  if (family == 9L) return(SB_OID_BYTEA)
+  if (family == 11L && code == 1L) return(SB_OID_DATE)
+  if (family == 11L && code == 2L) return(SB_OID_TIME)
+  if (family == 11L) return(SB_OID_TIMESTAMP)
+  if (family == 12L) return(SB_OID_INTERVAL)
+  if (family == 13L) return(SB_OID_UUID)
+  if (family == 19L && code == 3L) return(SB_OID_MACADDR)
+  if (family == 19L) return(SB_OID_INET)
+  if (family == 20L) return(SB_OID_JSON)
+  SB_OID_TEXT
+}
+
+type_size_for_oid <- function(type_oid) {
+  if (type_oid == SB_OID_BOOL) return(1L)
+  if (type_oid == SB_OID_INT4) return(4L)
+  if (type_oid %in% c(SB_OID_INT8, SB_OID_FLOAT8)) return(8L)
+  if (type_oid == SB_OID_UUID) return(16L)
+  -1L
+}
+
+read_nullable_text <- function(payload, offset) {
+  if (offset + 4 > length(payload)) stop("nullable text truncated")
+  tag <- as.integer(payload[offset])
+  offset <- offset + 1
+  len <- read_i32(payload, offset)
+  offset <- offset + 4
+  if (len < 0) stop("nullable text length invalid")
+  if (tag == 0L) return(list(text = "", offset = offset))
+  if (offset + len - 1 > length(payload)) stop("nullable text truncated")
+  text <- if (len == 0) "" else protocol_raw_to_text(payload[offset:(offset + len - 1)])
+  list(text = text, offset = offset + len)
 }
 
 parse_data_row <- function(payload) {
@@ -599,7 +726,7 @@ parse_command_complete <- function(payload) {
       tag_bytes <- raw()
     }
     if (length(tag_bytes) > 0) {
-      tag <- rawToChar(tag_bytes)
+      tag <- protocol_raw_to_text(tag_bytes)
     }
   }
   list(command_type = as.integer(command_type), rows = rows, last_id = last_id, tag = tag)
@@ -613,7 +740,7 @@ parse_notification <- function(payload) {
   channel_len <- read_u32(payload, offset)
   offset <- offset + 4
   if (offset + channel_len + 4 - 1 > length(payload)) stop("Notification truncated")
-  channel <- rawToChar(payload[offset:(offset + channel_len - 1)])
+  channel <- if (channel_len == 0) "" else protocol_raw_to_text(payload[offset:(offset + channel_len - 1)])
   offset <- offset + channel_len
   payload_len <- read_u32(payload, offset)
   offset <- offset + 4
@@ -623,7 +750,7 @@ parse_notification <- function(payload) {
   change_type <- NULL
   row_id <- NULL
   if (offset <= length(payload)) {
-    change_type <- rawToChar(payload[offset])
+    change_type <- protocol_raw_to_text(payload[offset])
     offset <- offset + 1
     if (offset + 7 <= length(payload)) {
       row_id <- read_u64(payload, offset)
@@ -678,7 +805,7 @@ parse_error_message <- function(payload) {
       offset <- offset + 1
     }
     if (offset > length(payload)) break
-    value <- rawToChar(payload[start:(offset - 1)])
+    value <- if (offset == start) "" else protocol_raw_to_text(payload[start:(offset - 1)])
     offset <- offset + 1
     if (field == as.integer(charToRaw("S"))) severity <- value
     if (field == as.integer(charToRaw("C"))) sqlstate <- value
