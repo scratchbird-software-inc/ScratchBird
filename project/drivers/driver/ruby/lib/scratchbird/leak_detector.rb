@@ -28,10 +28,12 @@ module Scratchbird
   end
   
   class CheckoutInfo
-    attr_reader :checkout_time, :thread_id, :stack_trace, :metadata
+    attr_reader :checkout_time, :last_activity_time, :thread_id, :stack_trace, :metadata, :active_operations
     
     def initialize(capture_stack_trace, metadata = {})
       @checkout_time = Time.now
+      @last_activity_time = @checkout_time
+      @active_operations = 0
       @thread_id = Thread.current.object_id
       @metadata = metadata.dup
       @stack_trace = capture_stack_trace ? caller : nil
@@ -39,6 +41,28 @@ module Scratchbird
     
     def held_duration_ms
       ((Time.now - @checkout_time) * 1000).to_i
+    end
+
+    def idle_duration_ms
+      ((Time.now - @last_activity_time) * 1000).to_i
+    end
+
+    def begin_operation
+      @active_operations += 1
+      touch
+    end
+
+    def end_operation
+      @active_operations -= 1 if @active_operations.positive?
+      touch
+    end
+
+    def touch
+      @last_activity_time = Time.now
+    end
+
+    def leak_candidate?(threshold_ms)
+      @active_operations.zero? && idle_duration_ms > threshold_ms
     end
   end
   
@@ -53,6 +77,18 @@ module Scratchbird
       return if @released
       @detector.checkin(@connection_id)
       @released = true
+    end
+
+    def begin_operation
+      @detector.begin_operation(@connection_id) unless @released
+    end
+
+    def end_operation
+      @detector.end_operation(@connection_id) unless @released
+    end
+
+    def touch
+      @detector.touch(@connection_id) unless @released
     end
     
     alias_method :close, :release
@@ -95,6 +131,18 @@ module Scratchbird
         # Log held too long
       end
     end
+
+    def begin_operation(connection_id)
+      @mutex.synchronize { @checkouts[connection_id]&.begin_operation }
+    end
+
+    def end_operation(connection_id)
+      @mutex.synchronize { @checkouts[connection_id]&.end_operation }
+    end
+
+    def touch(connection_id)
+      @mutex.synchronize { @checkouts[connection_id]&.touch }
+    end
     
     def active_count
       @mutex.synchronize { @checkouts.size }
@@ -104,7 +152,7 @@ module Scratchbird
       potential_leaks = 0
       @mutex.synchronize do
         @checkouts.each_value do |info|
-          potential_leaks += 1 if info.held_duration_ms > @config.threshold_ms
+          potential_leaks += 1 if info.leak_candidate?(@config.threshold_ms)
         end
       end
       { active_checkouts: active_count, potential_leaks: potential_leaks }
@@ -122,13 +170,13 @@ module Scratchbird
     def check_leaks
       @mutex.synchronize do
         @checkouts.each do |conn_id, info|
-          log_leak(conn_id, info) if info.held_duration_ms > @config.threshold_ms
+          log_leak(conn_id, info) if info.leak_candidate?(@config.threshold_ms)
         end
       end
     end
     
     def log_leak(conn_id, info)
-      puts "POSSIBLE CONNECTION LEAK: conn=#{conn_id}, held=#{info.held_duration_ms}ms"
+      puts "POSSIBLE CONNECTION LEAK: conn=#{conn_id}, held=#{info.held_duration_ms}ms, idle=#{info.idle_duration_ms}ms"
     end
   end
 end

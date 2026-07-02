@@ -1420,6 +1420,7 @@ module Scratchbird
       success = false
       prior_thread = @active_thread
       @active_thread = Thread.current
+      @leak_guard&.begin_operation
       begin
         result = yield
         success = true
@@ -1435,6 +1436,7 @@ module Scratchbird
         end
         raise e
       ensure
+        @leak_guard&.end_operation
         @active_thread = prior_thread
         @telemetry.end_span(span, success)
       end

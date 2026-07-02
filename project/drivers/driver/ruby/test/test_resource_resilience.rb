@@ -102,16 +102,28 @@ class TestResourceResilience < Minitest::Test
   end
 
   class FakeLeakGuard
-    attr_reader :release_calls
+    attr_reader :release_calls, :begin_operation_calls, :end_operation_calls
 
     def initialize(error = nil)
       @error = error
       @release_calls = 0
+      @begin_operation_calls = 0
+      @end_operation_calls = 0
     end
 
     def release
       @release_calls += 1
       raise @error if @error
+      true
+    end
+
+    def begin_operation
+      @begin_operation_calls += 1
+      true
+    end
+
+    def end_operation
+      @end_operation_calls += 1
       true
     end
   end
@@ -234,6 +246,26 @@ class TestResourceResilience < Minitest::Test
 
     assert_equal true, statement.closed?
     assert_equal 1, close_calls.length
+  end
+
+  def test_leak_detector_counts_idle_not_active_checkouts
+    detector = Scratchbird::LeakDetector.new(
+      Scratchbird::LeakDetectionConfig.new(threshold_ms: 1, check_interval_ms: 100_000)
+    )
+    guard = detector.checkout("conn-test", driver: "ruby")
+
+    sleep 0.01
+    assert_equal 1, detector.stats[:potential_leaks]
+
+    guard.begin_operation
+    sleep 0.01
+    assert_equal 0, detector.stats[:potential_leaks]
+
+    guard.end_operation
+    sleep 0.01
+    assert_equal 1, detector.stats[:potential_leaks]
+  ensure
+    guard&.release
   end
 
   def test_client_close_cleans_resilience_helpers_when_socket_absent
@@ -371,6 +403,8 @@ class TestResourceResilience < Minitest::Test
     client.instance_variable_set(:@circuit_breaker, breaker)
     client.instance_variable_set(:@telemetry, telemetry)
     client.instance_variable_set(:@keepalive_tracker, tracker)
+    leak_guard = FakeLeakGuard.new
+    client.instance_variable_set(:@leak_guard, leak_guard)
 
     result = client.send(:with_resilience, "query", "SELECT 'secret'") { :ok }
 
@@ -383,6 +417,8 @@ class TestResourceResilience < Minitest::Test
     assert_equal 1, telemetry.ended_spans.length
     assert_equal true, telemetry.ended_spans.first[:success]
     assert_equal "SELECT '?'", telemetry.ended_spans.first[:attributes]["db.statement"]
+    assert_equal 1, leak_guard.begin_operation_calls
+    assert_equal 1, leak_guard.end_operation_calls
   end
 
   def test_with_resilience_transport_failure_records_telemetry_and_circuit_failure
@@ -418,6 +454,8 @@ class TestResourceResilience < Minitest::Test
     client.instance_variable_set(:@circuit_breaker, breaker)
     client.instance_variable_set(:@telemetry, telemetry)
     client.instance_variable_set(:@keepalive_tracker, tracker)
+    leak_guard = FakeLeakGuard.new
+    client.instance_variable_set(:@leak_guard, leak_guard)
 
     err = assert_raises(Scratchbird::NotSupportedError) do
       client.send(:with_resilience, "query", "SELECT sha256('hello')") do
@@ -433,6 +471,8 @@ class TestResourceResilience < Minitest::Test
     assert_equal 1, telemetry.started_spans.length
     assert_equal 1, telemetry.ended_spans.length
     assert_equal false, telemetry.ended_spans.first[:success]
+    assert_equal 1, leak_guard.begin_operation_calls
+    assert_equal 1, leak_guard.end_operation_calls
   end
 
   def test_with_resilience_runs_ping_when_keepalive_validation_required
