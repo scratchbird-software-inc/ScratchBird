@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.lang.reflect.Field;
+import java.sql.SQLDataException;
 import java.sql.SQLTransientConnectionException;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -59,6 +60,24 @@ public class SBConnectionResilienceTest {
         );
 
         assertEquals(1, attempts.get());
+        assertEquals(0, protocol.connectAttempts.get());
+    }
+
+    @Test
+    public void statementLevelSqlErrorsDoNotOpenCircuitBreaker() throws Exception {
+        var protocol = new FailingReplayProtocol();
+        SBConnection connection = newConnectionForTest(protocol);
+
+        for (int i = 0; i < 10; i++) {
+            assertThrows(SQLDataException.class, () ->
+                connection.withResilience("execute", "SELECT bad_numeric()", () -> {
+                    throw new SQLDataException("numeric domain", "22003");
+                }, false)
+            );
+        }
+
+        String result = connection.withResilience("query", "SELECT 1", () -> "ok", false);
+        assertEquals("ok", result);
         assertEquals(0, protocol.connectAttempts.get());
     }
 
