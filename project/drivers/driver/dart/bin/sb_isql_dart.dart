@@ -831,6 +831,11 @@ Future<Set<String>> loadExpectedRefusals(String? path) async {
     final diagnostics = decoded['expected_diagnostics'];
     if (diagnostics is Map)
       ids.addAll(diagnostics.keys.map((value) => '$value'));
+    final aliases = decoded['compiled_chain_statement_aliases'];
+    if (aliases is Map) {
+      ids.addAll(aliases.keys.map((value) => '$value'));
+      ids.addAll(aliases.values.map((value) => '$value'));
+    }
     return ids;
   }
   if (decoded is List) return decoded.map((value) => '$value').toSet();

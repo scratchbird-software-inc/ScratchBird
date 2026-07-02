@@ -517,7 +517,9 @@ def load_expected_refusals(path)
     if doc.is_a?(Hash)
       Array(doc["statement_ids"]) +
         Array(doc["expected_refusals"]) +
-        (doc["expected_diagnostics"].is_a?(Hash) ? doc["expected_diagnostics"].keys : [])
+        (doc["expected_diagnostics"].is_a?(Hash) ? doc["expected_diagnostics"].keys : []) +
+        (doc["compiled_chain_statement_aliases"].is_a?(Hash) ? doc["compiled_chain_statement_aliases"].keys : []) +
+        (doc["compiled_chain_statement_aliases"].is_a?(Hash) ? doc["compiled_chain_statement_aliases"].values : [])
     elsif doc.is_a?(Array)
       doc
     else

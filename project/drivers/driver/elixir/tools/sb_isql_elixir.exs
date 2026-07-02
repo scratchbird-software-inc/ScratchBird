@@ -989,6 +989,12 @@ defmodule SBIsqlElixir do
           )
           |> Enum.map(fn [body] -> body end)
         )
+        |> Kernel.++(
+          Regex.scan(~r/"compiled_chain_statement_aliases"\s*:\s*\{(.*?)\n\s*\}/s, text,
+            capture: :all_but_first
+          )
+          |> Enum.map(fn [body] -> body end)
+        )
       end
 
     bodies

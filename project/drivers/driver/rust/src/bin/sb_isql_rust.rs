@@ -986,9 +986,22 @@ fn collect_expected_refusal_ids(expected: &mut BTreeSet<String>, value: &JsonVal
                 "expectedRefusals",
                 "expected_diagnostics",
                 "expectedDiagnostics",
+                "compiled_chain_statement_aliases",
+                "compiledChainStatementAliases",
             ] {
                 if let Some(nested) = object.get(key) {
                     collect_expected_refusal_ids(expected, nested);
+                }
+            }
+            for key in [
+                "compiled_chain_statement_aliases",
+                "compiledChainStatementAliases",
+            ] {
+                if let Some(JsonValue::Object(aliases)) = object.get(key) {
+                    for (alias_key, alias_value) in aliases {
+                        expected.insert(alias_key.clone());
+                        collect_expected_refusal_ids(expected, alias_value);
+                    }
                 }
             }
         }

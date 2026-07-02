@@ -362,6 +362,7 @@ std::set<std::string> loadExpectedRefusals(const std::string& path) {
     if (doc.contains("compiled_chain_statement_aliases") &&
         doc["compiled_chain_statement_aliases"].is_object()) {
         for (const auto& item : doc["compiled_chain_statement_aliases"].items()) {
+            ids.insert(item.key());
             if (item.value().is_string()) {
                 ids.insert(item.value().get<std::string>());
             }

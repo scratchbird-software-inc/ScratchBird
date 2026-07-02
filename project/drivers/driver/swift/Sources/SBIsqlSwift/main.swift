@@ -411,6 +411,10 @@ func loadExpectedRefusals(_ path: String) throws -> Set<String> {
         if let diagnostics = object["expected_diagnostics"] as? [String: Any] {
             for key in diagnostics.keys { ids.insert(key) }
         }
+        if let aliases = object["compiled_chain_statement_aliases"] as? [String: Any] {
+            for key in aliases.keys { ids.insert(key) }
+            for value in aliases.values { ids.insert(String(describing: value)) }
+        }
         return ids
     }
     throw RuntimeError("expected refusals must be a JSON object or array")

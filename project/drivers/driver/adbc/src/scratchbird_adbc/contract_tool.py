@@ -156,6 +156,11 @@ def load_expected_refusals(path: str | None) -> set[str]:
             for key in ("statement_id", "statementId", "id"):
                 if isinstance(value.get(key), str):
                     found.add(value[key])
+            aliases = value.get("compiled_chain_statement_aliases")
+            if isinstance(aliases, dict):
+                for alias_key, alias_value in aliases.items():
+                    found.add(str(alias_key))
+                    visit(alias_value)
             for item in value.values():
                 if isinstance(item, (list, dict)):
                     visit(item)
