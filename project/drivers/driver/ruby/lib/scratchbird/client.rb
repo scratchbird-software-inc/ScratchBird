@@ -1427,12 +1427,27 @@ module Scratchbird
         @keepalive_tracker&.mark_active
         result
       rescue => e
-        @circuit_breaker.record_failure
+        if circuit_breaker_failure?(e)
+          @circuit_breaker.record_failure
+        else
+          @circuit_breaker.record_success
+          @keepalive_tracker&.mark_active
+        end
         raise e
       ensure
         @active_thread = prior_thread
         @telemetry.end_span(span, success)
       end
+    end
+
+    def circuit_breaker_failure?(error)
+      return false if error.is_a?(CircuitBreakerOpenError)
+      return true if error.is_a?(ConnectionError)
+      return true if error.is_a?(IOError) || error.is_a?(SystemCallError) || error.is_a?(EOFError)
+      return true if defined?(Timeout::Error) && error.is_a?(Timeout::Error)
+
+      sqlstate = error.respond_to?(:sqlstate) ? error.sqlstate.to_s : ""
+      sqlstate.start_with?("08")
     end
 
     def execute_query(sql, params, options)

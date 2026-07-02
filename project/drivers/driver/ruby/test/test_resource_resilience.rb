@@ -385,7 +385,7 @@ class TestResourceResilience < Minitest::Test
     assert_equal "SELECT '?'", telemetry.ended_spans.first[:attributes]["db.statement"]
   end
 
-  def test_with_resilience_failure_records_telemetry_and_circuit_failure
+  def test_with_resilience_transport_failure_records_telemetry_and_circuit_failure
     client = Scratchbird::Client.new(Scratchbird::Config.new)
     breaker = FakeCircuitBreaker.new
     telemetry = FakeTelemetry.new
@@ -395,8 +395,8 @@ class TestResourceResilience < Minitest::Test
     client.instance_variable_set(:@telemetry, telemetry)
     client.instance_variable_set(:@keepalive_tracker, tracker)
 
-    err = assert_raises(RuntimeError) do
-      client.send(:with_resilience, "query", "SELECT 1") { raise "boom" }
+    err = assert_raises(Scratchbird::ConnectionError) do
+      client.send(:with_resilience, "query", "SELECT 1") { raise Scratchbird::ConnectionError, "boom" }
     end
 
     assert_equal "boom", err.message
@@ -404,6 +404,32 @@ class TestResourceResilience < Minitest::Test
     assert_equal 0, breaker.record_success_calls
     assert_equal 1, breaker.record_failure_calls
     assert_equal 0, tracker.mark_active_calls
+    assert_equal 1, telemetry.started_spans.length
+    assert_equal 1, telemetry.ended_spans.length
+    assert_equal false, telemetry.ended_spans.first[:success]
+  end
+
+  def test_with_resilience_server_sql_error_does_not_trip_circuit
+    client = Scratchbird::Client.new(Scratchbird::Config.new)
+    breaker = FakeCircuitBreaker.new
+    telemetry = FakeTelemetry.new
+    tracker = FakeTracker.new(needs_validation: false)
+
+    client.instance_variable_set(:@circuit_breaker, breaker)
+    client.instance_variable_set(:@telemetry, telemetry)
+    client.instance_variable_set(:@keepalive_tracker, tracker)
+
+    err = assert_raises(Scratchbird::NotSupportedError) do
+      client.send(:with_resilience, "query", "SELECT sha256('hello')") do
+        raise Scratchbird::NotSupportedError.new("dependency unavailable", "0A000")
+      end
+    end
+
+    assert_equal "0A000", err.sqlstate
+    assert_equal 1, breaker.allow_request_calls
+    assert_equal 1, breaker.record_success_calls
+    assert_equal 0, breaker.record_failure_calls
+    assert_equal 1, tracker.mark_active_calls
     assert_equal 1, telemetry.started_spans.length
     assert_equal 1, telemetry.ended_spans.length
     assert_equal false, telemetry.ended_spans.first[:success]
