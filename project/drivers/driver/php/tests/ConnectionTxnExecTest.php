@@ -318,6 +318,7 @@ final class ConnectionTxnExecTest extends TestCase
 
         try {
             $this->queueError($server, '23505', 'duplicate key');
+            $this->queueReady($server, 0);
             $this->assertFalse($conn->exec('INSERT INTO t(v) VALUES (1)'));
             $this->assertSame('23505', $conn->errorCode());
             $this->assertSame('duplicate key', $conn->errorInfo()[2]);

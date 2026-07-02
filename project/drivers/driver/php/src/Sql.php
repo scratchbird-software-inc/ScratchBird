@@ -39,6 +39,9 @@ final class Sql
      */
     public static function splitExecutableStatements(string $sql, array $params): ?array
     {
+        if (self::isSingleProceduralDefinition($sql)) {
+            return null;
+        }
         $statements = self::splitTopLevelStatements($sql);
         if (count($statements) <= 1) {
             return null;
@@ -205,6 +208,34 @@ final class Sql
             return trim($matches[1]);
         }
         return null;
+    }
+
+    private static function isSingleProceduralDefinition(string $sql): bool
+    {
+        $trimmed = self::trimLeadingLineComments($sql);
+        return preg_match(
+            '/^create\s+(?:or\s+replace\s+)?(?:trigger|function|procedure)\b/i',
+            $trimmed
+        ) === 1;
+    }
+
+    private static function trimLeadingLineComments(string $sql): string
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $sql);
+        if ($lines === false) {
+            return ltrim($sql);
+        }
+        $offset = 0;
+        $count = count($lines);
+        while ($offset < $count) {
+            $line = ltrim($lines[$offset]);
+            if ($line === '' || str_starts_with($line, '--')) {
+                $offset++;
+                continue;
+            }
+            break;
+        }
+        return ltrim(implode("\n", array_slice($lines, $offset)));
     }
 
     private static function rewriteNamed(string $sql, array $params): array

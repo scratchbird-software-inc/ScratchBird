@@ -65,4 +65,31 @@ final class SqlTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         Sql::normalizeCallableSql('{call bad(}');
     }
+
+    public function testSplitExecutableStatementsKeepsProceduralDefinitionWhole(): void
+    {
+        $sql = <<<'SQL'
+CREATE PROCEDURE users.public.p()
+AS
+BEGIN
+  INSERT INTO users.public.t VALUES (1);
+  INSERT INTO users.public.t VALUES (2);
+END
+SQL;
+
+        $this->assertNull(Sql::splitExecutableStatements($sql, []));
+    }
+
+    public function testSplitExecutableStatementsStillSplitsOrdinaryBatches(): void
+    {
+        $out = Sql::splitExecutableStatements('SELECT 1; SELECT 2;', []);
+
+        $this->assertSame(
+            [
+                ['sql' => 'SELECT 1', 'params' => []],
+                ['sql' => 'SELECT 2', 'params' => []],
+            ],
+            $out
+        );
+    }
 }

@@ -221,7 +221,11 @@ final class TypeDecoder
             return self::decodeUnknownBinary($data);
         }
         if ($format === self::FORMAT_TEXT) {
-            return self::decodeTextTypedValue($typeOid, $data);
+            try {
+                return self::decodeTextTypedValue($typeOid, $data);
+            } catch (\Throwable) {
+                return self::decodeTextValue($data);
+            }
         }
         return self::decodeBinaryValue($typeOid, $data);
     }
