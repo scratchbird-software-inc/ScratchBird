@@ -85,6 +85,7 @@ function run_tool(array $args): int
         'timing' => $runRoot . '/timing-groups.json',
         'digests' => $runRoot . '/result-digests.json',
         'metadata' => $runRoot . '/metadata-snapshots.json',
+        'route_environment' => $runRoot . '/route-environment.json',
         'process' => $runRoot . '/process-metrics.jsonl',
         'refusals' => $runRoot . '/security-refusals.json',
         'api' => $runRoot . '/native-api-coverage.json',
@@ -124,6 +125,10 @@ function run_tool(array $args): int
     $started = hrtime(true);
     $expectedRefusals = load_expected_refusals(value_or_default($args, '--expected-refusals', ''));
     $pdo = null;
+    write_text(
+        $paths['route_environment'],
+        json_encode(route_environment($args, null, 'fail', 'not_probed'), JSON_THROW_ON_ERROR) . PHP_EOL
+    );
 
     try {
         $route = required($args, '--route');
@@ -177,6 +182,11 @@ function run_tool(array $args): int
         }
         if (required($args, '--parser-mode') !== 'server-parser') {
             throw new RuntimeException(required($args, '--parser-mode') . ' is not accepted by the PHP native tool lane; it fails closed');
+        }
+        $routeEnvironment = probe_route_environment($pdo, $args);
+        write_text($paths['route_environment'], json_encode($routeEnvironment, JSON_THROW_ON_ERROR) . PHP_EOL);
+        if ($route !== 'embedded' && $routeEnvironment['page_size_verification_status'] !== 'pass') {
+            throw new RuntimeException('route environment page-size verification failed: ' . ($routeEnvironment['failure_reason'] ?? 'unknown'));
         }
 
         $statements = split_statements(read_input(required($args, '--input')));
@@ -522,6 +532,101 @@ function transport_implementation_for_route(string $route): string
     return 'native_php_tcp';
 }
 
+function expected_page_size_bytes(string $label): int
+{
+    $pageSizes = [
+        '4k' => 4096,
+        '8k' => 8192,
+        '16k' => 16384,
+        '32k' => 32768,
+        '64k' => 65536,
+        '128k' => 131072,
+    ];
+    if (!isset($pageSizes[$label])) {
+        throw new InvalidArgumentException('unsupported page size: ' . $label);
+    }
+    return $pageSizes[$label];
+}
+
+function route_environment(array $args, ?int $actualPageSize, string $status, ?string $reason = null): array
+{
+    $route = required($args, '--route');
+    $sslmode = effective_sslmode_for_route($route, value_or_default($args, '--sslmode', 'require'));
+    $record = [
+        'driver' => 'php',
+        'route' => $route,
+        'parser_mode' => required($args, '--parser-mode'),
+        'page_size' => required($args, '--page-size'),
+        'expected_page_size_bytes' => expected_page_size_bytes(required($args, '--page-size')),
+        'actual_page_size_bytes' => $actualPageSize,
+        'page_size_verification_source' => 'SHOW DATABASE',
+        'page_size_verification_status' => $status,
+        'sslmode' => $sslmode,
+        'transport_mode' => resolve_transport_mode($route, $sslmode),
+        'transport_endpoint_kind' => endpoint_kind_for_route($route),
+        'driver_transport_implementation' => transport_implementation_for_route($route),
+    ];
+    if ($reason !== null) {
+        $record['failure_reason'] = $reason;
+    }
+    return $record;
+}
+
+function probe_route_environment(ScratchBirdPDO $pdo, array $args): array
+{
+    try {
+        $stmt = $pdo->prepare('SHOW DATABASE');
+        if ($stmt === false) {
+            return route_environment($args, null, 'fail', 'SHOW DATABASE prepare failed');
+        }
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $actual = page_size_from_show_database($rows);
+        $expected = expected_page_size_bytes(required($args, '--page-size'));
+        $status = $actual === $expected ? 'pass' : 'fail';
+        $reason = $status === 'pass'
+            ? null
+            : ($actual === null ? 'show_database_missing_page_size_bytes' : 'actual_page_size_mismatch');
+        return route_environment($args, $actual, $status, $reason);
+    } catch (Throwable $ex) {
+        return route_environment($args, null, 'fail', $ex->getMessage());
+    }
+}
+
+function page_size_from_show_database(array $rows): ?int
+{
+    if ($rows === []) {
+        return null;
+    }
+    $row = $rows[0];
+    foreach ($row as $key => $value) {
+        if (strtolower((string) $key) === 'page_size_bytes') {
+            return int_value($value);
+        }
+    }
+    foreach (array_values($row) as $value) {
+        $text = trim((string) $value);
+        if (preg_match('/page_size_bytes\s*[:=]\s*(\d+)/i', $text, $matches) === 1) {
+            return (int) $matches[1];
+        }
+    }
+    return null;
+}
+
+function int_value(mixed $value): ?int
+{
+    if (is_int($value)) {
+        return $value;
+    }
+    if (is_float($value) && is_finite($value)) {
+        return (int) $value;
+    }
+    if (is_string($value) && trim($value) !== '' && preg_match('/^-?\d+$/', trim($value)) === 1) {
+        return (int) trim($value);
+    }
+    return null;
+}
+
 function load_expected_refusals(string $path): array
 {
     if ($path === '') {
@@ -543,6 +648,10 @@ function load_expected_refusals(string $path): array
         }
         if (isset($doc['expected_diagnostics']) && is_array($doc['expected_diagnostics'])) {
             $ids = array_merge($ids, array_keys($doc['expected_diagnostics']));
+        }
+        if (isset($doc['compiled_chain_statement_aliases']) && is_array($doc['compiled_chain_statement_aliases'])) {
+            $ids = array_merge($ids, array_keys($doc['compiled_chain_statement_aliases']));
+            $ids = array_merge($ids, array_values($doc['compiled_chain_statement_aliases']));
         }
     } else {
         throw new InvalidArgumentException('expected refusals must be a JSON object or array');
@@ -660,7 +769,7 @@ function classify_statement(string $sql): string
     if (in_array($first, ['insert', 'update', 'delete', 'merge', 'upsert'], true)) {
         return 'dml';
     }
-    if (in_array($first, ['commit', 'rollback', 'savepoint', 'begin', 'start'], true)) {
+    if (in_array($first, ['commit', 'rollback', 'savepoint', 'release', 'begin', 'start'], true)) {
         return 'transaction';
     }
     if (in_array($first, ['grant', 'revoke'], true)) {
@@ -754,16 +863,17 @@ function execute_copy_in(Connection $conn, string $sql, string $payload): int
 
 function run_transaction(ScratchBirdPDO $pdo, string $sql, array &$apiHits): void
 {
-    $first = strtok(strtolower(trim($sql)), " \t\r\n") ?: '';
-    if ($first === 'commit') {
-        $pdo->commit();
-        $apiHits['commit']++;
-    } elseif ($first === 'rollback') {
-        $pdo->rollBack();
-        $apiHits['rollback']++;
-    } else {
-        $pdo->beginTransaction();
+    $trimmed = trim(executable_sql_without_copy_markers($sql));
+    $stmt = $pdo->prepare($trimmed);
+    $apiHits['prepare']++;
+    if ($stmt === false) {
+        $apiHits['errorInfo']++;
+        throw new RuntimeException(json_encode($pdo->errorInfo(), JSON_THROW_ON_ERROR));
     }
+    $stmt->execute();
+    $apiHits['execute']++;
+    $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $apiHits['fetch']++;
 }
 
 function read_input(string $path): string

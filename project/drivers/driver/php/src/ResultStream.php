@@ -83,7 +83,9 @@ final class ResultStream
             }
             switch ($type) {
                 case Protocol::MSG_ERROR:
-                    throw $this->connection->buildQueryException($payload);
+                    $exception = $this->connection->buildQueryException($payload);
+                    $this->drainErrorBoundary();
+                    throw $exception;
                 case Protocol::MSG_ROW_DESCRIPTION:
                     $this->columns = Protocol::parseRowDescription($payload);
                     break;
@@ -151,6 +153,27 @@ final class ResultStream
             $this->hasNextResultSet = true;
             $this->resultSetBoundary = true;
             return;
+        }
+    }
+
+    private function drainErrorBoundary(): void
+    {
+        while (true) {
+            [$type, , $payload] = $this->connection->receive();
+            if ($this->connection->handleAsyncMessage($type, $payload)) {
+                continue;
+            }
+            if ($type === Protocol::MSG_READY) {
+                [$status, $txnId] = Protocol::parseReady($payload);
+                $this->connection->updateReadyState($status, $txnId);
+                $this->done = true;
+                $this->hasNextResultSet = false;
+                $this->resultSetBoundary = false;
+                return;
+            }
+            if ($type === Protocol::MSG_ERROR) {
+                continue;
+            }
         }
     }
 }
