@@ -568,6 +568,8 @@ module Scratchbird
       prepared_sql = Sql.normalize_prepared_sql(sql)
       payload = Protocol.build_parse_payload(name, prepared_sql, [])
       send_message(Protocol::MSG_PARSE, payload, 0, false)
+      send_message(Protocol::MSG_SYNC, +"", 0, false)
+      drain_until_ready
       param_count = describe_statement(name)
       @prepared[name] = { sql: sql, prepared_sql: prepared_sql, param_count: param_count }
     end
@@ -604,6 +606,64 @@ module Scratchbird
       drain_until_ready
       @prepared.delete(statement_name)
       true
+    end
+
+    def copy_in(sql, data, options = nil)
+      ensure_connected
+      payload_data = data.to_s.b
+      chunk_size = options && options[:chunk_size] ? options[:chunk_size].to_i : 65_536
+      chunk_size = 65_536 if chunk_size <= 0
+
+      send_simple_query(sql, nil)
+      unexpected_messages = []
+      loop do
+        type, _flags, payload, _sequence, _attachment_id, _txn_id = recv_message
+        next if handle_async_message(type, payload)
+
+        case type
+        when Protocol::MSG_ERROR
+          handle_query_error(payload)
+        when Protocol::MSG_COPY_IN_RESPONSE
+          Protocol.parse_copy_in_response(payload)
+          break
+        when Protocol::MSG_COMMAND_COMPLETE
+          _command_type, rows_count, _last_id, tag = Protocol.parse_command_complete(payload)
+          unexpected_messages << "COMMAND_COMPLETE tag=#{tag} rows=#{rows_count}"
+        when Protocol::MSG_READY
+          status, txn_id = Protocol.parse_ready(payload)
+          apply_runtime_ready_state(status, txn_id)
+          suffix = unexpected_messages.empty? ? "" : " after #{unexpected_messages.join(', ')}"
+          raise Error.new("expected COPY IN response#{suffix}", "HY000")
+        else
+          unexpected_messages << "MSG_0x#{type.to_i.to_s(16)}"
+        end
+      end
+
+      offset = 0
+      while offset < payload_data.bytesize
+        chunk = payload_data.byteslice(offset, chunk_size)
+        send_message(Protocol::MSG_COPY_DATA, Protocol.build_copy_data_payload(chunk), 0, false)
+        offset += chunk.bytesize
+      end
+      send_message(Protocol::MSG_COPY_DONE, Protocol.build_copy_done_payload, 0, false)
+
+      rows_copied = 0
+      loop do
+        type, _flags, payload, _sequence, _attachment_id, _txn_id = recv_message
+        next if handle_async_message(type, payload)
+
+        case type
+        when Protocol::MSG_ERROR
+          handle_query_error(payload)
+        when Protocol::MSG_COMMAND_COMPLETE
+          _command_type, rows_count, _last_id, _tag = Protocol.parse_command_complete(payload)
+          rows_copied = rows_count.to_i
+        when Protocol::MSG_READY
+          status, txn_id = Protocol.parse_ready(payload)
+          apply_runtime_ready_state(status, txn_id)
+          return rows_copied
+        end
+      end
     end
 
     def cancel
@@ -692,14 +752,21 @@ module Scratchbird
       end
     end
 
+    def drain_after_local_query_failure
+      drain_until_ready
+    rescue StandardError
+      nil
+    end
+
     private
 
     def handle_async_message(type, payload)
       case type
       when Protocol::MSG_PARAMETER_STATUS
-        name, value = Protocol.parse_parameter_status(payload)
-        @parameters[name] = value
-        update_attachment_from_param(name, value)
+        Protocol.parse_parameter_statuses(payload).each do |name, value|
+          @parameters[name] = value
+          update_attachment_from_param(name, value)
+        end
         true
       when Protocol::MSG_NOTIFICATION
         notice = Protocol.parse_notification(payload)
@@ -935,7 +1002,8 @@ module Scratchbird
     end
 
     def probe_direct_auth_surface(resolved_host, resolved_port)
-      features = 0
+      features = Protocol::FEATURE_SBLR | Protocol::FEATURE_NOTIFICATIONS |
+                 Protocol::FEATURE_QUERY_PLAN | Protocol::FEATURE_SAVEPOINTS
       features |= Protocol::FEATURE_COMPRESSION if @config.compression.to_s.downcase == "zstd"
       features |= Protocol::FEATURE_STREAMING if @config.binary_transfer
       startup = Protocol.build_startup_payload(features, build_startup_params)
@@ -992,7 +1060,7 @@ module Scratchbird
       type, _payload = recv_manager_frame
       raise ConnectionError, "expected MCP hello status response" unless type == MCP_MSG_STATUS_RESPONSE
 
-      auth_start = +""
+      auth_start = +"".b
       auth_start << manager_lpref(manager_user)
       auth_start << [MCP_AUTH_METHOD_TOKEN].pack("C")
       auth_start << [0].pack("V")
@@ -1043,12 +1111,15 @@ module Scratchbird
       if ctx.respond_to?(:min_version=) && defined?(OpenSSL::SSL::TLS1_3_VERSION)
         ctx.min_version = OpenSSL::SSL::TLS1_3_VERSION
       end
-      verify = %w[verify-full verify-ca require].include?(mode)
+      verify = %w[verify-full verify-ca].include?(mode)
       ctx.verify_mode = verify ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
-      ctx.ca_file = @config.sslrootcert if @config.sslrootcert
-      if @config.sslcert && @config.sslkey
-        ctx.cert = OpenSSL::X509::Certificate.new(File.read(@config.sslcert))
-        ctx.key = OpenSSL::PKey.read(File.read(@config.sslkey), @config.sslpassword)
+      ca_file = @config.sslrootcert.to_s
+      ctx.ca_file = ca_file unless ca_file.empty?
+      cert_file = @config.sslcert.to_s
+      key_file = @config.sslkey.to_s
+      if !cert_file.empty? && !key_file.empty?
+        ctx.cert = OpenSSL::X509::Certificate.new(File.read(cert_file))
+        ctx.key = OpenSSL::PKey.read(File.read(key_file), @config.sslpassword)
       end
 
       ssl_socket = OpenSSL::SSL::SSLSocket.new(raw_socket, ctx)
@@ -1070,7 +1141,7 @@ module Scratchbird
     end
 
     def send_manager_frame(type, payload)
-      frame = +""
+      frame = +"".b
       frame << [MANAGER_PROTOCOL_MAGIC].pack("V")
       frame << [MANAGER_PROTOCOL_VERSION].pack("v")
       frame << [type, 0].pack("C2")
@@ -1082,6 +1153,7 @@ module Scratchbird
         raise ConnectionError, "manager frame write failed" if written.nil? || written.zero?
         total += written
       end
+      @socket.flush if @socket.respond_to?(:flush)
     end
 
     def recv_manager_frame
@@ -1113,7 +1185,7 @@ module Scratchbird
       type, _payload = recv_manager_frame
       raise ConnectionError, "expected MCP hello status response" unless type == MCP_MSG_STATUS_RESPONSE
 
-      auth_start = +""
+      auth_start = +"".b
       auth_start << manager_lpref(manager_user)
       auth_start << [MCP_AUTH_METHOD_TOKEN].pack("C")
       if auth_fast_path
@@ -1163,7 +1235,8 @@ module Scratchbird
 
     def handshake
       reset_resolved_auth_context if @resolved_auth_context.nil?
-      features = 0
+      features = Protocol::FEATURE_SBLR | Protocol::FEATURE_NOTIFICATIONS |
+                 Protocol::FEATURE_QUERY_PLAN | Protocol::FEATURE_SAVEPOINTS
       features |= Protocol::FEATURE_COMPRESSION if @config.compression.to_s.downcase == "zstd"
       features |= Protocol::FEATURE_STREAMING if @config.binary_transfer
       startup = Protocol.build_startup_payload(features, build_startup_params)
@@ -1272,6 +1345,7 @@ module Scratchbird
         raise ConnectionError, "socket closed" if written.nil? || written.zero?
         total += written
       end
+      @socket.flush if @socket.respond_to?(:flush)
       sequence
     rescue IOError, SystemCallError => e
       raise ConnectionError, "socket write failed: #{e.message}"
@@ -1281,8 +1355,13 @@ module Scratchbird
       raise ConnectionError, "no active socket" unless @socket
       buffer = +""
       while buffer.bytesize < size
-        next unless wait_readable
-        chunk = @socket.readpartial(size - buffer.bytesize)
+        pending = @socket.respond_to?(:pending) ? @socket.pending.to_i : 0
+        wait_readable if pending <= 0
+        chunk = begin
+          @socket.readpartial(size - buffer.bytesize)
+        rescue IO::WaitReadable
+          next
+        end
         if chunk.nil? || chunk.empty?
           if @cancel_requested
             clear_cancel_request
@@ -1410,7 +1489,8 @@ module Scratchbird
       command_tag = ""
       last_insert_id = 0
 
-      loop do
+      begin
+        loop do
         type, _flags, payload, _sequence, _attachment_id, _txn_id = recv_message
         if handle_async_message(type, payload)
           next
@@ -1439,6 +1519,10 @@ module Scratchbird
           next
         end
       end
+      rescue StandardError
+        drain_after_local_query_failure
+        raise
+      end
 
       rowcount = rows.length if rowcount < 0
       Result.new(columns, rows, rowcount, command_tag, last_insert_id)
@@ -1453,7 +1537,8 @@ module Scratchbird
       last_insert_id = 0
       result_open = false
 
-      loop do
+      begin
+        loop do
         type, _flags, payload, _sequence, _attachment_id, _txn_id = recv_message
         if handle_async_message(type, payload)
           next
@@ -1498,6 +1583,10 @@ module Scratchbird
           end
           break
         end
+      end
+      rescue StandardError
+        drain_after_local_query_failure
+        raise
       end
 
       results = [Result.new([], [], 0, "", 0)] if results.empty?
@@ -1820,7 +1909,8 @@ module Scratchbird
       raise Error, "stream already consumed" if @consumed
       @consumed = true
 
-      loop do
+      begin
+        loop do
         type, _flags, payload, _sequence, _attachment_id, _txn_id = @client.recv_message
         next if @client.send(:handle_async_message, type, payload)
         case type
@@ -1847,6 +1937,10 @@ module Scratchbird
         else
           next
         end
+      end
+      rescue StandardError
+        @client.send(:drain_after_local_query_failure)
+        raise
       end
 
       @rowcount = @seen_rows if @rowcount < 0

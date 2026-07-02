@@ -12,7 +12,8 @@ program sb_isql_pascal;
 {$H+}
 
 uses
-  SysUtils, Classes, DateUtils, Variants, ScratchBird.Client, ScratchBird.Chunker;
+  SysUtils, Classes, DateUtils, Variants, ScratchBird.Client, ScratchBird.Chunker,
+  ScratchBird.Protocol;
 
 type
   TStatementResult = record
@@ -482,6 +483,105 @@ begin
   end;
 end;
 
+function ExpectedPageSizeBytes(const Value: string): Integer;
+begin
+  if SameText(Value, '4k') then
+    Exit(4096);
+  if SameText(Value, '8k') then
+    Exit(8192);
+  if SameText(Value, '16k') then
+    Exit(16384);
+  if SameText(Value, '32k') then
+    Exit(32768);
+  if SameText(Value, '64k') then
+    Exit(65536);
+  if SameText(Value, '128k') then
+    Exit(131072);
+  Result := 0;
+end;
+
+function VariantToIntDef(const Value: Variant; Default: Integer): Integer;
+begin
+  if VarIsNull(Value) or VarIsEmpty(Value) then
+    Exit(Default);
+  Result := StrToIntDef(VarToStr(Value), Default);
+end;
+
+function WriteRouteEnvironment(Client: TScratchBirdClient; const Route, SslMode, PageSize: string): Boolean;
+var
+  Stream: TScratchBirdResultStream;
+  Row: TArray<Variant>;
+  Columns: TArray<TColumnInfo>;
+  I, PageIndex, ExpectedBytes, ActualBytes: Integer;
+  Status, FailureReason, FailureJson: string;
+begin
+  Result := False;
+  ExpectedBytes := ExpectedPageSizeBytes(PageSize);
+  ActualBytes := -1;
+  FailureReason := '';
+  try
+    Stream := Client.ExecuteQuery('SHOW DATABASE');
+    try
+      Row := Stream.ReadRow;
+      Columns := Stream.Columns;
+      PageIndex := -1;
+      for I := 0 to High(Columns) do
+      begin
+        if SameText(Columns[I].Name, 'page_size_bytes') then
+        begin
+          PageIndex := I;
+          Break;
+        end;
+      end;
+      if (PageIndex < 0) and (Length(Row) >= 3) then
+        PageIndex := 2;
+      if (PageIndex >= 0) and (PageIndex < Length(Row)) then
+        ActualBytes := VariantToIntDef(Row[PageIndex], -1)
+      else
+        FailureReason := 'show_database_missing_page_size_bytes';
+    finally
+      Stream.Free;
+    end;
+  except
+    on E: Exception do
+      FailureReason := E.Message;
+  end;
+
+  if ActualBytes = ExpectedBytes then
+  begin
+    Status := 'pass';
+    FailureReason := '';
+    Result := True;
+  end
+  else
+    Status := 'fail';
+
+  if FailureReason <> '' then
+    FailureJson := ',' + LineEnding + '  "failure_reason": "' + JsonEscape(FailureReason) + '"'
+  else
+    FailureJson := '';
+
+  WriteTextFile(ArtifactPath('route-environment.json'),
+    '{' + LineEnding +
+    '  "run_id": "' + JsonEscape(ArgValue('--run-id', 'manual')) + '",' + LineEnding +
+    '  "driver": "pascal",' + LineEnding +
+    '  "route": "' + JsonEscape(Route) + '",' + LineEnding +
+    '  "sslmode": "' + JsonEscape(SslMode) + '",' + LineEnding +
+    '  "parser_mode": "' + JsonEscape(ArgValue('--parser-mode', '')) + '",' + LineEnding +
+    '  "concurrency_mode": "single",' + LineEnding +
+    '  "namespace": "' + JsonEscape(ArgValue('--namespace', '')) + '",' + LineEnding +
+    '  "page_size": "' + JsonEscape(PageSize) + '",' + LineEnding +
+    '  "expected_page_size_bytes": ' + IntToStr(ExpectedBytes) + ',' + LineEnding +
+    '  "actual_page_size_bytes": ' + IntToStr(ActualBytes) + ',' + LineEnding +
+    '  "page_size_verification_source": "SHOW DATABASE",' + LineEnding +
+    '  "page_size_verification_status": "' + Status + '",' + LineEnding +
+    '  "transport_mode": "' + JsonEscape(TransportModeForRoute(Route, SslMode)) + '",' + LineEnding +
+    '  "transport_endpoint_kind": "' + JsonEscape(EndpointKindForRoute(Route)) + '",' + LineEnding +
+    '  "driver_transport_implementation": "' + JsonEscape(TransportImplementationForRoute(Route)) + '"' +
+    FailureJson +
+    LineEnding + '}' + LineEnding);
+end;
+
 procedure WriteSummary(const Path: string; const Results: TStatementResults; FailureCount: Integer);
 var
   I: Integer;
@@ -618,128 +718,139 @@ begin
       Client.AttachCreate(ArgValue('--create-emulation-mode', 'sbsql'), ArgValue('--database', 'default'));
     SetLength(Results, Statements.Count);
     FailureCount := 0;
+    if not WriteRouteEnvironment(Client, Route, SslMode, PageSize) then
+    begin
+      Inc(FailureCount);
+      AppendTextFile(ArgValue('--error', 'sb_isql_pascal.err'),
+        'route_page_size: route page-size verification failed' + LineEnding);
+      AppendTextFile(ArgValue('--diagnostics', 'sb_isql_pascal.diagnostics.jsonl'),
+        '{"statement_id":"route_page_size","sqlstate":"HY000","message":"route page-size verification failed"}' + LineEnding);
+    end;
     SecurityRefusalsJson := '[';
     ResultDigestsJson := '[';
-    for I := 0 to Statements.Count - 1 do
+    if FailureCount = 0 then
     begin
-      Sql := Statements[I];
-      LowerSql := LowerCase(Trim(Sql));
-      Results[I].StatementId := ExtractFileName(InputPath) + ':' + IntToStr(I + 1);
-      IsExpectedRefusal := ExpectedRefusal(ExpectedText, Results[I].StatementId);
-      Results[I].GroupName := StatementGroup(Sql);
-      Started := Now;
-      RowCount := 0;
-      StopAfterStatement := False;
-      try
-        if (LowerSql = 'begin') or (LowerSql = 'start transaction') then
-          Client.BeginTransaction
-        else if LowerSql = 'commit' then
-          Client.Commit
-        else if LowerSql = 'rollback' then
-          Client.Rollback
-        else if (Results[I].GroupName = 'copy') and IsCopyStdinStatement(Sql) then
-        begin
-          if CopyPayloadForStatement(Sql) = '' then
-            raise Exception.Create('COPY FROM STDIN requires SB_COPY_INPUT rows in the script');
-          RowCount := Client.CopyIn(ExecutableSqlWithoutCopyMarkers(Sql), CopyPayloadForStatement(Sql));
-          AppendTextFile(
-            ArgValue('--output', 'sb_isql_pascal.out'),
-            '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
-            '","rows":[["copy_in",' + IntToStr(RowCount) + ']]}' + LineEnding
-          );
-        end
-        else
-        begin
-          Stream := Client.ExecuteQuery(Sql);
-          try
-            while True do
-            begin
-              Row := Stream.ReadRow;
-              if Length(Row) = 0 then
-                Break;
-              Inc(RowCount);
-              AppendTextFile(ArgValue('--output', 'sb_isql_pascal.out'), VariantRowDigest(Row) + LineEnding);
-            end;
-          finally
-            Stream.Free;
-          end;
-        end;
-        if ParserMode = 'driver-sblr-uuid' then
-          if Client.GetLastSblr(Compiled) then
-            AppendTextFile(ArgValue('--diagnostics', 'sb_isql_pascal.diagnostics.jsonl'),
-              '{"event":"sblr_seen","hash":' + IntToStr(Compiled.Hash) + '}' + LineEnding);
-        if IsExpectedRefusal then
-        begin
-          Inc(FailureCount);
-          Results[I].Status := 'unexpected_success';
-          Results[I].ErrorMessage := 'statement succeeded but was expected to refuse';
-          if BoolArg('--stop-on-error', False) then
-            StopAfterStatement := True;
-        end
-        else
-          Results[I].Status := 'ok';
-      except
-        on E: Exception do
-        begin
-          if IsExpectedRefusal then
+      for I := 0 to Statements.Count - 1 do
+      begin
+        Sql := Statements[I];
+        LowerSql := LowerCase(Trim(Sql));
+        Results[I].StatementId := ExtractFileName(InputPath) + ':' + IntToStr(I + 1);
+        IsExpectedRefusal := ExpectedRefusal(ExpectedText, Results[I].StatementId);
+        Results[I].GroupName := StatementGroup(Sql);
+        Started := Now;
+        RowCount := 0;
+        StopAfterStatement := False;
+        try
+          if (LowerSql = 'begin') or (LowerSql = 'start transaction') then
+            Client.BeginTransaction
+          else if LowerSql = 'commit' then
+            Client.Commit
+          else if LowerSql = 'rollback' then
+            Client.Rollback
+          else if (Results[I].GroupName = 'copy') and IsCopyStdinStatement(Sql) then
           begin
-            Results[I].Status := 'expected_refusal';
-            Results[I].ErrorMessage := E.Message;
-            if SecurityRefusalsJson <> '[' then
-              SecurityRefusalsJson := SecurityRefusalsJson + ',';
-            SecurityRefusalsJson := SecurityRefusalsJson +
+            if CopyPayloadForStatement(Sql) = '' then
+              raise Exception.Create('COPY FROM STDIN requires SB_COPY_INPUT rows in the script');
+            RowCount := Client.CopyIn(ExecutableSqlWithoutCopyMarkers(Sql), CopyPayloadForStatement(Sql));
+            AppendTextFile(
+              ArgValue('--output', 'sb_isql_pascal.out'),
               '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
-              '","sqlstate":"HY000","diagnostic_code":"' + JsonEscape(E.Message) + '"}';
+              '","rows":[["copy_in",' + IntToStr(RowCount) + ']]}' + LineEnding
+            );
           end
           else
           begin
+            Stream := Client.ExecuteQuery(Sql);
+            try
+              while True do
+              begin
+                Row := Stream.ReadRow;
+                if Length(Row) = 0 then
+                  Break;
+                Inc(RowCount);
+                AppendTextFile(ArgValue('--output', 'sb_isql_pascal.out'), VariantRowDigest(Row) + LineEnding);
+              end;
+            finally
+              Stream.Free;
+            end;
+          end;
+          if ParserMode = 'driver-sblr-uuid' then
+            if Client.GetLastSblr(Compiled) then
+              AppendTextFile(ArgValue('--diagnostics', 'sb_isql_pascal.diagnostics.jsonl'),
+                '{"event":"sblr_seen","hash":' + IntToStr(Compiled.Hash) + '}' + LineEnding);
+          if IsExpectedRefusal then
+          begin
             Inc(FailureCount);
-            Results[I].Status := 'error';
-            Results[I].ErrorMessage := E.Message;
-            AppendTextFile(ArgValue('--error', 'sb_isql_pascal.err'), E.Message + LineEnding);
-            AppendTextFile(ArgValue('--diagnostics', 'sb_isql_pascal.diagnostics.jsonl'),
-              '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
-              '","sqlstate":"HY000","message":"' + JsonEscape(E.Message) + '"}' + LineEnding);
+            Results[I].Status := 'unexpected_success';
+            Results[I].ErrorMessage := 'statement succeeded but was expected to refuse';
             if BoolArg('--stop-on-error', False) then
               StopAfterStatement := True;
+          end
+          else
+            Results[I].Status := 'ok';
+        except
+          on E: Exception do
+          begin
+            if IsExpectedRefusal then
+            begin
+              Results[I].Status := 'expected_refusal';
+              Results[I].ErrorMessage := E.Message;
+              if SecurityRefusalsJson <> '[' then
+                SecurityRefusalsJson := SecurityRefusalsJson + ',';
+              SecurityRefusalsJson := SecurityRefusalsJson +
+                '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
+                '","sqlstate":"HY000","diagnostic_code":"' + JsonEscape(E.Message) + '"}';
+            end
+            else
+            begin
+              Inc(FailureCount);
+              Results[I].Status := 'error';
+              Results[I].ErrorMessage := E.Message;
+              AppendTextFile(ArgValue('--error', 'sb_isql_pascal.err'), E.Message + LineEnding);
+              AppendTextFile(ArgValue('--diagnostics', 'sb_isql_pascal.diagnostics.jsonl'),
+                '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
+                '","sqlstate":"HY000","message":"' + JsonEscape(E.Message) + '"}' + LineEnding);
+              if BoolArg('--stop-on-error', False) then
+                StopAfterStatement := True;
+            end;
           end;
         end;
-      end;
-      Results[I].Rows := RowCount;
-      Results[I].ElapsedMs := MilliSecondsBetween(Now, Started);
-      TranscriptLine := '{"statement_id":"' + Results[I].StatementId +
-        '","group":"' + Results[I].GroupName + '","status":"' + Results[I].Status +
-        '","elapsed_ms":' + IntToStr(Results[I].ElapsedMs) + '}' + LineEnding;
-      EventLine := '{"run_id":"' + JsonEscape(ArgValue('--run-id', 'manual')) +
-        '","driver_name":"pascal","driver_version":"unknown","route":"' + JsonEscape(Route) +
-        '","parser_mode":"' + JsonEscape(ParserMode) + '","page_size":"' + JsonEscape(PageSize) +
-        '","namespace":"' + JsonEscape(ArgValue('--namespace', '')) +
-        '","script":"' + JsonEscape(InputPath) + '","statement_index":' + IntToStr(I + 1) +
-        ',"statement_id":"' + JsonEscape(Results[I].StatementId) +
-        '","command_group":"' + JsonEscape(Results[I].GroupName);
-      if IsExpectedRefusal then
-        ExpectedOutcome := 'refusal'
-      else
-        ExpectedOutcome := 'success';
-      EventLine := EventLine +
-        '","expected_outcome":"' + ExpectedOutcome +
-        '","actual_outcome":"' + JsonEscape(Results[I].Status) +
-        '","sqlstate":"HY000","diagnostic_code":"' + JsonEscape(Results[I].ErrorMessage) +
-        '","row_count":' + IntToStr(Results[I].Rows) +
-        ',"elapsed_ns":' + IntToStr(Results[I].ElapsedMs * 1000000) +
-        ',"server_revalidation_state":"required",' + LanguageEvidenceJson +
-        ',"mga_authority":"engine","native_api_surface":"pascal"}' + LineEnding;
-      AppendTextFile(ArgValue('--transcript', 'sb_isql_pascal.transcript.jsonl'), TranscriptLine);
-      AppendTextFile(ArgValue('--metrics', 'sb_isql_pascal.metrics.jsonl'), TranscriptLine);
-      AppendTextFile(ArtifactPath('command-events.jsonl'), EventLine);
-      if ResultDigestsJson <> '[' then
-        ResultDigestsJson := ResultDigestsJson + ',';
-      ResultDigestsJson := ResultDigestsJson + '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
-        '","row_count":' + IntToStr(Results[I].Rows) + '}';
-      if StopAfterStatement then
-      begin
-        SetLength(Results, I + 1);
-        Break;
+        Results[I].Rows := RowCount;
+        Results[I].ElapsedMs := MilliSecondsBetween(Now, Started);
+        TranscriptLine := '{"statement_id":"' + Results[I].StatementId +
+          '","group":"' + Results[I].GroupName + '","status":"' + Results[I].Status +
+          '","elapsed_ms":' + IntToStr(Results[I].ElapsedMs) + '}' + LineEnding;
+        EventLine := '{"run_id":"' + JsonEscape(ArgValue('--run-id', 'manual')) +
+          '","driver_name":"pascal","driver_version":"unknown","route":"' + JsonEscape(Route) +
+          '","parser_mode":"' + JsonEscape(ParserMode) + '","page_size":"' + JsonEscape(PageSize) +
+          '","namespace":"' + JsonEscape(ArgValue('--namespace', '')) +
+          '","script":"' + JsonEscape(InputPath) + '","statement_index":' + IntToStr(I + 1) +
+          ',"statement_id":"' + JsonEscape(Results[I].StatementId) +
+          '","command_group":"' + JsonEscape(Results[I].GroupName);
+        if IsExpectedRefusal then
+          ExpectedOutcome := 'refusal'
+        else
+          ExpectedOutcome := 'success';
+        EventLine := EventLine +
+          '","expected_outcome":"' + ExpectedOutcome +
+          '","actual_outcome":"' + JsonEscape(Results[I].Status) +
+          '","sqlstate":"HY000","diagnostic_code":"' + JsonEscape(Results[I].ErrorMessage) +
+          '","row_count":' + IntToStr(Results[I].Rows) +
+          ',"elapsed_ns":' + IntToStr(Results[I].ElapsedMs * 1000000) +
+          ',"server_revalidation_state":"required",' + LanguageEvidenceJson +
+          ',"mga_authority":"engine","native_api_surface":"pascal"}' + LineEnding;
+        AppendTextFile(ArgValue('--transcript', 'sb_isql_pascal.transcript.jsonl'), TranscriptLine);
+        AppendTextFile(ArgValue('--metrics', 'sb_isql_pascal.metrics.jsonl'), TranscriptLine);
+        AppendTextFile(ArtifactPath('command-events.jsonl'), EventLine);
+        if ResultDigestsJson <> '[' then
+          ResultDigestsJson := ResultDigestsJson + ',';
+        ResultDigestsJson := ResultDigestsJson + '{"statement_id":"' + JsonEscape(Results[I].StatementId) +
+          '","row_count":' + IntToStr(Results[I].Rows) + '}';
+        if StopAfterStatement then
+        begin
+          SetLength(Results, I + 1);
+          Break;
+        end;
       end;
     end;
     Client.Disconnect;

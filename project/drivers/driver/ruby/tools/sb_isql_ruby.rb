@@ -16,6 +16,14 @@ $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "scratchbird"
 
 PAGE_SIZES = %w[4k 8k 16k 32k 64k 128k].freeze
+PAGE_SIZE_BYTES = {
+  "4k" => 4096,
+  "8k" => 8192,
+  "16k" => 16_384,
+  "32k" => 32_768,
+  "64k" => 65_536,
+  "128k" => 131_072
+}.freeze
 ROUTES = %w[embedded ipc_local listener-parser manager-listener-parser].freeze
 PARSER_MODES = %w[server-parser standalone-parser driver-sblr-uuid].freeze
 SSLMODES = %w[allow disable prefer require verify-ca verify-full].freeze
@@ -78,6 +86,7 @@ def run(args)
     digests: File.join(run_root, "result-digests.json"),
     metadata: File.join(run_root, "metadata-snapshots.json"),
     process: File.join(run_root, "process-metrics.jsonl"),
+    route_env: File.join(run_root, "route-environment.json"),
     refusals: File.join(run_root, "security-refusals.json"),
     api: File.join(run_root, "native-api-coverage.json"),
     review: File.join(run_root, "code-example-review.json"),
@@ -94,9 +103,14 @@ def run(args)
   api_hits = {
     "Scratchbird" => 0,
     "connect" => 0,
+    "query" => 0,
     "prepare" => 0,
     "execute" => 0,
     "query_metadata" => 0,
+    "begin_transaction" => 0,
+    "savepoint" => 0,
+    "release_savepoint" => 0,
+    "rollback_to_savepoint" => 0,
     "attach_create" => 0,
     "commit" => 0,
     "rollback" => 0,
@@ -109,6 +123,8 @@ def run(args)
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
   expected_refusals = load_expected_refusals(value_or_default(args, "--expected-refusals", ""))
   client = nil
+  route_env = route_environment(args, actual_page_size: nil, status: "fail", reason: "not_probed")
+  write_text(paths[:route_env], JSON.generate(route_env) + "\n")
 
   begin
     route = required(args, "--route")
@@ -126,6 +142,7 @@ def run(args)
     cfg.sslrootcert = value_or_default(args, "--sslrootcert", "")
     cfg.sslcert = value_or_default(args, "--sslcert", "")
     cfg.sslkey = value_or_default(args, "--sslkey", "")
+    cfg.socket_timeout_ms = value_or_default(args, "--statement-timeout-ms", "600000").to_i
     cfg.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct"
     cfg.metadata_expand_schema_parents = true
     cfg.application_name = "SBIsqlRuby"
@@ -150,12 +167,25 @@ def run(args)
       api_hits["attach_create"] += 1
       add_timing(timings, "database_create", create_started)
     end
+    route_started = monotonic_ns
+    route_env = probe_route_environment(client, args)
+    api_hits["query"] += 1
+    write_text(paths[:route_env], JSON.generate(route_env) + "\n")
+    add_timing(timings, "metadata", route_started)
+    if route != "embedded" && route_env[:page_size_verification_status] != "pass"
+      failures << {
+        statement_id: "route_page_size",
+        message: "route page-size verification failed",
+        expected_page_size_bytes: route_env[:expected_page_size_bytes],
+        actual_page_size_bytes: route_env[:actual_page_size_bytes]
+      }
+    end
     unless required(args, "--parser-mode") == "server-parser"
       raise "#{required(args, "--parser-mode")} is not accepted by the Ruby native tool lane; it fails closed"
     end
 
-    split_statements(read_input(required(args, "--input"))).each_with_index do |sql, index|
-      statement_id = "#{File.basename(required(args, "--input"))}:#{index + 1}"
+    each_statement(required(args, "--input")).each do |sql, index|
+      statement_id = "#{File.basename(required(args, "--input"))}:#{index}"
       expected_outcome = expected_refusals.include?(statement_id) ? "refusal" : "success"
       group = classify_statement(sql)
       statement_started = monotonic_ns
@@ -179,11 +209,8 @@ def run(args)
           result_digest = sha256_text("copy_in:#{rows_copied}")
           append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: [{ copy_in: rows_copied }]) + "\n")
         else
-          name = "sb_isql_ruby_#{index + 1}"
-          client.prepare(name, sql)
-          api_hits["prepare"] += 1
-          result = client.execute(name)
-          api_hits["execute"] += 1
+          result = client.query(sql)
+          api_hits["query"] += 1
           rows = result.rows
           row_count = result.rowcount
           result_digest = sha256_text(JSON.generate(rows))
@@ -244,7 +271,7 @@ def run(args)
         transaction_id_observed: nil,
         mga_authority: "engine",
         native_api_surface: "ruby",
-        code_example_section: "prepare_execute_fetch"
+        code_example_section: group == "copy" ? "copy_in" : "query_fetch"
       }
       append_jsonl(paths[:events], event)
       testcases << event
@@ -371,6 +398,81 @@ end
 # changes the active terminator and is consumed -- not emitted, not counted.
 # With no SET TERM present this reduces to a plain quote-aware `;` split.
 def split_statements(script)
+  each_statement_in_text(script).map(&:first)
+end
+
+def each_statement(path)
+  return enum_for(:each_statement, path) unless block_given?
+
+  if path == "-"
+    each_statement_in_text(STDIN.read).each { |sql, index| yield sql, index }
+    return
+  end
+
+  term = ";"
+  current = +""
+  single = false
+  double = false
+  statement_index = 0
+
+  flush = lambda do
+    chunk = current.strip
+    current.clear
+    next if chunk.empty?
+    new_term = chunk_set_term(chunk)
+    if new_term
+      term = new_term
+      next
+    end
+    statement_index += 1
+    yield chunk, statement_index
+  end
+
+  File.foreach(path) do |line|
+    i = 0
+    length = line.length
+    while i < length
+      ch = line[i]
+      if !single && !double && ch == "-" && i + 1 < length && line[i + 1] == "-"
+        current << line[i..]
+        break
+      end
+      if ch == "'" && !double
+        single = !single
+        current << ch
+        i += 1
+        next
+      end
+      if ch == '"' && !single
+        double = !double
+        current << ch
+        i += 1
+        next
+      end
+      matched = false
+      if !single && !double && !term.empty?
+        if term.length == 1
+          matched = ch == term
+        else
+          matched = line.start_with?(term, i)
+        end
+      end
+      if matched
+        matched_len = term.length
+        flush.call
+        i += matched_len
+        next
+      end
+      current << ch
+      i += 1
+    end
+  end
+  flush.call
+end
+
+def each_statement_in_text(script)
+  return enum_for(:each_statement_in_text, script) unless block_given?
+
   statements = []
   term = ";"
   current = +""
@@ -388,6 +490,7 @@ def split_statements(script)
       next
     end
     statements << chunk
+    yield chunk, statements.length
   end
 
   while i < length
@@ -423,7 +526,6 @@ def split_statements(script)
   end
 
   flush.call
-  statements
 end
 
 def classify_statement(sql)
@@ -432,22 +534,35 @@ def classify_statement(sql)
   return "copy" if first == "copy"
   return "ddl" if %w[create alter drop].include?(first)
   return "dml" if %w[insert update delete merge upsert].include?(first)
-  return "transaction" if %w[commit rollback savepoint begin start].include?(first)
+  return "transaction" if %w[commit rollback savepoint release begin start].include?(first)
   return "security_refusal" if %w[grant revoke].include?(first)
   return "metadata" if trimmed.include?("sys.")
   "query"
 end
 
 def run_transaction(client, sql, api_hits)
-  first = sql.strip.downcase.split(/\s+/, 2).first.to_s
+  tokens = sql.strip.split(/\s+/)
+  first = tokens.first.to_s.downcase
   if first == "commit"
     client.commit
     api_hits["commit"] += 1
   elsif first == "rollback"
-    client.rollback
-    api_hits["rollback"] += 1
+    if tokens.length >= 4 && tokens[1].to_s.downcase == "to" && tokens[2].to_s.downcase == "savepoint"
+      client.rollback_to_savepoint(tokens[3])
+      api_hits["rollback_to_savepoint"] += 1
+    else
+      client.rollback
+      api_hits["rollback"] += 1
+    end
+  elsif first == "savepoint"
+    client.savepoint(tokens[1])
+    api_hits["savepoint"] += 1
+  elsif first == "release" && tokens.length >= 3 && tokens[1].to_s.downcase == "savepoint"
+    client.release_savepoint(tokens[2])
+    api_hits["release_savepoint"] += 1
   else
-    client.begin
+    client.begin_transaction
+    api_hits["begin_transaction"] += 1
   end
 end
 
@@ -507,6 +622,52 @@ def transport_implementation_for_route(route)
   return "unsupported_no_cpp_library_boundary" if route == "embedded"
   return "native_ruby_unix_socket" if route == "ipc_local"
   "native_ruby_tcp"
+end
+
+def route_environment(args, actual_page_size:, status:, reason: nil)
+  route = required(args, "--route")
+  sslmode = effective_sslmode_for_route(route, value_or_default(args, "--sslmode", "require"))
+  record = {
+    run_id: value_or_default(args, "--run-id", "manual"),
+    driver: "ruby",
+    route: route,
+    sslmode: sslmode,
+    parser_mode: required(args, "--parser-mode"),
+    concurrency_mode: "single",
+    namespace: required(args, "--namespace"),
+    page_size: required(args, "--page-size"),
+    expected_page_size_bytes: PAGE_SIZE_BYTES.fetch(required(args, "--page-size")),
+    actual_page_size_bytes: actual_page_size,
+    page_size_verification_source: "SHOW DATABASE",
+    page_size_verification_status: status,
+    transport_mode: resolve_transport_mode(route, sslmode),
+    transport_endpoint_kind: endpoint_kind_for_route(route),
+    driver_transport_implementation: transport_implementation_for_route(route)
+  }
+  record[:failure_reason] = reason if reason
+  record
+end
+
+def probe_route_environment(client, args)
+  result = client.query("SHOW DATABASE")
+  actual = extract_page_size_bytes(result)
+  expected = PAGE_SIZE_BYTES.fetch(required(args, "--page-size"))
+  status = actual == expected ? "pass" : "fail"
+  reason = status == "pass" ? nil : "actual_page_size_mismatch"
+  route_environment(args, actual_page_size: actual, status: status, reason: reason)
+rescue StandardError => e
+  route_environment(args, actual_page_size: nil, status: "fail", reason: e.message)
+end
+
+def extract_page_size_bytes(result)
+  names = result.columns.map { |column| column.name.to_s.downcase }
+  index = names.index("page_size_bytes")
+  return nil unless index
+
+  row = result.rows.first
+  return nil unless row
+  value = row.is_a?(Hash) ? row["page_size_bytes"] || row[:page_size_bytes] : row[index]
+  value.nil? ? nil : value.to_i
 end
 
 def load_expected_refusals(path)
@@ -578,30 +739,7 @@ def copy_stdin_statement?(sql)
 end
 
 def execute_copy_in(client, sql, payload)
-  client.send(:send_simple_query, sql, nil)
-  rows_copied = 0
-  copy_started = false
-  loop do
-    type, _flags, body, _sequence, _attachment_id, _txn_id = client.send(:recv_message)
-    next if client.send(:handle_async_message, type, body)
-
-    case type
-    when Scratchbird::Protocol::MSG_COPY_IN_RESPONSE
-      copy_started = true
-      client.send(:send_message, Scratchbird::Protocol::MSG_COPY_DATA, payload, 0, false)
-      client.send(:send_message, Scratchbird::Protocol::MSG_COPY_DONE, +"", 0, false)
-    when Scratchbird::Protocol::MSG_COMMAND_COMPLETE
-      _command_type, rows_count, _last_id, _tag = Scratchbird::Protocol.parse_command_complete(body)
-      rows_copied = rows_count.to_i
-    when Scratchbird::Protocol::MSG_READY
-      status, txn_id = Scratchbird::Protocol.parse_ready(body)
-      client.send(:apply_runtime_ready_state, status, txn_id)
-      raise "COPY FROM STDIN did not enter COPY input mode" unless copy_started
-      return rows_copied
-    when Scratchbird::Protocol::MSG_ERROR
-      client.send(:handle_query_error, body)
-    end
-  end
+  client.copy_in(sql, payload)
 end
 
 def monotonic_ns

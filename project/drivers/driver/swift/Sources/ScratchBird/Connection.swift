@@ -588,8 +588,8 @@ public final class ScratchBirdConnection {
         try await Task.detached {
             try self.requireActiveTransaction("commit")
             try await self.withResilience(operation: "txn_commit") {
-                try self.sendSimpleQuery("COMMIT", maxRows: 0, timeoutMs: 0)
-                _ = try self.collectResults()
+                _ = try self.sendMessage(type: .txnCommit, payload: buildTxnCommitPayload(flags: flags))
+                _ = try self.drainUntilReady()
             }
             self.explicitTransaction = false
             try self.drainImmediateReopenBoundary()
@@ -600,8 +600,8 @@ public final class ScratchBirdConnection {
         try await Task.detached {
             try self.requireActiveTransaction("rollback")
             try await self.withResilience(operation: "txn_rollback") {
-                try self.sendSimpleQuery("ROLLBACK", maxRows: 0, timeoutMs: 0)
-                _ = try self.collectResults()
+                _ = try self.sendMessage(type: .txnRollback, payload: buildTxnRollbackPayload(flags: flags))
+                _ = try self.drainUntilReady()
             }
             self.explicitTransaction = false
             try self.drainImmediateReopenBoundary()
@@ -613,8 +613,8 @@ public final class ScratchBirdConnection {
         try await Task.detached {
             try self.requireActiveTransaction("savepoint")
             try await self.withResilience(operation: "txn_savepoint") {
-                try self.sendSimpleQuery("SAVEPOINT \(self.quoteIdentifier(normalizedName))", maxRows: 0, timeoutMs: 0)
-                _ = try self.collectResults()
+                _ = try self.sendMessage(type: .txnSavepoint, payload: buildTxnSavepointPayload(name: normalizedName))
+                _ = try self.drainUntilReady()
             }
         }.value
     }
@@ -624,8 +624,8 @@ public final class ScratchBirdConnection {
         try await Task.detached {
             try self.requireActiveTransaction("release savepoint")
             try await self.withResilience(operation: "txn_release") {
-                try self.sendSimpleQuery("RELEASE SAVEPOINT \(self.quoteIdentifier(normalizedName))", maxRows: 0, timeoutMs: 0)
-                _ = try self.collectResults()
+                _ = try self.sendMessage(type: .txnRelease, payload: buildTxnReleasePayload(name: normalizedName))
+                _ = try self.drainUntilReady()
             }
         }.value
     }
@@ -635,8 +635,8 @@ public final class ScratchBirdConnection {
         try await Task.detached {
             try self.requireActiveTransaction("rollback to savepoint")
             try await self.withResilience(operation: "txn_rollback_to") {
-                try self.sendSimpleQuery("ROLLBACK TO SAVEPOINT \(self.quoteIdentifier(normalizedName))", maxRows: 0, timeoutMs: 0)
-                _ = try self.collectResults()
+                _ = try self.sendMessage(type: .txnRollbackTo, payload: buildTxnRollbackToPayload(name: normalizedName))
+                _ = try self.drainUntilReady()
             }
         }.value
     }
@@ -797,7 +797,9 @@ public final class ScratchBirdConnection {
         }
         if config.binaryTransfer {
             features |= featureStreaming
+            features |= featureBinaryCopy
         }
+        features |= featureSavepoints
         return features
     }
 

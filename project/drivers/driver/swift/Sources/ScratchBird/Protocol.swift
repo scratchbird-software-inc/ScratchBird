@@ -131,6 +131,8 @@ let messageFlagUrgent: UInt8 = 0x08
 
 let featureCompression: UInt64 = 1 << 0
 let featureStreaming: UInt64 = 1 << 1
+let featureBinaryCopy: UInt64 = 1 << 8
+let featureSavepoints: UInt64 = 1 << 9
 
 let queryFlagDescribeOnly: UInt32 = 0x01
 let queryFlagNoPortal: UInt32 = 0x02

@@ -11,8 +11,12 @@ module Scratchbird
     MAGIC_BYTES = "SBWP".b
     VERSION_MAJOR = 1
     VERSION_MINOR = 1
+    PROTOCOL_VERSION = (VERSION_MAJOR << 8) | VERSION_MINOR
     HEADER_SIZE = 40
     MAX_MESSAGE_SIZE = 1024 * 1024 * 1024
+    CONNECT_VALUE_TEXT = 1
+    P1_ROW_DESCRIPTION_HEADER_BYTES = 72
+    P1_CANONICAL_TYPE_REF_BYTES = 144
 
     MSG_STARTUP = 0x01
     MSG_AUTH_RESPONSE = 0x02
@@ -159,7 +163,7 @@ module Scratchbird
     SUB_TYPE_EVENT = 3
 
     def self.encode_message(type, payload, flags, sequence, attachment_id, txn_id)
-      header = +""
+      header = +"".b
       header << MAGIC_BYTES
       header << [VERSION_MAJOR, VERSION_MINOR, type, flags].pack("C4")
       header << [payload.bytesize, sequence].pack("V2")
@@ -181,14 +185,32 @@ module Scratchbird
     end
 
     def self.build_startup_payload(features, params)
-      payload = [VERSION_MAJOR, VERSION_MINOR, 0].pack("CCv")
-      payload << [features].pack("Q<")
-      payload << build_param_list(params)
+      payload = +"".b
+      payload << [PROTOCOL_VERSION, PROTOCOL_VERSION, 0].pack("vvV")
+      payload << [features.to_i, 0, 0].pack("Q<Q<Q<")
+      payload << ("\0" * 16)
+      payload << ("\0" * 16)
+      payload << ("\0" * 16)
+      keys = params.keys.map(&:to_s).sort
+      payload << [keys.length].pack("V")
+      keys.each do |key|
+        value = params[key] || params[key.to_sym] || ""
+        append_length_prefixed_string(payload, key)
+        payload << [CONNECT_VALUE_TEXT].pack("v")
+        append_length_prefixed_string(payload, value.to_s)
+      end
+      payload << [0].pack("V")
       payload
     end
 
+    def self.append_length_prefixed_string(payload, value)
+      encoded = value.to_s.b
+      payload << [encoded.bytesize].pack("V")
+      payload << encoded
+    end
+
     def self.build_param_list(params)
-      buf = +""
+      buf = +"".b
       params.each do |key, value|
         buf << key.to_s << "\0" << value.to_s << "\0"
       end
@@ -223,12 +245,15 @@ module Scratchbird
     end
 
     def self.build_query_payload(sql, flags, max_rows, timeout_ms)
-      [flags, max_rows, timeout_ms].pack("VVV") + sql.to_s + "\0"
+      payload = [flags, max_rows, timeout_ms].pack("VVV")
+      payload << sql.to_s.b
+      payload << "\0".b
+      payload
     end
 
     def self.build_parse_payload(statement_name, sql, param_types)
-      name_bytes = statement_name.to_s
-      sql_bytes = sql.to_s
+      name_bytes = statement_name.to_s.b
+      sql_bytes = sql.to_s.b
       payload = [name_bytes.bytesize].pack("V") + name_bytes
       payload << [sql_bytes.bytesize].pack("V") + sql_bytes
       payload << [param_types.length].pack("v")
@@ -238,8 +263,8 @@ module Scratchbird
     end
 
     def self.build_bind_payload(portal_name, statement_name, params, result_formats)
-      portal_bytes = portal_name.to_s
-      stmt_bytes = statement_name.to_s
+      portal_bytes = portal_name.to_s.b
+      stmt_bytes = statement_name.to_s.b
       payload = [portal_bytes.bytesize].pack("V") + portal_bytes
       payload << [stmt_bytes.bytesize].pack("V") + stmt_bytes
       payload << [params.length].pack("v")
@@ -250,7 +275,7 @@ module Scratchbird
         if param[:is_null]
           payload << [-1].pack("l<")
         else
-          data = param[:data] || ""
+          data = (param[:data] || "").b
           payload << [data.bytesize].pack("l<")
           payload << data
         end
@@ -261,12 +286,12 @@ module Scratchbird
     end
 
     def self.build_execute_payload(portal_name, max_rows)
-      portal_bytes = portal_name.to_s
+      portal_bytes = portal_name.to_s.b
       [portal_bytes.bytesize].pack("V") + portal_bytes + [max_rows].pack("V")
     end
 
     def self.build_close_payload(close_type, name)
-      name_bytes = name.to_s
+      name_bytes = name.to_s.b
       payload = [close_type].pack("C")
       payload << "\0\0\0"
       payload << [name_bytes.bytesize].pack("V")
@@ -275,7 +300,7 @@ module Scratchbird
     end
 
     def self.build_describe_payload(describe_type, name)
-      name_bytes = name.to_s
+      name_bytes = name.to_s.b
       payload = [describe_type].pack("C")
       payload << "\0\0\0"
       payload << [name_bytes.bytesize].pack("V") + name_bytes
@@ -287,7 +312,7 @@ module Scratchbird
     end
 
     def self.build_sblr_execute_payload(sblr_hash, sblr_bytecode, params)
-      bytecode = sblr_bytecode || +""
+      bytecode = (sblr_bytecode || +"").b
       payload = [sblr_hash].pack("Q<")
       payload << [bytecode.bytesize].pack("V")
       payload << [params.length].pack("v")
@@ -297,7 +322,7 @@ module Scratchbird
         if param[:is_null]
           payload << [-1].pack("l<")
         else
-          data = param[:data] || ""
+          data = (param[:data] || "").b
           payload << [data.bytesize].pack("l<")
           payload << data
         end
@@ -305,9 +330,22 @@ module Scratchbird
       payload
     end
 
+    def self.build_copy_data_payload(data)
+      data.to_s.b
+    end
+
+    def self.build_copy_done_payload
+      +"".b
+    end
+
+    def self.build_copy_fail_payload(error_message)
+      message = error_message.to_s.b
+      [message.bytesize].pack("V") + message
+    end
+
     def self.build_subscribe_payload(subscribe_type, channel, filter_expr = "")
-      channel_bytes = channel.to_s
-      filter_bytes = filter_expr.to_s
+      channel_bytes = channel.to_s.b
+      filter_bytes = filter_expr.to_s.b
       payload = [subscribe_type].pack("C")
       payload << "\0\0\0"
       payload << [channel_bytes.bytesize].pack("V") + channel_bytes
@@ -316,7 +354,7 @@ module Scratchbird
     end
 
     def self.build_unsubscribe_payload(channel)
-      channel_bytes = channel.to_s
+      channel_bytes = channel.to_s.b
       [channel_bytes.bytesize].pack("V") + channel_bytes
     end
 
@@ -352,7 +390,7 @@ module Scratchbird
     end
 
     def self.build_txn_savepoint_payload(name)
-      name_bytes = name.to_s
+      name_bytes = name.to_s.b
       [name_bytes.bytesize].pack("V") + name_bytes
     end
 
@@ -365,8 +403,8 @@ module Scratchbird
     end
 
     def self.build_set_option_payload(name, value)
-      name_bytes = name.to_s
-      value_bytes = value.to_s
+      name_bytes = name.to_s.b
+      value_bytes = value.to_s.b
       payload = [name_bytes.bytesize].pack("V") + name_bytes
       payload << [value_bytes.bytesize].pack("V") + value_bytes
       payload
@@ -377,14 +415,19 @@ module Scratchbird
     end
 
     def self.build_attach_create_payload(emulation_mode, db_name)
-      mode_bytes = emulation_mode.to_s
-      db_bytes = db_name.to_s
+      mode_bytes = emulation_mode.to_s.b
+      db_bytes = db_name.to_s.b
       payload = [mode_bytes.bytesize].pack("V") + mode_bytes
       payload << [db_bytes.bytesize].pack("V") + db_bytes
       payload
     end
 
     def self.parse_ready(payload)
+      if payload.bytesize >= 76 && [0x49, 0x54, 0x45, 0x52, 0x41].include?(payload.getbyte(56))
+        txn_id = payload.byteslice(48, 8).unpack1("Q<")
+        status = [0x54, 0x45].include?(payload.getbyte(56)) ? 1 : 0
+        return [status, txn_id, txn_id]
+      end
       raise "Ready truncated" if payload.bytesize < 20
       status = payload.getbyte(0)
       txn_id = payload.byteslice(4, 8).unpack1("Q<")
@@ -392,8 +435,34 @@ module Scratchbird
       [status, txn_id, visibility]
     end
 
-    def self.parse_parameter_status(payload)
+    def self.parse_parameter_statuses(payload)
       raise "Parameter status truncated" if payload.bytesize < 8
+      count = payload.byteslice(0, 4).unpack1("V")
+      if count.positive? && count <= 256
+        offset = 4
+        values = []
+        begin
+          count.times do
+            raise "Parameter status truncated" if offset + 4 > payload.bytesize
+            name_len = payload.byteslice(offset, 4).unpack1("V")
+            offset += 4
+            raise "Parameter status truncated" if offset + name_len + 7 > payload.bytesize
+            name = payload.byteslice(offset, name_len).to_s
+            offset += name_len
+            offset += 3
+            value_len = payload.byteslice(offset, 4).unpack1("V")
+            offset += 4
+            raise "Parameter status truncated" if offset + value_len > payload.bytesize
+            value = payload.byteslice(offset, value_len).to_s
+            offset += value_len
+            values << [name, value]
+          end
+          return values if offset == payload.bytesize
+        rescue StandardError
+          # Fall through to the legacy single name/value layout.
+        end
+      end
+
       offset = 0
       name_len = payload.byteslice(offset, 4).unpack1("V")
       offset += 4
@@ -402,10 +471,29 @@ module Scratchbird
       value_len = payload.byteslice(offset, 4).unpack1("V")
       offset += 4
       value = payload.byteslice(offset, value_len).to_s
-      [name, value]
+      [[name, value]]
+    end
+
+    def self.parse_parameter_status(payload)
+      statuses = parse_parameter_statuses(payload)
+      raise "Parameter status truncated" if statuses.empty?
+      statuses.first
     end
 
     def self.parse_parameter_description(payload)
+      if p1_row_description?(payload)
+        count = payload.byteslice(68, 4).unpack1("V")
+        offset = P1_ROW_DESCRIPTION_HEADER_BYTES
+        types = []
+        count.times do
+          raise "P1 parameter description truncated" if offset + 4 + 4 + 8 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 4 + 5 > payload.bytesize
+          type_offset = offset + 4 + 4 + 8 + 8
+          types << oid_from_canonical_type_ref(payload, type_offset)
+          offset = type_offset + P1_CANONICAL_TYPE_REF_BYTES + 4
+          _text, offset = read_nullable_text(payload, offset)
+        end
+        return types
+      end
       raise "Parameter description truncated" if payload.bytesize < 4
       count = payload.byteslice(0, 2).unpack1("v")
       offset = 4
@@ -419,6 +507,8 @@ module Scratchbird
     end
 
     def self.parse_row_description(payload)
+      return parse_p1_row_description(payload) if p1_row_description?(payload)
+
       raise "Row description truncated" if payload.bytesize < 4
       offset = 0
       count = payload.byteslice(offset, 2).unpack1("v")
@@ -448,6 +538,119 @@ module Scratchbird
                     type_size: type_size, type_modifier: type_modifier, format: format, nullable: nullable }
       end
       columns
+    end
+
+    def self.p1_row_description?(payload)
+      payload.bytesize >= P1_ROW_DESCRIPTION_HEADER_BYTES &&
+        payload.byteslice(0, 2).unpack1("v") == 1 &&
+        payload.getbyte(3) == 1
+    end
+
+    def self.parse_p1_row_description(payload)
+      count = payload.byteslice(4, 4).unpack1("l<")
+      raise "P1 row description column count invalid" if count.negative?
+
+      offset = P1_ROW_DESCRIPTION_HEADER_BYTES
+      columns = []
+      count.times do |idx|
+        fixed_column_bytes = 4 + 4 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 56
+        raise "P1 row description truncated" if offset + fixed_column_bytes > payload.bytesize
+        ordinal = payload.byteslice(offset, 4).unpack1("l<")
+        offset += 4
+        offset += 1
+        format = payload.getbyte(offset) == 1 ? 0 : 1
+        offset += 1
+        nullable = payload.getbyte(offset) == 1
+        offset += 1
+        offset += 1
+        offset += 8
+        type_oid = oid_from_canonical_type_ref(payload, offset)
+        offset += P1_CANONICAL_TYPE_REF_BYTES
+        offset += 16 * 3
+        offset += 4
+        offset += 2
+        offset += 2
+        name, offset = read_nullable_text(payload, offset)
+        columns << {
+          name: name.empty? ? "column#{idx + 1}" : name,
+          table_oid: 0,
+          column_index: ordinal.zero? ? idx : ordinal - 1,
+          type_oid: type_oid,
+          type_size: type_size_for_oid(type_oid),
+          type_modifier: -1,
+          format: format,
+          nullable: nullable
+        }
+      end
+      columns
+    end
+
+    def self.oid_from_canonical_type_ref(payload, offset)
+      return Types::OID_TEXT if offset + 4 > payload.bytesize
+      family = payload.byteslice(offset, 2).unpack1("v")
+      code = payload.byteslice(offset + 2, 2).unpack1("v")
+      return Types::OID_BOOL if family == 1 && code == 1
+      if family == 2
+        return Types::OID_INT2 if code <= 2
+        return Types::OID_INT4 if code == 3
+        return Types::OID_INT8 if code == 4
+        return Types::OID_NUMERIC
+      end
+      if family == 3
+        return Types::OID_INT4 if code <= 2
+        return Types::OID_INT8 if code <= 4
+        return Types::OID_NUMERIC
+      end
+      return Types::OID_NUMERIC if family == 4 || family == 5
+      return Types::OID_MONEY if family == 7
+      return Types::OID_FLOAT4 if family == 6 && code <= 2
+      return Types::OID_FLOAT8 if family == 6
+      return Types::OID_TEXT if family == 8
+      return Types::OID_BYTEA if family == 9 || family == 14 || family == 25 || family == 27
+      return Types::OID_TEXT if family == 10
+      if family == 11
+        return Types::OID_DATE if code == 1
+        return Types::OID_TIME if code == 2
+        return Types::OID_TIMESTAMP
+      end
+      return Types::OID_INTERVAL if family == 12
+      return Types::OID_UUID if family == 13
+      return Types::WIRE_ARRAY if family == 15
+      return Types::OID_RECORD if family == 16
+      return Types::OID_TEXT if family == 17 || family == 18
+      if family == 19
+        return Types::OID_MACADDR if code == 3
+        return Types::OID_INET
+      end
+      if family == 20
+        return Types::OID_XML if code == 5
+        return Types::OID_JSONB if code == 3
+        return Types::OID_JSON
+      end
+      return Types::OID_POINT if family == 21
+      return Types::OID_SB_VECTOR if family == 22
+      return Types::OID_TEXT if family >= 23 && family <= 30
+      Types::OID_TEXT
+    end
+
+    def self.type_size_for_oid(type_oid)
+      return 1 if type_oid == Types::OID_BOOL
+      return 4 if type_oid == Types::OID_INT4
+      return 8 if [Types::OID_INT8, Types::OID_FLOAT8].include?(type_oid)
+      return 16 if type_oid == Types::OID_UUID
+      -1
+    end
+
+    def self.read_nullable_text(payload, offset)
+      raise "nullable text truncated" if offset + 5 > payload.bytesize
+      tag = payload.getbyte(offset)
+      offset += 1
+      length = payload.byteslice(offset, 4).unpack1("l<")
+      offset += 4
+      raise "nullable text length invalid" if length.negative?
+      return ["", offset] if tag.zero?
+      raise "nullable text truncated" if offset + length > payload.bytesize
+      [payload.byteslice(offset, length).to_s, offset + length]
     end
 
     def self.parse_data_row(payload)
@@ -538,6 +741,13 @@ module Scratchbird
       raise "SBLR compiled truncated" if 16 + length > payload.bytesize
       bytecode = payload.byteslice(16, length) || ""
       [hash, version, bytecode]
+    end
+
+    def self.parse_copy_in_response(payload)
+      raise "copy in response truncated" if payload.bytesize < 5
+      format = payload.getbyte(0)
+      window_bytes = payload.byteslice(1, 4).unpack1("V")
+      [format, window_bytes]
     end
 
     def self.parse_error_message(payload)

@@ -351,6 +351,7 @@ module Scratchbird
     def self.decode_text_typed_value(type_oid, data)
       text = decode_text_value(data).to_s
       stripped = text.strip
+      return nil if stripped.empty? || stripped.upcase == "<NULL>" || stripped.upcase == "NULL"
       case type_oid
       when OID_BOOL
         lowered = stripped.downcase
@@ -358,7 +359,7 @@ module Scratchbird
         return false if lowered == "false" || lowered == "f" || stripped == "0"
         text
       when OID_INT2, OID_INT4, OID_INT8
-        Integer(stripped, 10)
+        decode_text_integer(stripped)
       when OID_FLOAT4, OID_FLOAT8
         Float(stripped)
       when OID_NUMERIC, OID_MONEY
@@ -372,6 +373,14 @@ module Scratchbird
       else
         text
       end
+    end
+
+    def self.decode_text_integer(stripped)
+      Integer(stripped, 10)
+    rescue ArgumentError
+      return BigDecimal(stripped) if stripped.match?(/\A[+-]?(?:\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?\z/)
+
+      raise
     end
 
     def self.decode_unknown_binary(data)

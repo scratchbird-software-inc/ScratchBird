@@ -1749,7 +1749,8 @@ begin
     if SameText(FConfig.Compression, 'zstd') then
       Features := Features or FEATURE_COMPRESSION;
     if FConfig.BinaryTransfer then
-      Features := Features or FEATURE_STREAMING;
+      Features := Features or FEATURE_STREAMING or FEATURE_BINARY_COPY;
+    Features := Features or FEATURE_SAVEPOINTS;
     Startup := BuildStartupPayload(Features, Params);
     SendMessage(MSG_STARTUP, Startup, 0, True);
   finally
@@ -1967,7 +1968,8 @@ begin
     if SameText(FConfig.Compression, 'zstd') then
       Features := Features or FEATURE_COMPRESSION;
     if FConfig.BinaryTransfer then
-      Features := Features or FEATURE_STREAMING;
+      Features := Features or FEATURE_STREAMING or FEATURE_BINARY_COPY;
+    Features := Features or FEATURE_SAVEPOINTS;
     Startup := BuildStartupPayload(Features, Params);
     SendMessage(MSG_STARTUP, Startup, 0, True);
   finally

@@ -99,6 +99,7 @@ defmodule SBIsqlElixir do
       timing: Path.join(run_root, "timing-groups.json"),
       digests: Path.join(run_root, "result-digests.json"),
       metadata: Path.join(run_root, "metadata-snapshots.json"),
+      route_env: Path.join(run_root, "route-environment.json"),
       process: Path.join(run_root, "process-metrics.jsonl"),
       refusals: Path.join(run_root, "security-refusals.json"),
       api: Path.join(run_root, "native-api-coverage.json"),
@@ -216,15 +217,21 @@ defmodule SBIsqlElixir do
                 %{state | connection: conn}
                 |> bump_api("ScratchBird.Connection.attach_create")
                 |> add_timing("database_create", create_started)
+                |> verify_route_environment(args, paths, route, sslmode)
 
-              if required!(args, "--parser-mode") != "server-parser" do
-                add_failure(
-                  state,
-                  "parser_mode",
-                  "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
-                )
-              else
-                run_statements(state, args, paths, expected_refusals)
+              cond do
+                state.failures != [] ->
+                  state
+
+                required!(args, "--parser-mode") != "server-parser" ->
+                  add_failure(
+                    state,
+                    "parser_mode",
+                    "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
+                  )
+
+                true ->
+                  run_statements(state, args, paths, expected_refusals)
               end
 
             {:error, reason, conn} ->
@@ -232,15 +239,23 @@ defmodule SBIsqlElixir do
               |> add_failure("database_create", inspect(reason))
           end
 
-        required!(args, "--parser-mode") != "server-parser" ->
-          add_failure(
-            state,
-            "parser_mode",
-            "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
-          )
-
         true ->
-          run_statements(state, args, paths, expected_refusals)
+          state = verify_route_environment(state, args, paths, route, sslmode)
+
+          cond do
+            state.failures != [] ->
+              state
+
+            required!(args, "--parser-mode") != "server-parser" ->
+              add_failure(
+                state,
+                "parser_mode",
+                "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
+              )
+
+            true ->
+              run_statements(state, args, paths, expected_refusals)
+          end
       end
 
     state =
@@ -936,6 +951,105 @@ defmodule SBIsqlElixir do
     |> ScratchBird.Protocol.parse_error()
     |> Map.get(:message, "COPY failed")
   end
+
+  defp verify_route_environment(state, args, paths, route, sslmode) do
+    started = monotonic_ns()
+
+    case ScratchBird.Connection.query(state.connection, "SHOW DATABASE", []) do
+      {:ok, result, conn} ->
+        expected = expected_page_size_bytes(required!(args, "--page-size"))
+        actual = extract_page_size_bytes(result)
+        status = if actual == expected, do: "pass", else: "fail"
+
+        write_text(
+          paths.route_env,
+          SBIsqlElixir.Json.encode(
+            route_environment(args, route, sslmode, actual, status, nil)
+          ) <> "\n"
+        )
+
+        state =
+          %{state | connection: conn}
+          |> bump_api("ScratchBird.Connection.query")
+          |> add_timing("metadata", started)
+
+        if route != "embedded" and status != "pass" do
+          add_failure(
+            state,
+            "route_page_size",
+            "route page-size verification failed expected=#{expected} actual=#{inspect(actual)}"
+          )
+        else
+          state
+        end
+
+      {:error, reason, conn} ->
+        write_text(
+          paths.route_env,
+          SBIsqlElixir.Json.encode(
+            route_environment(args, route, sslmode, nil, "fail", inspect(reason))
+          ) <> "\n"
+        )
+
+        %{state | connection: conn}
+        |> add_failure("route_page_size", inspect(reason))
+    end
+  end
+
+  defp route_environment(args, route, sslmode, actual_page_size, status, reason) do
+    record = %{
+      run_id: Map.get(args, "--run-id", "manual"),
+      driver: "elixir",
+      route: route,
+      sslmode: sslmode,
+      parser_mode: required!(args, "--parser-mode"),
+      concurrency_mode: "single",
+      namespace: required!(args, "--namespace"),
+      page_size: required!(args, "--page-size"),
+      expected_page_size_bytes: expected_page_size_bytes(required!(args, "--page-size")),
+      actual_page_size_bytes: actual_page_size,
+      page_size_verification_source: "SHOW DATABASE",
+      page_size_verification_status: status,
+      transport_mode: transport_mode_for_route(route, sslmode),
+      transport_endpoint_kind: endpoint_kind_for_route(route),
+      driver_transport_implementation: transport_implementation_for_route(route)
+    }
+
+    if reason, do: Map.put(record, :failure_reason, reason), else: record
+  end
+
+  defp expected_page_size_bytes("4k"), do: 4096
+  defp expected_page_size_bytes("8k"), do: 8192
+  defp expected_page_size_bytes("16k"), do: 16384
+  defp expected_page_size_bytes("32k"), do: 32768
+  defp expected_page_size_bytes("64k"), do: 65536
+  defp expected_page_size_bytes("128k"), do: 131_072
+  defp expected_page_size_bytes(_), do: 0
+
+  defp extract_page_size_bytes(%{columns: columns, rows: [row | _]}) when is_list(row) do
+    names =
+      Enum.map(columns, fn column ->
+        column
+        |> Map.get(:name, "")
+        |> to_string()
+        |> String.downcase()
+      end)
+
+    index = Enum.find_index(names, &(&1 == "page_size_bytes")) || if(length(row) >= 3, do: 2, else: nil)
+
+    if is_integer(index), do: parse_page_size_value(Enum.at(row, index)), else: nil
+  end
+
+  defp extract_page_size_bytes(_), do: nil
+
+  defp parse_page_size_value(value) when is_integer(value), do: value
+  defp parse_page_size_value(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+  defp parse_page_size_value(_), do: nil
 
   defp transport_mode_for_route("embedded", _sslmode), do: "embedded_no_network_transport"
   defp transport_mode_for_route("ipc_local", _sslmode), do: "local_ipc_no_tls"

@@ -78,6 +78,7 @@ struct SBIsqlSwift {
             "timing": "\(runRoot)/timing-groups.json",
             "digests": "\(runRoot)/result-digests.json",
             "metadata": "\(runRoot)/metadata-snapshots.json",
+            "route_env": "\(runRoot)/route-environment.json",
             "process": "\(runRoot)/process-metrics.jsonl",
             "refusals": "\(runRoot)/security-refusals.json",
             "api": "\(runRoot)/native-api-coverage.json",
@@ -117,6 +118,7 @@ struct SBIsqlSwift {
         let expectedRefusals = try loadExpectedRefusals(args["--expected-refusals"] ?? "")
         let started = nowNs()
         var connection: ScratchBirdConnection?
+        var routeEnv: [String: Any?]?
         let route = try required(args, "--route")
         let sslmode = effectiveSslMode(route, args["--sslmode"] ?? "require")
 
@@ -159,6 +161,31 @@ struct SBIsqlSwift {
                 )
                 api["attachCreate", default: 0] += 1
                 addTiming(&timings, "database_create", createStarted)
+            }
+            let routeProbeStarted = nowNs()
+            do {
+                routeEnv = try await probeRouteEnvironment(connection!, args, route, sslmode)
+                addTiming(&timings, "metadata", routeProbeStarted)
+                try writeText(paths["route_env"]!, "\(jsonLine(routeEnv!))\n")
+                if route != "embedded",
+                   (routeEnv?["page_size_verification_status"] as? String) != "pass" {
+                    failures.append([
+                        "statement_id": "route_page_size",
+                        "message": "route page-size verification failed",
+                        "expected_page_size_bytes": routeEnv?["expected_page_size_bytes"] ?? nil,
+                        "actual_page_size_bytes": routeEnv?["actual_page_size_bytes"] ?? nil
+                    ])
+                }
+            } catch {
+                routeEnv = routeEnvironment(args, route, sslmode, nil, "fail", "\(error)")
+                try writeText(paths["route_env"]!, "\(jsonLine(routeEnv!))\n")
+                failures.append([
+                    "statement_id": "route_page_size",
+                    "message": "\(error)"
+                ])
+            }
+            if !failures.isEmpty {
+                throw RuntimeError("route environment verification failed")
             }
             if try required(args, "--parser-mode") != "server-parser" {
                 throw RuntimeError("\(try required(args, "--parser-mode")) is not accepted by the Swift native tool lane; it fails closed")
@@ -286,6 +313,8 @@ struct SBIsqlSwift {
             "route": route,
             "parser_mode": try required(args, "--parser-mode"),
             "page_size": try required(args, "--page-size"),
+            "expected_page_size_bytes": expectedPageSizeBytes(try required(args, "--page-size")),
+            "actual_page_size_bytes": routeEnv?["actual_page_size_bytes"] ?? nil,
             "namespace": try required(args, "--namespace"),
             "sslmode": sslmode,
             "transport_mode": transportMode,
@@ -387,6 +416,81 @@ func transportImplementationForRoute(_ route: String) -> String {
     if route == "embedded" { return "unsupported_no_cpp_library_boundary" }
     if route == "ipc_local" { return "native_swift_unix_socket" }
     return "native_swift_tcp"
+}
+
+func expectedPageSizeBytes(_ pageSize: String) -> Int {
+    switch pageSize {
+    case "4k": return 4096
+    case "8k": return 8192
+    case "16k": return 16384
+    case "32k": return 32768
+    case "64k": return 65536
+    case "128k": return 131072
+    default: return 0
+    }
+}
+
+func routeEnvironment(
+    _ args: [String: String],
+    _ route: String,
+    _ sslmode: String,
+    _ actualPageSize: Int?,
+    _ status: String,
+    _ reason: String?
+) -> [String: Any?] {
+    var record: [String: Any?] = [
+        "run_id": args["--run-id"] ?? "manual",
+        "driver": "swift",
+        "route": route,
+        "sslmode": sslmode,
+        "parser_mode": args["--parser-mode"] ?? "",
+        "concurrency_mode": "single",
+        "namespace": args["--namespace"] ?? "",
+        "page_size": args["--page-size"] ?? "",
+        "expected_page_size_bytes": expectedPageSizeBytes(args["--page-size"] ?? ""),
+        "actual_page_size_bytes": actualPageSize,
+        "page_size_verification_source": "SHOW DATABASE",
+        "page_size_verification_status": status,
+        "transport_mode": transportModeForRoute(route, sslmode),
+        "transport_endpoint_kind": endpointKindForRoute(route),
+        "driver_transport_implementation": transportImplementationForRoute(route)
+    ]
+    if let reason { record["failure_reason"] = reason }
+    return record
+}
+
+func probeRouteEnvironment(
+    _ connection: ScratchBirdConnection,
+    _ args: [String: String],
+    _ route: String,
+    _ sslmode: String
+) async throws -> [String: Any?] {
+    let result = try await connection.query("SHOW DATABASE")
+    let names = result.columns.map { $0.name.lowercased() }
+    var index = names.firstIndex(of: "page_size_bytes")
+    if index == nil && !result.rows.isEmpty && result.rows[0].count >= 3 {
+        index = 2
+    }
+    let actual = index.flatMap { parsePageSizeValue(result.rows.first?[$0] ?? nil) }
+    let expected = expectedPageSizeBytes(args["--page-size"] ?? "")
+    let status = actual == expected ? "pass" : "fail"
+    return routeEnvironment(
+        args,
+        route,
+        sslmode,
+        actual,
+        status,
+        status == "pass" ? nil : "actual_page_size_mismatch"
+    )
+}
+
+func parsePageSizeValue(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? Int32 { return Int(value) }
+    if let value = value as? Int64 { return Int(value) }
+    if let value = value as? UInt64 { return Int(value) }
+    if let value = value as? String { return Int(value) }
+    return nil
 }
 
 func loadExpectedRefusals(_ path: String) throws -> Set<String> {

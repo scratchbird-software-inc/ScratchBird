@@ -127,10 +127,29 @@ class TestTypes < Minitest::Test
     assert_equal "12345678-1234-5678-1234-567812345678", Scratchbird::Types.decode(0, raw_uuid, Scratchbird::Types::FORMAT_BINARY)
   end
 
+  def test_p1_canonical_wire_type_ref_mapping_uses_current_wire_families
+    assert_equal Scratchbird::Types::OID_BYTEA, p1_wire_oid(9, 1), "binary family must not decode as integer"
+    assert_equal Scratchbird::Types::OID_TEXT, p1_wire_oid(8, 1)
+    assert_equal Scratchbird::Types::OID_INT4, p1_wire_oid(2, 3)
+    assert_equal Scratchbird::Types::OID_INT8, p1_wire_oid(2, 4)
+    assert_equal Scratchbird::Types::OID_NUMERIC, p1_wire_oid(3, 5)
+    assert_equal Scratchbird::Types::OID_JSONB, p1_wire_oid(20, 3)
+  end
+
+  def test_binary_wire_family_text_payload_stays_binary_text
+    oid = p1_wire_oid(9, 1)
+    assert_equal "00000001930a", Scratchbird::Types.decode(oid, "00000001930a", Scratchbird::Types::FORMAT_TEXT)
+  end
+
   private
 
   def decode_encoded(value)
     encoded = Scratchbird::Types.encode_param(value)
     Scratchbird::Types.decode(encoded[:oid], encoded[:param][:data], encoded[:param][:format])
+  end
+
+  def p1_wire_oid(family, code)
+    ref = [family, code].pack("vv") + ("\0" * (Scratchbird::Protocol::P1_CANONICAL_TYPE_REF_BYTES - 4))
+    Scratchbird::Protocol.oid_from_canonical_type_ref(ref, 0)
   end
 end

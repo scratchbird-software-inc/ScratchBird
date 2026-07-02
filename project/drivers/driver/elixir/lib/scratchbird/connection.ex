@@ -1717,9 +1717,11 @@ defmodule ScratchBird.Connection do
         else: features
 
     features =
-      if config[:binary_transfer], do: features ||| Protocol.feature(:streaming), else: features
+      if config[:binary_transfer],
+        do: features ||| Protocol.feature(:streaming) ||| Protocol.feature(:binary_copy),
+        else: features
 
-    features
+    features ||| Protocol.feature(:savepoints)
   end
 
   defp send_message(state, type, payload, flags) do
