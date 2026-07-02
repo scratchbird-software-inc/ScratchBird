@@ -380,7 +380,7 @@ module Scratchbird
     rescue ArgumentError
       return BigDecimal(stripped) if stripped.match?(/\A[+-]?(?:\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?\z/)
 
-      raise
+      stripped
     end
 
     def self.decode_unknown_binary(data)

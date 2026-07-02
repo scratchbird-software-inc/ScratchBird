@@ -141,6 +141,14 @@ class TestTypes < Minitest::Test
     assert_equal "00000001930a", Scratchbird::Types.decode(oid, "00000001930a", Scratchbird::Types::FORMAT_TEXT)
   end
 
+  def test_integer_text_decoder_preserves_misdescribed_hex_payload
+    assert_equal "00000001930a", Scratchbird::Types.decode(
+      Scratchbird::Types::OID_INT8,
+      "00000001930a",
+      Scratchbird::Types::FORMAT_TEXT
+    )
+  end
+
   private
 
   def decode_encoded(value)
