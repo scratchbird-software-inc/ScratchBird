@@ -17,6 +17,35 @@ defmodule ScratchBird.Protocol do
   @header_size 40
   @max_message_size 1_073_741_824
   @connect_value_text 1
+  @p1_row_description_header_bytes 72
+  @p1_canonical_type_ref_bytes 144
+
+  @format_text 0
+  @format_binary 1
+
+  @oid_bool 16
+  @oid_bytea 17
+  @oid_int2 21
+  @oid_int4 23
+  @oid_int8 20
+  @oid_text 25
+  @oid_json 114
+  @oid_xml 142
+  @oid_point 600
+  @oid_float4 700
+  @oid_float8 701
+  @oid_money 790
+  @oid_inet 869
+  @oid_macaddr 829
+  @oid_date 1082
+  @oid_time 1083
+  @oid_timestamp 1114
+  @oid_interval 1186
+  @oid_numeric 1700
+  @oid_uuid 2950
+  @oid_jsonb 3802
+  @oid_record 2249
+  @oid_sb_vector 16386
 
   @type message :: %{type: integer, flags: integer, length: integer, sequence: integer, attachment_id: binary, txn_id: integer, payload: binary}
 
@@ -510,9 +539,19 @@ defmodule ScratchBird.Protocol do
   defp error_field_name(?H), do: :hint
   defp error_field_name(_), do: :unknown
 
-  def parse_row_description(<<count::little-16, _reserved::little-16, rest::binary>>) do
-    {columns, _} = parse_columns(count, rest, [])
-    columns
+  def parse_row_description(payload) when is_binary(payload) do
+    cond do
+      p1_row_description?(payload) ->
+        parse_p1_row_description(payload)
+
+      byte_size(payload) < 4 ->
+        raise "row description truncated"
+
+      true ->
+        <<count::little-16, _reserved::little-16, rest::binary>> = payload
+        {columns, _} = parse_columns(count, rest, [])
+        columns
+    end
   end
 
   defp parse_columns(0, rest, acc), do: {Enum.reverse(acc), rest}
@@ -535,13 +574,145 @@ defmodule ScratchBird.Protocol do
     parse_columns(count - 1, rest3, [column | acc])
   end
 
+  defp p1_row_description?(payload) do
+    byte_size(payload) >= @p1_row_description_header_bytes and
+      read_u16(payload, 0) == 1 and
+      :binary.at(payload, 3) == 1
+  end
+
+  defp parse_p1_row_description(payload) do
+    count = read_i32(payload, 4)
+
+    if count < 0 do
+      raise "P1 row description column count invalid"
+    end
+
+    parse_p1_columns(count, payload, @p1_row_description_header_bytes, 0, [])
+  end
+
+  defp parse_p1_columns(0, _payload, _offset, _idx, acc), do: Enum.reverse(acc)
+
+  defp parse_p1_columns(count, payload, offset, idx, acc) do
+    fixed_column_bytes = 4 + 4 + 8 + @p1_canonical_type_ref_bytes + 56
+
+    if offset + fixed_column_bytes > byte_size(payload) do
+      raise "P1 row description truncated"
+    end
+
+    ordinal = read_i32(payload, offset)
+    offset = offset + 4
+    offset = offset + 1
+    format = if :binary.at(payload, offset) == 1, do: @format_text, else: @format_binary
+    offset = offset + 1
+    nullable = :binary.at(payload, offset) == 1
+    offset = offset + 1
+    offset = offset + 1
+    offset = offset + 8
+    type_oid = oid_from_canonical_type_ref(payload, offset)
+    offset = offset + @p1_canonical_type_ref_bytes
+    offset = offset + 16 * 3
+    offset = offset + 4
+    offset = offset + 2
+    offset = offset + 2
+    {name, offset} = read_nullable_text(payload, offset)
+
+    column = %{
+      name: if(name == "", do: "column#{idx + 1}", else: name),
+      table_oid: 0,
+      column_index: if(ordinal == 0, do: idx, else: ordinal - 1),
+      type_oid: type_oid,
+      type_size: type_size_for_oid(type_oid),
+      type_modifier: -1,
+      format: format,
+      nullable: nullable
+    }
+
+    parse_p1_columns(count - 1, payload, offset, idx + 1, [column | acc])
+  end
+
+  defp oid_from_canonical_type_ref(payload, offset) do
+    if offset + 4 > byte_size(payload) do
+      @oid_text
+    else
+      family = read_u16(payload, offset)
+      code = read_u16(payload, offset + 2)
+
+      cond do
+        family == 1 and code == 1 -> @oid_bool
+        family == 2 and code <= 2 -> @oid_int2
+        family == 2 and code == 3 -> @oid_int4
+        family == 2 and code == 4 -> @oid_int8
+        family == 2 -> @oid_numeric
+        family == 3 and code <= 2 -> @oid_int4
+        family == 3 and code <= 4 -> @oid_int8
+        family == 3 -> @oid_numeric
+        family == 4 or family == 5 -> @oid_numeric
+        family == 6 and code <= 2 -> @oid_float4
+        family == 6 -> @oid_float8
+        family == 7 -> @oid_money
+        family == 8 -> @oid_text
+        family in [9, 14, 25, 27] -> @oid_bytea
+        family == 10 -> @oid_text
+        family == 11 and code == 1 -> @oid_date
+        family == 11 and code == 2 -> @oid_time
+        family == 11 -> @oid_timestamp
+        family == 12 -> @oid_interval
+        family == 13 -> @oid_uuid
+        family == 15 -> 0
+        family == 16 -> @oid_record
+        family in [17, 18] -> @oid_text
+        family == 19 and code == 3 -> @oid_macaddr
+        family == 19 -> @oid_inet
+        family == 20 and code == 5 -> @oid_xml
+        family == 20 and code == 3 -> @oid_jsonb
+        family == 20 -> @oid_json
+        family == 21 -> @oid_point
+        family == 22 -> @oid_sb_vector
+        family >= 23 and family <= 30 -> @oid_text
+        true -> @oid_text
+      end
+    end
+  end
+
+  defp type_size_for_oid(@oid_bool), do: 1
+  defp type_size_for_oid(@oid_int2), do: 2
+  defp type_size_for_oid(@oid_int4), do: 4
+  defp type_size_for_oid(type_oid) when type_oid in [@oid_int8, @oid_float8], do: 8
+  defp type_size_for_oid(@oid_uuid), do: 16
+  defp type_size_for_oid(_type_oid), do: -1
+
+  defp read_nullable_text(payload, offset) do
+    if offset + 5 > byte_size(payload) do
+      raise "nullable text truncated"
+    end
+
+    tag = :binary.at(payload, offset)
+    offset = offset + 1
+    length = read_i32(payload, offset)
+    offset = offset + 4
+
+    if length < 0 do
+      raise "nullable text length invalid"
+    end
+
+    if tag == 0 do
+      {"", offset}
+    else
+      if offset + length > byte_size(payload) do
+        raise "nullable text truncated"
+      end
+
+      {binary_part(payload, offset, length), offset + length}
+    end
+  end
+
   def parse_data_row(<<count::little-16, null_bytes::little-16, rest::binary>>, column_count) do
     if column_count > 0 and count != column_count do
-      raise MatchError, "row data column count mismatch"
+      raise "row data column count mismatch"
     end
 
     if byte_size(rest) < null_bytes do
-      raise MatchError, "row data truncated"
+      raise "row data truncated"
     end
 
     <<null_bitmap::binary-size(null_bytes), values::binary>> = rest
@@ -587,6 +758,16 @@ defmodule ScratchBird.Protocol do
       :nomatch ->
         {data, <<>>}
     end
+  end
+
+  defp read_i32(payload, offset) do
+    <<value::signed-little-integer-size(32)>> = binary_part(payload, offset, 4)
+    value
+  end
+
+  defp read_u16(payload, offset) do
+    <<value::little-16>> = binary_part(payload, offset, 2)
+    value
   end
 
   defp build_param_list(params) do

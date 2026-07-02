@@ -135,7 +135,8 @@ defmodule SBIsqlElixir do
         "ScratchBird.Connection.commit" => 0,
         "ScratchBird.Connection.rollback" => 0,
         "ScratchBird.Connection.close" => 0,
-        "ScratchBird.Connection.copy_in" => 0
+        "ScratchBird.Connection.copy_in" => 0,
+        "ScratchBird.tables_query" => 0
       },
       testcases: [],
       failures: [],
@@ -262,11 +263,9 @@ defmodule SBIsqlElixir do
       if state.failures == [] do
         metadata_started = monotonic_ns()
 
-        case ScratchBird.Connection.query(
-               state.connection,
-               "SELECT * FROM sys.metadata.tables",
-               []
-             ) do
+        metadata_sql = ScratchBird.tables_query()
+
+        case ScratchBird.Connection.query(state.connection, metadata_sql, []) do
           {:ok, result, conn} ->
             write_text(
               paths.metadata,
@@ -278,6 +277,7 @@ defmodule SBIsqlElixir do
 
             %{state | connection: conn}
             |> bump_api("ScratchBird.Connection.query")
+            |> bump_api("ScratchBird.tables_query")
             |> add_timing("metadata", metadata_started)
 
           {:error, reason, conn} ->
@@ -510,7 +510,8 @@ defmodule SBIsqlElixir do
   end
 
   defp execute_statement(state, sql, "transaction") do
-    first = sql |> String.trim() |> String.downcase() |> String.split(~r/\s+/, parts: 2) |> hd()
+    tokens = transaction_tokens(sql)
+    first = List.first(tokens) || ""
 
     case first do
       "commit" ->
@@ -524,7 +525,14 @@ defmodule SBIsqlElixir do
         end
 
       "rollback" ->
-        case ScratchBird.Connection.rollback(state.connection) do
+        result =
+          if length(tokens) >= 4 and Enum.at(tokens, 1) == "to" and Enum.at(tokens, 2) == "savepoint" do
+            ScratchBird.Connection.rollback_to_savepoint(state.connection, Enum.at(tokens, 3))
+          else
+            ScratchBird.Connection.rollback(state.connection)
+          end
+
+        case result do
           {:ok, conn} ->
             {:ok, %{rows: []},
              %{state | connection: conn} |> bump_api("ScratchBird.Connection.rollback")}
@@ -533,9 +541,42 @@ defmodule SBIsqlElixir do
             {:error, reason, %{state | connection: conn}}
         end
 
+      "savepoint" ->
+        name = Enum.at(tokens, 1, "")
+
+        case ScratchBird.Connection.savepoint(state.connection, name) do
+          {:ok, conn} ->
+            {:ok, %{rows: []},
+             %{state | connection: conn} |> bump_api("ScratchBird.Connection.begin")}
+
+          {:error, reason, conn} ->
+            {:error, reason, %{state | connection: conn}}
+        end
+
+      "release" ->
+        name =
+          if length(tokens) >= 3 and Enum.at(tokens, 1) == "savepoint" do
+            Enum.at(tokens, 2)
+          else
+            ""
+          end
+
+        case ScratchBird.Connection.release_savepoint(state.connection, name) do
+          {:ok, conn} ->
+            {:ok, %{rows: []},
+             %{state | connection: conn} |> bump_api("ScratchBird.Connection.commit")}
+
+          {:error, reason, conn} ->
+            {:error, reason, %{state | connection: conn}}
+        end
+
       _ ->
         case ScratchBird.Connection.begin(state.connection) do
           {:ok, conn} ->
+            {:ok, %{rows: []},
+             %{state | connection: conn} |> bump_api("ScratchBird.Connection.begin")}
+
+          {:error, %{message: "transaction already active"}, conn} ->
             {:ok, %{rows: []},
              %{state | connection: conn} |> bump_api("ScratchBird.Connection.begin")}
 
@@ -786,11 +827,19 @@ defmodule SBIsqlElixir do
       first == "copy" -> "copy"
       first in ["create", "alter", "drop"] -> "ddl"
       first in ["insert", "update", "delete", "merge", "upsert"] -> "dml"
-      first in ["commit", "rollback", "savepoint", "begin", "start"] -> "transaction"
+      first in ["commit", "rollback", "savepoint", "release", "begin", "start"] -> "transaction"
       first in ["grant", "revoke"] -> "security_refusal"
       String.contains?(trimmed, "sys.") -> "metadata"
       true -> "query"
     end
+  end
+
+  defp transaction_tokens(sql) do
+    sql
+    |> executable_sql_without_copy_markers()
+    |> String.trim()
+    |> String.downcase()
+    |> String.split(~r/\s+/, trim: true)
   end
 
   defp executable_sql_without_copy_markers(sql) do
@@ -831,22 +880,27 @@ defmodule SBIsqlElixir do
   end
 
   defp execute_copy_in(conn, sql, payload) do
-    conn =
-      copy_send_message(
-        conn,
-        ScratchBird.Protocol.message_type(:query),
-        ScratchBird.Protocol.build_query_payload(sql, 0, 0, 0)
-      )
+    conn = send_copy_query(conn, sql)
 
-    copy_loop(conn, false, 0, payload)
+    copy_loop(conn, false, 0, payload, [], sql, 0)
   end
 
-  defp copy_loop(conn, copy_started, rows_copied, payload) do
+  defp send_copy_query(conn, sql) do
+    copy_send_message(
+      conn,
+      ScratchBird.Protocol.message_type(:query),
+      ScratchBird.Protocol.build_query_payload(sql, 0, 0, 0)
+    )
+  end
+
+  defp copy_loop(conn, copy_started, rows_copied, payload, unexpected_messages, sql, retry_count) do
     case copy_recv_message(conn) do
       {:ok, msg} ->
+        conn = adopt_message_txn_id(conn, msg)
+
         case copy_handle_async(conn, msg) do
           {:handled, new_conn} ->
-            copy_loop(new_conn, copy_started, rows_copied, payload)
+            copy_loop(new_conn, copy_started, rows_copied, payload, unexpected_messages, sql, retry_count)
 
           {:ok, new_conn} ->
             cond do
@@ -856,32 +910,69 @@ defmodule SBIsqlElixir do
                   |> copy_send_message(ScratchBird.Protocol.message_type(:copy_data), payload)
                   |> copy_send_message(ScratchBird.Protocol.message_type(:copy_done), <<>>)
 
-                copy_loop(new_conn, true, rows_copied, payload)
+                copy_loop(new_conn, true, rows_copied, payload, unexpected_messages, sql, retry_count)
 
               msg.type == ScratchBird.Protocol.message_type(:command_complete) ->
                 complete = ScratchBird.Protocol.parse_command_complete(msg.payload)
-                copy_loop(new_conn, copy_started, complete.rows, payload)
+                unexpected_messages =
+                  if copy_started do
+                    unexpected_messages
+                  else
+                    ["COMMAND_COMPLETE tag=#{complete.tag} rows=#{complete.rows}" | unexpected_messages]
+                  end
+
+                copy_loop(new_conn, copy_started, complete.rows, payload, unexpected_messages, sql, retry_count)
 
               msg.type == ScratchBird.Protocol.message_type(:ready) ->
                 {:ok, status, txn_id} = ScratchBird.Protocol.parse_ready(msg.payload)
                 new_conn = %{new_conn | txn_id: txn_id, runtime_txn_active: status != 0}
 
-                if copy_started do
-                  {:ok, rows_copied, new_conn}
-                else
-                  {:error, "COPY FROM STDIN did not enter COPY input mode", new_conn}
+                cond do
+                  copy_started ->
+                    {:ok, rows_copied, new_conn}
+
+                  retry_count == 0 and stale_select_probe?(unexpected_messages) ->
+                    copy_loop(new_conn, false, 0, payload, [], sql, retry_count + 1)
+
+                  true ->
+                    suffix =
+                      if unexpected_messages == [] do
+                        ""
+                      else
+                        " after " <> (unexpected_messages |> Enum.reverse() |> Enum.join(", "))
+                      end
+
+                    {:error, "COPY FROM STDIN did not enter COPY input mode#{suffix}", new_conn}
                 end
 
               msg.type == ScratchBird.Protocol.message_type(:error) ->
                 {:error, copy_error_message(msg.payload), new_conn}
 
               true ->
-                copy_loop(new_conn, copy_started, rows_copied, payload)
+                label = "MSG_0x" <> (msg.type |> Integer.to_string(16))
+                copy_loop(new_conn, copy_started, rows_copied, payload, [label | unexpected_messages], sql, retry_count)
             end
         end
 
       {:error, reason} ->
         {:error, inspect(reason), conn}
+    end
+  end
+
+  defp stale_select_probe?(unexpected_messages) do
+    unexpected_messages
+    |> Enum.reverse()
+    |> Enum.join(", ")
+    |> String.contains?("COMMAND_COMPLETE tag=SELECT 1 rows=1")
+  end
+
+  defp adopt_message_txn_id(conn, msg) do
+    txn_id = Map.get(msg, :txn_id, 0)
+
+    if is_integer(txn_id) and txn_id > 0 do
+      %{conn | txn_id: txn_id, runtime_txn_active: true}
+    else
+      conn
     end
   end
 
@@ -948,9 +1039,10 @@ defmodule SBIsqlElixir do
   end
 
   defp copy_error_message(payload) do
-    payload
-    |> ScratchBird.Protocol.parse_error()
-    |> Map.get(:message, "COPY failed")
+    error = ScratchBird.Protocol.parse_error(payload)
+    message = Map.get(error, :message, "COPY failed")
+    detail = Map.get(error, :detail, "")
+    if detail == "", do: message, else: "#{message}\nDETAIL: #{detail}"
   end
 
   defp verify_route_environment(state, args, paths, route, sslmode) do

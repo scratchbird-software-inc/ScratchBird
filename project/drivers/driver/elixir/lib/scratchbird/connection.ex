@@ -397,7 +397,7 @@ defmodule ScratchBird.Connection do
                 {:ok, apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
-                {:error, Protocol.parse_error(msg.payload), new_state}
+                query_error(new_state, msg.payload)
 
               _ ->
                 ping(new_state)
@@ -1290,7 +1290,7 @@ defmodule ScratchBird.Connection do
                 {:ok, param_count, apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
-                {:error, Protocol.parse_error(msg.payload), new_state}
+                query_error(new_state, msg.payload)
 
               _ ->
                 describe_loop(new_state, param_count)
@@ -1498,7 +1498,7 @@ defmodule ScratchBird.Connection do
                 {:ok, apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
-                {:error, Protocol.parse_error(msg.payload), new_state}
+                query_error(new_state, msg.payload)
 
               _ ->
                 drain_until_ready(new_state)
@@ -1577,28 +1577,29 @@ defmodule ScratchBird.Connection do
 
           case fun.(%{new_state | telemetry: telemetry}) do
             {:ok, result, after_state} ->
-              {:ok, result, finish_operation(after_state, span, true)}
+              {:ok, result, finish_operation(after_state, span, true, false)}
 
             {:ok, after_state} ->
-              {:ok, finish_operation(after_state, span, true)}
+              {:ok, finish_operation(after_state, span, true, false)}
 
             {:error, reason, after_state} ->
-              {:error, reason, finish_operation(after_state, span, false)}
+              {:error, reason,
+               finish_operation(after_state, span, false, circuit_breaker_failure?(reason))}
           end
       end
     end
   end
 
-  defp finish_operation(state, span, success) do
+  defp finish_operation(state, span, success, circuit_failure) do
     cb =
-      if success do
-        CircuitBreaker.record_success(state.circuit_breaker)
-      else
+      if circuit_failure do
         CircuitBreaker.record_failure(state.circuit_breaker)
+      else
+        CircuitBreaker.record_success(state.circuit_breaker)
       end
 
     tracker =
-      if success && state.keepalive_tracker do
+      if !circuit_failure && state.keepalive_tracker do
         Keepalive.Tracker.mark_active(state.keepalive_tracker)
       else
         state.keepalive_tracker
@@ -1607,6 +1608,23 @@ defmodule ScratchBird.Connection do
     telemetry = Telemetry.Collector.end_span(state.telemetry, span, success)
 
     %{state | circuit_breaker: cb, telemetry: telemetry, keepalive_tracker: tracker}
+  end
+
+  defp circuit_breaker_failure?(reason) do
+    sqlstate =
+      cond do
+        is_map(reason) ->
+          Map.get(reason, :sqlstate) || Map.get(reason, "sqlstate") || ""
+
+        true ->
+          ""
+      end
+
+    case to_string(sqlstate) do
+      <<"08", _::binary>> -> true
+      value when value != "" -> false
+      _ -> true
+    end
   end
 
   defp collect_results(state, rows) do
@@ -1636,7 +1654,7 @@ defmodule ScratchBird.Connection do
                  apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
-                {:error, Protocol.parse_error(msg.payload), new_state}
+                query_error(new_state, msg.payload)
 
               _ ->
                 collect_results(new_state, rows)
@@ -1672,10 +1690,43 @@ defmodule ScratchBird.Connection do
                  apply_runtime_ready_state(new_state, status, txn_id)}
 
               @msg_error ->
-                {:error, Protocol.parse_error(msg.payload), new_state}
+                query_error(new_state, msg.payload)
 
               _ ->
                 collect_rows(new_state, columns, rows)
+            end
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp query_error(state, payload) do
+    error = Protocol.parse_error(payload)
+
+    case drain_error_ready_boundary(state) do
+      {:ok, drained_state} -> {:error, error, drained_state}
+      {:error, _drain_error, drained_state} -> {:error, error, drained_state}
+      _ -> {:error, error, state}
+    end
+  end
+
+  defp drain_error_ready_boundary(state) do
+    case recv_message(state) do
+      {:ok, msg} ->
+        case handle_async(state, msg) do
+          {:handled, new_state} ->
+            drain_error_ready_boundary(new_state)
+
+          {:ok, new_state} ->
+            case msg.type do
+              @msg_ready ->
+                {:ok, status, txn_id} = Protocol.parse_ready(msg.payload)
+                {:ok, apply_runtime_ready_state(new_state, status, txn_id)}
+
+              _ ->
+                drain_error_ready_boundary(new_state)
             end
         end
 
@@ -1719,7 +1770,7 @@ defmodule ScratchBird.Connection do
 
     features =
       if config[:binary_transfer],
-        do: features ||| Protocol.feature(:streaming) ||| Protocol.feature(:binary_copy),
+        do: features ||| Protocol.feature(:streaming),
         else: features
 
     features ||| Protocol.feature(:savepoints)

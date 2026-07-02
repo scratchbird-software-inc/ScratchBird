@@ -10,7 +10,7 @@ defmodule ScratchBirdTxnBeginTest do
   use ExUnit.Case
   import Bitwise
 
-  alias ScratchBird.{Connection, Protocol}
+  alias ScratchBird.{CircuitBreaker, Connection, Protocol}
 
   test "protocol payload expands for read_committed_mode" do
     flags =
@@ -46,6 +46,30 @@ defmodule ScratchBirdTxnBeginTest do
 
     assert byte_size(extended) == 76
     assert {:ok, 1, 99} = Protocol.parse_ready(extended)
+  end
+
+  test "row description parser accepts P1 canonical descriptor payloads" do
+    name = "database_name"
+    header = <<1::little-16, 0, 1, 1::signed-little-integer-size(32), 0::size(64 * 8)>>
+    type_ref = <<8::little-16, 1::little-16, 0::size(140 * 8)>>
+
+    column =
+      IO.iodata_to_binary([
+        <<1::signed-little-integer-size(32), 0, 1, 1, 0, 0::size(8 * 8)>>,
+        type_ref,
+        <<0::size(56 * 8)>>,
+        <<1, byte_size(name)::signed-little-integer-size(32)>>,
+        name
+      ])
+
+    [column_info] = Protocol.parse_row_description(IO.iodata_to_binary([header, column]))
+
+    assert column_info.name == "database_name"
+    assert column_info.column_index == 0
+    assert column_info.type_oid == 25
+    assert column_info.type_size == -1
+    assert column_info.format == 0
+    assert column_info.nullable
   end
 
   test "begin rejects read_committed_mode with snapshot alias" do
@@ -89,6 +113,28 @@ defmodule ScratchBirdTxnBeginTest do
     assert rejected_state.txn_id == 42
     assert rejected_state.runtime_txn_active
     assert rejected_state.runtime_boundary_seen
+  end
+
+  test "SQLSTATE errors do not trip the circuit breaker" do
+    state = %Connection{
+      config: %{},
+      circuit_breaker: CircuitBreaker.new(),
+      runtime_boundary_seen: true,
+      runtime_txn_active: true,
+      txn_id: 42
+    }
+
+    final_state =
+      Enum.reduce(1..6, state, fn _, current ->
+        assert {:error, %{sqlstate: "25001", message: "transaction already active"}, rejected_state} =
+                 Connection.begin(current)
+
+        assert rejected_state.circuit_breaker.state == :closed
+        assert rejected_state.circuit_breaker.failure_count == 0
+        rejected_state
+      end)
+
+    assert final_state.circuit_breaker.state == :closed
   end
 
   test "prepared transaction SQL builder emits canonical control SQL" do
