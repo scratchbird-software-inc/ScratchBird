@@ -413,11 +413,43 @@ end;
 
 function BuildStartupPayload(Features: UInt64; const Params: TStringList): TBytes;
 var
-  Header: TBytes;
+  I: Integer;
+  KeyBytes, ValueBytes: TBytes;
+  ParamBytes: TBytes;
+  SortedParams: TStringList;
 begin
-  Header := BytesOf([PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR, 0, 0]);
-  Header := ConcatBytes(Header, WriteUInt64LE(Features));
-  Result := ConcatBytes(Header, BuildParamList(Params));
+  ParamBytes := nil;
+  SortedParams := TStringList.Create;
+  try
+    SortedParams.Assign(Params);
+    SortedParams.Sorted := True;
+    SortedParams.Duplicates := dupIgnore;
+    for I := 0 to SortedParams.Count - 1 do
+    begin
+      KeyBytes := TEncoding.UTF8.GetBytes(SortedParams.Names[I]);
+      ValueBytes := TEncoding.UTF8.GetBytes(SortedParams.ValueFromIndex[I]);
+      ParamBytes := ConcatBytes(ParamBytes, WriteUInt32LE(System.Length(KeyBytes)));
+      ParamBytes := ConcatBytes(ParamBytes, KeyBytes);
+      ParamBytes := ConcatBytes(ParamBytes, WriteUInt16LE(1));
+      ParamBytes := ConcatBytes(ParamBytes, WriteUInt32LE(System.Length(ValueBytes)));
+      ParamBytes := ConcatBytes(ParamBytes, ValueBytes);
+    end;
+
+    Result := WriteUInt16LE(Word((PROTOCOL_VERSION_MAJOR shl 8) or PROTOCOL_VERSION_MINOR));
+    Result := ConcatBytes(Result, WriteUInt16LE(Word((PROTOCOL_VERSION_MAJOR shl 8) or PROTOCOL_VERSION_MINOR)));
+    Result := ConcatBytes(Result, WriteUInt32LE(0));
+    Result := ConcatBytes(Result, WriteUInt64LE(Features));
+    Result := ConcatBytes(Result, WriteUInt64LE(0));
+    Result := ConcatBytes(Result, WriteUInt64LE(0));
+    Result := ConcatBytes(Result, BytesOf([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    Result := ConcatBytes(Result, BytesOf([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    Result := ConcatBytes(Result, BytesOf([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    Result := ConcatBytes(Result, WriteUInt32LE(SortedParams.Count));
+    Result := ConcatBytes(Result, ParamBytes);
+    Result := ConcatBytes(Result, WriteUInt32LE(0));
+  finally
+    SortedParams.Free;
+  end;
 end;
 
 function BuildQueryPayload(const Sql: string; Flags, MaxRows, TimeoutMs: Cardinal): TBytes;

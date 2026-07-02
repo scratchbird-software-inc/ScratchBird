@@ -34,6 +34,14 @@ private func systemClose(_ fd: Int32) -> Int32 { Darwin.close(fd) }
 private let socketStream: Int32 = Int32(SOCK_STREAM)
 #endif
 
+private func isIPAddressLiteral(_ host: String) -> Bool {
+    var ipv4 = in_addr()
+    var ipv6 = in6_addr()
+    return host.withCString { rawHost in
+        inet_pton(AF_INET, rawHost, &ipv4) == 1 || inet_pton(AF_INET6, rawHost, &ipv6) == 1
+    }
+}
+
 struct ScratchBirdTlsConfig {
     let sslmode: String
     let sslrootcert: String?
@@ -466,11 +474,24 @@ final class ScratchBirdSocket {
             }
 
             let sslContext = try NIOSSLContext(configuration: config)
+            let serverHostname: String?
+            if isIPAddressLiteral(host) {
+                if tlsConfig.sslmode == "verify-full" {
+                    throw NSError(
+                        domain: "ScratchBird",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "verify-full requires a DNS hostname; IP literals cannot be used for TLS SNI"]
+                    )
+                }
+                serverHostname = nil
+            } else {
+                serverHostname = host
+            }
 
             let bootstrap = ClientBootstrap(group: group)
                 .channelInitializer { channel in
                     do {
-                        let handler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+                        let handler = try NIOSSLClientHandler(context: sslContext, serverHostname: serverHostname)
                         return channel.pipeline.addHandler(handler).flatMap {
                             channel.pipeline.addHandler(NioInboundHandler(readBuffer: readBuffer))
                         }

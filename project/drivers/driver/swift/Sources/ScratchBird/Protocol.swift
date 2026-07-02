@@ -367,13 +367,21 @@ func parseAuthOk(_ payload: Data) throws -> (sessionId: Data, serverInfo: Data) 
 }
 
 func buildStartupPayload(features: UInt64, params: [String: String]) -> Data {
-    let paramBytes = buildParamList(params)
+    let protocolVersion = UInt16(protocolMajor) << 8 | UInt16(protocolMinor)
+    let paramBytes = buildP1ParamList(params)
     var data = Data()
-    data.append(protocolMajor)
-    data.append(protocolMinor)
-    data.append(contentsOf: [0, 0])
+    data.append(contentsOf: withUnsafeBytes(of: protocolVersion.littleEndian, Array.init))
+    data.append(contentsOf: withUnsafeBytes(of: protocolVersion.littleEndian, Array.init))
+    data.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian, Array.init))
     data.append(contentsOf: withUnsafeBytes(of: features.littleEndian, Array.init))
+    data.append(contentsOf: withUnsafeBytes(of: UInt64(0).littleEndian, Array.init))
+    data.append(contentsOf: withUnsafeBytes(of: UInt64(0).littleEndian, Array.init))
+    data.append(Data(repeating: 0, count: 16))
+    data.append(Data(repeating: 0, count: 16))
+    data.append(Data(repeating: 0, count: 16))
+    data.append(contentsOf: withUnsafeBytes(of: UInt32(params.count).littleEndian, Array.init))
     data.append(paramBytes)
+    data.append(contentsOf: withUnsafeBytes(of: UInt32(0).littleEndian, Array.init))
     return data
 }
 
@@ -599,5 +607,19 @@ func buildParamList(_ params: [String: String]) -> Data {
         data.append(0)
     }
     data.append(0)
+    return data
+}
+
+func buildP1ParamList(_ params: [String: String]) -> Data {
+    var data = Data()
+    for key in params.keys.sorted() {
+        let keyBytes = key.data(using: .utf8) ?? Data()
+        let valueBytes = (params[key] ?? "").data(using: .utf8) ?? Data()
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(keyBytes.count).littleEndian, Array.init))
+        data.append(keyBytes)
+        data.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian, Array.init))
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(valueBytes.count).littleEndian, Array.init))
+        data.append(valueBytes)
+    }
     return data
 }
