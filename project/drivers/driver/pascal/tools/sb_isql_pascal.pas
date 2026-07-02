@@ -12,6 +12,9 @@ program sb_isql_pascal;
 {$H+}
 
 uses
+  {$IFDEF UNIX}
+  cthreads,
+  {$ENDIF}
   SysUtils, Classes, DateUtils, Variants, ScratchBird.Client, ScratchBird.Chunker,
   ScratchBird.Protocol;
 

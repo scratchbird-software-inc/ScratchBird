@@ -898,6 +898,10 @@ def execute_work_item(
         result = run_command([*item.base_command, *tool_args], item.cwd, child_env(repo_root))
         entry["returncode"] = result.returncode
         entry["output_tail"] = result.stdout.splitlines()[-80:]
+        child_output_path = item.run_root / "child-process-output.log"
+        child_output_path.parent.mkdir(parents=True, exist_ok=True)
+        child_output_path.write_text(result.stdout, encoding="utf-8", errors="replace")
+        entry["child_output_log"] = str(child_output_path)
         entry["status"] = "pass" if result.returncode == 0 else "fail"
         annotate_summary_with_proof_tier(item.run_root, item, args.proof_strategy)
     except Exception as exc:  # noqa: BLE001 - matrix report must preserve the failure.
