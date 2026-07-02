@@ -375,6 +375,8 @@ private:
     bool allowRequest();
     void recordSuccess();
     void recordFailure();
+    void recordCompletionForSqlState(const char* sqlstate);
+    static bool isCircuitBreakerFailureSqlState(const char* sqlstate);
     void registerResilience();
     void unregisterResilience();
 

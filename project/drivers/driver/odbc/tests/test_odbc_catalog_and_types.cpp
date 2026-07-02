@@ -1091,6 +1091,48 @@ TEST(OdbcSqlStateMappingTest, MapsGranularStatusesToSpecificSqlStates) {
     }
 }
 
+TEST(OdbcCircuitBreakerTest, StatementSqlStatesDoNotOpenTransportCircuit) {
+    scratchbird::odbc::OdbcEnvironment env;
+    scratchbird::odbc::OdbcConnection conn(&env);
+    conn.connected_ = true;
+    conn.client_bridge_ = std::make_unique<StatusFailureClientBridge>(
+        scratchbird::core::Status::CHECK_VIOLATION,
+        "expected statement refusal");
+
+    std::vector<std::vector<std::string>> rows;
+    std::vector<scratchbird::odbc::ColumnMetadata> cols;
+    SQLLEN rows_affected = 0;
+
+    for (int i = 0; i < 8; ++i) {
+        ASSERT_EQ(conn.executeSQL("SELECT violates_check", rows, cols, rows_affected), SQL_ERROR);
+        const auto* diag = conn.getDiagnostic(1);
+        ASSERT_NE(diag, nullptr);
+        EXPECT_EQ(diag->sqlstate, "23514");
+        EXPECT_EQ(conn.circuit_breaker_.GetState(), ScratchBird::ODBC::CircuitState::CLOSED);
+        EXPECT_EQ(conn.circuit_breaker_.GetStats().failureCount, 0u);
+    }
+}
+
+TEST(OdbcCircuitBreakerTest, ConnectionSqlStatesOpenTransportCircuit) {
+    scratchbird::odbc::OdbcEnvironment env;
+    scratchbird::odbc::OdbcConnection conn(&env);
+    conn.connected_ = true;
+    conn.client_bridge_ = std::make_unique<StatusFailureClientBridge>(
+        scratchbird::core::Status::PROTOCOL_VIOLATION,
+        "forced transport failure");
+
+    std::vector<std::vector<std::string>> rows;
+    std::vector<scratchbird::odbc::ColumnMetadata> cols;
+    SQLLEN rows_affected = 0;
+
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(conn.executeSQL("SELECT transport_failure", rows, cols, rows_affected), SQL_ERROR);
+    }
+
+    EXPECT_EQ(conn.circuit_breaker_.GetState(), ScratchBird::ODBC::CircuitState::OPEN);
+    EXPECT_EQ(conn.circuit_breaker_.GetStats().failureCount, 5u);
+}
+
 TEST(OdbcStatementDiagnosticsTest, ExecuteSqlStatementsClearsStaleStatementDiagnostics) {
     scratchbird::odbc::OdbcEnvironment env;
     scratchbird::odbc::OdbcConnection conn(&env);

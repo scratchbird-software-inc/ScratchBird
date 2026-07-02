@@ -2628,9 +2628,10 @@ SQLRETURN OdbcConnection::endTransaction(SQLSMALLINT completion_type) {
         } else if (client_bridge_) {
             auto status = client_bridge_->lastStatus();
             auto message = client_bridge_->lastError();
-            setError(mapStatusToSqlState(status), static_cast<SQLINTEGER>(status),
+            const char* sqlstate = mapStatusToSqlState(status);
+            setError(sqlstate, static_cast<SQLINTEGER>(status),
                      message.empty() ? "Commit failed" : message);
-            recordFailure();
+            recordCompletionForSqlState(sqlstate);
         }
         return result;
     } else if (completion_type == SQL_ROLLBACK) {
@@ -2641,14 +2642,15 @@ SQLRETURN OdbcConnection::endTransaction(SQLSMALLINT completion_type) {
         } else if (client_bridge_) {
             auto status = client_bridge_->lastStatus();
             auto message = client_bridge_->lastError();
-            setError(mapStatusToSqlState(status), static_cast<SQLINTEGER>(status),
+            const char* sqlstate = mapStatusToSqlState(status);
+            setError(sqlstate, static_cast<SQLINTEGER>(status),
                      message.empty() ? "Rollback failed" : message);
-            recordFailure();
+            recordCompletionForSqlState(sqlstate);
         }
         return result;
     } else {
         setError("HY012", 0, "Invalid transaction operation code");
-        recordFailure();
+        recordCompletionForSqlState("HY012");
         return SQL_ERROR;
     }
 }
@@ -2675,9 +2677,10 @@ SQLRETURN OdbcConnection::beginTransaction() {
     } else if (client_bridge_) {
         auto status = client_bridge_->lastStatus();
         auto message = client_bridge_->lastError();
-        setError(mapStatusToSqlState(status), static_cast<SQLINTEGER>(status),
+        const char* sqlstate = mapStatusToSqlState(status);
+        setError(sqlstate, static_cast<SQLINTEGER>(status),
                  message.empty() ? "Begin transaction failed" : message);
-        recordFailure();
+        recordCompletionForSqlState(sqlstate);
     }
 
     return result;
@@ -3888,6 +3891,21 @@ void OdbcConnection::recordFailure() {
     circuit_breaker_.RecordFailure();
 }
 
+bool OdbcConnection::isCircuitBreakerFailureSqlState(const char* sqlstate) {
+    if (!sqlstate || sqlstate[0] == '\0') {
+        return true;
+    }
+    return sqlstate[0] == '0' && sqlstate[1] == '8';
+}
+
+void OdbcConnection::recordCompletionForSqlState(const char* sqlstate) {
+    if (isCircuitBreakerFailureSqlState(sqlstate)) {
+        recordFailure();
+        return;
+    }
+    recordSuccess();
+}
+
 void OdbcConnection::registerResilience() {
     if (!env_) {
         return;
@@ -3976,9 +3994,10 @@ SQLRETURN OdbcConnection::executeSQL(const std::string& sql,
     if (result != SQL_SUCCESS && result != SQL_SUCCESS_WITH_INFO) {
         auto status = client_bridge_->lastStatus();
         auto message = client_bridge_->lastError();
-        setError(mapStatusToSqlState(status), static_cast<SQLINTEGER>(status),
+        const char* sqlstate = mapStatusToSqlState(status);
+        setError(sqlstate, static_cast<SQLINTEGER>(status),
                  message.empty() ? "Execution failed" : message);
-        recordFailure();
+        recordCompletionForSqlState(sqlstate);
     } else {
         recordSuccess();
     }
