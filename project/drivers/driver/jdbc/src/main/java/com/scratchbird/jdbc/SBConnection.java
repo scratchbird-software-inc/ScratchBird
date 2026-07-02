@@ -1205,7 +1205,9 @@ public class SBConnection implements Connection {
                 }
                 return result;
             } catch (SQLException e) {
-                circuitBreaker.recordFailure();
+                if (isCircuitBreakerFailure(e)) {
+                    circuitBreaker.recordFailure();
+                }
                 boolean shouldReplay = allowFailoverReplay
                     && attempts == 0
                     && isFailoverReplayCandidate(e);
@@ -1229,6 +1231,17 @@ public class SBConnection implements Connection {
                 telemetry.endSpan(span, success);
             }
         }
+    }
+
+    private boolean isCircuitBreakerFailure(SQLException ex) {
+        String state = ex.getSQLState();
+        if (state != null && !state.isEmpty()) {
+            return state.startsWith("08")
+                || "57P01".equals(state)
+                || "57P03".equals(state);
+        }
+        return ex instanceof SQLTransientConnectionException
+            || ex instanceof SQLNonTransientConnectionException;
     }
 
     void registerNamedCursor(String cursorName, SBResultSet resultSet) {

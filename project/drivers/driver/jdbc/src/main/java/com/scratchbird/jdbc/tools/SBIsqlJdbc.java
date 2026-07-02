@@ -873,6 +873,8 @@ public final class SBIsqlJdbc {
         addStringArrayField(doc, "statement_ids", ids);
         addStringArrayField(doc, "expected_refusals", ids);
         addObjectKeysField(doc, "expected_diagnostics", ids);
+        addObjectKeysField(doc, "compiled_chain_statement_aliases", ids);
+        addObjectStringValuesField(doc, "compiled_chain_statement_aliases", ids);
         addStringField(doc, "statement_id", ids);
         if (trimmed.startsWith("[") && !trimmed.contains("\"statement_id\"")) {
             Matcher matcher = Pattern.compile("\"((?:\\\\.|[^\"\\\\])*)\"").matcher(trimmed);
@@ -894,6 +896,19 @@ public final class SBIsqlJdbc {
             Matcher strings = Pattern.compile("\"((?:\\\\.|[^\"\\\\])*)\"").matcher(matcher.group(1));
             while (strings.find()) {
                 ids.add(unescapeJsonString(strings.group(1)));
+            }
+        }
+    }
+
+    private static void addObjectStringValuesField(String doc, String field, Set<String> ids) {
+        Matcher matcher = Pattern.compile(
+            "\"" + Pattern.quote(field) + "\"\\s*:\\s*\\{(.*?)\\}\\s*(?:,|\\})",
+            Pattern.DOTALL).matcher(doc);
+        while (matcher.find()) {
+            Matcher values = Pattern.compile(
+                "\"(?:\\\\.|[^\"\\\\])*\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(matcher.group(1));
+            while (values.find()) {
+                ids.add(unescapeJsonString(values.group(1)));
             }
         }
     }
