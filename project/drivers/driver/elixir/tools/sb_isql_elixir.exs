@@ -581,6 +581,7 @@ defmodule SBIsqlElixir do
   end
 
   defp parse_args([], args), do: args
+  defp parse_args(["--" | rest], args), do: parse_args(rest, args)
 
   defp parse_args(["--stop-on-error", value | rest], args) do
     if String.starts_with?(value, "--") do

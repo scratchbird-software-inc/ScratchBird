@@ -316,9 +316,9 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
         return DriverTool(
             driver,
             exe,
-            ["elixir", str(repo_root / "project" / "drivers" / "driver" / "elixir" / "tools" / "sb_isql_elixir.exs")],
-            repo_root,
-            ["elixir"],
+            ["mix", "run", "tools/sb_isql_elixir.exs", "--"],
+            repo_root / "project" / "drivers" / "driver" / "elixir",
+            ["mix", "elixir"],
             "elixir_launcher",
         )
     if driver == "mojo":
@@ -356,6 +356,17 @@ def write_launcher(path: Path, tool: DriverTool) -> None:
         body.append('if [ -d "$HOME/perl5/lib/perl5" ]; then')
         body.append('  export PERL5LIB="$HOME/perl5/lib/perl5${PERL5LIB:+:$PERL5LIB}"')
         body.append("fi")
+    if tool.kind == "elixir_launcher":
+        build_root = path.parents[3]
+        elixir_build_root = build_root / "drivers" / "driver" / "elixir"
+        body.append(f"export MIX_BUILD_PATH={shlex.quote(str(elixir_build_root / '_build'))}")
+        body.append(f"export MIX_DEPS_PATH={shlex.quote(str(elixir_build_root / 'deps'))}")
+        body.append(
+            f"export MIX_HOME={shlex.quote(str(build_root / 'drivers' / '_deps' / 'elixir' / 'mix-home'))}"
+        )
+        body.append(
+            f"export HEX_HOME={shlex.quote(str(build_root / 'drivers' / '_deps' / 'elixir' / 'hex-home'))}"
+        )
     body.extend(
         [
             f"exec {quote_command(tool.command)} \"$@\"",
@@ -459,6 +470,14 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
     if driver == "swift" and shutil.which("swift"):
         build_path = build_root / "drivers" / "driver" / "swift" / ".build"
         return run_command(["swift", "build", "-c", "release", "--build-path", str(build_path), "--product", "SBIsqlSwift"], driver_root)
+    if driver == "elixir" and shutil.which("mix"):
+        elixir_build_root = build_root / "drivers" / "driver" / "elixir"
+        env = os.environ.copy()
+        env["MIX_BUILD_PATH"] = str(elixir_build_root / "_build")
+        env["MIX_DEPS_PATH"] = str(elixir_build_root / "deps")
+        env["MIX_HOME"] = str(build_root / "drivers" / "_deps" / "elixir" / "mix-home")
+        env["HEX_HOME"] = str(build_root / "drivers" / "_deps" / "elixir" / "hex-home")
+        return run_command(["mix", "deps.get"], driver_root, env=env)
     if driver == "dotnet" and shutil.which("dotnet"):
         out = build_root / "drivers" / "driver" / "dotnet" / "publish"
         out.mkdir(parents=True, exist_ok=True)

@@ -13,8 +13,10 @@ defmodule ScratchBird.Protocol do
   @protocol_magic 0x50574253
   @protocol_major 1
   @protocol_minor 1
+  @protocol_version (@protocol_major <<< 8) ||| @protocol_minor
   @header_size 40
   @max_message_size 1_073_741_824
+  @connect_value_text 1
 
   @type message :: %{type: integer, flags: integer, length: integer, sequence: integer, attachment_id: binary, txn_id: integer, payload: binary}
 
@@ -222,6 +224,23 @@ defmodule ScratchBird.Protocol do
     <<@protocol_major::8, @protocol_minor::8, 0::little-16, features::little-64, param_bytes::binary>>
   end
 
+  def build_p1_startup_payload(client_features, required_features, params) do
+    param_bytes = build_typed_param_list(params)
+
+    <<
+      @protocol_version::little-16,
+      @protocol_version::little-16,
+      0::little-32,
+      client_features::little-64,
+      required_features::little-64,
+      0::little-64,
+      0::size(128),
+      0::size(128),
+      0::size(128),
+      param_bytes::binary
+    >>
+  end
+
   def build_query_payload(sql, flags, max_rows, timeout_ms) do
     sql_bytes = sql <> <<0>>
     <<flags::little-32, max_rows::little-32, timeout_ms::little-32, sql_bytes::binary>>
@@ -395,7 +414,21 @@ defmodule ScratchBird.Protocol do
     {:ok, session_id, binary_part(info, 0, info_len)}
   end
 
-  def parse_ready(<<status::8, _::24, txn_id::little-64, _::binary>>) do
+  def parse_ready(payload) when byte_size(payload) >= 76 do
+    status_byte = :binary.at(payload, 56)
+
+    if status_byte in [0x49, 0x54, 0x45, 0x52, 0x41] do
+      <<_prefix::binary-size(48), txn_id::little-64, _rest::binary>> = payload
+      status = if status_byte in [0x54, 0x45], do: 1, else: 0
+      {:ok, status, txn_id}
+    else
+      parse_legacy_ready(payload)
+    end
+  end
+
+  def parse_ready(payload), do: parse_legacy_ready(payload)
+
+  defp parse_legacy_ready(<<status::8, _::24, txn_id::little-64, _::binary>>) do
     {:ok, status, txn_id}
   end
 
@@ -563,5 +596,26 @@ defmodule ScratchBird.Protocol do
     end)
     |> IO.iodata_to_binary()
     |> then(fn buf -> <<buf::binary, 0>> end)
+  end
+
+  defp build_typed_param_list(params) do
+    keys = params |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
+
+    entries =
+      Enum.map(keys, fn key ->
+        value = Map.get(params, key) || Map.get(params, String.to_atom(key)) || ""
+        encoded_key = to_string(key)
+        encoded_value = to_string(value)
+
+        [
+          <<byte_size(encoded_key)::little-32>>,
+          encoded_key,
+          <<@connect_value_text::little-16>>,
+          <<byte_size(encoded_value)::little-32>>,
+          encoded_value
+        ]
+      end)
+
+    IO.iodata_to_binary([<<length(keys)::little-32>>, entries, <<0::little-32>>])
   end
 end

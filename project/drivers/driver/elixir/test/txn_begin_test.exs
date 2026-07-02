@@ -37,6 +37,17 @@ defmodule ScratchBirdTxnBeginTest do
              "READ COMMITTED READ CONSISTENCY"
   end
 
+  test "ready parser accepts compact and extended runtime payloads" do
+    compact = <<?T, 0, 0, 0, 42::little-64, 42::little-64>>
+    assert {:ok, ?T, 42} = Protocol.parse_ready(compact)
+
+    extended =
+      <<0::size(384), 99::little-64, ?T, 0::size(152)>>
+
+    assert byte_size(extended) == 76
+    assert {:ok, 1, 99} = Protocol.parse_ready(extended)
+  end
+
   test "begin rejects read_committed_mode with snapshot alias" do
     assert_raise ArgumentError, "read_committed_mode requires a READ COMMITTED isolation alias", fn ->
       Connection.begin(%Connection{}, %{

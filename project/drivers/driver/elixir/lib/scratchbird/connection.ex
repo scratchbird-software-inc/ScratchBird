@@ -529,8 +529,7 @@ defmodule ScratchBird.Connection do
         ssl_opts = [
           verify: verify_mode,
           versions: [:"tlsv1.3"],
-          server_name_indication: host,
-          reuse_sessions: false
+          server_name_indication: host
         ]
 
         ssl_opts =
@@ -937,8 +936,9 @@ defmodule ScratchBird.Connection do
 
   defp probe_direct_auth_surface(state) do
     payload =
-      Protocol.build_startup_payload(
+      Protocol.build_p1_startup_payload(
         requested_features(state.config),
+        required_features(state.config),
         build_startup_params(state)
       )
 
@@ -1043,8 +1043,9 @@ defmodule ScratchBird.Connection do
 
   defp handshake(state) do
     payload =
-      Protocol.build_startup_payload(
+      Protocol.build_p1_startup_payload(
         requested_features(state.config),
+        required_features(state.config),
         build_startup_params(state)
       )
 
@@ -1723,6 +1724,8 @@ defmodule ScratchBird.Connection do
 
     features ||| Protocol.feature(:savepoints)
   end
+
+  defp required_features(_config), do: 0
 
   defp send_message(state, type, payload, flags) do
     header = %{

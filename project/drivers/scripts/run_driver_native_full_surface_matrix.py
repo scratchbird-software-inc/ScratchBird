@@ -261,7 +261,7 @@ def command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path]:
     if driver == "dart":
         return ["dart", "run", "bin/sb_isql_dart.dart"], repo_root / "project/drivers/driver/dart"
     if driver == "elixir":
-        return ["elixir", str(repo_root / "project/drivers/driver/elixir/tools/sb_isql_elixir.exs")], repo_root
+        return ["mix", "run", "tools/sb_isql_elixir.exs", "--"], repo_root / "project/drivers/driver/elixir"
     if driver == "mojo":
         return ["mojo", str(repo_root / "project/drivers/driver/mojo/tools/sb_isql_mojo.mojo")], repo_root
     raise KeyError(f"no native matrix command for driver: {driver}")
