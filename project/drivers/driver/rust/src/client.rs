@@ -13,6 +13,11 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use rand::RngCore;
+use rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde_json::{json, Value as JsonValue};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -2713,24 +2718,23 @@ impl Client {
         use rustls::{ClientConfig, RootCertStore};
 
         let mut root_store = RootCertStore::empty();
-        if let Ok(store) = rustls_native_certs::load_native_certs() {
-            for cert in store {
-                root_store.add(&rustls::Certificate(cert.0)).ok();
-            }
+        let native_certs = rustls_native_certs::load_native_certs();
+        for cert in native_certs.certs {
+            root_store.add(cert).ok();
         }
         if let Some(ref path) = self.config.sslrootcert {
             let data = std::fs::read(path)
                 .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
             let mut cursor = std::io::Cursor::new(data);
-            let certs = rustls_pemfile::certs(&mut cursor).unwrap_or_default();
+            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
             for cert in certs {
-                root_store.add(&rustls::Certificate(cert)).ok();
+                root_store.add(cert).ok();
             }
         }
 
-        let builder = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store);
+        let builder = ClientConfig::builder().with_root_certificates(root_store);
 
         let mut client_config = if let (Some(cert_path), Some(key_path)) =
             (&self.config.sslcert, &self.config.sslkey)
@@ -2741,19 +2745,19 @@ impl Client {
                 .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
             let mut cert_cursor = std::io::Cursor::new(cert_bytes);
             let mut key_cursor = std::io::Cursor::new(key_bytes);
-            let certs = rustls_pemfile::certs(&mut cert_cursor).unwrap_or_default();
-            let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_cursor).unwrap_or_default();
-            if keys.is_empty() {
-                key_cursor.set_position(0);
-                keys = rustls_pemfile::rsa_private_keys(&mut key_cursor).unwrap_or_default();
-            }
-            if !certs.is_empty() && !keys.is_empty() {
-                builder
-                    .with_single_cert(
-                        certs.into_iter().map(rustls::Certificate).collect(),
-                        rustls::PrivateKey(keys.remove(0)),
-                    )
-                    .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?
+            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_cursor)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
+            let key = rustls_pemfile::private_key(&mut key_cursor)
+                .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?;
+            if !certs.is_empty() {
+                if let Some(key) = key {
+                    builder
+                        .with_client_auth_cert(certs, key)
+                        .map_err(|e| Error::new(ErrorKind::Connection, e.to_string()))?
+                } else {
+                    builder.with_no_client_auth()
+                }
             } else {
                 builder.with_no_client_auth()
             }
@@ -2769,7 +2773,7 @@ impl Client {
         }
 
         let connector = TlsConnector::from(Arc::new(client_config));
-        let server_name = rustls::ServerName::try_from(self.config.host.as_str())
+        let server_name = ServerName::try_from(self.config.host.clone())
             .map_err(|_| Error::new(ErrorKind::Connection, "invalid tls server name"))?;
         let tls = connector
             .connect(server_name, stream)
@@ -3181,19 +3185,52 @@ impl<'a> QueryStream<'a> {
     }
 }
 
+#[derive(Debug)]
 struct NoVerifier;
 
-impl rustls::client::ServerCertVerifier for NoVerifier {
+impl ServerCertVerifier for NoVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+        ]
     }
 }
 
