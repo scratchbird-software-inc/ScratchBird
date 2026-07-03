@@ -46,6 +46,7 @@ struct ReservedMemoryClaimRequest {
   bool implementation_evidence_present = false;
   bool live_route_evidence_present = false;
   bool authoritative_base_input_present = false;
+  std::vector<std::string> live_route_evidence;
   bool exact_diagnostics_required = true;
   bool parser_or_client_authority = false;
   bool reference_authority = false;

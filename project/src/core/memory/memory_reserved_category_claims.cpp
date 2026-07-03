@@ -10,6 +10,7 @@
 
 #include "runtime_platform.hpp"
 
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::core::memory {
@@ -37,10 +38,10 @@ bool IsKnownImplementedCategory(ReservedMemoryClaimKind kind) {
   switch (kind) {
     case ReservedMemoryClaimKind::version_chain_cleanup:
     case ReservedMemoryClaimKind::durable_temp_resume:
-      return true;
-    case ReservedMemoryClaimKind::cluster_memory_pressure_coordination:
     case ReservedMemoryClaimKind::gpu_pinned_device_memory:
     case ReservedMemoryClaimKind::llvm_code_data_lifecycle:
+      return true;
+    case ReservedMemoryClaimKind::cluster_memory_pressure_coordination:
     case ReservedMemoryClaimKind::udr_workspace_governance:
     case ReservedMemoryClaimKind::parser_handoff_workspace:
     case ReservedMemoryClaimKind::deferred_epoch_reclamation:
@@ -48,6 +49,59 @@ bool IsKnownImplementedCategory(ReservedMemoryClaimKind kind) {
     case ReservedMemoryClaimKind::generic_heap_leak_detector:
       return false;
   }
+  return false;
+}
+
+bool HasEvidence(const std::vector<std::string>& evidence,
+                 std::string_view needle) {
+  for (const auto& entry : evidence) {
+    if (entry.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasKindSpecificRouteEvidence(const ReservedMemoryClaimRequest& request,
+                                  std::string* reason) {
+  switch (request.claim_kind) {
+    case ReservedMemoryClaimKind::gpu_pinned_device_memory:
+      if (!HasEvidence(request.live_route_evidence,
+                       "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE") ||
+          !HasEvidence(request.live_route_evidence,
+                       "foreign_memory.source=gpu_optional") ||
+          !HasEvidence(request.live_route_evidence,
+                       "foreign_memory.category=gpu_device_reserved") ||
+          !HasEvidence(request.live_route_evidence,
+                       "foreign_memory.reservation_committed=true")) {
+        *reason = "gpu_claim_requires_ceic_016_gpu_optional_route_evidence";
+        return false;
+      }
+      return true;
+    case ReservedMemoryClaimKind::llvm_code_data_lifecycle:
+      if (!HasEvidence(request.live_route_evidence,
+                       "CEIC-061_LLVM_DYNAMIC_STATIC_MEMORY_ACCOUNTING") ||
+          !HasEvidence(request.live_route_evidence,
+                       "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE") ||
+          !HasEvidence(request.live_route_evidence,
+                       "llvm_memory.reserve_before_llvm_or_native_call=true") ||
+          !HasEvidence(request.live_route_evidence,
+                       "llvm_memory.reservation_created=true")) {
+        *reason = "llvm_claim_requires_ceic_061_and_ceic_016_route_evidence";
+        return false;
+      }
+      return true;
+    case ReservedMemoryClaimKind::cluster_memory_pressure_coordination:
+    case ReservedMemoryClaimKind::udr_workspace_governance:
+    case ReservedMemoryClaimKind::parser_handoff_workspace:
+    case ReservedMemoryClaimKind::deferred_epoch_reclamation:
+    case ReservedMemoryClaimKind::version_chain_cleanup:
+    case ReservedMemoryClaimKind::durable_temp_resume:
+    case ReservedMemoryClaimKind::sparse_physical_reservation:
+    case ReservedMemoryClaimKind::generic_heap_leak_detector:
+      return true;
+  }
+  *reason = "unknown_reserved_memory_claim_kind";
   return false;
 }
 
@@ -138,6 +192,12 @@ ReservedMemoryClaimResult ValidateReservedMemoryCategoryClaim(
     return Block(request, "SB_MEMORY_RESERVED_CLAIM.MISSING_EVIDENCE",
                  "implementation_route_and_authoritative_base_input_required");
   }
+  std::string route_reason;
+  if (!HasKindSpecificRouteEvidence(request, &route_reason)) {
+    return Block(request,
+                 "SB_MEMORY_RESERVED_CLAIM.MISSING_KIND_ROUTE_EVIDENCE",
+                 std::move(route_reason));
+  }
 
   ReservedMemoryClaimResult result;
   result.status = OkStatus();
@@ -154,6 +214,12 @@ ReservedMemoryClaimResult ValidateReservedMemoryCategoryClaim(
   result.evidence.push_back("reserved_memory_claim.live_route_evidence_present=true");
   result.evidence.push_back(
       "reserved_memory_claim.authoritative_base_input_present=true");
+  result.evidence.push_back("reserved_memory_claim.live_route_evidence_count=" +
+                            std::to_string(request.live_route_evidence.size()));
+  for (const auto& entry : request.live_route_evidence) {
+    result.evidence.push_back("reserved_memory_claim.live_route_evidence=" +
+                              entry);
+  }
   result.diagnostic = MakeDiagnostic(
       result.status.code, result.status.severity, result.status.subsystem,
       result.diagnostic_code, "memory.reserved_claim.accepted",

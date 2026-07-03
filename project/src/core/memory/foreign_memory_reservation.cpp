@@ -55,6 +55,9 @@ void AddBaseEvidence(std::vector<std::string>* evidence,
   evidence->push_back(kAuthorityScope);
   evidence->push_back("foreign_memory.source=" +
                       std::string(ForeignMemorySourceName(request.source)));
+  evidence->push_back("foreign_memory.category=" +
+                      std::string(MemoryCategoryName(request.category)));
+  evidence->push_back("foreign_memory.memory_class=" + request.memory_class);
   evidence->push_back("foreign_memory.owner_id=" + request.owner_id);
   evidence->push_back("foreign_memory.owning_scope=" + request.owning_scope);
   evidence->push_back("foreign_memory.operation_id=" + request.operation_id);
