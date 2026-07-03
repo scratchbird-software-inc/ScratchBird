@@ -92,6 +92,9 @@ const
   MSG_PONG = $5D;
   MSG_CLUSTER_AUTH_OK = $5E;
   MSG_FEDERATED_RESULT = $5F;
+  MSG_QUERY_PROGRESS = $60;
+  MSG_SERVER_INFO = $61;
+  MSG_STATE_NOTIFICATION = $62;
   MSG_HEARTBEAT = $80;
   MSG_EXTENSION = $81;
 
@@ -189,6 +192,11 @@ type
     IsNull: Boolean;
   end;
 
+  TParameterStatus = record
+    Name: string;
+    Value: string;
+  end;
+
   TScratchBirdMessage = record
     MsgType: TScratchBirdMessageType;
     Flags: Byte;
@@ -233,6 +241,7 @@ procedure ParseAuthOk(const Payload: TBytes; out SessionId: TBytes; out ServerIn
 procedure ParseReady(const Payload: TBytes; out Status: Byte; out TxnId, Visibility: UInt64);
 procedure ParseTxnStatus(const Payload: TBytes; out Status: Byte; out TxnId: UInt64);
 procedure ParseParameterStatus(const Payload: TBytes; out Name, Value: string);
+function ParseParameterStatuses(const Payload: TBytes): TArray<TParameterStatus>;
 function ParseParameterDescription(const Payload: TBytes): TArray<Cardinal>;
 function ParseRowDescription(const Payload: TBytes): TArray<TColumnInfo>;
 function ParseRowData(const Payload: TBytes): TArray<TColumnValue>;
@@ -721,6 +730,16 @@ end;
 
 procedure ParseReady(const Payload: TBytes; out Status: Byte; out TxnId, Visibility: UInt64);
 begin
+  if System.Length(Payload) >= 76 then
+  begin
+    TxnId := ReadUInt64LE(Payload, 48);
+    if Payload[56] = Ord('T') then
+      Status := 1
+    else
+      Status := 0;
+    Visibility := TxnId;
+    Exit;
+  end;
   if System.Length(Payload) < 20 then
     raise Exception.Create('Ready truncated');
   Status := Payload[0];
@@ -738,18 +757,90 @@ end;
 
 procedure ParseParameterStatus(const Payload: TBytes; out Name, Value: string);
 var
-  Offset, NameLen, ValueLen: Integer;
+  Values: TArray<TParameterStatus>;
+begin
+  Values := ParseParameterStatuses(Payload);
+  if Length(Values) = 0 then
+    raise Exception.Create('Parameter status empty');
+  Name := Values[0].Name;
+  Value := Values[0].Value;
+end;
+
+function ParseParameterStatuses(const Payload: TBytes): TArray<TParameterStatus>;
+var
+  Offset, NameLen, ValueLen, Count, I: Integer;
+  ValueType: Word;
+  P1Ok: Boolean;
 begin
   if System.Length(Payload) < 8 then
     raise Exception.Create('Parameter status truncated');
+
   Offset := 0;
-  NameLen := Integer(ReadUInt32LE(Payload, Offset));
-  Offset := Offset + 4;
-  Name := TEncoding.UTF8.GetString(Payload, Offset, NameLen);
+
+  Count := Integer(ReadUInt32LE(Payload, Offset));
+  P1Ok := (Count > 0) and (Count < 4096);
+  if P1Ok then
+  begin
+    Offset := Offset + 4;
+    SetLength(Result, Count);
+    for I := 0 to Count - 1 do
+    begin
+      if not P1Ok then
+        Break;
+      if Offset + 4 > System.Length(Payload) then
+      begin
+        P1Ok := False;
+        Break;
+      end;
+      NameLen := Integer(ReadUInt32LE(Payload, Offset));
+      Offset := Offset + 4;
+      if (NameLen < 0) or (Offset + NameLen > System.Length(Payload)) then
+      begin
+        P1Ok := False;
+        Break;
+      end;
+      Result[I].Name := TEncoding.UTF8.GetString(Payload, Offset, NameLen);
+      Offset := Offset + NameLen;
+      if Offset + 7 > System.Length(Payload) then
+      begin
+        P1Ok := False;
+        Break;
+      end;
+      ValueType := Payload[Offset];
+      Inc(Offset);
+      Inc(Offset);
+      Inc(Offset);
+      if ValueType = 0 then
+      begin
+        P1Ok := False;
+        Break;
+      end;
+      ValueLen := Integer(ReadUInt32LE(Payload, Offset));
+      Offset := Offset + 4;
+      if (ValueLen < 0) or (Offset + ValueLen > System.Length(Payload)) then
+      begin
+        P1Ok := False;
+        Break;
+      end;
+      Result[I].Value := TEncoding.UTF8.GetString(Payload, Offset, ValueLen);
+      Offset := Offset + ValueLen;
+    end;
+    if P1Ok and (Offset = System.Length(Payload)) then
+      Exit;
+  end;
+
+  NameLen := Count;
+  Offset := 4;
+  if (NameLen < 0) or (Offset + NameLen + 4 > System.Length(Payload)) then
+    raise Exception.Create('Parameter status truncated');
+  SetLength(Result, 1);
+  Result[0].Name := TEncoding.UTF8.GetString(Payload, Offset, NameLen);
   Offset := Offset + NameLen;
   ValueLen := Integer(ReadUInt32LE(Payload, Offset));
   Offset := Offset + 4;
-  Value := TEncoding.UTF8.GetString(Payload, Offset, ValueLen);
+  if (ValueLen < 0) or (Offset + ValueLen > System.Length(Payload)) then
+    raise Exception.Create('Parameter status truncated');
+  Result[0].Value := TEncoding.UTF8.GetString(Payload, Offset, ValueLen);
 end;
 
 function ParseParameterDescription(const Payload: TBytes): TArray<Cardinal>;

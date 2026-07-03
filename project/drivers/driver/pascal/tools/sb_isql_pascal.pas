@@ -378,7 +378,8 @@ begin
     Exit('ddl');
   if (First = 'insert') or (First = 'update') or (First = 'delete') or (First = 'merge') then
     Exit('dml');
-  if (First = 'commit') or (First = 'rollback') or (First = 'savepoint') or (First = 'begin') then
+  if (First = 'commit') or (First = 'rollback') or (First = 'savepoint') or
+     (First = 'release') or (First = 'begin') then
     Exit('transaction');
   if (First = 'select') or (First = 'with') or (First = 'values') then
     Exit('query');
@@ -410,6 +411,21 @@ begin
   finally
     Lines.Free;
   end;
+end;
+
+function LastSqlToken(const Sql: string): string;
+var
+  Clean: string;
+  I: Integer;
+begin
+  Clean := Trim(Sql);
+  while (Length(Clean) > 0) and (Clean[Length(Clean)] = ';') do
+    Delete(Clean, Length(Clean), 1);
+  Clean := Trim(Clean);
+  I := Length(Clean);
+  while (I > 0) and not (Clean[I] in [' ', #9, #10, #13]) do
+    Dec(I);
+  Result := Copy(Clean, I + 1, MaxInt);
 end;
 
 function CopyPayloadForStatement(const Sql: string): string;
@@ -481,8 +497,16 @@ begin
       Result := Result + '|';
     if VarIsNull(Row[I]) then
       Result := Result + '<null>'
+    else if VarIsArray(Row[I]) then
+      Result := Result + '<array>'
     else
-      Result := Result + VarToStr(Row[I]);
+    begin
+      try
+        Result := Result + VarToStr(Row[I]);
+      except
+        Result := Result + '<variant:' + IntToStr(VarType(Row[I])) + '>';
+      end;
+    end;
   end;
 end;
 
@@ -647,7 +671,7 @@ begin
     Text := Text + '  <testcase classname="scratchbird.pascal.driver" name="' +
       JsonEscape(Results[I].StatementId) + '" time="' +
       FormatFloat('0.000', Results[I].ElapsedMs / 1000.0) + '">';
-    if Results[I].Status <> 'ok' then
+    if Results[I].Status <> 'success' then
       Text := Text + '<failure message="' + JsonEscape(Results[I].ErrorMessage) +
         '">' + JsonEscape(Results[I].ErrorMessage) + '</failure>';
     Text := Text + '</testcase>' + LineEnding;
@@ -737,6 +761,9 @@ begin
       begin
         Sql := Statements[I];
         LowerSql := LowerCase(Trim(Sql));
+        while (Length(LowerSql) > 0) and (LowerSql[Length(LowerSql)] = ';') do
+          Delete(LowerSql, Length(LowerSql), 1);
+        LowerSql := Trim(LowerSql);
         Results[I].StatementId := ExtractFileName(InputPath) + ':' + IntToStr(I + 1);
         IsExpectedRefusal := ExpectedRefusal(ExpectedText, Results[I].StatementId);
         Results[I].GroupName := StatementGroup(Sql);
@@ -748,8 +775,14 @@ begin
             Client.BeginTransaction
           else if LowerSql = 'commit' then
             Client.Commit
+          else if Pos('rollback to ', LowerSql) = 1 then
+            Client.RollbackToSavepoint(LastSqlToken(Sql))
           else if LowerSql = 'rollback' then
             Client.Rollback
+          else if Pos('savepoint ', LowerSql) = 1 then
+            Client.Savepoint(LastSqlToken(Sql))
+          else if Pos('release savepoint ', LowerSql) = 1 then
+            Client.ReleaseSavepoint(LastSqlToken(Sql))
           else if (Results[I].GroupName = 'copy') and IsCopyStdinStatement(Sql) then
           begin
             if CopyPayloadForStatement(Sql) = '' then
@@ -790,13 +823,13 @@ begin
               StopAfterStatement := True;
           end
           else
-            Results[I].Status := 'ok';
+            Results[I].Status := 'success';
         except
           on E: Exception do
           begin
             if IsExpectedRefusal then
             begin
-              Results[I].Status := 'expected_refusal';
+              Results[I].Status := 'refusal';
               Results[I].ErrorMessage := E.Message;
               if SecurityRefusalsJson <> '[' then
                 SecurityRefusalsJson := SecurityRefusalsJson + ',';

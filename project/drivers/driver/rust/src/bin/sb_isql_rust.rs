@@ -579,20 +579,45 @@ async fn run_transaction(
     sql: &str,
     api_hits: &mut BTreeMap<String, u64>,
 ) -> scratchbird::Result<()> {
-    let first = sql
+    let raw_tokens: Vec<String> = sql
         .trim()
         .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match first.as_str() {
+        .map(|token| token.trim_matches(';').to_string())
+        .collect();
+    let tokens: Vec<String> = raw_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .collect();
+    let first = tokens.first().map(String::as_str).unwrap_or("");
+    match first {
         "commit" => {
             *api_hits.entry("commit".to_string()).or_default() += 1;
             client.commit(None).await
         }
         "rollback" => {
+            if tokens.get(1).map(String::as_str) == Some("to") {
+                let name = raw_tokens
+                    .last()
+                    .map(String::as_str)
+                    .filter(|_| tokens.last().map(String::as_str) != Some("savepoint"))
+                    .unwrap_or("");
+                *api_hits
+                    .entry("rollback_to_savepoint".to_string())
+                    .or_default() += 1;
+                return client.rollback_to_savepoint(name).await;
+            }
             *api_hits.entry("rollback".to_string()).or_default() += 1;
             client.rollback(None).await
+        }
+        "savepoint" => {
+            let name = raw_tokens.get(1).map(String::as_str).unwrap_or("");
+            *api_hits.entry("savepoint".to_string()).or_default() += 1;
+            client.savepoint(name).await
+        }
+        "release" => {
+            let name = raw_tokens.last().map(String::as_str).unwrap_or("");
+            *api_hits.entry("release_savepoint".to_string()).or_default() += 1;
+            client.release_savepoint(name).await
         }
         _ => {
             *api_hits.entry("begin".to_string()).or_default() += 1;
@@ -1063,7 +1088,16 @@ fn classify(sql: &str) -> String {
         "ddl".to_string()
     } else if ["insert", "update", "delete", "merge", "upsert"].contains(&first) {
         "dml".to_string()
-    } else if ["commit", "rollback", "savepoint", "begin", "start"].contains(&first) {
+    } else if [
+        "commit",
+        "rollback",
+        "savepoint",
+        "release",
+        "begin",
+        "start",
+    ]
+    .contains(&first)
+    {
         "transaction".to_string()
     } else if ["grant", "revoke"].contains(&first) {
         "security_refusal".to_string()

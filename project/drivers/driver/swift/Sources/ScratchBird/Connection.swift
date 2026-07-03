@@ -276,11 +276,16 @@ public final class ScratchBirdConnection {
                     }
                     switch msg.header.type {
                     case .copyInResponse:
+                        let response = try parseCopyInResponse(msg.payload)
+                        let payload = response.format == copyFormatBinary
+                            ? try copyTextRowsToNativeFrame(data)
+                            : data
+                        let chunkSize = response.windowBytes > 0 ? Int(response.windowBytes) : 65536
                         copyStarted = true
                         var offset = 0
-                        while offset < data.count {
-                            let end = min(offset + 65536, data.count)
-                            try self.sendMessage(type: .copyData, payload: data.subdata(in: offset..<end))
+                        while offset < payload.count {
+                            let end = min(offset + chunkSize, payload.count)
+                            try self.sendMessage(type: .copyData, payload: payload.subdata(in: offset..<end))
                             offset = end
                         }
                         try self.sendMessage(type: .copyDone, payload: Data())
@@ -893,7 +898,7 @@ public final class ScratchBirdConnection {
 
         while true {
             let msg = try recvMessage()
-            if msg.header.type == .negotiateVersion || msg.header.type == .parameterStatus {
+            if msg.header.type == .negotiateVersion || msg.header.type == .parameterStatus || msg.header.type == .serverInfo {
                 continue
             }
             if msg.header.type == .authRequest {
@@ -993,6 +998,8 @@ public final class ScratchBirdConnection {
                 }
             case .parameterStatus:
                 handleParameterStatus(msg.payload)
+            case .serverInfo, .queryProgress:
+                continue
             case .ready:
                 let ready = parseReadyState(msg.payload, fallback: msg.header.txnId)
                 applyRuntimeReadyState(status: ready.status, txnId: ready.txnId)
@@ -1005,10 +1012,17 @@ public final class ScratchBirdConnection {
                 )
                 return
             case .error:
-                throw buildScratchBirdError(
+                let error = buildScratchBirdError(
                     from: msg.payload,
                     fallbackMessage: "Authentication failed",
                     defaultSqlState: "28000"
+                )
+                throw ScratchBirdAuthorizationException(
+                    message: "Authentication failed after \(authMethodName(activeAuthMethod)): \(error.description)",
+                    sqlState: error.sqlState ?? "28000",
+                    severity: error.severity,
+                    detail: error.detail,
+                    hint: error.hint
                 )
             default:
                 continue
@@ -1029,6 +1043,12 @@ public final class ScratchBirdConnection {
                 columns = parseRowDescription(msg.payload)
             case .dataRow:
                 let values = parseDataRow(msg.payload)
+                if values.count > columns.count {
+                    throw ScratchBirdConnectionException(
+                        message: "Data row has more fields than row description",
+                        sqlState: "08P01"
+                    )
+                }
                 let decoded = values.enumerated().map { idx, value -> Any? in
                     guard let value = value else { return nil }
                     return decodeValue(oid: columns[idx].typeOid, data: value, format: columns[idx].format)
@@ -1092,6 +1112,8 @@ public final class ScratchBirdConnection {
         switch msg.header.type {
         case .parameterStatus:
             handleParameterStatus(msg.payload)
+            return true
+        case .serverInfo, .queryProgress, .stateNotification:
             return true
         case .notification:
             if let notice = parseNotification(msg.payload) {
@@ -1175,37 +1197,86 @@ public final class ScratchBirdConnection {
             finishOperation(span: span, success: true)
             return result
         } catch {
-            finishOperation(span: span, success: false)
+            finishOperation(span: span, success: false, circuitBreakerFailure: isCircuitBreakerFailure(error))
             throw error
         }
     }
 
-    private func finishOperation(span: SpanContext?, success: Bool) {
+    private func finishOperation(span: SpanContext?, success: Bool, circuitBreakerFailure: Bool = false) {
         if success {
             circuitBreaker.recordSuccess()
             keepaliveTracker?.markActive()
-        } else {
+        } else if circuitBreakerFailure {
             circuitBreaker.recordFailure()
         }
         telemetry.endSpan(span, success: success)
     }
 
     private func handleParameterStatus(_ payload: Data) {
-        if payload.count < 8 { return }
-        let nameLen = Int(readUInt32LE(payload, 0))
-        if 4 + nameLen + 4 > payload.count { return }
+        for (name, value) in parseParameterStatuses(payload) {
+            parameters[name] = value
+            if name == "attachment_id", let parsed = parseUuidBytes(value) {
+                attachmentId = parsed
+            }
+            if name == "current_txn_id", let parsed = UInt64(value.trimmingCharacters(in: .whitespaces)) {
+                applyRuntimeTxnId(parsed)
+            }
+        }
+    }
+
+    private func parseParameterStatuses(_ payload: Data) -> [(String, String)] {
+        if payload.count < 8 { return [] }
+        let count = Int(readUInt32LE(payload, 0))
+        if count > 0 && count < 4096 {
+            var offset = 4
+            var values: [(String, String)] = []
+            var p1Ok = true
+            for _ in 0..<count {
+                if offset + 4 > payload.count {
+                    p1Ok = false
+                    break
+                }
+                let keyLen = Int(readUInt32LE(payload, offset))
+                offset += 4
+                if keyLen < 0 || offset + keyLen > payload.count {
+                    p1Ok = false
+                    break
+                }
+                let key = String(data: payload.subdata(in: offset..<(offset + keyLen)), encoding: .utf8) ?? ""
+                offset += keyLen
+                if offset + 7 > payload.count {
+                    p1Ok = false
+                    break
+                }
+                let valueType = payload[offset]
+                offset += 3
+                if valueType == 0 {
+                    p1Ok = false
+                    break
+                }
+                let valueLen = Int(readUInt32LE(payload, offset))
+                offset += 4
+                if valueLen < 0 || offset + valueLen > payload.count {
+                    p1Ok = false
+                    break
+                }
+                let value = String(data: payload.subdata(in: offset..<(offset + valueLen)), encoding: .utf8) ?? ""
+                offset += valueLen
+                values.append((key, value))
+            }
+            if p1Ok && offset == payload.count {
+                return values
+            }
+        }
+
+        let nameLen = count
+        if nameLen < 0 || 4 + nameLen + 4 > payload.count { return [] }
         let name = String(data: payload.subdata(in: 4..<(4 + nameLen)), encoding: .utf8) ?? ""
         let valueLen = Int(readUInt32LE(payload, 4 + nameLen))
         let valueStart = 8 + nameLen
-        if valueStart + valueLen > payload.count { return }
+        if valueLen < 0 || valueStart + valueLen > payload.count { return [] }
         let value = String(data: payload.subdata(in: valueStart..<(valueStart + valueLen)), encoding: .utf8) ?? ""
-        parameters[name] = value
-        if name == "attachment_id", let parsed = parseUuidBytes(value) {
-            attachmentId = parsed
-        }
-        if name == "current_txn_id", let parsed = UInt64(value.trimmingCharacters(in: .whitespaces)) {
-            applyRuntimeTxnId(parsed)
-        }
+        return [(name, value)]
     }
 
     private func parseNotification(_ payload: Data) -> NotificationMessage? {
@@ -1376,6 +1447,11 @@ public final class ScratchBirdConnection {
     }
 
     private func parseReadyState(_ payload: Data, fallback: UInt64) -> (status: UInt8, txnId: UInt64) {
+        if payload.count >= 76 {
+            let txnId = readUInt64LE(payload, 48)
+            let activeStatus: UInt8 = payload[56] == Character("T").asciiValue ? 1 : 0
+            return (activeStatus, txnId)
+        }
         if payload.count >= 20 {
             return (payload[0], readUInt64LE(payload, 4))
         }
@@ -1415,6 +1491,11 @@ public final class ScratchBirdConnection {
     private func quoteIdentifier(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
         return "\"\(escaped)\""
+    }
+
+    private func readUInt16LE(_ data: Data, _ offset: Int) -> UInt16 {
+        let slice = data.subdata(in: offset..<(offset + 2))
+        return UInt16(littleEndian: slice.withUnsafeBytes { $0.load(as: UInt16.self) })
     }
 
     private func readUInt32LE(_ data: Data, _ offset: Int) -> UInt32 {
@@ -1629,6 +1710,9 @@ public final class ScratchBirdConnection {
     }
 
     private func parseRowDescription(_ payload: Data) -> [ScratchBirdColumn] {
+        if isP1RowDescription(payload) {
+            return parseP1RowDescription(payload)
+        }
         if payload.count < 4 { return [] }
         let count = UInt16(littleEndian: payload.withUnsafeBytes { $0.load(as: UInt16.self) })
         var offset = 4
@@ -1669,6 +1753,105 @@ public final class ScratchBirdConnection {
             )
         }
         return columns
+    }
+
+    private func isP1RowDescription(_ payload: Data) -> Bool {
+        return payload.count >= 72 && readUInt16LE(payload, 0) == 1 && payload[3] == 1
+    }
+
+    private func parseP1RowDescription(_ payload: Data) -> [ScratchBirdColumn] {
+        let rawCount = Int32(bitPattern: readUInt32LE(payload, 4))
+        if rawCount < 0 { return [] }
+        let count = Int(rawCount)
+        var offset = 72
+        var columns: [ScratchBirdColumn] = []
+        columns.reserveCapacity(count)
+        for idx in 0..<count {
+            let fixedColumnBytes = 4 + 4 + 8 + 144 + 56
+            if offset + fixedColumnBytes > payload.count { return [] }
+            let ordinal = Int(Int32(bitPattern: readUInt32LE(payload, offset)))
+            offset += 4
+            offset += 1
+            let format: UInt16 = payload[offset] == 1 ? 0 : 1
+            offset += 1
+            let nullable = payload[offset] == 1
+            offset += 1
+            offset += 1
+            offset += 8
+            let typeOid = oidFromCanonicalTypeRef(payload, offset)
+            offset += 144
+            offset += 16 * 3
+            offset += 4
+            offset += 2
+            offset += 2
+            let parsedName = readNullableText(payload, offset)
+            guard let parsedName else { return [] }
+            offset = parsedName.nextOffset
+            let name = parsedName.value?.isEmpty == false ? parsedName.value! : "column\(idx + 1)"
+            let columnIndex = UInt16(max(0, ordinal > 0 ? ordinal - 1 : idx))
+            columns.append(
+                ScratchBirdColumn(
+                    name: name,
+                    tableOid: 0,
+                    columnIndex: columnIndex,
+                    typeOid: typeOid,
+                    typeSize: typeSizeForOid(typeOid),
+                    typeModifier: -1,
+                    format: format,
+                    nullable: nullable
+                )
+            )
+        }
+        return columns
+    }
+
+    private func oidFromCanonicalTypeRef(_ payload: Data, _ offset: Int) -> UInt32 {
+        if offset + 4 > payload.count { return TypeOid.text }
+        let family = readUInt16LE(payload, offset)
+        let code = readUInt16LE(payload, offset + 2)
+        switch (family, code) {
+        case (1, 1): return TypeOid.bool
+        case (2, 3): return TypeOid.int4
+        case (2, 4): return TypeOid.int8
+        case (4, 1): return TypeOid.numeric
+        case (6, 2): return TypeOid.float8
+        case (8, 1): return TypeOid.text
+        case (9, _): return TypeOid.bytea
+        case (11, 1): return TypeOid.date
+        case (11, 2): return TypeOid.time
+        case (11, _): return TypeOid.timestamp
+        case (12, _): return TypeOid.interval
+        case (13, _): return TypeOid.uuid
+        case (19, 3): return TypeOid.macaddr
+        case (19, _): return TypeOid.inet
+        case (20, _): return TypeOid.json
+        default: return TypeOid.text
+        }
+    }
+
+    private func typeSizeForOid(_ oid: UInt32) -> Int16 {
+        switch oid {
+        case TypeOid.bool: return 1
+        case TypeOid.int4: return 4
+        case TypeOid.int8, TypeOid.float8: return 8
+        case TypeOid.uuid: return 16
+        default: return -1
+        }
+    }
+
+    private func readNullableText(_ payload: Data, _ offset: Int) -> (value: String?, nextOffset: Int)? {
+        var current = offset
+        if current + 5 > payload.count { return nil }
+        let tag = payload[current]
+        current += 1
+        let length = Int(Int32(bitPattern: readUInt32LE(payload, current)))
+        current += 4
+        if tag == 0 || length < 0 {
+            return (nil, current)
+        }
+        if current + length > payload.count { return nil }
+        let value = String(data: payload.subdata(in: current..<(current + length)), encoding: .utf8) ?? ""
+        return (value, current + length)
     }
 
     private func parseDataRow(_ payload: Data) -> [Data?] {

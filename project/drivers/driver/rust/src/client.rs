@@ -747,7 +747,7 @@ impl Client {
                 .await?;
         }
         let result = self.collect_results().await;
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -762,7 +762,7 @@ impl Client {
                 .await?;
         }
         let result = self.collect_results().await;
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -788,7 +788,7 @@ impl Client {
                 let mut sets = self.collect_result_sets().await?;
                 all_sets.append(&mut sets);
             }
-            self.end_operation(span, true).await;
+            self.end_operation(span, true, false).await;
             return Ok(all_sets);
         }
         if normalized.params.is_empty() {
@@ -798,7 +798,7 @@ impl Client {
                 .await?;
         }
         let result = self.collect_result_sets().await;
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -1377,7 +1377,7 @@ impl Client {
         self.last_query_sequence = sequence;
         self.send_message(protocol::MSG_SYNC, &[], 0, false).await?;
         let result = self.collect_results().await;
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -1389,11 +1389,12 @@ impl Client {
             .await?;
         let drained = self.drain_until_ready().await;
         if let Err(err) = drained {
-            self.end_operation(span, false).await;
+            self.end_operation(span, false, err.is_circuit_breaker_failure())
+                .await;
             return Err(err);
         }
         let Some(compiled) = self.last_sblr.clone() else {
-            self.end_operation(span, false).await;
+            self.end_operation(span, false, true).await;
             return Err(Error::with_sqlstate(
                 ErrorKind::Connection,
                 "parser endpoint did not return SBLR for RETURN_SBLR request",
@@ -1402,7 +1403,7 @@ impl Client {
                 None,
             ));
         };
-        self.end_operation(span, true).await;
+        self.end_operation(span, true, false).await;
         Ok(compiled)
     }
 
@@ -1513,9 +1514,14 @@ impl Client {
 
         let result = match copy_response {
             CopyState::Sending {
-                format: _,
+                format,
                 window_bytes: _,
             } => {
+                let data = if format == protocol::COPY_FORMAT_BINARY {
+                    protocol::copy_text_rows_to_native_frame(&data)?
+                } else {
+                    data
+                };
                 // Send the copy data in chunks
                 self.send_copy_data_in_chunks(&data, opts.buffer_size)
                     .await?;
@@ -1535,7 +1541,7 @@ impl Client {
                 "unexpected copy response",
             )),
         };
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -1562,7 +1568,7 @@ impl Client {
 
         // Wait for CopyOutResponse and collect data
         let result = self.collect_copy_out_data().await;
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -1618,7 +1624,7 @@ impl Client {
                 "unexpected copy response",
             )),
         };
-        self.end_operation(span, result.is_ok()).await;
+        self.end_operation_for_result(span, &result).await;
         result
     }
 
@@ -3073,10 +3079,19 @@ impl Client {
         Ok(self.telemetry.start_span(name).await)
     }
 
-    async fn end_operation(&self, span: Option<SpanContext>, success: bool) {
+    async fn end_operation_for_result<T>(&self, span: Option<SpanContext>, result: &Result<T>) {
+        let success = result.is_ok();
+        let breaker_failure = result
+            .as_ref()
+            .err()
+            .is_some_and(Error::is_circuit_breaker_failure);
+        self.end_operation(span, success, breaker_failure).await;
+    }
+
+    async fn end_operation(&self, span: Option<SpanContext>, success: bool, breaker_failure: bool) {
         if success {
             self.circuit_breaker.record_success().await;
-        } else {
+        } else if breaker_failure {
             self.circuit_breaker.record_failure().await;
         }
         if let Some(span) = span {

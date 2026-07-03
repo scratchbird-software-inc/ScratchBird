@@ -72,6 +72,13 @@ impl Error {
             hint,
         }
     }
+
+    pub fn is_circuit_breaker_failure(&self) -> bool {
+        if let Some(sqlstate) = &self.sqlstate {
+            return sqlstate.len() == 5 && sqlstate.starts_with("08");
+        }
+        matches!(self.kind, ErrorKind::Connection)
+    }
 }
 
 impl fmt::Display for Error {

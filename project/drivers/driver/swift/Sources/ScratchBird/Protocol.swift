@@ -94,6 +94,18 @@ enum MessageType: UInt8 {
     case pong = 0x5d
     case clusterAuthOk = 0x5e
     case federatedResult = 0x5f
+    case queryProgress = 0x60
+    case serverInfo = 0x61
+    case stateNotification = 0x62
+    case cancelAck = 0x65
+    case cancelled = 0x66
+    case multiResultBegin = 0x67
+    case multiResultEnd = 0x68
+    case generatedKeys = 0x69
+    case outParameters = 0x6a
+    case batchResult = 0x6b
+    case pipelineStatus = 0x6c
+    case arrayBindStatus = 0x6d
     case heartbeat = 0x80
     case `extension` = 0x81
 }
@@ -133,6 +145,16 @@ let featureCompression: UInt64 = 1 << 0
 let featureStreaming: UInt64 = 1 << 1
 let featureBinaryCopy: UInt64 = 1 << 8
 let featureSavepoints: UInt64 = 1 << 9
+
+let copyFormatText: UInt8 = 0
+let copyFormatBinary: UInt8 = 1
+
+let nativeRowsetTypeText: UInt8 = 1
+let nativeRowsetTypeInt64: UInt8 = 2
+let nativeRowsetTypeBoolean: UInt8 = 3
+let nativeRowsetTypeInt32: UInt8 = 4
+let nativeRowsetTypeUInt64: UInt8 = 5
+let nativeRowsetTypeReal64: UInt8 = 6
 
 let queryFlagDescribeOnly: UInt32 = 0x01
 let queryFlagNoPortal: UInt32 = 0x02
@@ -622,4 +644,221 @@ func buildP1ParamList(_ params: [String: String]) -> Data {
         data.append(valueBytes)
     }
     return data
+}
+
+struct CopyInResponse {
+    let format: UInt8
+    let windowBytes: UInt32
+}
+
+func parseCopyInResponse(_ payload: Data) throws -> CopyInResponse {
+    guard payload.count >= 5 else {
+        throw ScratchBirdConnectionException(
+            message: "copy in response truncated",
+            sqlState: "08P01"
+        )
+    }
+    let window = payload.subdata(in: 1..<5).withUnsafeBytes { raw in
+        raw.load(as: UInt32.self).littleEndian
+    }
+    return CopyInResponse(format: payload[0], windowBytes: window)
+}
+
+func copyTextRowsToNativeFrame(_ data: Data) throws -> Data {
+    if data.count >= 4 && data.prefix(4) == Data("SBNR".utf8) {
+        return data
+    }
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw ScratchBirdDataException(
+            message: "binary COPY input is not a native rowset frame or UTF-8 COPY text",
+            sqlState: "22P03"
+        )
+    }
+    let lines = text
+        .split(whereSeparator: \.isNewline)
+        .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\r")) }
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    guard let first = lines.first else {
+        throw ScratchBirdDataException(message: "COPY input contains no rows", sqlState: "22000")
+    }
+    guard first.contains(";") && first.contains("=") else {
+        throw ScratchBirdDataException(
+            message: "binary COPY conversion requires canonical name=value rows",
+            sqlState: "22000"
+        )
+    }
+
+    var columns: [String] = []
+    var rows: [[String?]] = []
+    for line in lines {
+        var fields: [(String, String?)] = []
+        for item in line.split(separator: ";", omittingEmptySubsequences: true) {
+            let parts = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, !parts[0].isEmpty else {
+                throw ScratchBirdDataException(message: "malformed canonical COPY field", sqlState: "22000")
+            }
+            let value = String(parts[1])
+            fields.append((String(parts[0]), value.uppercased() == "NULL" ? nil : value))
+        }
+        if fields.isEmpty {
+            continue
+        }
+        let fieldColumns = fields.map { $0.0 }
+        if columns.isEmpty {
+            columns = fieldColumns
+        } else if fieldColumns != columns {
+            throw ScratchBirdDataException(message: "COPY input changed row shape mid-stream", sqlState: "22000")
+        }
+        rows.append(fields.map { $0.1 })
+    }
+    return try buildNativeRowsetPayload(columns: columns, rows: rows)
+}
+
+private func buildNativeRowsetPayload(columns: [String], rows: [[String?]]) throws -> Data {
+    guard !columns.isEmpty, !rows.isEmpty else {
+        throw ScratchBirdDataException(
+            message: "native rowset requires at least one column and one row",
+            sqlState: "22000"
+        )
+    }
+    for row in rows where row.count != columns.count {
+        throw ScratchBirdDataException(message: "native rowset row shape mismatch", sqlState: "22000")
+    }
+
+    let types = inferNativeRowsetColumnTypes(rows)
+    let nullBitmapBytes = (columns.count + 7) / 8
+    var payload = Data("SBNR".utf8)
+    appendUInt16LE(2, to: &payload)
+    appendUInt16LE(0, to: &payload)
+    appendUInt64LE(UInt64(rows.count), to: &payload)
+    appendUInt32LE(UInt32(columns.count), to: &payload)
+    payload.append(contentsOf: types)
+    for column in columns {
+        let encoded = Data(column.utf8)
+        appendUInt32LE(UInt32(encoded.count), to: &payload)
+        payload.append(encoded)
+    }
+
+    for row in rows {
+        let bitmapStart = payload.count
+        payload.append(Data(repeating: 0, count: nullBitmapBytes))
+        for (index, value) in row.enumerated() {
+            guard let value else {
+                payload[bitmapStart + (index / 8)] |= UInt8(1 << (index % 8))
+                continue
+            }
+            switch types[index] {
+            case nativeRowsetTypeInt64:
+                guard let parsed = Int64(value) else {
+                    throw ScratchBirdDataException(message: "native rowset INT64 conversion failed", sqlState: "22000")
+                }
+                appendInt64LE(parsed, to: &payload)
+            case nativeRowsetTypeBoolean:
+                let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                payload.append((normalized == "true" || normalized == "1") ? 1 : 0)
+            case nativeRowsetTypeInt32:
+                guard let parsed = Int32(value) else {
+                    throw ScratchBirdDataException(message: "native rowset INT32 conversion failed", sqlState: "22000")
+                }
+                appendInt32LE(parsed, to: &payload)
+            case nativeRowsetTypeUInt64:
+                guard let parsed = UInt64(value) else {
+                    throw ScratchBirdDataException(message: "native rowset UINT64 conversion failed", sqlState: "22000")
+                }
+                appendUInt64LE(parsed, to: &payload)
+            case nativeRowsetTypeReal64:
+                guard let parsed = Double(value) else {
+                    throw ScratchBirdDataException(message: "native rowset REAL64 conversion failed", sqlState: "22000")
+                }
+                appendReal64LE(parsed, to: &payload)
+            default:
+                let encoded = Data(value.utf8)
+                appendUInt32LE(UInt32(encoded.count), to: &payload)
+                payload.append(encoded)
+            }
+        }
+    }
+    return payload
+}
+
+private func inferNativeRowsetColumnTypes(_ rows: [[String?]]) -> [UInt8] {
+    let columnCount = rows[0].count
+    var types = Array(repeating: nativeRowsetTypeText, count: columnCount)
+    for column in 0..<columnCount {
+        let values = rows.compactMap { $0[column] }
+        if values.isEmpty {
+            continue
+        }
+        if values.allSatisfy({ value in
+            let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return lower == "true" || lower == "false"
+        }) {
+            types[column] = nativeRowsetTypeBoolean
+        } else if values.allSatisfy({ losslessInt32($0) != nil }) {
+            types[column] = nativeRowsetTypeInt32
+        } else if values.allSatisfy({ losslessInt64($0) != nil }) {
+            types[column] = nativeRowsetTypeInt64
+        } else if values.allSatisfy({ losslessUInt64($0) != nil }) {
+            types[column] = nativeRowsetTypeUInt64
+        } else if values.allSatisfy({ losslessReal64($0) != nil }) {
+            types[column] = nativeRowsetTypeReal64
+        }
+    }
+    return types
+}
+
+private func losslessInt32(_ value: String) -> Int32? {
+    guard let parsed = Int32(value), String(parsed) == value else { return nil }
+    return parsed
+}
+
+private func losslessInt64(_ value: String) -> Int64? {
+    guard let parsed = Int64(value), String(parsed) == value else { return nil }
+    return parsed
+}
+
+private func losslessUInt64(_ value: String) -> UInt64? {
+    guard let parsed = UInt64(value), String(parsed) == value else { return nil }
+    return parsed
+}
+
+private func losslessReal64(_ value: String) -> Double? {
+    let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.isEmpty {
+        return nil
+    }
+    switch text.lowercased() {
+    case "nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity":
+        return nil
+    default:
+        break
+    }
+    guard let parsed = Double(text), parsed.isFinite, text.contains(".") || text.contains("e") || text.contains("E") else {
+        return nil
+    }
+    return parsed
+}
+
+private func appendUInt16LE(_ value: UInt16, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+}
+
+private func appendUInt32LE(_ value: UInt32, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+}
+
+private func appendUInt64LE(_ value: UInt64, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+}
+
+private func appendInt32LE(_ value: Int32, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+}
+
+private func appendInt64LE(_ value: Int64, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+}
+
+private func appendReal64LE(_ value: Double, to data: inout Data) {
+    data.append(contentsOf: withUnsafeBytes(of: value.bitPattern.littleEndian, Array.init))
 }

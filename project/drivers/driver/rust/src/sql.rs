@@ -44,6 +44,12 @@ impl From<()> for Params {
 pub fn normalize(sql: &str, params: Params) -> Result<NormalizedQuery> {
     match params {
         Params::Positional(values) => {
+            if values.is_empty() {
+                return Ok(NormalizedQuery {
+                    sql: sql.to_string(),
+                    params: values,
+                });
+            }
             if sql.contains('?') {
                 let (rewritten, ordered) = rewrite_positional(sql, &values)?;
                 Ok(NormalizedQuery {

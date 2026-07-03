@@ -38,6 +38,20 @@ public class ScratchBirdDriverException: NSObject, Error, CustomNSError, Localiz
         return message
     }
 
+    public override var description: String {
+        var parts: [String] = [message]
+        if let sqlState, !sqlState.isEmpty {
+            parts.append("[SQLSTATE \(sqlState)]")
+        }
+        if let detail, !detail.isEmpty {
+            parts.append("DETAIL: \(detail)")
+        }
+        if let hint, !hint.isEmpty {
+            parts.append("HINT: \(hint)")
+        }
+        return parts.joined(separator: " ")
+    }
+
     public var errorCode: Int {
         return code
     }
@@ -71,6 +85,20 @@ public final class ScratchBirdProgrammingException: ScratchBirdDriverException {
 public final class ScratchBirdNotSupportedException: ScratchBirdDriverException {}
 public final class ScratchBirdTimeoutException: ScratchBirdDriverException {}
 public final class ScratchBirdOperationalException: ScratchBirdDriverException {}
+
+func isCircuitBreakerFailure(_ error: Error) -> Bool {
+    if let sbError = error as? ScratchBirdDriverException {
+        if let state = sbError.sqlState, state.count == 5 {
+            return state.hasPrefix("08")
+        }
+        return sbError is ScratchBirdConnectionException
+    }
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain || nsError.domain == NSPOSIXErrorDomain {
+        return true
+    }
+    return false
+}
 
 public enum ScratchBirdRetryScope: String {
     case none

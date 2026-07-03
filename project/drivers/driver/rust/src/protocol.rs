@@ -172,6 +172,13 @@ pub const AUTH_REATTACH: u8 = 7;
 pub const COPY_FORMAT_TEXT: u8 = 0;
 pub const COPY_FORMAT_BINARY: u8 = 1;
 
+pub const NATIVE_ROWSET_TYPE_TEXT: u8 = 1;
+pub const NATIVE_ROWSET_TYPE_INT64: u8 = 2;
+pub const NATIVE_ROWSET_TYPE_BOOLEAN: u8 = 3;
+pub const NATIVE_ROWSET_TYPE_INT32: u8 = 4;
+pub const NATIVE_ROWSET_TYPE_UINT64: u8 = 5;
+pub const NATIVE_ROWSET_TYPE_REAL64: u8 = 6;
+
 /// Copy operation types for Close message
 pub const COPY_CLOSE_STATEMENT: u8 = 0;
 pub const COPY_CLOSE_PORTAL: u8 = 1;
@@ -750,6 +757,227 @@ pub fn build_attach_create_payload(emulation_mode: &str, db_name: &str) -> Vec<u
 /// Build a CopyData message payload
 pub fn build_copy_data_payload(data: &[u8]) -> Vec<u8> {
     data.to_vec()
+}
+
+pub fn copy_text_rows_to_native_frame(data: &[u8]) -> Result<Vec<u8>> {
+    if data.starts_with(b"SBNR") {
+        return Ok(data.to_vec());
+    }
+    let text = std::str::from_utf8(data).map_err(|_| {
+        Error::new(
+            ErrorKind::Data,
+            "binary COPY input is not a native rowset frame or UTF-8 COPY text",
+        )
+    })?;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return Err(Error::new(ErrorKind::Data, "COPY input contains no rows"));
+    }
+    if !(lines[0].contains(';') && lines[0].contains('=')) {
+        return Err(Error::new(
+            ErrorKind::Data,
+            "binary COPY conversion requires canonical name=value rows",
+        ));
+    }
+
+    let mut columns: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+    for line in lines {
+        let mut fields: Vec<(String, Option<String>)> = Vec::new();
+        for item in line.split(';') {
+            if item.is_empty() {
+                continue;
+            }
+            let Some((name, value)) = item.split_once('=') else {
+                return Err(Error::new(
+                    ErrorKind::Data,
+                    "malformed canonical COPY field",
+                ));
+            };
+            if name.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Data,
+                    "malformed canonical COPY field",
+                ));
+            }
+            let value = if value.eq_ignore_ascii_case("NULL") {
+                None
+            } else {
+                Some(value.to_string())
+            };
+            fields.push((name.to_string(), value));
+        }
+        if fields.is_empty() {
+            continue;
+        }
+        let field_columns: Vec<String> = fields.iter().map(|(name, _)| name.clone()).collect();
+        if columns.is_empty() {
+            columns = field_columns;
+        } else if field_columns != columns {
+            return Err(Error::new(
+                ErrorKind::Data,
+                "COPY input changed row shape mid-stream",
+            ));
+        }
+        rows.push(fields.into_iter().map(|(_, value)| value).collect());
+    }
+    build_native_rowset_payload(&columns, &rows)
+}
+
+fn build_native_rowset_payload(
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+) -> Result<Vec<u8>> {
+    if columns.is_empty() || rows.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Data,
+            "native rowset requires at least one column and one row",
+        ));
+    }
+    for row in rows {
+        if row.len() != columns.len() {
+            return Err(Error::new(
+                ErrorKind::Data,
+                "native rowset row shape mismatch",
+            ));
+        }
+    }
+    let types = infer_native_rowset_column_types(rows);
+    let null_bitmap_bytes = (columns.len() + 7) / 8;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"SBNR");
+    payload.extend_from_slice(&2u16.to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    payload.extend_from_slice(&(columns.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&types);
+    for column in columns {
+        let encoded = column.as_bytes();
+        payload.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        payload.extend_from_slice(encoded);
+    }
+    for row in rows {
+        let bitmap_start = payload.len();
+        payload.resize(payload.len() + null_bitmap_bytes, 0);
+        for (index, value) in row.iter().enumerate() {
+            let Some(value) = value else {
+                payload[bitmap_start + (index / 8)] |= 1 << (index % 8);
+                continue;
+            };
+            match types[index] {
+                NATIVE_ROWSET_TYPE_INT64 => {
+                    let parsed = value.parse::<i64>().map_err(|_| {
+                        Error::new(ErrorKind::Data, "native rowset INT64 conversion failed")
+                    })?;
+                    payload.extend_from_slice(&parsed.to_le_bytes());
+                }
+                NATIVE_ROWSET_TYPE_BOOLEAN => {
+                    payload.push(
+                        if matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1") {
+                            1
+                        } else {
+                            0
+                        },
+                    );
+                }
+                NATIVE_ROWSET_TYPE_INT32 => {
+                    let parsed = value.parse::<i32>().map_err(|_| {
+                        Error::new(ErrorKind::Data, "native rowset INT32 conversion failed")
+                    })?;
+                    payload.extend_from_slice(&parsed.to_le_bytes());
+                }
+                NATIVE_ROWSET_TYPE_UINT64 => {
+                    let parsed = value.parse::<u64>().map_err(|_| {
+                        Error::new(ErrorKind::Data, "native rowset UINT64 conversion failed")
+                    })?;
+                    payload.extend_from_slice(&parsed.to_le_bytes());
+                }
+                NATIVE_ROWSET_TYPE_REAL64 => {
+                    let parsed = value.parse::<f64>().map_err(|_| {
+                        Error::new(ErrorKind::Data, "native rowset REAL64 conversion failed")
+                    })?;
+                    payload.extend_from_slice(&parsed.to_le_bytes());
+                }
+                _ => {
+                    let encoded = value.as_bytes();
+                    payload.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+                    payload.extend_from_slice(encoded);
+                }
+            }
+        }
+    }
+    Ok(payload)
+}
+
+fn infer_native_rowset_column_types(rows: &[Vec<Option<String>>]) -> Vec<u8> {
+    let column_count = rows[0].len();
+    let mut types = vec![NATIVE_ROWSET_TYPE_TEXT; column_count];
+    for column in 0..column_count {
+        let values: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row[column].as_deref())
+            .collect();
+        if values.is_empty() {
+            continue;
+        }
+        if values.iter().all(|value| {
+            let lower = value.trim().to_ascii_lowercase();
+            lower == "true" || lower == "false"
+        }) {
+            types[column] = NATIVE_ROWSET_TYPE_BOOLEAN;
+        } else if values.iter().all(|value| lossless_i32(value).is_some()) {
+            types[column] = NATIVE_ROWSET_TYPE_INT32;
+        } else if values.iter().all(|value| lossless_i64(value).is_some()) {
+            types[column] = NATIVE_ROWSET_TYPE_INT64;
+        } else if values.iter().all(|value| lossless_u64(value).is_some()) {
+            types[column] = NATIVE_ROWSET_TYPE_UINT64;
+        } else if values.iter().all(|value| lossless_f64(value).is_some()) {
+            types[column] = NATIVE_ROWSET_TYPE_REAL64;
+        }
+    }
+    types
+}
+
+fn lossless_i32(value: &str) -> Option<i32> {
+    let parsed = value.parse::<i32>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
+fn lossless_i64(value: &str) -> Option<i64> {
+    let parsed = value.parse::<i64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
+fn lossless_u64(value: &str) -> Option<u64> {
+    let parsed = value.parse::<u64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
+fn lossless_f64(value: &str) -> Option<f64> {
+    let text = value.trim();
+    if text.is_empty()
+        || matches!(
+            text.to_ascii_lowercase().as_str(),
+            "nan"
+                | "+nan"
+                | "-nan"
+                | "inf"
+                | "+inf"
+                | "-inf"
+                | "infinity"
+                | "+infinity"
+                | "-infinity"
+        )
+    {
+        return None;
+    }
+    let parsed = text.parse::<f64>().ok()?;
+    (parsed.is_finite() && (text.contains('.') || text.contains('e') || text.contains('E')))
+        .then_some(parsed)
 }
 
 /// Build a CopyDone message payload (empty payload)
@@ -1453,6 +1681,7 @@ pub fn parse_error_message(payload: &[u8]) -> Result<(String, String, String, St
 mod tests {
     use super::{
         build_txn_begin_payload, canonical_read_committed_mode_label,
+        copy_text_rows_to_native_frame, NATIVE_ROWSET_TYPE_INT32, NATIVE_ROWSET_TYPE_TEXT,
         READ_COMMITTED_MODE_READ_CONSISTENCY, TXN_FLAG_HAS_ISOLATION,
         TXN_FLAG_HAS_READ_COMMITTED_MODE, TXN_FLAG_HAS_TIMEOUT,
     };
@@ -1486,5 +1715,26 @@ mod tests {
             "READ COMMITTED READ CONSISTENCY"
         );
         assert_eq!(canonical_read_committed_mode_label(99), "UNKNOWN(99)");
+    }
+
+    #[test]
+    fn copy_text_rows_to_native_frame_encodes_canonical_rows() {
+        let payload = copy_text_rows_to_native_frame(
+            b"id=591;note=copy-alpha;payload_text=payload-a;marker=10\nid=592;note=copy-beta;payload_text=NULL;marker=20\n",
+        )
+        .unwrap();
+        assert_eq!(&payload[0..4], b"SBNR");
+        assert_eq!(u16::from_le_bytes(payload[4..6].try_into().unwrap()), 2);
+        assert_eq!(u64::from_le_bytes(payload[8..16].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(payload[16..20].try_into().unwrap()), 4);
+        assert_eq!(
+            &payload[20..24],
+            &[
+                NATIVE_ROWSET_TYPE_INT32,
+                NATIVE_ROWSET_TYPE_TEXT,
+                NATIVE_ROWSET_TYPE_TEXT,
+                NATIVE_ROWSET_TYPE_INT32,
+            ]
+        );
     }
 }

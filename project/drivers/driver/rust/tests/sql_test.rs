@@ -46,6 +46,14 @@ fn normalize_positional_ignores_escaped_string_literals() {
 }
 
 #[test]
+fn normalize_empty_positional_params_leaves_question_marks_untouched() {
+    let sql = "-- RIGHT OUTER?\nSELECT 1 AS ok";
+    let normalized = normalize(sql, Params::Positional(Vec::new())).unwrap();
+    assert_eq!(normalized.sql, sql);
+    assert!(normalized.params.is_empty());
+}
+
+#[test]
 fn normalize_named_ignores_escaped_string_literals() {
     let sql = "SELECT 'it''s @name' AS txt, @name";
     let mut params = std::collections::HashMap::new();

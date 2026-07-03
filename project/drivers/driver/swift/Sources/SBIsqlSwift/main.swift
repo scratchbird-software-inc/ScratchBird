@@ -295,6 +295,10 @@ struct SBIsqlSwift {
             try writeText(paths["metadata"]!, "\(jsonLine(["tables_digest": sha256Text(String(describing: metadata.rows)), "row_count": metadata.rows.count]))\n")
             addTiming(&timings, "metadata", metadataStarted)
         } catch {
+            if routeEnv == nil {
+                routeEnv = routeEnvironment(args, route, sslmode, nil, "fail", "\(error)")
+                try? writeText(paths["route_env"]!, "\(jsonLine(routeEnv!))\n")
+            }
             failures.append(["statement_id": "run", "message": "\(error)"])
             try appendText(paths["stderr"]!, "\(error)\n")
         }
@@ -536,13 +540,31 @@ func flagEnabled(_ args: [String: String], _ key: String, _ fallback: Bool = fal
 }
 
 func runTransaction(_ connection: ScratchBirdConnection, _ sql: String, _ api: inout [String: Int]) async throws {
-    let first = sql.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ").first?.lowercased() ?? ""
+    let tokens = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(whereSeparator: \.isWhitespace)
+        .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ";")).lowercased() }
+    let rawTokens = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(whereSeparator: \.isWhitespace)
+        .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ";")) }
+    let first = tokens.first ?? ""
     if first == "commit" {
         try await connection.commit()
         api["commit", default: 0] += 1
     } else if first == "rollback" {
-        try await connection.rollback()
-        api["rollback", default: 0] += 1
+        if tokens.dropFirst().first == "to" {
+            let name = rawTokens.last ?? ""
+            try await connection.rollbackToSavepoint(name)
+            api["rollback_to_savepoint", default: 0] += 1
+        } else {
+            try await connection.rollback()
+            api["rollback", default: 0] += 1
+        }
+    } else if first == "savepoint" {
+        try await connection.savepoint(rawTokens.dropFirst().first ?? "")
+        api["savepoint", default: 0] += 1
+    } else if first == "release" {
+        try await connection.releaseSavepoint(rawTokens.last ?? "")
+        api["release_savepoint", default: 0] += 1
     } else {
         try await connection.begin()
         api["begin", default: 0] += 1
@@ -652,7 +674,7 @@ func classify(_ sql: String) -> String {
     if first == "copy" { return "copy" }
     if ["create", "alter", "drop"].contains(first) { return "ddl" }
     if ["insert", "update", "delete", "merge", "upsert"].contains(first) { return "dml" }
-    if ["commit", "rollback", "savepoint", "begin", "start"].contains(first) { return "transaction" }
+    if ["commit", "rollback", "savepoint", "release", "begin", "start"].contains(first) { return "transaction" }
     if ["grant", "revoke"].contains(first) { return "security_refusal" }
     return trimmed.contains("sys.") ? "metadata" : "query"
 }

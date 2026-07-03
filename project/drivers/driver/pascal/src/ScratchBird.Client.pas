@@ -289,6 +289,24 @@ const
   MCP_MSG_DB_CONNECT = $69;
   MCP_AUTH_METHOD_TOKEN = 4;
 
+  COPY_FORMAT_TEXT = 0;
+  COPY_FORMAT_BINARY = 1;
+
+  NATIVE_ROWSET_TYPE_TEXT = 1;
+  NATIVE_ROWSET_TYPE_INT64 = 2;
+  NATIVE_ROWSET_TYPE_BOOLEAN = 3;
+  NATIVE_ROWSET_TYPE_INT32 = 4;
+  NATIVE_ROWSET_TYPE_UINT64 = 5;
+  NATIVE_ROWSET_TYPE_REAL64 = 6;
+
+type
+  TCopyNativeRow = record
+    Values: array of string;
+    Nulls: array of Boolean;
+  end;
+
+  TCopyNativeRows = array of TCopyNativeRow;
+
 function ReadUInt16LEValue(const Data: TBytes; Offset: Integer): Word;
 begin
   Result := Word(Data[Offset]) or (Word(Data[Offset + 1]) shl 8);
@@ -322,6 +340,52 @@ begin
   Buffer[Start + 3] := Byte((Value shr 24) and $FF);
 end;
 
+procedure AppendUInt64LE(var Buffer: TBytes; Value: UInt64);
+var
+  Start, I: Integer;
+begin
+  Start := Length(Buffer);
+  SetLength(Buffer, Start + 8);
+  for I := 0 to 7 do
+    Buffer[Start + I] := Byte((Value shr (I * 8)) and $FF);
+end;
+
+procedure AppendInt32LE(var Buffer: TBytes; Value: Int32);
+var
+  Start: Integer;
+begin
+  Start := Length(Buffer);
+  SetLength(Buffer, Start + 4);
+  Move(Value, Buffer[Start], 4);
+end;
+
+procedure AppendInt64LE(var Buffer: TBytes; Value: Int64);
+var
+  Start: Integer;
+begin
+  Start := Length(Buffer);
+  SetLength(Buffer, Start + 8);
+  Move(Value, Buffer[Start], 8);
+end;
+
+procedure AppendDoubleLE(var Buffer: TBytes; Value: Double);
+var
+  Start: Integer;
+begin
+  Start := Length(Buffer);
+  SetLength(Buffer, Start + 8);
+  Move(Value, Buffer[Start], 8);
+end;
+
+procedure AppendByteValue(var Buffer: TBytes; Value: Byte);
+var
+  Start: Integer;
+begin
+  Start := Length(Buffer);
+  SetLength(Buffer, Start + 1);
+  Buffer[Start] := Value;
+end;
+
 procedure AppendBytes(var Buffer: TBytes; const Bytes: TBytes);
 var
   Start, Count: Integer;
@@ -332,6 +396,270 @@ begin
   Start := Length(Buffer);
   SetLength(Buffer, Start + Count);
   Move(Bytes[0], Buffer[Start], Count);
+end;
+
+procedure AppendUtf8StringWithLength(var Buffer: TBytes; const Value: string);
+var
+  Encoded: TBytes;
+begin
+  Encoded := TEncoding.UTF8.GetBytes(Value);
+  AppendUInt32LE(Buffer, Cardinal(Length(Encoded)));
+  AppendBytes(Buffer, Encoded);
+end;
+
+procedure RaiseCopyDataError(const MessageText: string);
+begin
+  raise EScratchBirdError.CreateWithInfo(MessageText, 'HY000', '', '');
+end;
+
+function LowerAscii(const Value: string): string;
+begin
+  Result := LowerCase(Trim(Value));
+end;
+
+function TryLosslessInt32(const Value: string; out Parsed: Int32): Boolean;
+var
+  Parsed64: Int64;
+begin
+  Result := TryStrToInt64(Value, Parsed64) and
+    (Parsed64 >= Low(Int32)) and (Parsed64 <= High(Int32)) and
+    (IntToStr(Parsed64) = Value);
+  if Result then
+    Parsed := Int32(Parsed64);
+end;
+
+function TryLosslessInt64(const Value: string; out Parsed: Int64): Boolean;
+begin
+  Result := TryStrToInt64(Value, Parsed) and (IntToStr(Parsed) = Value);
+end;
+
+function TryLosslessUInt64(const Value: string; out Parsed: UInt64): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  Parsed := 0;
+  if Value = '' then
+    Exit;
+  for I := 1 to Length(Value) do
+  begin
+    if not (Value[I] in ['0'..'9']) then
+      Exit;
+    Parsed := (Parsed * 10) + UInt64(Ord(Value[I]) - Ord('0'));
+  end;
+  Result := UIntToStr(Parsed) = Value;
+end;
+
+function TryLosslessFloat64(const Value: string; out Parsed: Double): Boolean;
+var
+  ParsedExtended: Extended;
+  Settings: TFormatSettings;
+  Text, Lower: string;
+begin
+  Text := Trim(Value);
+  Lower := LowerAscii(Text);
+  if (Text = '') or (Pos('.', Text) = 0) and (Pos('e', Lower) = 0) then
+    Exit(False);
+  if (Lower = 'nan') or (Lower = '+nan') or (Lower = '-nan') or
+    (Lower = 'inf') or (Lower = '+inf') or (Lower = '-inf') or
+    (Lower = 'infinity') or (Lower = '+infinity') or (Lower = '-infinity') then
+    Exit(False);
+  Settings := DefaultFormatSettings;
+  Settings.DecimalSeparator := '.';
+  Result := TryStrToFloat(Text, ParsedExtended, Settings);
+  if Result then
+    Parsed := ParsedExtended;
+end;
+
+function SplitCopyFields(const Line: string): TStringList;
+begin
+  Result := TStringList.Create;
+  Result.StrictDelimiter := True;
+  Result.Delimiter := ';';
+  Result.DelimitedText := Line;
+end;
+
+function InferCopyColumnType(const Rows: TCopyNativeRows; ColumnIndex: Integer): Byte;
+var
+  I: Integer;
+  Text, Lower: string;
+  Seen: Boolean;
+  I32: Int32;
+  I64: Int64;
+  U64: UInt64;
+  F64: Double;
+  AllBoolean, AllInt32, AllInt64, AllUInt64, AllFloat64: Boolean;
+begin
+  Seen := False;
+  AllBoolean := True;
+  AllInt32 := True;
+  AllInt64 := True;
+  AllUInt64 := True;
+  AllFloat64 := True;
+  for I := 0 to High(Rows) do
+  begin
+    if Rows[I].Nulls[ColumnIndex] then
+      Continue;
+    Seen := True;
+    Text := Rows[I].Values[ColumnIndex];
+    Lower := LowerAscii(Text);
+    AllBoolean := AllBoolean and ((Lower = 'true') or (Lower = 'false'));
+    AllInt32 := AllInt32 and TryLosslessInt32(Text, I32);
+    AllInt64 := AllInt64 and TryLosslessInt64(Text, I64);
+    AllUInt64 := AllUInt64 and TryLosslessUInt64(Text, U64);
+    AllFloat64 := AllFloat64 and TryLosslessFloat64(Text, F64);
+  end;
+  if not Seen then
+    Exit(NATIVE_ROWSET_TYPE_TEXT);
+  if AllBoolean then
+    Exit(NATIVE_ROWSET_TYPE_BOOLEAN);
+  if AllInt32 then
+    Exit(NATIVE_ROWSET_TYPE_INT32);
+  if AllInt64 then
+    Exit(NATIVE_ROWSET_TYPE_INT64);
+  if AllUInt64 then
+    Exit(NATIVE_ROWSET_TYPE_UINT64);
+  if AllFloat64 then
+    Exit(NATIVE_ROWSET_TYPE_REAL64);
+  Result := NATIVE_ROWSET_TYPE_TEXT;
+end;
+
+function BuildNativeRowsetPayload(const Columns: TStringList; const Rows: TCopyNativeRows): TBytes;
+var
+  Types: array of Byte;
+  NullBitmapBytes: Integer;
+  I, J, BitmapStart: Integer;
+  I32: Int32;
+  I64: Int64;
+  U64: UInt64;
+  F64: Double;
+  BoolText: string;
+begin
+  if (Columns.Count = 0) or (Length(Rows) = 0) then
+    RaiseCopyDataError('native rowset requires at least one column and one row');
+  SetLength(Types, Columns.Count);
+  for I := 0 to Columns.Count - 1 do
+    Types[I] := InferCopyColumnType(Rows, I);
+  NullBitmapBytes := (Columns.Count + 7) div 8;
+  SetLength(Result, 0);
+  AppendBytes(Result, TEncoding.ASCII.GetBytes('SBNR'));
+  AppendUInt16LE(Result, 2);
+  AppendUInt16LE(Result, 0);
+  AppendUInt64LE(Result, UInt64(Length(Rows)));
+  AppendUInt32LE(Result, Cardinal(Columns.Count));
+  for I := 0 to High(Types) do
+    AppendByteValue(Result, Types[I]);
+  for I := 0 to Columns.Count - 1 do
+    AppendUtf8StringWithLength(Result, Columns[I]);
+  for I := 0 to High(Rows) do
+  begin
+    BitmapStart := Length(Result);
+    SetLength(Result, BitmapStart + NullBitmapBytes);
+    for J := 0 to Columns.Count - 1 do
+    begin
+      if Rows[I].Nulls[J] then
+      begin
+        Result[BitmapStart + (J div 8)] := Result[BitmapStart + (J div 8)] or (1 shl (J mod 8));
+        Continue;
+      end;
+      case Types[J] of
+        NATIVE_ROWSET_TYPE_BOOLEAN:
+          begin
+            BoolText := LowerAscii(Rows[I].Values[J]);
+            if (BoolText = 'true') or (BoolText = '1') then
+              AppendByteValue(Result, 1)
+            else
+              AppendByteValue(Result, 0);
+          end;
+        NATIVE_ROWSET_TYPE_INT32:
+          begin
+            if not TryLosslessInt32(Rows[I].Values[J], I32) then
+              RaiseCopyDataError('native rowset INT32 conversion failed');
+            AppendInt32LE(Result, I32);
+          end;
+        NATIVE_ROWSET_TYPE_INT64:
+          begin
+            if not TryLosslessInt64(Rows[I].Values[J], I64) then
+              RaiseCopyDataError('native rowset INT64 conversion failed');
+            AppendInt64LE(Result, I64);
+          end;
+        NATIVE_ROWSET_TYPE_UINT64:
+          begin
+            if not TryLosslessUInt64(Rows[I].Values[J], U64) then
+              RaiseCopyDataError('native rowset UINT64 conversion failed');
+            AppendUInt64LE(Result, U64);
+          end;
+        NATIVE_ROWSET_TYPE_REAL64:
+          begin
+            if not TryLosslessFloat64(Rows[I].Values[J], F64) then
+              RaiseCopyDataError('native rowset REAL64 conversion failed');
+            AppendDoubleLE(Result, F64);
+          end;
+        else
+          AppendUtf8StringWithLength(Result, Rows[I].Values[J]);
+      end;
+    end;
+  end;
+end;
+
+function CopyTextRowsToNativeFrame(const PayloadText: string): TBytes;
+var
+  Lines, Columns, Fields, RowColumns: TStringList;
+  I, J, EqualPos, RowIndex: Integer;
+  Line, Field, Name, Value: string;
+  Rows: TCopyNativeRows;
+begin
+  if Copy(PayloadText, 1, 4) = 'SBNR' then
+    Exit(TEncoding.UTF8.GetBytes(PayloadText));
+
+  Lines := TStringList.Create;
+  Columns := TStringList.Create;
+  try
+    Lines.Text := PayloadText;
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Line := TrimRight(Lines[I]);
+      if Trim(Line) = '' then
+        Continue;
+      Fields := SplitCopyFields(Line);
+      RowColumns := TStringList.Create;
+      try
+        if Fields.Count = 0 then
+          Continue;
+        RowIndex := Length(Rows);
+        SetLength(Rows, RowIndex + 1);
+        SetLength(Rows[RowIndex].Values, Fields.Count);
+        SetLength(Rows[RowIndex].Nulls, Fields.Count);
+        for J := 0 to Fields.Count - 1 do
+        begin
+          Field := Fields[J];
+          if Field = '' then
+            Continue;
+          EqualPos := Pos('=', Field);
+          if (EqualPos <= 1) then
+            RaiseCopyDataError('malformed canonical COPY field');
+          Name := Copy(Field, 1, EqualPos - 1);
+          Value := Copy(Field, EqualPos + 1, MaxInt);
+          RowColumns.Add(Name);
+          Rows[RowIndex].Values[J] := Value;
+          Rows[RowIndex].Nulls[J] := SameText(Value, 'NULL');
+        end;
+        if Columns.Count = 0 then
+          Columns.Assign(RowColumns)
+        else if RowColumns.Text <> Columns.Text then
+          RaiseCopyDataError('COPY input changed row shape mid-stream');
+      finally
+        RowColumns.Free;
+        Fields.Free;
+      end;
+    end;
+    if Length(Rows) = 0 then
+      RaiseCopyDataError('COPY input contains no rows');
+    Result := BuildNativeRowsetPayload(Columns, Rows);
+  finally
+    Columns.Free;
+    Lines.Free;
+  end;
 end;
 
 function GetProcessIdValue: Cardinal;
@@ -473,7 +801,10 @@ begin
       Continue;
     case Msg.MsgType of
       MSG_ERROR:
-        raise Client.BuildQueryError(Msg.Payload);
+        begin
+          FDone := True;
+          raise Client.BuildQueryError(Msg.Payload);
+        end;
       MSG_ROW_DESCRIPTION:
         begin
           FColumns := ParseRowDescription(Msg.Payload);
@@ -784,7 +1115,7 @@ begin
     );
   if FRuntimeBoundarySeen then
   begin
-    if FTransactionActive and (FTxnId = 0) then
+    if FTransactionActive then
     begin
       if FExplicitTransaction then
         raise EScratchbirdTransactionError.CreateWithInfo('transaction already active', '25001', '', '');
@@ -796,8 +1127,6 @@ begin
       FExplicitTransaction := True;
       Exit;
     end;
-    if FTransactionActive then
-      raise EScratchbirdTransactionError.CreateWithInfo('transaction already active', '25001', '', '');
   end;
   Flags := TXN_FLAG_HAS_ISOLATION;
   if HasReadCommittedMode then
@@ -1194,6 +1523,7 @@ var
   Span: TSpanContext;
   SqlText: string;
   PayloadBytes: TBytes;
+  CopyPayload: TBytes;
   Msg: TScratchBirdMessage;
   CopyStarted: Boolean;
   CommandType: Byte;
@@ -1223,7 +1553,10 @@ begin
         MSG_COPY_IN_RESPONSE:
           begin
             CopyStarted := True;
-            SendMessage(MSG_COPY_DATA, PayloadBytes, 0, False);
+            CopyPayload := PayloadBytes;
+            if (Length(Msg.Payload) >= 1) and (Msg.Payload[0] = COPY_FORMAT_BINARY) then
+              CopyPayload := CopyTextRowsToNativeFrame(PayloadText);
+            SendMessage(MSG_COPY_DATA, CopyPayload, 0, False);
             SendMessage(MSG_COPY_DONE, nil, 0, False);
           end;
         MSG_COMMAND_COMPLETE:
@@ -1761,7 +2094,7 @@ begin
   begin
     Msg := ReceiveMessage;
     case Msg.MsgType of
-      MSG_NEGOTIATE_VERSION, MSG_PARAMETER_STATUS, MSG_NOTICE:
+      MSG_NEGOTIATE_VERSION, MSG_PARAMETER_STATUS, MSG_NOTICE, MSG_SERVER_INFO:
         Continue;
       MSG_AUTH_REQUEST:
         begin
@@ -1958,9 +2291,10 @@ var
   Scram: TScramClient;
   Method, Stage: Byte;
   Data, SessionId, ServerInfo: TBytes;
-  Name, Value: string;
+  ParamStatuses: TArray<TParameterStatus>;
   Status: Byte;
   TxnId, Visibility: UInt64;
+  I: Integer;
 begin
   Params := BuildStartupParams;
   try
@@ -2054,10 +2388,13 @@ begin
           end;
         MSG_PARAMETER_STATUS:
           begin
-            ParseParameterStatus(Msg.Payload, Name, Value);
-            HandleParameterStatus(Name, Value);
+            ParamStatuses := ParseParameterStatuses(Msg.Payload);
+            for I := 0 to High(ParamStatuses) do
+              HandleParameterStatus(ParamStatuses[I].Name, ParamStatuses[I].Value);
             Continue;
           end;
+        MSG_SERVER_INFO:
+          Continue;
         MSG_READY:
           begin
             ParseReady(Msg.Payload, Status, TxnId, Visibility);
@@ -2123,19 +2460,21 @@ end;
 
 function TScratchBirdClient.HandleAsyncMessage(const Msg: TScratchBirdMessage): Boolean;
 var
-  Name, Value: string;
+  ParamStatuses: TArray<TParameterStatus>;
   Notice: TNotification;
   Plan: TQueryPlan;
   Compiled: TSblrCompiled;
   Status: Byte;
   TxnId: UInt64;
+  I: Integer;
 begin
   Result := True;
   case Msg.MsgType of
     MSG_PARAMETER_STATUS:
       begin
-        ParseParameterStatus(Msg.Payload, Name, Value);
-        HandleParameterStatus(Name, Value);
+        ParamStatuses := ParseParameterStatuses(Msg.Payload);
+        for I := 0 to High(ParamStatuses) do
+          HandleParameterStatus(ParamStatuses[I].Name, ParamStatuses[I].Value);
       end;
     MSG_NOTIFICATION:
       begin
@@ -2160,6 +2499,10 @@ begin
     MSG_NOTICE:
       begin
         // Notice payloads are informational; keep result-stream processing uninterrupted.
+      end;
+    MSG_SERVER_INFO:
+      begin
+        // P1 server-info frames are informational for the Pascal client lane.
       end;
     MSG_TXN_STATUS:
       begin
