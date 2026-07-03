@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,12 @@ def argument_token_present(text: str, argument: str, tool: dict[str, Any]) -> bo
     )
 
 
+def forbidden_token_present(text: str, token: str) -> bool:
+    if token == "exec(":
+        return re.search(r"(?<![\w.])exec\s*\(", text) is not None
+    return token in text
+
+
 def validate_tool_matrix(
     doc: dict[str, Any],
     manifest_rows: list[dict[str, str]],
@@ -305,7 +312,7 @@ def validate_tool_matrix(
         ]
         if missing_arguments:
             errors.append(f"tool_matrix:{name}:missing_required_tool_arguments:{','.join(missing_arguments)}")
-        banned = [token for token in forbidden_tokens if token in text]
+        banned = [token for token in forbidden_tokens if forbidden_token_present(text, token)]
         if banned:
             errors.append(f"tool_matrix:{name}:forbidden_static_or_shellout_tokens:{','.join(banned)}")
     return errors

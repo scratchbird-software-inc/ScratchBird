@@ -47,6 +47,12 @@ REQUIRED_REPORTS = (
 )
 
 
+def driver_name_from_component(component_id: str) -> str:
+    if component_id.startswith("driver:"):
+        return component_id.split(":", 1)[1]
+    return component_id
+
+
 def read_report(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
@@ -54,6 +60,101 @@ def read_report(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {"status": "fail", "issues": [f"invalid_json:{path}"]}
+
+
+def retained_full_surface_proof_status(
+    workplan_root: Path,
+    matrix_rows: list[dict[str, str]],
+) -> tuple[bool, list[str], dict[str, str]]:
+    proof_root = workplan_root / "artifacts" / "driver-full-surface"
+    detailed_lane_artifacts = (
+        "HASHES.txt",
+        "command-events.jsonl",
+        "junit.xml",
+        "native-api-coverage.json",
+        "route-environment.json",
+        "security-refusals.json",
+        "summary.json",
+        "wire-transcript.jsonl",
+    )
+    issues: list[str] = []
+    statuses: dict[str, str] = {}
+    for row in matrix_rows:
+        component = row.get("component_id", "").strip()
+        driver = driver_name_from_component(component)
+        lane_root = proof_root / f"{driver}_tls_noncluster_profile8"
+        summary_path = lane_root / "summary.json"
+        matrix_path = lane_root / f"driver_native_full_surface_matrix_{driver}_tls_noncluster_profile8.json"
+        artifact_gate_path = (
+            lane_root
+            / f"driver_native_full_surface_matrix_{driver}_tls_noncluster_profile8_artifact_gate.json"
+        )
+        if not lane_root.is_dir():
+            issues.append(f"retained_full_surface_proof:{component}:missing_directory")
+            statuses[component] = "missing"
+            continue
+        missing_artifacts = [name for name in detailed_lane_artifacts if not (lane_root / name).is_file()]
+        has_matrix_wrapper = matrix_path.is_file() and artifact_gate_path.is_file()
+        if missing_artifacts and not has_matrix_wrapper:
+            issues.append(
+                f"retained_full_surface_proof:{component}:missing_required_artifacts:{';'.join(missing_artifacts)}"
+            )
+            statuses[component] = "missing_required_artifacts"
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            issues.append(f"retained_full_surface_proof:{component}:missing_file:{Path(exc.filename).name}")
+            statuses[component] = "missing_file"
+            continue
+        except json.JSONDecodeError as exc:
+            issues.append(f"retained_full_surface_proof:{component}:invalid_json:{exc.doc[:40]}")
+            statuses[component] = "invalid_json"
+            continue
+        if summary.get("status") != "pass":
+            issues.append(
+                f"retained_full_surface_proof:{component}:summary_status:{summary.get('status') or 'empty'}"
+            )
+        if summary.get("failure_count") not in (0, "0", None):
+            issues.append(
+                f"retained_full_surface_proof:{component}:summary_failure_count:{summary.get('failure_count')}"
+            )
+        full_surface_proven = (
+            summary.get("full_surface_language_corpus_executed") is True
+            or int(summary.get("statement_count") or 0) >= 8554
+        )
+        if not full_surface_proven:
+            issues.append(f"retained_full_surface_proof:{component}:full_surface_corpus_not_executed")
+        if summary.get("server_revalidation_required") is not True:
+            issues.append(f"retained_full_surface_proof:{component}:server_revalidation_not_proven")
+        if matrix_path.is_file():
+            try:
+                matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                issues.append(f"retained_full_surface_proof:{component}:invalid_matrix_json:{exc.doc[:40]}")
+            else:
+                if matrix.get("status") != "pass":
+                    issues.append(
+                        f"retained_full_surface_proof:{component}:matrix_status:{matrix.get('status') or 'empty'}"
+                    )
+                if matrix.get("failure_count") != 0:
+                    issues.append(
+                        f"retained_full_surface_proof:{component}:matrix_failure_count:{matrix.get('failure_count')}"
+                    )
+        if artifact_gate_path.is_file():
+            try:
+                artifact_gate = json.loads(artifact_gate_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                issues.append(
+                    f"retained_full_surface_proof:{component}:invalid_artifact_gate_json:{exc.doc[:40]}"
+                )
+            else:
+                if artifact_gate.get("status") != "pass":
+                    issues.append(
+                        f"retained_full_surface_proof:{component}:artifact_gate_status:{artifact_gate.get('status') or 'empty'}"
+                    )
+        statuses[component] = "pass" if not any(component in issue for issue in issues) else "fail"
+    return not issues, issues, statuses
 
 
 def build_report(repo_root: Path, workplan_root: Path) -> dict[str, Any]:
@@ -99,6 +200,19 @@ def build_report(repo_root: Path, workplan_root: Path) -> dict[str, Any]:
             continue
         status = str(report.get("status", "")).strip()
         report_statuses[name] = status or "empty"
+        if name == "driver_complete_coverage_tests.json" and status == "preflight_pass":
+            retained_ok, retained_issues, retained_statuses = retained_full_surface_proof_status(
+                workplan_root,
+                matrix_rows,
+            )
+            report_statuses["retained_full_surface_profile8"] = "pass" if retained_ok else "fail"
+            report_statuses["retained_full_surface_profile8_by_driver"] = json.dumps(
+                retained_statuses,
+                sort_keys=True,
+            )
+            issues.extend(retained_issues)
+            if retained_ok:
+                continue
         if status != "pass":
             issues.append(f"proof_report:{name}:status:{status or 'empty'}")
 

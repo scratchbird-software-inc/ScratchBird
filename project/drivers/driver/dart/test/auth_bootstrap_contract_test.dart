@@ -124,7 +124,7 @@ void main() {
       await _writeProtocolMessage(
         socket,
         MessageType.ready,
-        Uint8List(0),
+        _readyPayload(),
         attachmentId: _sessionId(),
       );
     });
@@ -160,7 +160,7 @@ void main() {
       await _writeProtocolMessage(
         socket,
         MessageType.ready,
-        Uint8List(0),
+        _readyPayload(),
         attachmentId: _sessionId(),
       );
     });
@@ -329,6 +329,15 @@ String _extractNonce(String clientFirst) {
 
 Uint8List _sessionId() {
   return Uint8List.fromList(List<int>.generate(16, (index) => index + 1));
+}
+
+Uint8List _readyPayload({int status = 0, int txnId = 0, int visibility = 0}) {
+  final payload = Uint8List(20);
+  final data = ByteData.sublistView(payload);
+  payload[0] = status;
+  data.setUint64(4, txnId, Endian.little);
+  data.setUint64(12, visibility, Endian.little);
+  return payload;
 }
 
 Uint8List _makeAuthOkPayload(String serverInfo) {

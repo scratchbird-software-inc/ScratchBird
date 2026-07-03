@@ -94,6 +94,7 @@ public class ScratchBirdDataSourceProvider implements DBPDataSourceProvider {
     public DBPPropertyDescriptor[] getConnectionProperties(
         @NotNull DBRProgressMonitor monitor,
         @NotNull DBPDriver driver,
+        @NotNull DBPDataSourceContainer container,
         @NotNull DBPConnectionConfiguration connectionInfo
     ) throws DBException {
         DBPPropertyDescriptor[] connectionProperties = readDriverProperties(monitor, driver, connectionInfo);

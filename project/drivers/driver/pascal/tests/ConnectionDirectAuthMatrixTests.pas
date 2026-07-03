@@ -257,8 +257,8 @@ begin
     AssertEqualInt(2, Transport.WriteCount, 'compatibility mode write count');
     DecodeProtocolFrame(Transport.WriteAt(0), MsgType, PayloadLength, Payload);
     AssertTrue(MsgType = MSG_STARTUP, 'compatibility mode first write should be STARTUP');
-    AssertTrue(Length(Payload) >= 12, 'startup payload should include feature flags');
-    Features := ReadUInt64LEAt(Payload, 4);
+    AssertTrue(Length(Payload) >= 16, 'startup payload should include protocol header and feature flags');
+    Features := ReadUInt64LEAt(Payload, 8);
     AssertTrue((Features and FEATURE_COMPRESSION) = FEATURE_COMPRESSION, 'compression feature should be enabled');
     AssertTrue((Features and FEATURE_STREAMING) = 0, 'streaming feature should be disabled when binary_transfer=false');
   finally

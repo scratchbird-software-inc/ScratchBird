@@ -477,16 +477,38 @@ def check_benchmark_policy(ctx: Context) -> int:
 
 
 def check_execution_plan10(ctx: Context) -> int:
-    runner = ctx.repo_root / "docs/reference/legacy_execution_plan_10_performance_parity/benchmark_harness/scripts/run-benchmark.sh"
-    stress = ctx.repo_root / "docs/reference/legacy_execution_plan_10_performance_parity/benchmark_harness/stress-tests/runners/dialect_stress_runner.py"
-    for path in (runner, stress):
-        text = path.read_text(errors="ignore")
-        has_current_python_driver_path = (
-            "project/drivers/driver/python/src" in text
-            or '"project" / "drivers" / "driver" / "python" / "src"' in text
-        )
-        if not has_current_python_driver_path:
-            return fail(f"current Python driver path missing from {path.relative_to(ctx.repo_root)}")
+    readiness = ctx.execution_plan_root / "artifacts" / "BENCHMARK_DRIVER_READINESS_POLICY.md"
+    backlog = ctx.execution_plan_root / "artifacts" / "PATH_REALIGNMENT_BACKLOG.csv"
+    live_gate = ctx.project_root / "tests" / "sbsql_parser_worker" / "legacy_execution_plan10_live_scratchbird_benchmark_gate.py"
+
+    for path in (readiness, backlog, live_gate):
+        if not path.is_file():
+            return fail(f"execution_plan10 public evidence missing: {path.relative_to(ctx.repo_root)}")
+
+    readiness_text = readiness.read_text(errors="ignore")
+    for token in (
+        "project/drivers/driver/python/src",
+        "project/drivers/tool/cli",
+        "build/benchmarks/execution_plan10/",
+    ):
+        if token not in readiness_text:
+            return fail(f"execution_plan10 readiness policy missing {token}")
+
+    live_text = live_gate.read_text(errors="ignore")
+    if '"project" / "drivers" / "driver" / "python" / "src"' not in live_text:
+        return fail(f"current Python driver path missing from {live_gate.relative_to(ctx.repo_root)}")
+    if "SCRATCHBIRD_DRIVER_PYTHONPATH" not in live_text:
+        return fail(f"driver pythonpath export missing from {live_gate.relative_to(ctx.repo_root)}")
+
+    rows = read_csv(backlog)
+    open_rows = [
+        row["id"]
+        for row in rows
+        if row.get("evidence") == "driver_execution_plan10_runner_gate"
+        and row.get("status") != "complete"
+    ]
+    if open_rows:
+        return fail(f"execution_plan10 path realignment rows still open: {', '.join(open_rows)}")
     return check_old_paths(ctx)
 
 

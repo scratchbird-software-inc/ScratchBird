@@ -67,6 +67,13 @@
     "signing": "release_gate_required",
     "license": "MPL-2.0"
   },
+  "release_readiness": {
+    "package_status": "release_candidate",
+    "component_gate": "adaptor_prisma_gate",
+    "artifact_isolation": "driver_build_artifact_isolation_gate",
+    "source_tree_guard": "driver_source_tree_write_guard",
+    "promotion_evidence_required": "live_scratchbird_adaptor_conformance"
+  },
   "best_in_class_deltas": [
     {
       "comparator": "Prisma PostgreSQL connector",

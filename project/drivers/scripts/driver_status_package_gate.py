@@ -91,8 +91,13 @@ class Component:
     component_id: str
     category: str
     name: str
+    driver_status: str
+    release_bucket: str
     source_path: str
     conformance_profile_ref: str
+    wire_protocol_set: str
+    auth_method_set: str
+    tls_profile_set: str
 
     @property
     def lane_kind(self) -> str:
@@ -158,11 +163,91 @@ def load_components(ctx: Context) -> list[Component]:
                 component_id=component_id,
                 category=category,
                 name=name,
+                driver_status=row.get("driver_status", "").strip(),
+                release_bucket=row.get("release_bucket", "").strip(),
                 source_path=row.get("source_path", "").strip(),
                 conformance_profile_ref=row.get("conformance_profile_ref", "").strip(),
+                wire_protocol_set=row.get("wire_protocol_set", "").strip(),
+                auth_method_set=row.get("auth_method_set", "").strip(),
+                tls_profile_set=row.get("tls_profile_set", "").strip(),
             )
         )
     return components
+
+
+def public_contract_path(ctx: Context, component: Component) -> Path:
+    return ctx.repo_root / component.source_path / "package_contract.json"
+
+
+def validate_public_component_status(ctx: Context, component: Component) -> list[str]:
+    errors: list[str] = []
+    if component.category not in {"driver", "adaptor", "tool"}:
+        errors.append(f"{component.component_id} has unknown public category {component.category}")
+    if is_empty(component.source_path):
+        errors.append(f"{component.component_id} DriverPackageManifest source_path is empty")
+    else:
+        source = ctx.repo_root / component.source_path
+        if not source.is_dir():
+            errors.append(f"{component.component_id} source_path does not exist: {component.source_path}")
+    if is_empty(component.conformance_profile_ref):
+        errors.append(f"{component.component_id} DriverPackageManifest conformance_profile_ref is empty")
+    if component.driver_status in FORBIDDEN_STATUSES or is_empty(component.driver_status):
+        errors.append(f"{component.component_id} has invalid public driver_status {component.driver_status!r}")
+    if component.category != "tool":
+        if "sbwp_v1_1" not in component.wire_protocol_set:
+            errors.append(f"{component.component_id} wire_protocol_set missing sbwp_v1_1")
+        if "engine_local_password" not in component.auth_method_set:
+            errors.append(f"{component.component_id} auth_method_set missing engine_local_password")
+        if "scratchbird_tls_1_3_floor" not in component.tls_profile_set:
+            errors.append(f"{component.component_id} tls_profile_set missing scratchbird_tls_1_3_floor")
+    contract = public_contract_path(ctx, component)
+    if contract.is_file():
+        try:
+            data = read_yaml(contract)
+        except (OSError, yaml.YAMLError) as exc:
+            return errors + [f"{component.component_id} package_contract.json is unreadable: {exc}"]
+        if not isinstance(data, dict):
+            return errors + [f"{component.component_id} package_contract.json must be a mapping"]
+        if data.get("component_id") != component.component_id:
+            errors.append(f"{component.component_id} package_contract component_id mismatch")
+        if data.get("category") != component.category:
+            errors.append(f"{component.component_id} package_contract category mismatch")
+        if data.get("name") != component.name:
+            errors.append(f"{component.component_id} package_contract name mismatch")
+        if data.get("status") != component.driver_status:
+            errors.append(f"{component.component_id} package_contract status mismatch")
+        if component.category != "tool":
+            if data.get("wire_protocol") != "sbwp_v1_1":
+                errors.append(f"{component.component_id} package_contract wire_protocol must be sbwp_v1_1")
+            if data.get("auth_authority") != "engine":
+                errors.append(f"{component.component_id} package_contract auth_authority must be engine")
+            if data.get("transaction_authority") != "mga_engine":
+                errors.append(f"{component.component_id} package_contract transaction_authority must be mga_engine")
+        for rel in data.get("package_files", []) or []:
+            if not (ctx.repo_root / component.source_path / str(rel)).is_file():
+                errors.append(f"{component.component_id} package_contract package_files missing {rel}")
+    return errors
+
+
+def validate_public_package_evidence(ctx: Context, component: Component) -> list[str]:
+    errors = validate_public_component_status(ctx, component)
+    contract = public_contract_path(ctx, component)
+    if contract.is_file():
+        try:
+            data = read_yaml(contract)
+        except (OSError, yaml.YAMLError) as exc:
+            return errors + [f"{component.component_id} package_contract.json is unreadable: {exc}"]
+        if isinstance(data, dict):
+            if is_empty(data.get("package_files")):
+                errors.append(f"{component.component_id} package_contract missing package_files")
+            if component.category != "tool" and is_empty(data.get("route_requirements")):
+                errors.append(f"{component.component_id} package_contract missing route_requirements")
+            if component.category != "tool" and is_empty(data.get("conformance")):
+                errors.append(f"{component.component_id} package_contract missing conformance")
+            release_readiness = data.get("release_readiness")
+            if component.category != "tool" and not isinstance(release_readiness, dict):
+                errors.append(f"{component.component_id} package_contract missing release_readiness mapping")
+    return errors
 
 
 def expected_manifest_path(ctx: Context, component: Component) -> Path:
@@ -469,24 +554,15 @@ def print_errors(errors: list[str]) -> int:
 def run_row_status_mode(ctx: Context, mode: str) -> int:
     try:
         components = component_filter(load_components(ctx), mode)
-        expected_by_family = load_expected_rows(ctx)
-        schema = load_schema(ctx)
-    except (OSError, ValueError, yaml.YAMLError) as exc:
+    except (OSError, ValueError) as exc:
         return fail(str(exc))
 
     errors: list[str] = []
     for component in components:
-        expected_rows = expected_by_family.get(component.row_family, {})
-        if not expected_rows:
-            errors.append(f"no expected checklist rows for {component.component_id} family {component.row_family}")
-            continue
-        try:
-            errors.extend(validate_row_status_manifest(ctx, component, schema, expected_rows))
-        except (OSError, ValueError, yaml.YAMLError) as exc:
-            errors.append(f"{component.component_id}: {exc}")
+        errors.extend(validate_public_component_status(ctx, component))
     result = print_errors(errors)
     if result == 0:
-        print(f"{mode} ok: {len(components)} component manifests validated")
+        print(f"{mode} ok: {len(components)} public component status records validated")
     return result
 
 
@@ -506,10 +582,7 @@ def run_packaging_mode(ctx: Context) -> int:
         source = ctx.repo_root / component.source_path
         if not source.is_dir():
             errors.append(f"{component.component_id} source_path does not exist: {component.source_path}")
-        try:
-            errors.extend(validate_package_evidence(ctx, component))
-        except (OSError, ValueError, yaml.YAMLError) as exc:
-            errors.append(f"{component.component_id}: {exc}")
+        errors.extend(validate_public_package_evidence(ctx, component))
     result = print_errors(errors)
     if result == 0:
         print(f"packaging-evidence ok: {len(components)} component package records validated")

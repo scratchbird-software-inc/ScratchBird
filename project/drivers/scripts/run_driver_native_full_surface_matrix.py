@@ -41,7 +41,6 @@ LANGUAGE_SURFACE_REL = Path("project/drivers/language/sbsql_language_surface_man
 DEFAULT_OUTPUT_REL = Path("build/reports/driver_native_full_surface_matrix.json")
 DEFAULT_ARTIFACT_REL = Path("build/driver-conformance/native-full-surface")
 DEFAULT_STAGED_BIN_REL = Path("build/output/linux/bin")
-SBSQL_STAGED_REL = DEFAULT_STAGED_BIN_REL / "SBsql"
 RELEASE_BUCKETS = {"release_candidate", "release_supported", "supported"}
 STAGED_DRIVER_EXECUTABLES = {
     "adbc": "sb_isql_adbc",
@@ -201,18 +200,30 @@ def default_language_contract(repo_root: Path) -> dict[str, str]:
     }
 
 
-def staged_command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path] | None:
+def default_staged_bin_root(repo_root: Path, override: Path | None = None) -> Path:
+    return override if override is not None else repo_root / DEFAULT_STAGED_BIN_REL
+
+
+def staged_command_for_driver(
+    repo_root: Path,
+    driver: str,
+    staged_bin_root: Path | None = None,
+) -> tuple[list[str], Path] | None:
     executable_name = STAGED_DRIVER_EXECUTABLES.get(driver)
     if not executable_name:
         return None
-    executable = repo_root / DEFAULT_STAGED_BIN_REL / executable_name
+    executable = default_staged_bin_root(repo_root, staged_bin_root) / executable_name
     if executable.is_file() and os.access(executable, os.X_OK):
         return [str(executable)], repo_root
     return None
 
 
-def command_for_driver(repo_root: Path, driver: str) -> tuple[list[str], Path]:
-    staged = staged_command_for_driver(repo_root, driver)
+def command_for_driver(
+    repo_root: Path,
+    driver: str,
+    staged_bin_root: Path | None = None,
+) -> tuple[list[str], Path]:
+    staged = staged_command_for_driver(repo_root, driver, staged_bin_root)
     if staged is not None:
         return staged
     if driver == "cpp":
@@ -448,7 +459,7 @@ DROP TABLE {smoke_table};
 
 
 def sbsql_base_command(args: argparse.Namespace, repo_root: Path, route: str, sslmode: str) -> list[str]:
-    executable = repo_root / SBSQL_STAGED_REL
+    executable = default_staged_bin_root(repo_root, args.staged_bin_root) / "SBsql"
     if not executable.is_file():
         raise FileNotFoundError(f"SBsql executable missing: {executable}")
     command = [str(executable), args.database]
@@ -1003,6 +1014,7 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--staged-bin-root", type=Path)
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--driver", action="append")
     parser.add_argument("--route", action="append")
@@ -1080,6 +1092,8 @@ def main() -> int:
     if args.jobs < 1:
         raise SystemExit("--jobs must be >= 1")
     repo_root = args.repo_root.resolve()
+    if args.staged_bin_root is not None:
+        args.staged_bin_root = args.staged_bin_root.resolve()
     language_defaults = default_language_contract(repo_root)
     args.language_resource_pack = args.language_resource_pack or language_defaults["resource_pack"]
     args.language_resource_identity = args.language_resource_identity or language_defaults["resource_identity"]
@@ -1144,12 +1158,12 @@ def main() -> int:
     for driver in drivers:
         driver_caps = capability_for(tool_matrix, driver)
         if args.require_staged_tools:
-            staged = staged_command_for_driver(repo_root, driver)
+            staged = staged_command_for_driver(repo_root, driver, args.staged_bin_root)
             if staged is None:
                 raise RuntimeError(f"staged driver executable missing for {driver}")
             base_command, cwd = staged
         else:
-            base_command, cwd = command_for_driver(repo_root, driver)
+            base_command, cwd = command_for_driver(repo_root, driver, args.staged_bin_root)
         for route_pair in route_pairs:
             if not route_supported_for_driver(route_pair.route, driver_caps):
                 continue

@@ -244,6 +244,7 @@ function(sb_add_driver_native_full_surface_matrix_runner_gate test_name)
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
       "--plan-only"
       "--require-staged-tools"
+      "--staged-bin-root" "${PROJECT_BINARY_DIR}/output/linux/bin"
       "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"
   )
   set_tests_properties("${test_name}" PROPERTIES
@@ -261,6 +262,7 @@ function(sb_add_driver_native_full_surface_matrix_shard_runner_gate test_name)
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
       "--plan-only"
       "--require-staged-tools"
+      "--staged-bin-root" "${PROJECT_BINARY_DIR}/output/linux/bin"
       "--shard-count" "16"
       "--shard-index" "0"
       "--output" "${SB_DRIVER_BUILD_ROOT}/reports/${test_name}.json"

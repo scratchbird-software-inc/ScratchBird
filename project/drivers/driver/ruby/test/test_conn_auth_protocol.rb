@@ -17,6 +17,27 @@ class TestConnAuthProtocol < Minitest::Test
     end
   end
 
+  def decode_startup_params(payload)
+    offset = 80
+    count = payload.byteslice(offset, 4).unpack1("V")
+    offset += 4
+    params = {}
+    count.times do
+      key_len = payload.byteslice(offset, 4).unpack1("V")
+      offset += 4
+      key = payload.byteslice(offset, key_len)
+      offset += key_len
+      value_type = payload.byteslice(offset, 2).unpack1("v")
+      offset += 2
+      value_len = payload.byteslice(offset, 4).unpack1("V")
+      offset += 4
+      value = payload.byteslice(offset, value_len)
+      offset += value_len
+      params[key] = [value_type, value]
+    end
+    params
+  end
+
   def test_connect_requires_user_and_database
     cfg = base_config
     cfg.user = ""
@@ -455,18 +476,22 @@ class TestConnAuthProtocol < Minitest::Test
 
     err = assert_raises(RuntimeError) { client.send(:handshake) }
     assert_equal "startup_sent", err.message
-    startup_text = startup_payload.to_s
-    assert_includes startup_text, "client_flags\000256\000"
-    assert_includes startup_text, "auth_method_id\000scratchbird.auth.proxy_assertion\000"
-    assert_includes startup_text, "auth_method_payload\000opaque\000"
-    assert_includes startup_text, "auth_payload_json\000{\"subject\":\"alice\"}\000"
-    assert_includes startup_text, "auth_payload_b64\000YWJj\000"
-    assert_includes startup_text, "auth_provider_profile\000corp_primary\000"
-    assert_includes startup_text, "auth_required_methods\000SCRAM_SHA_256,TOKEN\000"
-    assert_includes startup_text, "auth_forbidden_methods\000MD5\000"
-    assert_includes startup_text, "auth_require_channel_binding\0001\000"
-    assert_includes startup_text, "workload_identity_token\000jwt-token\000"
-    assert_includes startup_text, "proxy_principal_assertion\000signed-assertion\000"
+    startup_params = decode_startup_params(startup_payload)
+    {
+      "client_flags" => "256",
+      "auth_method_id" => "scratchbird.auth.proxy_assertion",
+      "auth_method_payload" => "opaque",
+      "auth_payload_json" => "{\"subject\":\"alice\"}",
+      "auth_payload_b64" => "YWJj",
+      "auth_provider_profile" => "corp_primary",
+      "auth_required_methods" => "SCRAM_SHA_256,TOKEN",
+      "auth_forbidden_methods" => "MD5",
+      "auth_require_channel_binding" => "1",
+      "workload_identity_token" => "jwt-token",
+      "proxy_principal_assertion" => "signed-assertion"
+    }.each do |key, expected|
+      assert_equal [Scratchbird::Protocol::CONNECT_VALUE_TEXT, expected], startup_params[key]
+    end
   end
 
   def test_handshake_rejects_invalid_auth_method_namespace

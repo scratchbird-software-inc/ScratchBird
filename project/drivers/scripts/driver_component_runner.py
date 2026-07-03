@@ -324,16 +324,37 @@ def stage_source(ctx: Context) -> Path:
     stage = ctx.component_build_root / "stage"
     if stage.exists():
         shutil.rmtree(stage)
+    tracked_paths = git_tracked_paths(ctx, ctx.source_dir)
 
-    def ignore(_: str, names: list[str]) -> set[str]:
+    def ignore(current_dir: str, names: list[str]) -> set[str]:
         ignored = set()
         for name in names:
+            path = Path(current_dir) / name
+            try:
+                rel = str(path.relative_to(ctx.repo_root))
+            except ValueError:
+                rel = ""
+            prefix = rel.rstrip("/") + "/"
+            if rel in tracked_paths or any(tracked.startswith(prefix) for tracked in tracked_paths):
+                continue
             if name in GENERATED_DIR_NAMES or name.endswith(".egg-info"):
                 ignored.add(name)
         return ignored
 
     shutil.copytree(ctx.source_dir, stage, ignore=ignore)
+    stage_shared_conformance_fixtures(ctx)
     return stage
+
+
+def stage_shared_conformance_fixtures(ctx: Context) -> None:
+    source = ctx.project_root / "tests" / "conformance" / "drivers" / "chunker_conformance"
+    if not source.is_dir():
+        return
+    target = ctx.build_root / "tests" / "conformance" / "drivers" / "chunker_conformance"
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
 
 
 def check_toolchains(ctx: Context) -> int:
@@ -427,21 +448,24 @@ def run_cli(ctx: Context) -> int:
 
 
 def run_go(ctx: Context) -> int:
+    stage = stage_source(ctx)
     env = {"GOTMPDIR": str(ctx.component_build_root / "tmp")}
-    return run_command(ctx, "go-test", ["go", "test", "./..."], cwd=ctx.source_dir, env=env)
+    return run_command(ctx, "go-test", ["go", "test", "./..."], cwd=stage, env=env)
 
 
 def run_rust(ctx: Context) -> int:
+    stage = stage_source(ctx)
     env = {"CARGO_TARGET_DIR": str(ctx.component_build_root / "target")}
-    return run_command(ctx, "cargo-test", ["cargo", "test", "--locked"], cwd=ctx.source_dir, env=env)
+    return run_command(ctx, "cargo-test", ["cargo", "test", "--locked"], cwd=stage, env=env)
 
 
 def run_python_driver(ctx: Context) -> int:
+    stage = stage_source(ctx)
     env = {
-        "PYTHONPATH": str(ctx.source_dir / "src"),
+        "PYTHONPATH": str(stage / "src"),
         "PYTEST_ADDOPTS": f"-o cache_dir={ctx.component_build_root / 'pytest-cache'}",
     }
-    return run_command(ctx, "pytest", ["python3", "-m", "pytest", "-q", "tests"], cwd=ctx.source_dir, env=env)
+    return run_command(ctx, "pytest", ["python3", "-m", "pytest", "-q", "tests"], cwd=stage, env=env)
 
 
 def run_python_adaptor(ctx: Context) -> int:
@@ -647,6 +671,7 @@ def run_elixir(ctx: Context) -> int:
 
 
 def run_mojo(ctx: Context) -> int:
+    stage = stage_source(ctx)
     env = {"SCRATCHBIRD_MOJO_NATIVE_RUN_ARGS": os.environ.get("SCRATCHBIRD_MOJO_NATIVE_RUN_ARGS", "-O0 -j1")}
     launcher = mojo_launcher()
     if launcher is None:
@@ -657,34 +682,35 @@ def run_mojo(ctx: Context) -> int:
         ["python3", "tests/integration.py"],
     ]
     for index, argv in enumerate(tests, start=1):
-        result = run_command(ctx, f"mojo-test-{index}", argv, cwd=ctx.source_dir, env=env)
+        result = run_command(ctx, f"mojo-test-{index}", argv, cwd=stage, env=env)
         if result != 0:
             return result
     return 0
 
 
 def run_pascal(ctx: Context) -> int:
+    stage = stage_source(ctx)
     unit_dir = ctx.component_build_root / "units"
     bin_dir = ctx.component_build_root / "bin"
     unit_dir.mkdir(parents=True, exist_ok=True)
     bin_dir.mkdir(parents=True, exist_ok=True)
-    tests = sorted((ctx.source_dir / "tests").glob("*.pas"))
+    tests = sorted((stage / "tests").glob("*.pas"))
     if not tests:
         return fail("no Pascal tests found")
     for test in tests:
         argv = [
             "fpc",
-            f"-Fu{ctx.source_dir / 'src'}",
+            f"-Fu{stage / 'src'}",
             f"-FU{unit_dir}",
             f"-FE{bin_dir}",
             str(test),
         ]
-        result = run_command(ctx, f"fpc-{test.stem}", argv, cwd=ctx.source_dir)
+        result = run_command(ctx, f"fpc-{test.stem}", argv, cwd=stage)
         if result != 0:
             return result
         exe = bin_dir / test.stem
         if exe.exists():
-            result = run_command(ctx, f"run-{test.stem}", [str(exe)], cwd=ctx.source_dir)
+            result = run_command(ctx, f"run-{test.stem}", [str(exe)], cwd=stage)
             if result != 0:
                 return result
     return 0
@@ -713,11 +739,13 @@ def run_r(ctx: Context) -> int:
 
 
 def run_ruby(ctx: Context) -> int:
+    stage = stage_source(ctx)
     expr = "Dir['test/test_*.rb'].sort.each { |path| require_relative path }"
-    return run_command(ctx, "ruby-tests", ["ruby", f"-I{os.pathsep.join(['lib', 'test'])}", "-e", expr], cwd=ctx.source_dir)
+    return run_command(ctx, "ruby-tests", ["ruby", f"-I{os.pathsep.join(['lib', 'test'])}", "-e", expr], cwd=stage)
 
 
 def run_swift(ctx: Context) -> int:
+    stage = stage_source(ctx)
     env = {"SWIFTPM_CACHE_PATH": str(ctx.deps_root / "swift" / "cache")}
     argv = [
         "swift",
@@ -725,7 +753,7 @@ def run_swift(ctx: Context) -> int:
         "--scratch-path",
         str(ctx.component_build_root / ".build"),
     ]
-    return run_command(ctx, "swift-test", argv, cwd=ctx.source_dir, env=env)
+    return run_command(ctx, "swift-test", argv, cwd=stage, env=env)
 
 
 def read_manifest_row(ctx: Context) -> dict[str, str] | None:

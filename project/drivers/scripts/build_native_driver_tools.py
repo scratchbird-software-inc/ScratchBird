@@ -137,6 +137,25 @@ def executable_name(driver: str) -> str:
     return f"sb_isql_{driver}"
 
 
+def mojo_launcher() -> list[str] | None:
+    mojo_bin = os.environ.get("MOJO_BIN", "").strip()
+    if mojo_bin:
+        return [mojo_bin]
+    mojo_path = shutil.which("mojo")
+    if mojo_path:
+        return [mojo_path]
+    pixi_path = shutil.which("pixi")
+    if not pixi_path:
+        return None
+    manifest = os.environ.get("MOJO_PIXI_MANIFEST", "").strip()
+    if not manifest:
+        manifest = str(Path.home() / "mojo-work" / "sb-mojo")
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.exists():
+        return None
+    return [pixi_path, "run", "-m", str(manifest_path), "--executable", "mojo"]
+
+
 def platform_bin_root(build_root: Path) -> Path:
     return build_root / "output" / "linux" / "bin"
 
@@ -416,13 +435,30 @@ def stage_driver_source(repo_root: Path, build_root: Path, driver: str) -> Path:
     stage = build_root / "drivers" / "driver" / driver / "stage"
     if stage.exists():
         shutil.rmtree(stage)
+    tracked = {
+        line.strip()
+        for line in subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "--", str(source.relative_to(repo_root))],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+        if line.strip()
+    }
 
-    def ignore(_: str, names: list[str]) -> set[str]:
-        return {
-            name
-            for name in names
-            if name in GENERATED_STAGE_EXCLUDES or name.endswith(".egg-info")
-        }
+    def ignore(current_dir: str, names: list[str]) -> set[str]:
+        ignored = set()
+        for name in names:
+            path = Path(current_dir) / name
+            rel = str(path.relative_to(repo_root))
+            prefix = rel.rstrip("/") + "/"
+            is_tracked = rel in tracked or any(item.startswith(prefix) for item in tracked)
+            if is_tracked:
+                continue
+            if name in GENERATED_STAGE_EXCLUDES or name.endswith(".egg-info"):
+                ignored.add(name)
+        return ignored
 
     shutil.copytree(source, stage, ignore=ignore)
     return stage
@@ -464,9 +500,12 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
             repo_root,
         )
     if driver == "dart" and shutil.which("dart"):
+        stage = stage_driver_source(repo_root, build_root, driver)
         out = build_root / "drivers" / "driver" / "dart" / "bin" / "sb_isql_dart"
         out.parent.mkdir(parents=True, exist_ok=True)
-        return run_command(["dart", "compile", "exe", "bin/sb_isql_dart.dart", "-o", str(out)], driver_root)
+        env = os.environ.copy()
+        env.setdefault("PUB_CACHE", str(build_root / "drivers" / "_deps" / "dart" / "pub-cache"))
+        return run_command(["dart", "compile", "exe", "bin/sb_isql_dart.dart", "-o", str(out)], stage, env=env)
     if driver == "swift" and shutil.which("swift"):
         build_path = build_root / "drivers" / "driver" / "swift" / ".build"
         return run_command(["swift", "build", "-c", "release", "--build-path", str(build_path), "--product", "SBIsqlSwift"], driver_root)
@@ -479,21 +518,27 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
         env["HEX_HOME"] = str(build_root / "drivers" / "_deps" / "elixir" / "hex-home")
         return run_command(["mix", "deps.get"], driver_root, env=env)
     if driver == "dotnet" and shutil.which("dotnet"):
+        stage = stage_driver_source(repo_root, build_root, driver)
         out = build_root / "drivers" / "driver" / "dotnet" / "publish"
         out.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env.setdefault("NUGET_PACKAGES", str(build_root / "drivers" / "_deps" / "dotnet" / "packages"))
         return run_command(
             [
                 "dotnet",
                 "publish",
-                str(driver_root / "tools" / "SBIsqlDotNet" / "SBIsqlDotNet.csproj"),
+                str(stage / "tools" / "SBIsqlDotNet" / "SBIsqlDotNet.csproj"),
                 "-c",
                 "Release",
                 "-o",
                 str(out),
+                "--artifacts-path",
+                str(build_root / "drivers" / "driver" / "dotnet" / "artifacts"),
             ],
             repo_root,
+            env=env,
         )
-    if driver == "mojo" and shutil.which("mojo"):
+    if driver == "mojo" and mojo_launcher() is not None:
         bridge_build = run_command(
             ["cmake", "--build", str(build_root), "--target", "scratchbird_mojo_client_bridge", "--parallel", "2"],
             repo_root,
@@ -506,7 +551,7 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
         out.parent.mkdir(parents=True, exist_ok=True)
         return run_command(
             [
-                "mojo",
+                *mojo_launcher(),
                 "build",
                 "-I",
                 str(driver_root / "src"),

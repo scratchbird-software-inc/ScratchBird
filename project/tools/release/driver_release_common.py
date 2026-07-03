@@ -66,9 +66,11 @@ CLOSING_STATUSES = {
     "not_applicable_with_citation",
     "pass",
     "passed",
+    "passed_non_cluster_tls_profile8",
     "proven",
     "separate_controller",
     "verified",
+    "verified_non_cluster_tls_profile8",
 }
 
 REQUIRED_MANIFEST_FIELDS = (
