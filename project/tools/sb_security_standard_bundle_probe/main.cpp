@@ -29,7 +29,7 @@ int main() {
   denied.context.security_context_present = true;
   const auto denied_result = EngineSeedStandardSecurityBundles(denied);
 
-  const bool ok = seeded.ok && seeded.groups_seeded == 12 && seeded.roles_seeded == 5 && seeded.policies_seeded == 10 && !denied_result.ok;
+  const bool ok = seeded.ok && seeded.groups_seeded == 12 && seeded.roles_seeded == 5 && seeded.policies_seeded == 58 && !denied_result.ok;
   std::cout << "{\"ok\":" << (ok ? "true" : "false")
             << ",\"groups\":" << seeded.groups_seeded
             << ",\"roles\":" << seeded.roles_seeded

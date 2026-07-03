@@ -1464,6 +1464,138 @@ bool DefaultPolicyKeysExactlyCovered(const std::set<std::string>& keys) {
   return keys == RequiredDefaultPolicyKeys();
 }
 
+bool SafePolicySettingKey(const std::string& value) {
+  if (value.empty() || value.size() > 160) {
+    return false;
+  }
+  for (const char ch : value) {
+    const auto uch = static_cast<unsigned char>(ch);
+    if (!std::isalnum(uch) && ch != '-' && ch != '_' && ch != '.' && ch != '=') {
+      return false;
+    }
+  }
+  return value.find("..") == std::string::npos;
+}
+
+PolicyPackLoadResult ValidatePolicyDefaultsResource(
+    const std::string& policy_defaults_json,
+    u32 expected_policy_generation,
+    const std::map<std::string, std::set<std::string>>& catalog_required_properties) {
+  u32 schema_version = 0;
+  u32 policy_generation = 0;
+  u32 declared_policy_count = 0;
+  bool create_time_only = false;
+  bool post_create_authority = true;
+  std::string policy_pack_id;
+  std::string source_catalog;
+  std::string identity_authority;
+  std::string catalog_authority;
+  if (!ExtractU32Field(policy_defaults_json, "schema_version", &schema_version) ||
+      !ExtractU32Field(policy_defaults_json, "policy_generation", &policy_generation) ||
+      !ExtractU32Field(policy_defaults_json, "default_policy_count", &declared_policy_count) ||
+      !ExtractBoolField(policy_defaults_json, "create_time_only", &create_time_only) ||
+      !ExtractBoolField(policy_defaults_json, "post_create_filesystem_authority",
+                        &post_create_authority) ||
+      !ExtractStringField(policy_defaults_json, "policy_pack_id", &policy_pack_id) ||
+      !ExtractStringField(policy_defaults_json, "source_catalog", &source_catalog) ||
+      !ExtractStringField(policy_defaults_json, "identity_authority", &identity_authority) ||
+      !ExtractStringField(policy_defaults_json, "catalog_authority", &catalog_authority) ||
+      schema_version != 1 ||
+      policy_generation != expected_policy_generation ||
+      declared_policy_count != RequiredDefaultPolicyKeys().size() ||
+      !create_time_only ||
+      post_create_authority ||
+      policy_pack_id != "default-local-password" ||
+      source_catalog != "policies/default_policy_catalog.json" ||
+      identity_authority != "uuid" ||
+      catalog_authority != "durable_catalog_after_create") {
+    return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                               "policy_defaults header");
+  }
+
+  std::string array_body;
+  if (!ExtractArrayBody(policy_defaults_json, "policies", &array_body)) {
+    return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                               "policies");
+  }
+  std::set<std::string> defaults_keys;
+  for (const std::string& object : SplitTopLevelObjects(array_body)) {
+    std::string policy_key;
+    std::string default_profile;
+    std::string state;
+    std::string override_class;
+    if (!ExtractStringField(object, "policy_key", &policy_key) ||
+        !ExtractStringField(object, "default_profile", &default_profile) ||
+        !ExtractStringField(object, "state", &state) ||
+        !ExtractStringField(object, "override_class", &override_class) ||
+        !IsSafePolicyPackId(policy_key) ||
+        default_profile.empty() ||
+        (state != "enabled" && state != "fail_closed") ||
+        (override_class != "no_override" &&
+         override_class != "create_database_only" &&
+         override_class != "security_admin" &&
+         override_class != "sysarch" &&
+         override_class != "policy_defined" &&
+         override_class != "cluster_only") ||
+        catalog_required_properties.count(policy_key) == 0 ||
+        !defaults_keys.insert(policy_key).second ||
+        object.find("\"default_values\"") == std::string::npos ||
+        object.find("\"tx1_seed_required\": true") == std::string::npos ||
+        object.find("\"created_txn\": \"tx1\"") == std::string::npos ||
+        object.find("\"uuid_source\": \"fresh_uuidv7\"") == std::string::npos ||
+        object.find("\"post_create_filesystem_authority\": false") == std::string::npos ||
+        object.find("\"catalog_authority\": \"durable_catalog_after_create\"") ==
+            std::string::npos) {
+      return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                                 policy_key.empty() ? "policy" : policy_key);
+    }
+
+    std::string settings_body;
+    if (!ExtractArrayBody(object, "settings", &settings_body)) {
+      return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                                 policy_key + ":settings");
+    }
+    std::set<std::string> setting_keys;
+    for (const std::string& setting_object : SplitTopLevelObjects(settings_body)) {
+      std::string setting_key;
+      std::string meaning;
+      std::string used_by_body;
+      if (!ExtractStringField(setting_object, "setting_key", &setting_key) ||
+          !ExtractStringField(setting_object, "meaning", &meaning) ||
+          !SafePolicySettingKey(setting_key) ||
+          meaning.empty() ||
+          setting_object.find("\"default_value\"") == std::string::npos ||
+          !ExtractArrayBody(setting_object, "used_by", &used_by_body) ||
+          used_by_body.find('"') == std::string::npos ||
+          !setting_keys.insert(setting_key).second) {
+        return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                                   policy_key + ":setting");
+      }
+    }
+    if (setting_keys != catalog_required_properties.at(policy_key)) {
+      return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-MISMATCH",
+                                 policy_key);
+    }
+    const std::vector<std::string> invariants =
+        ExtractStringArrayField(object, "authority_invariants");
+    const std::set<std::string> invariant_set(invariants.begin(), invariants.end());
+    if (invariant_set.count("policy_catalog_is_authority") == 0 ||
+        invariant_set.count("mga_visibility_required") == 0 ||
+        invariant_set.count("wal_not_authority") == 0 ||
+        invariant_set.count("parser_not_authority") == 0 ||
+        invariant_set.count("reference_not_authority") == 0 ||
+        invariant_set.count("uuid_order_not_finality") == 0) {
+      return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
+                                 policy_key + ":authority");
+    }
+  }
+  if (!DefaultPolicyKeysExactlyCovered(defaults_keys)) {
+    return PolicyPackLoadError("SB-POLICY-PACK-POLICY-DEFAULTS-UNKNOWN",
+                               "default policy key coverage");
+  }
+  return PolicyPackLoadOk({});
+}
+
 PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_text) {
   if (pack_root_text.empty()) {
     return PolicyPackLoadError("SB-POLICY-PACK-ROOT-REQUIRED",
@@ -1580,6 +1712,22 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-HASH-MISMATCH",
                                "aggregate content_sha256");
   }
+  for (const char* required_path : {
+           "policies/security_providers.json",
+           "policies/roles.json",
+           "policies/groups.json",
+           "policies/grants.json",
+           "policies/policy_profiles.json",
+           "policies/server_memory_cache_policy.json",
+           "policies/default_policy_catalog.json",
+           "policies/policy_defaults.json",
+           "catalog_materialization.json",
+       }) {
+    if (seen_content_paths.count(required_path) == 0) {
+      return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-MANIFEST-INCOMPLETE",
+                                 required_path);
+    }
+  }
 
   std::string materialization_path;
   if (!ExtractStringField(manifest, "catalog_materialization_metadata", &materialization_path) ||
@@ -1626,6 +1774,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/policy_profiles.json"); }
   const std::string default_policies_json = load_content("policies/default_policy_catalog.json");
   if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/default_policy_catalog.json"); }
+  const std::string policy_defaults_json = load_content("policies/policy_defaults.json");
+  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/policy_defaults.json"); }
 
   std::string array_body;
   if (!ExtractArrayBody(providers_json, "providers", &array_body)) {
@@ -1796,6 +1946,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
                                "policies");
   }
   std::set<std::string> default_policy_keys;
+  std::map<std::string, std::set<std::string>> default_policy_required_properties;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyDefaultSeed policy;
     std::vector<std::string> required_properties = ExtractStringArrayField(object, "required_properties");
@@ -1830,6 +1981,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
                                  policy.policy_key.empty() ? "policy" : policy.policy_key);
     }
     policy.required_properties = JoinComma(required_properties);
+    default_policy_required_properties[policy.policy_key] =
+        std::set<std::string>(required_properties.begin(), required_properties.end());
     loaded.default_policies.push_back(std::move(policy));
   }
   image.default_policy_records = static_cast<u32>(loaded.default_policies.size());
@@ -1842,6 +1995,13 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       image.default_policy_records != RequiredDefaultPolicyKeys().size()) {
     return PolicyPackLoadError("SB-POLICY-PACK-MATERIALIZATION-INCOMPLETE",
                                "role/group/grant/profile/default-policy counts");
+  }
+  const auto policy_defaults_valid =
+      ValidatePolicyDefaultsResource(policy_defaults_json,
+                                     image.policy_generation,
+                                     default_policy_required_properties);
+  if (!policy_defaults_valid.ok()) {
+    return policy_defaults_valid;
   }
 
   return PolicyPackLoadOk(std::move(loaded));
@@ -4843,7 +5003,7 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   descriptor.manifest_relative_path =
       "resources/policy-packs/default-local-password/POLICY_PACK_MANIFEST.json";
   descriptor.content_sha256 =
-      "45da12f80d12ac70034741f4f2401ed906284e0b71fdeb1137245924f27ebcf5";
+      "1dfb45dd2e167a65f2094be9d70775f3add122b3065c727db434e1549a420b93";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

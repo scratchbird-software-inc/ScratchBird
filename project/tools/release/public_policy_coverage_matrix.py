@@ -174,6 +174,13 @@ def validate_manifest_boundary(pack_root: Path) -> None:
     require(isinstance(provider_policy, dict), "default provider policy is required")
     require(provider_policy.get("mode") == "local-password-only",
             "default provider policy must remain local-password-only")
+    content_paths = {
+        item.get("path")
+        for item in manifest.get("content_manifest", [])
+        if isinstance(item, dict)
+    }
+    require("policies/policy_defaults.json" in content_paths,
+            "policy defaults resource must be part of the content manifest")
 
 
 def build_matrix_rows(pack_root: Path) -> list[dict[str, str]]:

@@ -127,6 +127,7 @@ void RehashPolicyPackManifest(const std::filesystem::path& pack_root) {
       "policies/policy_profiles.json",
       "policies/server_memory_cache_policy.json",
       "policies/default_policy_catalog.json",
+      "policies/policy_defaults.json",
       "catalog_materialization.json",
   };
   std::string manifest = ReadText(pack_root / "POLICY_PACK_MANIFEST.json");
@@ -329,6 +330,19 @@ void ProveFailClosedDiagnostics(const std::filesystem::path& root) {
   ExpectCreateDiagnostic(root / "unknown_default_policy.sbdb",
                          unknown_default_policy,
                          "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN");
+
+  const auto incomplete_policy_defaults = CopyPack(root, "incomplete-policy-defaults-pack");
+  {
+    std::string defaults = ReadText(incomplete_policy_defaults / "policies/policy_defaults.json");
+    ReplaceOnce(&defaults,
+                "\"policy_key\": \"diagnostics.message_vector\"",
+                "\"policy_key\": \"diagnostics.unknown_policy\"");
+    WriteText(incomplete_policy_defaults / "policies/policy_defaults.json", defaults);
+    RehashPolicyPackManifest(incomplete_policy_defaults);
+  }
+  ExpectCreateDiagnostic(root / "incomplete_policy_defaults.sbdb",
+                         incomplete_policy_defaults,
+                         "SB-POLICY-PACK-POLICY-DEFAULTS-INVALID");
 }
 
 void ProvePostCreatePackMutationStillRefuses(const std::filesystem::path& database_path) {

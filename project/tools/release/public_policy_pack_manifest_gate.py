@@ -260,6 +260,8 @@ def validate_manifest(pack_root: Path) -> dict:
     require(entries, "manifest content_manifest must not be empty")
     require("policies/default_policy_catalog.json" in seen_paths,
             "manifest content_manifest must include default policy catalog")
+    require("policies/policy_defaults.json" in seen_paths,
+            "manifest content_manifest must include policy defaults")
     require("policies/server_memory_cache_policy.json" in seen_paths,
             "manifest content_manifest must include server memory/cache policy")
     require(manifest.get("content_sha256") == aggregate_digest(entries),
@@ -479,6 +481,97 @@ def validate_default_policy_catalog(pack_root: Path) -> None:
     require(not extra, "unexpected default policies: " + ",".join(sorted(extra)))
 
 
+def validate_policy_defaults_resource(pack_root: Path) -> None:
+    catalog = load_json(pack_root / "policies/default_policy_catalog.json")
+    defaults = load_json(pack_root / "policies/policy_defaults.json")
+    require(isinstance(defaults, dict), "policy defaults resource must be an object")
+    expected_header = {
+        "schema_version": 1,
+        "policy_generation": 1,
+        "policy_pack_id": "default-local-password",
+        "source_catalog": "policies/default_policy_catalog.json",
+        "create_time_only": True,
+        "post_create_filesystem_authority": False,
+        "catalog_authority": "durable_catalog_after_create",
+        "identity_authority": "uuid",
+        "default_policy_count": REQUIRED_DEFAULT_POLICY_COUNT,
+    }
+    for key, expected in expected_header.items():
+        require(defaults.get(key) == expected, f"policy defaults {key} mismatch")
+
+    catalog_rows = catalog.get("policies")
+    default_rows = defaults.get("policies")
+    require(isinstance(catalog_rows, list), "default policy catalog rows required")
+    require(isinstance(default_rows, list), "policy defaults rows required")
+    require(len(default_rows) == REQUIRED_DEFAULT_POLICY_COUNT,
+            "policy defaults row count mismatch")
+    catalog_required = {
+        row["policy_key"]: set(row.get("required_properties", []))
+        for row in catalog_rows
+        if isinstance(row, dict) and isinstance(row.get("policy_key"), str)
+    }
+    defaults_seen: set[str] = set()
+    for row in default_rows:
+        require(isinstance(row, dict), "policy defaults rows must be objects")
+        key = row.get("policy_key")
+        require(isinstance(key, str) and key, "policy defaults policy_key required")
+        require(key not in defaults_seen, f"duplicate policy defaults key: {key}")
+        require(key in REQUIRED_DEFAULT_POLICY_KEYS, f"unexpected policy defaults key: {key}")
+        require(key in catalog_required, f"policy defaults key not in catalog: {key}")
+        defaults_seen.add(key)
+        require(isinstance(row.get("default_profile"), str) and row["default_profile"],
+                f"{key}: policy defaults profile required")
+        require(row.get("state") in {"enabled", "fail_closed"},
+                f"{key}: policy defaults state invalid")
+        require(row.get("override_class") in {
+            "no_override",
+            "create_database_only",
+            "security_admin",
+            "sysarch",
+            "policy_defined",
+            "cluster_only",
+        }, f"{key}: policy defaults override class invalid")
+        values = row.get("default_values")
+        require(isinstance(values, dict), f"{key}: default_values required")
+        require(values.get("policy_generation") == 1,
+                f"{key}: policy defaults generation mismatch")
+        require(values.get("tx1_seed_required") is True,
+                f"{key}: policy defaults tx1 seed missing")
+        require(values.get("created_txn") == "tx1",
+                f"{key}: policy defaults created_txn mismatch")
+        require(values.get("uuid_source") == "fresh_uuidv7",
+                f"{key}: policy defaults uuid source mismatch")
+        require(values.get("post_create_filesystem_authority") is False,
+                f"{key}: policy defaults post-create authority mismatch")
+        require(values.get("catalog_authority") == "durable_catalog_after_create",
+                f"{key}: policy defaults catalog authority mismatch")
+        settings = row.get("settings")
+        require(isinstance(settings, list) and settings, f"{key}: settings required")
+        setting_keys: set[str] = set()
+        for setting in settings:
+            require(isinstance(setting, dict), f"{key}: setting row must be object")
+            setting_key = setting.get("setting_key")
+            require(isinstance(setting_key, str) and setting_key,
+                    f"{key}: setting_key required")
+            require("default_value" in setting, f"{key}:{setting_key}: default_value missing")
+            require(isinstance(setting.get("meaning"), str) and setting["meaning"],
+                    f"{key}:{setting_key}: meaning missing")
+            used_by = setting.get("used_by")
+            require(isinstance(used_by, list) and used_by and
+                    all(isinstance(item, str) and item for item in used_by),
+                    f"{key}:{setting_key}: used_by missing")
+            require(setting_key not in setting_keys,
+                    f"{key}: duplicate setting {setting_key}")
+            setting_keys.add(setting_key)
+        require(setting_keys == catalog_required[key],
+                f"{key}: policy defaults settings do not match catalog required_properties")
+        invariants = set(row.get("authority_invariants") or [])
+        require(REQUIRED_AUTHORITY_INVARIANTS <= invariants,
+                f"{key}: policy defaults authority invariants incomplete")
+    missing = REQUIRED_DEFAULT_POLICY_KEYS - defaults_seen
+    require(not missing, "missing policy defaults: " + ",".join(sorted(missing)))
+
+
 def validate_catalog_materialization(pack_root: Path, manifest: dict) -> None:
     rel_path = manifest.get("catalog_materialization_metadata")
     require(isinstance(rel_path, str) and rel_path,
@@ -538,6 +631,7 @@ def main(argv: list[str]) -> int:
     validate_policy_profiles(pack_root)
     validate_server_memory_cache_policy(pack_root)
     validate_default_policy_catalog(pack_root)
+    validate_policy_defaults_resource(pack_root)
     validate_catalog_materialization(pack_root, manifest)
     validate_database_lifecycle_descriptor(project_root, manifest)
     print("public_policy_pack_manifest_gate=passed")

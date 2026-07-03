@@ -95,6 +95,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             '"private_inputs_required": false',
             '"policies/server_memory_cache_policy.json"',
             '"policies/default_policy_catalog.json"',
+            '"policies/policy_defaults.json"',
         ),
     },
     {
@@ -136,11 +137,29 @@ CHECKS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "surface": "policy_pack_default_policy_settings",
+        "path": "project/resources/policy-packs/default-local-password/policies/policy_defaults.json",
+        "tokens": (
+            '"default_policy_count": 58',
+            '"source_catalog": "policies/default_policy_catalog.json"',
+            '"catalog_authority": "durable_catalog_after_create"',
+            '"post_create_filesystem_authority": false',
+            '"default_values"',
+            '"settings"',
+            '"meaning"',
+            '"used_by"',
+            '"policy_key": "policy.catalog.bootstrap"',
+            '"policy_key": "transaction.admission"',
+            '"policy_key": "cluster.boundary_fail_closed"',
+        ),
+    },
+    {
         "surface": "policy_pack_manifest_gate",
         "path": "project/tools/release/public_policy_pack_manifest_gate.py",
         "tokens": (
             "validate_manifest",
             "validate_default_policy_catalog",
+            "validate_policy_defaults_resource",
             "min_supported_schema_version",
             "max_supported_schema_version",
             "post_create_filesystem_authority",

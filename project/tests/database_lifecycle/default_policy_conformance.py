@@ -149,9 +149,11 @@ def load_paths(repo_root: Path) -> dict[str, Path]:
     return {
         "pack_root": pack_root,
         "resource_policy_catalog": pack_root / "policies/default_policy_catalog.json",
+        "resource_policy_defaults": pack_root / "policies/policy_defaults.json",
         "policy_pack_manifest": pack_root / "POLICY_PACK_MANIFEST.json",
         "policy_materialization": pack_root / "catalog_materialization.json",
         "policy_pack_readme": pack_root / "README.md",
+        "policy_defaults_doc": repo_root / "docs/policies/default-policy-pack.md",
         "policy_audit": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_DEFAULT_POLICY_AUDIT.csv",
         "registry_audit": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_DEFAULT_POLICY_REGISTRY_AUDIT.csv",
         "lifecycle_header": repo_root / "project/src/storage/database/database_lifecycle.hpp",
@@ -285,6 +287,8 @@ def validate_policy_pack_files(paths: dict[str, Path]) -> None:
 
     if "policies/default_policy_catalog.json" not in seen_paths:
         fail("policy pack manifest is missing policies/default_policy_catalog.json")
+    if "policies/policy_defaults.json" not in seen_paths:
+        fail("policy pack manifest is missing policies/policy_defaults.json")
     aggregate_sha = hashlib.sha256(aggregate_payload).hexdigest()
     if aggregate_sha != manifest.get("content_sha256"):
         fail("policy pack aggregate content_sha256 mismatch")
@@ -318,6 +322,89 @@ def validate_policy_audit(paths: dict[str, Path], policies: dict[str, dict[str, 
         if row["status"] != "ready":
             fail(f"{key} P0E audit status is not ready")
     return rows
+
+
+def validate_policy_defaults_resource(paths: dict[str, Path], policies: dict[str, dict[str, Any]]) -> None:
+    defaults = load_json(paths["resource_policy_defaults"])
+    expected_header = {
+        "schema_version": 1,
+        "policy_generation": 1,
+        "policy_pack_id": "default-local-password",
+        "source_catalog": "policies/default_policy_catalog.json",
+        "catalog_authority": "durable_catalog_after_create",
+        "identity_authority": "uuid",
+        "create_time_only": True,
+        "post_create_filesystem_authority": False,
+        "default_policy_count": EXPECTED_POLICY_COUNT,
+    }
+    for key, expected in expected_header.items():
+        if defaults.get(key) != expected:
+            fail(f"policy defaults resource {key} mismatch")
+
+    rows = defaults.get("policies")
+    if not isinstance(rows, list) or len(rows) != EXPECTED_POLICY_COUNT:
+        fail("policy defaults resource policy count mismatch")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            fail("policy defaults row is not an object")
+        key = row.get("policy_key")
+        if not isinstance(key, str) or key not in policies or key in seen:
+            fail(f"policy defaults key invalid or duplicate: {key}")
+        seen.add(key)
+        policy = policies[key]
+        if row.get("default_profile") != policy["default_profile"]:
+            fail(f"{key} policy defaults profile mismatch")
+        if row.get("state") != policy["state"]:
+            fail(f"{key} policy defaults state mismatch")
+        if row.get("override_class") != policy["override_class"]:
+            fail(f"{key} policy defaults override_class mismatch")
+        values = row.get("default_values")
+        if not isinstance(values, dict):
+            fail(f"{key} policy defaults default_values missing")
+        if values.get("policy_generation") != 1:
+            fail(f"{key} policy defaults generation mismatch")
+        if values.get("tx1_seed_required") is not True:
+            fail(f"{key} policy defaults tx1 seed flag missing")
+        if values.get("created_txn") != "tx1":
+            fail(f"{key} policy defaults created_txn mismatch")
+        if values.get("uuid_source") != "fresh_uuidv7":
+            fail(f"{key} policy defaults uuid_source mismatch")
+        if values.get("post_create_filesystem_authority") is not False:
+            fail(f"{key} policy defaults post-create authority mismatch")
+        if values.get("catalog_authority") != "durable_catalog_after_create":
+            fail(f"{key} policy defaults catalog authority mismatch")
+        settings = row.get("settings")
+        if not isinstance(settings, list) or not settings:
+            fail(f"{key} policy defaults settings missing")
+        setting_keys: set[str] = set()
+        for setting in settings:
+            if not isinstance(setting, dict):
+                fail(f"{key} policy defaults setting is not an object")
+            setting_key = setting.get("setting_key")
+            if not isinstance(setting_key, str) or not setting_key:
+                fail(f"{key} policy defaults setting_key missing")
+            if "default_value" not in setting:
+                fail(f"{key}.{setting_key} policy defaults default_value missing")
+            if not isinstance(setting.get("meaning"), str) or not setting["meaning"]:
+                fail(f"{key}.{setting_key} policy defaults meaning missing")
+            used_by = setting.get("used_by")
+            if (
+                not isinstance(used_by, list)
+                or not used_by
+                or not all(isinstance(item, str) and item for item in used_by)
+            ):
+                fail(f"{key}.{setting_key} policy defaults used_by missing")
+            if setting_key in setting_keys:
+                fail(f"{key} policy defaults duplicate setting {setting_key}")
+            setting_keys.add(setting_key)
+        if setting_keys != set(policy["required_properties"]):
+            fail(f"{key} policy defaults settings do not match required_properties")
+        invariants = set(row.get("authority_invariants") or [])
+        if not REQUIRED_AUTHORITY_INVARIANTS.issubset(invariants):
+            fail(f"{key} policy defaults authority invariants incomplete")
+    if seen != set(policies):
+        fail("policy defaults keys do not exactly match catalog")
 
 
 def validate_registry_audit(paths: dict[str, Path], policies: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
@@ -366,13 +453,16 @@ def validate_registry_audit(paths: dict[str, Path], policies: dict[str, dict[str
 def mode_catalog(repo_root: Path, paths: dict[str, Path]) -> None:
     policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
     validate_policy_pack_files(paths)
+    validate_policy_defaults_resource(paths, policies)
     audit_rows = validate_policy_audit(paths, policies)
     assert_not_ignored(
         repo_root,
         [
             paths["resource_policy_catalog"],
+            paths["resource_policy_defaults"],
             paths["policy_pack_manifest"],
             paths["policy_materialization"],
+            paths["policy_defaults_doc"],
             paths["policy_audit"],
         ],
     )
@@ -381,6 +471,7 @@ def mode_catalog(repo_root: Path, paths: dict[str, Path]) -> None:
 
 def mode_registry(repo_root: Path, paths: dict[str, Path]) -> None:
     policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_policy_defaults_resource(paths, policies)
     rows = validate_registry_audit(paths, policies)
     require_text(
         paths["lifecycle_source"],
@@ -393,12 +484,13 @@ def mode_registry(repo_root: Path, paths: dict[str, Path]) -> None:
             "durable_catalog_after_create",
         ),
     )
-    assert_not_ignored(repo_root, [paths["resource_policy_catalog"], paths["registry_audit"]])
+    assert_not_ignored(repo_root, [paths["resource_policy_catalog"], paths["resource_policy_defaults"], paths["registry_audit"]])
     print(f"PASS: default policy registry audit covers {len(rows)} policy families")
 
 
 def mode_diagnostics(repo_root: Path, paths: dict[str, Path]) -> None:
     policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_policy_defaults_resource(paths, policies)
     rows = validate_registry_audit(paths, policies)
     referenced = {diag for row in rows for diag in row["diagnostics_mapped"].split(";") if diag}
     if referenced != ROW_DIAGNOSTICS:
@@ -407,7 +499,9 @@ def mode_diagnostics(repo_root: Path, paths: dict[str, Path]) -> None:
         paths["manifest_gate"],
         (
             "validate_default_policy_catalog",
+            "validate_policy_defaults_resource",
             "missing default policies",
+            "missing policy defaults",
             "unexpected default policies",
         ),
     )
@@ -416,6 +510,7 @@ def mode_diagnostics(repo_root: Path, paths: dict[str, Path]) -> None:
         (
             "SB-POLICY-PACK-DEFAULT-POLICIES-INVALID",
             "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
+            "SB-POLICY-PACK-POLICY-DEFAULTS-INVALID",
         ),
     )
     assert_not_ignored(repo_root, [paths["manifest_gate"], paths["registry_audit"]])
@@ -424,6 +519,7 @@ def mode_diagnostics(repo_root: Path, paths: dict[str, Path]) -> None:
 
 def mode_overrides(repo_root: Path, paths: dict[str, Path]) -> None:
     policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_policy_defaults_resource(paths, policies)
     validate_registry_audit(paths, policies)
     by_class: dict[str, list[str]] = {}
     for key, policy in policies.items():
@@ -444,6 +540,7 @@ def mode_overrides(repo_root: Path, paths: dict[str, Path]) -> None:
 def mode_specs(repo_root: Path, paths: dict[str, Path]) -> None:
     policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
     validate_policy_pack_files(paths)
+    validate_policy_defaults_resource(paths, policies)
     require_text(
         paths["lifecycle_header"],
         (
@@ -475,6 +572,7 @@ def mode_specs(repo_root: Path, paths: dict[str, Path]) -> None:
         (
             "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
             "policies/default_policy_catalog.json",
+            "policies/policy_defaults.json",
         ),
     )
     require_text(
@@ -484,17 +582,20 @@ def mode_specs(repo_root: Path, paths: dict[str, Path]) -> None:
             "post-create policy mutation must not re-read this filesystem pack",
             "durable",
             "catalog is the authority",
+            "policies/policy_defaults.json",
         ),
     )
     assert_not_ignored(
         repo_root,
         [
             paths["resource_policy_catalog"],
+            paths["resource_policy_defaults"],
             paths["lifecycle_header"],
             paths["lifecycle_source"],
             paths["migration_gate"],
             paths["catalog_import_gate"],
             paths["custom_pack_gate"],
+            paths["policy_defaults_doc"],
         ],
     )
     print(f"PASS: current default-policy resource closure anchors cover {len(policies)} policy families")
