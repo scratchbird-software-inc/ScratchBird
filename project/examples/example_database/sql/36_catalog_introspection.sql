@@ -161,8 +161,8 @@ order by operation_kind, operation_uuid
 limit 20;
 
 -- ===========================================================================
--- G. sys.catalog.reference_type_mapping  (donor type / compatibility mapping)
---    Columns documented in sys_catalog_donor_type_mapping.md.
+-- G. sys.catalog.reference_type_mapping  (reference compatibility mapping)
+--    Columns documented in sys_catalog_reference_type_mapping.md.
 --    Surface name used here is the alias visible in catalog_reference/index.md:
 --    sys.catalog.reference_type_mapping
 -- ===========================================================================

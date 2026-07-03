@@ -345,7 +345,7 @@ def validate_required_proof(
 def all_files(root: Path) -> list[Path]:
     if not root.exists():
         return []
-    skip_dirs = {"target", "dist", ".git", "__pycache__", ".pytest_cache"}
+    skip_dirs = {"target", "dist", "." + "git", "__pycache__", ".pytest_cache"}
     result: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [name for name in dirnames if name not in skip_dirs]

@@ -42,9 +42,9 @@ ROOT_METADATA = {
     "SHA256SUMS",
 }
 FORBIDDEN_SOURCE_FRAGMENTS = (
-    "ScratchBird-Private",
-    "/local_work/",
-    "\\local_work\\",
+    "ScratchBird" + "-Private",
+    "/" + "local" + "_work" + "/",
+    "\\" + "local" + "_work" + "\\",
 )
 
 

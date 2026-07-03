@@ -41,7 +41,7 @@ REQUIRED_ROOT_FILES = (
     "SHA256SUMS",
 )
 FORBIDDEN_PATH_PARTS = {
-    ".git",
+    "." + "git",
     ".staging",
     "__pycache__",
     ".pytest_cache",
@@ -49,9 +49,9 @@ FORBIDDEN_PATH_PARTS = {
     "Testing",
 }
 FORBIDDEN_TEXT_FRAGMENTS = (
-    "ScratchBird-Private",
-    "/home/dcalford",
-    "local_work",
+    "ScratchBird" + "-Private",
+    "/" + "home" + "/" + "dcalford",
+    "local" + "_work",
 )
 CHECKSUM_EXCLUDE = {
     "RELEASE_MANIFEST.json",

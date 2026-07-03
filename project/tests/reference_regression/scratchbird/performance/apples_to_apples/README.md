@@ -16,7 +16,7 @@ Example:
 
 ```bash
 python3 project/tests/reference_regression/scratchbird/performance/apples_to_apples/tools/run_scratchbird_apples_to_apples.py \
-  --latest-server-json /home/dcalford/CliWork/local_work/scratchbird-driver-test-server/latest.json \
+  --latest-server-json build/reference-regression/scratchbird/driver-test-server/latest.json \
   --scale small \
   --postgres-summary build/reference-regression/postgresql/performance/apples-to-apples/postgresql-small-20260619T230437Z/summary.json
 ```

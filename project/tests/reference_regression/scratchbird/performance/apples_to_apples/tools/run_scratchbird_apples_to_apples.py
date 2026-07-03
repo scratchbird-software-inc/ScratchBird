@@ -34,7 +34,12 @@ DEFAULT_OUTPUT_ROOT = (
     / "apples-to-apples"
 )
 DEFAULT_LATEST_JSON = Path(
-    "/home/dcalford/CliWork/local_work/scratchbird-driver-test-server/latest.json"
+    REPO_ROOT
+    / "build"
+    / "reference-regression"
+    / "scratchbird"
+    / "driver-test-server"
+    / "latest.json"
 )
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ROWS_AFFECTED_RE = re.compile(r"^Rows affected:\s+(\d+)\s*$", re.MULTILINE)

@@ -56,19 +56,7 @@ REQUIRED_TOP_LEVEL = {
     "public_input_snapshot",
 }
 
-DOCS_CHILDREN = {"build_requirements", "legal", "contracts"}
-DOCS_CONTRACT_FILES = {
-    Path("implementation_inputs")
-    / "sbsql-canonicalization"
-    / "SBSQL_SURFACE_REGISTRY.csv",
-    Path("implementation_inputs")
-    / "sbsql-canonicalization"
-    / "SBSQL_SURFACE_STATUS_MATRIX.csv",
-}
-
-PRIVATE_LEGAL_WORKING_FILES = {
-    "ScratchBird_legacy_poc_vs_private_cluster_boundary_audit.md",
-}
+DOCS_CHILDREN = {"build_requirements"}
 
 SKIP_DIRS = {
     "__pycache__",
@@ -218,13 +206,6 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
         if entry == "docs":
             mkdir_public(dst)
             for child in sorted(DOCS_CHILDREN):
-                if child == "contracts":
-                    for spec_file in sorted(DOCS_CONTRACT_FILES):
-                        child_src = src / child / spec_file
-                        child_dst = dst / child / spec_file
-                        if child_src.exists():
-                            copy2_public(child_src, child_dst)
-                    continue
                 child_src = src / child
                 child_dst = dst / child
                 if child_src.exists():
@@ -252,9 +233,6 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
 def ignore_public_copy(dirpath: str, names: list[str]) -> set[str]:
     ignored: set[str] = set()
     for name in names:
-        if Path(dirpath).name == "legal" and name in PRIVATE_LEGAL_WORKING_FILES:
-            ignored.add(name)
-            continue
         if name == dot_git() or name.startswith(dot_git()) or name in SKIP_DIRS:
             ignored.add(name)
             continue
