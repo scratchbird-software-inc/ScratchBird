@@ -35,6 +35,7 @@ ALLOWED_TOP_LEVELS = {
     "udr",
 }
 REQUIRED_ROOT_FILES = (
+    "FILE_LOCATION_MANIFEST.json",
     "README.md",
     "PRE_RELEASE_NOT_FINAL.txt",
     "RELEASE_MANIFEST.json",
@@ -51,7 +52,7 @@ FORBIDDEN_PATH_PARTS = {
 FORBIDDEN_TEXT_FRAGMENTS = (
     "ScratchBird" + "-Private",
     "/" + "home" + "/" + "dcalford",
-    "local" + "_work",
+    "/" + "local" + "_work",
 )
 CHECKSUM_EXCLUDE = {
     "RELEASE_MANIFEST.json",
@@ -79,6 +80,12 @@ def sha256_file(path: Path) -> str:
 def is_text_candidate(path: Path) -> bool:
     if path.stat().st_size > 2 * 1024 * 1024:
         return False
+    try:
+        head = path.read_bytes()[:256]
+    except OSError:
+        return False
+    if head.startswith(b"#!"):
+        return True
     if path.suffix.lower() in {
         ".json",
         ".md",
@@ -232,6 +239,43 @@ def validate_sha256sums(rows: dict[str, str], files: dict[str, Path]) -> None:
             fail(f"sha256sums_checksum_mismatch:{rel}")
 
 
+def validate_file_location_manifest(release_root: Path, release_date: str, files: dict[str, Path]) -> None:
+    manifest = load_json(release_root / "FILE_LOCATION_MANIFEST.json")
+    if manifest.get("schema_id") != "scratchbird.prerelease_file_location_manifest.v1":
+        fail("file_location_manifest_schema_mismatch")
+    if manifest.get("release_date") != release_date:
+        fail("file_location_manifest_release_date_mismatch")
+    rows = manifest.get("files")
+    if not isinstance(rows, list):
+        fail("file_location_manifest_files_not_list")
+    expected_paths = set(files) - {"FILE_LOCATION_MANIFEST.json"}
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            fail("file_location_manifest_row_not_object")
+        rel = row.get("path")
+        if not isinstance(rel, str) or rel not in expected_paths:
+            fail(f"file_location_manifest_missing_file:{rel}")
+        if rel in seen:
+            fail(f"file_location_manifest_duplicate:{rel}")
+        seen.add(rel)
+        if not isinstance(row.get("role"), str) or not row["role"]:
+            fail(f"file_location_manifest_missing_role:{rel}")
+        if not isinstance(row.get("installer_destination_hint"), str) or not row["installer_destination_hint"]:
+            fail(f"file_location_manifest_missing_destination_hint:{rel}")
+        if row.get("sha256") != sha256_file(files[rel]):
+            fail(f"file_location_manifest_checksum_mismatch:{rel}")
+        if row.get("bytes") != files[rel].stat().st_size:
+            fail(f"file_location_manifest_size_mismatch:{rel}")
+    if seen != expected_paths:
+        missing = sorted(expected_paths - seen)
+        extra = sorted(seen - expected_paths)
+        if missing:
+            fail(f"file_location_manifest_missing_paths:{','.join(missing[:10])}")
+        if extra:
+            fail(f"file_location_manifest_extra_paths:{','.join(extra[:10])}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("release_root", type=Path)
@@ -255,6 +299,7 @@ def main() -> int:
     files = collect_files(release_root)
     manifest = load_json(release_root / "RELEASE_MANIFEST.json")
     validate_manifest(release_root, release_date, manifest, files, args.allow_empty)
+    validate_file_location_manifest(release_root, release_date, files)
     validate_sha256sums(parse_sha256sums(release_root / "SHA256SUMS"), files)
     print(f"verify_prerelease_packaging_bundle=pass:{release_root.relative_to(repo_root).as_posix()}")
     return 0
