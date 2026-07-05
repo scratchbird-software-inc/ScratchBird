@@ -31,6 +31,12 @@ final class ConnectionConnTest extends TestCase
     private const MCP_MSG_AUTH_START = 0x66;
     private const MCP_MSG_AUTH_CONTINUE = 0x67;
     private const MCP_MSG_DB_CONNECT = 0x69;
+    private const BASELINE_STARTUP_FEATURES = Protocol::FEATURE_SBLR
+        | Protocol::FEATURE_NOTIFICATIONS
+        | Protocol::FEATURE_QUERY_PLAN
+        | Protocol::FEATURE_BATCH
+        | Protocol::FEATURE_PIPELINE
+        | Protocol::FEATURE_SAVEPOINTS;
 
     public function testBinaryTransferFalseDoesNotThrowNotSupportedDuringConnect(): void
     {
@@ -71,7 +77,10 @@ final class ConnectionConnTest extends TestCase
         $cfg->compression = 'off';
         $conn = $this->newConnectionWithoutConstructor($cfg);
         $features = $this->invokeBuildStartupFeatures($conn);
-        $this->assertSame(Protocol::FEATURE_STREAMING, $features);
+        $this->assertSame(
+            self::BASELINE_STARTUP_FEATURES | Protocol::FEATURE_STREAMING | Protocol::FEATURE_BINARY_COPY,
+            $features
+        );
     }
 
     public function testBuildStartupFeaturesIncludesCompressionWhenConfigured(): void
@@ -81,7 +90,7 @@ final class ConnectionConnTest extends TestCase
         $cfg->compression = 'zstd';
         $conn = $this->newConnectionWithoutConstructor($cfg);
         $features = $this->invokeBuildStartupFeatures($conn);
-        $this->assertSame(Protocol::FEATURE_COMPRESSION, $features);
+        $this->assertSame(self::BASELINE_STARTUP_FEATURES | Protocol::FEATURE_COMPRESSION, $features);
     }
 
     public function testBuildStartupFeaturesIncludesCompressionAndStreamingTogether(): void
@@ -91,7 +100,13 @@ final class ConnectionConnTest extends TestCase
         $cfg->compression = 'zstd';
         $conn = $this->newConnectionWithoutConstructor($cfg);
         $features = $this->invokeBuildStartupFeatures($conn);
-        $this->assertSame(Protocol::FEATURE_COMPRESSION | Protocol::FEATURE_STREAMING, $features);
+        $this->assertSame(
+            self::BASELINE_STARTUP_FEATURES
+                | Protocol::FEATURE_COMPRESSION
+                | Protocol::FEATURE_STREAMING
+                | Protocol::FEATURE_BINARY_COPY,
+            $features
+        );
     }
 
     public function testApplyTlsAllowsSslModeDisableWithoutHandshake(): void

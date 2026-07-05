@@ -55,7 +55,14 @@ def main(argv: list[str]) -> int:
         raise SystemExit("usage: legacy_execution_plan10_scratchbird_benchmark_compat_gate.py <repo-root>")
 
     repo_root = Path(argv[1]).resolve()
-    harness_root = repo_root / "docs" / "reference" / "legacy_execution_plan_10_performance_parity" / "benchmark_harness"
+    harness_root = (
+        repo_root
+        / "project"
+        / "tests"
+        / "benchmarks"
+        / "legacy_execution_plan_10_performance_parity"
+        / "benchmark_harness"
+    )
     require(harness_root.exists(), f"missing benchmark harness root: {harness_root}")
 
     sql_dialect = load_module(
@@ -166,7 +173,7 @@ def main(argv: list[str]) -> int:
         "self_join_same_country",
         "bulk_update_with_join",
     }
-    require(set(stress_runner.LEGACY_EXECUTION_PLAN10_TESTS) == required_legacy_tests,
+    require(set(stress_runner.LEGACY_WORKPLAN10_TESTS) == required_legacy_tests,
             "ScratchBird stress runner no longer targets the selected Execution_Plan 10 legacy-seven surface")
     require(stress_runner.SCRATCHBIRD_CURRENT_SURFACE_ADAPTER == "scratchbird_current_native_v1",
             "ScratchBird stress runner no longer declares the current-native adapter")

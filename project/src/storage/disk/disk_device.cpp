@@ -578,7 +578,6 @@ bool NativePreallocateExtent(void* file_handle,
     }
     return false;
   }
-  end = offset + bytes;
   FILE_ALLOCATION_INFO allocation_info{};
   allocation_info.AllocationSize.QuadPart = static_cast<LONGLONG>(end);
   if (::SetFileInformationByHandle(static_cast<HANDLE>(file_handle),

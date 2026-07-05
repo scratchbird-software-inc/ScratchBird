@@ -1,0 +1,187 @@
+# ScratchBird Comparative Benchmarks - Engine Orchestration
+# This compose file starts all database engines for benchmarking
+
+version: '3.8'
+
+services:
+  firebird:
+    build:
+      context: ./engines/firebird
+      dockerfile: Dockerfile
+    container_name: sb-benchmark-firebird
+    environment:
+      - FIREBIRD_DATABASE=benchmark.fdb
+      - FIREBIRD_USER=benchmark
+      - FIREBIRD_PASSWORD=benchmark
+    ports:
+      - "3050:3050"
+    volumes:
+      - firebird_data:/firebird/data
+      - ./results:/benchmark-results
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/collect-version.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mysql:
+    build:
+      context: ./engines/mysql
+      dockerfile: Dockerfile
+    container_name: sb-benchmark-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=benchmark
+      - MYSQL_USER=benchmark
+      - MYSQL_PASSWORD=benchmark
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./results:/benchmark-results
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/collect-version.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgresql:
+    build:
+      context: ./engines/postgresql
+      dockerfile: Dockerfile
+    container_name: sb-benchmark-postgresql
+    environment:
+      - POSTGRES_USER=benchmark
+      - POSTGRES_PASSWORD=benchmark
+      - POSTGRES_DB=benchmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./results:/benchmark-results
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/collect-version.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ScratchBird will be added when ready
+  # scratchbird:
+  #   build:
+  #     context: ./engines/scratchbird
+  #   container_name: sb-benchmark-scratchbird
+  #   ...
+
+  benchmark-runner:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    container_name: sb-benchmark-runner
+    depends_on:
+      firebird:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+    volumes:
+      - ./results:/benchmark-results
+      - ./test-suites:/test-suites
+      - ./scripts:/scripts
+      - ./regression-suites:/regression-suites
+      # Mount local test repositories (read-only)
+      - ${FIREBIRD_REPO_PATH:-../fbt-repository}:/fbt-repository:ro
+      - ${MYSQL_REPO_PATH:-../mysql-server}:/mysql-server:ro
+      - ${POSTGRESQL_REPO_PATH:-../postgresql}:/postgresql:ro
+    networks:
+      - benchmark-net
+    environment:
+      - BENCHMARK_OUTPUT=/benchmark-results
+      - ENGINES=firebird,mysql,postgresql
+    command: ["/scripts/run-benchmarks.sh"]
+
+  # Firebird FBT Test Runner
+  fbt-runner:
+    build:
+      context: ./regression-suites
+      dockerfile: Dockerfile.fbt
+    container_name: sb-fbt-runner
+    volumes:
+      - ./results:/results
+      - ${FIREBIRD_REPO_PATH:-../fbt-repository}:/fbt-repository:ro
+    networks:
+      - benchmark-net
+    profiles:
+      - regression
+      - fbt
+
+  # MySQL Test Runner
+  mysql-test-runner:
+    build:
+      context: ./regression-suites
+      dockerfile: Dockerfile.mysql
+    container_name: sb-mysql-test-runner
+    volumes:
+      - ./results:/results
+      - ${MYSQL_REPO_PATH:-../mysql-server}:/mysql-server:ro
+    networks:
+      - benchmark-net
+    profiles:
+      - regression
+      - mysql-test
+
+  # PostgreSQL Regress Test Runner
+  pg-regress-runner:
+    build:
+      context: ./regression-suites
+      dockerfile: Dockerfile.pg
+    container_name: sb-pg-regress-runner
+    volumes:
+      - ./results:/results
+      - ${POSTGRESQL_REPO_PATH:-../postgresql}:/postgresql:ro
+    networks:
+      - benchmark-net
+    profiles:
+      - regression
+      - pg-regress
+
+  # Stress Test Runner (Dialect-Aware)
+  stress-runner:
+    build:
+      context: ./stress-tests
+      dockerfile: Dockerfile
+    container_name: sb-stress-runner
+    volumes:
+      - ./results:/results
+    networks:
+      - benchmark-net
+    profiles:
+      - stress
+    environment:
+      - STRESS_ENGINE=${STRESS_ENGINE:-firebird}
+      - STRESS_SCALE=${STRESS_SCALE:-medium}
+    command: >
+      python3 runners/dialect_stress_runner.py
+      --engine=${STRESS_ENGINE:-firebird}
+      --host=${STRESS_HOST:-firebird}
+      --port=${STRESS_PORT:-3050}
+      --database=${STRESS_DB:-benchmark.fdb}
+      --user=${STRESS_USER:-benchmark}
+      --password=${STRESS_PASS:-benchmark}
+      --scale=${STRESS_SCALE:-medium}
+      --output-dir=/results
+
+volumes:
+  firebird_data:
+  mysql_data:
+  postgres_data:
+
+networks:
+  benchmark-net:
+    driver: bridge

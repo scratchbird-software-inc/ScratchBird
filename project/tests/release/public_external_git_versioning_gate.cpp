@@ -7,12 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "artifacts/artifact_api.hpp"
+#include "database_lifecycle.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -23,7 +25,23 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
 namespace sblr = scratchbird::engine::sblr;
+namespace uuid = scratchbird::core::uuid;
+
+using scratchbird::core::platform::TypedUuid;
+using scratchbird::core::platform::UuidKind;
+using scratchbird::core::platform::u64;
+using scratchbird::core::platform::u32;
+
+constexpr u64 kBaseMillis = 1770605000000ull;
+constexpr u32 kPageSize = 16384;
+
+struct DatabaseFixture {
+  std::filesystem::path path;
+  TypedUuid database_uuid;
+  TypedUuid filespace_uuid;
+};
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -41,12 +59,38 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-void WriteFile(const std::filesystem::path& path, std::string_view content) {
-  std::filesystem::create_directories(path.parent_path());
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  out << content;
-  out.close();
-  Require(static_cast<bool>(out), "file write failed");
+TypedUuid MakeUuid(UuidKind kind, u64 offset) {
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
+  Require(generated.ok(), "external Git fixture uuid generation failed");
+  return generated.value;
+}
+
+std::string UuidText(TypedUuid typed_uuid) {
+  return uuid::UuidToString(typed_uuid.value);
+}
+
+DatabaseFixture CreateDatabaseFixture(const std::filesystem::path& path) {
+  DatabaseFixture fixture;
+  fixture.path = path;
+  fixture.database_uuid = MakeUuid(UuidKind::database, 10);
+  fixture.filespace_uuid = MakeUuid(UuidKind::filespace, 11);
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = fixture.database_uuid;
+  create.filespace_uuid = fixture.filespace_uuid;
+  create.page_size = kPageSize;
+  create.creation_unix_epoch_millis = kBaseMillis;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << "external Git create diagnostic: "
+              << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+  }
+  Require(created.ok(), "external Git fixture database create failed");
+  return fixture;
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code_or_detail) {
@@ -101,20 +145,62 @@ bool RowHasField(const api::EngineRowValue& row,
   return RowField(row, name) == expected;
 }
 
-api::EngineRequestContext Context(const std::filesystem::path& database_path,
+api::EngineRequestContext Context(const DatabaseFixture& fixture,
                                   std::uint64_t tx) {
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.database_path = database_path.string();
-  context.database_uuid.canonical = "019e3900-0000-7000-8000-00000000e911";
+  context.database_path = fixture.path.string();
+  context.database_uuid.canonical = UuidText(fixture.database_uuid);
   context.session_uuid.canonical = "019e3900-0000-7000-8000-00000000e912";
-  context.transaction_uuid.canonical = "019e3900-0000-7000-8000-00000000e913";
   context.principal_uuid.canonical = "019e3900-0000-7000-8000-00000000e914";
   context.local_transaction_id = tx;
-  context.snapshot_visible_through_local_transaction_id = tx;
+  if (tx != 0) {
+    context.transaction_uuid.canonical = "019e3900-0000-7000-8000-00000000e913";
+    context.snapshot_visible_through_local_transaction_id = tx;
+  }
   context.security_context_present = true;
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
   context.trace_tags.push_back("security.bootstrap");
   return context;
+}
+
+void Begin(api::EngineRequestContext* context) {
+  api::EngineBeginTransactionRequest request;
+  request.context = *context;
+  const auto begun = api::EngineBeginTransaction(request);
+  if (!begun.ok && !begun.diagnostics.empty()) {
+    std::cerr << "external Git begin diagnostic: "
+              << begun.diagnostics.front().code << ':'
+              << begun.diagnostics.front().message_key << ':'
+              << begun.diagnostics.front().detail << '\n';
+  }
+  Require(begun.ok, "external Git transaction begin failed");
+  context->local_transaction_id = begun.local_transaction_id;
+  context->transaction_uuid = begun.transaction_uuid;
+  context->snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context->transaction_isolation_level = begun.isolation_level;
+}
+
+void Commit(api::EngineRequestContext* context) {
+  api::EngineCommitTransactionRequest request;
+  request.context = *context;
+  const auto committed = api::EngineCommitTransaction(request);
+  if (!committed.ok && !committed.diagnostics.empty()) {
+    std::cerr << "external Git commit diagnostic: "
+              << committed.diagnostics.front().code << ':'
+              << committed.diagnostics.front().message_key << ':'
+              << committed.diagnostics.front().detail << '\n';
+  }
+  Require(committed.ok, "external Git transaction commit failed");
+  context->local_transaction_id = 0;
+  context->transaction_uuid.canonical.clear();
 }
 
 sblr::SblrDispatchResult DispatchEncoded(std::string operation_id,
@@ -154,10 +240,13 @@ void RunGate() {
   constexpr std::string_view kObjectUuid = "019e3900-0000-7000-8000-00000000e915";
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "external_git_versioning.sbdb";
-  WriteFile(database_path, "SBDB_EXTERNAL_GIT_VERSIONING_PUBLIC_GATE");
+  const auto fixture = CreateDatabaseFixture(database_path);
+
+  auto import_context = Context(fixture, 0);
+  Begin(&import_context);
 
   api::EngineImportCatalogArtifactsRequest import;
-  import.context = Context(database_path, 900);
+  import.context = import_context;
   import.option_envelopes.push_back("external_git_policy:enabled");
   import.rows.push_back(ArtifactRow(std::string(kObjectUuid),
                                     "schema",
@@ -173,9 +262,11 @@ void RunGate() {
                       "mga_transaction_authority",
                       "local_mga_transaction_inventory"),
           "external Git import did not preserve MGA authority");
+  Commit(&import_context);
 
   api::EngineExportExternalGitSnapshotRequest export_request;
-  export_request.context = Context(database_path, 901);
+  export_request.context = Context(fixture, 0);
+  Begin(&export_request.context);
   export_request.option_envelopes.push_back("external_git_policy:enabled");
   const auto exported = api::EngineExportExternalGitSnapshot(export_request);
   Require(exported.ok, "external Git snapshot export failed");
@@ -192,9 +283,11 @@ void RunGate() {
 
   const auto candidate_rows = MutatedCandidateRows(exported, kObjectUuid);
   Require(!candidate_rows.empty(), "external Git snapshot exported no object rows");
+  Commit(&export_request.context);
 
   api::EngineDiffExternalGitSnapshotRequest diff_request;
-  diff_request.context = Context(database_path, 902);
+  diff_request.context = Context(fixture, 0);
+  Begin(&diff_request.context);
   diff_request.option_envelopes.push_back("external_git_policy:enabled");
   diff_request.rows = candidate_rows;
   const auto diff = api::EngineDiffExternalGitSnapshot(diff_request);
@@ -206,9 +299,11 @@ void RunGate() {
     saw_modified = saw_modified || RowHasField(row, "diff_kind", "modified");
   }
   Require(saw_modified, "external Git diff omitted modified row");
+  Commit(&diff_request.context);
 
   api::EnginePlanExternalGitRollbackRequest rollback_request;
-  rollback_request.context = Context(database_path, 903);
+  rollback_request.context = Context(fixture, 0);
+  Begin(&rollback_request.context);
   rollback_request.option_envelopes.push_back("external_git_policy:enabled");
   rollback_request.rows = candidate_rows;
   const auto rollback_plan = api::EnginePlanExternalGitRollback(rollback_request);
@@ -219,6 +314,7 @@ void RunGate() {
                       "external_git_rollback_apply_route",
                       "authorized_catalog_api_not_git_repository"),
           "external Git rollback plan omitted authorized apply route");
+  Commit(&rollback_request.context);
 
   auto corrupt_rows = exported.result_shape.rows;
   for (auto& row : corrupt_rows) {
@@ -228,24 +324,29 @@ void RunGate() {
     }
   }
   api::EngineDiffExternalGitSnapshotRequest corrupt_request;
-  corrupt_request.context = Context(database_path, 904);
+  corrupt_request.context = Context(fixture, 0);
+  Begin(&corrupt_request.context);
   corrupt_request.option_envelopes.push_back("external_git_policy:enabled");
   corrupt_request.rows = corrupt_rows;
   const auto corrupt = api::EngineDiffExternalGitSnapshot(corrupt_request);
   Require(!corrupt.ok && HasDiagnostic(corrupt, "external_git_snapshot_hash_mismatch"),
           "external Git diff accepted a corrupt snapshot hash");
+  Commit(&corrupt_request.context);
 
   api::EngineImportCatalogArtifactsRequest forbidden_import;
-  forbidden_import.context = Context(database_path, 905);
+  forbidden_import.context = Context(fixture, 0);
+  Begin(&forbidden_import.context);
   forbidden_import.option_envelopes.push_back("external_git_policy:enabled");
   forbidden_import.option_envelopes.push_back("external_git_direct_apply:true");
   forbidden_import.rows.push_back(import.rows.front());
   const auto forbidden = api::EngineImportCatalogArtifacts(forbidden_import);
   Require(!forbidden.ok && HasDiagnostic(forbidden, "external_git_authority_forbidden"),
           "catalog import accepted external Git direct authority");
+  Commit(&forbidden_import.context);
 
   api::EngineApiRequest sblr_request;
-  sblr_request.context = Context(database_path, 906);
+  sblr_request.context = Context(fixture, 0);
+  Begin(&sblr_request.context);
   sblr_request.option_envelopes.push_back("external_git_policy:enabled");
   const auto sblr_export = DispatchEncoded("artifact.external_git.export_snapshot",
                                            "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT",
@@ -256,6 +357,7 @@ void RunGate() {
           "encoded SBLR external Git export route failed");
   Require(HasEvidence(sblr_export.api_result, "git_runtime_authority", "false"),
           "encoded SBLR external Git export became runtime authority");
+  Commit(&sblr_request.context);
 
   std::filesystem::remove_all(temp_dir);
 }
@@ -267,4 +369,3 @@ int main() {
   std::cout << "PUBLIC_EXTERNAL_GIT_VERSIONING_GATE=passed\n";
   return EXIT_SUCCESS;
 }
-

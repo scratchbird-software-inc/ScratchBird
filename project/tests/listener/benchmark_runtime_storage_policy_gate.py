@@ -26,7 +26,14 @@ def main(argv: list[str]) -> int:
         raise SystemExit("usage: benchmark_runtime_storage_policy_gate.py <repo-root>")
 
     repo_root = Path(argv[1]).resolve()
-    harness_root = repo_root / "docs" / "reference" / "legacy_execution_plan_10_performance_parity" / "benchmark_harness"
+    harness_root = (
+        repo_root
+        / "project"
+        / "tests"
+        / "benchmarks"
+        / "legacy_execution_plan_10_performance_parity"
+        / "benchmark_harness"
+    )
     sys.path.insert(0, str(harness_root))
     sys.path.insert(0, str(harness_root / "scripts"))
 

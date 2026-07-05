@@ -124,6 +124,8 @@ def udr_handler_key(row: dict[str, str]) -> str:
         return "udr.sbsql_parser_support.cluster_profile_gate"
     if row["source_status"] == "native_future":
         return "udr.sbsql_parser_support.native_future_decision"
+    if row["sblr_operation_family"] == "sblr.udr.operation.v3":
+        return "udr.sbsql_parser_support.parse_to_sblr_uuid"
     return "udr.sbsql_parser_support.parse_describe_normalize"
 
 

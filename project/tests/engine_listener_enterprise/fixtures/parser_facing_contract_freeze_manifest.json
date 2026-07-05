@@ -28,22 +28,22 @@
     {
       "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
       "resource_kind": "engine_sblr_opcode_registry",
-      "sha256": "b298ed523284bc293939fe3539afb98f247937c33b4333968fd4b606f0b0c438"
+      "sha256": "295f8e60cbdca0cfe71b78f2fc6c916d6a2aa17c1484b30348a1be179b75e304"
     },
     {
       "path": "project/src/server/sblr_admission.cpp",
       "resource_kind": "server_sblr_admission_surface",
-      "sha256": "aba38972859ca4626b4760f48099e0cac8a1402c3716ee193983ff54db55c23e"
+      "sha256": "c794cea80098121093654ddff5eaa898d803ba839e84dbb30193cf024f803af0"
     },
     {
       "path": "project/src/server/sblr_dispatch_server.cpp",
       "resource_kind": "server_sblr_dispatch_surface",
-      "sha256": "7653e41ff84600ac221eccc8298e7d4662ee9ce028a6a52f6c2ba4aca07169fb"
+      "sha256": "d20619fa2a3149ee7f2e0fa7147778b2dc6bffec4811291a3655afb56d659f92"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
       "resource_kind": "parser_facing_strict_row_coverage_ledger",
-      "sha256": "ba7de161d83856ea8c19950c4418a75a99061fef4e8faf268244546a5fefccfe"
+      "sha256": "37dd4dafa6914194c06a193547392f74c1eb675ed835ae9f06016bcda1fd5ad7"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
@@ -53,7 +53,7 @@
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
       "resource_kind": "parser_facing_sbsql_sync_requirements",
-      "sha256": "f6d6a36c7144316c23197ed9278642d8efda1ea6703f3aa112e36e5945e081eb"
+      "sha256": "eb396362d499ef9ae9bfee7eb484b472e4160242b48b5249319ba439f0c15192"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SERVER_AUTHORITY_SURFACE_MATRIX.csv",
@@ -73,7 +73,7 @@
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
       "resource_kind": "sbsql_family_reconciliation_matrix",
-      "sha256": "d6c7b96a3644e52bb90c0a7454ce59a78703fba98cb8cf8be58749c36e82403a"
+      "sha256": "46e70eeac87964ef1852f944408a20bba04f4e17e0d5a985c50d85b0a46ab695"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",

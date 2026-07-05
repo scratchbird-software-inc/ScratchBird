@@ -68,9 +68,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::filesystem::path project = argv[1];
-  const auto repo_root = project.parent_path();
   const auto registry =
-      repo_root / "docs" / "contracts" / "registries" / "reconciliation-diagnostic-codes.yaml";
+      project / "resources" / "diagnostics" / "reconciliation-diagnostic-codes.yaml";
 
   std::set<std::string> registered;
   AddRegisteredCodes(registry, &registered);

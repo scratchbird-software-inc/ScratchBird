@@ -1,0 +1,27 @@
+# MySQL Test Runner
+# Uses original MySQL client to execute mysql-test suite
+
+FROM python:3.11-slim
+
+# Install MySQL client
+RUN apt-get update && apt-get install -y \
+    default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    pymysql \
+    cryptography
+
+# Copy runner scripts
+COPY runners/mysql_test_runner.py /usr/local/bin/
+RUN chmod +x /usr/local/bin/mysql_test_runner.py
+
+# Create results directory
+RUN mkdir -p /results
+
+WORKDIR /regression-suites
+
+# Default command shows help
+ENTRYPOINT ["python3", "/usr/local/bin/mysql_test_runner.py"]
+CMD ["--help"]

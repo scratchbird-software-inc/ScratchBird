@@ -1,0 +1,537 @@
+# Firebird FBT Exclusion List for ScratchBird
+# Tests to skip when running against ScratchBird (not bugs, but unimplemented features)
+
+# ============================================================================
+# Storage/Engine Features
+# ============================================================================
+# Shadow database - Firebird-specific feature
+core_1028
+core_1160
+
+# External tables - Firebird-specific file-based tables
+core_0706
+core_1196
+
+# Database encryption - Firebird 3.0+ feature
+core_4745
+core_5158
+
+# Page-level features (not applicable to ScratchBird)
+core_0162  # Page size tests
+core_0163
+core_0164
+
+# ============================================================================
+# PSQL/Stored Procedures (if not fully implemented)
+# ============================================================================
+# Complex PSQL features - adjust based on implementation status
+# core_0118  # EXECUTE STATEMENT - if not implemented
+# core_0200  # Autonomous transactions - if not implemented
+# core_2005  # Cross-database PSQL - if not implemented
+
+# ============================================================================
+# Generator/Sequence Handling
+# ============================================================================
+# Firebird generators are different from standard sequences
+# May need special handling or exclusion
+# core_0001  # Generator tests - if behavior differs
+
+# ============================================================================
+# System Tables/Monitoring
+# ============================================================================
+# Firebird system tables are engine-specific
+core_1363  # MON$ tables
+core_2256  # MON$ statements
+core_2729  # MON$ transactions
+core_3456  # MON$ tables
+core_3893  # MON$ tables
+core_4371  # MON$ tables
+core_4372  # MON$ tables
+core_4451  # MON$ tables
+core_4734  # MON$ tables
+
+# RDB$ system tables - implementation may differ
+core_0198  # RDB$DATABASE modifications
+core_0484  # System table access
+
+# ============================================================================
+# UDF/User Defined Functions
+# ============================================================================
+# UDFs are Firebird-specific legacy feature
+core_0356
+core_0584
+core_0678
+core_0769
+core_0770
+core_0771
+core_0772
+core_0773
+core_0774
+core_0775
+core_0900
+core_0901
+core_1089
+core_1090
+core_1116
+core_1117
+core_1118
+core_1119
+core_1120
+core_1174
+core_1175
+core_1176
+core_1177
+core_1178
+core_1179
+core_1180
+core_1181
+core_1182
+core_1183
+core_1184
+core_1185
+core_1186
+core_1187
+core_1188
+core_1189
+core_1190
+core_1191
+core_1192
+core_1193
+core_1194
+core_1195
+core_1197
+core_1198
+core_1199
+core_1200
+core_1201
+core_1202
+core_1203
+core_1204
+core_1205
+core_1206
+core_1207
+core_1208
+core_1209
+core_1210
+core_1211
+core_1212
+core_1213
+core_1214
+core_1215
+core_1216
+core_1217
+core_1218
+core_1219
+core_1220
+core_1221
+core_1222
+core_1223
+core_1224
+core_1225
+core_1226
+core_1227
+core_1228
+core_1229
+core_1230
+core_1231
+core_1232
+core_1233
+core_1234
+core_1235
+core_1236
+core_1237
+core_1238
+core_1239
+core_1240
+core_1241
+core_1242
+core_1243
+core_1244
+core_1245
+core_1246
+core_1247
+core_1248
+core_1249
+core_1250
+core_1251
+core_1252
+core_1253
+core_1254
+core_1255
+core_1256
+core_1257
+core_1258
+core_1259
+core_1260
+core_1261
+core_1262
+core_1263
+core_1264
+core_1265
+core_1266
+core_1267
+core_1268
+core_1269
+core_1270
+core_1271
+core_1272
+core_1273
+core_1274
+core_1275
+core_1276
+core_1277
+core_1278
+core_1279
+core_1280
+core_1281
+core_1282
+core_1283
+core_1284
+core_1285
+core_1286
+core_1287
+core_1288
+core_1289
+core_1290
+core_1291
+core_1292
+core_1293
+core_1294
+core_1295
+core_1296
+core_1297
+core_1298
+core_1299
+core_1300
+core_1301
+core_1302
+core_1303
+core_1304
+core_1305
+core_1306
+core_1307
+core_1308
+core_1309
+core_1310
+core_1311
+core_1312
+core_1313
+core_1314
+core_1315
+core_1316
+core_1317
+core_1318
+core_1319
+core_1320
+core_1321
+core_1322
+core_1323
+core_1324
+core_1325
+core_1326
+core_1327
+core_1328
+core_1329
+core_1330
+core_1331
+core_1332
+core_1333
+core_1334
+core_1335
+core_1336
+core_1337
+core_1338
+core_1339
+core_1340
+core_1341
+core_1342
+core_1343
+core_1344
+core_1345
+core_1346
+core_1347
+core_1348
+core_1349
+core_1350
+core_1351
+core_1352
+core_1353
+core_1354
+core_1355
+core_1356
+core_1357
+core_1358
+core_1359
+core_1360
+core_1361
+core_1362
+core_1364
+core_1365
+core_1366
+core_1367
+core_1368
+core_1369
+core_1370
+core_1371
+core_1372
+core_1373
+core_1374
+core_1375
+core_1376
+core_1377
+core_1378
+core_1379
+core_1380
+core_1381
+core_1382
+core_1383
+core_1384
+core_1385
+core_1386
+core_1387
+core_1388
+core_1389
+core_1390
+core_1391
+core_1392
+core_1393
+core_1394
+core_1395
+core_1396
+core_1397
+core_1398
+core_1399
+core_1400
+core_1401
+core_1402
+core_1403
+core_1404
+core_1405
+core_1406
+core_1407
+core_1408
+core_1409
+core_1410
+core_1411
+core_1412
+core_1413
+core_1414
+core_1415
+core_1416
+core_1417
+core_1418
+core_1419
+core_1420
+core_1421
+core_1422
+core_1423
+core_1424
+core_1425
+core_1426
+core_1427
+core_1428
+core_1429
+core_1430
+core_1431
+core_1432
+core_1433
+core_1434
+core_1435
+core_1436
+core_1437
+core_1438
+core_1439
+core_1440
+core_1441
+core_1442
+core_1443
+core_1444
+core_1445
+core_1446
+core_1447
+core_1448
+core_1449
+core_1450
+core_1451
+core_1452
+core_1453
+core_1454
+core_1455
+core_1456
+core_1457
+core_1458
+core_1459
+core_1460
+core_1461
+core_1462
+core_1463
+core_1464
+core_1465
+core_1466
+core_1467
+core_1468
+core_1469
+core_1470
+core_1471
+core_1472
+core_1473
+core_1474
+core_1475
+core_1476
+core_1477
+core_1478
+core_1479
+core_1480
+core_1481
+core_1482
+core_1483
+core_1484
+core_1485
+core_1486
+core_1487
+core_1488
+core_1489
+core_1490
+core_1491
+core_1492
+core_1493
+core_1494
+core_1495
+core_1496
+core_1497
+core_1498
+core_1499
+core_1500
+
+# ============================================================================
+# Wire Protocol / Connection Features
+# ============================================================================
+# Connection strings and protocols
+core_2780  # Connection string parsing
+core_2781
+core_2782
+core_2783
+core_2784
+
+# Service API - Firebird-specific
+core_3537
+core_3538
+core_3539
+core_3540
+core_3541
+
+# ============================================================================
+# Backup/Restore (gbak)
+# ============================================================================
+core_0020  # gbak tests
+core_0021
+core_0022
+core_0023
+core_0024
+core_0025
+core_0026
+core_0027
+core_0028
+core_0029
+core_0030
+core_0031
+core_0032
+core_0033
+core_0034
+core_0035
+core_0036
+core_0037
+core_0038
+core_0039
+core_0040
+core_0041
+core_0042
+core_0043
+core_0044
+core_0045
+core_0046
+core_0047
+core_0048
+core_0049
+core_0050
+core_0051
+core_0052
+core_0053
+core_0054
+core_0055
+core_0056
+core_0057
+core_0058
+core_0059
+core_0060
+core_0061
+core_0062
+core_0063
+core_0064
+core_0065
+core_0066
+core_0067
+core_0068
+core_0069
+core_0070
+core_0071
+core_0072
+core_0073
+core_0074
+core_0075
+core_0076
+core_0077
+core_0078
+core_0079
+core_0080
+core_0081
+core_0082
+core_0083
+core_0084
+core_0085
+core_0086
+core_0087
+core_0088
+core_0089
+core_0090
+core_0091
+core_0092
+core_0093
+core_0094
+core_0095
+core_0096
+core_0097
+core_0098
+core_0099
+core_0100
+
+# ============================================================================
+# Authentication/Security
+# ============================================================================
+# User management - may differ in implementation
+core_3000  # SRP authentication
+core_3001
+core_3002
+core_3003
+core_3004
+core_3005
+core_3006
+core_3007
+core_3008
+core_3009
+
+# ============================================================================
+# Character Set/Collation
+# ============================================================================
+# Firebird-specific collation handling
+core_0330
+core_0331
+core_0332
+core_0333
+core_0334
+core_0335
+core_0336
+core_0337
+core_0338
+core_0339
+core_0340

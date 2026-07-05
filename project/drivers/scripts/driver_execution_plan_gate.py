@@ -298,8 +298,8 @@ def check_inventory(ctx: Context) -> int:
 def check_old_paths(ctx: Context) -> int:
     roots = [
         ctx.drivers_root,
-        ctx.repo_root / "docs/reference/legacy_execution_plan_10_performance_parity/benchmark_harness/scripts",
-        ctx.repo_root / "docs/reference/legacy_execution_plan_10_performance_parity/benchmark_harness/stress-tests/runners",
+        ctx.project_root / "tests/benchmarks/legacy_execution_plan_10_performance_parity/benchmark_harness/scripts",
+        ctx.project_root / "tests/benchmarks/legacy_execution_plan_10_performance_parity/benchmark_harness/stress-tests/runners",
     ]
     hits: list[str] = []
     fixture_root = ctx.execution_plan_root.resolve()

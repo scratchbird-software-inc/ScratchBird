@@ -1,0 +1,34 @@
+# Python dependencies for ScratchBird Benchmarks
+# Installation options:
+#
+# Option 1: Use pip with --break-system-packages (simplest, use with caution)
+#   pip3 install --break-system-packages -r requirements.txt
+#
+# Option 2: Use virtual environment (recommended)
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip3 install -r requirements.txt
+#
+# Option 3: Install system packages where available
+#   sudo apt install python3-psutil
+#   pip3 install --user fdb  # for packages not in apt
+
+# System information collection
+psutil>=5.9.0
+
+# Firebird driver
+# Note: python3-fdb is not in Ubuntu repos, use pip
+fdb>=2.0.0
+
+# Alternative: use JayDeBeApi with Firebird JDBC if fdb fails
+# JayDeBeApi>=1.2.3
+
+# MySQL drivers (uncomment one)
+PyMySQL>=1.1.0
+# mysql-connector-python>=8.0.0
+
+# PostgreSQL driver (uncomment)
+psycopg2-binary>=2.9.0
+
+# Optional dependencies for better system detection
+# distro>=1.8.0  # Linux distribution detection

@@ -1,0 +1,79 @@
+{
+  "engines": {
+    "firebird": {
+      "runtime_service": "firebird",
+      "supported_index_families": [
+        "btree"
+      ],
+      "supported_workload_families": [
+        "point_lookup",
+        "range_scan",
+        "composite_predicate",
+        "order_preserving_scan"
+      ],
+      "plan_capture": {
+        "mode": "cursor_plan",
+        "supports_structured_json": false
+      }
+    },
+    "mysql": {
+      "runtime_service": "mysql",
+      "supported_index_families": [
+        "btree",
+        "fulltext_inverted",
+        "rtree"
+      ],
+      "supported_workload_families": [
+        "point_lookup",
+        "range_scan",
+        "composite_predicate",
+        "order_preserving_scan",
+        "fulltext_search"
+      ],
+      "plan_capture": {
+        "mode": "explain_json",
+        "supports_structured_json": true
+      }
+    },
+    "postgresql": {
+      "runtime_service": "postgresql",
+      "supported_index_families": [
+        "btree",
+        "bitmap_filter",
+        "brin_summary",
+        "gist",
+        "spgist",
+        "fulltext_inverted"
+      ],
+      "supported_workload_families": [
+        "point_lookup",
+        "range_scan",
+        "composite_predicate",
+        "order_preserving_scan",
+        "bitmap_filtering",
+        "coarse_summary_filter",
+        "fulltext_search"
+      ],
+      "plan_capture": {
+        "mode": "explain_json",
+        "supports_structured_json": true
+      }
+    },
+    "scratchbird": {
+      "runtime_service": "scratchbird",
+      "supported_index_families": [
+        "btree"
+      ],
+      "supported_workload_families": [
+        "point_lookup",
+        "range_scan",
+        "composite_predicate",
+        "order_preserving_scan"
+      ],
+      "plan_capture": {
+        "mode": "explain_json",
+        "supports_structured_json": true
+      }
+    }
+  }
+}

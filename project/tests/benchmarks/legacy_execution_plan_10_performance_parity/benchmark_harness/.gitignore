@@ -1,0 +1,38 @@
+# Benchmark results (large files, use git-lfs if needed)
+results/*.json
+results/*.txt
+results/*.html
+results/*.csv
+*.log
+
+# Docker volumes
+volumes/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+results/
+.benchmark-engine-ports/

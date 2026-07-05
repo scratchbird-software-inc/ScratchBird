@@ -26,14 +26,29 @@ class SBProtocolHandlerStartupFeaturesTest {
     private static final int PROTOCOL_VERSION = 0x0101;
     private static final long FEATURE_COMPRESSION = 1L << 0;
     private static final long FEATURE_STREAMING = 1L << 1;
+    private static final long FEATURE_SBLR = 1L << 2;
+    private static final long FEATURE_NOTIFICATIONS = 1L << 4;
+    private static final long FEATURE_QUERY_PLAN = 1L << 5;
+    private static final long FEATURE_BATCH = 1L << 6;
+    private static final long FEATURE_PIPELINE = 1L << 7;
+    private static final long FEATURE_BINARY_COPY = 1L << 8;
+    private static final long FEATURE_SAVEPOINTS = 1L << 9;
+    private static final long BASELINE_FEATURES = FEATURE_SBLR
+            | FEATURE_NOTIFICATIONS
+            | FEATURE_QUERY_PLAN
+            | FEATURE_BATCH
+            | FEATURE_PIPELINE
+            | FEATURE_SAVEPOINTS;
     private static final int P1_CANONICAL_TYPE_REF_BYTES = 144;
 
     @Test
     void startupPayloadEncodesFeatureFlagsFromConnectionOptions() throws Exception {
-        assertEquals(FEATURE_STREAMING, startupFeatureBits(true, "off"));
-        assertEquals(0L, startupFeatureBits(false, "off"));
-        assertEquals(FEATURE_COMPRESSION, startupFeatureBits(false, "zstd"));
-        assertEquals(FEATURE_COMPRESSION | FEATURE_STREAMING, startupFeatureBits(true, "zstd"));
+        assertEquals(BASELINE_FEATURES | FEATURE_STREAMING | FEATURE_BINARY_COPY,
+            startupFeatureBits(true, "off"));
+        assertEquals(BASELINE_FEATURES, startupFeatureBits(false, "off"));
+        assertEquals(BASELINE_FEATURES | FEATURE_COMPRESSION, startupFeatureBits(false, "zstd"));
+        assertEquals(BASELINE_FEATURES | FEATURE_COMPRESSION | FEATURE_STREAMING | FEATURE_BINARY_COPY,
+            startupFeatureBits(true, "zstd"));
     }
 
     @Test

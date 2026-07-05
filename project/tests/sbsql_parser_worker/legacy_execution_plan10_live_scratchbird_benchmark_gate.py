@@ -242,10 +242,24 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     repo_root = Path(args.repo_root).resolve()
-    harness_root = repo_root / "docs" / "reference" / "legacy_execution_plan_10_performance_parity" / "benchmark_harness"
+    harness_root = (
+        repo_root
+        / "project"
+        / "tests"
+        / "benchmarks"
+        / "legacy_execution_plan_10_performance_parity"
+        / "benchmark_harness"
+    )
     runner = harness_root / "scripts" / "benchmark_runner.py"
     stress_runner = harness_root / "stress-tests" / "runners" / "stress_test_runner.py"
-    comparison_script = repo_root / "docs" / "reference" / "legacy_execution_plan_10_performance_parity" / "compare_execution_plan10_baseline.py"
+    comparison_script = (
+        repo_root
+        / "project"
+        / "tests"
+        / "benchmarks"
+        / "legacy_execution_plan_10_performance_parity"
+        / "compare_execution_plan10_baseline.py"
+    )
     comparability_gate = repo_root / "project" / "tests" / "sbsql_parser_worker" / "legacy_execution_plan10_comparability_gate.py"
     require(runner.exists(), f"benchmark runner missing: {runner}")
     require(stress_runner.exists(), f"stress benchmark runner missing: {stress_runner}")

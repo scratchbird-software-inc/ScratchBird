@@ -1,0 +1,26 @@
+# PostgreSQL pg_regress Test Runner
+# Uses original psql client to execute regression tests
+
+FROM python:3.11-slim
+
+# Install PostgreSQL client
+RUN apt-get update && apt-get install -y \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    psycopg2-binary
+
+# Copy runner scripts
+COPY runners/pg_regress_runner.py /usr/local/bin/
+RUN chmod +x /usr/local/bin/pg_regress_runner.py
+
+# Create results directory
+RUN mkdir -p /results
+
+WORKDIR /regression-suites
+
+# Default command shows help
+ENTRYPOINT ["python3", "/usr/local/bin/pg_regress_runner.py"]
+CMD ["--help"]

@@ -294,8 +294,20 @@ bool BackupForwardSessionProof(const std::filesystem::path& work_dir) {
 
   auto tx1 = Context(source, "pcr085-source-tx1");
   ok = Expect(Begin(&tx1), "PCR-085 source tx1 should begin") && ok;
+  const std::string schema_uuid = UuidText(UuidKind::schema, 500);
+  api::EngineCreateSchemaRequest schema;
+  schema.context = tx1;
+  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "pcr085", true});
+  const auto created_schema = api::EngineCreateSchema(schema);
+  ok = ExpectApiOk(created_schema,
+                   "PCR-085 source schema should create") && ok;
+  tx1.current_schema_uuid.canonical = schema_uuid;
   api::EngineCreateTableRequest create;
   create.context = tx1;
+  create.target_schema.uuid.canonical = schema_uuid;
+  create.target_schema.object_kind = "schema";
   create.table_names.push_back({"en", "primary", "", "backup_forward_items", true});
   api::EngineColumnDefinition payload_col;
   payload_col.names.push_back({"en", "primary", "", "payload", true});

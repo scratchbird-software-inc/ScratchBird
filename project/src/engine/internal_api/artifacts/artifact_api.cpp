@@ -130,7 +130,9 @@ EngineApiDiagnostic ValidateExternalGitRequest(const EngineApiRequest& request,
 
 std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestContext& context) {
   std::vector<ArtifactSnapshotEntry> rows;
+  std::set<std::string> schema_tree_uuids;
   for (const auto& schema : VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+    schema_tree_uuids.insert(schema.schema_uuid);
     ArtifactSnapshotEntry entry;
     entry.object_uuid = schema.schema_uuid;
     entry.object_kind = "schema";
@@ -141,7 +143,9 @@ std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestCo
     rows.push_back(std::move(entry));
   }
   for (const auto& record : VisibleApiBehaviorRecords(context, {}, context.local_transaction_id)) {
-    if (record.object_kind == "schema") { continue; }
+    if (record.object_kind == "schema" && schema_tree_uuids.contains(record.object_uuid)) {
+      continue;
+    }
     ArtifactSnapshotEntry entry;
     entry.object_uuid = record.object_uuid;
     entry.object_kind = record.object_kind;
@@ -398,12 +402,16 @@ EngineExportCatalogArtifactsResult EngineExportCatalogArtifacts(const EngineExpo
   }
   auto result = MakeApiBehaviorSuccess<EngineExportCatalogArtifactsResult>(request.context, "artifact.export_catalog");
   std::size_t count = 0;
+  std::set<std::string> schema_tree_uuids;
   for (const auto& schema : VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id)) {
+    schema_tree_uuids.insert(schema.schema_uuid);
     AddArtifactRow(&result, "catalog_object", schema.schema_uuid, "schema", schema.default_name, schema.payload);
     ++count;
   }
   for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id)) {
-    if (record.object_kind == "schema") { continue; }
+    if (record.object_kind == "schema" && schema_tree_uuids.contains(record.object_uuid)) {
+      continue;
+    }
     AddArtifactRow(&result,
                    "api_behavior_record",
                    record.object_uuid,

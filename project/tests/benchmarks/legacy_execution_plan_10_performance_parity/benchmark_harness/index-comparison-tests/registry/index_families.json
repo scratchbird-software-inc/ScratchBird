@@ -1,0 +1,64 @@
+{
+  "index_families": [
+    {
+      "name": "btree",
+      "phase": "active",
+      "description": "Exact and ordered lookups, range scans, and composite key access."
+    },
+    {
+      "name": "lsm_range",
+      "phase": "planned",
+      "description": "LSM-backed exact and range access."
+    },
+    {
+      "name": "gist",
+      "phase": "planned",
+      "description": "Generalized tree search over structured predicates."
+    },
+    {
+      "name": "spgist",
+      "phase": "planned",
+      "description": "Space-partitioned search."
+    },
+    {
+      "name": "rtree",
+      "phase": "planned",
+      "description": "Spatial overlap and containment access."
+    },
+    {
+      "name": "bitmap_filter",
+      "phase": "planned",
+      "description": "Bitmap-style filtering and index intersection."
+    },
+    {
+      "name": "brin_summary",
+      "phase": "planned",
+      "description": "Block or zone summary filtering."
+    },
+    {
+      "name": "columnstore",
+      "phase": "planned",
+      "description": "Columnar scan and aggregation access."
+    },
+    {
+      "name": "fulltext_inverted",
+      "phase": "planned",
+      "description": "Text and inverted-index search."
+    },
+    {
+      "name": "vector_flat",
+      "phase": "planned",
+      "description": "Brute-force vector comparison."
+    },
+    {
+      "name": "vector_hnsw",
+      "phase": "planned",
+      "description": "HNSW approximate nearest-neighbor search."
+    },
+    {
+      "name": "vector_ivf",
+      "phase": "planned",
+      "description": "IVF approximate nearest-neighbor search."
+    }
+  ]
+}

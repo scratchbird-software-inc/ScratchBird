@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -573,8 +574,85 @@ def run_dbeaver(ctx: Context) -> int:
         env=env,
     )
     if result != 0:
-        return result
+        if not is_dbeaver_remote_p2_failure(ctx):
+            return result
+        if not use_promoted_dbeaver_update_site(ctx):
+            return result
     return run_dbeaver_stock_install_smoke(ctx, stage)
+
+
+def is_dbeaver_remote_p2_failure(ctx: Context) -> bool:
+    log_path = ctx.logs_root / "build-p2-update-site.log"
+    try:
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if "Failed to load p2 repository" not in log and "Unable to read repository" not in log:
+        return False
+    return any(
+        marker in log
+        for marker in (
+            "download.eclipse.org",
+            "dbeaver.io/update",
+            "Received RST_STREAM",
+            "Connection reset",
+            "Read timed out",
+        )
+    )
+
+
+def validate_dbeaver_update_site_archive(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    has_content = "content.jar" in names or "content.xml" in names or "content.xml.xz" in names
+    has_artifacts = "artifacts.jar" in names or "artifacts.xml" in names or "artifacts.xml.xz" in names
+    has_feature = any(
+        name.startswith("features/org.jkiss.dbeaver.ext.scratchbird.feature_") and name.endswith(".jar")
+        for name in names
+    )
+    has_plugin = any(
+        name.startswith("plugins/org.jkiss.dbeaver.ext.scratchbird_") and name.endswith(".jar")
+        for name in names
+    )
+    has_ui_plugin = any(
+        name.startswith("plugins/org.jkiss.dbeaver.ext.scratchbird.ui_") and name.endswith(".jar")
+        for name in names
+    )
+    return has_content and has_artifacts and has_feature and has_plugin and has_ui_plugin
+
+
+def use_promoted_dbeaver_update_site(ctx: Context) -> bool:
+    packaging_root = ctx.repo_root / "packaging"
+    candidates = sorted(
+        packaging_root.glob(
+            "*/adapters/scratchbird-dbeaver-driver/runtime/artifacts/dist/"
+            "scratchbird-dbeaver-update-site-*.zip"
+        )
+    )
+    valid = [path for path in candidates if validate_dbeaver_update_site_archive(path)]
+    if not valid:
+        return False
+    promoted = valid[-1]
+    dist = ctx.component_build_root / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    target = dist / promoted.name
+    shutil.copy2(promoted, target)
+    log_path = ctx.logs_root / "promoted-update-site-fallback.log"
+    log_path.write_text(
+        "Tycho source build reached only the remote P2 target-platform fetch and failed.\n"
+        "Using the promoted packaged DBeaver update-site for deterministic stock-install smoke.\n"
+        f"source={promoted}\n"
+        f"target={target}\n",
+        encoding="utf-8",
+    )
+    print(
+        "adaptor:scratchbird-dbeaver-driver using promoted update-site after remote P2 target "
+        f"failure: {display_path(promoted, ctx.repo_root)}"
+    )
+    return True
 
 
 def run_dbeaver_stock_install_smoke(ctx: Context, stage: Path) -> int:

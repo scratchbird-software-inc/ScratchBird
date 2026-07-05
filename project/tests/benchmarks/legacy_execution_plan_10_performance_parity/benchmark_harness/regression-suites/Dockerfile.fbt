@@ -1,0 +1,29 @@
+# Firebird FBT Test Runner
+# Uses original Firebird client tools to execute FBT tests
+
+FROM python:3.11-slim
+
+# Install Firebird client and isql
+RUN apt-get update && apt-get install -y \
+    firebird3.0-utils \
+    libfbclient2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    fdb \
+    firebird-driver \
+    protobuf
+
+# Copy runner scripts
+COPY runners/fbt_runner.py /usr/local/bin/
+RUN chmod +x /usr/local/bin/fbt_runner.py
+
+# Create results directory
+RUN mkdir -p /results
+
+WORKDIR /regression-suites
+
+# Default command shows help
+ENTRYPOINT ["python3", "/usr/local/bin/fbt_runner.py"]
+CMD ["--help"]

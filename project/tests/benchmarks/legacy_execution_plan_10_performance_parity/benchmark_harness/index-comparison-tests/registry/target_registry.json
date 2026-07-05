@@ -1,0 +1,53 @@
+{
+  "targets": {
+    "upstream-firebird": {
+      "engine": "firebird",
+      "runtime_service": "firebird",
+      "target_class": "upstream",
+      "dialect_family": "firebird",
+      "enabled": true
+    },
+    "upstream-mysql": {
+      "engine": "mysql",
+      "runtime_service": "mysql",
+      "target_class": "upstream",
+      "dialect_family": "mysql",
+      "enabled": true
+    },
+    "upstream-postgresql": {
+      "engine": "postgresql",
+      "runtime_service": "postgresql",
+      "target_class": "upstream",
+      "dialect_family": "postgresql",
+      "enabled": true
+    },
+    "scratchbird-firebird": {
+      "engine": "firebird",
+      "runtime_service": "scratchbird",
+      "target_class": "scratchbird-emulation",
+      "dialect_family": "firebird",
+      "enabled": true
+    },
+    "scratchbird-mysql": {
+      "engine": "mysql",
+      "runtime_service": "scratchbird",
+      "target_class": "scratchbird-emulation",
+      "dialect_family": "mysql",
+      "enabled": true
+    },
+    "scratchbird-postgresql": {
+      "engine": "postgresql",
+      "runtime_service": "scratchbird",
+      "target_class": "scratchbird-emulation",
+      "dialect_family": "postgresql",
+      "enabled": true
+    },
+    "scratchbird-native": {
+      "engine": "scratchbird",
+      "runtime_service": "scratchbird",
+      "target_class": "scratchbird-native",
+      "dialect_family": "sblr",
+      "enabled": true
+    }
+  }
+}
