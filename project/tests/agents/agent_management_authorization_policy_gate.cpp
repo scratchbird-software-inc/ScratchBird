@@ -197,6 +197,24 @@ api::EngineFilespacePreallocateRequest FilespacePreallocateRequest(
   return request;
 }
 
+void SeedVisibleFilespaceDescriptor(const Fixture& fixture) {
+  api::EngineFilespaceLifecycleRequest request;
+  request.context = Context(fixture, {"FILESPACE_LIFECYCLE_CONTROL"});
+  request.operation_id = "filespace.create";
+  request.target_object = FilespaceTarget(fixture);
+  request.option_envelopes.push_back("filespace.page_size_bytes:16384");
+  request.option_envelopes.push_back("filespace.current_pages:64");
+  request.option_envelopes.push_back("filespace.total_pages:64");
+  request.option_envelopes.push_back("filespace.free_pages:32");
+  request.option_envelopes.push_back("filespace.preallocated_pages:4");
+  request.option_envelopes.push_back("filespace.maximum_pages:256");
+  request.option_envelopes.push_back("filespace.role:secondary_data");
+  const auto created = api::EngineFilespaceLifecycleOperation(request);
+  Require(created.ok, "visible filespace descriptor seed failed");
+  Require(HasEvidence(created, "storage_executor", "ApplyFilespaceOperation"),
+          "visible filespace descriptor seed storage evidence missing");
+}
+
 api::EngineRequestPagePreallocationRequest PageHookRequest(const Fixture& fixture) {
   api::EngineRequestPagePreallocationRequest request;
   request.context = Context(fixture, {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"});
@@ -348,6 +366,7 @@ void TestFilespacePreallocateAuthorization(const Fixture& fixture) {
 
   auto allowed = FilespacePreallocateRequest(
       fixture, {"OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL"});
+  SeedVisibleFilespaceDescriptor(fixture);
   const auto allowed_result = api::EngineFilespacePreallocate(allowed);
   Require(allowed_result.ok, "authorized filespace preallocate failed");
   Require(HasEvidence(allowed_result, "storage_executor", "PreallocateFilespace"),

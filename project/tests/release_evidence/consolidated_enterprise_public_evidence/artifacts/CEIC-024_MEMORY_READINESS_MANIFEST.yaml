@@ -3,7 +3,7 @@
   "schema_version": 1,
   "manifest_kind": "memory_readiness_manifest",
   "search_key": "CEIC_024_MEMORY_READINESS_MANIFEST",
-  "manifest_uuid": "d0f8759f-ded7-5a3a-925e-ff11c612c82d",
+  "manifest_uuid": "e76bf75e-8906-568f-903b-7f90a538e343",
   "subsystem": "memory",
   "slice_ids": [
     "CEIC-010",
@@ -27,10 +27,10 @@
     "CEIC-028",
     "CEIC-029"
   ],
-  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
-  "source_branch": "codex/migration-project-issue-closures",
-  "source_evidence_digest": "3360d17d7e05c20e686cc25bb4f5b57088280404f23788eb1f3b0a4b208bdcdf",
-  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "source_commit": "a036561dfb2514b01ac0d7e6eeede6bf15a6b2c3",
+  "source_branch": "main",
+  "source_evidence_digest": "9281878f84d78f81beef13cca9b377fc72013d68353a6b81c729cbb08d84a17c",
+  "generated_at_utc": "2026-07-05T16:03:06-04:00",
   "generated_by": "project/tools/ceic_memory_readiness_manifest.py#CEIC_024_MEMORY_READINESS_MANIFEST_TOOL",
   "build_profile": "focused_ceic_memory_manifest",
   "authority_boundary": {
@@ -177,7 +177,7 @@
       "search_key": "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE",
       "state": "implemented",
       "surface": "foreign/native memory reservation",
-      "sha256": "c3a7f8357a349a3354ec623674f19353ce775fa2b4a36a7276faa507d7293032"
+      "sha256": "7c6d0d6d439abbfa2361dcfdc6347db1f287bcf13af33839a9ae4a2d3608e5b2"
     },
     {
       "slice_id": "CEIC-017",
@@ -201,7 +201,7 @@
       "search_key": "MMCH_PAGE_CACHE_SHARDED_FRAME_TABLE",
       "state": "implemented",
       "surface": "page-cache frame ownership",
-      "sha256": "62b875049aad6077bc6c519e43e9712fa004af2bcf5705f8d2b13629da66085e"
+      "sha256": "112c6dc4368c657365917bea691a3bb615c5be0f4048b061de9a170f78b6af0b"
     },
     {
       "slice_id": "CEIC-020",
@@ -292,8 +292,8 @@
     },
     {
       "path": "project/src/core/memory/foreign_memory_reservation.cpp",
-      "sha256": "c3a7f8357a349a3354ec623674f19353ce775fa2b4a36a7276faa507d7293032",
-      "bytes": 41628
+      "sha256": "7c6d0d6d439abbfa2361dcfdc6347db1f287bcf13af33839a9ae4a2d3608e5b2",
+      "bytes": 41831
     },
     {
       "path": "project/src/core/memory/hierarchical_memory_budget_ledger.hpp",
@@ -367,8 +367,8 @@
     },
     {
       "path": "project/src/storage/page/page_cache.cpp",
-      "sha256": "62b875049aad6077bc6c519e43e9712fa004af2bcf5705f8d2b13629da66085e",
-      "bytes": 64655
+      "sha256": "112c6dc4368c657365917bea691a3bb615c5be0f4048b061de9a170f78b6af0b",
+      "bytes": 67500
     },
     {
       "path": "project/tests/consolidated_enterprise/CMakeLists.txt",

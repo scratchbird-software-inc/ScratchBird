@@ -3274,7 +3274,14 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
 
 struct ScopedDecodedRowCacheEntry {
   std::uintmax_t file_size = 0;
+  std::int64_t file_mtime_ticks = 0;
   std::vector<CrudRowVersionRecord> rows;
+};
+
+struct ScopedRelationFileIdentity {
+  std::uintmax_t file_size = 0;
+  std::int64_t file_mtime_ticks = 0;
+  bool ok = false;
 };
 
 constexpr std::size_t kScopedDecodedRowCacheMaxAutoWarmRows = 60000;
@@ -3288,6 +3295,26 @@ std::unordered_map<std::string, ScopedDecodedRowCacheEntry>&
 ScopedDecodedRowCache() {
   static std::unordered_map<std::string, ScopedDecodedRowCacheEntry> cache;
   return cache;
+}
+
+ScopedRelationFileIdentity ScopedRelationTextFileIdentity(
+    const std::string& path) {
+  ScopedRelationFileIdentity identity;
+  std::error_code ignored;
+  const auto file_size = std::filesystem::file_size(path, ignored);
+  if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
+    return identity;
+  }
+  ignored.clear();
+  const auto mtime = std::filesystem::last_write_time(path, ignored);
+  if (ignored) {
+    return identity;
+  }
+  identity.file_size = file_size;
+  identity.file_mtime_ticks =
+      static_cast<std::int64_t>(mtime.time_since_epoch().count());
+  identity.ok = true;
+  return identity;
 }
 
 void UpdateScopedDecodedRowCacheAfterAppend(
@@ -3308,9 +3335,8 @@ void UpdateScopedDecodedRowCacheAfterAppend(
       cache.erase(path);
       continue;
     }
-    std::error_code ignored;
-    const auto file_size = std::filesystem::file_size(path, ignored);
-    if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
+    const auto identity = ScopedRelationTextFileIdentity(path);
+    if (!identity.ok) {
       cache.erase(path);
       continue;
     }
@@ -3318,8 +3344,11 @@ void UpdateScopedDecodedRowCacheAfterAppend(
         static_cast<std::uintmax_t>(encoded->second.size());
     auto existing = cache.find(path);
     if (existing == cache.end()) {
-      if (file_size == appended_bytes) {
-        cache.emplace(path, ScopedDecodedRowCacheEntry{file_size, decoded_rows});
+      if (identity.file_size == appended_bytes) {
+        cache.emplace(path,
+                      ScopedDecodedRowCacheEntry{identity.file_size,
+                                                 identity.file_mtime_ticks,
+                                                 decoded_rows});
       }
       continue;
     }
@@ -3328,17 +3357,22 @@ void UpdateScopedDecodedRowCacheAfterAppend(
       cache.erase(existing);
       continue;
     }
-    if (file_size < appended_bytes ||
-        existing->second.file_size != file_size - appended_bytes) {
-      if (existing->second.file_size != file_size) {
-        cache.erase(existing);
+    if (identity.file_size < appended_bytes ||
+        existing->second.file_size != identity.file_size - appended_bytes) {
+      cache.erase(existing);
+      if (identity.file_size == appended_bytes) {
+        cache.emplace(path,
+                      ScopedDecodedRowCacheEntry{identity.file_size,
+                                                 identity.file_mtime_ticks,
+                                                 decoded_rows});
       }
       continue;
     }
     existing->second.rows.insert(existing->second.rows.end(),
                                  decoded_rows.begin(),
                                  decoded_rows.end());
-    existing->second.file_size = file_size;
+    existing->second.file_size = identity.file_size;
+    existing->second.file_mtime_ticks = identity.file_mtime_ticks;
   }
 }
 
@@ -3361,11 +3395,11 @@ bool LoadDecodedScopedRowsForTable(
   std::error_code ignored;
   std::uintmax_t file_size = 0;
   if (text_exists) {
-    const auto text_size = std::filesystem::file_size(path, ignored);
-    if (ignored || text_size == static_cast<std::uintmax_t>(-1)) {
+    const auto identity = ScopedRelationTextFileIdentity(path);
+    if (!identity.ok) {
       return false;
     }
-    file_size += text_size;
+    file_size += identity.file_size;
   }
   if (binary_exists) {
     ignored.clear();
@@ -3381,10 +3415,19 @@ bool LoadDecodedScopedRowsForTable(
   {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
     const auto cached = ScopedDecodedRowCache().find(path);
-    if (cached != ScopedDecodedRowCache().end() &&
-        cached->second.file_size == file_size) {
-      *rows = cached->second.rows;
-      return true;
+    if (cached != ScopedDecodedRowCache().end()) {
+      const auto identity = text_exists
+                                ? ScopedRelationTextFileIdentity(path)
+                                : ScopedRelationFileIdentity{};
+      const bool text_identity_matches =
+          !text_exists ||
+          (identity.ok && cached->second.file_mtime_ticks ==
+                              identity.file_mtime_ticks);
+      if (cached->second.file_size == file_size && text_identity_matches) {
+        *rows = cached->second.rows;
+        return true;
+      }
+      ScopedDecodedRowCache().erase(cached);
     }
   }
 
@@ -3426,7 +3469,13 @@ bool LoadDecodedScopedRowsForTable(
   }
   {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
-    ScopedDecodedRowCache()[path] = {file_size, decoded_rows};
+    const auto identity = text_exists
+                              ? ScopedRelationTextFileIdentity(path)
+                              : ScopedRelationFileIdentity{};
+    ScopedDecodedRowCache()[path] = {
+        file_size,
+        identity.ok ? identity.file_mtime_ticks : 0,
+        decoded_rows};
   }
   *rows = std::move(decoded_rows);
   return true;
@@ -3659,6 +3708,7 @@ bool IndexEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
 
 struct DescriptorFieldsCacheRecord {
   std::uintmax_t file_size = 0;
+  std::int64_t file_mtime_ticks = 0;
   std::map<std::string, std::vector<std::pair<std::string, std::string>>>
       descriptors;
 };
@@ -3676,20 +3726,26 @@ std::map<std::string, DescriptorFieldsCacheRecord>& DescriptorFieldsCache() {
 struct MgaMetadataCacheKey {
   std::string metadata_path;
   std::uintmax_t metadata_file_size = 0;
+  std::int64_t metadata_file_mtime_ticks = 0;
   std::string savepoint_path;
   std::uintmax_t savepoint_file_size = 0;
+  std::int64_t savepoint_file_mtime_ticks = 0;
   std::uint64_t local_transaction_id = 0;
 
   bool operator<(const MgaMetadataCacheKey& other) const {
     return std::tie(metadata_path,
                     metadata_file_size,
+                    metadata_file_mtime_ticks,
                     savepoint_path,
                     savepoint_file_size,
+                    savepoint_file_mtime_ticks,
                     local_transaction_id) <
            std::tie(other.metadata_path,
                     other.metadata_file_size,
+                    other.metadata_file_mtime_ticks,
                     other.savepoint_path,
                     other.savepoint_file_size,
+                    other.savepoint_file_mtime_ticks,
                     other.local_transaction_id);
   }
 };
@@ -3718,15 +3774,27 @@ std::uintmax_t ExistingFileSize(const std::string& path) {
   return std::filesystem::file_size(path, ignored);
 }
 
+ScopedRelationFileIdentity ExistingFileIdentity(const std::string& path) {
+  std::error_code ignored;
+  if (path.empty() || !std::filesystem::exists(path, ignored)) {
+    return {};
+  }
+  return ScopedRelationTextFileIdentity(path);
+}
+
 std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDescriptorFieldsByRelation(
     const EngineRequestContext& context) {
   const std::string path = DescriptorStorePath(context);
-  const std::uintmax_t file_size = ExistingFileSize(path);
+  const auto identity = ExistingFileIdentity(path);
+  const std::uintmax_t file_size = identity.ok ? identity.file_size : 0;
+  const std::int64_t file_mtime_ticks =
+      identity.ok ? identity.file_mtime_ticks : 0;
   {
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
     const auto cached = DescriptorFieldsCache().find(path);
     if (cached != DescriptorFieldsCache().end() &&
-        cached->second.file_size == file_size) {
+        cached->second.file_size == file_size &&
+        cached->second.file_mtime_ticks == file_mtime_ticks) {
       return cached->second.descriptors;
     }
   }
@@ -3738,7 +3806,7 @@ std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDesc
   }
   {
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
-    DescriptorFieldsCache()[path] = {file_size, descriptors};
+    DescriptorFieldsCache()[path] = {file_size, file_mtime_ticks, descriptors};
   }
   return descriptors;
 }
@@ -3758,8 +3826,12 @@ EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
     auto cached = DescriptorFieldsCache().find(path);
     if (cached != DescriptorFieldsCache().end()) {
+      const auto updated_identity = ExistingFileIdentity(path);
       cached->second.descriptors[relation_uuid] = fields;
-      cached->second.file_size = ExistingFileSize(path);
+      cached->second.file_size =
+          updated_identity.ok ? updated_identity.file_size : 0;
+      cached->second.file_mtime_ticks =
+          updated_identity.ok ? updated_identity.file_mtime_ticks : 0;
     }
   }
   return OkDiagnostic();
@@ -3971,11 +4043,15 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
   }
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
+  const auto metadata_identity = ExistingFileIdentity(metadata_path);
+  const auto savepoint_identity = ExistingFileIdentity(savepoint_path);
   const MgaMetadataCacheKey cache_key{
       metadata_path,
-      ExistingFileSize(metadata_path),
+      metadata_identity.ok ? metadata_identity.file_size : 0,
+      metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0,
       savepoint_path,
-      ExistingFileSize(savepoint_path),
+      savepoint_identity.ok ? savepoint_identity.file_size : 0,
+      savepoint_identity.ok ? savepoint_identity.file_mtime_ticks : 0,
       context.local_transaction_id};
   {
     const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());

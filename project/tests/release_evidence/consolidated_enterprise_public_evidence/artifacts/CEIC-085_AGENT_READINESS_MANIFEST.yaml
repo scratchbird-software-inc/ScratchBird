@@ -22,15 +22,15 @@
     "CEIC-084",
     "CEIC-085"
   ],
-  "manifest_uuid": "02bcc169-1c7b-5312-980c-464020ea1f90",
-  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
-  "source_branch": "codex/migration-project-issue-closures",
-  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "manifest_uuid": "6b241d37-ca29-5e7d-9cd7-08bc9f5ed2f0",
+  "source_commit": "a036561dfb2514b01ac0d7e6eeede6bf15a6b2c3",
+  "source_branch": "main",
+  "generated_at_utc": "2026-07-05T16:03:06-04:00",
   "generated_by": "project/tools/ceic_agent_readiness_manifest.py#CEIC_085_AGENT_READINESS_MANIFEST_TOOL",
-  "source_evidence_digest": "d7ba59b87061bdc5e9a47da553d2ff265939a0b773cf1d9220114e3171457e20",
+  "source_evidence_digest": "939a2b389a56ecd5ae7e9d5fe5dbe0c403ad60df0c06ff66ddcdf48da4b97fc1",
   "auditor": {
     "slice_id": "CEIC-085",
-    "timestamp_utc": "2026-06-13T12:38:17-04:00",
+    "timestamp_utc": "2026-07-05T16:03:06-04:00",
     "proof_state": "generated_and_validated"
   },
   "authority_boundary": {
@@ -341,8 +341,8 @@
           "sha256": "a89a6ef35010842d84b1aa65e8f8b0cfd8d9c572c8790535d56eeeec699108c2"
         }
       ],
-      "evidence_contract_hash": "sha256:9b7575010133a8511b62e76a91a0d383dfbfbecc67fbfa7e4d9587f77ee78eb4",
-      "evidence_digest": "sha256:b4d101ba65e499b5339203ee3f9c2977ae22d0310dec3b0887ef213dfcb8deff",
+      "evidence_contract_hash": "sha256:3f9ed27a3442e7b001800268b6bc68b14762f36b28ac4fe0acf17f2252bd5af5",
+      "evidence_digest": "sha256:a0b7a288dc3de3f376326aa1cb94e5be7520ca25688596d527d7f4882c42b8ab",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -446,8 +446,8 @@
           "sha256": "473f3e6be25a04e440a9b147842121364b9cd6b0b38ee460383438a0cdfabe33"
         }
       ],
-      "evidence_contract_hash": "sha256:5de8b7f2464aac8ccf112cfc2395f88e462efee63def1760f0142a5b3621f5df",
-      "evidence_digest": "sha256:120eac50f46ff36eb158e9a15b9dfe6e25697eb12eb48ac2c518098d3956b004",
+      "evidence_contract_hash": "sha256:e055d521f708990df46bc26a0b9e3a20f3c9cefb5181166c8608d9806d69098c",
+      "evidence_digest": "sha256:b5bc5c23be4adf818f493e15af9b7c0092d43bbf0f7b6e4f7aea22c5bce7a24f",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -512,8 +512,8 @@
           "sha256": "00bf9df0a52d8e499dc6db2ca1257329d25300ee416476b570ca2b6d729da147"
         }
       ],
-      "evidence_contract_hash": "sha256:a6234c481a8a5f54569c37de51124acd22c55610112513211c62f6b604eee17b",
-      "evidence_digest": "sha256:f53a3ec4b48a39008ce70b1ae4d6308ca653daa52ea5b47a75e83f2b9e4a3e77",
+      "evidence_contract_hash": "sha256:a135324b4562b775bd8877212938675607852e095fd1569638b6159ca9165f7f",
+      "evidence_digest": "sha256:d36022e51ac662e52f727230ebbd3ba5b385810d70e4a9e3a6a61e4206f642bf",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -577,8 +577,8 @@
           "sha256": "25dfbc9f183a806858826c655c0ed971408c5165963ac5434853e4fc60932800"
         }
       ],
-      "evidence_contract_hash": "sha256:14aed681dfd29cd21321397c4d31d7e5480415407f2f886b88d2a9919fd3b534",
-      "evidence_digest": "sha256:c04b01bbf41f80ec27433e1d689210afc0bae235e11cb9446a5f5fdd1209289e",
+      "evidence_contract_hash": "sha256:f665520810c760d9a9b43a188dd5067c102583b9536ae42978b86e0bda58d24f",
+      "evidence_digest": "sha256:05fd98fd765ed84d9ec1cb806767d273d82ee0ba796b4f07e5da8309cfb04abe",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -645,8 +645,8 @@
           "sha256": "f00f7361739acbb0abaef1e3190b743482571997b61aafd734f304f04fd46758"
         }
       ],
-      "evidence_contract_hash": "sha256:de0cb86e5f82775e975b532bf3d8e651cb71b7dd8e383facb75bc3c01d92a81e",
-      "evidence_digest": "sha256:55837bbb8d1f27ff718d21ea7c40624d66d56065b91f191dd8c309a96e0fdb14",
+      "evidence_contract_hash": "sha256:dd46cbd1b0fba2e159e8f121d64054dbf14621489facd82ed1d77875975cdf97",
+      "evidence_digest": "sha256:3f626587a308991ae18c3ff2bae937e49f98bf551830a267268a48516f258279",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -709,8 +709,8 @@
           "sha256": "df7da3677a6ed84f30949f38006c79940007ef07678b9ed1f39c4ce0ecf35e90"
         }
       ],
-      "evidence_contract_hash": "sha256:7d19c6068c2bcd0a51066e152e16f07c4c0a687b54e6acd3643f8c6917abe976",
-      "evidence_digest": "sha256:3b7213129fca5ca0cdb7132ab952f17b5d8228910acd111b2598932e9a55987f",
+      "evidence_contract_hash": "sha256:8990827a1253587ccb459d3e16483a22000a74b9668b40ce45cebbd002fd85ca",
+      "evidence_digest": "sha256:6b3becb02938be875d6a49a61f1eb717a2c73cef359b218da434239e6fe41fb7",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -775,8 +775,8 @@
           "sha256": "a6626d64393e51c8838a6e127e485d028448a1717ec5373ad2beb80e2a25f893"
         }
       ],
-      "evidence_contract_hash": "sha256:76a4c414b6c2cbcc333f9b66bfaa09f7668e8a5da85786a03d2833546e8b6c8d",
-      "evidence_digest": "sha256:39af3e4382899796ab243980e74929feed179947cbb79049d29def778c930597",
+      "evidence_contract_hash": "sha256:4b511114bd1f8f3d036571c606f2312d9c99c018de2da6540ffd0982d021cd31",
+      "evidence_digest": "sha256:5150324c3a0292d1a977a2063488ed38dd742ad2997fc1bcf68cae616fe76ced",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -833,8 +833,8 @@
           "sha256": "8e3d21bb794f50692b8164c7bae0b84c58be3d4bc0b5ebe6c1fbeead898b4be1"
         }
       ],
-      "evidence_contract_hash": "sha256:7610b879c811b2e4cb802bedb6db463fe70dbeee45f1e6360332f866ad2d038d",
-      "evidence_digest": "sha256:7ac6ada5a4090f46a969e452c18ce29852acaeb07c700e7e8d9fb228c2e888da",
+      "evidence_contract_hash": "sha256:ce47f571c92e782b088b1377b60c8741137e203d655cbb4e3b7694f919c4c9e2",
+      "evidence_digest": "sha256:7dc00dee0da77f9338c7a9a1404d9748c9951d8224d4cb78ba1142227af97e84",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -891,8 +891,8 @@
           "sha256": "3cae396c206352179e42f6098ab95364da6e499f73eb0a227d80b101f8083516"
         }
       ],
-      "evidence_contract_hash": "sha256:77e374570d49b52f0b3ba0614e6ff0089d991f79a357dfbfcb9ae7ca4167aee9",
-      "evidence_digest": "sha256:099dd7464f94db331868f9bf4d9b2200ebea5dc88ecadbe8a2b12f28f8b78142",
+      "evidence_contract_hash": "sha256:c1150f9a7ae15b6e15d1b951102c71a06fca588539ec123c7a2a7572c23aff28",
+      "evidence_digest": "sha256:4663cc77cc5d895fc9611dc31d99c95858a02e17aea162b8b48b569f426e0d2d",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -960,8 +960,8 @@
           "sha256": "715a62e63dd422f1cd02e63b6bfe976a4d573bcac25e3a2365fdf71200fd1ed0"
         }
       ],
-      "evidence_contract_hash": "sha256:e666dd490d9c4c483bf7e54c8e49988b8dbc143c6f36676be28a223f5300a3fa",
-      "evidence_digest": "sha256:19006b382f2699d951f8db7efa50b006b2ec29df80067f817349a6861cac383b",
+      "evidence_contract_hash": "sha256:c331da4c0b9c7bd33a567368edbddc2f354e7ea01653dcd338dd3646157c597e",
+      "evidence_digest": "sha256:a19e9318834bc1d4730f8111a754579894a4cdbf77ead140602f717b2bd79655",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1018,8 +1018,8 @@
           "sha256": "cfe801fc9c5b9a5c234911d00ce71ac200054267287d9899699fbda0e6cad896"
         }
       ],
-      "evidence_contract_hash": "sha256:d2294357422d48483fb72425fdf002d20ffd6e23919427428fe1d431b9c942eb",
-      "evidence_digest": "sha256:7d94f993da60dcd52e37926ad54b513face524047662a9a87c4b38eb2755b928",
+      "evidence_contract_hash": "sha256:156ed0ea027ccbaf0f0a52abb8d37ec0e436d2222f44b407cb1d85a315399c22",
+      "evidence_digest": "sha256:9d974c00553737bfea03e290cadd243e40d7f26d95b3adf372ef1a6c07b14a22",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1080,8 +1080,8 @@
           "sha256": "9bbe65d621044846f4530413cdad04d7fb0abcbdea5d5e3c9c6516ccc3ff2706"
         }
       ],
-      "evidence_contract_hash": "sha256:7f3061ee38cdf20098394e71599a24b304378e7e993c2d958f6eb979805d81af",
-      "evidence_digest": "sha256:a5e672a0f4d0dc88d4a4de98740518c080eccad1b216473597fc0e8ae8dc6859",
+      "evidence_contract_hash": "sha256:d8dc64257368060be2a6a6fc51ea4ef9ed783f0a00dadadd5741ef58bc6c2331",
+      "evidence_digest": "sha256:a53775714a47971902b84d04cda1bc40e658c13b8bf02e3d8827670e6dedc2d4",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1143,11 +1143,11 @@
           "path": "project/src/core/agents/agent_production_classification.cpp",
           "search_key": "ValidateAgentProductionExposureMatrix",
           "surface": "production exposure validator",
-          "sha256": "eab326bd8ceb7b57bf869484685890e04da7f8eb32343f1a09a67dee6a93b670"
+          "sha256": "d71940c353db97b48a93200376903618920ce1451be8e7bfb3e33bf802f78e58"
         }
       ],
-      "evidence_contract_hash": "sha256:1001161a99a981a4c364362c7a7b49285d405c604a623aebe328169bd0c3dbaf",
-      "evidence_digest": "sha256:1c5736f6af28bc9619e8225d3ce764ec7ae5dd8723253fac259888ac68918fdc",
+      "evidence_contract_hash": "sha256:2a2e14b06fa173f4874987c31f74bc2af534d85e12e08fd45f809a0b2f854857",
+      "evidence_digest": "sha256:1b306cd141bc2e2501129af34380510300cfd0413dba5bb776559c3481d62117",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1210,8 +1210,8 @@
           "sha256": "101956cd1becf8eae143f7cfc232b36b22f88b6819a2927d0030a1a25b81b9c0"
         }
       ],
-      "evidence_contract_hash": "sha256:ca29b566f28dfdbdb4d16ac168f5ee210bd60ff625adb90605b260ee029cd14b",
-      "evidence_digest": "sha256:c774e75c9602072f840239122f6720d62a825ac2a1b6acf50d7142503b7cb7d3",
+      "evidence_contract_hash": "sha256:9bab71bdc68b9df5aea5996f1cc4ea56291f77660eb369f76521806f78b379e8",
+      "evidence_digest": "sha256:e38b357c553bb61771567dce1eca51dcc814d447ff340af507b1d34080ffd481",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1283,8 +1283,8 @@
           "sha256": "ca387d284f306ee7bfef5afb349e9d44b1696180f5bdfab50a6abe49f1057843"
         }
       ],
-      "evidence_contract_hash": "sha256:0fb954685aa0dad020a9f99e14dae52a3ac7f103db1846f76027567ceed4f028",
-      "evidence_digest": "sha256:56c8c7403f870847908f285a3fd0ae5ee6618a89d5ea7bbfeebfebdb2c2fb390",
+      "evidence_contract_hash": "sha256:3927c1e85da082856530470292b591b6ce284ea8aeb9e3768bc95e264e3aece9",
+      "evidence_digest": "sha256:702908b63eedc289c4ed93c3a672d29971d7575ebeedcfb8ae9be5443cd40186",
       "static_only_readiness": false,
       "descriptor_only_readiness": false,
       "anchor_only_live_exposure": false,
@@ -1323,7 +1323,7 @@
       "subsystem": "memory",
       "artifact_id": "CEIC-ART-011",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
+      "sha256": "c1e2fcf98a253074c049523c11c967c38b64e9728093b735ce3cfd42a8e99f27",
       "coupling_status": "consumed_evidence_only"
     },
     {
@@ -1475,7 +1475,7 @@
       "slice_id": "CEIC-024",
       "kind": "manifest",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
+      "sha256": "c1e2fcf98a253074c049523c11c967c38b64e9728093b735ce3cfd42a8e99f27",
       "status": "present"
     },
     {
@@ -1642,8 +1642,8 @@
     },
     {
       "path": "project/src/core/agents/agent_production_classification.cpp",
-      "sha256": "eab326bd8ceb7b57bf869484685890e04da7f8eb32343f1a09a67dee6a93b670",
-      "bytes": 31554
+      "sha256": "d71940c353db97b48a93200376903618920ce1451be8e7bfb3e33bf802f78e58",
+      "bytes": 31620
     },
     {
       "path": "project/src/core/agents/agent_production_classification.hpp",
@@ -1692,8 +1692,8 @@
     },
     {
       "path": "project/tests/agents/CMakeLists.txt",
-      "sha256": "3496f343d653943caa0fa91fd21f46b10cf44dd19b29f62f3b007773cb37c8fe",
-      "bytes": 37174
+      "sha256": "34c4b86e59e2d73f6f3d5424321e7edcf816ed6352bac46584ae22c1a5af0399",
+      "bytes": 37364
     },
     {
       "path": "project/tests/agents/agent_action_safety_rollout_gate.cpp",
@@ -1857,8 +1857,8 @@
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
-      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
-      "bytes": 42562
+      "sha256": "c1e2fcf98a253074c049523c11c967c38b64e9728093b735ce3cfd42a8e99f27",
+      "bytes": 42528
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",

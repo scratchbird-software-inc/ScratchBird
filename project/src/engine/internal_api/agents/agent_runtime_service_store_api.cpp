@@ -93,6 +93,12 @@ agents::AgentRuntimeServiceResult AgentRuntimeServiceStore::Open(
   production_live_path_ = request.production_live_path;
   opened_ = false;
 
+  if (request.production_live_path && !request.fsync_or_checkpoint_evidence) {
+    return ServiceStoreError("open",
+                             "SB_AGENT_SERVICE_STORE.PERSIST_FAILED",
+                             "fsync_or_checkpoint_evidence_required");
+  }
+
   auto loaded = LoadAgentDurableCatalogImage(context_, request.production_live_path);
   if (!loaded.ok) {
     return ServiceStoreError("open",

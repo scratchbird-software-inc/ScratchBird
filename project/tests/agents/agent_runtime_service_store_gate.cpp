@@ -14,8 +14,6 @@
 #include "agent_durable_catalog.hpp"
 #include "agent_runtime_manifest.hpp"
 #include "database_lifecycle.hpp"
-#include "local_transaction_store.hpp"
-#include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
@@ -28,7 +26,6 @@ namespace {
 namespace agents = scratchbird::core::agents;
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
-namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -57,10 +54,12 @@ void Cleanup(const std::filesystem::path& path) {
                              ".sb.mga_large_values",
                              ".sb.mga_relation_descriptors",
                              ".sb.mga_relation_metadata",
+                             ".sb.mga_relation_scope",
                              ".sb.mga_row_versions",
                              ".sb.mga_savepoints",
-                             ".sb.mga_secondary_index_delta_ledger"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
+                             ".sb.mga_secondary_index_delta_ledger",
+                             ".sb.txn_publish"}) {
+    std::filesystem::remove_all(path.string() + suffix, ignored);
   }
 }
 
@@ -88,24 +87,38 @@ TestDatabase CreateActiveDatabase() {
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
 
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
-  const auto transaction_uuid = uuid::GenerateEngineIdentityV7(UuidKind::transaction,
-                                                              1790000000204);
-  Require(transaction_uuid.ok(), "transaction UUID generation failed");
-  auto begun = mga::BeginLocalTransaction(std::move(inventory),
-                                          transaction_uuid.value,
-                                          1790000000205);
-  Require(begun.ok(), "local transaction begin failed");
-  Require(db::PersistLocalTransactionInventoryToDatabase(path.string(),
-                                                         begun.inventory)
-              .ok(),
-          "local transaction inventory persist failed");
+  api::EngineRequestContext bootstrap_context;
+  bootstrap_context.request_id = "aeic-runtime-service-bootstrap";
+  bootstrap_context.database_path = path.string();
+  bootstrap_context.database_uuid.canonical =
+      uuid::UuidToString(database_uuid.value.value);
+  bootstrap_context.security_context_present = true;
+  bootstrap_context.principal_uuid.canonical =
+      "018f0000-0000-7000-8000-00000000be10";
+  bootstrap_context.session_uuid.canonical =
+      "018f0000-0000-7000-8000-00000000be14";
+  bootstrap_context.catalog_generation_id = 1;
+  bootstrap_context.security_epoch = 1;
+  bootstrap_context.resource_epoch = 1;
+  bootstrap_context.name_resolution_epoch = 1;
+
+  api::EngineBeginTransactionRequest begin;
+  begin.context = bootstrap_context;
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      "transaction_read_only:false");
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      "transaction_read_mode:read_write");
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0,
+          "engine bootstrap transaction begin failed");
 
   TestDatabase result;
   result.path = path;
   result.database_uuid = uuid::UuidToString(database_uuid.value.value);
-  result.transaction_uuid = uuid::UuidToString(transaction_uuid.value.value);
-  result.local_transaction_id = begun.entry.identity.local_id.value;
+  result.transaction_uuid = begun.transaction_uuid.canonical;
+  result.local_transaction_id = begun.local_transaction_id;
   return result;
 }
 
@@ -192,6 +205,17 @@ double CurrentMetricValue(const std::string& family,
     return value.value;
   }
   return -1.0;
+}
+
+std::string StoreDiagnostic(
+    const api::AgentDurableCatalogStoreResult& result) {
+  std::string diagnostic = result.diagnostic.code;
+  if (!result.diagnostic.detail.empty()) {
+    diagnostic += ":" + result.diagnostic.detail;
+  } else if (!result.diagnostic.message_key.empty()) {
+    diagnostic += ":" + result.diagnostic.message_key;
+  }
+  return diagnostic.empty() ? std::string("no diagnostic") : diagnostic;
 }
 
 agents::DurableAgentCatalogImage CatalogImage() {
@@ -305,7 +329,8 @@ void TestRuntimeServiceStoreRoundTrip() {
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
   Require(result.status.ok, "store-backed runtime service open failed: " +
-                                result.status.diagnostic_code);
+                                result.status.diagnostic_code + ":" +
+                                result.status.detail);
 
   result = service.Start("018f0000-0000-7000-8000-00000000be32", true);
   Require(result.status.ok, "store-backed runtime service start failed");
@@ -339,7 +364,9 @@ void TestRuntimeServiceStoreRoundTrip() {
   reopen.evidence_uuid = "018f0000-0000-7000-8000-00000000be33";
   reopen.fsync_or_checkpoint_evidence = true;
   result = recovered.Open(std::move(reopen));
-  Require(result.status.ok, "recovered service open from store failed");
+  Require(result.status.ok, "recovered service open from store failed: " +
+                                result.status.diagnostic_code + ":" +
+                                result.status.detail);
   result = recovered.Start("018f0000-0000-7000-8000-00000000be34", true);
   Require(result.status.ok, "recovered service start failed");
   lease.evidence_uuid = "018f0000-0000-7000-8000-00000000be24";
@@ -416,7 +443,9 @@ void TestRuntimeServiceStoreAcceptsTransactionPerOperation() {
   open.evidence_uuid = "018f0000-0000-7000-8000-00000000bf31";
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
-  Require(result.status.ok, "transaction-per-operation open failed");
+  Require(result.status.ok, "transaction-per-operation open failed: " +
+                                result.status.diagnostic_code + ":" +
+                                result.status.detail);
   CommitContext(open_context);
 
   auto start_context =
@@ -474,7 +503,9 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   open.evidence_uuid = "018f0000-0000-7000-8000-00000000bfa2";
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
-  Require(result.status.ok, "drain shutdown open failed");
+  Require(result.status.ok, "drain shutdown open failed: " +
+                                result.status.diagnostic_code + ":" +
+                                result.status.detail);
   CommitContext(open_context);
 
   auto start_context =
@@ -506,7 +537,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   auto drain_load_context =
       BeginTransactionContext(database, "aeic-runtime-service-drain-load");
   auto loaded = api::LoadAgentDurableCatalogImage(drain_load_context, true);
-  Require(loaded.ok, "drained catalog load failed");
+  Require(loaded.ok, "drained catalog load failed: " + StoreDiagnostic(loaded));
   Require(!loaded.image.leases.empty(), "drained lease missing");
   Require(loaded.image.leases.front().state ==
               agents::DurableAgentLeaseState::draining,
@@ -525,7 +556,7 @@ void TestRuntimeServiceStoreDrainShutdownPersist() {
   auto shutdown_load_context =
       BeginTransactionContext(database, "aeic-runtime-service-shutdown-load");
   loaded = api::LoadAgentDurableCatalogImage(shutdown_load_context, true);
-  Require(loaded.ok, "shutdown catalog load failed");
+  Require(loaded.ok, "shutdown catalog load failed: " + StoreDiagnostic(loaded));
   Require(!loaded.image.leases.empty(), "shutdown lease missing");
   Require(loaded.image.leases.front().state ==
               agents::DurableAgentLeaseState::cancelled,
@@ -572,7 +603,9 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
   open.evidence_uuid = "018f0000-0000-7000-8000-00000000bfb2";
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
-  Require(result.status.ok, "supervision transition open failed");
+  Require(result.status.ok, "supervision transition open failed: " +
+                                result.status.diagnostic_code + ":" +
+                                result.status.detail);
   CommitContext(open_context);
 
   const auto policy = SupervisionPolicy();
@@ -593,7 +626,8 @@ void TestRuntimeServiceStoreSupervisionTransitionsPersist() {
   auto load_context =
       BeginTransactionContext(database, "aeic-runtime-service-supervision-load1");
   auto loaded = api::LoadAgentDurableCatalogImage(load_context, true);
-  Require(loaded.ok, "supervision failure catalog load failed");
+  Require(loaded.ok,
+          "supervision failure catalog load failed: " + StoreDiagnostic(loaded));
   const auto& failed = loaded.image.instances.front();
   Require(failed.state == agents::AgentLifecycleState::failed,
           "supervision failure did not persist failed state");
