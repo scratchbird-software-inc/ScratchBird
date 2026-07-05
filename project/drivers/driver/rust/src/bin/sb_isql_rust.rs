@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 
 const SUPPORTED_ARGS: &[&str] = &[
     "--database",
+    "--manager-auth-token",
+    "--manager-database",
     "--host",
     "--port",
     "--user",
@@ -61,6 +63,8 @@ const SUPPORTED_ARGS: &[&str] = &[
 #[derive(Debug)]
 struct Args {
     database: String,
+    manager_auth_token: String,
+    manager_database: String,
     host: String,
     port: u16,
     user: String,
@@ -199,6 +203,10 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     } else {
         "direct".to_string()
     };
+    if args.route == "manager-listener-parser" {
+        config.manager_auth_token = args.manager_auth_token.clone();
+        config.manager_database = args.manager_database.clone();
+    }
     config.application_name = "SBIsqlRust".to_string();
     config.metadata_expand_schema_parents = true;
     config.fetch_size = args.fetch_size;
@@ -698,6 +706,14 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
     }
     Ok(Args {
         database: required(&values, "--database")?,
+        manager_auth_token: values
+            .get("--manager-auth-token")
+            .cloned()
+            .unwrap_or_default(),
+        manager_database: values
+            .get("--manager-database")
+            .cloned()
+            .unwrap_or_default(),
         host: values
             .get("--host")
             .cloned()

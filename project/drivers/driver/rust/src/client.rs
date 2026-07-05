@@ -3058,7 +3058,12 @@ impl Client {
     }
 
     fn requested_features(&self) -> u64 {
-        let mut features = 0u64;
+        let mut features = protocol::FEATURE_SBLR
+            | protocol::FEATURE_NOTIFICATIONS
+            | protocol::FEATURE_QUERY_PLAN
+            | protocol::FEATURE_SAVEPOINTS
+            | protocol::FEATURE_BATCH
+            | protocol::FEATURE_PIPELINE;
         if self.config.compression.eq_ignore_ascii_case("zstd") {
             features |= protocol::FEATURE_COMPRESSION;
         }
@@ -3066,9 +3071,6 @@ impl Client {
             features |= protocol::FEATURE_STREAMING;
             features |= protocol::FEATURE_BINARY_COPY;
         }
-        features |= protocol::FEATURE_SAVEPOINTS;
-        features |= protocol::FEATURE_BATCH;
-        features |= protocol::FEATURE_PIPELINE;
         features
     }
 

@@ -123,6 +123,20 @@ const MSG_SBLR_COMPILED = UInt8(0x57)
 const MSG_TXN_STATUS = UInt8(0x5c)
 const AUTH_OK = UInt8(0)
 const AUTH_PASSWORD = UInt8(1)
+const MANAGER_PROTOCOL_MAGIC = UInt32(0x42444253)
+const MANAGER_PROTOCOL_VERSION = UInt16(0x0101)
+const MANAGER_HEADER_SIZE = 12
+const MANAGER_MAX_PAYLOAD_SIZE = 16 * 1024 * 1024
+const MCP_PROTOCOL_VERSION = UInt16(0x0100)
+const MCP_MSG_CONNECT_RESPONSE = UInt8(0x02)
+const MCP_MSG_AUTH_CHALLENGE = UInt8(0x12)
+const MCP_MSG_AUTH_RESPONSE = UInt8(0x11)
+const MCP_MSG_STATUS_RESPONSE = UInt8(0x64)
+const MCP_MSG_HELLO = UInt8(0x65)
+const MCP_MSG_AUTH_START = UInt8(0x66)
+const MCP_MSG_AUTH_CONTINUE = UInt8(0x67)
+const MCP_MSG_DB_CONNECT = UInt8(0x69)
+const MCP_AUTH_METHOD_TOKEN = UInt8(4)
 
 Tables.istable(::Type{ScratchBirdResult}) = true
 Tables.rowaccess(::Type{ScratchBirdResult}) = true
@@ -148,6 +162,14 @@ function DBInterface.connect(
     ipc_path::AbstractString = "",
     application_name::AbstractString = "ScratchBirdJulia",
     parser_mode::AbstractString = "server-parser",
+    front_door_mode::AbstractString = "direct",
+    manager_auth_token::AbstractString = "",
+    manager_database::AbstractString = "",
+    manager_username::AbstractString = "",
+    manager_connection_profile::AbstractString = "SBsql",
+    manager_client_intent::AbstractString = "SBsql",
+    manager_client_flags::Integer = 0,
+    manager_auth_fast_path::Bool = true,
     kwargs...,
 )
     io = open_transport(
@@ -160,6 +182,18 @@ function DBInterface.connect(
         String(sslcert),
         String(sslkey),
     )
+    if String(front_door_mode) == "manager_proxy"
+        perform_manager_connect!(
+            io,
+            isempty(String(manager_username)) ? String(user) : String(manager_username),
+            String(manager_auth_token),
+            isempty(String(manager_database)) ? String(database) : String(manager_database),
+            String(manager_connection_profile),
+            String(manager_client_intent),
+            UInt16(manager_client_flags & 0xffff),
+            Bool(manager_auth_fast_path),
+        )
+    end
     conn = ScratchBirdConnection(
         String(host),
         Int(port),
@@ -182,6 +216,92 @@ function DBInterface.connect(
     )
     startup_and_auth!(conn)
     return conn
+end
+
+function append_lprefixed_string!(out::Vector{UInt8}, value::AbstractString)
+    bytes = Vector{UInt8}(codeunits(String(value)))
+    append_le!(out, UInt32(length(bytes)))
+    append!(out, bytes)
+    return nothing
+end
+
+function send_manager_frame!(io, msg_type::UInt8, payload::Vector{UInt8})
+    frame = UInt8[]
+    append_le!(frame, MANAGER_PROTOCOL_MAGIC)
+    append_le!(frame, MANAGER_PROTOCOL_VERSION)
+    push!(frame, msg_type)
+    push!(frame, UInt8(0))
+    append_le!(frame, UInt32(length(payload)))
+    append!(frame, payload)
+    write(io, frame)
+    flush(io)
+    return nothing
+end
+
+function recv_manager_frame(io)
+    header = read_exact(io, MANAGER_HEADER_SIZE)
+    read_u32(header, 1) == MANAGER_PROTOCOL_MAGIC || throw(ScratchBirdError("08006", "manager frame magic mismatch"))
+    read_u16(header, 5) == MANAGER_PROTOCOL_VERSION || throw(ScratchBirdError("08006", "manager frame version mismatch"))
+    payload_length = Int(read_u32(header, 9))
+    payload_length <= MANAGER_MAX_PAYLOAD_SIZE || throw(ScratchBirdError("08006", "manager frame payload too large"))
+    payload = payload_length == 0 ? UInt8[] : read_exact(io, payload_length)
+    return header[7], payload
+end
+
+function perform_manager_connect!(
+    io,
+    manager_user::String,
+    manager_auth_token::String,
+    manager_database::String,
+    manager_profile::String,
+    manager_intent::String,
+    manager_flags::UInt16,
+    auth_fast_path::Bool,
+)
+    isempty(manager_auth_token) && throw(ScratchBirdError("28000", "manager_proxy mode requires manager_auth_token"))
+    hello = UInt8[]
+    append_le!(hello, MCP_PROTOCOL_VERSION)
+    append_le!(hello, manager_flags)
+    send_manager_frame!(io, MCP_MSG_HELLO, hello)
+    msg_type, _payload = recv_manager_frame(io)
+    msg_type == MCP_MSG_STATUS_RESPONSE || throw(ScratchBirdError("08P01", "expected MCP hello status response"))
+
+    auth_start = UInt8[]
+    append_lprefixed_string!(auth_start, manager_user)
+    push!(auth_start, MCP_AUTH_METHOD_TOKEN)
+    token_bytes = Vector{UInt8}(codeunits(manager_auth_token))
+    if auth_fast_path
+        append_le!(auth_start, UInt32(length(token_bytes)))
+        append!(auth_start, token_bytes)
+    else
+        append_le!(auth_start, UInt32(0))
+    end
+    send_manager_frame!(io, MCP_MSG_AUTH_START, auth_start)
+    msg_type, payload = recv_manager_frame(io)
+    if msg_type == MCP_MSG_AUTH_CHALLENGE
+        continuation = UInt8[]
+        append_le!(continuation, UInt32(length(token_bytes)))
+        append!(continuation, token_bytes)
+        send_manager_frame!(io, MCP_MSG_AUTH_CONTINUE, continuation)
+        msg_type, payload = recv_manager_frame(io)
+    end
+    msg_type == MCP_MSG_AUTH_RESPONSE || throw(ScratchBirdError("08P01", "expected MCP auth response"))
+    length(payload) >= 1 || throw(ScratchBirdError("08P01", "truncated MCP auth response"))
+    payload[1] == 0 || throw(ScratchBirdError("28000", "MCP authentication failed"))
+
+    db_connect = Vector{UInt8}(codeunits("MCP1"))
+    append_lprefixed_string!(db_connect, manager_database)
+    append_lprefixed_string!(db_connect, manager_profile)
+    append_lprefixed_string!(db_connect, manager_intent)
+    nonce = fill(UInt8(0x42), 16)
+    append_le!(db_connect, UInt16(length(nonce)))
+    append!(db_connect, nonce)
+    send_manager_frame!(io, MCP_MSG_DB_CONNECT, db_connect)
+    msg_type, payload = recv_manager_frame(io)
+    msg_type == MCP_MSG_CONNECT_RESPONSE || throw(ScratchBirdError("08P01", "expected MCP connect response"))
+    length(payload) >= 1 || throw(ScratchBirdError("08P01", "truncated MCP connect response"))
+    payload[1] == 0 || throw(ScratchBirdError("28000", "MCP database connect failed"))
+    return nothing
 end
 
 function open_transport(transport::String, host::String, port::Int, ipc_path::String, sslmode::String, sslrootcert::String, sslcert::String, sslkey::String)

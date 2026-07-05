@@ -741,6 +741,26 @@ final class Connection
         });
     }
 
+    public function compileSblr(string $sql): array
+    {
+        return $this->withResilience('compile_sblr', $sql, function () use ($sql): array {
+            $this->lastSblr = null;
+            $this->sendSimpleQuery($sql, 0, Protocol::QUERY_FLAG_RETURN_SBLR);
+            $stream = new ResultStream($this);
+            while ($stream->readRow() !== null) {
+                // Drain the parser result; the SBLR_COMPILED frame is captured as async state.
+            }
+            $compiled = $this->lastSblr;
+            if ($compiled === null || ($compiled['bytecode'] ?? '') === '') {
+                throw new ScratchBirdConnectionException(
+                    'parser endpoint did not return SBLR for RETURN_SBLR request',
+                    '08P01'
+                );
+            }
+            return $compiled;
+        });
+    }
+
     public function streamControl(int $controlType, int $windowSize, int $timeoutMs): void
     {
         $payload = Protocol::buildStreamControlPayload($controlType, $windowSize, $timeoutMs);
@@ -1519,12 +1539,18 @@ final class Connection
 
     private function buildStartupFeatures(): int
     {
-        $features = 0;
+        $features = Protocol::FEATURE_SBLR
+            | Protocol::FEATURE_NOTIFICATIONS
+            | Protocol::FEATURE_QUERY_PLAN
+            | Protocol::FEATURE_SAVEPOINTS
+            | Protocol::FEATURE_BATCH
+            | Protocol::FEATURE_PIPELINE;
         if (strtolower($this->config->compression) === 'zstd') {
             $features |= Protocol::FEATURE_COMPRESSION;
         }
         if ($this->config->binaryTransfer) {
             $features |= Protocol::FEATURE_STREAMING;
+            $features |= Protocol::FEATURE_BINARY_COPY;
         }
         return $features;
     }
@@ -1666,9 +1692,9 @@ final class Connection
         }
     }
 
-    private function sendSimpleQuery(string $sql, int $maxRows): void
+    private function sendSimpleQuery(string $sql, int $maxRows, int $extraFlags = 0): void
     {
-        $flags = $this->config->binaryTransfer ? self::QUERY_FLAG_BINARY_RESULT : 0;
+        $flags = ($this->config->binaryTransfer ? self::QUERY_FLAG_BINARY_RESULT : 0) | $extraFlags;
         $payload = Protocol::buildQueryPayload($sql, $flags, $maxRows, 0);
         $this->lastMaxRows = max(0, $maxRows);
         $this->lastQuerySequence = $this->sendMessage(Protocol::MSG_QUERY, $payload, 0, false);

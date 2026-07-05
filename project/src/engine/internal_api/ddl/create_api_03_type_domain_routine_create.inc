@@ -58,7 +58,9 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
         "ddl.create_index",
         UnsupportedCrudFeatureDiagnostic("ddl.create_index", "at_least_one_key_envelope_required"));
   }
-  const auto loaded_mga = LoadMgaRelationStoreState(request.context);
+  const auto loaded_mga = LoadMgaRelationStoreRowsOnlyForMutationTarget(
+      request.context,
+      request.target_object.uuid.canonical);
   if (!loaded_mga.ok) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(request.context, "ddl.create_index", loaded_mga.diagnostic);
   }

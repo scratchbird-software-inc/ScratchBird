@@ -39,6 +39,8 @@ const std::set<std::string> kParserModes{"server-parser", "standalone-parser", "
 const std::set<std::string> kSslModes{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"};
 const std::set<std::string> kSupportedArgs{
     "--database",
+    "--manager-auth-token",
+    "--manager-database",
     "--host",
     "--port",
     "--user",
@@ -568,21 +570,25 @@ int main(int argc, char** argv) {
         if (SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc) != SQL_SUCCESS) throw std::runtime_error("SQLAllocHandle dbc failed");
         api["SQLAllocHandle"]++;
 
-        const std::string connStr = "Driver={ScratchBird};Server=" + required(args, "--host") +
-                                    ";Port=" + required(args, "--port") +
-                                    ";Database=" + required(args, "--database") +
-                                    ";UID=" + required(args, "--user") +
-                                    ";PWD=" + required(args, "--password") +
-                                    ";SSLMode=" + valueOrDefault(args, "--sslmode", "require") +
-                                    ";SSLRootCert=" + valueOrDefault(args, "--sslrootcert", "") +
-                                    ";SSLCert=" + valueOrDefault(args, "--sslcert", "") +
-                                    ";SSLKey=" + valueOrDefault(args, "--sslkey", "") +
-                                    ";Parser_Mode=" + parserMode +
-                                    ";Transport_Mode=" + driverTransportModeForRoute(route) +
-                                    ";IPC_Method=unix" +
-                                    ";IPC_Path=" + valueOrDefault(args, "--ipc-path", "") +
-                                    ";Front_Door_Mode=" + (route == "manager-listener-parser" ? "manager_proxy" : "direct") +
-                                    ";Role=" + valueOrDefault(args, "--role", "");
+        std::string connStr = "Driver={ScratchBird};Server=" + required(args, "--host") +
+                              ";Port=" + required(args, "--port") +
+                              ";Database=" + required(args, "--database") +
+                              ";UID=" + required(args, "--user") +
+                              ";PWD=" + required(args, "--password") +
+                              ";SSLMode=" + valueOrDefault(args, "--sslmode", "require") +
+                              ";SSLRootCert=" + valueOrDefault(args, "--sslrootcert", "") +
+                              ";SSLCert=" + valueOrDefault(args, "--sslcert", "") +
+                              ";SSLKey=" + valueOrDefault(args, "--sslkey", "") +
+                              ";Parser_Mode=" + parserMode +
+                              ";Transport_Mode=" + driverTransportModeForRoute(route) +
+                              ";IPC_Method=unix" +
+                              ";IPC_Path=" + valueOrDefault(args, "--ipc-path", "") +
+                              ";Front_Door_Mode=" + (route == "manager-listener-parser" ? "manager_proxy" : "direct") +
+                              ";Role=" + valueOrDefault(args, "--role", "");
+        if (route == "manager-listener-parser") {
+            connStr += ";Manager_Auth_Token=" + valueOrDefault(args, "--manager-auth-token", "") +
+                       ";Manager_Database=" + valueOrDefault(args, "--manager-database", "");
+        }
         SQLCHAR outConn[256] = {};
         SQLSMALLINT outLen = 0;
         auto connectStarted = nowNs();

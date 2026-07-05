@@ -21,6 +21,7 @@ namespace scratchbird::core::agents {
 
 struct CanonicalAgentManifestEntry {
   std::string type_id;
+  AgentRuntimeLayer layer = AgentRuntimeLayer::l3_dispatcher;
   AgentDeployment deployment = AgentDeployment::local;
   std::string scope;
   AgentAuthorityClass authority = AgentAuthorityClass::observe_only;

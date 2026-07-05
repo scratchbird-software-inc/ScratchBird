@@ -34,6 +34,8 @@ const SUPPORTED_ARGS = Set([
     "--sslcert",
     "--sslkey",
     "--ipc-path",
+    "--manager-auth-token",
+    "--manager-database",
     "--route",
     "--parser-mode",
     "--page-size",
@@ -127,6 +129,10 @@ function run_tool(args::Dict{String,Any})::Int
             ipc_path = value_or_default(args, "--ipc-path", ""),
             application_name = "SBIsqlJulia",
             parser_mode = required(args, "--parser-mode"),
+            front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct",
+            manager_auth_token = value_or_default(args, "--manager-auth-token", ""),
+            manager_database = value_or_default(args, "--manager-database", required(args, "--database")),
+            manager_username = required(args, "--user"),
         )
         api_hits["DBInterface.connect"] += 1
         add_timing!(timings, "connection", connect_started)

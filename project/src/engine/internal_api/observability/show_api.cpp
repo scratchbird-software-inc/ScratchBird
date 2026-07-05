@@ -1761,6 +1761,7 @@ EngineShowAgentsExtendedResult EngineShowAgentsExtended(
   for (const auto& agent : registry) {
     AddApiBehaviorRow(&result,
                       {{"agent_type", agent.type_id},
+                       {"layer", scratchbird::core::agents::AgentRuntimeLayerName(agent.layer)},
                        {"deployment", scratchbird::core::agents::AgentDeploymentName(agent.deployment)},
                        {"scope", agent.scope},
                        {"authority", scratchbird::core::agents::AgentAuthorityClassName(agent.authority)},

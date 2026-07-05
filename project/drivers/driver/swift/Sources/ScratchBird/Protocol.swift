@@ -143,6 +143,11 @@ let messageFlagUrgent: UInt8 = 0x08
 
 let featureCompression: UInt64 = 1 << 0
 let featureStreaming: UInt64 = 1 << 1
+let featureSblr: UInt64 = 1 << 2
+let featureNotifications: UInt64 = 1 << 4
+let featureQueryPlan: UInt64 = 1 << 5
+let featureBatch: UInt64 = 1 << 6
+let featurePipeline: UInt64 = 1 << 7
 let featureBinaryCopy: UInt64 = 1 << 8
 let featureSavepoints: UInt64 = 1 << 9
 

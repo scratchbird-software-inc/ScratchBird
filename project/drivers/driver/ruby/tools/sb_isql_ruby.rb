@@ -29,6 +29,8 @@ PARSER_MODES = %w[server-parser standalone-parser driver-sblr-uuid].freeze
 SSLMODES = %w[allow disable prefer require verify-ca verify-full].freeze
 SUPPORTED_ARGS = %w[
   --database
+  --manager-auth-token
+  --manager-database
   --host
   --port
   --user
@@ -114,7 +116,9 @@ def run(args)
     "attach_create" => 0,
     "commit" => 0,
     "rollback" => 0,
-    "copy_in" => 0
+    "copy_in" => 0,
+    "compile_sblr" => 0,
+    "execute_sblr" => 0
   }
   testcases = []
   failures = []
@@ -144,6 +148,11 @@ def run(args)
     cfg.sslkey = value_or_default(args, "--sslkey", "")
     cfg.socket_timeout_ms = value_or_default(args, "--statement-timeout-ms", "600000").to_i
     cfg.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct"
+    if route == "manager-listener-parser"
+      cfg.manager_auth_token = value_or_default(args, "--manager-auth-token", "")
+      cfg.manager_database = value_or_default(args, "--manager-database", required(args, "--database"))
+      cfg.manager_username = required(args, "--user")
+    end
     cfg.metadata_expand_schema_parents = true
     cfg.application_name = "SBIsqlRuby"
     client = Scratchbird::Client.new(cfg)
@@ -180,10 +189,6 @@ def run(args)
         actual_page_size_bytes: route_env[:actual_page_size_bytes]
       }
     end
-    unless required(args, "--parser-mode") == "server-parser"
-      raise "#{required(args, "--parser-mode")} is not accepted by the Ruby native tool lane; it fails closed"
-    end
-
     each_statement(required(args, "--input")).each do |sql, index|
       statement_id = "#{File.basename(required(args, "--input"))}:#{index}"
       expected_outcome = expected_refusals.include?(statement_id) ? "refusal" : "success"
@@ -208,6 +213,35 @@ def run(args)
           row_count = rows_copied
           result_digest = sha256_text("copy_in:#{rows_copied}")
           append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: [{ copy_in: rows_copied }]) + "\n")
+        elsif required(args, "--parser-mode") != "server-parser"
+          compiled = client.compile_sblr(sql)
+          api_hits["compile_sblr"] += 1
+          append_jsonl(paths[:wire], {
+            event: "driver_sblr_compile",
+            driver: "ruby",
+            parser_mode: required(args, "--parser-mode"),
+            statement_id: statement_id,
+            sblr_hash: compiled[:hash].to_s,
+            sblr_version: compiled[:version],
+            sblr_bytes: compiled[:bytecode].bytesize
+          })
+          stream = client.execute_sblr(compiled[:hash], compiled[:bytecode])
+          api_hits["execute_sblr"] += 1
+          rows = stream.to_a
+          row_count = rows.length
+          result_digest = sha256_text(JSON.generate(rows))
+          append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: rows) + "\n")
+          append_jsonl(paths[:wire], {
+            event: "driver_sblr_execute",
+            driver: "ruby",
+            parser_mode: required(args, "--parser-mode"),
+            statement_id: statement_id,
+            sblr_hash: compiled[:hash].to_s,
+            sblr_version: compiled[:version],
+            sblr_bytes: compiled[:bytecode].bytesize,
+            engine_sql_text_execution: false,
+            mga_authority: "engine"
+          })
         else
           result = client.query(sql)
           api_hits["query"] += 1

@@ -316,4 +316,18 @@ final class ScratchBirdPDO
     {
         $this->connection->close();
     }
+
+    public function compileSblr(string $sql): array
+    {
+        return $this->connection->compileSblr($sql);
+    }
+
+    public function executeSblr(array $compiled, array $params = []): ResultStream
+    {
+        return $this->connection->executeSblr(
+            (int) $compiled['hash'],
+            (string) $compiled['bytecode'],
+            $params
+        );
+    }
 }

@@ -108,7 +108,7 @@ add_test(
   COMMAND sbsql_multilingual_passthrough_runtime_conformance
 )
 set_tests_properties(sbsql_multilingual_passthrough_runtime_conformance PROPERTIES
-  LABELS "sbsql_multilingual_passthrough_runtime;sbsql_parser_worker;SML-018;SML-020;SML-090;frontdoor_lowering_cache;no_execution_plan_runtime"
+  LABELS "sbsql_multilingual_passthrough_runtime;sbsql_parser_worker;SML-018;SML-020;SML-084;SML-090;frontdoor_lowering_cache;no_execution_plan_runtime"
 )
 
 add_executable(sbp_sbsql_registry_generation_probe sbsql_registry_generation_probe.cpp)

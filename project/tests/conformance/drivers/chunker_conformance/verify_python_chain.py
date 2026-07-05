@@ -79,6 +79,7 @@ def check_real_suite_parity() -> int:
             output_root=out,
             values=values,
             namespace_ancestor_mode="chain",
+            surface_profile="non-cluster-beta",
         )
         chain_text = (out / "full_surface_chain.sbsql").read_text(encoding="utf-8")
         chain_tuples = list(iter_chain_statements(chain_text))

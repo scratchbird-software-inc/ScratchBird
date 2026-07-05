@@ -22,6 +22,8 @@ driver_root <- normalizePath(file.path(dirname(script_path), ".."), mustWork = F
 repo_root <- normalizePath(file.path(driver_root, "../../../.."), mustWork = FALSE)
 native_lib_candidates <- unique(c(
   Sys.getenv("SCRATCHBIRD_R_NATIVE_LIB", unset = ""),
+  file.path(repo_root, "build", "public-release-linux", "drivers", "driver", "r", "stage", "src", "scratchbird.so"),
+  file.path(repo_root, "build", "public-release-linux", "output", "linux", "r", "scratchbird.so"),
   file.path(repo_root, "build", "drivers", "driver", "r", "stage", "src", "scratchbird.so"),
   file.path(driver_root, "src", "scratchbird.so")
 ))
@@ -68,6 +70,8 @@ parser_modes <- c("server-parser", "standalone-parser", "driver-sblr-uuid")
 ssl_modes <- c("allow", "disable", "prefer", "require", "verify-ca", "verify-full")
 supported_args <- c(
   "--database",
+  "--manager-auth-token",
+  "--manager-database",
   "--host",
   "--port",
   "--user",
@@ -105,6 +109,14 @@ supported_args <- c(
   "--topology-profile",
   "--standard-english-fallback"
 )
+
+native_rowset_type_text <- 1L
+native_rowset_type_int64 <- 2L
+native_rowset_type_boolean <- 3L
+native_rowset_type_int32 <- 4L
+native_rowset_type_uint64 <- 5L
+native_rowset_type_real64 <- 6L
+native_rowset_type_binary <- 7L
 
 main <- function() {
   args <- parse_args(commandArgs(trailingOnly = TRUE))
@@ -147,6 +159,8 @@ run_tool <- function(args) {
     "sb_attach_create" = 0,
     "DBI::dbCommit" = 0,
     "DBI::dbRollback" = 0,
+    "sb_compile_sblr" = 0,
+    "sb_execute_sblr" = 0,
     "sb_copy_in" = 0
   )
   testcases <- list()
@@ -162,7 +176,7 @@ run_tool <- function(args) {
   tryCatch({
     route <- required(args, "--route")
     ensure_transport_route_supported(route, args)
-    dsn <- paste(
+    dsn_parts <- c(
       sprintf("host=%s", required(args, "--host")),
       sprintf("port=%s", required(args, "--port")),
       sprintf("database=%s", required(args, "--database")),
@@ -176,9 +190,17 @@ run_tool <- function(args) {
       sprintf("front_door_mode=%s", if (route == "manager-listener-parser") "manager_proxy" else "direct"),
       sprintf("transport=%s", transport_config_for_route(route)),
       sprintf("ipc_path=%s", value_or_default(args, "--ipc-path", "")),
-      "metadata_expand_schema_parents=true",
-      sep = ";"
+      "metadata_expand_schema_parents=true"
     )
+    if (route == "manager-listener-parser") {
+      dsn_parts <- c(
+        dsn_parts,
+        sprintf("manager_auth_token=%s", value_or_default(args, "--manager-auth-token", "")),
+        sprintf("manager_database=%s", value_or_default(args, "--manager-database", required(args, "--database"))),
+        sprintf("manager_username=%s", required(args, "--user"))
+      )
+    }
+    dsn <- paste(dsn_parts, collapse = ";")
     connect_started <- nanotime()
     conn <- DBI::dbConnect(Scratchbird(), dsn)
     api_hits[["DBI::dbConnect"]] <- api_hits[["DBI::dbConnect"]] + 1
@@ -214,10 +236,6 @@ run_tool <- function(args) {
       api_hits[["sb_attach_create"]] <- api_hits[["sb_attach_create"]] + 1
       timings <- add_timing(timings, "database_create", create_started)
     }
-    if (required(args, "--parser-mode") != "server-parser") {
-      stop(paste(required(args, "--parser-mode"), "is not accepted by the R native tool lane; it fails closed"))
-    }
-
     statements <- split_statements(read_input(required(args, "--input")))
     for (i in seq_along(statements)) {
       sql <- statements[[i]]
@@ -240,10 +258,52 @@ run_tool <- function(args) {
           if (identical(payload, raw(0))) {
             stop("COPY FROM STDIN requires SB_COPY_INPUT rows in the script")
           }
+          payload <- copy_text_rows_to_native_frame(payload)
           row_count <- sb_isql_copy_in(conn@ptr$client, executable_sql_without_copy_markers(sql), payload)
           api_hits[["sb_copy_in"]] <- api_hits[["sb_copy_in"]] + 1
           result_digest <- sha256_text(paste0("copy_in:", row_count))
+          append_jsonl(paths$wire, list(
+            event = "copy_payload",
+            driver = "r",
+            statement_id = statement_id,
+            copy_payload_format = "sbnr_native_rowset",
+            copy_payload_bytes = length(payload)
+          ))
           append_text(required(args, "--output"), paste0(jsonlite::toJSON(list(statement_id = statement_id, rows = list(list(copy_in = row_count))), auto_unbox = TRUE), "\n"))
+        } else if (required(args, "--parser-mode") != "server-parser") {
+          compiled <- sb_compile_sblr(conn@ptr$client, sql)
+          api_hits[["sb_compile_sblr"]] <- api_hits[["sb_compile_sblr"]] + 1
+          append_jsonl(paths$wire, list(
+            event = "driver_sblr_compile",
+            driver = "r",
+            parser_mode = required(args, "--parser-mode"),
+            statement_id = statement_id,
+            sblr_hash = as.character(compiled$hash),
+            sblr_version = compiled$version,
+            sblr_bytes = length(compiled$bytecode)
+          ))
+          stream <- sb_execute_sblr(conn@ptr$client, compiled$hash, compiled$bytecode)
+          api_hits[["sb_execute_sblr"]] <- api_hits[["sb_execute_sblr"]] + 1
+          append_jsonl(paths$wire, list(
+            event = "driver_sblr_execute",
+            driver = "r",
+            parser_mode = required(args, "--parser-mode"),
+            statement_id = statement_id,
+            sblr_hash = as.character(compiled$hash),
+            sblr_version = compiled$version,
+            sblr_bytes = length(compiled$bytecode),
+            engine_sql_text_execution = FALSE,
+            mga_authority = "engine"
+          ))
+          rows <- sb_fetch_rows(stream, -1)
+          row_count <- if (is.data.frame(rows)) nrow(rows) else length(rows)
+          if (group %in% c("query", "metadata") || row_count > 0) {
+            result_digest <- sha256_text(jsonlite::toJSON(rows, dataframe = "rows", auto_unbox = TRUE))
+            append_text(required(args, "--output"), paste0(jsonlite::toJSON(list(statement_id = statement_id, rows = rows), auto_unbox = TRUE), "\n"))
+          } else {
+            row_count <- as.integer(stream$rowcount)
+            result_digest <- sha256_text(as.character(row_count))
+          }
         } else if (group %in% c("ddl", "dml", "security_refusal")) {
           row_count <- DBI::dbExecute(conn, sql)
           api_hits[["DBI::dbExecute"]] <- api_hits[["DBI::dbExecute"]] + 1
@@ -604,6 +664,338 @@ copy_payload_for_statement <- function(sql) {
   }
   if (length(rows) == 0) return(raw(0))
   charToRaw(paste0(paste(rows, collapse = "\n"), "\n"))
+}
+
+copy_text_rows_to_native_frame <- function(data) {
+  if (length(data) >= 4 && rawToChar(data[1:4]) == "SBNR") {
+    return(data)
+  }
+  lines <- strsplit(rawToChar(data), "\r\n|\r|\n", perl = TRUE)[[1]]
+  lines <- sub("\r$", "", lines)
+  lines <- lines[nzchar(trimws(lines))]
+  if (length(lines) == 0) {
+    stop("COPY input contains no rows")
+  }
+
+  if (grepl(";", lines[[1]], fixed = TRUE) && grepl("=", lines[[1]], fixed = TRUE)) {
+    columns <- NULL
+    rows <- list()
+    for (line in lines) {
+      names <- character()
+      values <- list()
+      for (part in strsplit(line, ";", fixed = TRUE)[[1]]) {
+        if (!nzchar(part)) next
+        separator <- regexpr("=", part, fixed = TRUE)[[1]]
+        if (separator <= 1L) {
+          stop("malformed canonical COPY field")
+        }
+        names <- c(names, substr(part, 1L, separator - 1L))
+        value <- substr(part, separator + 1L, nchar(part))
+        values <- c(values, list(if (tolower(value) == "null") NULL else value))
+      }
+      if (length(names) == 0) next
+      if (is.null(columns)) {
+        columns <- names
+      } else if (!identical(columns, names)) {
+        stop("COPY input changed row shape mid-stream")
+      }
+      rows[[length(rows) + 1L]] <- values
+    }
+    if (is.null(columns)) {
+      stop("COPY input contains no rows")
+    }
+    return(build_native_rowset_payload(columns, rows))
+  }
+
+  columns <- trimws(split_copy_csv_line(lines[[1]]))
+  if (length(columns) == 0 || any(!nzchar(columns))) {
+    stop("CSV COPY input requires a non-empty header row")
+  }
+  rows <- list()
+  for (line in lines[-1]) {
+    values <- split_copy_csv_line(line)
+    if (length(values) != length(columns)) {
+      stop("CSV COPY row shape mismatch")
+    }
+    rows[[length(rows) + 1L]] <- lapply(values, function(value) if (!nzchar(value) || tolower(value) == "null") NULL else value)
+  }
+  if (length(rows) == 0) {
+    stop("CSV COPY input contains no data rows")
+  }
+  build_native_rowset_payload(columns, rows)
+}
+
+build_native_rowset_payload <- function(columns, rows, column_types = NULL) {
+  if (length(rows) == 0) {
+    stop("native rowset requires at least one row")
+  }
+  if (length(columns) == 0 || any(!nzchar(columns))) {
+    stop("native rowset requires non-empty column names")
+  }
+  for (row in rows) {
+    if (length(row) != length(columns)) {
+      stop("native rowset row shape mismatch")
+    }
+  }
+  types <- column_types %||% infer_native_rowset_column_types(rows)
+  if (length(types) != length(columns)) {
+    stop("native rowset column/type shape mismatch")
+  }
+
+  out <- c(charToRaw("SBNR"), pack_uint16_le(2L), pack_uint16_le(0L), pack_uint64_le(as.character(length(rows))), pack_uint32_le(length(columns)), as.raw(types))
+  for (column in columns) {
+    encoded <- charToRaw(enc2utf8(column))
+    out <- c(out, pack_uint32_le(length(encoded)), encoded)
+  }
+  null_bitmap_bytes <- ceiling(length(columns) / 8)
+  for (row in rows) {
+    null_bitmap <- rep(as.raw(0), null_bitmap_bytes)
+    values <- raw(0)
+    for (index in seq_along(row)) {
+      value <- row[[index]]
+      if (is.null(value)) {
+        byte_index <- ((index - 1L) %/% 8L) + 1L
+        null_bitmap[byte_index] <- as.raw(as.integer(null_bitmap[byte_index]) + bitwShiftL(1L, (index - 1L) %% 8L))
+      } else {
+        values <- c(values, encode_native_rowset_value(as.character(value), types[[index]]))
+      }
+    }
+    out <- c(out, null_bitmap, values)
+  }
+  out
+}
+
+encode_native_rowset_value <- function(value, type) {
+  trimmed <- trimws(value)
+  if (type == native_rowset_type_int64) {
+    return(pack_int64_le(trimmed))
+  }
+  if (type == native_rowset_type_boolean) {
+    return(as.raw(if (truthy_native_rowset_boolean(trimmed)) 1L else 0L))
+  }
+  if (type == native_rowset_type_int32) {
+    return(pack_int32_le(as.integer(trimmed)))
+  }
+  if (type == native_rowset_type_uint64) {
+    return(pack_uint64_le(trimmed))
+  }
+  if (type == native_rowset_type_real64) {
+    return(write_bin_raw(as.double(trimmed), size = 8L, endian = "little"))
+  }
+  if (type == native_rowset_type_binary || type == native_rowset_type_text) {
+    encoded <- charToRaw(enc2utf8(value))
+    return(c(pack_uint32_le(length(encoded)), encoded))
+  }
+  stop(paste("unsupported native rowset type", type))
+}
+
+infer_native_rowset_column_types <- function(rows) {
+  if (length(rows) == 0) {
+    return(integer())
+  }
+  column_count <- length(rows[[1]])
+  types <- rep(native_rowset_type_text, column_count)
+  for (column in seq_len(column_count)) {
+    values <- Filter(Negate(is.null), lapply(rows, function(row) row[[column]]))
+    if (length(values) == 0) next
+    text_values <- vapply(values, as.character, character(1))
+    if (all(tolower(trimws(text_values)) %in% c("true", "false"))) {
+      types[[column]] <- native_rowset_type_boolean
+    } else if (all(vapply(text_values, lossless_int32, logical(1)))) {
+      types[[column]] <- native_rowset_type_int32
+    } else if (all(vapply(text_values, lossless_int64, logical(1)))) {
+      types[[column]] <- native_rowset_type_int64
+    } else if (all(vapply(text_values, lossless_uint64, logical(1)))) {
+      types[[column]] <- native_rowset_type_uint64
+    } else if (all(vapply(text_values, lossless_real64, logical(1)))) {
+      types[[column]] <- native_rowset_type_real64
+    }
+  }
+  types
+}
+
+split_copy_csv_line <- function(line) {
+  values <- character()
+  current <- ""
+  in_quote <- FALSE
+  chars <- strsplit(line, "", fixed = TRUE)[[1]]
+  index <- 1L
+  while (index <= length(chars)) {
+    ch <- chars[[index]]
+    if (identical(ch, "\"")) {
+      if (in_quote && index + 1L <= length(chars) && identical(chars[[index + 1L]], "\"")) {
+        current <- paste0(current, "\"")
+        index <- index + 1L
+      } else {
+        in_quote <- !in_quote
+      }
+    } else if (identical(ch, ",") && !in_quote) {
+      values <- c(values, current)
+      current <- ""
+    } else {
+      current <- paste0(current, ch)
+    }
+    index <- index + 1L
+  }
+  c(values, current)
+}
+
+pack_uint16_le <- function(value) {
+  value <- as.integer(value)
+  as.raw(c(bitwAnd(value, 0xffL), bitwAnd(bitwShiftR(value, 8L), 0xffL)))
+}
+
+pack_uint32_le <- function(value) {
+  value <- as.numeric(value)
+  as.raw(c(
+    value %% 256,
+    floor(value / 256) %% 256,
+    floor(value / 65536) %% 256,
+    floor(value / 16777216) %% 256
+  ))
+}
+
+pack_int32_le <- function(value) {
+  write_bin_raw(as.integer(value), size = 4L, endian = "little")
+}
+
+pack_uint64_le <- function(value) {
+  text <- normalize_decimal_string(value)
+  bytes <- integer(8)
+  for (index in seq_len(8)) {
+    divided <- decimal_divmod_int(text, 256L)
+    bytes[[index]] <- divided$remainder
+    text <- divided$quotient
+  }
+  if (text != "0") {
+    stop("uint64 value exceeds 64 bits")
+  }
+  as.raw(bytes)
+}
+
+pack_int64_le <- function(value) {
+  text <- normalize_decimal_string(value, allow_negative = TRUE)
+  if (startsWith(text, "-")) {
+    magnitude <- substring(text, 2L)
+    if (decimal_compare_abs(magnitude, "9223372036854775808") > 0) {
+      stop("int64 value is below minimum")
+    }
+    return(pack_uint64_le(decimal_subtract_unsigned("18446744073709551616", magnitude)))
+  }
+  if (decimal_compare_abs(text, "9223372036854775807") > 0) {
+    stop("int64 value exceeds maximum")
+  }
+  pack_uint64_le(text)
+}
+
+write_bin_raw <- function(value, size, endian) {
+  con <- rawConnection(raw(0), "wb")
+  on.exit(close(con))
+  writeBin(value, con, size = size, endian = endian)
+  rawConnectionValue(con)
+}
+
+normalize_decimal_string <- function(value, allow_negative = FALSE) {
+  text <- trimws(as.character(value))
+  pattern <- if (allow_negative) "^-?[0-9]+$" else "^[0-9]+$"
+  if (!grepl(pattern, text)) {
+    stop(paste("invalid integer literal", value))
+  }
+  negative <- startsWith(text, "-")
+  if (negative) {
+    text <- substring(text, 2L)
+  }
+  text <- sub("^0+", "", text)
+  if (!nzchar(text)) text <- "0"
+  if (negative && text != "0") paste0("-", text) else text
+}
+
+decimal_divmod_int <- function(text, divisor) {
+  text <- normalize_decimal_string(text)
+  digits <- as.integer(strsplit(text, "", fixed = TRUE)[[1]])
+  quotient <- integer()
+  remainder <- 0L
+  for (digit in digits) {
+    current <- remainder * 10L + digit
+    quotient <- c(quotient, current %/% divisor)
+    remainder <- current %% divisor
+  }
+  quotient_text <- paste(quotient, collapse = "")
+  quotient_text <- sub("^0+", "", quotient_text)
+  if (!nzchar(quotient_text)) quotient_text <- "0"
+  list(quotient = quotient_text, remainder = remainder)
+}
+
+decimal_compare_abs <- function(left, right) {
+  left <- normalize_decimal_string(left)
+  right <- normalize_decimal_string(right)
+  if (nchar(left) != nchar(right)) {
+    return(if (nchar(left) < nchar(right)) -1L else 1L)
+  }
+  if (left == right) return(0L)
+  if (left < right) -1L else 1L
+}
+
+decimal_subtract_unsigned <- function(left, right) {
+  left <- normalize_decimal_string(left)
+  right <- normalize_decimal_string(right)
+  if (decimal_compare_abs(left, right) < 0) {
+    stop("unsigned decimal subtraction underflow")
+  }
+  ldigits <- rev(as.integer(strsplit(left, "", fixed = TRUE)[[1]]))
+  rdigits <- rev(as.integer(strsplit(right, "", fixed = TRUE)[[1]]))
+  out <- integer(max(length(ldigits), length(rdigits)))
+  borrow <- 0L
+  for (index in seq_along(out)) {
+    l <- if (index <= length(ldigits)) ldigits[[index]] else 0L
+    r <- if (index <= length(rdigits)) rdigits[[index]] else 0L
+    value <- l - borrow - r
+    if (value < 0L) {
+      value <- value + 10L
+      borrow <- 1L
+    } else {
+      borrow <- 0L
+    }
+    out[[index]] <- value
+  }
+  text <- paste(rev(out), collapse = "")
+  text <- sub("^0+", "", text)
+  if (!nzchar(text)) "0" else text
+}
+
+lossless_int32 <- function(value) {
+  text <- tryCatch(normalize_decimal_string(value, allow_negative = TRUE), error = function(e) NULL)
+  if (is.null(text)) return(FALSE)
+  if (startsWith(text, "-")) {
+    decimal_compare_abs(substring(text, 2L), "2147483648") <= 0
+  } else {
+    decimal_compare_abs(text, "2147483647") <= 0
+  }
+}
+
+lossless_int64 <- function(value) {
+  text <- tryCatch(normalize_decimal_string(value, allow_negative = TRUE), error = function(e) NULL)
+  if (is.null(text)) return(FALSE)
+  if (startsWith(text, "-")) {
+    decimal_compare_abs(substring(text, 2L), "9223372036854775808") <= 0
+  } else {
+    decimal_compare_abs(text, "9223372036854775807") <= 0
+  }
+}
+
+lossless_uint64 <- function(value) {
+  text <- tryCatch(normalize_decimal_string(value), error = function(e) NULL)
+  if (is.null(text)) return(FALSE)
+  decimal_compare_abs(text, "18446744073709551615") <= 0
+}
+
+lossless_real64 <- function(value) {
+  parsed <- suppressWarnings(as.double(trimws(value)))
+  is.finite(parsed)
+}
+
+truthy_native_rowset_boolean <- function(value) {
+  tolower(trimws(value)) %in% c("1", "true", "t", "yes", "y", "on")
 }
 
 is_copy_stdin_statement <- function(sql) {

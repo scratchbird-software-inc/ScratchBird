@@ -455,6 +455,30 @@ sb_execute_sblr <- function(client, sblr_hash, sblr_bytecode, params = list()) {
   result
 }
 
+sb_compile_sblr <- function(client, sql) {
+  sb_prepare_connection(client)
+  client$last_sblr <- NULL
+  sb_send_simple_query(client, sql, 0L, SB_QUERY_FLAG_RETURN_SBLR)
+  result <- new.env(parent = emptyenv())
+  result$client <- client
+  result$columns <- list()
+  result$rowcount <- -1
+  result$command_tag <- ""
+  result$done <- FALSE
+  result$page_size <- 0L
+  result$pending_rows <- list()
+  result$response_started <- FALSE
+  result$ignored_stray_ready <- FALSE
+  while (!is.null(sb_result_next_row(result))) {
+    # Drain parser output; SBLR_COMPILED is captured by sb_handle_async.
+  }
+  compiled <- sb_get_last_sblr(client)
+  if (is.null(compiled) || is.null(compiled$bytecode) || length(compiled$bytecode) == 0) {
+    stop("parser endpoint did not return SBLR for RETURN_SBLR request")
+  }
+  compiled
+}
+
 sb_stream_control <- function(client, control_type, window_size = 0L, timeout_ms = 0L) {
   payload <- build_stream_control_payload(control_type, window_size, timeout_ms)
   sb_send_message(client, SB_MSG_STREAM_CONTROL, payload, 0L, FALSE)
@@ -686,9 +710,18 @@ sb_build_startup_params <- function(client) {
 }
 
 sb_requested_features <- function(cfg) {
-  features <- 0L
+  features <- bitwOr(
+    bitwOr(
+      bitwOr(SB_FEATURE_SBLR, SB_FEATURE_NOTIFICATIONS),
+      bitwOr(SB_FEATURE_QUERY_PLAN, SB_FEATURE_SAVEPOINTS)
+    ),
+    bitwOr(SB_FEATURE_BATCH, SB_FEATURE_PIPELINE)
+  )
   if (tolower(cfg$compression) == "zstd") features <- bitwOr(features, SB_FEATURE_COMPRESSION)
-  if (isTRUE(cfg$binary_transfer)) features <- bitwOr(features, SB_FEATURE_STREAMING)
+  if (isTRUE(cfg$binary_transfer)) {
+    features <- bitwOr(features, SB_FEATURE_STREAMING)
+    features <- bitwOr(features, SB_FEATURE_BINARY_COPY)
+  }
   features
 }
 
@@ -1282,8 +1315,9 @@ sb_drain_ready_after_error <- function(client) {
   invisible(NULL)
 }
 
-sb_send_simple_query <- function(client, sql, max_rows = 0L) {
+sb_send_simple_query <- function(client, sql, max_rows = 0L, extra_flags = 0L) {
   flags <- if (isTRUE(client$cfg$binary_transfer)) 0x04L else 0L
+  flags <- bitwOr(flags, extra_flags)
   payload <- build_query_payload(sql, flags, max_rows, 0L)
   client$last_plan <- NULL
   client$last_sblr <- NULL

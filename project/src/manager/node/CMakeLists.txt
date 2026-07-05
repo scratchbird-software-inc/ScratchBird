@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 add_library(sbl_manager_node_runtime STATIC
   manager_lifecycle.cpp
@@ -28,6 +29,8 @@ target_link_libraries(sbl_manager_node_runtime PUBLIC
   sbl_manager_protocol
   sbl_listener_control_plane
   Threads::Threads
+  OpenSSL::SSL
+  OpenSSL::Crypto
 )
 if(WIN32)
   target_link_libraries(sbl_manager_node_runtime PUBLIC ws2_32)

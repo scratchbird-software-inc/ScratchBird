@@ -222,6 +222,12 @@ sb_agent_runtime_cpp_gate(
 )
 
 sb_agent_runtime_cpp_gate(
+  agent_runtime_layer_classification_gate
+  agent_runtime_layer_classification_gate.cpp
+  "ARHC-000;AGH_AGENT_LAYERS;manifest_consistency;layer_classification"
+)
+
+sb_agent_runtime_cpp_gate(
   agent_durable_runtime_catalog_gate
   agent_durable_runtime_catalog_gate.cpp
   "ARHC-020;ARHC-021;ARHC-022;ARHC-030;durable_catalog;runtime_service;leases"

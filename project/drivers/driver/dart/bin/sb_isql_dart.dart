@@ -38,6 +38,8 @@ const pageSizeBytes = {
 };
 const supportedArgs = {
   '--database',
+  '--manager-auth-token',
+  '--manager-database',
   '--host',
   '--port',
   '--user',
@@ -131,6 +133,8 @@ Future<int> runTool(Map<String, String> args) async {
     'rollback': 0,
     'close': 0,
     'copy_in': 0,
+    'compileSblr': 0,
+    'executeSblr': 0,
   };
   final testcases = <Map<String, Object?>>[];
   final failures = <Map<String, Object?>>[];
@@ -169,8 +173,15 @@ Future<int> runTool(Map<String, String> args) async {
       sslrootcert: args['--sslrootcert'],
       sslcert: args['--sslcert'],
       sslkey: args['--sslkey'],
-      frontDoorMode:
-          route == 'manager-listener-parser' ? 'manager_proxy' : 'direct',
+      frontDoorMode: route == 'manager-listener-parser'
+          ? 'manager_proxy'
+          : 'direct',
+      managerAuthToken: route == 'manager-listener-parser'
+          ? args['--manager-auth-token']
+          : null,
+      managerDatabase: route == 'manager-listener-parser'
+          ? args['--manager-database']
+          : null,
       applicationName: 'SBIsqlDart',
       metadataExpandSchemaParents: true,
       fetchSize: int.parse(args['--fetch-size'] ?? '1000'),
@@ -193,8 +204,12 @@ Future<int> runTool(Map<String, String> args) async {
       'driver_or_parser_finality': 'forbidden',
     });
 
-    routeEnvironment =
-        await probeRouteEnvironment(client, args, route, sslmode);
+    routeEnvironment = await probeRouteEnvironment(
+      client,
+      args,
+      route,
+      sslmode,
+    );
     await writeText(
       paths['route_environment']!,
       '${jsonEncode(routeEnvironment)}\n',
@@ -217,20 +232,15 @@ Future<int> runTool(Map<String, String> args) async {
       apiHits['attachCreate'] = apiHits['attachCreate']! + 1;
       addTiming(timings, 'database_create', createStarted);
     }
-    if (required(args, '--parser-mode') != 'server-parser') {
-      throw StateError(
-        '${required(args, '--parser-mode')} is not accepted by the Dart native tool lane; it fails closed',
-      );
-    }
-
     final inputPath = required(args, '--input');
     final inputText = await readInput(inputPath);
     final statements = splitInputStatements(inputPath, inputText);
     for (final statement in statements) {
       final sql = statement.sql;
       final statementId = '${statement.scriptName}:${statement.statementIndex}';
-      final expectedOutcome =
-          expectedRefusals.contains(statementId) ? 'refusal' : 'success';
+      final expectedOutcome = expectedRefusals.contains(statementId)
+          ? 'refusal'
+          : 'success';
       final group = classifyStatement(sql);
       final statementStarted = monotonicNs();
       var outcome = 'success';
@@ -257,13 +267,48 @@ Future<int> runTool(Map<String, String> args) async {
           apiHits['copy_in'] = apiHits['copy_in']! + 1;
           rowCount = rowsCopied;
           final rows = [
-            ['copy_in', rowsCopied]
+            ['copy_in', rowsCopied],
           ];
           resultDigest = sha256Text(jsonEncode(rows));
           await appendText(
             required(args, '--output'),
             '${jsonEncode({'statement_id': statementId, 'rows': rows})}\n',
           );
+        } else if (required(args, '--parser-mode') != 'server-parser') {
+          final compiled = await client.compileSblr(sql);
+          apiHits['compileSblr'] = apiHits['compileSblr']! + 1;
+          await appendJsonl(paths['wire']!, {
+            'event': 'driver_sblr_compile',
+            'driver': 'dart',
+            'parser_mode': required(args, '--parser-mode'),
+            'statement_id': statementId,
+            'sblr_hash': compiled.hash.toString(),
+            'sblr_version': compiled.version,
+            'sblr_bytes': compiled.bytecode.length,
+          });
+          final result = await client.executeSblr(
+            compiled.hash,
+            compiled.bytecode,
+          );
+          apiHits['executeSblr'] = apiHits['executeSblr']! + 1;
+          rowCount = result.rows.length;
+          final rows = jsonSafeRows(result.rows);
+          resultDigest = sha256Text(jsonEncode(rows));
+          await appendText(
+            required(args, '--output'),
+            '${jsonEncode({'statement_id': statementId, 'rows': rows})}\n',
+          );
+          await appendJsonl(paths['wire']!, {
+            'event': 'driver_sblr_execute',
+            'driver': 'dart',
+            'parser_mode': required(args, '--parser-mode'),
+            'statement_id': statementId,
+            'sblr_hash': compiled.hash.toString(),
+            'sblr_version': compiled.version,
+            'sblr_bytes': compiled.bytecode.length,
+            'engine_sql_text_execution': false,
+            'mga_authority': 'engine',
+          });
         } else {
           final result = await client.query(sql);
           apiHits['query'] = apiHits['query']! + 1;
@@ -340,11 +385,14 @@ Future<int> runTool(Map<String, String> args) async {
         'elapsed_ns': elapsed,
         'server_revalidation_state': 'required',
         'language_profile': args['--language-profile'] ?? 'en-US',
-        'language_resource_pack': args['--language-resource-pack'] ??
+        'language_resource_pack':
+            args['--language-resource-pack'] ??
             'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
-        'language_resource_identity': args['--language-resource-identity'] ??
+        'language_resource_identity':
+            args['--language-resource-identity'] ??
             'sbsql.common_resource_pack.v1',
-        'language_resource_hash': args['--language-resource-hash'] ??
+        'language_resource_hash':
+            args['--language-resource-hash'] ??
             'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
         'syntax_profile': args['--syntax-profile'] ?? 'sbsql.v3',
         'topology_profile':
@@ -368,10 +416,7 @@ Future<int> runTool(Map<String, String> args) async {
     apiHits['queryMetadata'] = apiHits['queryMetadata']! + 1;
     await writeText(
       paths['metadata']!,
-      '${jsonEncode({
-            'tables_digest': sha256Text(jsonEncode(metadata.rows)),
-            'row_count': metadata.rows.length
-          })}\n',
+      '${jsonEncode({'tables_digest': sha256Text(jsonEncode(metadata.rows)), 'row_count': metadata.rows.length})}\n',
     );
     addTiming(timings, 'metadata', metadataStarted);
   } catch (error) {
@@ -386,10 +431,7 @@ Future<int> runTool(Map<String, String> args) async {
 
   final elapsed = monotonicNs() - started;
   timings['overall'] = elapsed;
-  final transportMode = resolveTransportMode(
-    route,
-    sslmode,
-  );
+  final transportMode = resolveTransportMode(route, sslmode);
   final processMetrics = currentProcessMetrics();
   final summary = {
     'run_id': args['--run-id'] ?? 'manual',
@@ -401,15 +443,15 @@ Future<int> runTool(Map<String, String> args) async {
     'sslmode': sslmode,
     'transport_mode': transportMode,
     'transport_endpoint_kind': endpointKindForRoute(route),
-    'driver_transport_implementation': transportImplementationForRoute(
-      route,
-    ),
+    'driver_transport_implementation': transportImplementationForRoute(route),
     'cpp_library_boundary': 'none',
-    'language_resource_pack': args['--language-resource-pack'] ??
+    'language_resource_pack':
+        args['--language-resource-pack'] ??
         'project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack',
     'language_resource_identity':
         args['--language-resource-identity'] ?? 'sbsql.common_resource_pack.v1',
-    'language_resource_hash': args['--language-resource-hash'] ??
+    'language_resource_hash':
+        args['--language-resource-hash'] ??
         'sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc',
     'language_resource_authority': 'shared_server_parser_resource_pack',
     'language_profile': args['--language-profile'] ?? 'en-US',
@@ -444,19 +486,12 @@ Future<int> runTool(Map<String, String> args) async {
   await writeText(
     paths['review']!,
     '${jsonEncode({
-          'driver': 'dart',
-          'public_api_only': true,
-          'shells_out_to_other_driver': false,
-          'source_is_canonical_example': true,
-          'sections': [
-            'connection',
-            'query',
-            'fetch',
-            'metadata',
-            'diagnostics',
-            'transaction'
-          ],
-        })}\n',
+      'driver': 'dart',
+      'public_api_only': true,
+      'shells_out_to_other_driver': false,
+      'source_is_canonical_example': true,
+      'sections': ['connection', 'query', 'fetch', 'metadata', 'diagnostics', 'transaction'],
+    })}\n',
   );
   await writeText(
     paths['junit']!,
@@ -581,8 +616,9 @@ Future<Map<String, Object?>> probeRouteEnvironment(
 }
 
 int? pageSizeFromShowDatabase(ScratchBirdResult result) {
-  var pageIndex = result.columns
-      .indexWhere((column) => column.name.toLowerCase() == 'page_size_bytes');
+  var pageIndex = result.columns.indexWhere(
+    (column) => column.name.toLowerCase() == 'page_size_bytes',
+  );
   if (pageIndex < 0 && result.columns.length >= 3) {
     pageIndex = 2;
   }
@@ -606,9 +642,10 @@ int? pageSizeFromShowDatabase(ScratchBirdResult result) {
         final value = intValue(row[index + 1]);
         if (value != null) return value;
       }
-      final match =
-          RegExp(r'page_size_bytes\s*[:=]\s*(\d+)', caseSensitive: false)
-              .firstMatch(text);
+      final match = RegExp(
+        r'page_size_bytes\s*[:=]\s*(\d+)',
+        caseSensitive: false,
+      ).firstMatch(text);
       if (match != null) {
         return int.parse(match.group(1)!);
       }
@@ -628,8 +665,8 @@ String normalizeControlName(String token) =>
     token.replaceAll(RegExp(r'[;]$'), '').trim();
 
 List<List<Object?>> jsonSafeRows(List<List<dynamic>> rows) => [
-      for (final row in rows) [for (final value in row) jsonSafeValue(value)]
-    ];
+  for (final row in rows) [for (final value in row) jsonSafeValue(value)],
+];
 
 Object? jsonSafeValue(dynamic value) {
   if (value == null || value is bool || value is String || value is int) {
@@ -649,7 +686,7 @@ Object? jsonSafeValue(dynamic value) {
   if (value is Map) {
     return {
       for (final entry in value.entries)
-        '${entry.key}': jsonSafeValue(entry.value)
+        '${entry.key}': jsonSafeValue(entry.value),
     };
   }
   return value.toString();
@@ -744,7 +781,8 @@ String classifyStatement(String sql) {
     'begin',
     'start',
     'release',
-  }.contains(first)) return 'transaction';
+  }.contains(first))
+    return 'transaction';
   if (const {'grant', 'revoke'}.contains(first)) return 'security_refusal';
   if (trimmed.contains('sys.')) return 'metadata';
   return 'query';
@@ -853,8 +891,7 @@ bool flagEnabled(
   Map<String, String> args,
   String key, [
   bool fallback = false,
-]) =>
-    (args[key] ?? fallback.toString()).toLowerCase() == 'true';
+]) => (args[key] ?? fallback.toString()).toLowerCase() == 'true';
 
 Map<String, Map<String, int>> currentProcessMetrics() {
   final rssKb = (ProcessInfo.currentRss / 1024).ceil();

@@ -9,6 +9,7 @@
 package com.scratchbird.jdbc.tools;
 
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -61,8 +62,17 @@ public final class SBIsqlJdbc {
         List.of("server-parser", "standalone-parser", "driver-sblr-uuid");
     private static final List<String> SSL_MODES =
         List.of("disable", "allow", "prefer", "require", "verify-ca", "verify-full");
+    private static final byte NATIVE_ROWSET_TYPE_TEXT = 1;
+    private static final byte NATIVE_ROWSET_TYPE_INT64 = 2;
+    private static final byte NATIVE_ROWSET_TYPE_BOOLEAN = 3;
+    private static final byte NATIVE_ROWSET_TYPE_INT32 = 4;
+    private static final byte NATIVE_ROWSET_TYPE_UINT64 = 5;
+    private static final byte NATIVE_ROWSET_TYPE_REAL64 = 6;
+    private static final byte NATIVE_ROWSET_TYPE_BINARY = 7;
     private static final Set<String> SUPPORTED_ARGS = Set.of(
         "--database",
+        "--manager-auth-token",
+        "--manager-database",
         "--host",
         "--port",
         "--user",
@@ -232,7 +242,8 @@ public final class SBIsqlJdbc {
                                 "COPY FROM STDIN requires SB_COPY_INPUT rows in the script",
                                 "22023");
                         }
-                        long rowsCopied = executeCopyIn(sbConnection, executableSql, copyPayload,
+                        byte[] nativeCopyPayload = copyTextRowsToNativeFrame(copyPayload);
+                        long rowsCopied = executeCopyIn(sbConnection, executableSql, nativeCopyPayload,
                             Integer.parseInt(args.valueOrDefault("--statement-timeout-ms", "30000")));
                         apiHits.merge("SBWP_COPY", 1, Integer::sum);
                         List<Object> row = new ArrayList<>();
@@ -248,7 +259,8 @@ public final class SBIsqlJdbc {
                             "event", "copy_in",
                             "statement_id", statementId,
                             "parser_mode", args.required("--parser-mode"),
-                            "payload_bytes", copyPayload.length,
+                            "payload_bytes", nativeCopyPayload.length,
+                            "copy_payload_format", "sbnr_native_rowset",
                             "rows_copied", rowsCopied,
                             "engine_sql_text_execution", false,
                             "mga_authority", "engine"));
@@ -493,6 +505,300 @@ public final class SBIsqlJdbc {
         return payload.getBytes(StandardCharsets.UTF_8);
     }
 
+    private static byte[] copyTextRowsToNativeFrame(byte[] data) {
+        if (data.length >= 4
+            && data[0] == 'S'
+            && data[1] == 'B'
+            && data[2] == 'N'
+            && data[3] == 'R') {
+            return data;
+        }
+
+        String text = new String(data, StandardCharsets.UTF_8).replace("\r\n", "\n");
+        List<String> lines = new ArrayList<>();
+        for (String raw : text.split("\n", -1)) {
+            String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
+            if (!line.trim().isEmpty()) {
+                lines.add(line);
+            }
+        }
+        if (lines.isEmpty()) {
+            throw new IllegalArgumentException("COPY input contains no rows");
+        }
+
+        if (lines.get(0).contains(";") && lines.get(0).contains("=")) {
+            List<String> columns = null;
+            List<List<String>> rows = new ArrayList<>();
+            for (String line : lines) {
+                List<String> names = new ArrayList<>();
+                List<String> values = new ArrayList<>();
+                for (String part : line.split(";", -1)) {
+                    if (part.isEmpty()) {
+                        continue;
+                    }
+                    int separator = part.indexOf('=');
+                    if (separator <= 0) {
+                        throw new IllegalArgumentException("malformed canonical COPY field");
+                    }
+                    names.add(part.substring(0, separator));
+                    String value = part.substring(separator + 1);
+                    values.add("NULL".equalsIgnoreCase(value) ? null : value);
+                }
+                if (names.isEmpty()) {
+                    continue;
+                }
+                if (columns == null) {
+                    columns = names;
+                } else if (!columns.equals(names)) {
+                    throw new IllegalArgumentException("COPY input changed row shape mid-stream");
+                }
+                rows.add(values);
+            }
+            if (columns == null) {
+                throw new IllegalArgumentException("COPY input contains no rows");
+            }
+            return buildNativeRowsetPayload(columns, rows, null);
+        }
+
+        List<String> columns = splitCopyCsvLine(lines.get(0));
+        for (int i = 0; i < columns.size(); i++) {
+            columns.set(i, columns.get(i).trim());
+            if (columns.get(i).isEmpty()) {
+                throw new IllegalArgumentException("CSV COPY input requires a non-empty header row");
+            }
+        }
+        List<List<String>> rows = new ArrayList<>();
+        for (int lineIndex = 1; lineIndex < lines.size(); lineIndex++) {
+            List<String> values = splitCopyCsvLine(lines.get(lineIndex));
+            if (values.size() != columns.size()) {
+                throw new IllegalArgumentException("CSV COPY row shape mismatch");
+            }
+            List<String> row = new ArrayList<>(values.size());
+            for (String value : values) {
+                row.add(value.isEmpty() || "NULL".equalsIgnoreCase(value) ? null : value);
+            }
+            rows.add(row);
+        }
+        if (rows.isEmpty()) {
+            throw new IllegalArgumentException("CSV COPY input contains no data rows");
+        }
+        return buildNativeRowsetPayload(columns, rows, null);
+    }
+
+    private static byte[] buildNativeRowsetPayload(List<String> columns, List<List<String>> rows, byte[] columnTypes) {
+        if (rows.isEmpty()) {
+            throw new IllegalArgumentException("native rowset requires at least one row");
+        }
+        if (columns.isEmpty()) {
+            throw new IllegalArgumentException("native rowset requires columns");
+        }
+        for (String column : columns) {
+            if (column == null || column.isEmpty()) {
+                throw new IllegalArgumentException("native rowset requires non-empty column names");
+            }
+        }
+        for (List<String> row : rows) {
+            if (row.size() != columns.size()) {
+                throw new IllegalArgumentException("native rowset row shape mismatch");
+            }
+        }
+        byte[] types = columnTypes == null ? inferNativeRowsetColumnTypes(rows) : columnTypes;
+        if (types.length != columns.size()) {
+            throw new IllegalArgumentException("native rowset column/type shape mismatch");
+        }
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(new byte[] { 'S', 'B', 'N', 'R' });
+        writeU16(out, 2);
+        writeU16(out, 0);
+        writeU64(out, rows.size());
+        writeU32(out, columns.size());
+        out.writeBytes(types);
+        for (String column : columns) {
+            byte[] encoded = column.getBytes(StandardCharsets.UTF_8);
+            writeU32(out, encoded.length);
+            out.writeBytes(encoded);
+        }
+
+        int nullBitmapBytes = (columns.size() + 7) / 8;
+        for (List<String> row : rows) {
+            byte[] nullBitmap = new byte[nullBitmapBytes];
+            ByteArrayOutputStream values = new ByteArrayOutputStream();
+            for (int index = 0; index < row.size(); index++) {
+                String value = row.get(index);
+                if (value == null) {
+                    nullBitmap[index / 8] |= (byte) (1 << (index % 8));
+                    continue;
+                }
+                values.writeBytes(encodeNativeRowsetValue(value, types[index]));
+            }
+            out.writeBytes(nullBitmap);
+            out.writeBytes(values.toByteArray());
+        }
+        return out.toByteArray();
+    }
+
+    private static byte[] encodeNativeRowsetValue(String value, byte type) {
+        String trimmed = value.trim();
+        return switch (type) {
+            case NATIVE_ROWSET_TYPE_INT64 -> le64(Long.parseLong(trimmed));
+            case NATIVE_ROWSET_TYPE_BOOLEAN -> new byte[] { truthyNativeRowsetBoolean(trimmed) ? (byte) 1 : (byte) 0 };
+            case NATIVE_ROWSET_TYPE_INT32 -> le32(Integer.parseInt(trimmed));
+            case NATIVE_ROWSET_TYPE_UINT64 -> le64(Long.parseUnsignedLong(trimmed));
+            case NATIVE_ROWSET_TYPE_REAL64 -> leDouble(Double.parseDouble(trimmed));
+            case NATIVE_ROWSET_TYPE_BINARY, NATIVE_ROWSET_TYPE_TEXT -> lengthPrefixedUtf8(value);
+            default -> throw new IllegalArgumentException("unsupported native rowset type " + type);
+        };
+    }
+
+    private static byte[] inferNativeRowsetColumnTypes(List<List<String>> rows) {
+        if (rows.isEmpty()) {
+            return new byte[0];
+        }
+        int columnCount = rows.get(0).size();
+        byte[] types = new byte[columnCount];
+        Arrays.fill(types, NATIVE_ROWSET_TYPE_TEXT);
+        for (int column = 0; column < columnCount; column++) {
+            List<String> values = new ArrayList<>();
+            for (List<String> row : rows) {
+                String value = row.get(column);
+                if (value != null) {
+                    values.add(value);
+                }
+            }
+            if (values.isEmpty()) {
+                continue;
+            }
+            if (allValues(values, value -> {
+                String normalized = value.trim().toLowerCase(Locale.ROOT);
+                return "true".equals(normalized) || "false".equals(normalized);
+            })) {
+                types[column] = NATIVE_ROWSET_TYPE_BOOLEAN;
+            } else if (allValues(values, SBIsqlJdbc::losslessInt32)) {
+                types[column] = NATIVE_ROWSET_TYPE_INT32;
+            } else if (allValues(values, SBIsqlJdbc::losslessInt64)) {
+                types[column] = NATIVE_ROWSET_TYPE_INT64;
+            } else if (allValues(values, SBIsqlJdbc::losslessUint64)) {
+                types[column] = NATIVE_ROWSET_TYPE_UINT64;
+            } else if (allValues(values, SBIsqlJdbc::losslessReal64)) {
+                types[column] = NATIVE_ROWSET_TYPE_REAL64;
+            }
+        }
+        return types;
+    }
+
+    private static List<String> splitCopyCsvLine(String line) {
+        List<String> values = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuote = false;
+        for (int index = 0; index < line.length(); index++) {
+            char ch = line.charAt(index);
+            if (ch == '"') {
+                if (inQuote && index + 1 < line.length() && line.charAt(index + 1) == '"') {
+                    current.append('"');
+                    index++;
+                } else {
+                    inQuote = !inQuote;
+                }
+                continue;
+            }
+            if (ch == ',' && !inQuote) {
+                values.add(current.toString());
+                current.setLength(0);
+                continue;
+            }
+            current.append(ch);
+        }
+        values.add(current.toString());
+        return values;
+    }
+
+    private static boolean allValues(List<String> values, java.util.function.Predicate<String> predicate) {
+        for (String value : values) {
+            if (!predicate.test(value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean losslessInt32(String value) {
+        String trimmed = value.trim();
+        try {
+            int parsed = Integer.parseInt(trimmed);
+            return Integer.toString(parsed).equals(trimmed);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static boolean losslessInt64(String value) {
+        String trimmed = value.trim();
+        try {
+            long parsed = Long.parseLong(trimmed);
+            return Long.toString(parsed).equals(trimmed);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static boolean losslessUint64(String value) {
+        String trimmed = value.trim();
+        try {
+            long parsed = Long.parseUnsignedLong(trimmed);
+            return Long.toUnsignedString(parsed).equals(trimmed);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static boolean losslessReal64(String value) {
+        try {
+            return Double.isFinite(Double.parseDouble(value.trim()));
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static boolean truthyNativeRowsetBoolean(String value) {
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "1", "true", "t", "yes", "y", "on" -> true;
+            default -> false;
+        };
+    }
+
+    private static void writeU16(ByteArrayOutputStream out, int value) {
+        out.writeBytes(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort((short) value).array());
+    }
+
+    private static void writeU32(ByteArrayOutputStream out, int value) {
+        out.writeBytes(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array());
+    }
+
+    private static void writeU64(ByteArrayOutputStream out, long value) {
+        out.writeBytes(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(value).array());
+    }
+
+    private static byte[] le32(int value) {
+        return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array();
+    }
+
+    private static byte[] le64(long value) {
+        return ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(value).array();
+    }
+
+    private static byte[] leDouble(double value) {
+        return ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(value).array();
+    }
+
+    private static byte[] lengthPrefixedUtf8(String value) {
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeU32(out, encoded.length);
+        out.writeBytes(encoded);
+        return out.toByteArray();
+    }
+
     private static boolean isCopyStdinStatement(String sql) {
         String executable = String.join(" ", nonCommentLines(sql)).trim().toLowerCase(Locale.ROOT);
         return executable.startsWith("copy ") && executable.contains(" from stdin");
@@ -681,6 +987,11 @@ public final class SBIsqlJdbc {
         Properties props = new Properties();
         props.setProperty("user", args.required("--user"));
         props.setProperty("password", args.required("--password"));
+        if ("manager-listener-parser".equals(args.required("--route"))) {
+            props.setProperty("front_door_mode", "manager_proxy");
+            props.setProperty("manager_auth_token", args.valueOrDefault("--manager-auth-token", ""));
+            props.setProperty("manager_database", args.valueOrDefault("--manager-database", ""));
+        }
         if ("ipc_local".equals(args.required("--route"))) {
             props.setProperty("transport_mode", "local_ipc");
             props.setProperty("ipc_method", "unix");

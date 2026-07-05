@@ -33,6 +33,9 @@
 #include <string_view>
 #include <utility>
 
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -532,6 +535,10 @@ bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::str
   if (key == "manager.proxy.client_idle_timeout_ms") return ParseU64(value, &config->proxy_client_idle_timeout_ms) || invalid();
   if (key == "manager.proxy.backend_connect_timeout_ms") return ParseU64(value, &config->proxy_backend_connect_timeout_ms) || invalid();
   if (key == "manager.proxy.io_timeout_ms") return ParseU64(value, &config->proxy_io_timeout_ms) || invalid();
+  if (key == "manager.proxy.tls_required") return ParseBool(value, &config->proxy_tls_required) || invalid();
+  if (key == "manager.proxy.tls_cert_file") { config->proxy_tls_cert_file = value; return true; }
+  if (key == "manager.proxy.tls_key_file") { config->proxy_tls_key_file = value; return true; }
+  if (key == "manager.proxy.tls_ca_file") { config->proxy_tls_ca_file = value; return true; }
   if (key == "manager.control.backlog") return parse_nonzero_u32(&config->management_backlog) || invalid();
   if (key == "manager.control.max_clients") return parse_nonzero_u32(&config->management_max_clients) || invalid();
   if (key == "manager.control.max_payload_bytes") {
@@ -657,6 +664,11 @@ bool RecvExactWithTimeout(int fd, std::uint8_t* data, std::size_t size, std::uin
   return true;
 }
 
+bool FileReadableRegular(const std::filesystem::path& path) {
+  std::error_code ec;
+  return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
 int CreateTcpListener(const std::string& bind_address, std::uint16_t port, int backlog, std::vector<proto::Diagnostic>* diagnostics) {
   addrinfo hints{};
   hints.ai_family = AF_UNSPEC;
@@ -734,6 +746,94 @@ bool SendAll(int fd, const char* data, std::size_t size) {
 
 bool SendBytes(int fd, const proto::Bytes& bytes) {
   return SendAll(fd, reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+struct ProxyClientIo {
+  int fd = -1;
+  SSL* ssl = nullptr;
+};
+
+bool ProxyClientUsesTls(const ProxyClientIo& client) {
+  return client.ssl != nullptr;
+}
+
+int TlsIoResult(SSL* ssl, int rc) {
+  const int error = SSL_get_error(ssl, rc);
+  if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) return 0;
+  if (error == SSL_ERROR_ZERO_RETURN) return -1;
+  return -1;
+}
+
+bool TlsAcceptBlocking(SSL* ssl) {
+  while (true) {
+    const int rc = SSL_accept(ssl);
+    if (rc == 1) return true;
+    const int state = TlsIoResult(ssl, rc);
+    if (state < 0) return false;
+  }
+}
+
+ssize_t ProxyClientRecvSome(ProxyClientIo* client, char* data, std::size_t size) {
+  if (client->ssl == nullptr) {
+    while (true) {
+      const auto rc = ::recv(client->fd, data, size, 0);
+      if (rc < 0 && errno == EINTR) continue;
+      return rc;
+    }
+  }
+  while (true) {
+    const int rc = SSL_read(client->ssl, data, static_cast<int>(size));
+    if (rc > 0) return rc;
+    const int state = TlsIoResult(client->ssl, rc);
+    if (state == 0) continue;
+    return -1;
+  }
+}
+
+bool ProxyClientRecvExact(ProxyClientIo* client, std::uint8_t* data, std::size_t size) {
+  std::size_t got = 0;
+  while (got < size) {
+    const auto rc = ProxyClientRecvSome(client,
+                                        reinterpret_cast<char*>(data + got),
+                                        size - got);
+    if (rc <= 0) return false;
+    got += static_cast<std::size_t>(rc);
+  }
+  return true;
+}
+
+bool ProxyClientSendAll(ProxyClientIo* client, const char* data, std::size_t size) {
+  if (client->ssl == nullptr) return SendAll(client->fd, data, size);
+  std::size_t sent = 0;
+  while (sent < size) {
+    const int rc = SSL_write(client->ssl,
+                             data + sent,
+                             static_cast<int>(size - sent));
+    if (rc > 0) {
+      sent += static_cast<std::size_t>(rc);
+      continue;
+    }
+    const int state = TlsIoResult(client->ssl, rc);
+    if (state == 0) continue;
+    return false;
+  }
+  return true;
+}
+
+bool ProxyClientSendBytes(ProxyClientIo* client, const proto::Bytes& bytes) {
+  return ProxyClientSendAll(client, reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+void CloseProxyClient(ProxyClientIo* client) {
+  if (client->ssl != nullptr) {
+    SSL_shutdown(client->ssl);
+    SSL_free(client->ssl);
+    client->ssl = nullptr;
+  }
+  if (client->fd >= 0) {
+    ::close(client->fd);
+    client->fd = -1;
+  }
 }
 
 bool DaemonizeService(std::vector<proto::Diagnostic>* diagnostics) {
@@ -1502,6 +1602,7 @@ class ManagerRuntime {
 
  private:
   bool PrepareRuntime(std::vector<proto::Diagnostic>* diagnostics);
+  bool PrepareProxyTls(std::vector<proto::Diagnostic>* diagnostics);
   void CleanupRuntime();
   void StartHeartbeat();
   bool StartControl(std::vector<proto::Diagnostic>* diagnostics);
@@ -1526,7 +1627,7 @@ class ManagerRuntime {
                   const std::vector<std::pair<std::string, std::string>>& fields = {});
   void ProxyLoop(int fd);
   void HandleProxyClient(int client_fd);
-  void ForwardPair(int client_fd, int backend_fd);
+  void ForwardPair(ProxyClientIo* client, int backend_fd);
   bool SendListenerManagementCommand(const std::string& command, std::string* response_text, std::string* error_code);
   proto::SbdbFrame HandleManagerCommand(McpSession* session, const proto::SbdbFrame& request);
   proto::SbdbFrame HandleListenerCommand(McpSession* session,
@@ -1599,6 +1700,7 @@ class ManagerRuntime {
   std::uint64_t support_bundle_requests_total_ = 0;
   std::uint64_t support_bundle_failures_total_ = 0;
   bool lifecycle_started_ = false;
+  SSL_CTX* proxy_tls_ctx_ = nullptr;
   std::uint64_t heartbeat_success_ = 0;
   std::uint64_t heartbeat_failure_ = 0;
   std::uint64_t missed_heartbeat_count_ = 0;
@@ -1866,7 +1968,64 @@ bool ManagerRuntime::PrepareRuntime(std::vector<proto::Diagnostic>* diagnostics)
   return true;
 }
 
+bool ManagerRuntime::PrepareProxyTls(std::vector<proto::Diagnostic>* diagnostics) {
+  if (!config_.proxy_tls_required) return true;
+  if (!FileReadableRegular(config_.proxy_tls_cert_file) ||
+      !FileReadableRegular(config_.proxy_tls_key_file)) {
+    diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONFIG_INVALID",
+                                "Manager proxy TLS requires readable certificate and key files.",
+                                {{"tls_cert_file", config_.proxy_tls_cert_file.string()},
+                                 {"tls_key_file", config_.proxy_tls_key_file.string()}}));
+    return false;
+  }
+  if (!config_.proxy_tls_ca_file.empty() && !FileReadableRegular(config_.proxy_tls_ca_file)) {
+    diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONFIG_INVALID",
+                                "Manager proxy TLS CA file is not readable.",
+                                {{"tls_ca_file", config_.proxy_tls_ca_file.string()}}));
+    return false;
+  }
+  SSL_load_error_strings();
+  OpenSSL_add_ssl_algorithms();
+  SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+  if (ctx == nullptr) {
+    diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONTEXT_FAILED",
+                                "Manager proxy TLS context could not be created."));
+    return false;
+  }
+  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+  if (SSL_CTX_use_certificate_file(ctx,
+                                   config_.proxy_tls_cert_file.string().c_str(),
+                                   SSL_FILETYPE_PEM) != 1 ||
+      SSL_CTX_use_PrivateKey_file(ctx,
+                                  config_.proxy_tls_key_file.string().c_str(),
+                                  SSL_FILETYPE_PEM) != 1 ||
+      SSL_CTX_check_private_key(ctx) != 1) {
+    SSL_CTX_free(ctx);
+    diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONTEXT_FAILED",
+                                "Manager proxy TLS certificate or key could not be loaded.",
+                                {{"tls_cert_file", config_.proxy_tls_cert_file.string()},
+                                 {"tls_key_file", config_.proxy_tls_key_file.string()}}));
+    return false;
+  }
+  if (!config_.proxy_tls_ca_file.empty() &&
+      SSL_CTX_load_verify_locations(ctx,
+                                    config_.proxy_tls_ca_file.string().c_str(),
+                                    nullptr) != 1) {
+    SSL_CTX_free(ctx);
+    diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONTEXT_FAILED",
+                                "Manager proxy TLS CA bundle could not be loaded.",
+                                {{"tls_ca_file", config_.proxy_tls_ca_file.string()}}));
+    return false;
+  }
+  proxy_tls_ctx_ = ctx;
+  return true;
+}
+
 void ManagerRuntime::CleanupRuntime() {
+  if (proxy_tls_ctx_ != nullptr) {
+    SSL_CTX_free(proxy_tls_ctx_);
+    proxy_tls_ctx_ = nullptr;
+  }
   std::vector<proto::Diagnostic> ignored;
   lifecycle_.Transition(ManagerLifecycleState::kStopped, "cleanup complete", &ignored);
   (void)CleanupManagerRuntimeArtifactsImpl(config_, ManagerRuntimeCleanupOperation::kStop);
@@ -3068,18 +3227,44 @@ void ManagerRuntime::ProxyLoop(int fd) {
 void ManagerRuntime::HandleProxyClient(int client_fd) {
   bool handed_to_forwarder = false;
   McpSession session;
+  ProxyClientIo client{client_fd, nullptr};
+  if (config_.proxy_tls_required) {
+    client.ssl = SSL_new(proxy_tls_ctx_);
+    if (client.ssl == nullptr) {
+      AuditEvent("MANAGER_PROXY_TLS_HANDSHAKE", false, "MANAGER.PROXY_TLS_CONTEXT_FAILED");
+      CloseProxyClient(&client);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_clients_ > 0) active_clients_--;
+      }
+      PublishMetricsSnapshot();
+      return;
+    }
+    SSL_set_fd(client.ssl, client.fd);
+    if (!TlsAcceptBlocking(client.ssl)) {
+      AuditEvent("MANAGER_PROXY_TLS_HANDSHAKE", false, "MANAGER.PROXY_TLS_HANDSHAKE_FAILED");
+      CloseProxyClient(&client);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_clients_ > 0) active_clients_--;
+      }
+      PublishMetricsSnapshot();
+      return;
+    }
+    AuditEvent("MANAGER_PROXY_TLS_HANDSHAKE", true, "accepted");
+  }
   while (!stopping_.load()) {
     proto::Bytes header(12);
-    if (!RecvExact(client_fd, header.data(), header.size())) break;
+    if (!ProxyClientRecvExact(&client, header.data(), header.size())) break;
     const auto payload_length = ReadU32(header, 8);
     if (payload_length > 16u * 1024u * 1024u) {
       const auto response = proto::EncodeSbdbFrame(proto::SbdbFrame{0xff, 0, ProtocolErrorPayload("WIRE.PAYLOAD_TOO_LARGE")});
-      SendBytes(client_fd, response);
+      ProxyClientSendBytes(&client, response);
       break;
     }
     proto::Bytes encoded = header;
     encoded.resize(12 + static_cast<std::size_t>(payload_length));
-    if (payload_length != 0 && !RecvExact(client_fd, encoded.data() + 12, payload_length)) break;
+    if (payload_length != 0 && !ProxyClientRecvExact(&client, encoded.data() + 12, payload_length)) break;
     std::vector<proto::Diagnostic> diagnostics;
     const auto request = proto::DecodeSbdbFrame(encoded, &diagnostics);
     proto::SbdbFrame response;
@@ -3089,7 +3274,7 @@ void ManagerRuntime::HandleProxyClient(int client_fd) {
     } else {
       response = HandleMcpFrame(&session, *request);
     }
-    SendBytes(client_fd, proto::EncodeSbdbFrame(response));
+    ProxyClientSendBytes(&client, proto::EncodeSbdbFrame(response));
     if (!request || request->type == 0x03 || request->type == 0x60) break;
     if (request->type == 0x69 && session.proxy_ready) {
       int backend_fd = session.prepared_backend_fd;
@@ -3099,7 +3284,7 @@ void ManagerRuntime::HandleProxyClient(int client_fd) {
       }
       if (backend_fd < 0) break;
       handed_to_forwarder = true;
-      ForwardPair(client_fd, backend_fd);
+      ForwardPair(&client, backend_fd);
       break;
     }
   }
@@ -3107,7 +3292,7 @@ void ManagerRuntime::HandleProxyClient(int client_fd) {
     ::close(session.prepared_backend_fd);
     session.prepared_backend_fd = -1;
   }
-  if (!handed_to_forwarder) ::close(client_fd);
+  if (!handed_to_forwarder) CloseProxyClient(&client);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (active_clients_ > 0) active_clients_--;
@@ -3115,20 +3300,28 @@ void ManagerRuntime::HandleProxyClient(int client_fd) {
   PublishMetricsSnapshot();
 }
 
-void ManagerRuntime::ForwardPair(int client_fd, int backend_fd) {
+void ManagerRuntime::ForwardPair(ProxyClientIo* client, int backend_fd) {
   std::array<char, 8192> buffer{};
   bool client_open = true;
   bool backend_open = true;
   while (!stopping_.load() && (client_open || backend_open)) {
+    const bool client_tls_pending =
+        client_open && ProxyClientUsesTls(*client) && SSL_pending(client->ssl) > 0;
     pollfd pfds[2]{};
-    pfds[0].fd = client_fd;
-    pfds[0].events = client_open ? POLLIN : 0;
+    pfds[0].fd = client->fd;
+    pfds[0].events = client_open && !client_tls_pending ? POLLIN : 0;
     pfds[1].fd = backend_fd;
     pfds[1].events = backend_open ? POLLIN : 0;
-    const int rc = ::poll(pfds, 2, static_cast<int>(config_.proxy_io_timeout_ms));
-    if (rc <= 0) break;
-    if (client_open && (pfds[0].revents & POLLIN)) {
-      const auto n = ::recv(client_fd, buffer.data(), buffer.size(), 0);
+    if (!client_tls_pending) {
+      const int rc = ::poll(pfds, 2, static_cast<int>(config_.proxy_io_timeout_ms));
+      if (rc <= 0) break;
+    } else {
+      pfds[0].revents = POLLIN;
+    }
+    if (client_open &&
+        ((pfds[0].revents & POLLIN) ||
+         (ProxyClientUsesTls(*client) && SSL_pending(client->ssl) > 0))) {
+      const auto n = ProxyClientRecvSome(client, buffer.data(), buffer.size());
       if (n <= 0) { client_open = false; ::shutdown(backend_fd, SHUT_WR); }
       else if (!SendAll(backend_fd, buffer.data(), static_cast<std::size_t>(n))) break;
       else {
@@ -3138,15 +3331,15 @@ void ManagerRuntime::ForwardPair(int client_fd, int backend_fd) {
     }
     if (backend_open && (pfds[1].revents & POLLIN)) {
       const auto n = ::recv(backend_fd, buffer.data(), buffer.size(), 0);
-      if (n <= 0) { backend_open = false; ::shutdown(client_fd, SHUT_WR); }
-      else if (!SendAll(client_fd, buffer.data(), static_cast<std::size_t>(n))) break;
+      if (n <= 0) { backend_open = false; ::shutdown(client->fd, SHUT_WR); }
+      else if (!ProxyClientSendAll(client, buffer.data(), static_cast<std::size_t>(n))) break;
       else {
         std::lock_guard<std::mutex> lock(mutex_);
         proxy_bytes_backend_to_client_ += static_cast<std::uint64_t>(n);
       }
     }
   }
-  ::close(client_fd);
+  CloseProxyClient(client);
   ::close(backend_fd);
   PublishMetricsSnapshot();
 }
@@ -3383,6 +3576,16 @@ RuntimeResult ManagerRuntime::Run() {
     result.exit_code = 2;
     return result;
   }
+  if (!PrepareProxyTls(&result.diagnostics)) {
+    if (lifecycle_started_) {
+      (void)lifecycle_.Transition(ManagerLifecycleState::kStartupFailed,
+                                  "proxy tls preparation failed",
+                                  &result.diagnostics);
+      (void)CleanupManagerRuntimeArtifactsImpl(config_, ManagerRuntimeCleanupOperation::kStop);
+    }
+    result.exit_code = 2;
+    return result;
+  }
   if (config_.service && !config_.validate_config) {
     if (!lifecycle_.Transition(ManagerLifecycleState::kDaemonizing,
                                "service daemonization complete",
@@ -3402,6 +3605,7 @@ RuntimeResult ManagerRuntime::Run() {
 #ifndef _WIN32
   std::signal(SIGTERM, StopHandler);
   std::signal(SIGINT, StopHandler);
+  std::signal(SIGPIPE, SIG_IGN);
 #endif
   auto fail_started = [&](const std::string& detail) {
     (void)lifecycle_.Transition(ManagerLifecycleState::kStartupFailed, detail, &result.diagnostics);
@@ -3479,6 +3683,7 @@ std::string HelpText() {
          "Usage: sbmn_manager [--foreground|--service|--validate-config] [options]\n"
          "  --config PATH\n  --runtime-dir PATH\n  --control-dir PATH\n"
          "  --bind ADDRESS --port PORT\n  --native-bind ADDRESS --native-port PORT\n"
+         "  --tls-required BOOL --tls-cert-file PATH --tls-key-file PATH [--tls-ca-file PATH]\n"
          "  --management-max-clients N --management-max-payload-bytes BYTES\n"
          "  --management-idle-timeout-ms MS --management-backlog N\n"
          "  --owner-db NAME --owner-db-path PATH --owner-db-uuid UUID\n"
@@ -3506,6 +3711,10 @@ ParseResult ParseManagerCli(int argc, char** argv) {
   };
   auto parse_cli_u32 = [&](const std::string& option, const std::string& value, std::uint32_t* out) {
     if (ParseU32(value, out)) return;
+    report_invalid_cli_value(option, value);
+  };
+  auto parse_cli_bool = [&](const std::string& option, const std::string& value, bool* out) {
+    if (ParseBool(value, out)) return;
     report_invalid_cli_value(option, value);
   };
   auto parse_cli_nonzero_u32 = [&](const std::string& option, const std::string& value, std::uint32_t* out) {
@@ -3543,6 +3752,10 @@ ParseResult ParseManagerCli(int argc, char** argv) {
     else if (arg == "--control-dir") { if (auto v = require_value(arg)) { result.config.control_dir = *v; explicit_control_dir = true; } }
     else if (arg == "--bind") { if (auto v = require_value(arg)) result.config.bind_address = *v; }
     else if (arg == "--port") { if (auto v = require_value(arg)) parse_cli_u16(arg, *v, &result.config.proxy_port); }
+    else if (arg == "--tls-required") { if (auto v = require_value(arg)) parse_cli_bool(arg, *v, &result.config.proxy_tls_required); }
+    else if (arg == "--tls-cert-file") { if (auto v = require_value(arg)) result.config.proxy_tls_cert_file = *v; }
+    else if (arg == "--tls-key-file") { if (auto v = require_value(arg)) result.config.proxy_tls_key_file = *v; }
+    else if (arg == "--tls-ca-file") { if (auto v = require_value(arg)) result.config.proxy_tls_ca_file = *v; }
     else if (arg == "--management-backlog") { if (auto v = require_value(arg)) parse_cli_nonzero_u32(arg, *v, &result.config.management_backlog); }
     else if (arg == "--management-max-clients") { if (auto v = require_value(arg)) parse_cli_nonzero_u32(arg, *v, &result.config.management_max_clients); }
     else if (arg == "--management-max-payload-bytes") {
@@ -3638,11 +3851,18 @@ ParseResult ParseManagerCli(int argc, char** argv) {
       if (!ParseU64(text, &parsed) || parsed == 0) return;
       *out = parsed;
     };
+    auto apply_bool = [](const std::string& text, bool* out) {
+      (void)ParseBool(text, out);
+    };
     if (arg == "--config") { (void)value(); }
     else if (arg == "--runtime-dir") { if (auto v = value()) result.config.runtime_dir = *v; }
     else if (arg == "--control-dir") { if (auto v = value()) { result.config.control_dir = *v; explicit_control_dir = true; } }
     else if (arg == "--bind") { if (auto v = value()) result.config.bind_address = *v; }
     else if (arg == "--port") { if (auto v = value()) (void)ParseU16(*v, &result.config.proxy_port); }
+    else if (arg == "--tls-required") { if (auto v = value()) apply_bool(*v, &result.config.proxy_tls_required); }
+    else if (arg == "--tls-cert-file") { if (auto v = value()) result.config.proxy_tls_cert_file = *v; }
+    else if (arg == "--tls-key-file") { if (auto v = value()) result.config.proxy_tls_key_file = *v; }
+    else if (arg == "--tls-ca-file") { if (auto v = value()) result.config.proxy_tls_ca_file = *v; }
     else if (arg == "--management-backlog") { if (auto v = value()) apply_nonzero_u32(*v, &result.config.management_backlog); }
     else if (arg == "--management-max-clients") { if (auto v = value()) apply_nonzero_u32(*v, &result.config.management_max_clients); }
     else if (arg == "--management-max-payload-bytes") {

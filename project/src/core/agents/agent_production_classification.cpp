@@ -172,6 +172,7 @@ std::vector<std::string> BaseEvidenceFields(
       "source=canonical_agent_manifest",
       "agent_type_id=" + entry.type_id,
       "implementation_anchor=" + entry.implementation_anchor,
+      "layer=" + std::string(AgentRuntimeLayerName(entry.layer)),
       "deployment=" + std::string(AgentDeploymentName(entry.deployment)),
       "manifest_default_activation=" +
           std::string(AgentActivationProfileName(entry.default_activation)),

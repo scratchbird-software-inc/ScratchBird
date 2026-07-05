@@ -10,19 +10,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +35,8 @@ import (
 
 type config struct {
 	Database                 string
+	ManagerAuthToken         string
+	ManagerDatabase          string
 	Host                     string
 	Port                     int
 	User                     string
@@ -78,6 +84,16 @@ var (
 	parserModes   = map[string]bool{"server-parser": true, "standalone-parser": true, "driver-sblr-uuid": true}
 )
 
+const (
+	nativeRowsetTypeText    byte = 1
+	nativeRowsetTypeInt64   byte = 2
+	nativeRowsetTypeBoolean byte = 3
+	nativeRowsetTypeInt32   byte = 4
+	nativeRowsetTypeUint64  byte = 5
+	nativeRowsetTypeReal64  byte = 6
+	nativeRowsetTypeBinary  byte = 7
+)
+
 func main() {
 	cfg := parseFlags()
 	if err := run(cfg); err != nil {
@@ -89,6 +105,8 @@ func main() {
 func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.Database, "database", "", "database name")
+	flag.StringVar(&cfg.ManagerAuthToken, "manager-auth-token", "", "manager auth token")
+	flag.StringVar(&cfg.ManagerDatabase, "manager-database", "", "manager database")
 	flag.StringVar(&cfg.Host, "host", "127.0.0.1", "server host")
 	flag.IntVar(&cfg.Port, "port", 3092, "server port")
 	flag.StringVar(&cfg.User, "user", "", "user")
@@ -303,34 +321,40 @@ func run(cfg config) error {
 			if len(copyPayload) == 0 {
 				err = errors.New("COPY FROM STDIN requires SB_COPY_INPUT rows in the script")
 			} else {
-				err = conn.Raw(func(driverConn any) error {
-					sbConn, ok := driverConn.(*scratchbird.Conn)
-					if !ok {
-						return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
-					}
-					rowsCopied, copyErr := sbConn.CopyIn(ctx, executableStatement, copyPayload, 0)
-					if copyErr != nil {
-						return copyErr
-					}
-					apiHits["CopyIn"]++
-					rowCount = rowsCopied
-					rows := [][]any{{"copy_in", rowsCopied}}
-					resultDigest = sha256Text(jsonString(rows))
-					digests = append(digests, map[string]any{
-						"statement_id": statementID, "row_count": rowCount, "result_digest": resultDigest,
+				nativeCopyPayload, frameErr := copyTextRowsToNativeFrame(copyPayload)
+				if frameErr != nil {
+					err = frameErr
+				} else {
+					err = conn.Raw(func(driverConn any) error {
+						sbConn, ok := driverConn.(*scratchbird.Conn)
+						if !ok {
+							return fmt.Errorf("native Go connection did not expose *scratchbird.Conn")
+						}
+						rowsCopied, copyErr := sbConn.CopyIn(ctx, executableStatement, nativeCopyPayload, 0)
+						if copyErr != nil {
+							return copyErr
+						}
+						apiHits["CopyIn"]++
+						rowCount = rowsCopied
+						rows := [][]any{{"copy_in", rowsCopied}}
+						resultDigest = sha256Text(jsonString(rows))
+						digests = append(digests, map[string]any{
+							"statement_id": statementID, "row_count": rowCount, "result_digest": resultDigest,
+						})
+						appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": rows})+"\n")
+						appendJSONL(filepath.Join(runRoot, "wire-transcript.jsonl"), map[string]any{
+							"event":                     "copy_in",
+							"statement_id":              statementID,
+							"parser_mode":               cfg.ParserMode,
+							"payload_bytes":             len(nativeCopyPayload),
+							"rows_copied":               rowsCopied,
+							"copy_payload_format":       "sbnr_native_rowset",
+							"engine_sql_text_execution": false,
+							"mga_authority":             "engine",
+						})
+						return nil
 					})
-					appendText(cfg.Output, jsonString(map[string]any{"statement_id": statementID, "rows": rows})+"\n")
-					appendJSONL(filepath.Join(runRoot, "wire-transcript.jsonl"), map[string]any{
-						"event":                     "copy_in",
-						"statement_id":              statementID,
-						"parser_mode":               cfg.ParserMode,
-						"payload_bytes":             len(copyPayload),
-						"rows_copied":               rowsCopied,
-						"engine_sql_text_execution": false,
-						"mga_authority":             "engine",
-					})
-					return nil
-				})
+				}
 			}
 		} else if cfg.ParserMode == "server-parser" {
 			var values [][]any
@@ -521,6 +545,10 @@ func openDB(cfg config) (*sql.DB, error) {
 	}
 	dsn := fmt.Sprintf("scratchbird://%s:%s@%s:%d/%s?sslmode=%s&front_door_mode=%s&transport_mode=%s&application_name=sb-isql-go",
 		urlEscape(cfg.User), urlEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, sslMode, frontDoor, transportMode)
+	if cfg.Route == "manager-listener-parser" {
+		dsn += "&manager_auth_token=" + urlEscape(cfg.ManagerAuthToken)
+		dsn += "&manager_database=" + urlEscape(cfg.ManagerDatabase)
+	}
 	if cfg.Route == "ipc_local" {
 		dsn += "&ipc_method=unix&ipc_path=" + urlEscape(cfg.IPCPath)
 	}
@@ -941,6 +969,339 @@ func copyPayloadForStatement(sqlText string) []byte {
 		payload += "\n"
 	}
 	return []byte(payload)
+}
+
+func copyTextRowsToNativeFrame(data []byte) ([]byte, error) {
+	if bytes.HasPrefix(data, []byte("SBNR")) {
+		return data, nil
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	rawLines := strings.Split(text, "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return nil, errors.New("COPY input contains no rows")
+	}
+
+	if strings.Contains(lines[0], ";") && strings.Contains(lines[0], "=") {
+		var columns []string
+		rows := [][]*string{}
+		for _, line := range lines {
+			parts := strings.Split(line, ";")
+			names := []string{}
+			values := []*string{}
+			for _, part := range parts {
+				if part == "" {
+					continue
+				}
+				sep := strings.Index(part, "=")
+				if sep <= 0 {
+					return nil, errors.New("malformed canonical COPY field")
+				}
+				name := part[:sep]
+				value := part[sep+1:]
+				names = append(names, name)
+				if strings.EqualFold(value, "NULL") {
+					values = append(values, nil)
+				} else {
+					copied := value
+					values = append(values, &copied)
+				}
+			}
+			if len(names) == 0 {
+				continue
+			}
+			if len(columns) == 0 {
+				columns = names
+			} else if !sameStrings(columns, names) {
+				return nil, errors.New("COPY input changed row shape mid-stream")
+			}
+			rows = append(rows, values)
+		}
+		return buildNativeRowsetPayload(columns, rows, nil)
+	}
+
+	columns := splitCopyCSVLine(lines[0])
+	for index := range columns {
+		columns[index] = strings.TrimSpace(columns[index])
+		if columns[index] == "" {
+			return nil, errors.New("CSV COPY input requires a non-empty header row")
+		}
+	}
+	rows := [][]*string{}
+	for _, line := range lines[1:] {
+		values := splitCopyCSVLine(line)
+		if len(values) != len(columns) {
+			return nil, errors.New("CSV COPY row shape mismatch")
+		}
+		row := make([]*string, len(values))
+		for index, value := range values {
+			if value == "" || strings.EqualFold(value, "NULL") {
+				row[index] = nil
+			} else {
+				copied := value
+				row[index] = &copied
+			}
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return nil, errors.New("CSV COPY input contains no data rows")
+	}
+	return buildNativeRowsetPayload(columns, rows, nil)
+}
+
+func buildNativeRowsetPayload(columns []string, rows [][]*string, columnTypes []byte) ([]byte, error) {
+	if len(rows) == 0 {
+		return nil, errors.New("native rowset requires at least one row")
+	}
+	if len(columns) == 0 {
+		return nil, errors.New("native rowset requires columns")
+	}
+	for _, column := range columns {
+		if column == "" {
+			return nil, errors.New("native rowset requires non-empty column names")
+		}
+	}
+	for _, row := range rows {
+		if len(row) != len(columns) {
+			return nil, errors.New("native rowset row shape mismatch")
+		}
+	}
+	types := columnTypes
+	if types == nil {
+		types = inferNativeRowsetColumnTypes(rows)
+	}
+	if len(types) != len(columns) {
+		return nil, errors.New("native rowset column/type shape mismatch")
+	}
+
+	var out bytes.Buffer
+	out.Write([]byte{'S', 'B', 'N', 'R'})
+	writeU16(&out, 2)
+	writeU16(&out, 0)
+	writeU64(&out, uint64(len(rows)))
+	writeU32(&out, uint32(len(columns)))
+	out.Write(types)
+	for _, column := range columns {
+		encoded := []byte(column)
+		writeU32(&out, uint32(len(encoded)))
+		out.Write(encoded)
+	}
+	nullBitmapBytes := (len(columns) + 7) / 8
+	for _, row := range rows {
+		nullBitmap := make([]byte, nullBitmapBytes)
+		var values bytes.Buffer
+		for index, value := range row {
+			if value == nil {
+				nullBitmap[index/8] |= 1 << uint(index%8)
+				continue
+			}
+			text := *value
+			switch types[index] {
+			case nativeRowsetTypeInt64:
+				parsed, err := strconv.ParseInt(text, 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				writeI64(&values, parsed)
+			case nativeRowsetTypeBoolean:
+				if truthyNativeRowsetBoolean(text) {
+					values.WriteByte(1)
+				} else {
+					values.WriteByte(0)
+				}
+			case nativeRowsetTypeInt32:
+				parsed, err := strconv.ParseInt(text, 10, 32)
+				if err != nil {
+					return nil, err
+				}
+				writeI32(&values, int32(parsed))
+			case nativeRowsetTypeUint64:
+				parsed, err := strconv.ParseUint(text, 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				writeU64(&values, parsed)
+			case nativeRowsetTypeReal64:
+				parsed, err := strconv.ParseFloat(text, 64)
+				if err != nil {
+					return nil, err
+				}
+				writeF64(&values, parsed)
+			case nativeRowsetTypeBinary, nativeRowsetTypeText:
+				encoded := []byte(text)
+				writeU32(&values, uint32(len(encoded)))
+				values.Write(encoded)
+			default:
+				return nil, fmt.Errorf("unsupported native rowset type %d", types[index])
+			}
+		}
+		out.Write(nullBitmap)
+		out.Write(values.Bytes())
+	}
+	return out.Bytes(), nil
+}
+
+func inferNativeRowsetColumnTypes(rows [][]*string) []byte {
+	if len(rows) == 0 {
+		return nil
+	}
+	columnCount := len(rows[0])
+	types := make([]byte, columnCount)
+	for index := range types {
+		types[index] = nativeRowsetTypeText
+	}
+	for column := 0; column < columnCount; column++ {
+		values := []string{}
+		for _, row := range rows {
+			if row[column] != nil {
+				values = append(values, *row[column])
+			}
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if allValues(values, func(value string) bool {
+			lower := strings.ToLower(strings.TrimSpace(value))
+			return lower == "true" || lower == "false"
+		}) {
+			types[column] = nativeRowsetTypeBoolean
+			continue
+		}
+		if allValues(values, func(value string) bool { return losslessInt(value, math.MinInt32, math.MaxInt32) }) {
+			types[column] = nativeRowsetTypeInt32
+			continue
+		}
+		if allValues(values, func(value string) bool { return losslessInt(value, math.MinInt64, math.MaxInt64) }) {
+			types[column] = nativeRowsetTypeInt64
+			continue
+		}
+		if allValues(values, losslessUint64) {
+			types[column] = nativeRowsetTypeUint64
+			continue
+		}
+		if allValues(values, losslessReal64) {
+			types[column] = nativeRowsetTypeReal64
+			continue
+		}
+	}
+	return types
+}
+
+func splitCopyCSVLine(line string) []string {
+	values := []string{}
+	var current strings.Builder
+	inQuote := false
+	for index := 0; index < len(line); index++ {
+		ch := line[index]
+		if ch == '"' {
+			if inQuote && index+1 < len(line) && line[index+1] == '"' {
+				current.WriteByte('"')
+				index++
+			} else {
+				inQuote = !inQuote
+			}
+			continue
+		}
+		if ch == ',' && !inQuote {
+			values = append(values, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteByte(ch)
+	}
+	values = append(values, current.String())
+	return values
+}
+
+func sameStrings(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func allValues(values []string, predicate func(string) bool) bool {
+	for _, value := range values {
+		if !predicate(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func losslessInt(value string, min int64, max int64) bool {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return false
+	}
+	return parsed >= min && parsed <= max && strconv.FormatInt(parsed, 10) == strings.TrimSpace(value)
+}
+
+func losslessUint64(value string) bool {
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return false
+	}
+	return strconv.FormatUint(parsed, 10) == strings.TrimSpace(value)
+}
+
+func losslessReal64(value string) bool {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) {
+		return false
+	}
+	return true
+}
+
+func truthyNativeRowsetBoolean(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeU16(out *bytes.Buffer, value uint16) {
+	var data [2]byte
+	binary.LittleEndian.PutUint16(data[:], value)
+	out.Write(data[:])
+}
+
+func writeU32(out *bytes.Buffer, value uint32) {
+	var data [4]byte
+	binary.LittleEndian.PutUint32(data[:], value)
+	out.Write(data[:])
+}
+
+func writeI32(out *bytes.Buffer, value int32) {
+	writeU32(out, uint32(value))
+}
+
+func writeU64(out *bytes.Buffer, value uint64) {
+	var data [8]byte
+	binary.LittleEndian.PutUint64(data[:], value)
+	out.Write(data[:])
+}
+
+func writeI64(out *bytes.Buffer, value int64) {
+	writeU64(out, uint64(value))
+}
+
+func writeF64(out *bytes.Buffer, value float64) {
+	writeU64(out, math.Float64bits(value))
 }
 
 func isCopyStdinStatement(sqlText string) bool {

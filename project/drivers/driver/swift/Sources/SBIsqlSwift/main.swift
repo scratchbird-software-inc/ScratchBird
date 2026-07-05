@@ -16,6 +16,8 @@ let parserModes = Set(["server-parser", "standalone-parser", "driver-sblr-uuid"]
 let sslModes = Set(["allow", "disable", "prefer", "require", "verify-ca", "verify-full"])
 let supportedArgs = Set([
     "--database",
+    "--manager-auth-token",
+    "--manager-database",
     "--host",
     "--port",
     "--user",
@@ -109,6 +111,8 @@ struct SBIsqlSwift {
             "commit": 0,
             "rollback": 0,
             "close": 0,
+            "compileSblr": 0,
+            "executeSblr": 0,
             "copy_in": 0
         ]
         var testcases: [[String: Any?]] = []
@@ -137,7 +141,9 @@ struct SBIsqlSwift {
                 ipcPath: route == "ipc_local" ? try required(args, "--ipc-path") : nil,
                 applicationName: "SBIsqlSwift",
                 role: args["--role"],
-                fetchSize: Int(args["--fetch-size"] ?? "1000") ?? 1000
+                fetchSize: Int(args["--fetch-size"] ?? "1000") ?? 1000,
+                managerAuthToken: route == "manager-listener-parser" ? args["--manager-auth-token"] : nil,
+                managerDatabase: route == "manager-listener-parser" ? args["--manager-database"] : nil
             )
             let connectStarted = nowNs()
             connection = try await ScratchBirdConnection.connect(config)
@@ -187,10 +193,6 @@ struct SBIsqlSwift {
             if !failures.isEmpty {
                 throw RuntimeError("route environment verification failed")
             }
-            if try required(args, "--parser-mode") != "server-parser" {
-                throw RuntimeError("\(try required(args, "--parser-mode")) is not accepted by the Swift native tool lane; it fails closed")
-            }
-
             let statements = splitStatements(try readInput(try required(args, "--input")))
             for (index, sql) in statements.enumerated() {
                 let statementId = "\(URL(fileURLWithPath: try required(args, "--input")).lastPathComponent):\(index + 1)"
@@ -225,6 +227,44 @@ struct SBIsqlSwift {
                             try required(args, "--output"),
                             "\(jsonLine(["statement_id": statementId, "rows": String(describing: rows)]))\n"
                         )
+                    } else if try required(args, "--parser-mode") != "server-parser" {
+                        let compiled = try await connection!.compileSblr(
+                            sql,
+                            timeoutMs: UInt32(Int(args["--statement-timeout-ms"] ?? "30000") ?? 30000)
+                        )
+                        api["compileSblr", default: 0] += 1
+                        try appendJsonl(paths["wire"]!, [
+                            "event": "driver_sblr_compile",
+                            "driver": "swift",
+                            "parser_mode": try required(args, "--parser-mode"),
+                            "statement_id": statementId,
+                            "sblr_hash": String(compiled.hash),
+                            "sblr_version": compiled.version,
+                            "sblr_bytes": compiled.bytecode.count
+                        ])
+
+                        let result = try await connection!.executeSblr(
+                            compiled.hash,
+                            bytecode: compiled.bytecode
+                        )
+                        api["executeSblr", default: 0] += 1
+                        try appendJsonl(paths["wire"]!, [
+                            "event": "driver_sblr_execute",
+                            "driver": "swift",
+                            "parser_mode": try required(args, "--parser-mode"),
+                            "statement_id": statementId,
+                            "sblr_hash": String(compiled.hash),
+                            "sblr_version": compiled.version,
+                            "sblr_bytes": compiled.bytecode.count,
+                            "engine_sql_text_execution": false,
+                            "mga_authority": "engine"
+                        ])
+
+                        rowCount = result.rows.count
+                        resultDigest = sha256Text(String(describing: result.rows))
+                        if group == "query" || group == "metadata" || rowCount > 0 {
+                            try appendText(try required(args, "--output"), "\(jsonLine(["statement_id": statementId, "rows": String(describing: result.rows)]))\n")
+                        }
                     } else {
                         let result = try await connection!.query(sql)
                         api["query", default: 0] += 1

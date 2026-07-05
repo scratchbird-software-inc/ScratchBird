@@ -16,6 +16,13 @@ import {
   MSG_FLAG_URGENT,
   FEATURE_COMPRESSION,
   FEATURE_STREAMING,
+  FEATURE_SBLR,
+  FEATURE_NOTIFICATIONS,
+  FEATURE_QUERY_PLAN,
+  FEATURE_BATCH,
+  FEATURE_PIPELINE,
+  FEATURE_BINARY_COPY,
+  FEATURE_SAVEPOINTS,
   HEADER_SIZE,
   QUERY_FLAG_DESCRIBE_ONLY,
   QUERY_FLAG_INCLUDE_PLAN,
@@ -1429,12 +1436,19 @@ export class Client {
   }
 
   private requestedFeatures(): bigint {
-    let features = 0n;
+    let features =
+      FEATURE_SBLR |
+      FEATURE_NOTIFICATIONS |
+      FEATURE_QUERY_PLAN |
+      FEATURE_SAVEPOINTS |
+      FEATURE_BATCH |
+      FEATURE_PIPELINE;
     if (this.config.compression === "zstd") {
       features |= FEATURE_COMPRESSION;
     }
     if (this.config.binaryTransfer) {
       features |= FEATURE_STREAMING;
+      features |= FEATURE_BINARY_COPY;
     }
     return features;
   }

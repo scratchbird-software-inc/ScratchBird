@@ -18,6 +18,12 @@ extern "C" {
 typedef struct sb_connection sb_connection;
 typedef struct sb_prepared sb_prepared;
 typedef struct sb_result sb_result;
+typedef struct sb_sblr_compiled {
+    uint64_t hash;
+    uint32_t version;
+    uint8_t* bytecode;
+    size_t bytecode_len;
+} sb_sblr_compiled;
 typedef struct sb_row {
     struct sb_result* result;
     size_t row_index;
@@ -468,6 +474,8 @@ sb_result* sb_execute_sblr(sb_connection* conn,
                            const sb_value* params,
                            size_t param_count,
                            sb_error* err);
+sb_sblr_compiled* sb_compile_sblr(sb_connection* conn, const char* sql, sb_error* err);
+void sb_sblr_compiled_free(sb_sblr_compiled* compiled);
 
 #ifdef SCRATCHBIRD_TEST_HOOKS
 sb_type sb_test_map_type_oid(uint32_t oid);

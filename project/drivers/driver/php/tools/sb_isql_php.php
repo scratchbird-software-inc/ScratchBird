@@ -16,8 +16,18 @@ use ScratchBird\PDO\ScratchBirdPDO;
 
 require_driver_sources(dirname(__DIR__));
 
+const NATIVE_ROWSET_TYPE_TEXT = 1;
+const NATIVE_ROWSET_TYPE_INT64 = 2;
+const NATIVE_ROWSET_TYPE_BOOLEAN = 3;
+const NATIVE_ROWSET_TYPE_INT32 = 4;
+const NATIVE_ROWSET_TYPE_UINT64 = 5;
+const NATIVE_ROWSET_TYPE_REAL64 = 6;
+const NATIVE_ROWSET_TYPE_BINARY = 7;
+
 const SUPPORTED_ARGS = [
     '--database',
+    '--manager-auth-token',
+    '--manager-database',
     '--host',
     '--port',
     '--user',
@@ -58,7 +68,9 @@ const SUPPORTED_ARGS = [
 
 const SSLMODES = ['allow', 'disable', 'prefer', 'require', 'verify-ca', 'verify-full'];
 
-main($argv);
+if (PHP_SAPI === 'cli' && realpath($argv[0] ?? '') === __FILE__) {
+    main($argv);
+}
 
 function main(array $argv): void
 {
@@ -117,6 +129,8 @@ function run_tool(array $args): int
         'commit' => 0,
         'rollback' => 0,
         'copy_in' => 0,
+        'compileSblr' => 0,
+        'executeSblr' => 0,
     ];
     $testcases = [];
     $failures = [];
@@ -134,8 +148,17 @@ function run_tool(array $args): int
         $route = required($args, '--route');
         ensure_transport_route_supported($route, $args);
         $effectiveSslmode = effective_sslmode_for_route($route, value_or_default($args, '--sslmode', 'require'));
+        $managerDsn = '';
+        if ($route === 'manager-listener-parser') {
+            $managerDsn = sprintf(
+                ';manager_auth_token=%s;manager_database=%s;manager_username=%s',
+                value_or_default($args, '--manager-auth-token', ''),
+                value_or_default($args, '--manager-database', required($args, '--database')),
+                required($args, '--user')
+            );
+        }
         $dsn = sprintf(
-            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;sslrootcert=%s;sslcert=%s;sslkey=%s;front_door_mode=%s;transport=%s;metadata_expand_schema_parents=true',
+            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;sslrootcert=%s;sslcert=%s;sslkey=%s;front_door_mode=%s%s;transport=%s;metadata_expand_schema_parents=true',
             required($args, '--host'),
             required($args, '--port'),
             required($args, '--database'),
@@ -144,6 +167,7 @@ function run_tool(array $args): int
             value_or_default($args, '--sslcert', ''),
             value_or_default($args, '--sslkey', ''),
             $route === 'manager-listener-parser' ? 'manager_proxy' : 'direct',
+            $managerDsn,
             transport_config_for_route($route)
         );
         if ($route === 'ipc_local') {
@@ -180,9 +204,6 @@ function run_tool(array $args): int
             }
             add_timing($timings, 'database_create', $createStarted);
         }
-        if (required($args, '--parser-mode') !== 'server-parser') {
-            throw new RuntimeException(required($args, '--parser-mode') . ' is not accepted by the PHP native tool lane; it fails closed');
-        }
         $routeEnvironment = probe_route_environment($pdo, $args);
         write_text($paths['route_environment'], json_encode($routeEnvironment, JSON_THROW_ON_ERROR) . PHP_EOL);
         if ($route !== 'embedded' && $routeEnvironment['page_size_verification_status'] !== 'pass') {
@@ -210,7 +231,8 @@ function run_tool(array $args): int
                     if ($payload === '') {
                         throw new RuntimeException('COPY FROM STDIN requires SB_COPY_INPUT rows in the script');
                     }
-                    $rowsCopied = execute_copy_in(pdo_connection($pdo), executable_sql_without_copy_markers($sql), $payload);
+                    $nativePayload = copy_text_rows_to_native_frame($payload);
+                    $rowsCopied = execute_copy_in(pdo_connection($pdo), executable_sql_without_copy_markers($sql), $nativePayload);
                     $apiHits['copy_in']++;
                     $rowCount = $rowsCopied;
                     $resultDigest = sha256_text('copy_in:' . (string) $rowsCopied);
@@ -218,6 +240,41 @@ function run_tool(array $args): int
                         'statement_id' => $statementId,
                         'rows' => [['copy_in' => $rowsCopied]],
                     ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                } elseif (required($args, '--parser-mode') !== 'server-parser') {
+                    $compiled = $pdo->compileSblr($sql);
+                    $apiHits['compileSblr']++;
+                    append_jsonl($paths['wire'], [
+                        'event' => 'driver_sblr_compile',
+                        'driver' => 'php',
+                        'parser_mode' => required($args, '--parser-mode'),
+                        'statement_id' => $statementId,
+                        'sblr_hash' => (string)$compiled['hash'],
+                        'sblr_version' => $compiled['version'],
+                        'sblr_bytes' => strlen((string)$compiled['bytecode']),
+                    ]);
+                    $stream = $pdo->executeSblr($compiled);
+                    $apiHits['executeSblr']++;
+                    $rows = [];
+                    while (($row = $stream->readRow()) !== null) {
+                        $rows[] = $row;
+                    }
+                    $rowCount = count($rows);
+                    $resultDigest = sha256_text(json_encode($rows, JSON_THROW_ON_ERROR));
+                    append_text(required($args, '--output'), json_encode([
+                        'statement_id' => $statementId,
+                        'rows' => $rows,
+                    ], JSON_THROW_ON_ERROR) . PHP_EOL);
+                    append_jsonl($paths['wire'], [
+                        'event' => 'driver_sblr_execute',
+                        'driver' => 'php',
+                        'parser_mode' => required($args, '--parser-mode'),
+                        'statement_id' => $statementId,
+                        'sblr_hash' => (string)$compiled['hash'],
+                        'sblr_version' => $compiled['version'],
+                        'sblr_bytes' => strlen((string)$compiled['bytecode']),
+                        'engine_sql_text_execution' => false,
+                        'mga_authority' => 'engine',
+                    ]);
                 } else {
                     $stmt = $pdo->prepare($sql);
                     $apiHits['prepare']++;
@@ -803,6 +860,262 @@ function copy_payload_for_statement(string $sql): string
         }
     }
     return $rows === [] ? '' : implode("\n", $rows) . "\n";
+}
+
+function copy_text_rows_to_native_frame(string $data): string
+{
+    if (substr($data, 0, 4) === 'SBNR') {
+        return $data;
+    }
+    $lines = [];
+    foreach (preg_split('/\r\n|\r|\n/', $data) as $line) {
+        if (trim($line) !== '') {
+            $lines[] = rtrim($line, "\r");
+        }
+    }
+    if ($lines === []) {
+        throw new RuntimeException('COPY input contains no rows');
+    }
+
+    if (str_contains($lines[0], ';') && str_contains($lines[0], '=')) {
+        $columns = null;
+        $rows = [];
+        foreach ($lines as $line) {
+            $names = [];
+            $values = [];
+            foreach (explode(';', $line) as $part) {
+                if ($part === '') {
+                    continue;
+                }
+                $separator = strpos($part, '=');
+                if ($separator === false || $separator <= 0) {
+                    throw new RuntimeException('malformed canonical COPY field');
+                }
+                $names[] = substr($part, 0, $separator);
+                $value = substr($part, $separator + 1);
+                $values[] = strcasecmp($value, 'NULL') === 0 ? null : $value;
+            }
+            if ($names === []) {
+                continue;
+            }
+            if ($columns === null) {
+                $columns = $names;
+            } elseif ($columns !== $names) {
+                throw new RuntimeException('COPY input changed row shape mid-stream');
+            }
+            $rows[] = $values;
+        }
+        if ($columns === null) {
+            throw new RuntimeException('COPY input contains no rows');
+        }
+        return build_native_rowset_payload($columns, $rows);
+    }
+
+    $columns = array_map('trim', split_copy_csv_line($lines[0]));
+    if ($columns === [] || in_array('', $columns, true)) {
+        throw new RuntimeException('CSV COPY input requires a non-empty header row');
+    }
+    $rows = [];
+    foreach (array_slice($lines, 1) as $line) {
+        $values = split_copy_csv_line($line);
+        if (count($values) !== count($columns)) {
+            throw new RuntimeException('CSV COPY row shape mismatch');
+        }
+        $rows[] = array_map(
+            static fn(string $value): ?string => ($value === '' || strcasecmp($value, 'NULL') === 0) ? null : $value,
+            $values
+        );
+    }
+    if ($rows === []) {
+        throw new RuntimeException('CSV COPY input contains no data rows');
+    }
+    return build_native_rowset_payload($columns, $rows);
+}
+
+function build_native_rowset_payload(array $columns, array $rows, ?array $columnTypes = null): string
+{
+    if ($rows === []) {
+        throw new RuntimeException('native rowset requires at least one row');
+    }
+    if ($columns === [] || in_array('', $columns, true)) {
+        throw new RuntimeException('native rowset requires non-empty column names');
+    }
+    foreach ($rows as $row) {
+        if (count($row) !== count($columns)) {
+            throw new RuntimeException('native rowset row shape mismatch');
+        }
+    }
+    $types = $columnTypes ?? infer_native_rowset_column_types($rows);
+    if (count($types) !== count($columns)) {
+        throw new RuntimeException('native rowset column/type shape mismatch');
+    }
+
+    $out = 'SBNR' . pack('v', 2) . pack('v', 0) . pack_u64_le((string) count($rows)) . pack('V', count($columns));
+    foreach ($types as $type) {
+        $out .= chr((int) $type);
+    }
+    foreach ($columns as $column) {
+        $encoded = (string) $column;
+        $out .= pack('V', strlen($encoded)) . $encoded;
+    }
+    $nullBitmapBytes = intdiv(count($columns) + 7, 8);
+    foreach ($rows as $row) {
+        $nullBitmap = array_fill(0, $nullBitmapBytes, 0);
+        $values = '';
+        foreach ($row as $index => $value) {
+            if ($value === null) {
+                $byte = intdiv($index, 8);
+                $nullBitmap[$byte] |= 1 << ($index % 8);
+                continue;
+            }
+            $values .= encode_native_rowset_value((string) $value, (int) $types[$index]);
+        }
+        $out .= implode('', array_map('chr', $nullBitmap)) . $values;
+    }
+    return $out;
+}
+
+function encode_native_rowset_value(string $value, int $type): string
+{
+    $trimmed = trim($value);
+    return match ($type) {
+        NATIVE_ROWSET_TYPE_INT64 => pack('q', (int) $trimmed),
+        NATIVE_ROWSET_TYPE_BOOLEAN => truthy_native_rowset_boolean($trimmed) ? "\x01" : "\x00",
+        NATIVE_ROWSET_TYPE_INT32 => pack('V', (int) $trimmed),
+        NATIVE_ROWSET_TYPE_UINT64 => pack_u64_le($trimmed),
+        NATIVE_ROWSET_TYPE_REAL64 => pack('e', (float) $trimmed),
+        NATIVE_ROWSET_TYPE_BINARY, NATIVE_ROWSET_TYPE_TEXT => pack('V', strlen($value)) . $value,
+        default => throw new RuntimeException('unsupported native rowset type ' . $type),
+    };
+}
+
+function infer_native_rowset_column_types(array $rows): array
+{
+    if ($rows === []) {
+        return [];
+    }
+    $columnCount = count($rows[0]);
+    $types = array_fill(0, $columnCount, NATIVE_ROWSET_TYPE_TEXT);
+    for ($column = 0; $column < $columnCount; $column++) {
+        $values = [];
+        foreach ($rows as $row) {
+            if ($row[$column] !== null) {
+                $values[] = (string) $row[$column];
+            }
+        }
+        if ($values === []) {
+            continue;
+        }
+        if (sb_array_all($values, static fn(string $value): bool => in_array(strtolower(trim($value)), ['true', 'false'], true))) {
+            $types[$column] = NATIVE_ROWSET_TYPE_BOOLEAN;
+            continue;
+        }
+        if (sb_array_all($values, static fn(string $value): bool => lossless_int($value, -2147483648, 2147483647))) {
+            $types[$column] = NATIVE_ROWSET_TYPE_INT32;
+            continue;
+        }
+        if (sb_array_all($values, static fn(string $value): bool => lossless_int($value, PHP_INT_MIN, PHP_INT_MAX))) {
+            $types[$column] = NATIVE_ROWSET_TYPE_INT64;
+            continue;
+        }
+        if (sb_array_all($values, 'lossless_uint64')) {
+            $types[$column] = NATIVE_ROWSET_TYPE_UINT64;
+            continue;
+        }
+        if (sb_array_all($values, 'lossless_real64')) {
+            $types[$column] = NATIVE_ROWSET_TYPE_REAL64;
+            continue;
+        }
+    }
+    return $types;
+}
+
+function split_copy_csv_line(string $line): array
+{
+    $values = [];
+    $current = '';
+    $inQuote = false;
+    $length = strlen($line);
+    for ($index = 0; $index < $length; $index++) {
+        $ch = $line[$index];
+        if ($ch === '"') {
+            if ($inQuote && $index + 1 < $length && $line[$index + 1] === '"') {
+                $current .= '"';
+                $index++;
+            } else {
+                $inQuote = !$inQuote;
+            }
+            continue;
+        }
+        if ($ch === ',' && !$inQuote) {
+            $values[] = $current;
+            $current = '';
+            continue;
+        }
+        $current .= $ch;
+    }
+    $values[] = $current;
+    return $values;
+}
+
+function sb_array_all(array $values, callable $predicate): bool
+{
+    foreach ($values as $value) {
+        if (!$predicate($value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function lossless_int(string $value, int $min, int $max): bool
+{
+    $trimmed = trim($value);
+    if (!preg_match('/^-?\d+$/', $trimmed)) {
+        return false;
+    }
+    $parsed = filter_var($trimmed, FILTER_VALIDATE_INT);
+    if (!is_int($parsed)) {
+        return false;
+    }
+    return $parsed >= $min && $parsed <= $max && (string) $parsed === $trimmed;
+}
+
+function lossless_uint64(string $value): bool
+{
+    $trimmed = trim($value);
+    return preg_match('/^\d+$/', $trimmed) === 1
+        && strlen($trimmed) <= 20
+        && strcmp(str_pad($trimmed, 20, '0', STR_PAD_LEFT), '18446744073709551615') <= 0;
+}
+
+function lossless_real64(string $value): bool
+{
+    $parsed = filter_var(trim($value), FILTER_VALIDATE_FLOAT);
+    return is_float($parsed) && is_finite($parsed);
+}
+
+function truthy_native_rowset_boolean(string $value): bool
+{
+    return in_array(strtolower(trim($value)), ['1', 'true', 't', 'yes', 'y', 'on'], true);
+}
+
+function pack_u64_le(string $decimal): string
+{
+    $text = ltrim(trim($decimal), '+');
+    if (!preg_match('/^\d+$/', $text)) {
+        throw new RuntimeException('invalid uint64 value');
+    }
+    $hi = 0;
+    $lo = 0;
+    for ($i = 0, $n = strlen($text); $i < $n; $i++) {
+        $digit = ord($text[$i]) - 48;
+        $lo = $lo * 10 + $digit;
+        $carry = intdiv($lo, 0x100000000);
+        $lo %= 0x100000000;
+        $hi = ($hi * 10 + $carry) % 0x100000000;
+    }
+    return pack('V2', $lo, $hi);
 }
 
 function is_copy_stdin_statement(string $sql): bool

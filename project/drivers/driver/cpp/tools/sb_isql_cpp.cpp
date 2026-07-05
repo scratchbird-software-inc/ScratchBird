@@ -39,6 +39,8 @@ const std::set<std::string> kParserModes{"server-parser", "standalone-parser", "
 const std::set<std::string> kSslModes{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"};
 const std::set<std::string> kSupportedArgs{
     "--database",
+    "--manager-auth-token",
+    "--manager-database",
     "--host",
     "--port",
     "--user",
@@ -735,6 +737,10 @@ int main(int argc, char** argv) {
             config.transport_mode = "inet_listener";
         }
         config.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct";
+        if (route == "manager-listener-parser") {
+            config.manager_auth_token = valueOrDefault(args, "--manager-auth-token", "");
+            config.manager_database = valueOrDefault(args, "--manager-database", "");
+        }
         config.application_name = "SBIsqlCpp";
         config.query_timeout_ms = static_cast<uint32_t>(
             std::stoul(valueOrDefault(args, "--statement-timeout-ms", "30000")));
@@ -766,7 +772,15 @@ int main(int argc, char** argv) {
                                            {"parser_output_to_engine_required", true},
                                            {"engine_sql_text_execution", false}});
         } else {
-            failures.push_back({{"statement_id", "connect"}, {"message", statusMessage(ctx)}});
+            const std::string diagnostic = statusMessage(ctx);
+            failures.push_back({{"statement_id", "connect"},
+                                {"sqlstate", ctx.sqlstate ? ctx.sqlstate : "HY000"},
+                                {"message", diagnostic}});
+            appendJsonl(required(args, "--diagnostics"),
+                        {{"statement_id", "connect"},
+                         {"sqlstate", ctx.sqlstate ? ctx.sqlstate : "HY000"},
+                         {"message", diagnostic}});
+            appendText(required(args, "--error"), "connect: " + diagnostic + "\n");
         }
 
         json routeEnvironment{{"run_id", valueOrDefault(args, "--run-id", "manual")},
@@ -787,6 +801,8 @@ int main(int argc, char** argv) {
                               {"driver_transport_implementation", transportImplementationForRoute(route)}};
         if (status != scratchbird::core::Status::OK) {
             routeEnvironment["failure_reason"] = "connect_failed";
+            routeEnvironment["failure_message"] = statusMessage(ctx);
+            routeEnvironment["failure_sqlstate"] = ctx.sqlstate ? ctx.sqlstate : "HY000";
         }
         writeText(paths.at("route_env"), routeEnvironment.dump(2) + "\n");
 
@@ -1096,6 +1112,7 @@ int main(int argc, char** argv) {
                                {"standard_english_fallback", standardEnglishFallback},
                                {"status", failures.empty() ? "pass" : "fail"},
                                {"failure_count", failures.size()},
+                               {"failures", failures},
                                {"elapsed_ns", timings["overall"]},
                                {"process_metrics", processMetrics},
                                {"server_revalidation_required", true},

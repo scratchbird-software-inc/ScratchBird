@@ -50,6 +50,14 @@ enum class AgentDeployment {
   cluster
 };
 
+enum class AgentRuntimeLayer {
+  l1_observation,
+  l2_recorder,
+  l3_dispatcher,
+  l4_worker,
+  l5_coordinator
+};
+
 enum class AgentAuthorityClass {
   observe_only,
   recommend_only,
@@ -219,6 +227,7 @@ struct AgentDependencyEvaluation {
 
 struct AgentTypeDescriptor {
   std::string type_id;
+  AgentRuntimeLayer layer = AgentRuntimeLayer::l3_dispatcher;
   AgentDeployment deployment = AgentDeployment::local;
   std::string scope;
   AgentAuthorityClass authority = AgentAuthorityClass::observe_only;
@@ -1050,6 +1059,7 @@ struct AgentFaultInjectionResult {
 };
 
 const char* AgentDeploymentName(AgentDeployment value);
+const char* AgentRuntimeLayerName(AgentRuntimeLayer value);
 const char* AgentAuthorityClassName(AgentAuthorityClass value);
 const char* AgentLifecycleStateName(AgentLifecycleState value);
 const char* AgentActivationProfileName(AgentActivationProfile value);

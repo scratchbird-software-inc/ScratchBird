@@ -86,6 +86,7 @@ u64 Seconds(u64 value) {
 }
 
 AgentTypeDescriptor Agent(std::string type_id,
+                          AgentRuntimeLayer layer,
                           AgentDeployment deployment,
                           std::string scope,
                           AgentAuthorityClass authority,
@@ -93,6 +94,7 @@ AgentTypeDescriptor Agent(std::string type_id,
                           std::vector<AgentMetricDependency> deps) {
   AgentTypeDescriptor descriptor;
   descriptor.type_id = std::move(type_id);
+  descriptor.layer = layer;
   descriptor.deployment = deployment;
   descriptor.scope = std::move(scope);
   descriptor.authority = authority;
@@ -970,6 +972,17 @@ const char* AgentDeploymentName(AgentDeployment value) {
   return "unknown";
 }
 
+const char* AgentRuntimeLayerName(AgentRuntimeLayer value) {
+  switch (value) {
+    case AgentRuntimeLayer::l1_observation: return "l1_observation";
+    case AgentRuntimeLayer::l2_recorder: return "l2_recorder";
+    case AgentRuntimeLayer::l3_dispatcher: return "l3_dispatcher";
+    case AgentRuntimeLayer::l4_worker: return "l4_worker";
+    case AgentRuntimeLayer::l5_coordinator: return "l5_coordinator";
+  }
+  return "unknown";
+}
+
 const char* AgentAuthorityClassName(AgentAuthorityClass value) {
   switch (value) {
     case AgentAuthorityClass::observe_only: return "observe_only";
@@ -1312,7 +1325,7 @@ std::optional<AgentMetricDependency> FindAgentMetricDependencyContract(
 std::vector<AgentTypeDescriptor> CanonicalAgentRegistry() {
   std::vector<AgentTypeDescriptor> registry;
   for (const auto& entry : CanonicalAgentManifest()) {
-    registry.push_back(Agent(entry.type_id, entry.deployment, entry.scope,
+    registry.push_back(Agent(entry.type_id, entry.layer, entry.deployment, entry.scope,
                              entry.authority, entry.default_activation,
                              MetricDependenciesForAgent(entry.type_id)));
   }
@@ -1332,8 +1345,36 @@ AgentRuntimeStatus ValidateAgentType(const AgentTypeDescriptor& descriptor) {
   if (descriptor.deployment == AgentDeployment::cluster && !descriptor.cluster_only) {
     return AgentError("SB_AGENT_REGISTRY.CLUSTER_FLAG_REQUIRED", descriptor.type_id);
   }
-  if (descriptor.metric_dependencies.empty()) {
+  if (descriptor.layer == AgentRuntimeLayer::l1_observation) {
+    if (descriptor.authority != AgentAuthorityClass::observe_only ||
+        (descriptor.default_activation != AgentActivationProfile::observe_only &&
+         descriptor.default_activation != AgentActivationProfile::disabled)) {
+      return AgentError("SB_AGENT_REGISTRY.L1_OBSERVE_ONLY_REQUIRED",
+                        descriptor.type_id);
+    }
+    if (std::find(descriptor.required_rights.begin(), descriptor.required_rights.end(),
+                  "OBS_AGENT_CONTROL") != descriptor.required_rights.end()) {
+      return AgentError("SB_AGENT_REGISTRY.L1_CONTROL_RIGHT_FORBIDDEN",
+                        descriptor.type_id);
+    }
+  } else if (descriptor.metric_dependencies.empty()) {
     return AgentError("SB_AGENT_REGISTRY.METRIC_DEPENDENCY_REQUIRED", descriptor.type_id);
+  }
+  if (descriptor.layer == AgentRuntimeLayer::l4_worker &&
+      descriptor.default_activation != AgentActivationProfile::disabled) {
+    return AgentError("SB_AGENT_REGISTRY.L4_DISABLED_BY_DEFAULT_REQUIRED",
+                      descriptor.type_id);
+  }
+  if (descriptor.layer == AgentRuntimeLayer::l5_coordinator) {
+    if (descriptor.scope.rfind("node", 0) != 0) {
+      return AgentError("SB_AGENT_REGISTRY.L5_NODE_SCOPE_REQUIRED",
+                        descriptor.type_id);
+    }
+    if (descriptor.authority == AgentAuthorityClass::observe_only ||
+        descriptor.authority == AgentAuthorityClass::recommend_only) {
+      return AgentError("SB_AGENT_REGISTRY.L5_SCHEDULER_AUTHORITY_REQUIRED",
+                        descriptor.type_id);
+    }
   }
   for (const auto& dep : descriptor.metric_dependencies) {
     if (dep.metric_family.empty() || dep.namespace_prefix.empty()) {

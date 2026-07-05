@@ -9,6 +9,8 @@
 using System.Data;
 using System.Data.Common;
 using System.Security.Cryptography;
+using System.Buffers.Binary;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using ScratchBird.Data;
@@ -21,9 +23,18 @@ internal static class SBIsqlDotNet
     private static readonly HashSet<string> PageSizes = ["4k", "8k", "16k", "32k", "64k", "128k"];
     private static readonly HashSet<string> Routes = ["embedded", "ipc_local", "listener-parser", "manager-listener-parser"];
     private static readonly HashSet<string> ParserModes = ["server-parser", "standalone-parser", "driver-sblr-uuid"];
+    private const byte NativeRowsetTypeText = 1;
+    private const byte NativeRowsetTypeInt64 = 2;
+    private const byte NativeRowsetTypeBoolean = 3;
+    private const byte NativeRowsetTypeInt32 = 4;
+    private const byte NativeRowsetTypeUint64 = 5;
+    private const byte NativeRowsetTypeReal64 = 6;
+    private const byte NativeRowsetTypeBinary = 7;
     private static readonly HashSet<string> SupportedArgs =
     [
         "--database",
+        "--manager-auth-token",
+        "--manager-database",
         "--host",
         "--port",
         "--user",
@@ -117,6 +128,10 @@ internal static class SBIsqlDotNet
         ScratchBirdTransaction? activeTransaction = null;
         try
         {
+            var route = Required(args, "--route");
+            var effectiveSslMode = route == "ipc_local"
+                ? "disable"
+                : ValueOrDefault(args, "--sslmode", "require");
             var builder = new ScratchBirdConnectionStringBuilder
             {
                 Host = Required(args, "--host"),
@@ -124,18 +139,24 @@ internal static class SBIsqlDotNet
                 Database = Required(args, "--database"),
                 Username = Required(args, "--user"),
                 Password = Required(args, "--password"),
-                SSLMode = Required(args, "--route") == "ipc_local"
-                    ? "disable"
-                    : ValueOrDefault(args, "--sslmode", "require"),
-                FrontDoorMode = Required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct",
+                SSLMode = effectiveSslMode,
+                FrontDoorMode = route == "manager-listener-parser" ? "manager_proxy" : "direct",
                 FetchSize = int.Parse(ValueOrDefault(args, "--fetch-size", "1000")),
                 CommandTimeout = Math.Max(1, int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")) / 1000)
             };
-            if (Required(args, "--route") == "ipc_local")
+            if (route == "manager-listener-parser")
+            {
+                builder.ManagerAuthToken = ValueOrDefault(args, "--manager-auth-token", "");
+                builder["Manager_Database"] = ValueOrDefault(args, "--manager-database", "");
+            }
+            if (route == "ipc_local")
             {
                 builder["Transport_Mode"] = "local_ipc";
                 builder["IPC_Method"] = "unix";
                 builder["IPC_Path"] = ValueOrDefault(args, "--ipc-path", "");
+            }
+            if (string.Equals(effectiveSslMode, "disable", StringComparison.OrdinalIgnoreCase))
+            {
                 builder["AllowInsecureDisable"] = "true";
             }
             builder["SslRootCert"] = ValueOrDefault(args, "--sslrootcert", "");
@@ -168,7 +189,7 @@ internal static class SBIsqlDotNet
             });
             await AppendJsonlAsync(paths["wire"], new { @event = "server_admission_required", driver_or_parser_finality = "forbidden" });
 
-            if (args.ContainsKey("--create-database"))
+            if (BooleanArg(args, "--create-database", false))
             {
                 var createStarted = NowNs();
                 ((ScratchBirdConnection)connection).AttachCreate(
@@ -216,7 +237,8 @@ internal static class SBIsqlDotNet
                         {
                             throw new InvalidOperationException("COPY FROM STDIN requires SB_COPY_INPUT rows in the script");
                         }
-                        var rowsCopied = ((ScratchBirdConnection)connection).ExecuteCopyIn(executableSql, copyPayload,
+                        var nativeCopyPayload = CopyTextRowsToNativeFrame(copyPayload);
+                        var rowsCopied = ((ScratchBirdConnection)connection).ExecuteCopyIn(executableSql, nativeCopyPayload,
                             int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")));
                         apiHits["SBWP_COPY"]++;
                         var rows = new List<List<object?>> { new() { "copy_in", rowsCopied } };
@@ -228,7 +250,8 @@ internal static class SBIsqlDotNet
                             @event = "copy_in",
                             statement_id = statementId,
                             parser_mode = Required(args, "--parser-mode"),
-                            payload_bytes = copyPayload.Length,
+                            payload_bytes = nativeCopyPayload.Length,
+                            copy_payload_format = "sbnr_native_rowset",
                             rows_copied = rowsCopied,
                             engine_sql_text_execution = false,
                             mga_authority = "engine"
@@ -576,6 +599,340 @@ internal static class SBIsqlDotNet
             .Select(line => line["-- SB_COPY_INPUT ".Length..].TrimEnd('\r'))
             .ToList();
         return Encoding.UTF8.GetBytes(string.Join("\n", rows) + (rows.Count == 0 ? "" : "\n"));
+    }
+
+    private static byte[] CopyTextRowsToNativeFrame(byte[] data)
+    {
+        if (data.Length >= 4
+            && data[0] == (byte)'S'
+            && data[1] == (byte)'B'
+            && data[2] == (byte)'N'
+            && data[3] == (byte)'R')
+        {
+            return data;
+        }
+
+        var lines = Encoding.UTF8.GetString(data)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .Select(line => line.TrimEnd('\r'))
+            .Where(line => line.Trim().Length > 0)
+            .ToList();
+        if (lines.Count == 0)
+        {
+            throw new InvalidOperationException("COPY input contains no rows");
+        }
+
+        if (lines[0].Contains(';', StringComparison.Ordinal) && lines[0].Contains('=', StringComparison.Ordinal))
+        {
+            List<string>? columns = null;
+            var rows = new List<List<string?>>();
+            foreach (var line in lines)
+            {
+                var names = new List<string>();
+                var values = new List<string?>();
+                foreach (var part in line.Split(';'))
+                {
+                    if (part.Length == 0)
+                    {
+                        continue;
+                    }
+                    var separator = part.IndexOf('=', StringComparison.Ordinal);
+                    if (separator <= 0)
+                    {
+                        throw new InvalidOperationException("malformed canonical COPY field");
+                    }
+                    names.Add(part[..separator]);
+                    var value = part[(separator + 1)..];
+                    values.Add(string.Equals(value, "NULL", StringComparison.OrdinalIgnoreCase) ? null : value);
+                }
+                if (names.Count == 0)
+                {
+                    continue;
+                }
+                if (columns == null)
+                {
+                    columns = names;
+                }
+                else if (!columns.SequenceEqual(names))
+                {
+                    throw new InvalidOperationException("COPY input changed row shape mid-stream");
+                }
+                rows.Add(values);
+            }
+            if (columns == null)
+            {
+                throw new InvalidOperationException("COPY input contains no rows");
+            }
+            return BuildNativeRowsetPayload(columns, rows);
+        }
+
+        var csvColumns = SplitCopyCsvLine(lines[0]).Select(column => column.Trim()).ToList();
+        if (csvColumns.Count == 0 || csvColumns.Any(column => column.Length == 0))
+        {
+            throw new InvalidOperationException("CSV COPY input requires a non-empty header row");
+        }
+        var csvRows = new List<List<string?>>();
+        foreach (var line in lines.Skip(1))
+        {
+            var values = SplitCopyCsvLine(line);
+            if (values.Count != csvColumns.Count)
+            {
+                throw new InvalidOperationException("CSV COPY row shape mismatch");
+            }
+            csvRows.Add(values.Select(value =>
+                value.Length == 0 || string.Equals(value, "NULL", StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : value).ToList());
+        }
+        if (csvRows.Count == 0)
+        {
+            throw new InvalidOperationException("CSV COPY input contains no data rows");
+        }
+        return BuildNativeRowsetPayload(csvColumns, csvRows);
+    }
+
+    private static byte[] BuildNativeRowsetPayload(IReadOnlyList<string> columns, IReadOnlyList<IReadOnlyList<string?>> rows, IReadOnlyList<byte>? columnTypes = null)
+    {
+        if (rows.Count == 0)
+        {
+            throw new InvalidOperationException("native rowset requires at least one row");
+        }
+        if (columns.Count == 0 || columns.Any(column => column.Length == 0))
+        {
+            throw new InvalidOperationException("native rowset requires non-empty column names");
+        }
+        if (rows.Any(row => row.Count != columns.Count))
+        {
+            throw new InvalidOperationException("native rowset row shape mismatch");
+        }
+        var types = columnTypes?.ToArray() ?? InferNativeRowsetColumnTypes(rows);
+        if (types.Length != columns.Count)
+        {
+            throw new InvalidOperationException("native rowset column/type shape mismatch");
+        }
+
+        using var stream = new MemoryStream();
+        stream.Write(Encoding.ASCII.GetBytes("SBNR"));
+        WriteUInt16LE(stream, 2);
+        WriteUInt16LE(stream, 0);
+        WriteUInt64LE(stream, (ulong)rows.Count);
+        WriteUInt32LE(stream, (uint)columns.Count);
+        stream.Write(types, 0, types.Length);
+        foreach (var column in columns)
+        {
+            var encoded = Encoding.UTF8.GetBytes(column);
+            WriteUInt32LE(stream, (uint)encoded.Length);
+            stream.Write(encoded, 0, encoded.Length);
+        }
+
+        var nullBitmapBytes = (columns.Count + 7) / 8;
+        foreach (var row in rows)
+        {
+            var nullBitmap = new byte[nullBitmapBytes];
+            using var values = new MemoryStream();
+            for (var index = 0; index < row.Count; index++)
+            {
+                var value = row[index];
+                if (value == null)
+                {
+                    nullBitmap[index / 8] |= (byte)(1 << (index % 8));
+                    continue;
+                }
+                var encoded = EncodeNativeRowsetValue(value, types[index]);
+                values.Write(encoded, 0, encoded.Length);
+            }
+            stream.Write(nullBitmap, 0, nullBitmap.Length);
+            var valueBytes = values.ToArray();
+            stream.Write(valueBytes, 0, valueBytes.Length);
+        }
+        return stream.ToArray();
+    }
+
+    private static byte[] EncodeNativeRowsetValue(string value, byte type)
+    {
+        var trimmed = value.Trim();
+        return type switch
+        {
+            NativeRowsetTypeInt64 => EncodeInt64(long.Parse(trimmed, CultureInfo.InvariantCulture)),
+            NativeRowsetTypeBoolean => [TruthyNativeRowsetBoolean(trimmed) ? (byte)1 : (byte)0],
+            NativeRowsetTypeInt32 => EncodeInt32(int.Parse(trimmed, CultureInfo.InvariantCulture)),
+            NativeRowsetTypeUint64 => EncodeUInt64(ulong.Parse(trimmed, CultureInfo.InvariantCulture)),
+            NativeRowsetTypeReal64 => EncodeReal64(double.Parse(trimmed, CultureInfo.InvariantCulture)),
+            NativeRowsetTypeBinary or NativeRowsetTypeText => EncodeLengthPrefixedUtf8(value),
+            _ => throw new InvalidOperationException($"unsupported native rowset type {type}")
+        };
+    }
+
+    private static byte[] InferNativeRowsetColumnTypes(IReadOnlyList<IReadOnlyList<string?>> rows)
+    {
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+        var columnCount = rows[0].Count;
+        var types = Enumerable.Repeat(NativeRowsetTypeText, columnCount).ToArray();
+        for (var column = 0; column < columnCount; column++)
+        {
+            var values = rows
+                .Select(row => row[column])
+                .Where(value => value != null)
+                .Select(value => value!)
+                .ToList();
+            if (values.Count == 0)
+            {
+                continue;
+            }
+            if (values.All(value =>
+            {
+                var normalized = value.Trim().ToLowerInvariant();
+                return normalized is "true" or "false";
+            }))
+            {
+                types[column] = NativeRowsetTypeBoolean;
+                continue;
+            }
+            if (values.All(value => LosslessInt32(value)))
+            {
+                types[column] = NativeRowsetTypeInt32;
+                continue;
+            }
+            if (values.All(value => LosslessInt64(value)))
+            {
+                types[column] = NativeRowsetTypeInt64;
+                continue;
+            }
+            if (values.All(value => LosslessUInt64(value)))
+            {
+                types[column] = NativeRowsetTypeUint64;
+                continue;
+            }
+            if (values.All(value => LosslessReal64(value)))
+            {
+                types[column] = NativeRowsetTypeReal64;
+            }
+        }
+        return types;
+    }
+
+    private static List<string> SplitCopyCsvLine(string line)
+    {
+        var values = new List<string>();
+        var current = new StringBuilder();
+        var inQuote = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var ch = line[index];
+            if (ch == '"')
+            {
+                if (inQuote && index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    current.Append('"');
+                    index++;
+                }
+                else
+                {
+                    inQuote = !inQuote;
+                }
+                continue;
+            }
+            if (ch == ',' && !inQuote)
+            {
+                values.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+            current.Append(ch);
+        }
+        values.Add(current.ToString());
+        return values;
+    }
+
+    private static bool LosslessInt32(string value)
+    {
+        var trimmed = value.Trim();
+        return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed.ToString(CultureInfo.InvariantCulture) == trimmed;
+    }
+
+    private static bool LosslessInt64(string value)
+    {
+        var trimmed = value.Trim();
+        return long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed.ToString(CultureInfo.InvariantCulture) == trimmed;
+    }
+
+    private static bool LosslessUInt64(string value)
+    {
+        var trimmed = value.Trim();
+        return ulong.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            && parsed.ToString(CultureInfo.InvariantCulture) == trimmed;
+    }
+
+    private static bool LosslessReal64(string value) =>
+        double.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+        && !double.IsNaN(parsed)
+        && !double.IsInfinity(parsed);
+
+    private static bool TruthyNativeRowsetBoolean(string value) =>
+        value.Trim().ToLowerInvariant() is "1" or "true" or "t" or "yes" or "y" or "on";
+
+    private static byte[] EncodeInt32(int value)
+    {
+        var output = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(output, value);
+        return output;
+    }
+
+    private static byte[] EncodeInt64(long value)
+    {
+        var output = new byte[8];
+        BinaryPrimitives.WriteInt64LittleEndian(output, value);
+        return output;
+    }
+
+    private static byte[] EncodeUInt64(ulong value)
+    {
+        var output = new byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(output, value);
+        return output;
+    }
+
+    private static byte[] EncodeReal64(double value)
+    {
+        var output = new byte[8];
+        BinaryPrimitives.WriteInt64LittleEndian(output, BitConverter.DoubleToInt64Bits(value));
+        return output;
+    }
+
+    private static byte[] EncodeLengthPrefixedUtf8(string value)
+    {
+        var encoded = Encoding.UTF8.GetBytes(value);
+        var output = new byte[4 + encoded.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(0, 4), (uint)encoded.Length);
+        encoded.CopyTo(output.AsSpan(4));
+        return output;
+    }
+
+    private static void WriteUInt16LE(Stream stream, ushort value)
+    {
+        Span<byte> buffer = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer, value);
+        stream.Write(buffer);
+    }
+
+    private static void WriteUInt32LE(Stream stream, uint value)
+    {
+        Span<byte> buffer = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer, value);
+        stream.Write(buffer);
+    }
+
+    private static void WriteUInt64LE(Stream stream, ulong value)
+    {
+        Span<byte> buffer = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer, value);
+        stream.Write(buffer);
     }
 
     private static bool IsCopyStdinStatement(string sql)

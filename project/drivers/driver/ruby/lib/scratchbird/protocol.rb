@@ -740,7 +740,7 @@ module Scratchbird
       length = payload.byteslice(12, 4).unpack1("V")
       raise "SBLR compiled truncated" if 16 + length > payload.bytesize
       bytecode = payload.byteslice(16, length) || ""
-      [hash, version, bytecode]
+      { hash: hash, version: version, bytecode: bytecode }
     end
 
     def self.parse_copy_in_response(payload)

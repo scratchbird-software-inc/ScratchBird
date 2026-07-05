@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,10 @@ LANGUAGE_SURFACE_REL = Path("project/drivers/language/sbsql_language_surface_man
 DEFAULT_OUTPUT_REL = Path("build/reports/driver_native_full_surface_matrix.json")
 DEFAULT_ARTIFACT_REL = Path("build/driver-conformance/native-full-surface")
 DEFAULT_STAGED_BIN_REL = Path("build/output/linux/bin")
+DEFAULT_STAGED_BIN_FALLBACK_RELS = (
+    DEFAULT_STAGED_BIN_REL,
+    Path("build/public-release-linux/output/linux/bin"),
+)
 RELEASE_BUCKETS = {"release_candidate", "release_supported", "supported"}
 STAGED_DRIVER_EXECUTABLES = {
     "adbc": "sb_isql_adbc",
@@ -74,6 +79,8 @@ PAGE_SIZE_BYTES = {
     "64k": 65536,
     "128k": 131072,
 }
+
+BOOTSTRAP_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -201,7 +208,13 @@ def default_language_contract(repo_root: Path) -> dict[str, str]:
 
 
 def default_staged_bin_root(repo_root: Path, override: Path | None = None) -> Path:
-    return override if override is not None else repo_root / DEFAULT_STAGED_BIN_REL
+    if override is not None:
+        return override
+    for candidate_rel in DEFAULT_STAGED_BIN_FALLBACK_RELS:
+        candidate = repo_root / candidate_rel
+        if (candidate / "SBsql").is_file():
+            return candidate
+    return repo_root / DEFAULT_STAGED_BIN_REL
 
 
 def staged_command_for_driver(
@@ -467,10 +480,35 @@ def sbsql_base_command(args: argparse.Namespace, repo_root: Path, route: str, ss
         if not args.ipc_path:
             raise ValueError("ipc_local namespace bootstrap requires --ipc-path")
         command.extend(["--mode=local-ipc", f"--ipc-path={args.ipc_path}"])
-    elif route in {"listener-parser", "manager-listener-parser"}:
+    elif route == "listener-parser":
         command.extend([
             f"--host={args.host}",
             f"--port={args.port}",
+            f"--sslmode={sslmode}",
+        ])
+        if args.sslrootcert:
+            command.extend(["--conn-opt", f"sslrootcert={args.sslrootcert}"])
+        if args.sslcert:
+            command.extend(["--conn-opt", f"sslcert={args.sslcert}"])
+        if args.sslkey:
+            command.extend(["--conn-opt", f"sslkey={args.sslkey}"])
+    elif route == "manager-listener-parser":
+        if not args.manager_auth_token or not args.manager_database:
+            raise ValueError("manager-listener-parser namespace bootstrap requires manager auth token and database")
+        command.extend([
+            "--mode=managed",
+            "--front-door-mode=manager_proxy",
+            f"--host={args.host}",
+            f"--port={args.port}",
+            "--manager-user",
+            args.user,
+            "--manager-db",
+            args.manager_database,
+            "--manager-auth-token",
+            args.manager_auth_token,
+            "--manager-auth-fast-path=true",
+            "--manager-profile=SBsql",
+            "--manager-intent=SBsql",
             f"--sslmode={sslmode}",
         ])
         if args.sslrootcert:
@@ -543,12 +581,6 @@ def bootstrap_namespace_ancestors(
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    if route == "embedded":
-        return {
-            "status": "skipped",
-            "reason": "embedded route uses the driver's local create path",
-            "schemas": [],
-        }
     for schema in namespace_ancestor_schemas(namespace):
         create_sql = f"CREATE SCHEMA {schema}"
         create = sbsql_scalar(args, repo_root, route, sslmode, create_sql)
@@ -715,6 +747,11 @@ def preflight_lane_manifest(
                     errors.append(f"lane_manifest:{key}:invalid_port")
             if sslmode != "disable" and not str(lane.get("sslrootcert", "")).strip():
                 errors.append(f"lane_manifest:{key}:missing_sslrootcert")
+        if route == "manager-listener-parser":
+            if not str(lane.get("manager_auth_token", "")).strip():
+                errors.append(f"lane_manifest:{key}:missing_manager_auth_token")
+            if not str(lane.get("manager_database", "")).strip():
+                errors.append(f"lane_manifest:{key}:missing_manager_database")
     return errors
 
 
@@ -729,6 +766,8 @@ LANE_OVERRIDE_FIELDS = {
     "sslcert",
     "sslkey",
     "ipc_path",
+    "manager_auth_token",
+    "manager_database",
 }
 
 
@@ -805,6 +844,8 @@ def build_tool_args(
         "--sslcert", args.sslcert,
         "--sslkey", args.sslkey,
         "--ipc-path", args.ipc_path,
+        "--manager-auth-token", args.manager_auth_token,
+        "--manager-database", args.manager_database,
         "--route", route,
         "--parser-mode", parser_mode,
         "--page-size", page_size,
@@ -865,14 +906,17 @@ def execute_work_item(
             "port": effective_args.port,
             "ipc_path": effective_args.ipc_path,
             "sslrootcert": effective_args.sslrootcert,
+            "manager_database": effective_args.manager_database,
+            "manager_auth_token_present": bool(effective_args.manager_auth_token),
         }
-        bootstrap = bootstrap_namespace_ancestors(
-            effective_args,
-            repo_root,
-            item.route_pair.route,
-            item.route_pair.sslmode,
-            item.namespace,
-        )
+        with BOOTSTRAP_LOCK:
+            bootstrap = bootstrap_namespace_ancestors(
+                effective_args,
+                repo_root,
+                item.route_pair.route,
+                item.route_pair.sslmode,
+                item.namespace,
+            )
         entry["namespace_bootstrap"] = bootstrap
         if bootstrap.get("status") == "fail":
             raise RuntimeError(
@@ -1038,6 +1082,8 @@ def main() -> int:
     parser.add_argument("--sslcert", default="")
     parser.add_argument("--sslkey", default="")
     parser.add_argument("--ipc-path", default=os.environ.get("SCRATCHBIRD_IPC_PATH", ""))
+    parser.add_argument("--manager-auth-token", default="")
+    parser.add_argument("--manager-database", default="")
     parser.add_argument("--statement-timeout-ms", type=int, default=600000)
     parser.add_argument("--fetch-size", type=int, default=1000)
     parser.add_argument("--create-emulation-mode", default="")
@@ -1236,8 +1282,22 @@ def main() -> int:
 
     if not args.plan_only:
         work_items.sort(key=work_item_execution_key)
-        if args.jobs == 1:
-            for item in work_items:
+        full_surface_items = [item for item in work_items if item.proof_tier == "full_surface"]
+        lane_smoke_items = [item for item in work_items if item.proof_tier != "full_surface"]
+
+        # The canonical full-surface cells all target the same live route/page lane
+        # under reduced proof strategies. Running several of them at once creates
+        # catalog/DDL contention and turns the proof into a server stress test.
+        # Keep those cells serial; reserve --jobs parallelism for the small lane
+        # smoke cells that prove the remaining dimensions.
+        for item in full_surface_items:
+            entry = execute_work_item(item, args, repo_root, lane_overrides, required_artifacts)
+            results.append(entry)
+            if entry["status"] != "pass":
+                failures.append(entry)
+
+        if args.jobs == 1 or len(lane_smoke_items) <= 1:
+            for item in lane_smoke_items:
                 entry = execute_work_item(item, args, repo_root, lane_overrides, required_artifacts)
                 results.append(entry)
                 if entry["status"] != "pass":
@@ -1253,15 +1313,15 @@ def main() -> int:
                         lane_overrides,
                         required_artifacts,
                     ): item
-                    for item in work_items
+                    for item in lane_smoke_items
                 }
                 for future in concurrent.futures.as_completed(futures):
                     entry = future.result()
                     results.append(entry)
                     if entry["status"] != "pass":
                         failures.append(entry)
-            results.sort(key=lambda item: int(item.get("combination_ordinal", 0)))
-            failures.sort(key=lambda item: int(item.get("combination_ordinal", 0)))
+        results.sort(key=lambda item: int(item.get("combination_ordinal", 0)))
+        failures.sort(key=lambda item: int(item.get("combination_ordinal", 0)))
 
     artifact_gate: dict[str, Any] | None = None
     if not args.plan_only:
@@ -1292,6 +1352,9 @@ def main() -> int:
 
     proof_tier_counts: dict[str, int] = {}
     full_surface_passes_by_driver: dict[str, int] = {}
+    expected_full_surface_drivers = sorted(
+        {item.driver for item in work_items if item.proof_tier == "full_surface"}
+    )
     for row in results:
         tier = str(row.get("proof_tier") or "unknown")
         proof_tier_counts[tier] = proof_tier_counts.get(tier, 0) + 1
@@ -1302,12 +1365,15 @@ def main() -> int:
         "canonical-full-plus-lane-smoke",
         "canonical-full-plus-dimension-smoke",
     }:
-        missing_full_surface = sorted(driver for driver in drivers if full_surface_passes_by_driver.get(driver, 0) < 1)
+        missing_full_surface = [
+            driver for driver in expected_full_surface_drivers
+            if full_surface_passes_by_driver.get(driver, 0) < 1
+        ]
         if missing_full_surface:
             failures.append(
                 {
                     "status": "fail",
-                    "error": "proof strategy requires one passing full_surface lane per driver",
+                    "error": "proof strategy requires every selected full_surface lane to pass",
                     "missing_full_surface_drivers": missing_full_surface,
                 }
             )
@@ -1332,6 +1398,7 @@ def main() -> int:
         "surface_profile": args.surface_profile,
         "proof_strategy": args.proof_strategy,
         "proof_tier_counts": proof_tier_counts,
+        "expected_full_surface_drivers": expected_full_surface_drivers,
         "full_surface_passes_by_driver": full_surface_passes_by_driver,
         "lane_manifest": str(args.lane_manifest.resolve()) if args.lane_manifest else None,
         "lane_count": len(lane_overrides),

@@ -60,6 +60,11 @@ const {
   applyAuthPluginSelection,
   buildQueryPayload,
 } = require("../dist/protocol.js");
+const {
+  NATIVE_ROWSET_TYPE_INT32,
+  NATIVE_ROWSET_TYPE_TEXT,
+  copyTextRowsToNativeFrame,
+} = require("../dist/tools/sb-isql-node.js");
 const packageMetadata = require("../package.json");
 
 test("parseDsn supports uri", () => {
@@ -154,6 +159,32 @@ test("copy query payload can use binary-result framing", () => {
   assert.equal(payload.readUInt32LE(4), 0);
   assert.equal(payload.readUInt32LE(8), 0);
   assert.equal(payload.subarray(12).toString("utf8"), "COPY users.public.t FROM STDIN");
+});
+
+test("copy input converts canonical rows to native rowset frame", () => {
+  const frame = copyTextRowsToNativeFrame(Buffer.from(
+    "id=591;note=copy-alpha;payload_text=payload-a;marker=10\n"
+      + "id=592;note=copy-beta;payload_text=payload-b;marker=20\n"
+      + "id=593;note=copy-null;payload_text=NULL;marker=30\n",
+    "utf8",
+  ));
+  assert.equal(frame.subarray(0, 4).toString("ascii"), "SBNR");
+  assert.equal(frame.readUInt16LE(4), 2);
+  assert.equal(Number(frame.readBigUInt64LE(8)), 3);
+  assert.equal(frame.readUInt32LE(16), 4);
+  assert.deepEqual([...frame.subarray(20, 24)], [
+    NATIVE_ROWSET_TYPE_INT32,
+    NATIVE_ROWSET_TYPE_TEXT,
+    NATIVE_ROWSET_TYPE_TEXT,
+    NATIVE_ROWSET_TYPE_INT32,
+  ]);
+});
+
+test("copy input rejects mid-stream row shape changes", () => {
+  assert.throws(
+    () => copyTextRowsToNativeFrame(Buffer.from("id=1;note=a\nid=2;payload_text=b\n", "utf8")),
+    /row shape/,
+  );
 });
 
 test("parseDsn supports key-value", () => {

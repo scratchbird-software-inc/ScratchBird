@@ -114,6 +114,7 @@ using scratchbird::core::agents::AgentFeatureAvailability;
 using scratchbird::core::agents::AgentFeatureAvailabilityName;
 using scratchbird::core::agents::AgentLifecycleMode;
 using scratchbird::core::agents::AgentLifecycleModeName;
+using scratchbird::core::agents::AgentRuntimeLayerName;
 using scratchbird::core::agents::AgentPersistenceUsesScratchBirdStorageAuthority;
 using scratchbird::core::agents::AgentRuntimeContext;
 using scratchbird::core::agents::BaselinePolicyForAgent;
@@ -2953,6 +2954,7 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                          {"policy_uuid", policy.policy_uuid},
                          {"policy_class", "operational_agent"},
                          {"agent_type", agent.type_id},
+                         {"layer", AgentRuntimeLayerName(agent.layer)},
                          {"deployment", AgentDeploymentName(agent.deployment)},
                          {"scope", agent.scope},
                          {"authority", AgentAuthorityClassName(agent.authority)},

@@ -98,6 +98,21 @@ const int authReattachMethod = 7;
 
 const int featureCompression = 1 << 0;
 const int featureStreaming = 1 << 1;
+const int featureSblr = 1 << 2;
+const int featureNotifications = 1 << 4;
+const int featureQueryPlan = 1 << 5;
+const int featureBatch = 1 << 6;
+const int featurePipeline = 1 << 7;
+const int featureBinaryCopy = 1 << 8;
+const int featureSavepoints = 1 << 9;
+
+const int nativeRowsetTypeText = 1;
+const int nativeRowsetTypeInt64 = 2;
+const int nativeRowsetTypeBoolean = 3;
+const int nativeRowsetTypeInt32 = 4;
+const int nativeRowsetTypeUint64 = 5;
+const int nativeRowsetTypeReal64 = 6;
+const int nativeRowsetTypeBinary = 7;
 
 const int queryFlagDescribeOnly = 0x01;
 const int queryFlagNoPortal = 0x02;
@@ -200,8 +215,10 @@ ProtocolError parseErrorMessage(Uint8List payload) {
     if (offset >= payload.length) {
       break;
     }
-    final value =
-        utf8.decode(payload.sublist(start, offset), allowMalformed: true);
+    final value = utf8.decode(
+      payload.sublist(start, offset),
+      allowMalformed: true,
+    );
     offset += 1;
     switch (String.fromCharCode(field)) {
       case 'S':
@@ -307,17 +324,18 @@ MessageHeader decodeHeader(Uint8List data) {
   return (method: payload[0], data: payload.sublist(4));
 }
 
-({int method, int stage, Uint8List data}) parseAuthContinue(
-  Uint8List payload,
-) {
+({int method, int stage, Uint8List data}) parseAuthContinue(Uint8List payload) {
   if (payload.length < 8) {
     throw const ScratchBirdConnectionException(
       'Auth continue truncated',
       sqlState: '08P01',
     );
   }
-  final dataLen =
-      ByteData.sublistView(payload, 4, 8).getUint32(0, Endian.little);
+  final dataLen = ByteData.sublistView(
+    payload,
+    4,
+    8,
+  ).getUint32(0, Endian.little);
   if (8 + dataLen > payload.length) {
     throw const ScratchBirdConnectionException(
       'Auth continue truncated',
@@ -338,8 +356,11 @@ MessageHeader decodeHeader(Uint8List data) {
       sqlState: '08P01',
     );
   }
-  final infoLen =
-      ByteData.sublistView(payload, 16, 20).getUint32(0, Endian.little);
+  final infoLen = ByteData.sublistView(
+    payload,
+    16,
+    20,
+  ).getUint32(0, Endian.little);
   if (20 + infoLen > payload.length) {
     throw const ScratchBirdConnectionException(
       'Auth ok truncated',
@@ -360,8 +381,11 @@ MessageHeader decodeHeader(Uint8List data) {
         statusByte == 0x45 ||
         statusByte == 0x52 ||
         statusByte == 0x41) {
-      final txnId =
-          ByteData.sublistView(payload, 48, 56).getUint64(0, Endian.little);
+      final txnId = ByteData.sublistView(
+        payload,
+        48,
+        56,
+      ).getUint64(0, Endian.little);
       final status = statusByte == 0x54 || statusByte == 0x45 ? 1 : 0;
       return (status: status, txnId: txnId, visibility: txnId);
     }
@@ -370,10 +394,16 @@ MessageHeader decodeHeader(Uint8List data) {
     throw const ScratchBirdProtocolException('Ready truncated');
   }
   final status = payload[0];
-  final txnId =
-      ByteData.sublistView(payload, 4, 12).getUint64(0, Endian.little);
-  final visibility =
-      ByteData.sublistView(payload, 12, 20).getUint64(0, Endian.little);
+  final txnId = ByteData.sublistView(
+    payload,
+    4,
+    12,
+  ).getUint64(0, Endian.little);
+  final visibility = ByteData.sublistView(
+    payload,
+    12,
+    20,
+  ).getUint64(0, Endian.little);
   return (status: status, txnId: txnId, visibility: visibility);
 }
 
@@ -382,8 +412,11 @@ MessageHeader decodeHeader(Uint8List data) {
     throw const ScratchBirdProtocolException('Txn status truncated');
   }
   final status = String.fromCharCode(payload[0]);
-  final txnId =
-      ByteData.sublistView(payload, 4, 12).getUint64(0, Endian.little);
+  final txnId = ByteData.sublistView(
+    payload,
+    4,
+    12,
+  ).getUint64(0, Endian.little);
   return (status: status, txnId: txnId);
 }
 
@@ -392,10 +425,16 @@ Uint8List buildStartupPayload(int features, Map<String, String> params) {
   final payload = ByteData(88 + paramBytes.length);
   var offset = 0;
   payload.setUint16(
-      offset, (protocolMajor << 8) | protocolMinor, Endian.little);
+    offset,
+    (protocolMajor << 8) | protocolMinor,
+    Endian.little,
+  );
   offset += 2;
   payload.setUint16(
-      offset, (protocolMajor << 8) | protocolMinor, Endian.little);
+    offset,
+    (protocolMajor << 8) | protocolMinor,
+    Endian.little,
+  );
   offset += 2;
   payload.setUint32(offset, 0, Endian.little);
   offset += 4;
@@ -446,7 +485,10 @@ Uint8List buildQueryPayload(String sql, int flags, int maxRows, int timeoutMs) {
 }
 
 Uint8List buildParsePayload(
-    String statementName, String sql, List<int> paramTypes) {
+  String statementName,
+  String sql,
+  List<int> paramTypes,
+) {
   final nameBytes = Uint8List.fromList(utf8.encode(statementName));
   final sqlBytes = Uint8List.fromList(utf8.encode(sql));
   final payload = BytesBuilder();
@@ -462,8 +504,12 @@ Uint8List buildParsePayload(
   return payload.toBytes();
 }
 
-Uint8List buildBindPayload(String portalName, String statementName,
-    List<ParamValue> params, List<int> resultFormats) {
+Uint8List buildBindPayload(
+  String portalName,
+  String statementName,
+  List<ParamValue> params,
+  List<int> resultFormats,
+) {
   final portalBytes = Uint8List.fromList(utf8.encode(portalName));
   final stmtBytes = Uint8List.fromList(utf8.encode(statementName));
   final payload = BytesBuilder();
@@ -511,6 +557,243 @@ Uint8List buildExecutePayload(String portalName, int maxRows) {
   return payload.toBytes();
 }
 
+Uint8List copyTextRowsToNativeFrame(List<int> data, {List<int>? columnTypes}) {
+  final bytes = Uint8List.fromList(data);
+  if (bytes.length >= 4 &&
+      bytes[0] == 0x53 &&
+      bytes[1] == 0x42 &&
+      bytes[2] == 0x4e &&
+      bytes[3] == 0x52) {
+    return bytes;
+  }
+  final text = utf8.decode(bytes);
+  final lines = text
+      .split('\n')
+      .map(
+        (line) =>
+            line.endsWith('\r') ? line.substring(0, line.length - 1) : line,
+      )
+      .where((line) => line.trim().isNotEmpty)
+      .toList();
+  if (lines.isEmpty) {
+    throw const ScratchBirdProtocolException('COPY input contains no rows');
+  }
+
+  final first = lines.first;
+  if (first.contains(';') && first.contains('=')) {
+    var columns = <String>[];
+    final rows = <List<Object?>>[];
+    for (final line in lines) {
+      final fields = <({String name, Object? value})>[];
+      for (final item in line.split(';')) {
+        if (item.isEmpty) {
+          continue;
+        }
+        final sep = item.indexOf('=');
+        if (sep <= 0) {
+          throw const ScratchBirdProtocolException(
+            'malformed canonical COPY field',
+          );
+        }
+        final name = item.substring(0, sep);
+        final value = item.substring(sep + 1);
+        fields.add((
+          name: name,
+          value: value.toUpperCase() == 'NULL' ? null : value,
+        ));
+      }
+      if (fields.isEmpty) {
+        continue;
+      }
+      final names = fields.map((field) => field.name).toList();
+      if (columns.isEmpty) {
+        columns = names;
+      } else if (!_sameStringList(columns, names)) {
+        throw const ScratchBirdProtocolException(
+          'COPY input changed row shape mid-stream',
+        );
+      }
+      rows.add(fields.map((field) => field.value).toList());
+    }
+    return buildNativeRowsetPayload(columns, rows, columnTypes: columnTypes);
+  }
+
+  final columns = _splitCopyCsvLine(
+    first,
+  ).map((value) => value.trim()).toList();
+  if (columns.isEmpty || columns.any((value) => value.isEmpty)) {
+    throw const ScratchBirdProtocolException(
+      'CSV COPY input requires a non-empty header row',
+    );
+  }
+  final rows = <List<Object?>>[];
+  for (final line in lines.skip(1)) {
+    final values = _splitCopyCsvLine(line);
+    if (values.length != columns.length) {
+      throw const ScratchBirdProtocolException('CSV COPY row shape mismatch');
+    }
+    rows.add(
+      values
+          .map<Object?>(
+            (value) =>
+                value.isEmpty || value.toUpperCase() == 'NULL' ? null : value,
+          )
+          .toList(),
+    );
+  }
+  if (rows.isEmpty) {
+    throw const ScratchBirdProtocolException(
+      'CSV COPY input contains no data rows',
+    );
+  }
+  return buildNativeRowsetPayload(columns, rows, columnTypes: columnTypes);
+}
+
+Uint8List buildNativeRowsetPayload(
+  List<String> columns,
+  List<List<Object?>> rows, {
+  List<int>? columnTypes,
+}) {
+  if (rows.isEmpty) {
+    throw const ScratchBirdProtocolException(
+      'native rowset requires at least one row',
+    );
+  }
+  if (columns.isEmpty || columns.any((column) => column.isEmpty)) {
+    throw const ScratchBirdProtocolException(
+      'native rowset requires non-empty column names',
+    );
+  }
+  for (final row in rows) {
+    if (row.length != columns.length) {
+      throw const ScratchBirdProtocolException(
+        'native rowset row shape mismatch',
+      );
+    }
+  }
+  final normalizedTypes = columnTypes == null
+      ? inferNativeRowsetColumnTypes(rows)
+      : List<int>.from(columnTypes);
+  if (normalizedTypes.length != columns.length) {
+    throw const ScratchBirdProtocolException(
+      'native rowset column/type shape mismatch',
+    );
+  }
+
+  final nullBitmapBytes = (columns.length + 7) ~/ 8;
+  final payload = BytesBuilder(copy: false);
+  payload.add(Uint8List.fromList([0x53, 0x42, 0x4e, 0x52]));
+  payload.add(_u16(2));
+  payload.add(_u16(0));
+  payload.add(_u64(rows.length));
+  payload.add(_u32(columns.length));
+  payload.add(Uint8List.fromList(normalizedTypes));
+  for (final column in columns) {
+    final encoded = utf8.encode(column);
+    payload.add(_u32(encoded.length));
+    payload.add(Uint8List.fromList(encoded));
+  }
+  for (final row in rows) {
+    final nullBitmap = Uint8List(nullBitmapBytes);
+    final values = BytesBuilder(copy: false);
+    for (var index = 0; index < row.length; index += 1) {
+      final value = row[index];
+      if (value == null) {
+        nullBitmap[index ~/ 8] |= 1 << (index % 8);
+        continue;
+      }
+      switch (normalizedTypes[index]) {
+        case nativeRowsetTypeInt64:
+          values.add(_i64(int.parse(value.toString())));
+          break;
+        case nativeRowsetTypeBoolean:
+          values.add(
+            Uint8List.fromList([_truthyNativeRowsetBoolean(value) ? 1 : 0]),
+          );
+          break;
+        case nativeRowsetTypeInt32:
+          values.add(_i32(int.parse(value.toString())));
+          break;
+        case nativeRowsetTypeUint64:
+          values.add(_u64(int.parse(value.toString())));
+          break;
+        case nativeRowsetTypeReal64:
+          values.add(_f64(double.parse(value.toString())));
+          break;
+        case nativeRowsetTypeBinary:
+          final raw = value is Uint8List
+              ? value
+              : Uint8List.fromList(utf8.encode(value.toString()));
+          values.add(_u32(raw.length));
+          values.add(raw);
+          break;
+        case nativeRowsetTypeText:
+          final encoded = utf8.encode(value.toString());
+          values.add(_u32(encoded.length));
+          values.add(Uint8List.fromList(encoded));
+          break;
+        default:
+          throw ScratchBirdProtocolException(
+            'unsupported native rowset type ${normalizedTypes[index]}',
+          );
+      }
+    }
+    payload.add(nullBitmap);
+    payload.add(values.toBytes());
+  }
+  return payload.toBytes();
+}
+
+List<int> inferNativeRowsetColumnTypes(List<List<Object?>> rows) {
+  if (rows.isEmpty) {
+    return <int>[];
+  }
+  final columnCount = rows.first.length;
+  final types = List<int>.filled(columnCount, nativeRowsetTypeText);
+  for (var column = 0; column < columnCount; column += 1) {
+    final values = rows
+        .map((row) => row[column])
+        .where((value) => value != null)
+        .toList();
+    if (values.isEmpty) {
+      continue;
+    }
+    if (values.every((value) => value is Uint8List)) {
+      types[column] = nativeRowsetTypeBinary;
+      continue;
+    }
+    final textValues = values.map((value) => value.toString()).toList();
+    final lowerValues = textValues
+        .map((value) => value.trim().toLowerCase())
+        .toList();
+    if (lowerValues.every((value) => value == 'true' || value == 'false')) {
+      types[column] = nativeRowsetTypeBoolean;
+      continue;
+    }
+    if (textValues.every(
+      (value) => _losslessInt(value, -2147483648, 2147483647),
+    )) {
+      types[column] = nativeRowsetTypeInt32;
+      continue;
+    }
+    if (textValues.every(
+      (value) => _losslessInt(value, -9223372036854775808, 9223372036854775807),
+    )) {
+      types[column] = nativeRowsetTypeInt64;
+      continue;
+    }
+    if (textValues.every((value) => _losslessUint64(value))) {
+      types[column] = nativeRowsetTypeUint64;
+      continue;
+    }
+    if (textValues.every(_losslessReal64)) {
+      types[column] = nativeRowsetTypeReal64;
+      continue;
+    }
+  }
+  return types;
+}
+
 Uint8List buildCancelPayload(int cancelType, int targetSequence) {
   final payload = ByteData(8);
   payload.setUint32(0, cancelType, Endian.little);
@@ -519,7 +802,10 @@ Uint8List buildCancelPayload(int cancelType, int targetSequence) {
 }
 
 Uint8List buildSblrExecutePayload(
-    int sblrHash, Uint8List? sblrBytecode, List<ParamValue> params) {
+  int sblrHash,
+  Uint8List? sblrBytecode,
+  List<ParamValue> params,
+) {
   final bytecode = sblrBytecode ?? Uint8List(0);
   final payload = BytesBuilder();
   final header = ByteData(16);
@@ -543,7 +829,10 @@ Uint8List buildSblrExecutePayload(
 }
 
 Uint8List buildSubscribePayload(
-    int subscribeType, String channel, String filterExpr) {
+  int subscribeType,
+  String channel,
+  String filterExpr,
+) {
   final channelBytes = Uint8List.fromList(utf8.encode(channel));
   final filterBytes = Uint8List.fromList(utf8.encode(filterExpr));
   final payload = BytesBuilder();
@@ -624,7 +913,10 @@ Uint8List buildSetOptionPayload(String name, String value) {
 }
 
 Uint8List buildStreamControlPayload(
-    int controlType, int windowSize, int timeoutMs) {
+  int controlType,
+  int windowSize,
+  int timeoutMs,
+) {
   final payload = ByteData(12);
   payload.setUint8(0, controlType);
   payload.setUint32(4, windowSize, Endian.little);
@@ -675,8 +967,118 @@ Uint8List _u32(int value) {
   return data.buffer.asUint8List();
 }
 
+Uint8List _u64(int value) {
+  final data = ByteData(8);
+  data.setUint64(0, value, Endian.little);
+  return data.buffer.asUint8List();
+}
+
 Uint8List _i32(int value) {
   final data = ByteData(4);
   data.setInt32(0, value, Endian.little);
   return data.buffer.asUint8List();
+}
+
+Uint8List _i64(int value) {
+  final data = ByteData(8);
+  data.setInt64(0, value, Endian.little);
+  return data.buffer.asUint8List();
+}
+
+Uint8List _f64(double value) {
+  final data = ByteData(8);
+  data.setFloat64(0, value, Endian.little);
+  return data.buffer.asUint8List();
+}
+
+bool _sameStringList(List<String> left, List<String> right) {
+  if (left.length != right.length) {
+    return false;
+  }
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+List<String> _splitCopyCsvLine(String line) {
+  final values = <String>[];
+  final current = StringBuffer();
+  var inQuotes = false;
+  for (var index = 0; index < line.length; index += 1) {
+    final ch = line[index];
+    if (ch == '"') {
+      if (inQuotes && index + 1 < line.length && line[index + 1] == '"') {
+        current.write('"');
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch == ',' && !inQuotes) {
+      values.add(current.toString());
+      current.clear();
+      continue;
+    }
+    current.write(ch);
+  }
+  values.add(current.toString());
+  return values;
+}
+
+bool _losslessInt(String value, int minimum, int maximum) {
+  if (value.isEmpty) {
+    return false;
+  }
+  final parsed = int.tryParse(value);
+  if (parsed == null || parsed < minimum || parsed > maximum) {
+    return false;
+  }
+  return parsed.toString() == value;
+}
+
+bool _losslessUint64(String value) {
+  if (value.isEmpty || value.startsWith('-')) {
+    return false;
+  }
+  final parsed = BigInt.tryParse(value);
+  if (parsed == null || parsed > BigInt.parse('18446744073709551615')) {
+    return false;
+  }
+  return parsed.toString() == value;
+}
+
+bool _losslessReal64(String value) {
+  final text = value.trim();
+  if (text.isEmpty) {
+    return false;
+  }
+  final lower = text.toLowerCase();
+  if (lower == 'nan' ||
+      lower == '+nan' ||
+      lower == '-nan' ||
+      lower == 'inf' ||
+      lower == '+inf' ||
+      lower == '-inf' ||
+      lower == 'infinity' ||
+      lower == '+infinity' ||
+      lower == '-infinity') {
+    return false;
+  }
+  final parsed = double.tryParse(text);
+  if (parsed == null || parsed.isNaN || parsed.isInfinite) {
+    return false;
+  }
+  return text.contains('.') || text.contains('e') || text.contains('E');
+}
+
+bool _truthyNativeRowsetBoolean(Object value) {
+  if (value is bool) {
+    return value;
+  }
+  final normalized = value.toString().trim().toLowerCase();
+  return normalized == 'true' || normalized == '1';
 }

@@ -47,6 +47,7 @@ using scratchbird::core::agents::AgentMetricSnapshotEvaluationOptions;
 using scratchbird::core::agents::AgentMetricSourceQuality;
 using scratchbird::core::agents::AgentObservedMetricSnapshot;
 using scratchbird::core::agents::AgentPolicy;
+using scratchbird::core::agents::AgentRuntimeLayerName;
 using scratchbird::core::agents::AgentRuntimeContext;
 using scratchbird::core::agents::AgentSecurityDenialKindName;
 using scratchbird::core::agents::AgentTypeDescriptor;
@@ -1376,6 +1377,7 @@ std::vector<std::pair<std::string, std::string>> LegacyAgentDescriptorFields(
     metrics += dep.metric_family;
   }
   return {{"agent_type", descriptor.type_id},
+          {"layer", AgentRuntimeLayerName(descriptor.layer)},
           {"deployment", AgentDeploymentName(descriptor.deployment)},
           {"scope", descriptor.scope},
           {"authority", AgentAuthorityClassName(descriptor.authority)},

@@ -35,12 +35,22 @@ defmodule SBIsqlElixir.Json do
 end
 
 defmodule SBIsqlElixir do
+  @native_rowset_type_text 1
+  @native_rowset_type_int64 2
+  @native_rowset_type_boolean 3
+  @native_rowset_type_int32 4
+  @native_rowset_type_uint64 5
+  @native_rowset_type_real64 6
+  @native_rowset_type_binary 7
+
   @page_sizes ~w(4k 8k 16k 32k 64k 128k)
   @routes ~w(embedded ipc_local listener-parser manager-listener-parser)
   @parser_modes ~w(server-parser standalone-parser driver-sblr-uuid)
   @ssl_modes ~w(allow disable prefer require verify-ca verify-full)
   @supported_args ~w(
     --database
+    --manager-auth-token
+    --manager-database
     --host
     --port
     --user
@@ -134,6 +144,8 @@ defmodule SBIsqlElixir do
         "ScratchBird.Connection.begin" => 0,
         "ScratchBird.Connection.commit" => 0,
         "ScratchBird.Connection.rollback" => 0,
+        "ScratchBird.Connection.compile_sblr" => 0,
+        "ScratchBird.Connection.execute_sblr" => 0,
         "ScratchBird.Connection.close" => 0,
         "ScratchBird.Connection.copy_in" => 0,
         "ScratchBird.tables_query" => 0
@@ -147,6 +159,17 @@ defmodule SBIsqlElixir do
 
     state =
       try do
+        manager_opts =
+          if route == "manager-listener-parser" do
+            [
+              manager_auth_token: Map.get(args, "--manager-auth-token", ""),
+              manager_database: Map.get(args, "--manager-database", required!(args, "--database")),
+              manager_username: required!(args, "--user")
+            ]
+          else
+            []
+          end
+
         opts = [
           host: required!(args, "--host"),
           port: args |> required!("--port") |> String.to_integer(),
@@ -166,7 +189,7 @@ defmodule SBIsqlElixir do
             ),
           metadata_expand_schema_parents: true,
           application_name: "SBIsqlElixir"
-        ]
+        ] ++ manager_opts
 
         connect_started = monotonic_ns()
 
@@ -220,19 +243,10 @@ defmodule SBIsqlElixir do
                 |> add_timing("database_create", create_started)
                 |> verify_route_environment(args, paths, route, sslmode)
 
-              cond do
-                state.failures != [] ->
-                  state
-
-                required!(args, "--parser-mode") != "server-parser" ->
-                  add_failure(
-                    state,
-                    "parser_mode",
-                    "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
-                  )
-
-                true ->
-                  run_statements(state, args, paths, expected_refusals)
+              if state.failures != [] do
+                state
+              else
+                run_statements(state, args, paths, expected_refusals)
               end
 
             {:error, reason, conn} ->
@@ -243,19 +257,10 @@ defmodule SBIsqlElixir do
         true ->
           state = verify_route_environment(state, args, paths, route, sslmode)
 
-          cond do
-            state.failures != [] ->
-              state
-
-            required!(args, "--parser-mode") != "server-parser" ->
-              add_failure(
-                state,
-                "parser_mode",
-                "#{required!(args, "--parser-mode")} is not accepted by the Elixir native tool lane; it fails closed"
-              )
-
-            true ->
-              run_statements(state, args, paths, expected_refusals)
+          if state.failures != [] do
+            state
+          else
+            run_statements(state, args, paths, expected_refusals)
           end
       end
 
@@ -393,7 +398,7 @@ defmodule SBIsqlElixir do
       started = monotonic_ns()
 
       {state, outcome, row_count, result_digest, sqlstate, diagnostic} =
-        case execute_statement(state, sql, group) do
+        case execute_statement(state, sql, group, args, paths, statement_id) do
           {:ok, result, state} ->
             rows = Map.get(result, :rows, [])
 
@@ -509,7 +514,7 @@ defmodule SBIsqlElixir do
     end)
   end
 
-  defp execute_statement(state, sql, "transaction") do
+  defp execute_statement(state, sql, "transaction", _args, _paths, _statement_id) do
     tokens = transaction_tokens(sql)
     first = List.first(tokens) || ""
 
@@ -586,14 +591,16 @@ defmodule SBIsqlElixir do
     end
   end
 
-  defp execute_statement(state, sql, "copy") do
+  defp execute_statement(state, sql, "copy", args, paths, statement_id) do
     if copy_stdin_statement?(sql) do
       payload = copy_payload_for_statement(sql)
 
       if payload == "" do
         {:error, "COPY FROM STDIN requires SB_COPY_INPUT rows in the script", state}
       else
-        case execute_copy_in(state.connection, executable_sql_without_copy_markers(sql), payload) do
+        native_payload = copy_text_rows_to_native_frame(payload)
+
+        case execute_copy_in(state.connection, executable_sql_without_copy_markers(sql), native_payload) do
           {:ok, rows_copied, conn} ->
             {:ok, %{rows: [%{copy_in: rows_copied}]},
              %{state | connection: conn} |> bump_api("ScratchBird.Connection.copy_in")}
@@ -603,17 +610,62 @@ defmodule SBIsqlElixir do
         end
       end
     else
-      execute_statement(state, sql, "query")
+      execute_statement(state, sql, "query", args, paths, statement_id)
     end
   end
 
-  defp execute_statement(state, sql, _group) do
+  defp execute_statement(state, sql, _group, args, paths, statement_id) do
+    if required!(args, "--parser-mode") != "server-parser" do
+      with {:ok, compiled, conn} <- ScratchBird.Connection.compile_sblr(state.connection, sql) do
+        bytecode = Map.get(compiled, :bytecode, "")
+        sblr_hash = Map.get(compiled, :hash, 0)
+        sblr_version = Map.get(compiled, :version, 0)
+
+        state =
+          %{state | connection: conn}
+          |> bump_api("ScratchBird.Connection.compile_sblr")
+
+        append_jsonl(paths.wire, %{
+          event: "driver_sblr_compile",
+          driver: "elixir",
+          parser_mode: required!(args, "--parser-mode"),
+          statement_id: statement_id,
+          sblr_hash: to_string(sblr_hash),
+          sblr_version: sblr_version,
+          sblr_bytes: byte_size(bytecode)
+        })
+
+        case ScratchBird.Connection.execute_sblr(conn, sblr_hash, bytecode, []) do
+          {:ok, result, conn} ->
+            append_jsonl(paths.wire, %{
+              event: "driver_sblr_execute",
+              driver: "elixir",
+              parser_mode: required!(args, "--parser-mode"),
+              statement_id: statement_id,
+              sblr_hash: to_string(sblr_hash),
+              sblr_version: sblr_version,
+              sblr_bytes: byte_size(bytecode),
+              engine_sql_text_execution: false,
+              mga_authority: "engine"
+            })
+
+            {:ok, result,
+             %{state | connection: conn} |> bump_api("ScratchBird.Connection.execute_sblr")}
+
+          {:error, reason, conn} ->
+            {:error, reason, %{state | connection: conn}}
+        end
+      else
+        {:error, reason, conn} -> {:error, reason, %{state | connection: conn}}
+      end
+    else
     case ScratchBird.Connection.query(state.connection, sql, []) do
       {:ok, result, conn} ->
         {:ok, result, %{state | connection: conn} |> bump_api("ScratchBird.Connection.query")}
 
       {:error, reason, conn} ->
         {:error, reason, %{state | connection: conn}}
+    end
     end
   end
 
@@ -865,6 +917,253 @@ defmodule SBIsqlElixir do
       end)
 
     if rows == [], do: "", else: Enum.join(rows, "\n") <> "\n"
+  end
+
+  defp copy_text_rows_to_native_frame(<<"SBNR", _::binary>> = data), do: data
+
+  defp copy_text_rows_to_native_frame(data) do
+    lines =
+      data
+      |> String.replace("\r\n", "\n")
+      |> String.split("\n")
+      |> Enum.map(&String.trim_trailing(&1, "\r"))
+      |> Enum.reject(&(String.trim(&1) == ""))
+
+    if lines == [] do
+      raise ArgumentError, "COPY input contains no rows"
+    end
+
+    first = hd(lines)
+
+    if String.contains?(first, ";") and String.contains?(first, "=") do
+      {columns, rows} =
+        Enum.reduce(lines, {nil, []}, fn line, {columns, rows} ->
+          {names, values} =
+            line
+            |> String.split(";", trim: false)
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.map(fn part ->
+              case String.split(part, "=", parts: 2) do
+                [name, value] when name != "" ->
+                  {name, if(String.downcase(value) == "null", do: nil, else: value)}
+
+                _ ->
+                  raise ArgumentError, "malformed canonical COPY field"
+              end
+            end)
+            |> Enum.unzip()
+
+          cond do
+            names == [] ->
+              {columns, rows}
+
+            columns == nil ->
+              {names, [values | rows]}
+
+            columns == names ->
+              {columns, [values | rows]}
+
+            true ->
+              raise ArgumentError, "COPY input changed row shape mid-stream"
+          end
+        end)
+
+      if columns == nil do
+        raise ArgumentError, "COPY input contains no rows"
+      end
+
+      build_native_rowset_payload(columns, Enum.reverse(rows))
+    else
+      columns = first |> split_copy_csv_line() |> Enum.map(&String.trim/1)
+
+      if columns == [] or Enum.any?(columns, &(&1 == "")) do
+        raise ArgumentError, "CSV COPY input requires a non-empty header row"
+      end
+
+      rows =
+        lines
+        |> Enum.drop(1)
+        |> Enum.map(fn line ->
+          values = split_copy_csv_line(line)
+
+          if length(values) != length(columns) do
+            raise ArgumentError, "CSV COPY row shape mismatch"
+          end
+
+          Enum.map(values, fn value ->
+            if value == "" or String.downcase(value) == "null", do: nil, else: value
+          end)
+        end)
+
+      if rows == [] do
+        raise ArgumentError, "CSV COPY input contains no data rows"
+      end
+
+      build_native_rowset_payload(columns, rows)
+    end
+  end
+
+  defp build_native_rowset_payload(columns, rows, column_types \\ nil) do
+    if rows == [] do
+      raise ArgumentError, "native rowset requires at least one row"
+    end
+
+    if columns == [] or Enum.any?(columns, &(&1 == "")) do
+      raise ArgumentError, "native rowset requires non-empty column names"
+    end
+
+    if Enum.any?(rows, &(length(&1) != length(columns))) do
+      raise ArgumentError, "native rowset row shape mismatch"
+    end
+
+    types = column_types || infer_native_rowset_column_types(rows)
+
+    if length(types) != length(columns) do
+      raise ArgumentError, "native rowset column/type shape mismatch"
+    end
+
+    header = [
+      "SBNR",
+      <<2::little-16, 0::little-16, length(rows)::little-64, length(columns)::little-32>>,
+      IO.iodata_to_binary(types),
+      Enum.map(columns, fn column ->
+        encoded = to_string(column)
+        [<<byte_size(encoded)::little-32>>, encoded]
+      end)
+    ]
+
+    null_bitmap_bytes = div(length(columns) + 7, 8)
+
+    row_payloads =
+      Enum.map(rows, fn row ->
+        {bitmap, values} =
+          row
+          |> Enum.with_index()
+          |> Enum.reduce({List.duplicate(0, null_bitmap_bytes), []}, fn {value, index}, {bitmap, values} ->
+            if is_nil(value) do
+              byte_index = div(index, 8)
+              bit = Bitwise.bsl(1, rem(index, 8))
+              bitmap = List.update_at(bitmap, byte_index, &Bitwise.bor(&1, bit))
+              {bitmap, values}
+            else
+              {bitmap, [encode_native_rowset_value(to_string(value), Enum.at(types, index)) | values]}
+            end
+          end)
+
+        [IO.iodata_to_binary(bitmap), Enum.reverse(values)]
+      end)
+
+    IO.iodata_to_binary([header, row_payloads])
+  end
+
+  defp encode_native_rowset_value(value, type) do
+    trimmed = String.trim(value)
+
+    case type do
+      @native_rowset_type_int64 ->
+        <<String.to_integer(trimmed)::signed-little-64>>
+
+      @native_rowset_type_boolean ->
+        if truthy_native_rowset_boolean?(trimmed), do: <<1>>, else: <<0>>
+
+      @native_rowset_type_int32 ->
+        <<String.to_integer(trimmed)::signed-little-32>>
+
+      @native_rowset_type_uint64 ->
+        <<String.to_integer(trimmed)::unsigned-little-64>>
+
+      @native_rowset_type_real64 ->
+        {float, ""} = Float.parse(trimmed)
+        <<float::float-little-64>>
+
+      type when type in [@native_rowset_type_binary, @native_rowset_type_text] ->
+        <<byte_size(value)::little-32, value::binary>>
+
+      _ ->
+        raise ArgumentError, "unsupported native rowset type #{type}"
+    end
+  end
+
+  defp infer_native_rowset_column_types(rows) do
+    column_count = rows |> hd() |> length()
+
+    Enum.map(0..(column_count - 1), fn column ->
+      values =
+        rows
+        |> Enum.map(&Enum.at(&1, column))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&to_string/1)
+
+      cond do
+        values == [] ->
+          @native_rowset_type_text
+
+        Enum.all?(values, fn value ->
+          normalized = value |> String.trim() |> String.downcase()
+          normalized in ["true", "false"]
+        end) ->
+          @native_rowset_type_boolean
+
+        Enum.all?(values, &lossless_int32?/1) ->
+          @native_rowset_type_int32
+
+        Enum.all?(values, &lossless_int64?/1) ->
+          @native_rowset_type_int64
+
+        Enum.all?(values, &lossless_uint64?/1) ->
+          @native_rowset_type_uint64
+
+        Enum.all?(values, &lossless_real64?/1) ->
+          @native_rowset_type_real64
+
+        true ->
+          @native_rowset_type_text
+      end
+    end)
+  end
+
+  defp split_copy_csv_line(line) do
+    {values, current, _in_quote} =
+      line
+      |> String.graphemes()
+      |> Enum.reduce({[], "", false}, fn
+        "\"", {values, current, in_quote} ->
+          {values, current, !in_quote}
+
+        ",", {values, current, false} ->
+          {[current | values], "", false}
+
+        ch, {values, current, in_quote} ->
+          {values, current <> ch, in_quote}
+      end)
+
+    Enum.reverse([current | values])
+  end
+
+  defp lossless_int32?(value), do: lossless_integer?(value, -2_147_483_648, 2_147_483_647)
+  defp lossless_int64?(value), do: lossless_integer?(value, -9_223_372_036_854_775_808, 9_223_372_036_854_775_807)
+  defp lossless_uint64?(value), do: lossless_integer?(value, 0, 18_446_744_073_709_551_615)
+
+  defp lossless_integer?(value, min, max) do
+    trimmed = String.trim(value)
+
+    case Integer.parse(trimmed) do
+      {parsed, ""} -> parsed >= min and parsed <= max and Integer.to_string(parsed) == trimmed
+      _ -> false
+    end
+  end
+
+  defp lossless_real64?(value) do
+    case Float.parse(String.trim(value)) do
+      {parsed, ""} -> parsed != :infinity and parsed != :neg_infinity and not :erlang.is_nan(parsed)
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp truthy_native_rowset_boolean?(value) do
+    (value |> String.trim() |> String.downcase()) in ["1", "true", "t", "yes", "y", "on"]
   end
 
   defp copy_stdin_statement?(sql) do

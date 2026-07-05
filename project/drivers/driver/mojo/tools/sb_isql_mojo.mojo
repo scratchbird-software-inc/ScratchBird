@@ -67,6 +67,27 @@ def _copy_to_file(handle: UInt64, sql: String, data: String, result_path: String
     ](handle, CStringSlice(sql0), CStringSlice(data0), CStringSlice(result0), CStringSlice(err0))
 
 
+def _compile_sblr_to_file(handle: UInt64, sql: String, result_path: String, error_path: String) raises -> Int32:
+    var sql0 = sql + "\0"
+    var result0 = result_path + "\0"
+    var err0 = error_path + "\0"
+    return external_call[
+        "sb_mojo_bridge_compile_sblr_to_file",
+        Int32,
+    ](handle, CStringSlice(sql0), CStringSlice(result0), CStringSlice(err0))
+
+
+def _execute_sblr_to_file(handle: UInt64, sblr_hash_hex: String, bytecode_hex: String, result_path: String, error_path: String) raises -> Int32:
+    var hash0 = sblr_hash_hex + "\0"
+    var bytecode0 = bytecode_hex + "\0"
+    var result0 = result_path + "\0"
+    var err0 = error_path + "\0"
+    return external_call[
+        "sb_mojo_bridge_execute_sblr_to_file",
+        Int32,
+    ](handle, CStringSlice(hash0), CStringSlice(bytecode0), CStringSlice(result0), CStringSlice(err0))
+
+
 def _tx_begin(handle: UInt64, error_path: String) raises -> Int32:
     var err0 = error_path + "\0"
     return external_call["sb_mojo_bridge_tx_begin", Int32](handle, CStringSlice(err0))
@@ -193,6 +214,36 @@ def main() raises:
                     result_path,
                     error_path,
                 )
+            elif Bool(py=runtime.statement_uses_driver_sblr(state, index)):
+                var compile_result = String(runtime.tmp_result_path(state, statement_key + "_sblr_compile"))
+                var compile_error = String(runtime.tmp_error_path(state, statement_key + "_sblr_compile"))
+                var compile_started = Int(py=runtime.now_ns())
+                rc = _compile_sblr_to_file(handle, statement, compile_result, compile_error)
+                runtime.record_sblr_compile(
+                    state,
+                    index,
+                    rc,
+                    compile_result,
+                    compile_error,
+                    Int(py=runtime.now_ns()) - compile_started,
+                )
+                if rc == Int32(0):
+                    var execute_started = Int(py=runtime.now_ns())
+                    rc = _execute_sblr_to_file(
+                        handle,
+                        String(runtime.sblr_compile_hash_hex(compile_result)),
+                        String(runtime.sblr_compile_bytecode_hex(compile_result)),
+                        result_path,
+                        error_path,
+                    )
+                    runtime.record_sblr_execute(
+                        state,
+                        index,
+                        compile_result,
+                        Int(py=runtime.now_ns()) - execute_started,
+                    )
+                else:
+                    error_path = compile_error
             else:
                 rc = _execute_to_file(handle, statement, result_path, error_path)
             runtime.record_statement(

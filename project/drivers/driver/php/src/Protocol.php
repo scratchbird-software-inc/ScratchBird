@@ -746,6 +746,24 @@ final class Protocol
         return [$commandType, $rows, $lastId, $tag];
     }
 
+    public static function parseSblrCompiled(string $payload): array
+    {
+        if (strlen($payload) < 16) {
+            throw new \RuntimeException('SBLR compiled truncated');
+        }
+        $hash = self::readUInt64LE(substr($payload, 0, 8));
+        $version = self::readUInt32LE(substr($payload, 8, 4));
+        $length = self::readUInt32LE(substr($payload, 12, 4));
+        if (16 + $length > strlen($payload)) {
+            throw new \RuntimeException('SBLR compiled truncated');
+        }
+        return [
+            'hash' => $hash,
+            'version' => $version,
+            'bytecode' => substr($payload, 16, $length),
+        ];
+    }
+
     public static function parseErrorMessage(string $payload): array
     {
         $offset = 0;

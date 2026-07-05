@@ -14,12 +14,14 @@ namespace scratchbird::core::agents {
 namespace {
 
 CanonicalAgentManifestEntry Entry(std::string type_id,
+                                  AgentRuntimeLayer layer,
                                   AgentDeployment deployment,
                                   std::string scope,
                                   AgentAuthorityClass authority,
                                   AgentActivationProfile activation) {
   CanonicalAgentManifestEntry entry;
   entry.type_id = std::move(type_id);
+  entry.layer = layer;
   entry.deployment = deployment;
   entry.scope = std::move(scope);
   entry.authority = authority;
@@ -34,8 +36,8 @@ CanonicalAgentManifestEntry Entry(std::string type_id,
 
 std::vector<CanonicalAgentManifestEntry> CanonicalAgentManifest() {
   return {
-#define SB_AGENT_MANIFEST_ENTRY(type_id, deployment, scope, authority, activation) \
-  Entry(#type_id, AgentDeployment::deployment, scope, AgentAuthorityClass::authority, \
+#define SB_AGENT_MANIFEST_ENTRY(type_id, layer, deployment, scope, authority, activation) \
+  Entry(#type_id, AgentRuntimeLayer::layer, AgentDeployment::deployment, scope, AgentAuthorityClass::authority, \
         AgentActivationProfile::activation),
 #include "agent_runtime_manifest.def"
 #undef SB_AGENT_MANIFEST_ENTRY

@@ -44,6 +44,10 @@ struct ManagerConfig {
   std::uint64_t proxy_client_idle_timeout_ms = 300000;
   std::uint64_t proxy_backend_connect_timeout_ms = 5000;
   std::uint64_t proxy_io_timeout_ms = 30000;
+  bool proxy_tls_required = false;
+  std::filesystem::path proxy_tls_cert_file;
+  std::filesystem::path proxy_tls_key_file;
+  std::filesystem::path proxy_tls_ca_file;
   std::uint32_t management_backlog = 64;
   std::uint32_t management_max_clients = 128;
   std::uint32_t management_max_payload_bytes = 1024 * 1024;

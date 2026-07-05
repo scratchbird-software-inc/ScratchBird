@@ -36,6 +36,8 @@ interface Args {
   sslcert: string;
   sslkey: string;
   ipcPath: string;
+  managerAuthToken: string;
+  managerDatabase: string;
   route: string;
   parserMode: string;
   pageSize: string;
@@ -73,6 +75,13 @@ const PAGE_SIZE_BYTES: Record<string, number> = {
   "64k": 65536,
   "128k": 131072,
 };
+export const NATIVE_ROWSET_TYPE_TEXT = 1;
+export const NATIVE_ROWSET_TYPE_INT64 = 2;
+export const NATIVE_ROWSET_TYPE_BOOLEAN = 3;
+export const NATIVE_ROWSET_TYPE_INT32 = 4;
+export const NATIVE_ROWSET_TYPE_UINT64 = 5;
+export const NATIVE_ROWSET_TYPE_REAL64 = 6;
+export const NATIVE_ROWSET_TYPE_BINARY = 7;
 const ROUTES = new Set(["embedded", "ipc_local", "listener-parser", "manager-listener-parser"]);
 const PARSER_MODES = new Set(["server-parser", "standalone-parser", "driver-sblr-uuid"]);
 const SUPPORTED_ARGS = new Set([
@@ -87,6 +96,8 @@ const SUPPORTED_ARGS = new Set([
   "--sslcert",
   "--sslkey",
   "--ipc-path",
+  "--manager-auth-token",
+  "--manager-database",
   "--route",
   "--parser-mode",
   "--page-size",
@@ -202,6 +213,9 @@ async function run(args: Args): Promise<number> {
       ipcMethod: args.route === "ipc_local" ? "unix" : undefined,
       ipcPath: args.route === "ipc_local" ? args.ipcPath : undefined,
       sslmode: args.route === "ipc_local" ? "disable" : args.sslmode,
+      managerAuthToken: args.route === "manager-listener-parser" ? args.managerAuthToken : undefined,
+      managerDatabase: args.route === "manager-listener-parser" ? args.managerDatabase : undefined,
+      managerUsername: args.route === "manager-listener-parser" ? args.user : undefined,
       metadataExpandSchemaParents: true,
     };
     client = new ScratchBirdClient(config);
@@ -260,7 +274,8 @@ async function run(args: Args): Promise<number> {
           if (copyPayload.length === 0) {
             throw new Error("COPY FROM STDIN requires SB_COPY_INPUT rows in the script");
           }
-          const rowsCopied = await executeCopyIn(client, executableSql, copyPayload, args.statementTimeoutMs);
+          const nativeCopyPayload = copyTextRowsToNativeFrame(copyPayload);
+          const rowsCopied = await executeCopyIn(client, executableSql, nativeCopyPayload, args.statementTimeoutMs);
           apiHits.copyIn++;
           const rows = [["copy_in", rowsCopied]];
           rowCount = rowsCopied;
@@ -270,7 +285,8 @@ async function run(args: Args): Promise<number> {
             event: "copy_in",
             statement_id: statementId,
             parser_mode: args.parserMode,
-            payload_bytes: copyPayload.length,
+            payload_bytes: nativeCopyPayload.length,
+            copy_payload_format: "sbnr_native_rowset",
             rows_copied: rowsCopied,
             engine_sql_text_execution: false,
             mga_authority: "engine",
@@ -477,6 +493,281 @@ function copyPayloadForStatement(sql: string): Buffer {
     .filter((line) => line.startsWith("-- SB_COPY_INPUT "))
     .map((line) => line.slice("-- SB_COPY_INPUT ".length).replace(/\r$/, ""));
   return Buffer.from(rows.join("\n") + (rows.length ? "\n" : ""), "utf8");
+}
+
+export function copyTextRowsToNativeFrame(data: Buffer): Buffer {
+  if (data.subarray(0, 4).toString("utf8") === "SBNR") {
+    return data;
+  }
+  const lines = data
+    .toString("utf8")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) {
+    throw new Error("COPY input contains no rows");
+  }
+
+  if (lines[0].includes(";") && lines[0].includes("=")) {
+    let columns: string[] | null = null;
+    const rows: Array<Array<string | null>> = [];
+    for (const line of lines) {
+      const names: string[] = [];
+      const values: Array<string | null> = [];
+      for (const part of line.split(";")) {
+        if (part.length === 0) {
+          continue;
+        }
+        const separator = part.indexOf("=");
+        if (separator <= 0) {
+          throw new Error("malformed canonical COPY field");
+        }
+        names.push(part.slice(0, separator));
+        const value = part.slice(separator + 1);
+        values.push(value.toLowerCase() === "null" ? null : value);
+      }
+      if (names.length === 0) {
+        continue;
+      }
+      if (columns === null) {
+        columns = names;
+      } else if (!sameStrings(columns, names)) {
+        throw new Error("COPY input changed row shape mid-stream");
+      }
+      rows.push(values);
+    }
+    if (columns === null) {
+      throw new Error("COPY input contains no rows");
+    }
+    return buildNativeRowsetPayload(columns, rows);
+  }
+
+  const columns = splitCopyCsvLine(lines[0]).map((column) => column.trim());
+  if (columns.length === 0 || columns.some((column) => column.length === 0)) {
+    throw new Error("CSV COPY input requires a non-empty header row");
+  }
+  const rows: Array<Array<string | null>> = [];
+  for (const line of lines.slice(1)) {
+    const values = splitCopyCsvLine(line);
+    if (values.length !== columns.length) {
+      throw new Error("CSV COPY row shape mismatch");
+    }
+    rows.push(values.map((value) => value === "" || value.toLowerCase() === "null" ? null : value));
+  }
+  if (rows.length === 0) {
+    throw new Error("CSV COPY input contains no data rows");
+  }
+  return buildNativeRowsetPayload(columns, rows);
+}
+
+function buildNativeRowsetPayload(
+  columns: string[],
+  rows: Array<Array<string | null>>,
+  columnTypes?: number[],
+): Buffer {
+  if (rows.length === 0) {
+    throw new Error("native rowset requires at least one row");
+  }
+  if (columns.length === 0 || columns.some((column) => column.length === 0)) {
+    throw new Error("native rowset requires non-empty column names");
+  }
+  for (const row of rows) {
+    if (row.length !== columns.length) {
+      throw new Error("native rowset row shape mismatch");
+    }
+  }
+  const types = columnTypes ?? inferNativeRowsetColumnTypes(rows);
+  if (types.length !== columns.length) {
+    throw new Error("native rowset column/type shape mismatch");
+  }
+
+  const chunks: Buffer[] = [];
+  const header = Buffer.alloc(20 + types.length);
+  header.write("SBNR", 0, "ascii");
+  header.writeUInt16LE(2, 4);
+  header.writeUInt16LE(0, 6);
+  header.writeBigUInt64LE(BigInt(rows.length), 8);
+  header.writeUInt32LE(columns.length, 16);
+  for (let index = 0; index < types.length; index++) {
+    header[20 + index] = types[index];
+  }
+  chunks.push(header);
+
+  for (const column of columns) {
+    const encoded = Buffer.from(column, "utf8");
+    const length = Buffer.alloc(4);
+    length.writeUInt32LE(encoded.length, 0);
+    chunks.push(length, encoded);
+  }
+
+  const nullBitmapBytes = Math.ceil(columns.length / 8);
+  for (const row of rows) {
+    const nullBitmap = Buffer.alloc(nullBitmapBytes);
+    const values: Buffer[] = [];
+    for (let index = 0; index < row.length; index++) {
+      const value = row[index];
+      if (value === null) {
+        nullBitmap[Math.floor(index / 8)] |= 1 << (index % 8);
+        continue;
+      }
+      values.push(encodeNativeRowsetValue(value, types[index]));
+    }
+    chunks.push(nullBitmap, ...values);
+  }
+  return Buffer.concat(chunks);
+}
+
+function encodeNativeRowsetValue(value: string, type: number): Buffer {
+  switch (type) {
+    case NATIVE_ROWSET_TYPE_INT64: {
+      const out = Buffer.alloc(8);
+      out.writeBigInt64LE(BigInt(value.trim()), 0);
+      return out;
+    }
+    case NATIVE_ROWSET_TYPE_BOOLEAN:
+      return Buffer.from([truthyNativeRowsetBoolean(value) ? 1 : 0]);
+    case NATIVE_ROWSET_TYPE_INT32: {
+      const out = Buffer.alloc(4);
+      out.writeInt32LE(Number.parseInt(value.trim(), 10), 0);
+      return out;
+    }
+    case NATIVE_ROWSET_TYPE_UINT64: {
+      const out = Buffer.alloc(8);
+      out.writeBigUInt64LE(BigInt(value.trim()), 0);
+      return out;
+    }
+    case NATIVE_ROWSET_TYPE_REAL64: {
+      const out = Buffer.alloc(8);
+      out.writeDoubleLE(Number(value.trim()), 0);
+      return out;
+    }
+    case NATIVE_ROWSET_TYPE_BINARY:
+    case NATIVE_ROWSET_TYPE_TEXT: {
+      const encoded = Buffer.from(value, "utf8");
+      const out = Buffer.alloc(4 + encoded.length);
+      out.writeUInt32LE(encoded.length, 0);
+      encoded.copy(out, 4);
+      return out;
+    }
+    default:
+      throw new Error(`unsupported native rowset type ${type}`);
+  }
+}
+
+function inferNativeRowsetColumnTypes(rows: Array<Array<string | null>>): number[] {
+  if (rows.length === 0) {
+    return [];
+  }
+  const columnCount = rows[0].length;
+  const types = Array<number>(columnCount).fill(NATIVE_ROWSET_TYPE_TEXT);
+  for (let column = 0; column < columnCount; column++) {
+    const values = rows
+      .map((row) => row[column])
+      .filter((value): value is string => value !== null);
+    if (values.length === 0) {
+      continue;
+    }
+    if (values.every((value) => {
+      const normalized = value.trim().toLowerCase();
+      return normalized === "true" || normalized === "false";
+    })) {
+      types[column] = NATIVE_ROWSET_TYPE_BOOLEAN;
+      continue;
+    }
+    if (values.every((value) => losslessInt(value, -2147483648n, 2147483647n))) {
+      types[column] = NATIVE_ROWSET_TYPE_INT32;
+      continue;
+    }
+    if (values.every((value) => losslessInt(value, -(1n << 63n), (1n << 63n) - 1n))) {
+      types[column] = NATIVE_ROWSET_TYPE_INT64;
+      continue;
+    }
+    if (values.every(losslessUint64)) {
+      types[column] = NATIVE_ROWSET_TYPE_UINT64;
+      continue;
+    }
+    if (values.every(losslessReal64)) {
+      types[column] = NATIVE_ROWSET_TYPE_REAL64;
+      continue;
+    }
+  }
+  return types;
+}
+
+function splitCopyCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let inQuote = false;
+  for (let index = 0; index < line.length; index++) {
+    const ch = line[index];
+    if (ch === "\"") {
+      if (inQuote && index + 1 < line.length && line[index + 1] === "\"") {
+        current += "\"";
+        index++;
+      } else {
+        inQuote = !inQuote;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuote) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  values.push(current);
+  return values;
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function losslessInt(value: string, min: bigint, max: bigint): boolean {
+  const text = value.trim();
+  if (!/^-?\d+$/.test(text)) {
+    return false;
+  }
+  try {
+    const parsed = BigInt(text);
+    return parsed >= min && parsed <= max && parsed.toString() === text;
+  } catch {
+    return false;
+  }
+}
+
+function losslessUint64(value: string): boolean {
+  const text = value.trim();
+  if (!/^\d+$/.test(text)) {
+    return false;
+  }
+  try {
+    const parsed = BigInt(text);
+    return parsed <= (1n << 64n) - 1n && parsed.toString() === text;
+  } catch {
+    return false;
+  }
+}
+
+function losslessReal64(value: string): boolean {
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed);
+}
+
+function truthyNativeRowsetBoolean(value: string): boolean {
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "t":
+    case "yes":
+    case "y":
+    case "on":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isCopyStdinStatement(sql: string): boolean {
@@ -771,6 +1062,8 @@ function parseArgs(raw: string[]): Args {
     sslcert: values["--sslcert"] ?? "",
     sslkey: values["--sslkey"] ?? "",
     ipcPath: values["--ipc-path"] ?? process.env.SCRATCHBIRD_IPC_PATH ?? "",
+    managerAuthToken: values["--manager-auth-token"] ?? "",
+    managerDatabase: values["--manager-database"] ?? "",
     route: values["--route"] ?? "listener-parser",
     parserMode: values["--parser-mode"] ?? "server-parser",
     pageSize: values["--page-size"] ?? "8k",
@@ -999,7 +1292,9 @@ function escapeXml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

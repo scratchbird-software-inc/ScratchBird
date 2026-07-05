@@ -105,6 +105,7 @@ function IsSupportedArg(const Name: string): Boolean;
 begin
   Result :=
     (Name = '--database') or (Name = '--host') or (Name = '--port') or
+    (Name = '--manager-auth-token') or (Name = '--manager-database') or
     (Name = '--user') or (Name = '--password') or (Name = '--role') or
     (Name = '--sslmode') or (Name = '--sslrootcert') or
     (Name = '--sslcert') or (Name = '--sslkey') or (Name = '--ipc-path') or
@@ -246,7 +247,9 @@ begin
     ]);
 
   if Route = 'manager-listener-parser' then
-    Result := Result + '&front_door_mode=manager_proxy'
+    Result := Result + '&front_door_mode=manager_proxy' +
+      '&manager_auth_token=' + ArgValue('--manager-auth-token', '') +
+      '&manager_database=' + ArgValue('--manager-database', '')
   else if Route = 'ipc_local' then
     Result := Result + '&front_door_mode=direct'
   else if Route = 'embedded' then

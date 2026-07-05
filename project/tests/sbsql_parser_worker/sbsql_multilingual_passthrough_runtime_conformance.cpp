@@ -9,6 +9,7 @@
 #include "cache/sblr_template_cache.hpp"
 #include "lowering/lowering.hpp"
 #include "metrics/parser_metrics.hpp"
+#include "rendering/rendering.hpp"
 #include "wire/sbsql_test_wire.hpp"
 
 #include <cstdlib>
@@ -228,11 +229,61 @@ void VerifyParserFamilyNegativesFailClosed() {
           "missing parser operation family did not emit fail-closed diagnostic");
 }
 
+void VerifyPreferredAndFallbackSblrRendering() {
+  const auto envelope = MinimalEnvelope();
+
+  sbsql::SblrRenderRequest preferred;
+  preferred.sblr_uuid_authority_valid = true;
+  preferred.preferred_renderer_available = true;
+  preferred.canonical_english_renderer_available = true;
+  preferred.preferred_language_profile = "fr-CA";
+  const auto preferred_result =
+      sbsql::RenderSblrEnvelopeWithProfileSelection(envelope, preferred);
+  Require(preferred_result.ok,
+          "SML-084 preferred-language SBLR renderer did not accept admitted envelope");
+  Require(preferred_result.selection.decision ==
+              sbsql::SblrRenderDecision::kPreferredLanguage,
+          "SML-084 preferred-language renderer did not preserve preferred decision");
+  Require(preferred_result.selection.selected_language_profile == "fr-CA",
+          "SML-084 preferred-language renderer lost selected profile evidence");
+  Require(preferred_result.selection.server_revalidation_required,
+          "SML-084 preferred-language renderer lost server revalidation requirement");
+  Require(Contains(preferred_result.text, "SBLR sblr.query.relational.v3 42"),
+          "SML-084 preferred-language renderer lost SBLR output");
+
+  sbsql::SblrRenderRequest fallback;
+  fallback.sblr_uuid_authority_valid = true;
+  fallback.preferred_renderer_available = false;
+  fallback.canonical_english_renderer_available = true;
+  fallback.preferred_language_profile = "fr-CA";
+  fallback.canonical_english_profile = "sbsql.builtin.recovery.en";
+  const auto fallback_result =
+      sbsql::RenderSblrEnvelopeWithProfileSelection(envelope, fallback);
+  Require(fallback_result.ok,
+          "SML-084 canonical English fallback renderer did not accept admitted envelope");
+  Require(fallback_result.selection.decision ==
+              sbsql::SblrRenderDecision::kCanonicalEnglishFallback,
+          "SML-084 fallback renderer did not preserve fallback decision");
+  Require(fallback_result.selection.used_canonical_english_fallback,
+          "SML-084 fallback renderer did not record canonical English fallback");
+  Require(fallback_result.selection.fallback_language_profile ==
+              "sbsql.builtin.recovery.en",
+          "SML-084 fallback renderer lost canonical English profile evidence");
+  Require(fallback_result.selection.server_revalidation_required,
+          "SML-084 fallback renderer lost server revalidation requirement");
+  Require(HasDiagnosticCode(fallback_result.messages,
+                            "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH"),
+          "SML-084 fallback renderer did not emit fallback diagnostic");
+  Require(Contains(fallback_result.text, "SBLR sblr.query.relational.v3 42"),
+          "SML-084 fallback renderer lost SBLR output");
+}
+
 } // namespace
 
 int main() {
   VerifyStandardEnglishFallbackPassThrough();
   VerifyParserFamilyNegativesFailClosed();
+  VerifyPreferredAndFallbackSblrRendering();
   std::cout << "sbsql_multilingual_passthrough_runtime_conformance=passed\n";
   return EXIT_SUCCESS;
 }

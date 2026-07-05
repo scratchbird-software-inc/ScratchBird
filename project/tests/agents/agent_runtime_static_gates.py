@@ -134,6 +134,7 @@ AMBIGUOUS_TOKENS = (
 @dataclass(frozen=True)
 class ImplAgent:
     type_id: str
+    layer: str
     deployment: str
     scope: str
     authority: str
@@ -351,6 +352,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
 
     pattern = re.compile(
         r'Agent\(\s*"(?P<type_id>[^"]+)"\s*,\s*'
+        r"(?:AgentRuntimeLayer::(?P<layer>[A-Za-z0-9_]+)\s*,\s*)?"
         r"AgentDeployment::(?P<deployment>[A-Za-z0-9_]+)\s*,\s*"
         r'"(?P<scope>[^"]+)"\s*,\s*'
         r"AgentAuthorityClass::(?P<authority>[A-Za-z0-9_]+)\s*,\s*"
@@ -365,6 +367,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
     agents: dict[str, ImplAgent] = {}
     manifest_def_pattern = re.compile(
         r"SB_AGENT_MANIFEST_ENTRY\(\s*(?P<type_id>[A-Za-z0-9_]+)\s*,\s*"
+        r"(?P<layer>[A-Za-z0-9_]+)\s*,\s*"
         r"(?P<deployment>[A-Za-z0-9_]+)\s*,\s*"
         r'"(?P<scope>[^"]+)"\s*,\s*'
         r"(?P<authority>[A-Za-z0-9_]+)\s*,\s*"
@@ -374,6 +377,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
         agent_type = match.group("type_id")
         agents[agent_type] = ImplAgent(
             type_id=agent_type,
+            layer=match.group("layer"),
             deployment=match.group("deployment"),
             scope=match.group("scope"),
             authority=match.group("authority"),
@@ -383,6 +387,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
 
     entry_pattern = re.compile(
         r'Entry\(\s*"(?P<type_id>[^"]+)"\s*,\s*'
+        r"AgentRuntimeLayer::(?P<layer>[A-Za-z0-9_]+)\s*,\s*"
         r"AgentDeployment::(?P<deployment>[A-Za-z0-9_]+)\s*,\s*"
         r'"(?P<scope>[^"]+)"\s*,\s*'
         r"AgentAuthorityClass::(?P<authority>[A-Za-z0-9_]+)\s*,\s*"
@@ -394,6 +399,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
             agent_type = match.group("type_id")
             agents[agent_type] = ImplAgent(
                 type_id=agent_type,
+                layer=match.group("layer"),
                 deployment=match.group("deployment"),
                 scope=match.group("scope"),
                 authority=match.group("authority"),
@@ -416,6 +422,7 @@ def parse_impl_registry(repo_root: Path) -> dict[str, ImplAgent]:
         agent_type = match.group("type_id")
         agents[agent_type] = ImplAgent(
             type_id=agent_type,
+            layer=match.group("layer") or "l3_dispatcher",
             deployment=match.group("deployment"),
             scope=match.group("scope"),
             authority=match.group("authority"),
@@ -429,6 +436,7 @@ def parse_manifest_def(repo_root: Path) -> dict[str, ImplAgent]:
     text = read_text(repo_root, AGENT_RUNTIME_MANIFEST_DEF_REL)
     pattern = re.compile(
         r"SB_AGENT_MANIFEST_ENTRY\(\s*(?P<type_id>[A-Za-z0-9_]+)\s*,\s*"
+        r"(?P<layer>[A-Za-z0-9_]+)\s*,\s*"
         r"(?P<deployment>[A-Za-z0-9_]+)\s*,\s*"
         r'"(?P<scope>[^"]+)"\s*,\s*'
         r"(?P<authority>[A-Za-z0-9_]+)\s*,\s*"
@@ -441,6 +449,7 @@ def parse_manifest_def(repo_root: Path) -> dict[str, ImplAgent]:
             raise GateFailure(f"duplicate manifest definition entry: {agent_type}")
         entries[agent_type] = ImplAgent(
             type_id=agent_type,
+            layer=match.group("layer"),
             deployment=match.group("deployment"),
             scope=match.group("scope"),
             authority=match.group("authority"),
@@ -616,7 +625,7 @@ def gate_no_implicit_defaults(repo_root: Path) -> list[str]:
             errors.append(f"{agent}: scope drift implementation={impl.scope} spec={spec['scope']}")
         if impl.authority != spec["authority_class"]:
             errors.append(f"{agent}: authority drift implementation={impl.authority} spec={spec['authority_class']}")
-        if not impl.metric_dependencies:
+        if not impl.metric_dependencies and impl.layer != "l1_observation":
             errors.append(f"{agent}: implementation registry has no explicit metric dependencies")
         for family, namespace, _cluster_only in impl.metric_dependencies:
             if family not in metric_tokens:
@@ -635,6 +644,9 @@ def gate_no_implicit_defaults(repo_root: Path) -> list[str]:
         "SB_AGENT_REGISTRY.TYPE_ID_REQUIRED",
         "SB_AGENT_REGISTRY.SCOPE_REQUIRED",
         "SB_AGENT_REGISTRY.METRIC_DEPENDENCY_REQUIRED",
+        "SB_AGENT_REGISTRY.L1_OBSERVE_ONLY_REQUIRED",
+        "SB_AGENT_REGISTRY.L4_DISABLED_BY_DEFAULT_REQUIRED",
+        "SB_AGENT_REGISTRY.L5_NODE_SCOPE_REQUIRED",
         "SB_AGENT_REGISTRY.DUPLICATE_TYPE_ID",
         "ValidateStorageSpaceAgentDefaults",
     ):
@@ -642,7 +654,7 @@ def gate_no_implicit_defaults(repo_root: Path) -> list[str]:
             errors.append(f"CanonicalAgentRegistry validation does not enforce {diagnostic}")
 
     management_cpp = read_text(repo_root, MANAGEMENT_API_CPP_REL)
-    for emitted_field in ("agent_type", "deployment", "scope", "authority", "metric_dependencies"):
+    for emitted_field in ("agent_type", "layer", "deployment", "scope", "authority", "metric_dependencies"):
         if f'"{emitted_field}"' not in management_cpp:
             errors.append(f"agent management API does not emit descriptor field {emitted_field}")
 

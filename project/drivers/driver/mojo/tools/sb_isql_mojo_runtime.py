@@ -25,6 +25,7 @@ import resource
 import sys
 import time
 from typing import Any
+from urllib.parse import urlencode
 import xml.sax.saxutils
 
 
@@ -351,10 +352,13 @@ def build_dsn(args: argparse.Namespace) -> str:
     if args.sslkey:
         query["sslkey"] = args.sslkey
     if args.route == "manager-listener-parser":
-        query["front_door_mode"] = "manager"
+        query["front_door_mode"] = "manager_proxy"
+        query["manager_auth_token"] = args.manager_auth_token
+        query["manager_database"] = args.manager_database or args.database
+        query["manager_username"] = args.user
     else:
         query["front_door_mode"] = "direct"
-    query_text = "&".join(f"{key}={value}" for key, value in query.items())
+    query_text = urlencode(query)
     return f"scratchbird://{args.user}:{args.password}@{args.host}:{args.port}/{args.database}?{query_text}"
 
 
@@ -426,6 +430,8 @@ def junit_xml(testcases: list[dict[str, Any]], failures: list[dict[str, Any]]) -
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ScratchBird native Mojo driver conformance shell")
     parser.add_argument("--database", required=True)
+    parser.add_argument("--manager-auth-token", default="")
+    parser.add_argument("--manager-database", default="")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=3092)
     parser.add_argument("--user", required=True)
@@ -483,8 +489,6 @@ class RunnerState:
         self.args = build_arg_parser().parse_args(normalized)
         if self.args.route in {"embedded", "ipc_local"}:
             raise ValueError(f"Mojo conformance runner does not support route {self.args.route}")
-        if self.args.parser_mode != "server-parser":
-            raise ValueError(f"Mojo conformance runner supports server-parser mode for this closure lane, got {self.args.parser_mode}")
         self.output_path = Path(self.args.output)
         self.error_path = Path(self.args.error)
         self.diagnostics_path = Path(self.args.diagnostics)
@@ -535,6 +539,8 @@ class RunnerState:
             "connect": 0,
             "prepare": 0,
             "execute": 0,
+            "compile_sblr": 0,
+            "execute_sblr": 0,
             "query_metadata": 0,
             "commit": 0,
             "rollback": 0,
@@ -584,6 +590,14 @@ def statement_name(state: RunnerState, index: int) -> str:
 
 def statement_is_copy(state: RunnerState, index: int) -> bool:
     return is_copy_stdin_statement(state.statements[index][2])
+
+
+def statement_uses_driver_sblr(state: RunnerState, index: int) -> bool:
+    if state.args.parser_mode == "server-parser":
+        return False
+    if statement_is_copy(state, index):
+        return False
+    return statement_transaction_operation(state, index) == ""
 
 
 def statement_copy_sql(state: RunnerState, index: int) -> str:
@@ -652,6 +666,64 @@ def record_route_probe(state: RunnerState, rc: int, result_path: str, error_path
                 "actual_page_size_bytes": actual,
             })
     write_text(state.route_environment_path, json.dumps(state.route_env, indent=2, sort_keys=True) + "\n")
+
+
+def record_sblr_compile(state: RunnerState, index: int, rc: int, result_path: str, error_path: str, elapsed_ns: int) -> None:
+    script_name, script_index, _ = state.statements[index]
+    statement_id = f"{script_name}:{script_index}"
+    state.api_hits["compile_sblr"] += 1
+    state.timing_groups["compile_sblr"] = state.timing_groups.get("compile_sblr", 0) + int(elapsed_ns)
+    if int(rc) != 0:
+        error = parse_bridge_error(error_path)
+        state.wire_writer.write({
+            "event": "driver_sblr_compile_failed",
+            "driver": "mojo",
+            "parser_mode": state.args.parser_mode,
+            "statement_id": statement_id,
+            "message": error.get("message", "SBLR compile failed"),
+        })
+        return
+    compiled = read_json_file(result_path)
+    state.wire_writer.write({
+        "event": "driver_sblr_compile",
+        "driver": "mojo",
+        "parser_mode": state.args.parser_mode,
+        "statement_id": statement_id,
+        "sblr_hash": str(compiled.get("hash", 0)),
+        "sblr_version": int(compiled.get("version", 0)),
+        "sblr_bytes": int(compiled.get("bytecode_len", 0)),
+    })
+
+
+def sblr_compile_hash(result_path: str) -> int:
+    return int(read_json_file(result_path).get("hash", 0))
+
+
+def sblr_compile_hash_hex(result_path: str) -> str:
+    return f"{sblr_compile_hash(result_path):016x}"
+
+
+def sblr_compile_bytecode_hex(result_path: str) -> str:
+    return str(read_json_file(result_path).get("bytecode_hex", ""))
+
+
+def record_sblr_execute(state: RunnerState, index: int, compile_result_path: str, elapsed_ns: int) -> None:
+    script_name, script_index, _ = state.statements[index]
+    statement_id = f"{script_name}:{script_index}"
+    compiled = read_json_file(compile_result_path)
+    state.api_hits["execute_sblr"] += 1
+    state.timing_groups["execute_sblr"] = state.timing_groups.get("execute_sblr", 0) + int(elapsed_ns)
+    state.wire_writer.write({
+        "event": "driver_sblr_execute",
+        "driver": "mojo",
+        "parser_mode": state.args.parser_mode,
+        "statement_id": statement_id,
+        "sblr_hash": str(compiled.get("hash", 0)),
+        "sblr_version": int(compiled.get("version", 0)),
+        "sblr_bytes": int(compiled.get("bytecode_len", 0)),
+        "engine_sql_text_execution": False,
+        "mga_authority": "engine",
+    })
 
 
 def record_statement(state: RunnerState, index: int, rc: int, result_path: str, error_path: str, elapsed_ns: int) -> None:

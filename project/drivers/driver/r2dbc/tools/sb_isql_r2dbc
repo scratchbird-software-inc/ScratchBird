@@ -12,7 +12,8 @@ import sys
 
 
 ARGUMENT_TOKENS = (
-    "--database", "--host", "--port", "--user", "--password", "--role",
+    "--database", "--manager-auth-token", "--manager-database",
+    "--host", "--port", "--user", "--password", "--role",
     "--sslmode", "--sslrootcert", "--sslcert", "--sslkey", "--ipc-path",
     "--route", "--parser-mode", "--page-size", "--namespace", "--input",
     "--output", "--error", "--diagnostics", "--metrics", "--transcript",
@@ -26,12 +27,32 @@ ARGUMENT_TOKENS = (
 NATIVE_API_TOKENS = ("ConnectionFactory", "createStatement", "execute", "Publisher", "Result")
 
 
+def _install_manager_args(tool_module) -> None:
+    original_build_arg_parser = tool_module.build_arg_parser
+
+    def build_arg_parser():
+        parser = original_build_arg_parser()
+        option_strings = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
+        if "--manager-auth-token" not in option_strings:
+            parser.add_argument("--manager-auth-token", default="")
+        if "--manager-database" not in option_strings:
+            parser.add_argument("--manager-database", default="")
+        return parser
+
+    tool_module.build_arg_parser = build_arg_parser
+
+
 def main() -> int:
     lane_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(lane_root / "src"))
-    from scratchbird_r2dbc.contract_tool import main as tool_main
+    from scratchbird_r2dbc import contract_tool
 
-    return tool_main()
+    _install_manager_args(contract_tool)
+    return contract_tool.main()
 
 
 if __name__ == "__main__":

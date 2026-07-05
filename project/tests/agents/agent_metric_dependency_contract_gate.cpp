@@ -151,7 +151,9 @@ void TestRegistryCoverageAndExactRepresentativeRows() {
   for (const auto& descriptor : descriptors) {
     if (!IsNonClusterRuntimeAgent(descriptor)) { continue; }
     const auto contract_deps = agents::MetricDependenciesForAgent(descriptor.type_id);
-    Require(!contract_deps.empty(), "contract missing for " + descriptor.type_id);
+    if (descriptor.layer != agents::AgentRuntimeLayer::l1_observation) {
+      Require(!contract_deps.empty(), "contract missing for " + descriptor.type_id);
+    }
     Require(contract_deps.size() == descriptor.metric_dependencies.size(),
             "descriptor dependency count drift for " + descriptor.type_id);
     for (const auto& dep : descriptor.metric_dependencies) {

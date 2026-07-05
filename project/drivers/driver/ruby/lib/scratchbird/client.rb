@@ -395,6 +395,19 @@ module Scratchbird
       end
     end
 
+    def compile_sblr(sql)
+      ensure_connected
+      @last_sblr = nil
+      with_resilience("compile_sblr", sql) do
+        execute_query(sql, [], return_sblr: true, max_rows: 0)
+        compiled = @last_sblr
+        unless compiled && compiled[:bytecode] && !compiled[:bytecode].empty?
+          raise ConnectionError.new("parser endpoint did not return SBLR for RETURN_SBLR request", "08P01")
+        end
+        compiled
+      end
+    end
+
     def stream_control(control_type, window_size, timeout_ms)
       ensure_connected
       payload = Protocol.build_stream_control_payload(control_type, window_size, timeout_ms)

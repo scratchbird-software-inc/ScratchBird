@@ -1182,7 +1182,9 @@ sendPayload:
         var features = ProtocolConstants.FeatureSblr |
                        ProtocolConstants.FeatureNotifications |
                        ProtocolConstants.FeatureSavepoints |
-                       ProtocolConstants.FeatureQueryPlan;
+                       ProtocolConstants.FeatureQueryPlan |
+                       ProtocolConstants.FeatureBatch |
+                       ProtocolConstants.FeaturePipeline;
         if (string.Equals(config.Compression, "zstd", StringComparison.OrdinalIgnoreCase))
         {
             features |= ProtocolConstants.FeatureCompression;
@@ -1190,6 +1192,7 @@ sendPayload:
         if (config.BinaryTransfer)
         {
             features |= ProtocolConstants.FeatureStreaming;
+            features |= ProtocolConstants.FeatureBinaryCopy;
         }
         return features;
     }

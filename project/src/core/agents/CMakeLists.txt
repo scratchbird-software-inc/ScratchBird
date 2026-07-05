@@ -66,6 +66,7 @@ add_library(sb_core_agents
   agent_runtime_manager.cpp
   agent_engine_lifecycle.cpp
   agent_feature_gates.cpp
+  agent_layer_pipeline.cpp
   agent_background_jobs.cpp
   online_maintenance_progress.cpp
   dynamic_cleanup_debt_scheduler.cpp

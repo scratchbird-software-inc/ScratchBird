@@ -251,6 +251,23 @@ public final class ScratchBirdConnection {
         }.value
     }
 
+    public func compileSblr(_ sql: String, timeoutMs: UInt32 = 0) async throws -> SblrCompiledMessage {
+        return try await Task.detached { () -> SblrCompiledMessage in
+            return try await self.withResilience(operation: "compile_sblr", sql: sql) {
+                self.lastSblr = nil
+                try self.sendSimpleQuery(sql, maxRows: 0, timeoutMs: timeoutMs, extraFlags: queryFlagReturnSblr)
+                _ = try self.collectResults()
+                guard let compiled = self.lastSblr, !compiled.bytecode.isEmpty else {
+                    throw ScratchBirdConnectionException(
+                        message: "parser endpoint did not return SBLR for RETURN_SBLR request",
+                        sqlState: "08P01"
+                    )
+                }
+                return compiled
+            }
+        }.value
+    }
+
     public func copyIn(_ sql: String, data: Data) async throws -> UInt64 {
         return try await Task.detached { () -> UInt64 in
             return try await self.withResilience(operation: "copy_in", sql: sql) {
@@ -796,7 +813,8 @@ public final class ScratchBirdConnection {
     }
 
     private func buildStartupFeatures() -> UInt64 {
-        var features: UInt64 = 0
+        var features: UInt64 = featureSblr | featureNotifications | featureQueryPlan |
+            featureSavepoints | featureBatch | featurePipeline
         if config.compression.lowercased() == "zstd" {
             features |= featureCompression
         }
@@ -1080,8 +1098,8 @@ public final class ScratchBirdConnection {
         }
     }
 
-    private func sendSimpleQuery(_ sql: String, maxRows: UInt32, timeoutMs: UInt32) throws {
-        let flags: UInt32 = config.binaryTransfer ? queryFlagBinaryResult : 0
+    private func sendSimpleQuery(_ sql: String, maxRows: UInt32, timeoutMs: UInt32, extraFlags: UInt32 = 0) throws {
+        let flags: UInt32 = (config.binaryTransfer ? queryFlagBinaryResult : 0) | extraFlags
         portalResumePending = false
         lastPlan = nil
         lastSblr = nil

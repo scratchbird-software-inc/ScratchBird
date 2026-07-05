@@ -2654,6 +2654,60 @@ sb_result* sb_execute_sblr(sb_connection* conn,
     return result;
 }
 
+sb_sblr_compiled* sb_compile_sblr(sb_connection* conn, const char* sql, sb_error* err) {
+    if (!conn || !sql) {
+        set_error(err, SB_ERR_NULL_POINTER, "Connection and SQL required");
+        return nullptr;
+    }
+
+    scratchbird::client::NetworkResultSet ignored;
+    scratchbird::core::ErrorContext ctx;
+    auto status = conn->client.executeQuery(
+        sql,
+        ignored,
+        &ctx,
+        scratchbird::protocol::kQueryFlagReturnSblr);
+    if (status != scratchbird::core::Status::OK) {
+        set_error(err, map_status(status), ctx.message.empty() ? conn->client.lastError() : ctx.message);
+        return nullptr;
+    }
+
+    scratchbird::protocol::SblrCompiled compiled{};
+    if (!conn->client.takeLastSblrCompiled(compiled) || compiled.bytecode.empty()) {
+        set_error(err, SB_ERR_PROTOCOL, "parser endpoint did not return SBLR for RETURN_SBLR request");
+        return nullptr;
+    }
+
+    auto* out = static_cast<sb_sblr_compiled*>(std::calloc(1, sizeof(sb_sblr_compiled)));
+    if (!out) {
+        set_error(err, SB_ERR_OUT_OF_MEMORY, "Out of memory allocating SBLR compiled handle");
+        return nullptr;
+    }
+    auto* bytes = static_cast<uint8_t*>(std::malloc(compiled.bytecode.size()));
+    if (!bytes) {
+        std::free(out);
+        set_error(err, SB_ERR_OUT_OF_MEMORY, "Out of memory allocating SBLR bytecode");
+        return nullptr;
+    }
+    std::memcpy(bytes, compiled.bytecode.data(), compiled.bytecode.size());
+    out->hash = compiled.hash;
+    out->version = compiled.version;
+    out->bytecode = bytes;
+    out->bytecode_len = compiled.bytecode.size();
+    set_error(err, SB_OK, "");
+    return out;
+}
+
+void sb_sblr_compiled_free(sb_sblr_compiled* compiled) {
+    if (!compiled) {
+        return;
+    }
+    std::free(compiled->bytecode);
+    compiled->bytecode = nullptr;
+    compiled->bytecode_len = 0;
+    std::free(compiled);
+}
+
 #ifdef SCRATCHBIRD_TEST_HOOKS
 sb_type sb_test_map_type_oid(uint32_t oid) {
     return map_type_oid(oid);

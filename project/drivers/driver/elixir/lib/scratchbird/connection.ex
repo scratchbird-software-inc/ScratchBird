@@ -450,6 +450,32 @@ defmodule ScratchBird.Connection do
     end)
   end
 
+  def compile_sblr(state, sql) do
+    with_resilience(state, "compile_sblr", sql, fn state ->
+      payload = Protocol.build_query_payload(sql, Protocol.query_flag(:return_sblr), 0, 0)
+      state = %{state | last_plan: nil, last_sblr: nil}
+      sequence = state.sequence
+      state = send_message(state, Protocol.message_type(:query), payload, 0)
+      state = %{state | last_query_sequence: sequence}
+
+      case collect_results(state, []) do
+        {:ok, _result, new_state} ->
+          case new_state.last_sblr do
+            %{bytecode: bytecode} = compiled when is_binary(bytecode) and byte_size(bytecode) > 0 ->
+              {:ok, compiled, new_state}
+
+            _ ->
+              {:error,
+               %{message: "parser endpoint did not return SBLR for RETURN_SBLR request", sqlstate: "08P01"},
+               new_state}
+          end
+
+        {:error, reason, new_state} ->
+          {:error, reason, new_state}
+      end
+    end)
+  end
+
   def stream_control(state, control_type, window_size \\ 0, timeout_ms \\ 0) do
     payload = Protocol.build_stream_control_payload(control_type, window_size, timeout_ms)
     state = send_message(state, Protocol.message_type(:stream_control), payload, 0)
@@ -1761,7 +1787,10 @@ defmodule ScratchBird.Connection do
   end
 
   defp requested_features(config) do
-    features = 0
+    features =
+      Protocol.feature(:sblr) ||| Protocol.feature(:notifications) |||
+        Protocol.feature(:query_plan) ||| Protocol.feature(:savepoints) |||
+        Protocol.feature(:batch) ||| Protocol.feature(:pipeline)
 
     features =
       if config[:compression] == "zstd",
@@ -1770,10 +1799,10 @@ defmodule ScratchBird.Connection do
 
     features =
       if config[:binary_transfer],
-        do: features ||| Protocol.feature(:streaming),
+        do: features ||| Protocol.feature(:streaming) ||| Protocol.feature(:binary_copy),
         else: features
 
-    features ||| Protocol.feature(:savepoints)
+    features
   end
 
   defp required_features(_config), do: 0

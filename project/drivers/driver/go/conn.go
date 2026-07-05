@@ -1746,12 +1746,14 @@ func (c *Conn) queue(msg protocolMessage) {
 }
 
 func (c *Conn) requestedFeatures() uint64 {
-	features := uint64(0)
+	features := featureSBLR | featureNotifications | featureQueryPlan |
+		featureSavepoints | featureBatch | featurePipeline
 	if strings.EqualFold(c.config.Compression, "zstd") {
 		features |= featureCompression
 	}
 	if c.config.BinaryTransfer {
 		features |= featureStreaming
+		features |= featureBinaryCopy
 	}
 	return features
 }

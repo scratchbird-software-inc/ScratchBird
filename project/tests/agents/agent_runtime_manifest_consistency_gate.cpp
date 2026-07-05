@@ -88,6 +88,8 @@ void TestManifestInventory() {
     Require(found != manifest_by_name.end(),
             "registry agent missing from manifest: " + descriptor.type_id);
     const auto& entry = found->second;
+    Require(descriptor.layer == entry.layer,
+            "layer drift: " + descriptor.type_id);
     Require(descriptor.deployment == entry.deployment,
             "deployment drift: " + descriptor.type_id);
     Require(descriptor.scope == entry.scope, "scope drift: " + descriptor.type_id);
@@ -97,8 +99,10 @@ void TestManifestInventory() {
             "activation drift: " + descriptor.type_id);
     Require(descriptor.cluster_only == entry.cluster_only,
             "registry cluster flag drift: " + descriptor.type_id);
-    Require(!descriptor.metric_dependencies.empty(),
-            "missing metric dependency contract: " + descriptor.type_id);
+    if (descriptor.layer != agents::AgentRuntimeLayer::l1_observation) {
+      Require(!descriptor.metric_dependencies.empty(),
+              "missing metric dependency contract: " + descriptor.type_id);
+    }
   }
 }
 

@@ -54,6 +54,18 @@ sub connect {
         $drh->set_err(1, $message, DBD::ScratchBird::Util::sqlstate_from_error($message));
         return;
     }
+    if (($cfg->{front_door_mode} // 'direct') eq 'manager_proxy') {
+        my $manager_ok = eval {
+            DBD::ScratchBird::Util::manager_proxy_connect($socket, $cfg);
+            1;
+        };
+        if (!$manager_ok) {
+            my $message = $@ || 'ScratchBird manager proxy handshake failed';
+            eval { close $socket };
+            $drh->set_err(1, $message, DBD::ScratchBird::Util::sqlstate_from_error($message));
+            return;
+        }
+    }
     my $state = eval { DBD::ScratchBird::Util::startup_auth($socket, $cfg) };
     if (!$state) {
         my $message = $@ || 'ScratchBird startup/auth failed';
@@ -396,6 +408,20 @@ use constant {
     MSG_TXN_STATUS => 0x5c,
     AUTH_OK => 0,
     AUTH_PASSWORD => 1,
+    MANAGER_PROTOCOL_MAGIC => 0x42444253,
+    MANAGER_PROTOCOL_VERSION => 0x0101,
+    MANAGER_HEADER_SIZE => 12,
+    MANAGER_MAX_PAYLOAD_SIZE => 16 * 1024 * 1024,
+    MCP_PROTOCOL_VERSION => 0x0100,
+    MCP_MSG_CONNECT_RESPONSE => 0x02,
+    MCP_MSG_AUTH_CHALLENGE => 0x12,
+    MCP_MSG_AUTH_RESPONSE => 0x11,
+    MCP_MSG_STATUS_RESPONSE => 0x64,
+    MCP_MSG_HELLO => 0x65,
+    MCP_MSG_AUTH_START => 0x66,
+    MCP_MSG_AUTH_CONTINUE => 0x67,
+    MCP_MSG_DB_CONNECT => 0x69,
+    MCP_AUTH_METHOD_TOKEN => 4,
     FEATURE_STREAMING => 1 << 1,
     FEATURE_SBLR => 1 << 2,
     FEATURE_NOTIFICATIONS => 1 << 4,
@@ -404,6 +430,76 @@ use constant {
     QUERY_FLAG_BINARY_RESULT => 0x04,
     QUERY_FLAG_RETURN_SBLR => 0x10,
 };
+
+sub append_lprefixed_string {
+    my ($value) = @_;
+    $value //= '';
+    return pack('V', length($value)) . $value;
+}
+
+sub send_manager_frame {
+    my ($socket, $type, $payload) = @_;
+    $payload //= '';
+    print {$socket} pack('V v C C V', MANAGER_PROTOCOL_MAGIC, MANAGER_PROTOCOL_VERSION, $type, 0, length($payload)) . $payload
+        or die "08006: failed writing manager frame: $!";
+}
+
+sub recv_manager_frame {
+    my ($socket) = @_;
+    my $header = read_exact($socket, MANAGER_HEADER_SIZE);
+    my ($magic, $version, $type, undef, $payload_len) = unpack('V v C C V', $header);
+    die "08006: manager frame magic mismatch" unless $magic == MANAGER_PROTOCOL_MAGIC;
+    die "08006: manager frame version mismatch" unless $version == MANAGER_PROTOCOL_VERSION;
+    die "08006: manager frame payload too large" if $payload_len > MANAGER_MAX_PAYLOAD_SIZE;
+    my $payload = $payload_len ? read_exact($socket, $payload_len) : '';
+    return ($type, $payload);
+}
+
+sub manager_proxy_connect {
+    my ($socket, $cfg) = @_;
+    my $token = $cfg->{manager_auth_token} // '';
+    die "28000: manager_proxy mode requires manager_auth_token" unless length $token;
+    my $manager_user = $cfg->{manager_username} // $cfg->{user} // 'admin';
+    my $manager_database = $cfg->{manager_database} // $cfg->{database} // '';
+    my $manager_profile = $cfg->{manager_connection_profile} // 'SBsql';
+    my $manager_intent = $cfg->{manager_client_intent} // 'SBsql';
+    my $manager_flags = int($cfg->{manager_client_flags} // 0) & 0xffff;
+    my $auth_fast_path = !defined($cfg->{manager_auth_fast_path}) || $cfg->{manager_auth_fast_path} !~ /\A(?:0|false|no|off)\z/i;
+
+    send_manager_frame($socket, MCP_MSG_HELLO, pack('v v', MCP_PROTOCOL_VERSION, $manager_flags));
+    my ($type, $payload) = recv_manager_frame($socket);
+    die "08P01: expected MCP hello status response" unless $type == MCP_MSG_STATUS_RESPONSE;
+
+    my $auth_start = append_lprefixed_string($manager_user) . pack('C', MCP_AUTH_METHOD_TOKEN);
+    if ($auth_fast_path) {
+        $auth_start .= pack('V', length($token)) . $token;
+    } else {
+        $auth_start .= pack('V', 0);
+    }
+    send_manager_frame($socket, MCP_MSG_AUTH_START, $auth_start);
+    ($type, $payload) = recv_manager_frame($socket);
+    if ($type == MCP_MSG_AUTH_CHALLENGE) {
+        send_manager_frame($socket, MCP_MSG_AUTH_CONTINUE, pack('V', length($token)) . $token);
+        ($type, $payload) = recv_manager_frame($socket);
+    }
+    die "08P01: expected MCP auth response" unless $type == MCP_MSG_AUTH_RESPONSE;
+    die "08P01: truncated MCP auth response" unless length($payload) >= 1;
+    die "28000: MCP authentication failed" unless unpack('C', substr($payload, 0, 1)) == 0;
+
+    my $nonce = chr(0x42) x 16;
+    my $db_connect = 'MCP1'
+        . append_lprefixed_string($manager_database)
+        . append_lprefixed_string($manager_profile)
+        . append_lprefixed_string($manager_intent)
+        . pack('v', length($nonce))
+        . $nonce;
+    send_manager_frame($socket, MCP_MSG_DB_CONNECT, $db_connect);
+    ($type, $payload) = recv_manager_frame($socket);
+    die "08P01: expected MCP connect response" unless $type == MCP_MSG_CONNECT_RESPONSE;
+    die "08P01: truncated MCP connect response" unless length($payload) >= 1;
+    die "28000: MCP database connect failed" unless unpack('C', substr($payload, 0, 1)) == 0;
+    return 1;
+}
 
 sub startup_auth {
     my ($socket, $cfg) = @_;

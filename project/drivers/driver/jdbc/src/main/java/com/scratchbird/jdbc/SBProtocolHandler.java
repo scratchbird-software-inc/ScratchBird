@@ -227,6 +227,13 @@ public class SBProtocolHandler {
 
     private static final long FEATURE_COMPRESSION = 1L << 0;
     private static final long FEATURE_STREAMING = 1L << 1;
+    private static final long FEATURE_SBLR = 1L << 2;
+    private static final long FEATURE_NOTIFICATIONS = 1L << 4;
+    private static final long FEATURE_QUERY_PLAN = 1L << 5;
+    private static final long FEATURE_BATCH = 1L << 6;
+    private static final long FEATURE_PIPELINE = 1L << 7;
+    private static final long FEATURE_BINARY_COPY = 1L << 8;
+    private static final long FEATURE_SAVEPOINTS = 1L << 9;
     private static final int CONNECT_VALUE_TEXT = 0x01;
 
     private static final int QUERY_FLAG_DESCRIBE_ONLY = 0x01;
@@ -1229,12 +1236,18 @@ public class SBProtocolHandler {
             params.put("proxy_principal_assertion", props.getProxyPrincipalAssertion());
         }
 
-        long features = 0;
+        long features = FEATURE_SBLR
+                | FEATURE_NOTIFICATIONS
+                | FEATURE_QUERY_PLAN
+                | FEATURE_SAVEPOINTS
+                | FEATURE_BATCH
+                | FEATURE_PIPELINE;
         if ("zstd".equalsIgnoreCase(props.getCompression())) {
             features |= FEATURE_COMPRESSION;
         }
         if (props.isBinaryTransfer()) {
             features |= FEATURE_STREAMING;
+            features |= FEATURE_BINARY_COPY;
         }
 
         byte[] payload = buildStartupPayload(features, params);

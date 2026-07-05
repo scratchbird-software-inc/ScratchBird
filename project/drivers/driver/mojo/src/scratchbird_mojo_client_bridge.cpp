@@ -8,7 +8,9 @@
 
 #include "scratchbird/client/scratchbird_client.h"
 
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -90,6 +92,53 @@ std::string hexBytes(const uint8_t* data, size_t length) {
         out.push_back(kHex[value & 0x0F]);
     }
     return out;
+}
+
+bool parseHexBytes(const char* hex, std::string& out) {
+    out.clear();
+    if (!hex) {
+        return false;
+    }
+    const size_t len = std::strlen(hex);
+    if ((len % 2) != 0) {
+        return false;
+    }
+    out.reserve(len / 2);
+    auto nibble = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') {
+            return ch - '0';
+        }
+        if (ch >= 'a' && ch <= 'f') {
+            return ch - 'a' + 10;
+        }
+        if (ch >= 'A' && ch <= 'F') {
+            return ch - 'A' + 10;
+        }
+        return -1;
+    };
+    for (size_t index = 0; index < len; index += 2) {
+        const int hi = nibble(hex[index]);
+        const int lo = nibble(hex[index + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return true;
+}
+
+bool parseUInt64Hex(const char* hex, uint64_t& out) {
+    if (!hex || !*hex) {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long value = std::strtoull(hex, &end, 16);
+    if (errno != 0 || !end || *end != '\0') {
+        return false;
+    }
+    out = static_cast<uint64_t>(value);
+    return true;
 }
 
 std::string jsonValue(sb_value& value) {
@@ -312,6 +361,80 @@ int sb_mojo_bridge_copy_to_file(uint64_t handle,
         write_err.code = SB_ERR_INVALID_PARAM;
         std::snprintf(write_err.message, sizeof(write_err.message), "could not write Mojo bridge COPY result file");
         writeBridgeError(error_path, write_err, "copy");
+        return 1;
+    }
+    return 0;
+}
+
+int sb_mojo_bridge_compile_sblr_to_file(uint64_t handle,
+                                        const char* sql,
+                                        const char* result_path,
+                                        const char* error_path) {
+    sb_connection* conn = asConnection(handle);
+    if (!conn || !sql) {
+        sb_error err{};
+        err.code = SB_ERR_INVALID_HANDLE;
+        std::snprintf(err.message, sizeof(err.message), "invalid Mojo bridge SBLR compile handle");
+        writeBridgeError(error_path, err, "compile_sblr");
+        return 1;
+    }
+    sb_error err{};
+    sb_sblr_compiled* compiled = sb_compile_sblr(conn, sql, &err);
+    if (!compiled) {
+        writeBridgeError(error_path, err, "compile_sblr");
+        return 1;
+    }
+    std::ostringstream out;
+    out << "{\"hash\":" << compiled->hash
+        << ",\"version\":" << compiled->version
+        << ",\"bytecode_len\":" << compiled->bytecode_len
+        << ",\"bytecode_hex\":" << quote(hexBytes(compiled->bytecode, compiled->bytecode_len))
+        << "}\n";
+    sb_sblr_compiled_free(compiled);
+    if (!writeText(result_path, out.str())) {
+        sb_error write_err{};
+        write_err.code = SB_ERR_INVALID_PARAM;
+        std::snprintf(write_err.message, sizeof(write_err.message), "could not write Mojo bridge SBLR compile result file");
+        writeBridgeError(error_path, write_err, "compile_sblr");
+        return 1;
+    }
+    return 0;
+}
+
+int sb_mojo_bridge_execute_sblr_to_file(uint64_t handle,
+                                       const char* sblr_hash_hex,
+                                       const char* bytecode_hex,
+                                       const char* result_path,
+                                       const char* error_path) {
+    sb_connection* conn = asConnection(handle);
+    uint64_t sblr_hash = 0;
+    std::string bytecode;
+    if (!conn || !parseUInt64Hex(sblr_hash_hex, sblr_hash) || !parseHexBytes(bytecode_hex, bytecode)) {
+        sb_error err{};
+        err.code = SB_ERR_INVALID_PARAM;
+        std::snprintf(err.message, sizeof(err.message), "invalid Mojo bridge SBLR execute payload");
+        writeBridgeError(error_path, err, "execute_sblr");
+        return 1;
+    }
+    sb_error err{};
+    sb_result* result = sb_execute_sblr(conn,
+                                        sblr_hash,
+                                        reinterpret_cast<const uint8_t*>(bytecode.data()),
+                                        bytecode.size(),
+                                        nullptr,
+                                        0,
+                                        &err);
+    if (!result) {
+        writeBridgeError(error_path, err, "execute_sblr");
+        return 1;
+    }
+    const std::string payload = resultToJson(result, err);
+    sb_result_free(result);
+    if (!writeText(result_path, payload)) {
+        sb_error write_err{};
+        write_err.code = SB_ERR_INVALID_PARAM;
+        std::snprintf(write_err.message, sizeof(write_err.message), "could not write Mojo bridge SBLR execute result file");
+        writeBridgeError(error_path, write_err, "execute_sblr");
         return 1;
     }
     return 0;

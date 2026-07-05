@@ -33,6 +33,8 @@ my %SSLMODES = map { $_ => 1 } qw(allow disable prefer require verify-ca verify-
 my %BOOLEAN_ARGS = map { $_ => 1 } qw(--stop-on-error --create-database --standard-english-fallback);
 my %SUPPORTED_ARGS = map { $_ => 1 } qw(
     --database
+    --manager-auth-token
+    --manager-database
     --host
     --port
     --user
@@ -366,6 +368,12 @@ sub build_dsn {
         'parser_mode=' . required($args, '--parser-mode'),
         'front_door_mode=' . ($route eq 'manager-listener-parser' ? 'manager_proxy' : 'direct'),
     );
+    if ($route eq 'manager-listener-parser') {
+        push @parts,
+            'manager_auth_token=' . value_or_default($args, '--manager-auth-token', ''),
+            'manager_database=' . value_or_default($args, '--manager-database', required($args, '--database')),
+            'manager_username=' . required($args, '--user');
+    }
     return 'dbi:ScratchBird:' . join(';', @parts);
 }
 

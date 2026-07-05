@@ -1355,22 +1355,32 @@ def generate_optimizer_manifest(namespace: str, repo_root: Path, families: list[
         "",
     ]
     statement_count = 2
-    for row in records:
-        lines.append(
-            f"INSERT INTO {namespace}.optimizer_storage_source_manifest VALUES "
-            f"({sql_string(row['path'])}, {sql_string(row['sha256'])}, {row['bytes']});"
-        )
-        statement_count += 1
+    source_manifest_rows = [
+        f"({sql_string(row['path'])}, {sql_string(row['sha256'])}, {row['bytes']})"
+        for row in records
+    ]
+    statement_count += append_batched_values_insert(
+        lines,
+        f"{namespace}.optimizer_storage_source_manifest",
+        source_manifest_rows,
+    )
+    matrix_rows: list[str] = []
+    explain_statements: dict[str, str] = {}
     for page_size in page_sizes:
         for family in families:
             case_id = f"OPT-{page_size}-{qident(family)}"
             statement = f"EXPLAIN SELECT * FROM {namespace}.dt_int64_values WHERE case_id BETWEEN 1 AND {int(page_size) % 97 + 1}"
-            lines.append(
-                f"INSERT INTO {namespace}.optimizer_page_index_matrix VALUES "
-                f"({sql_string(case_id)}, {int(page_size)}, {sql_string(family)}, {sql_string(statement)});"
+            matrix_rows.append(
+                f"({sql_string(case_id)}, {int(page_size)}, {sql_string(family)}, {sql_string(statement)})"
             )
-            lines.append(statement + ";")
-            statement_count += 2
+            explain_statements.setdefault(statement, statement + ";")
+    statement_count += append_batched_values_insert(
+        lines,
+        f"{namespace}.optimizer_page_index_matrix",
+        matrix_rows,
+    )
+    lines.extend(explain_statements.values())
+    statement_count += len(explain_statements)
     expected = len(page_sizes) * len(families)
     lines.extend(
         [

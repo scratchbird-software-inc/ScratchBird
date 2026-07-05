@@ -256,7 +256,10 @@ def connect_with_public_api(args: argparse.Namespace):
         else 30,
     }
     if args.route == "manager-listener-parser":
-        kwargs["front_door_mode"] = "manager"
+        kwargs["front_door_mode"] = "manager_proxy"
+        kwargs["manager_auth_token"] = getattr(args, "manager_auth_token", "")
+        kwargs["manager_database"] = getattr(args, "manager_database", "") or args.database
+        kwargs["manager_username"] = args.user
     elif args.route == "ipc_local":
         kwargs["front_door_mode"] = "direct"
         kwargs["transport_mode"] = "local_ipc"
@@ -784,6 +787,8 @@ def run_script(args: argparse.Namespace) -> int:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ScratchBird native Python driver conformance shell")
     parser.add_argument("--database", required=True)
+    parser.add_argument("--manager-auth-token", default="")
+    parser.add_argument("--manager-database", default="")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=3092)
     parser.add_argument("--user", required=True)
