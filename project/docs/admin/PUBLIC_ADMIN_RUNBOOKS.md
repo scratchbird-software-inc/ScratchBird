@@ -27,6 +27,7 @@ Cluster-positive production behavior is outside the public runbook scope unless 
 | RUNBOOK_DIAGNOSTICS | Generate stable public diagnostic matrices with redaction classes, compatibility status, source paths, and public test paths. | `public_diagnostic_stability_gate`; `PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR`; `stable_public`; `fail_closed_stable` |
 | RUNBOOK_UNSUPPORTED_FEATURES | Report unsupported features through deterministic fail-closed diagnostics without runtime execution or authority overclaim. | `public_unsupported_feature_gate`; `PUBLIC_UNSUPPORTED_FEATURE_MATRIX`; `external_provider_required`; `compile_time_disabled`; `policy_blocked` |
 | RUNBOOK_UPGRADE | Run ODF, catalog page, index, datatype, policy-pack, and cluster-catalog migration checks, including interrupted upgrade rollback and downgrade refusal. | `public_upgrade_migration_gate`; `PUBLIC_UPGRADE_MIGRATION_GATE`; `downgrade_refusal`; `rollback` |
+| RUNBOOK_SBMN_MANAGER | Operate the single-node manager release profile, config validation, DBBT/LPREFACE handoff, command rights, support bundles, restart/quarantine, and health checks. | `SBMN_MANAGER_ENTERPRISE_RUNBOOK`; `sbmn_manager_enterprise_release_gate`; `generated_manager_traceability_manifest.csv` |
 
 ## Operator Boundaries
 

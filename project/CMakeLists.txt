@@ -2626,6 +2626,8 @@ endif()
 
 # SEARCH_KEY: EVN_IMPL_006_SERVER_SUBSCRIPTION_REGISTRY_CMAKE
 option(SB_BUILD_SBMN_MANAGER "Build the standalone sbmn_manager executable product" OFF)
+option(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS
+  "Build and run the single-node manager enterprise release CTest gate" OFF)
 option(SB_BUILD_SB_LISTENER "Build the standalone sb_listener executable product" OFF)
 option(SB_BUILD_SERVER "Build the standalone sb_server executable product skeleton" OFF)
 option(SB_BUILD_SERVER_BOUNDARY_GUARD "Build the sb_server forbidden dependency boundary guard" OFF)
@@ -2638,9 +2640,12 @@ if(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
     "Build listener runtime for public release correctness gates" FORCE)
   set(SB_BUILD_SBMN_MANAGER ON CACHE BOOL
     "Build node manager for public release correctness gates" FORCE)
+  set(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS ON CACHE BOOL
+    "Build node manager enterprise release correctness gate" FORCE)
 endif()
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   set(SB_BUILD_SBMN_MANAGER ON)
+  set(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS ON)
   set(SB_BUILD_SERVER ON)
   set(SB_BUILD_SB_LISTENER ON)
   set(SB_BUILD_SBSQL_PARSER_WORKER ON)
@@ -3699,6 +3704,13 @@ if(SB_BUILD_TESTS OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
 endif()
 if(SB_BUILD_ENGINE_LISTENER_ENTERPRISE_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_listener_enterprise/CMakeLists.txt")
   add_subdirectory(tests/engine_listener_enterprise)
+endif()
+
+if(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS
+   AND TARGET sbmn_manager
+   AND TARGET sbmn_manager_protocol_unit_tests
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/manager_enterprise/CMakeLists.txt")
+  add_subdirectory(tests/manager_enterprise)
 endif()
 
 if(SB_BUILD_ENGINE_LISTENER_ENTERPRISE_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fault_injection/CMakeLists.txt")
