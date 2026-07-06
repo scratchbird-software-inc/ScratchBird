@@ -1,0 +1,15 @@
+gate_id,phase,status,requirement,evidence
+DPGEC-GATE-001,P0,accepted,Reference parser ledger contains all 25 rows,REFERENCE_GATE_EVIDENCE_LEDGER.csv
+DPGEC-GATE-002,P1,blocked_engine_listener_gold,Engine/listener gold signoff is required,EVIDENCE_BLOCKER_REGISTER.csv
+DPGEC-GATE-003,P2,accepted_start_evidence,Parser-facing interface closure evidence is recorded,ACCEPTED_START_EVIDENCE_REGISTER.csv
+DPGEC-GATE-004,P3,accepted_source_locator,Reference source locator status is recorded,REFERENCE_REGRESSION_SOURCE_LOCATION_MATRIX.csv
+DPGEC-GATE-005,P3,manifest_generated_pending_regression_replay,Reference regression inventories must execute,project/tests/reference_regression
+DPGEC-GATE-006,P3,manifest_generated_pending_native_replay_execution,Native replay manifests must execute,project/tests/reference_regression/*/native_tool_harness
+DPGEC-GATE-007,P4,policy_manifest_generated_pending_fixture_execution,Security policy fixtures must execute,project/tests/reference_regression/*/security_operations
+DPGEC-GATE-008,P5,accepted_method_selection_blocked_proof,Migration method selection is recorded but proof remains blocked,REFERENCE_GATE_EVIDENCE_LEDGER.csv
+DPGEC-GATE-009,P5,baseline_manifest_generated_pending_execution,Performance baselines must execute,project/tests/reference_regression/*/performance
+DPGEC-GATE-011,P6,parser_control_manifest_generated_pending_execution,Parser control resources must execute,project/tests/reference_regression/*/wire_transcripts
+DPGEC-GATE-012,P6,abi_manifest_generated_pending_execution,Management package ABI manifests must execute,project/tests/reference_regression/*/management_package_abi
+DPGEC-GATE-013,P7,project_test_manifests_generated_pending_execution,Project test manifests exist and remain execution-pending,PROJECT_TEST_EVIDENCE_MAP.csv
+DPGEC-GATE-014,P8,blocked_pending_QA_signoff,QA signoff required,QA_AUDIT_SIGNOFF_MATRIX.csv
+DPGEC-GATE-015,P8,blocked_pending_independent_audit,Independent audit required,QA_AUDIT_SIGNOFF_MATRIX.csv

@@ -1,0 +1,15 @@
+{
+  "accepted_start_evidence_rows": 7,
+  "blocker_rows": 8,
+  "decision": "no_go_pending_evidence_execution_and_gold_signoff",
+  "generated": "2026-07-05T00:00:00Z",
+  "generated_project_test_manifest_files": 250,
+  "missing_project_test_manifests": 0,
+  "native_tool_paths_missing": 25,
+  "project_test_execution_pending_families": 250,
+  "reference_rows": 25,
+  "source_path_entries_missing": 0,
+  "source_status_counts": {
+    "verified_present": 25
+  }
+}

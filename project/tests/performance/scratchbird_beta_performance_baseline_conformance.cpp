@@ -512,7 +512,10 @@ void InsertRows(const std::filesystem::path& database_path,
                            context,
                            request,
                            true);
-  Require(inserted.api_result.result_shape.rows.size() == row_count, "inserted row count mismatch");
+  Require(EvidenceU64(inserted.api_result, "dml_summary.rows_changed") == row_count,
+          "inserted row count mismatch");
+  Require(inserted.api_result.result_shape.rows.size() <= row_count,
+          "insert returned more rows than it inserted");
 }
 
 std::size_t SelectById(const std::filesystem::path& database_path,

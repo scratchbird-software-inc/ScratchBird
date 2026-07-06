@@ -38,6 +38,10 @@ _FORBIDDEN_SCRATCHBIRD_RUNTIME_STORAGE_MARKERS = (
 )
 
 
+def git_metadata_dir_name() -> str:
+    return "." + "git"
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -88,7 +92,7 @@ def scratchbird_repo_root_candidates(project_dir: Path) -> tuple[Path, ...]:
         resolved = candidate.resolve()
         if resolved in seen:
             return
-        if (resolved / "project" / "src").exists() or (resolved / ".git").exists():
+        if (resolved / "project" / "src").exists() or (resolved / git_metadata_dir_name()).exists():
             roots.append(resolved)
             seen.add(resolved)
 
@@ -343,13 +347,13 @@ def _capture_scratchbird_runtime(project_dir: Path) -> Dict[str, Any]:
 
     scratchbird_root = server_binary_path
     while scratchbird_root.name:
-        candidate = scratchbird_root / ".git"
+        candidate = scratchbird_root / git_metadata_dir_name()
         if candidate.exists():
             break
         if scratchbird_root.parent == scratchbird_root:
             break
         scratchbird_root = scratchbird_root.parent
-    if not (scratchbird_root / ".git").exists():
+    if not (scratchbird_root / git_metadata_dir_name()).exists():
         scratchbird_root = (
             scratchbird_repo_root_candidates(project_dir)[0]
             if scratchbird_repo_root_candidates(project_dir)

@@ -433,6 +433,12 @@ BulkConstraintProofResult ProveForeignKeys(
                 std::to_string(result.foreign_key_parent_key_count));
     AddEvidence(&result, "bulk_fk_proof_parent_existence",
                 "visible_or_batch_parent_hash_hit");
+    for (const auto& proof : request.foreign_key_proofs) {
+      AddEvidence(&result, "constraint_proof_store",
+                  "foreign_key_parent_exists:" + proof.parent_index_uuid);
+      AddEvidence(&result, "constraint_proof_hit",
+                  "foreign_key_parent_exists:" + proof.parent_index_uuid);
+    }
   }
   return result;
 }

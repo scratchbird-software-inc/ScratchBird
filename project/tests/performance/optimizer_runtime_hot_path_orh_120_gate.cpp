@@ -11,9 +11,11 @@
 #include "agent_runtime.hpp"
 #include "cache/sblr_template_cache.hpp"
 #include "compression_policy.hpp"
+#include "database_lifecycle.hpp"
 #include "direct_binary_result_frame.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "hot_point_lookup_cache.hpp"
+#include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "observability/performance_metric_event.hpp"
@@ -21,6 +23,7 @@
 #include "selectivity_model.hpp"
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "transaction_inventory.hpp"
 #include "uuid.hpp"
 #include "vector_maintenance_jobs.hpp"
 #include "vector_training_recall_lifecycle.hpp"
@@ -42,8 +45,10 @@ namespace {
 
 namespace agents = scratchbird::core::agents;
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
 namespace exec = scratchbird::engine::executor;
 namespace idx = scratchbird::core::index;
+namespace mga = scratchbird::transaction::mga;
 namespace opt = scratchbird::engine::optimizer;
 namespace parser = scratchbird::parser::sbsql;
 namespace platform = scratchbird::core::platform;
@@ -575,12 +580,68 @@ std::filesystem::path UniqueTempDir(std::string_view name) {
   return path;
 }
 
+platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, 1779540000000ull + salt);
+  Require(generated.ok(), "could not generate ORH-120 native UUID");
+  return generated.value;
+}
+
+mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
+                                              mga::TransactionState state) {
+  auto identity = mga::MakeTransactionIdentity(
+      mga::MakeLocalTransactionId(local_id),
+      NewUuid(platform::UuidKind::transaction, local_id),
+      mga::TransactionScope::local_node);
+  Require(identity.ok(), "could not create ORH-120 transaction identity");
+
+  mga::TransactionInventoryEntry entry;
+  entry.identity = identity.identity;
+  entry.state = state;
+  entry.begin_unix_epoch_millis = 1779540000000ull + local_id;
+  if (state == mga::TransactionState::committed ||
+      state == mga::TransactionState::archived ||
+      state == mga::TransactionState::rolled_back ||
+      state == mga::TransactionState::failed_terminal) {
+    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
+    entry.evidence_record_written = true;
+  }
+  return entry;
+}
+
+void CreateDatabaseFixture(const std::filesystem::path& path) {
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
+  create.creation_unix_epoch_millis = 1779540000000ull;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "could not create ORH-120 native test database");
+}
+
+void PersistTransactionInventory(const std::filesystem::path& database_path,
+                                 std::uint64_t writer_tx,
+                                 mga::TransactionState writer_state) {
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  inventory.entries.push_back(InventoryEntry(writer_tx, writer_state));
+  inventory.entries.push_back(InventoryEntry(950, mga::TransactionState::active));
+  inventory.next_local_transaction_id = 951;
+  const auto persisted =
+      db::PersistLocalTransactionInventoryToDatabase(database_path.string(),
+                                                     inventory);
+  Require(persisted.ok(), "could not persist ORH-120 transaction inventory");
+}
+
 struct TempDatabase {
   std::filesystem::path dir;
   std::filesystem::path path;
 
   explicit TempDatabase(std::string_view name) : dir(UniqueTempDir(name)) {
     path = dir / "orh120.sbdb";
+    CreateDatabaseFixture(path);
   }
 
   ~TempDatabase() {
@@ -620,12 +681,15 @@ void AddFragment(api::EngineDocumentInsertRequest* request,
 }
 
 void SeedCrudTransaction(const api::EngineRequestContext& context) {
-  std::ofstream crud(context.database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t" << context.local_transaction_id << '\t'
-       << context.transaction_uuid.canonical << '\n';
-  crud << "SBCRUD1\tTX_BEGIN\t950\torh120-reader-tx\n";
-  crud.flush();
-  Require(static_cast<bool>(crud), "could not seed transaction inventory");
+  PersistTransactionInventory(context.database_path,
+                              context.local_transaction_id,
+                              mga::TransactionState::active);
+}
+
+void CommitCrudTransaction(const api::EngineRequestContext& context) {
+  PersistTransactionInventory(context.database_path,
+                              context.local_transaction_id,
+                              mga::TransactionState::committed);
 }
 
 api::EngineNoSqlProviderGenerationMetadata CurrentGeneration(
@@ -1030,6 +1094,7 @@ void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   auto inserted = api::EngineDocumentInsert(insert);
   Require(inserted.ok, "document insert failed");
   const auto generation = CurrentGeneration(writer);
+  CommitCrudTransaction(writer);
 
   api::EngineDocumentFindRequest find;
   find.context = DocumentContext(db.path, 950);

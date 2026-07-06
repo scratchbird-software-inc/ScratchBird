@@ -6,9 +6,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "database_lifecycle.hpp"
+#include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
+#include "transaction_inventory.hpp"
+#include "uuid.hpp"
 
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -20,6 +25,10 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
+namespace mga = scratchbird::transaction::mga;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -41,12 +50,68 @@ api::EngineRequestContext Context(const std::string& database_path,
   return context;
 }
 
+platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, 1779520000000ull + salt);
+  Require(generated.ok(), "ODF-072 could not generate native UUID");
+  return generated.value;
+}
+
+mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
+                                              mga::TransactionState state) {
+  auto identity = mga::MakeTransactionIdentity(
+      mga::MakeLocalTransactionId(local_id),
+      NewUuid(platform::UuidKind::transaction, local_id),
+      mga::TransactionScope::local_node);
+  Require(identity.ok(), "ODF-072 could not create transaction identity");
+
+  mga::TransactionInventoryEntry entry;
+  entry.identity = identity.identity;
+  entry.state = state;
+  entry.begin_unix_epoch_millis = 1779520000000ull + local_id;
+  if (state == mga::TransactionState::committed ||
+      state == mga::TransactionState::archived ||
+      state == mga::TransactionState::rolled_back ||
+      state == mga::TransactionState::failed_terminal) {
+    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
+    entry.evidence_record_written = true;
+  }
+  return entry;
+}
+
+void CreateDatabaseFixture(const std::string& database_path) {
+  db::DatabaseCreateConfig create;
+  create.path = database_path;
+  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
+  create.creation_unix_epoch_millis = 1779520000000ull;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "ODF-072 could not create native test database");
+}
+
+void PersistTransactionInventory(const std::string& database_path,
+                                 mga::TransactionState writer_state) {
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  inventory.entries.push_back(InventoryEntry(77, writer_state));
+  inventory.entries.push_back(InventoryEntry(90, mga::TransactionState::active));
+  inventory.next_local_transaction_id = 91;
+  const auto persisted =
+      db::PersistLocalTransactionInventoryToDatabase(database_path, inventory);
+  Require(persisted.ok(), "ODF-072 could not persist native transaction inventory");
+}
+
 void SeedCrudTransaction(const std::string& database_path) {
   std::remove(database_path.c_str());
   std::remove((database_path + ".sb.api_events").c_str());
-  std::ofstream crud(database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t77\t019df072-0000-7000-8000-000000000077\n";
-  crud << "SBCRUD1\tTX_BEGIN\t90\t019df072-0000-7000-8000-000000000090\n";
+  CreateDatabaseFixture(database_path);
+  PersistTransactionInventory(database_path, mga::TransactionState::active);
+}
+
+void CommitCrudTransaction(const std::string& database_path) {
+  PersistTransactionInventory(database_path, mga::TransactionState::committed);
 }
 
 api::EngineTypedValue Value(std::string value) {
@@ -192,6 +257,7 @@ void ExactWildcardProjectionAndShapeEvidence() {
                   {"line_items.0.sku", "SKU-3"},
                   {"line_items.1.sku", "SKU-4"},
                   {"private.ssn", "redacted"}});
+  CommitCrudTransaction(database_path);
 
   api::EngineDocumentFindRequest exact;
   exact.context = Context(database_path, 90);
@@ -263,6 +329,7 @@ void FailClosedCasesPreserveAuthority() {
                  "doc-closed",
                  "closed",
                  {{"customer.id", "C1"}, {"line_items.0.sku", "SKU-C"}});
+  CommitCrudTransaction(database_path);
 
   api::EngineDocumentFindRequest request;
   request.context = Context(database_path, 90);

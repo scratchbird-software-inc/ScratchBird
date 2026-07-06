@@ -844,12 +844,24 @@ std::string_view GrantPrivilegeProjectionPolicy(std::string_view dialect_id) {
 }
 
 std::string_view SystemCatalogSblrOpcode(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "SBLR_COMPAT_FIREBIRD_CATALOG_PROJECT";
-  if (dialect_id == "mysql") return "SBLR_COMPAT_MYSQL_CATALOG_PROJECT";
+  if (dialect_id == "firebird") return "SBLR_COMPATIBILITY_FIREBIRD_CATALOG_PROJECT";
+  if (dialect_id == "mysql") return "SBLR_COMPATIBILITY_MYSQL_CATALOG_PROJECT";
   if (dialect_id == "postgresql") {
-    return "SBLR_COMPAT_POSTGRESQL_CATALOG_PROJECT";
+    return "SBLR_COMPATIBILITY_POSTGRESQL_CATALOG_PROJECT";
   }
-  return "SBLR_COMPAT_UNKNOWN_CATALOG_PROJECT";
+  return "SBLR_COMPATIBILITY_UNKNOWN_CATALOG_PROJECT";
+}
+
+std::string NormalizeCompatibilitySblrOpcode(std::string_view opcode) {
+  constexpr std::string_view kCompatPrefix = "SBLR_COMPAT_";
+  if (!StartsWith(opcode, kCompatPrefix)) {
+    return std::string(opcode);
+  }
+  if (StartsWith(opcode, "SBLR_COMPATIBILITY_")) {
+    return std::string(opcode);
+  }
+  return "SBLR_COMPATIBILITY_" +
+         std::string(opcode.substr(kCompatPrefix.size()));
 }
 
 std::string_view SystemCatalogDiagnosticMapRef(std::string_view dialect_id) {
@@ -1521,7 +1533,7 @@ std::string_view TemporaryObjectLifetimePolicy(std::string_view dialect_id,
 
 std::string_view SchemaRootSandboxPolicy(std::string_view dialect_id) {
   if (dialect_id == "firebird") {
-    return "firebird_reference_schema_root_uuid_required_no_cross_root_temp_access";
+    return "firebird_compatibility_schema_root_uuid_required_no_cross_root_temp_access";
   }
   if (dialect_id == "mysql") {
     return "mysql_connected_database_root_uuid_required_temp_shadowing_root_local";
@@ -2268,7 +2280,7 @@ std::string_view StatisticsCommandPolicy(std::string_view dialect_id,
     if (StartsWithCommand(upper, "ANALYZE") ||
         StartsWithCommand(upper, "VACUUM") ||
         StartsWithCommand(upper, "REINDEX")) {
-      return "postgresql_statistics_maintenance_command_refused_no_reference_execution";
+      return "postgresql_statistics_maintenance_command_refused_no_compatibility_execution";
     }
     return "postgresql_optimizer_metadata_catalog_projection_only";
   }
@@ -2355,7 +2367,7 @@ std::string_view AnalyzeCommandPolicy(std::string_view dialect_id,
   }
   if (dialect_id == "postgresql") {
     return StartsWithCommand(upper, "ANALYZE")
-               ? "postgresql_analyze_refused_descriptor_no_reference_execution"
+               ? "postgresql_analyze_refused_descriptor_no_compatibility_execution"
                : "postgresql_analyze_policy_descriptor_required";
   }
   return "unknown_analyze_command_policy";
@@ -4187,12 +4199,13 @@ std::string MakeSblrEnvelope(const DialectProfile& profile,
       pattern.disposition == MappingDisposition::kPolicyRefusal ||
       pattern.disposition == MappingDisposition::kSecurityRefusal ||
       pattern.disposition == MappingDisposition::kUnsupportedRefusal;
+  const auto sblr_operation = NormalizeCompatibilitySblrOpcode(pattern.sblr_operation);
   return "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
          "\"dialect\":\"" + EscapeJson(profile.dialect_id) + "\","
          "\"statement_family\":\"" + EscapeJson(pattern.statement_family) + "\","
          "\"operation_family\":\"" + EscapeJson(pattern.operation_family) + "\","
          "\"operation_id\":\"" + EscapeJson(pattern.mapping_key) + "\","
-         "\"sblr_operation\":\"" + EscapeJson(pattern.sblr_operation) + "\","
+         "\"sblr_operation\":\"" + EscapeJson(sblr_operation) + "\","
          "\"sblr_operation_family\":\"" +
          EscapeJson(profile.sblr_operation_family) + "\","
          "\"engine_api_function\":\"" +
@@ -4833,6 +4846,8 @@ std::string ScalarExpressionSemanticEvidenceJson(
       << BoolJson(is_distinct_from_surface) << ','
       << "\"regexp_surface\":" << BoolJson(regexp_surface) << ','
       << "\"similar_to_surface\":" << BoolJson(similar_to_surface) << ','
+      << "\"compatibility_conditional_function_surface\":"
+      << BoolJson(reference_conditional_function_surface) << ','
       << "\"reference_conditional_function_surface\":"
       << BoolJson(reference_conditional_function_surface) << ','
       << "\"uuid_required_semantic_profile\":true,"
@@ -6397,6 +6412,11 @@ std::string ProceduralFunctionalEncodingEvidenceJson(
       span_metadata.uuid_dependency_bindings_bound &&
       body_span_metadata_present;
   return "{\"evidence_contract\":\"compatibility_procedural_functional_encoding_source_span_uuid_binding.v1\","
+         "\"compatibility_cst_materialized\":" +
+         BoolJson(cst_materialized) + ","
+         "\"compatibility_ast_materialized\":" + BoolJson(ast_materialized) + ","
+         "\"compatibility_bound_ast_materialized\":" +
+         BoolJson(bound_ast_materialized) + ","
          "\"reference_cst_materialized\":" +
          BoolJson(cst_materialized) + ","
          "\"reference_ast_materialized\":" + BoolJson(ast_materialized) + ","
@@ -6896,7 +6916,7 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
     result.statement_family = std::string(pattern.statement_family);
     result.operation_family = std::string(pattern.operation_family);
     result.lifecycle_operation_id = std::string(pattern.mapping_key);
-    result.sblr_operation = std::string(pattern.sblr_operation);
+    result.sblr_operation = NormalizeCompatibilitySblrOpcode(pattern.sblr_operation);
     result.sblr_operation_family = std::string(profile.sblr_operation_family);
     result.engine_api_function = std::string(pattern.engine_api_function);
     result.lifecycle_mapping_key = std::string(pattern.mapping_key);
@@ -7000,7 +7020,7 @@ std::string ConnectionSandboxReportJson(const DialectProfile& profile) {
   std::ostringstream out;
   out << "{\"ok\":true"
       << ",\"dialect\":\"" << EscapeJson(profile.dialect_id) << "\""
-      << ",\"connection_sandbox_contract\":\"reference_connection_schema_root_v1\""
+      << ",\"connection_sandbox_contract\":\"compatibility_connection_schema_root_v1\""
       << ",\"schema_root_source\":\"listener_engine_materialized_attach_context\""
       << ",\"user_object_resolution\":\"relative_to_connection_schema_root\""
       << ",\"unqualified_name_root\":\"reference_schema_branch_root\""
@@ -7178,12 +7198,12 @@ std::string DialectVariantReportJson(const DialectProfile& profile) {
   std::ostringstream out;
   out << "{\"ok\":true"
       << ",\"dialect\":\"" << EscapeJson(profile.dialect_id) << "\""
-      << ",\"dialect_variant_contract\":\"reference_supported_variant_surface_v1\""
+      << ",\"dialect_variant_contract\":\"compatibility_supported_variant_surface_v1\""
       << ",\"variant_selection_authority\":\"listener_profile_and_engine_attach_context\""
       << ",\"parser_cross_dialect_detection\":false"
       << ",\"parser_cross_dialect_dispatch\":false"
       << ",\"sbsql_variant_admitted\":false"
-      << ",\"reasonable_subset_policy\":\"declared_and_tested_per_reference_variant\""
+      << ",\"reasonable_subset_policy\":\"declared_and_tested_per_compatibility_variant\""
       << ",\"variant_count\":" << variants.size()
       << ",\"variants\":[";
   for (std::size_t i = 0; i < variants.size(); ++i) {

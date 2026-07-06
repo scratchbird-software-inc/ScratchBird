@@ -439,6 +439,25 @@ std::string NormalizePrivilege(std::string privilege) {
   return UpperAscii(std::move(privilege));
 }
 
+bool PrivilegeAllowsGlobalGrant(const std::string& privilege) {
+  if (!IsKnownSecurityRight(privilege)) return false;
+  return privilege.rfind("OBS_", 0) == 0 ||
+         privilege.rfind("SEC_", 0) == 0 ||
+         privilege.rfind("MGA_", 0) == 0 ||
+         privilege.rfind("AUTH_", 0) == 0 ||
+         privilege.rfind("AUDIT_", 0) == 0 ||
+         privilege.rfind("UDR_", 0) == 0 ||
+         privilege.rfind("EVENT_", 0) == 0 ||
+         privilege.rfind("BACKUP_", 0) == 0 ||
+         privilege == "POLICY_ADMIN" ||
+         privilege == "PROTECTED_MATERIAL_RELEASE" ||
+         privilege == "KEY_RELEASE_APPROVE" ||
+         privilege == "SUPPORT_EXPORT" ||
+         privilege == "FILESPACE_LIFECYCLE_CONTROL" ||
+         privilege == "MIGRATE_DATABASE" ||
+         privilege == "MANAGER_ADMISSION_ADMIN";
+}
+
 std::string NormalizePrincipalKind(std::string kind) {
   if (kind.empty()) return {};
   return LowerAscii(std::move(kind));
@@ -1680,13 +1699,16 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
   if (!preflight.ok) { return preflight; }
   const std::string privilege = NormalizePrivilege(request.privilege);
   const std::string effect = request.grant_effect.empty() ? "allow" : request.grant_effect;
-  if (request.grantee_uuid.empty() || request.target_object_uuid.empty() ||
+  const bool global_grant = request.target_object_uuid.empty();
+  if (request.grantee_uuid.empty() ||
+      (global_grant && !PrivilegeAllowsGlobalGrant(privilege)) ||
       privilege.empty() || (effect != "allow" && effect != "deny")) {
     return DiagnosticResult<EngineSecurityGrantPrivilegeResult>(
         request.context,
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantInvalid,
-                            "grantee_target_privilege_required"));
+                            global_grant ? "grantee_global_privilege_not_allowed"
+                                         : "grantee_target_privilege_required"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {

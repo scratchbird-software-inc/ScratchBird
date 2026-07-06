@@ -190,7 +190,10 @@ std::string FirstDetail(const api::EngineApiResult& result) {
 
 bool IsDuplicateKeyDetail(std::string_view detail) {
   return detail == "crud.unique_index:unique_index_duplicate" ||
-         detail.find("duplicate_key") != std::string_view::npos;
+         detail.find("duplicate_key") != std::string_view::npos ||
+         detail.find("unique_index_duplicate") != std::string_view::npos ||
+         detail.find("bulk_unique_proof_persisted_conflict") !=
+             std::string_view::npos;
 }
 
 std::string FieldValue(const api::EngineInsertRowsResult& result,
@@ -853,7 +856,8 @@ std::vector<ScenarioEvidence> RunUniquePreflightScenarios() {
         InsertRows(fixture, context, {Row("1", "ada", "duplicate")});
     Require(!duplicate.ok, "ODF-111 duplicate insert was accepted");
     Require(IsDuplicateKeyDetail(FirstDetail(duplicate)),
-            "ODF-111 duplicate insert diagnostic drifted");
+            "ODF-111 duplicate insert diagnostic drifted: " +
+                FirstDetail(duplicate));
     Require(HasEvidence(duplicate.evidence,
                         "insert_unique_preflight_path",
                         "index_backed"),

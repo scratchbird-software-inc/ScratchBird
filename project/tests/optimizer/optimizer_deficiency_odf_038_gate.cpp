@@ -154,7 +154,10 @@ void RequireSummaryEvidence(const api::EngineApiResult& result,
                       "scratchbird.dml_summary_counters.v1"),
           "ODF-038 summary schema evidence missing");
   Require(HasEvidence(result.evidence, "dml_summary.operation", operation),
-          "ODF-038 summary operation evidence missing");
+          "ODF-038 summary operation evidence missing: expected=" +
+              std::string(operation) + " result_operation=" +
+              result.operation_id + " evidence_operation=" +
+              EvidenceValue(result.evidence, "dml_summary.operation"));
   Require(HasEvidence(result.evidence, "dml_summary.benchmark_clean", "true"),
           "ODF-038 summary benchmark-clean evidence missing");
   Require(EvidenceValue(result.evidence, "dml_summary.rows_changed") ==

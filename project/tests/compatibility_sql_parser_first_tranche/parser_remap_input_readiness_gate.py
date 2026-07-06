@@ -51,26 +51,27 @@ EXPECTED_COUNTS = {
 }
 
 EXTERNAL_REFERENCE_SKIP_CODE = 77
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 
 UPSTREAM_CSVS = {
     "inventory_noncluster_handoff_rows":
-        "public_execution_plan/COMPATIBILITY_UNSUPPORTED_NONCLUSTER_SURFACE_INVENTORY.csv",
+        f"{PARSER_REMAP_ROOT}/COMPATIBILITY_UNSUPPORTED_NONCLUSTER_SURFACE_INVENTORY.csv",
     "inventory_external_authority_rows":
-        "public_execution_plan/COMPATIBILITY_EXTERNAL_AUTHORITY_SURFACE_INVENTORY.csv",
+        f"{PARSER_REMAP_ROOT}/COMPATIBILITY_EXTERNAL_AUTHORITY_SURFACE_INVENTORY.csv",
     "inventory_architecture_refusal_rows":
-        "public_execution_plan/COMPATIBILITY_ARCHITECTURE_CONFLICT_REFUSAL_REGISTER.csv",
+        f"{PARSER_REMAP_ROOT}/COMPATIBILITY_ARCHITECTURE_CONFLICT_REFUSAL_REGISTER.csv",
     "parser_declared_surface_rows":
-        "public_execution_plan/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv",
     "cluster_parser_intake_rows":
-        "public_execution_plan/CLUSTER_PARSER_REMAP_INTAKE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/CLUSTER_PARSER_REMAP_INTAKE_MATRIX.csv",
     "normalized_cluster_provider_commands":
-        "public_execution_plan/NORMALIZED_COMPATIBILITY_CLUSTER_COMMAND_SET.csv",
+        f"{PARSER_REMAP_ROOT}/NORMALIZED_COMPATIBILITY_CLUSTER_COMMAND_SET.csv",
     "sblr_p7_proof_rows":
-        "public_execution_plan/SBLR_EXECUTION_PROOF_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/SBLR_EXECUTION_PROOF_MATRIX.csv",
     "sblr_p4_noncluster_route_rows":
-        "public_execution_plan/ENGINE_INTERNAL_API_ROUTE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/ENGINE_INTERNAL_API_ROUTE_MATRIX.csv",
     "sblr_p5_cluster_external_policy_rows":
-        "public_execution_plan/SBLR_CLUSTER_AND_EXTERNAL_AUTHORITY_POLICY_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/SBLR_CLUSTER_AND_EXTERNAL_AUTHORITY_POLICY_MATRIX.csv",
 }
 
 
@@ -127,7 +128,7 @@ def tracker_has_no_pending(repo_root: pathlib.Path, execution_plan: str) -> None
 def require_fpr_tracker_state(repo_root: pathlib.Path) -> None:
     rows = read_csv(
         repo_root,
-        "public_execution_plan",
+        f"{PARSER_REMAP_ROOT}/TRACKER.csv",
     )
     by_id = {row["slice_id"]: row for row in rows}
     require(
@@ -174,7 +175,7 @@ def registered_ctests(build_root: pathlib.Path) -> set[str]:
 def validate_scope_matrix(repo_root: pathlib.Path) -> dict[str, int]:
     rows = read_csv(
         repo_root,
-        "public_execution_plan/PARSER_REMAP_SCOPE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/PARSER_REMAP_SCOPE_MATRIX.csv",
     )
     required = {
         "scope_id",
@@ -384,7 +385,7 @@ def validate_scope_count_rows(
 ) -> None:
     rows = read_csv(
         repo_root,
-        "public_execution_plan/PARSER_REMAP_SCOPE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/PARSER_REMAP_SCOPE_MATRIX.csv",
     )
     count_rows = {
         row["subject_id"]: row
@@ -404,7 +405,7 @@ def validate_registered_tests(repo_root: pathlib.Path, build_root: pathlib.Path)
     require(not missing, f"baseline parser CTests are not registered: {missing}")
     scope_rows = read_csv(
         repo_root,
-        "public_execution_plan/PARSER_REMAP_SCOPE_MATRIX.csv",
+        f"{PARSER_REMAP_ROOT}/PARSER_REMAP_SCOPE_MATRIX.csv",
     )
     matrix_tests = {
         row["subject_id"]
@@ -439,7 +440,7 @@ def write_private_packet_skip_evidence(evidence_file: pathlib.Path) -> None:
         "gate": "parser_remap_input_readiness_gate",
         "status": "skipped",
         "skip_reason": "external_public_execution_plan_packet_not_installed",
-        "required_packet": "public_execution_plan",
+        "required_packet": PARSER_REMAP_ROOT,
         "workplan_storage": "private workplan repository",
         "public_repo_policy": "workplans_are_not_tracked_in_scratchbird_public_repo",
     }
@@ -455,7 +456,7 @@ def main() -> int:
     repo_root = pathlib.Path(args.repo_root).resolve()
     build_root = pathlib.Path(args.build_root).resolve()
     evidence_file = pathlib.Path(args.evidence_file)
-    if not (repo_root / "public_execution_plan").is_dir():
+    if not (repo_root / PARSER_REMAP_ROOT).is_dir():
         write_private_packet_skip_evidence(evidence_file)
         print("parser_remap_input_readiness_gate=skipped external_public_execution_plan_packet_not_installed")
         return EXTERNAL_REFERENCE_SKIP_CODE
@@ -467,15 +468,15 @@ def main() -> int:
     validate_scope_count_rows(repo_root, observed_counts)
     tracker_has_no_pending(
         repo_root,
-        "public_execution_plan",
+        PARSER_REMAP_ROOT,
     )
     tracker_has_no_pending(
         repo_root,
-        "public_execution_plan",
+        PARSER_REMAP_ROOT,
     )
     tracker_has_no_pending(
         repo_root,
-        "public_execution_plan",
+        PARSER_REMAP_ROOT,
     )
     require_fpr_tracker_state(repo_root)
     validate_registered_tests(repo_root, build_root)

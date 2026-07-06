@@ -222,23 +222,51 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
               << created.diagnostic.message_key << '\n';
     return false;
   }
+  const auto database_uuid_text = uuid::UuidToString(create.database_uuid.value);
 
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
-      uuid::UuidToString(create.database_uuid.value),
+      database_uuid_text,
       kAlicePrincipalUuid,
       "alice",
       kAliceVerifier,
       17,
       "server_restart_killed_listener_smoke:alice");
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      database_path,
+      database_uuid_text,
+      kAlicePrincipalUuid,
+      database_uuid_text,
+      "database",
+      "CONNECT",
+      19,
+      "server_restart_killed_listener_smoke:alice-connect");
   scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
       database_path,
-      uuid::UuidToString(create.database_uuid.value),
+      database_uuid_text,
       kSysdbaPrincipalUuid,
       "sysdba",
       kAliceVerifier,
       18,
       "server_restart_killed_listener_smoke:sysdba");
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      database_path,
+      database_uuid_text,
+      kSysdbaPrincipalUuid,
+      database_uuid_text,
+      "database",
+      "CONNECT",
+      20,
+      "server_restart_killed_listener_smoke:sysdba-connect");
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      database_path,
+      database_uuid_text,
+      kSysdbaPrincipalUuid,
+      "",
+      "server_management",
+      "OBS_MANAGEMENT_CONTROL",
+      21,
+      "server_restart_killed_listener_smoke:sysdba-management");
   return true;
 }
 

@@ -1,0 +1,2 @@
+dependency_id,used_by,type,status,dependency_path,decision
+DRP-DEP-001,all,project_tests_destination,available,project/tests/reference_regression,Reference replay harnesses live in project tests; upstream source remains external unless explicitly packaged as test assets

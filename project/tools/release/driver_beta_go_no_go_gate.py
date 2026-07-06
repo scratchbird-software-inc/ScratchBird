@@ -42,7 +42,7 @@ STATUS_FILES = (
     ("LIVE_SERVER_TEST_FIXTURE_MATRIX.csv", "fixture_id"),
     ("WIRE_TRANSCRIPT_ORACLE_MATRIX.csv", "oracle_id"),
     ("COMPATIBILITY_VARIANCE_REGISTER.csv", "variance_id"),
-    ("RELEASE_ARTIFACT_MANIFEST_MATRIX.csv", "component_id"),
+    ("RELEASE_ARTIFACT_MANIFEST_MATRIX.csv", "artifact_id"),
     ("RESOURCE_LIMIT_AND_SOAK_MATRIX.csv", "resource_gate_id"),
     ("SHARED_CONFORMANCE_SUITE_MATRIX.csv", "suite_id"),
     ("DRIVER_CAPABILITY_BASELINE_MATRIX.csv", "capability_id"),

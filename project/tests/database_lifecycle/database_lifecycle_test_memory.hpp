@@ -97,6 +97,52 @@ inline void CreateDurableLocalPasswordPrincipal(
   }
 }
 
+inline void GrantDurablePrincipalPrivilege(
+    const std::filesystem::path& database_path,
+    std::string_view database_uuid,
+    std::string_view principal_uuid,
+    std::string_view target_object_uuid,
+    std::string_view target_object_kind,
+    std::string_view privilege,
+    std::uint64_t local_transaction_id,
+    std::string_view provenance) {
+  engine::internal_api::EngineSecurityGrantPrivilegeRequest request;
+  request.context.trust_mode = engine::internal_api::EngineTrustMode::server_isolated;
+  request.context.database_path = database_path.string();
+  request.context.database_uuid = DurableTestUuid(database_uuid);
+  request.context.principal_uuid = DurableTestUuid(principal_uuid);
+  request.context.session_uuid =
+      DurableTestUuid("019e108d-1700-7000-8000-00000000d101");
+  request.context.transaction_uuid =
+      DurableTestUuid("019e108d-1700-7000-8000-00000000d102");
+  request.context.security_context_present = true;
+  request.context.trace_tags.push_back("security.bootstrap");
+  request.context.local_transaction_id = local_transaction_id;
+  request.context.snapshot_visible_through_local_transaction_id =
+      local_transaction_id;
+  request.context.catalog_generation_id = 1;
+  request.context.security_epoch = 1;
+  request.target_object.uuid = DurableTestUuid(target_object_uuid);
+  request.target_object.object_kind = std::string(target_object_kind);
+  request.grantee_uuid = std::string(principal_uuid);
+  request.grantee_kind = "principal";
+  request.target_object_uuid = std::string(target_object_uuid);
+  request.target_object_kind = std::string(target_object_kind);
+  request.privilege = std::string(privilege);
+  request.grant_effect = "allow";
+  request.option_envelopes.push_back("grant_authority:engine");
+  const auto granted =
+      engine::internal_api::EngineSecurityGrantPrivilege(request);
+  if (!granted.ok || !granted.privilege_granted) {
+    for (const auto& diagnostic : granted.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    std::cerr << provenance
+              << " durable privilege grant failed: " << privilege << '\n';
+    std::exit(EXIT_FAILURE);
+  }
+}
+
 inline std::string DurableLocalPasswordEvidence(
     std::string_view principal_name,
     std::string_view principal_uuid,

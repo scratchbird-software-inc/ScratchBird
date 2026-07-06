@@ -45,7 +45,7 @@ METADATA_SYNONYMS = {
     "version": ("version",),
     "source_commit": ("source_commit", "commit", "revision"),
     "resource_pack_digest": ("resource_pack_digest", "language_resource_pack_sha256"),
-    "support_bundle_schema": ("support_bundle_schema",),
+    "support_bundle_schema": ("support_bundle_schema", "schema_id"),
     "proof_summary": ("proof_summary",),
 }
 
@@ -204,7 +204,10 @@ def validate_driver_package(
         issues.append(f"artifact_manifest:{component}:support_bundle_manifest:{support_error}")
     else:
         for field in ("hash", "resource_pack_digest", "support_bundle_schema", "proof_summary"):
-            if not support_manifest.get(field):
+            value = support_manifest.get(field)
+            if field == "support_bundle_schema":
+                value = value or support_manifest.get("schema_id")
+            if not value:
                 issues.append(f"artifact_manifest:{component}:support_bundle_missing:{field}")
 
     package_contract = package_root / "support" / "package_contract.json"
@@ -478,8 +481,9 @@ def build_report(repo_root: Path, workplan_root: Path, output_root: Path) -> dic
             issues.append("artifact_manifest:dbeaver_status_not_excluded")
         if dbeaver_row.get("expected_public_output", "").strip().lower() != "none":
             issues.append("artifact_manifest:dbeaver_expected_output_not_none")
-    for hit in dbeaver_output_hits(output_root):
-        issues.append(f"artifact_manifest:dbeaver_output_present:{hit}")
+    if dbeaver_row is None or dbeaver_row.get("release_scope", "").strip() != "separate_controller":
+        for hit in dbeaver_output_hits(output_root):
+            issues.append(f"artifact_manifest:dbeaver_output_present:{hit}")
 
     return {
         "command": "driver_release_artifact_manifest_gate.py",

@@ -27,7 +27,11 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+struct DurableAuthorizationMaterializeResult;
 struct EngineLanguageContext;
+struct EngineMaterializedAuthorizationContext;
+struct EngineRequestContext;
+struct EngineSecurityPrincipalLifecycleState;
 }
 
 namespace scratchbird::server {
@@ -653,6 +657,10 @@ const char* ServerTransactionPressureActionName(ServerTransactionPressureAction 
 std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid);
 ServerLanguageContextIdentity ServerLanguageContextForSession(
     const ServerSessionRecord& session);
+scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+MaterializeDurableManagementAuthorizationContext(
+    const ServerSessionRecord& session,
+    const scratchbird::engine::internal_api::EngineRequestContext& context);
 void ApplyRequestedLanguageProfile(ServerSessionRecord* session,
                                    std::string_view requested_language_tag);
 void PopulateEngineLanguageContextFromSession(

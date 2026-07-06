@@ -142,6 +142,24 @@ std::filesystem::path IndexStorePath(const Fixture& fixture) {
   return fixture.database_path.string() + ".sb.mga_index_entries";
 }
 
+std::string ScopedRelationSegmentName(const std::string& table_uuid) {
+  std::string name;
+  name.reserve(table_uuid.size());
+  for (const char ch : table_uuid) {
+    const bool safe = (ch >= 'a' && ch <= 'z') ||
+                      (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9') ||
+                      ch == '-' || ch == '_';
+    name.push_back(safe ? ch : '_');
+  }
+  return name.empty() ? std::string("unknown") : name;
+}
+
+std::filesystem::path ScopedIndexStorePath(const Fixture& fixture) {
+  return fixture.database_path.string() + ".sb.mga_relation_scope/" +
+         ScopedRelationSegmentName(fixture.table_uuid) + ".indexes";
+}
+
 std::filesystem::path DeltaLedgerPath(const Fixture& fixture) {
   return fixture.database_path.string() + ".sb.mga_secondary_index_delta_ledger";
 }
@@ -403,7 +421,8 @@ void IndexBatchUsesOneDurableRange(Fixture& fixture,
   std::sort(observed.begin(), observed.end());
   Require(observed == std::vector<platform::u64>({1, 2}),
           "ODF-034 index batch did not persist contiguous event sequences");
-  Require(std::filesystem::exists(IndexStorePath(fixture)),
+  Require(std::filesystem::exists(IndexStorePath(fixture)) ||
+              std::filesystem::exists(ScopedIndexStorePath(fixture)),
           "ODF-034 index store path was not created");
 }
 

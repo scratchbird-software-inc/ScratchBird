@@ -425,6 +425,8 @@ def require_no_forbidden_completion_tokens(path: pathlib.Path) -> None:
 
 def require_execution_plan_gates(repo_root: pathlib.Path, dialect: str, spec: dict[str, str]) -> int:
     rel = spec["execution_plan"]
+    if rel == "public_execution_plan":
+        rel = f"{EXECUTION_PLAN_ROOT}/compatibility-parser-{dialect}-implementation-readiness"
     path = require_file(repo_root, f"{rel}/ACCEPTANCE_GATES.csv")
     rows = read_csv(path)
     gate_ids = {row["gate_id"] for row in rows}

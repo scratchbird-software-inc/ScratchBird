@@ -84,9 +84,13 @@ bool EvidenceTextContains(const api::EngineApiResult& result,
   return std::any_of(result.evidence.begin(),
                      result.evidence.end(),
                      [&](const auto& evidence) {
+                       const std::string structured =
+                           evidence.evidence_kind + "=" + evidence.evidence_id;
                        return evidence.evidence_kind.find(value) !=
                                   std::string::npos ||
                               evidence.evidence_id.find(value) !=
+                                  std::string::npos ||
+                              structured.find(value) !=
                                   std::string::npos;
                      });
 }
@@ -128,6 +132,13 @@ void SeedTransaction(const api::EngineRequestContext& context) {
        << api::GenerateCrudEngineUuid("transaction") << '\n';
   crud.flush();
   Require(static_cast<bool>(crud), "could not seed transaction inventory");
+}
+
+void CommitTransaction(const api::EngineRequestContext& context) {
+  std::ofstream crud(context.database_path, std::ios::binary | std::ios::app);
+  crud << "SBCRUD1\tTX_COMMIT\t" << context.local_transaction_id << '\n';
+  crud.flush();
+  Require(static_cast<bool>(crud), "could not commit transaction inventory");
 }
 
 void InsertDocument(
@@ -267,6 +278,7 @@ void ProveCloseReopenBackupRestoreAndProofRefusals() {
 
   InsertDocument(writer, {{"tenant.id", "T1"}, {"status", "open"}});
   const auto generation = CurrentGeneration(writer);
+  CommitTransaction(writer);
   Require(generation.database_identity == writer.database_path,
           "provider generation did not bind current database identity");
   Require(generation.database_uuid == writer.database_uuid.canonical,

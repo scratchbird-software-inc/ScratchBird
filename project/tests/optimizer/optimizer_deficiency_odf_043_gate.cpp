@@ -345,9 +345,15 @@ api::EngineUpdateRowsRequest UpdateRequest(
 
 void AssertLocalityEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                             std::string_view phase) {
-  Require(HasEvidence(evidence, "index_apply_planner",
-                      "commit_group_locality_aware_v1"),
-          "ODF-043 planner evidence missing");
+  if (!HasEvidence(evidence,
+                   "index_apply_planner",
+                   "commit_group_locality_aware_v1")) {
+    std::cerr << "ODF-043 " << phase << " evidence:\n";
+    for (const auto& item : evidence) {
+      std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
+    }
+    Fail("ODF-043 planner evidence missing");
+  }
   Require(HasEvidence(evidence, "index_apply_grouping_before_append", "true"),
           "ODF-043 grouping-before-append evidence missing");
   Require(HasEvidence(evidence, "mga_finality_authority",

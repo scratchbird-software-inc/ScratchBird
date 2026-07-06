@@ -23,23 +23,24 @@ import sys
 EXPECTED_DECLARED_ROWS = 2078
 EXPECTED_KPATTERN_ROWS = 933
 EXTERNAL_REFERENCE_SKIP_CODE = 77
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 MATRIX_REL = (
-    "public_execution_plan/COMPATIBILITY_PARSER_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_PARSER_REMAP_MATRIX.csv"
 )
 DECLARED_REL = (
-    "public_execution_plan/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv"
 )
 NONCLUSTER_REL = (
-    "public_execution_plan/COMPATIBILITY_NONCLUSTER_FUNCTION_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_NONCLUSTER_FUNCTION_REMAP_MATRIX.csv"
 )
 CLUSTER_REL = (
-    "public_execution_plan/COMPATIBILITY_CLUSTER_ROUTE_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_CLUSTER_ROUTE_REMAP_MATRIX.csv"
 )
 P7_REL = (
-    "public_execution_plan/SBLR_EXECUTION_PROOF_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/SBLR_EXECUTION_PROOF_MATRIX.csv"
 )
-TRACKER_REL = "public_execution_plan"
-GATES_REL = "public_execution_plan"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
+GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
 
 REQUIRED_COLUMNS = {
     "declared_row_id",
@@ -243,7 +244,10 @@ def sample_sql(entry: dict[str, str]) -> str:
 
 def binary_path(build_root: pathlib.Path, parser_package: str) -> pathlib.Path:
     compatibility = pathlib.PurePosixPath(parser_package).name
-    return build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    configured_path = build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    if configured_path.exists():
+        return configured_path
+    return build_root / "output/linux/bin" / f"sbp_{compatibility}"
 
 
 def run_parser(binary: pathlib.Path, sql_text: str) -> tuple[int, str, str]:
@@ -275,6 +279,19 @@ def validate_envelope_common(row: dict[str, str], output: str) -> None:
         require(token in output, f"runtime evidence token missing {token}: {row['declared_row_id']}")
     require('"query.plan_operation"' not in output,
             f"local query operation leaked into runtime output: {row['declared_row_id']}")
+
+
+def compatibility_sblr_output_tokens(symbol: str) -> set[str]:
+    tokens = {f'"sblr_operation":"{symbol}"'}
+    if symbol.startswith("SBLR_COMPAT_"):
+        tokens.add(
+            f'"sblr_operation":"{symbol.replace("SBLR_COMPAT_", "SBLR_COMPATIBILITY_", 1)}"'
+        )
+    if symbol.startswith("SBLR_COMPATIBILITY_"):
+        tokens.add(
+            f'"sblr_operation":"{symbol.replace("SBLR_COMPATIBILITY_", "SBLR_COMPAT_", 1)}"'
+        )
+    return tokens
 
 
 def validate_tracker_and_gate_state(
@@ -441,7 +458,7 @@ def main() -> int:
                             f"UDR-promoted cluster row failed closed: {row['declared_row_id']}")
                     require('"parser_support_udr_route":true' in output,
                             f"UDR-promoted cluster row lacks UDR marker: {row['declared_row_id']}")
-                    require(f'"sblr_operation":"{entry["sblr"]}"' in output,
+                    require(any(token in output for token in compatibility_sblr_output_tokens(entry["sblr"])),
                             f"UDR-promoted cluster row SBLR mismatch: {row['declared_row_id']}")
                     require(f'"engine_api_function":"{entry["engine"]}"' in output,
                             f"UDR-promoted cluster row engine route mismatch: {row['declared_row_id']}")

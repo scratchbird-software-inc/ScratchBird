@@ -410,6 +410,34 @@ std::vector<std::string> ReadScopedRelationLinesForTables(
   return lines;
 }
 
+std::set<std::string> DiscoverScopedRelationTableUuids(
+    const EngineRequestContext& context) {
+  std::set<std::string> table_uuids;
+  const std::filesystem::path root = ScopedRelationStoreRoot(context);
+  std::error_code ignored;
+  if (!std::filesystem::exists(root, ignored)) {
+    return table_uuids;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(root, ignored)) {
+    if (ignored) { break; }
+    if (!entry.is_regular_file(ignored)) {
+      ignored.clear();
+      continue;
+    }
+    std::string name = entry.path().filename().string();
+    for (const std::string_view suffix :
+         {".rows.sbnr", ".indexes.sbnx", ".rows", ".indexes", ".summary"}) {
+      if (name.size() > suffix.size() &&
+          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        table_uuids.insert(name.substr(0, name.size() - suffix.size()));
+        break;
+      }
+    }
+    ignored.clear();
+  }
+  return table_uuids;
+}
+
 std::vector<idx::byte> ReadBinaryFile(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) { return {}; }
@@ -2343,6 +2371,27 @@ DurableEventSequenceState LoadDurableEventSequenceState(
   return state;
 }
 
+std::uint64_t NextReservedEventSequence(
+    const EngineRequestContext& context,
+    const std::string& stream_kind,
+    const std::string& stream_path,
+    std::uint64_t fallback_next) {
+  std::uint64_t next = fallback_next == 0 ? 1 : fallback_next;
+  {
+    const std::lock_guard<std::mutex> guard(EventSequenceCacheMutex());
+    const auto cache_it =
+        EventSequenceCache().find(EventSequenceStreamKey(stream_kind, stream_path));
+    if (cache_it != EventSequenceCache().end() && cache_it->second != 0) {
+      next = std::max(next, cache_it->second);
+    }
+  }
+  const auto durable = LoadDurableEventSequenceState(context, stream_kind, stream_path);
+  if (durable.found && durable.next != 0) {
+    next = std::max(next, durable.next);
+  }
+  return next == 0 ? 1 : next;
+}
+
 MgaEventSequenceRangeReservation RefuseEventSequenceReservation(
     const EngineRequestContext& context,
     const std::string& stream_kind,
@@ -2453,7 +2502,10 @@ std::uint64_t ScanNextRowEventSequence(const EngineRequestContext& context) {
 }
 
 std::uint64_t NextRowEventSequence(const EngineRequestContext& context) {
-  return ScanNextRowEventSequence(context);
+  return NextReservedEventSequence(context,
+                                   "row_versions",
+                                   RowStorePath(context),
+                                   ScanNextRowEventSequence(context));
 }
 
 std::uint64_t ScanNextIndexEventSequence(const EngineRequestContext& context) {
@@ -2468,7 +2520,10 @@ std::uint64_t ScanNextIndexEventSequence(const EngineRequestContext& context) {
 }
 
 std::uint64_t NextIndexEventSequence(const EngineRequestContext& context) {
-  return ScanNextIndexEventSequence(context);
+  return NextReservedEventSequence(context,
+                                   "index_entries",
+                                   IndexStorePath(context),
+                                   ScanNextIndexEventSequence(context));
 }
 
 std::uint64_t ScanNextMetadataEventSequence(const EngineRequestContext& context) {
@@ -2484,7 +2539,10 @@ std::uint64_t ScanNextMetadataEventSequence(const EngineRequestContext& context)
 }
 
 std::uint64_t NextMetadataEventSequence(const EngineRequestContext& context) {
-  return ScanNextMetadataEventSequence(context);
+  return NextReservedEventSequence(context,
+                                   "relation_metadata",
+                                   MetadataStorePath(context),
+                                   ScanNextMetadataEventSequence(context));
 }
 
 std::uint64_t ChecksumText(const std::string& value) {
@@ -4468,6 +4526,9 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       all_table_uuids.insert(table.table_uuid);
     }
   }
+  const auto discovered_scoped_tables = DiscoverScopedRelationTableUuids(context);
+  all_table_uuids.insert(discovered_scoped_tables.begin(),
+                         discovered_scoped_tables.end());
   std::set<std::string> scoped_row_tables_used;
   for (const auto& table_uuid : all_table_uuids) {
     std::vector<CrudRowVersionRecord> decoded_rows;

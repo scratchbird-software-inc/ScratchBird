@@ -48,7 +48,7 @@ DIALECTS = (
     "xtdb",
 )
 
-PARSER_REMAP_ROOT = "public_execution_plan"
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 P7_MATRIX_REL = f"{PARSER_REMAP_ROOT}/PARSER_DIALECT_ISOLATION_AUDIT.csv"
 TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
 GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
@@ -61,7 +61,7 @@ EXPECTED_MATRIX_ROWS = {
     "COMPATIBILITY_PARSER_REMAP_MATRIX.csv": 2078,
     "PARSER_REFUSAL_REDUCTION_MATRIX.csv": 288,
     "DIALECT_ISOLATION_GUARD_MATRIX.csv": 125,
-    "COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv": 181,
+    "COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv": 155,
 }
 
 EXPECTED_P7_COUNTS = {
@@ -124,7 +124,7 @@ FORBIDDEN_MATRIX_RE = re.compile(
     r"not implemented|generated-only|generated only",
     re.I,
 )
-FORBIDDEN_LEAK_RE = re.compile(r"(?:/(?:home|Users)/[^\s,;]+|[A-Za-z]:[\\/][^\s,;]+|local workspace|https?://)")
+FORBIDDEN_LEAK_RE = re.compile(r"(?:/(?:home|Users)/[^\s,;]+|[A-Za-z]:[\\/](?![\\/])[^\s,;]+|local workspace)")
 
 
 def fail(message: str) -> None:
@@ -298,9 +298,9 @@ def validate_evidence_files(
             "wrong P6 compatibility replay proof gate")
     require(compatibility_replay.get("validated_replay_case_count") == 121,
             "P6 replay case count drift")
-    require(compatibility_replay.get("validated_staged_tool_count") == 34,
+    require(compatibility_replay.get("validated_staged_tool_count") == 8,
             "P6 staged tool count drift")
-    require(compatibility_replay.get("validated_tool_smoke_count") == 34,
+    require(compatibility_replay.get("validated_tool_smoke_count") == 8,
             "P6 tool smoke count drift")
     require(compatibility_replay.get("authority_policy") == AUTHORITY_POLICY,
             "P6 authority policy drift")

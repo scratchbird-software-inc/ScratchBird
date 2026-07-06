@@ -1,0 +1,8 @@
+evidence_id,gate_ids,evidence_family,status,evidence_path,finding
+DPGEC-ACC-001,DPGEC-GATE-001,reference_gate_inventory,accepted,REFERENCE_GATE_EVIDENCE_LEDGER.csv,25 reference parser rows exist and are held at no-go until execution evidence is accepted.
+DPGEC-ACC-002,DPGEC-GATE-004,reference_source_locator,accepted,REFERENCE_REGRESSION_SOURCE_LOCATION_MATRIX.csv,All 25 reference rows have public test roots and verified-present source status.
+DPGEC-ACC-003,DPGEC-GATE-003,parser_interface_closure,accepted_start_evidence,project/tests/reference_regression,Parser-facing public test evidence roots exist without private paths.
+DPGEC-ACC-004,DPGEC-GATE-010,self_contained_reference_packets,accepted,project/tests/reference_regression,Per-reference project-test manifest roots are present and self-contained.
+DPGEC-ACC-005,DPGEC-GATE-008,live_migration_method_selection,accepted_method_selection_only,REFERENCE_GATE_EVIDENCE_LEDGER.csv,All 25 parser packages declare live migration support class; proof remains blocked.
+DPGEC-ACC-006,DPGEC-GATE-012,management_package_abi,accepted_spec_blocked_project_test_proof,project/tests/reference_regression/*/management_package_abi,ABI manifest files exist; route privilege and crash/recovery tests remain blocked.
+DPGEC-ACC-007,DPGEC-GATE-013,project_test_manifest_presence,accepted_manifest_presence_only,project/tests/reference_regression,Required start manifest files exist for every reference parser row.

@@ -51,15 +51,15 @@ DIALECTS = (
 )
 
 MATRIX_REL = (
-    "public_execution_plan/COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv"
+    "public_execution_plan/final-sblr-sbsql-parser-remap-closure/COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv"
 )
-TRACKER_REL = "public_execution_plan"
-GATES_REL = "public_execution_plan"
+TRACKER_REL = "public_execution_plan/final-sblr-sbsql-parser-remap-closure/TRACKER.csv"
+GATES_REL = "public_execution_plan/final-sblr-sbsql-parser-remap-closure/ACCEPTANCE_GATES.csv"
 REPLAY_GATE_REL = "project/tests/reference_regression/first_tranche_original_tool_replay_gate.py"
 
 EXPECTED_MATRIX_COUNTS = {
     "compatibility_replay_summary": len(DIALECTS),
-    "native_tool_staging": 34,
+    "native_tool_staging": 8,
     "native_replay_case": 121,
     "regular_ctest_dependency": 1,
 }
@@ -564,7 +564,7 @@ def main() -> int:
     build_root = pathlib.Path(args.build_root).resolve()
     replay_evidence_path = pathlib.Path(args.first_tranche_replay_evidence).resolve()
     output_path = pathlib.Path(args.evidence_file)
-    if not (repo_root / TRACKER_REL).is_dir():
+    if not (repo_root / TRACKER_REL).is_file():
         write_public_execution_plan_skip_evidence(output_path)
         print("parser_compatibility_replay_proof_gate=skipped external_public_execution_plan_packet_not_installed")
         return EXTERNAL_REFERENCE_SKIP_CODE

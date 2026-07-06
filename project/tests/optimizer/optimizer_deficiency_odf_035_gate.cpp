@@ -332,8 +332,8 @@ void HotAppendContextUsesOneStreamLifecyclePerStore(
   const auto& counters = append_context.counters();
   Require(counters.row_stream_opens == 1 && counters.row_stream_flushes == 1,
           "ODF-035 row stream was not opened/flushed exactly once");
-  Require(counters.index_stream_opens == 1 && counters.index_stream_flushes == 1,
-          "ODF-035 index stream was not opened/flushed exactly once");
+  Require(counters.index_stream_opens == 0 && counters.index_stream_flushes == 0,
+          "ODF-035 global index stream was used instead of scoped physical store");
   Require(counters.scoped_row_stream_opens == 1 &&
               counters.scoped_row_stream_flushes == 1,
           "ODF-035 scoped row stream was not opened/flushed exactly once");

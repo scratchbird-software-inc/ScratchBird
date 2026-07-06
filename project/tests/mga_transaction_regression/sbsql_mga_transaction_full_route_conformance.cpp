@@ -282,6 +282,15 @@ void CreateDatabase(const std::filesystem::path& path) {
       kAliceVerifier,
       11,
       "sbsql_mga_transaction_full_route_conformance");
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      path,
+      uuid::UuidToString(database_uuid.value.value),
+      kAlicePrincipalUuid,
+      uuid::UuidToString(database_uuid.value.value),
+      "database",
+      "CONNECT",
+      12,
+      "sbsql_mga_transaction_full_route_conformance:connect");
 }
 
 pid_t LaunchServer(const std::filesystem::path& server,
@@ -538,7 +547,7 @@ int main(int argc, char** argv) {
   Require(Contains(begin_commit, "evidence=transaction_state:active"),
           "BEGIN did not return active MGA state evidence");
 
-  const auto commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 24);
+  const auto commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 64);
   RequireContains(commit, "\"surface_key\":\"SBSQL-37B92A5842F6\"",
                   "COMMIT did not bind the commit surface row");
   RequireContains(commit, "\"sblr_operation\":\"SBLR_TRANSACTION_COMMIT\"",
@@ -548,7 +557,7 @@ int main(int argc, char** argv) {
   Require(Contains(commit, "evidence=transaction_state:committed"),
           "COMMIT did not return committed MGA state evidence");
 
-  const auto replacement_commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 24);
+  const auto replacement_commit = ReadCommandResponse(fd, "EXECUTE COMMIT", "evidence=always_active_transaction_replacement:", 64);
   Require(Contains(replacement_commit, "RESULT transaction.commit"),
           "COMMIT after replacement did not execute through engine transaction operation");
   Require(Contains(replacement_commit, "evidence=transaction_state:committed"),
@@ -566,7 +575,7 @@ int main(int argc, char** argv) {
   Require(Contains(begin_stmt, "evidence=transaction_state:active"),
           "BEGIN statement did not return active MGA state evidence");
 
-  const auto commit_stmt = ReadCommandResponse(fd, "EXECUTE COMMIT WORK", "evidence=always_active_transaction_replacement:", 24);
+  const auto commit_stmt = ReadCommandResponse(fd, "EXECUTE COMMIT WORK", "evidence=always_active_transaction_replacement:", 64);
   RequireContains(commit_stmt, "\"surface_key\":\"SBSQL-7A09CE443D7A\"",
                   "COMMIT WORK did not bind the commit_stmt grammar row");
   RequireContains(commit_stmt, "\"sblr_operation\":\"SBLR_TRANSACTION_COMMIT\"",
@@ -579,7 +588,7 @@ int main(int argc, char** argv) {
   const auto begin_rollback = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
   Require(Contains(begin_rollback, "RESULT transaction.begin"),
           "second BEGIN did not execute through engine transaction operation");
-  const auto rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 24);
+  const auto rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
   RequireContains(rollback, "\"surface_key\":\"SBSQL-EACF8DB1CB02\"",
                   "ROLLBACK did not bind the rollback surface row");
   RequireContains(rollback, "\"sblr_operation\":\"SBLR_TRANSACTION_ROLLBACK\"",
@@ -592,7 +601,7 @@ int main(int argc, char** argv) {
   const auto begin_rollback_stmt = ReadCommandResponse(fd, "EXECUTE BEGIN", "transaction_timestamp=", 40);
   Require(Contains(begin_rollback_stmt, "RESULT transaction.begin"),
           "third BEGIN did not execute through engine transaction operation");
-  const auto rollback_stmt = ReadCommandResponse(fd, "EXECUTE ROLLBACK WORK", "evidence=always_active_transaction_replacement:", 24);
+  const auto rollback_stmt = ReadCommandResponse(fd, "EXECUTE ROLLBACK WORK", "evidence=always_active_transaction_replacement:", 64);
   RequireContains(rollback_stmt, "\"surface_key\":\"SBSQL-129ADA0B6225\"",
                   "ROLLBACK WORK did not bind the rollback_stmt grammar row");
   RequireContains(rollback_stmt, "\"sblr_operation\":\"SBLR_TRANSACTION_ROLLBACK\"",
@@ -678,11 +687,11 @@ int main(int argc, char** argv) {
   Require(Contains(missing_release, "savepoint_not_found"),
           "RELEASE missing savepoint did not return savepoint_not_found detail");
 
-  const auto rollback_savepoint_tx = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 24);
+  const auto rollback_savepoint_tx = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
   Require(Contains(rollback_savepoint_tx, "RESULT transaction.rollback"),
           "savepoint transaction cleanup rollback did not execute");
 
-  const auto replacement_rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 24);
+  const auto replacement_rollback = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "evidence=always_active_transaction_replacement:", 64);
   Require(Contains(replacement_rollback, "RESULT transaction.rollback"),
           "ROLLBACK after replacement did not execute through engine transaction operation");
   Require(Contains(replacement_rollback, "evidence=transaction_state:rolled_back"),

@@ -94,7 +94,7 @@ bool ExpectParseCase(const ParseCase& test) {
                   Contains(result.parser_evidence_json,
                            "\"evidence_contract\":\"firebird_connection_sandbox_evidence.v1\"") &&
                   Contains(result.parser_evidence_json,
-                           "\"connection_sandbox_contract\":\"reference_connection_schema_root_v1\"") &&
+                           "\"connection_sandbox_contract\":\"compatibility_connection_schema_root_v1\"") &&
                   Contains(result.parser_evidence_json,
                            "\"user_object_resolution\":\"relative_to_connection_schema_root\"") &&
                   Contains(result.parser_evidence_json,

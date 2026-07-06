@@ -1,0 +1,2 @@
+proof_id,current_status,required_status,test_destination
+DPDE-AUD-001,active_blocker_truth,enterprise_implemented_proven,project/tests/compatibility_sql_parser_first_tranche/spec_implementation_audit_matrix_proof

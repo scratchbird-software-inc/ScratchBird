@@ -25,26 +25,27 @@ EXPECTED_CLASSIFICATION_COUNTS = {
     "PARSER_REMAP_ONLY": 967,
 }
 EXTERNAL_REFERENCE_SKIP_CODE = 77
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 MATRIX_REL = (
-    "public_execution_plan/COMPATIBILITY_NONCLUSTER_FUNCTION_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_NONCLUSTER_FUNCTION_REMAP_MATRIX.csv"
 )
 INVENTORY_REL = (
-    "public_execution_plan/COMPATIBILITY_UNSUPPORTED_NONCLUSTER_SURFACE_INVENTORY.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_UNSUPPORTED_NONCLUSTER_SURFACE_INVENTORY.csv"
 )
 DECLARED_REL = (
-    "public_execution_plan/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/PARSER_DECLARED_SURFACE_COVERAGE_MATRIX.csv"
 )
 P7_REL = (
-    "public_execution_plan/SBLR_EXECUTION_PROOF_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/SBLR_EXECUTION_PROOF_MATRIX.csv"
 )
 P1_REL = (
-    "public_execution_plan/SBLR_OPERATION_EXPANSION_REGISTER.csv"
+    f"{PARSER_REMAP_ROOT}/SBLR_OPERATION_EXPANSION_REGISTER.csv"
 )
 ENGINE_SBLR_REL = "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml"
 BACKFILL_REL = (
-    "public_execution_plan/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
+    f"{PARSER_REMAP_ROOT}/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
 )
-TRACKER_REL = "public_execution_plan"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
 
 REQUIRED_COLUMNS = {
     "remap_id",
@@ -213,7 +214,7 @@ def validate_symbols(
         final_sblr = row["final_sblr"]
         uppercase_tokens = set(re.findall(r"\bSBLR_[A-Z0-9_]+", final_sblr))
         for token in uppercase_tokens:
-            if token.startswith("SBLR_COMPATIBILITY_"):
+            if token.startswith(("SBLR_COMPAT_", "SBLR_COMPATIBILITY_")):
                 compatibility_symbol_rows += 1
                 require(token in backfill_symbols, f"compatibility SBLR symbol missing from backfill: {token}")
             else:

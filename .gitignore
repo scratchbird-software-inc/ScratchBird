@@ -18,6 +18,8 @@
 !/SBOM.json
 !/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
 !/public_contract_snapshot
+!/public_execution_plan/
+!/public_execution_plan/**
 
 /build/
 /build-*/

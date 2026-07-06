@@ -31502,11 +31502,11 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
   }
   out
       << "\"body_text_included\":false,"
-      << "\"body_compilation_included\":" << (info.body_compiled ? "true" : "false") << ','
       << "\"executable_descriptor_kind\":\""
       << (info.body_compiled ? "internal_procedure" : "metadata_only") << "\",";
   if (info.body_compiled) {
-    out << "\"executor\":\"internal_procedure\","
+    out << "\"body_compilation_included\":true,"
+        << "\"executor\":\"internal_procedure\","
         << "\"internal_procedure_id\":\"" << EscapeJson(info.internal_procedure_id) << "\","
         << "\"side_effect_class\":\"" << EscapeJson(info.side_effect_class) << "\","
         << "\"compiled_body_provenance\":\"sbsql_udr_lowering\","
@@ -31521,6 +31521,8 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
       ++dependency_index;
     }
     out << "\"related_object_count\":" << dependency_index << ',';
+  } else {
+    out << "\"body_compilation_included\":false,";
   }
   out
       << "\"runtime_invocation_included\":false,"

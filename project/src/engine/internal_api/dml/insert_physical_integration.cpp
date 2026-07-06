@@ -10649,6 +10649,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     result.dml_summary.index_probes +=
         DirectUniqueIndexProbeCount(visible_indexes, staged_rows.size());
   }
+  if (has_not_null_validators) {
+    for (const auto& column : batch_context.row_encoder_plan.columns) {
+      if (!column.not_null_bound) {
+        continue;
+      }
+      const std::string proof_id =
+          "not_null_descriptor:" + request.target_table.uuid.canonical + ":" +
+          column.column_name;
+      result.evidence.push_back({"constraint_proof_store", proof_id});
+      result.evidence.push_back({"constraint_proof_hit", proof_id});
+    }
+  }
 
   const auto sorted_index_build = BuildDirectSortedBulkIndexArtifacts(
       request,

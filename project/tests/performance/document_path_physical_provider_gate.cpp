@@ -7,9 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "crud_support/crud_store.hpp"
+#include "database_lifecycle.hpp"
+#include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
 #include "nosql/document_path_physical_provider.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
+#include "transaction_inventory.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -22,6 +26,10 @@
 #include <vector>
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
+namespace mga = scratchbird::transaction::mga;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 
 namespace {
 
@@ -150,14 +158,67 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
   return context;
 }
 
+platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, 1779520000000ull + salt);
+  Require(generated.ok(), "could not generate gate UUID");
+  return generated.value;
+}
+
+mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
+                                              mga::TransactionState state) {
+  mga::TransactionInventoryEntry entry;
+  const auto identity = mga::MakeTransactionIdentity(
+      mga::MakeLocalTransactionId(local_id),
+      NewUuid(platform::UuidKind::transaction, local_id),
+      mga::TransactionScope::local_node);
+  Require(identity.ok(), "could not create transaction identity");
+  entry.identity = identity.identity;
+  entry.state = state;
+  entry.begin_unix_epoch_millis = 1779520000000ull + local_id;
+  if (state == mga::TransactionState::committed ||
+      state == mga::TransactionState::archived ||
+      state == mga::TransactionState::rolled_back ||
+      state == mga::TransactionState::failed_terminal) {
+    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
+    entry.evidence_record_written = true;
+  }
+  return entry;
+}
+
+void CreateDatabaseFixture(const std::filesystem::path& path) {
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
+  create.creation_unix_epoch_millis = 1779520000000ull;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "could not create document provider gate database");
+}
+
+void PersistTransactionInventory(const api::EngineRequestContext& context,
+                                 mga::TransactionState writer_state) {
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  const std::uint64_t writer_tx = context.local_transaction_id;
+  const std::uint64_t reader_tx = context.local_transaction_id + 50;
+  inventory.entries.push_back(InventoryEntry(writer_tx, writer_state));
+  inventory.entries.push_back(InventoryEntry(reader_tx, mga::TransactionState::active));
+  inventory.next_local_transaction_id = reader_tx + 1;
+  const auto persisted =
+      db::PersistLocalTransactionInventoryToDatabase(context.database_path,
+                                                     inventory);
+  Require(persisted.ok(), "could not persist transaction inventory");
+}
+
 void SeedTransaction(const api::EngineRequestContext& context) {
-  std::ofstream crud(context.database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t" << context.local_transaction_id << '\t'
-       << context.transaction_uuid.canonical << '\n';
-  crud << "SBCRUD1\tTX_BEGIN\t" << (context.local_transaction_id + 50) << '\t'
-       << api::GenerateCrudEngineUuid("transaction") << '\n';
-  crud.flush();
-  Require(static_cast<bool>(crud), "could not seed transaction inventory");
+  PersistTransactionInventory(context, mga::TransactionState::active);
+}
+
+void CommitTransaction(const api::EngineRequestContext& context) {
+  PersistTransactionInventory(context, mga::TransactionState::committed);
 }
 
 api::EngineDocumentInsertResult InsertDocument(
@@ -285,6 +346,7 @@ void RequireOpenDiagnostic(const std::filesystem::path& path,
 }
 
 void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
+  CreateDatabaseFixture(db_path);
   auto writer = Context(db_path, 100);
   SeedTransaction(writer);
   api::EngineDocumentProviderCleanup(writer, true);
@@ -305,6 +367,7 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
   const auto generation = CurrentGeneration(writer);
   Require(generation.provider_id == api::kDocumentPathPhysicalProviderId,
           "wrong provider generation id");
+  CommitTransaction(writer);
 
   auto reader = writer;
   reader.local_transaction_id = 150;
@@ -320,7 +383,8 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
   auto exact_result = api::EngineDocumentFind(exact);
   Require(exact_result.ok, "exact document provider probe failed");
   Require(exact_result.result_shape.rows.size() == 1,
-          "exact probe returned wrong row count");
+          "exact probe returned wrong row count: " +
+              std::to_string(exact_result.result_shape.rows.size()));
   Require(exact_result.dml_summary.visible_rows_scanned == 0,
           "exact probe scanned visible document rows");
   Require(exact_result.dml_summary.index_probes == 1,

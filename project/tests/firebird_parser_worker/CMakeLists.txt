@@ -287,7 +287,7 @@ set_tests_properties(firebird_operational_failure_inventory_gate PROPERTIES
 )
 
 set(FIREBIRD_QA_CANDIDATE_ROOT
-  "${PROJECT_SOURCE_DIR}/../../firebird-qa"
+  "${PROJECT_SOURCE_DIR}/../project/tests/reference_regression/firebird/original_firebird_qa"
 )
 add_test(
   NAME firebird_isql_original_regression_gate

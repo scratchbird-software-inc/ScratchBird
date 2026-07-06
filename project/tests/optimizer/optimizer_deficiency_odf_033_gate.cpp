@@ -121,7 +121,10 @@ std::string FirstDetail(const api::EngineApiResult& result) {
 
 bool IsDuplicateKeyDetail(std::string_view detail) {
   return detail == "crud.unique_index:unique_index_duplicate" ||
-         detail.find("duplicate_key") != std::string_view::npos;
+         detail.find("duplicate_key") != std::string_view::npos ||
+         detail.find("unique_index_duplicate") != std::string_view::npos ||
+         detail.find("bulk_unique_proof_persisted_conflict") !=
+             std::string_view::npos;
 }
 
 std::string FieldValue(const api::EngineInsertRowsResult& result,
@@ -302,7 +305,7 @@ void DuplicateInsertRefusedByIndexPreflight() {
   const auto duplicate = InsertRows(fixture, context, {Row("1", "ada", "dup")});
   Require(!duplicate.ok, "ODF-033 duplicate insert was accepted");
   Require(IsDuplicateKeyDetail(FirstDetail(duplicate)),
-          "ODF-033 duplicate diagnostic drifted");
+          "ODF-033 duplicate diagnostic drifted: " + FirstDetail(duplicate));
   Require(HasEvidence(duplicate.evidence,
                       "insert_unique_preflight_path",
                       "index_backed"),
@@ -380,7 +383,8 @@ void StatementOverlayCatchesBatchDuplicates() {
                                        Row("1", "ada", "second")});
     Require(!duplicate.ok, "ODF-033 intra-batch duplicate was accepted");
     Require(IsDuplicateKeyDetail(FirstDetail(duplicate)),
-            "ODF-033 intra-batch duplicate diagnostic drifted");
+            "ODF-033 intra-batch duplicate diagnostic drifted: " +
+                FirstDetail(duplicate));
     Require(HasEvidence(duplicate.evidence,
                         "insert_unique_probe_candidate_source",
                         "statement_delta_overlay"),

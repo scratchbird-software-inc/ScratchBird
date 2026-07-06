@@ -19,15 +19,15 @@
     "CEIC-061",
     "CEIC-062"
   ],
-  "manifest_uuid": "1919a677-ce85-5d54-8b60-2d7c9a78c8f7",
-  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
-  "source_branch": "codex/migration-project-issue-closures",
-  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "manifest_uuid": "34154c6a-514d-5ac7-9b96-cd7d60da0328",
+  "source_commit": "e19cd3961ca0b5b2b2d42b91727419aff4eae15a",
+  "source_branch": "main",
+  "generated_at_utc": "2026-07-05T16:24:29-04:00",
   "generated_by": "project/tools/ceic_optimizer_readiness_manifest.py#CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
-  "source_evidence_digest": "a8dabf25ce9024bb9c047083cef5cad6ee615221bbb9019ffe1cd120e61fe0d1",
+  "source_evidence_digest": "8978a592780ae5d24d61b1d94c3c582beacd6d61035005b22782e5a5f31083d8",
   "auditor": {
     "slice_id": "CEIC-062",
-    "timestamp_utc": "2026-06-13T12:38:17-04:00",
+    "timestamp_utc": "2026-07-05T16:24:29-04:00",
     "proof_state": "generated_and_validated"
   },
   "authority_boundary": {
@@ -284,7 +284,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-058",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "artifact_sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "artifact_sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
       "artifact_state": "present",
       "ctest": "ceic_050_live_route_benchmark_artifact_gate",
       "ctest_registered": true,
@@ -295,8 +295,8 @@
         "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
       },
       "proof_kind": "live_route_runtime_evidence",
-      "result_contract_hash": "sha256:9c4c9d86be03be7ea12bacc44593114837b480b0a91b8731a8aa02a267ff3450",
-      "evidence_digest": "sha256:c2b77a554eccb813a7a5216e5abcdba51b22f03f1a5f29cf2f307841602ed53d",
+      "result_contract_hash": "sha256:33469706d55668a097a1c4119eac87d05366c1bb91e63571d490117200ee3441",
+      "evidence_digest": "sha256:fcbb8f9522038fb698b0001ed5e37465f20234ec054ac4a4ae8e5596a2d93bf2",
       "catalog_epoch": 62050,
       "security_epoch": 72050,
       "redaction_epoch": 82050,
@@ -346,8 +346,8 @@
         "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
       },
       "proof_kind": "benchmark_schema_validation",
-      "result_contract_hash": "sha256:e6dac1b368793b40451201ba38b66f4bc3772efb29407c81d39b42de2ff1504c",
-      "evidence_digest": "sha256:ee305443541b484d7c60a271e6c8e75183295dbc4f1acaef92fb7fa3b372c53b",
+      "result_contract_hash": "sha256:85a89a7ca5064ab9996efac04c55bfea0861957be9678acf04f63d03ebea35c7",
+      "evidence_digest": "sha256:0069e1c94456b17840bc386619eadfa33e635fd5fe6e99f6f9547febdfdc0ea6",
       "catalog_epoch": 62051,
       "security_epoch": 72051,
       "redaction_epoch": 82051,
@@ -389,8 +389,8 @@
         "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
       },
       "proof_kind": "correctness_oracle_validation",
-      "result_contract_hash": "sha256:d8871a4f822a41d175a45538fdb88d034125283e0410b21081255e7320767d30",
-      "evidence_digest": "sha256:b87b20fe788f1b11bd1866f7d42b562bde218b8d88a1c3683e16bd69ec469064",
+      "result_contract_hash": "sha256:7082a6d39e3ca3f372c71c80ef3eb93ec14d4ed40a1ab5843174cfdbc5d8107e",
+      "evidence_digest": "sha256:b11173525e2340f3d8a7efaf2ce41f0801827ef19a01536897e4442d4bdf7796",
       "catalog_epoch": 62052,
       "security_epoch": 72052,
       "redaction_epoch": 82052,
@@ -451,8 +451,8 @@
         "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
       },
       "proof_kind": "crash_reopen_matrix_validation",
-      "result_contract_hash": "sha256:905a449ac4c280232a4fba7b1a0190534dc052f8260fce9e3eab805fd59dbbd5",
-      "evidence_digest": "sha256:400f22526197504b010975ab68923077f424ef2fea8efeb336b7690f4cc9c1d1",
+      "result_contract_hash": "sha256:71d98ecff4a851e56c3386a93909347267c90d270cd098de228b2f8d6f5955c7",
+      "evidence_digest": "sha256:3869ca32cc6f5b637ea432948506a5feb1ede8c712f4402430f22126f35d7a82",
       "catalog_epoch": 62053,
       "security_epoch": 72053,
       "redaction_epoch": 82053,
@@ -510,8 +510,8 @@
         "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
       },
       "proof_kind": "metrics_feedback_and_observability",
-      "result_contract_hash": "sha256:cdd9adb953ab5f204ae4b23cf4eb0219a851adf4b3a9e7c75987cfdbe71f5916",
-      "evidence_digest": "sha256:191fe6ad8d7e891afc3059b66ab71a4b55ecc506549817728bfabd3b1bb13ed4",
+      "result_contract_hash": "sha256:13b86ca23572495a1cfc4ac6a72ae0024f7820029f45b678ba1156ba24582a5c",
+      "evidence_digest": "sha256:66b9de18f06565a029d3b8c7cd3b0dfcf30e7e6c9586dcc4b2509971c0d210e3",
       "catalog_epoch": 62054,
       "security_epoch": 72054,
       "redaction_epoch": 82054,
@@ -560,8 +560,8 @@
         "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
       },
       "proof_kind": "transformation_memo_validation",
-      "result_contract_hash": "sha256:d85cfe09e67be84b352d0490805d26c97b5d9130a877a0fe7fa77eed0cd68cc5",
-      "evidence_digest": "sha256:6b870d404bc853fa8ed53c059ae0b898622dd030ce8b7d22a7bf49e677a88dc1",
+      "result_contract_hash": "sha256:2cfd5a233c43f0f2dc69ecee26aa9b7a6e27dde42114a2ec4fb20dbd3e2e38f7",
+      "evidence_digest": "sha256:46003bf260ff2fac40fd9bb9c5431eff68eb93bcc99d3e1b058b401b85c4f63e",
       "catalog_epoch": 62055,
       "security_epoch": 72055,
       "redaction_epoch": 82055,
@@ -603,8 +603,8 @@
         "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
       },
       "proof_kind": "workload_budget_validation",
-      "result_contract_hash": "sha256:b4a87cf8eb13f97e5a0ac5037464efa8c0f19918b93ef044c9798f6a2002d7d8",
-      "evidence_digest": "sha256:250596a4366a42df57abc8171cded38f307ed0049c40750aeeb3be09f688e926",
+      "result_contract_hash": "sha256:9f40c2212d65c1feea032db3b9cda90856e85b1455eaaf9883c9ec2f96dbb6d2",
+      "evidence_digest": "sha256:788e9f5054503881ebc7af0bc10242f66d0510cdd84d89984ae06ee1df9fd836",
       "catalog_epoch": 62056,
       "security_epoch": 72056,
       "redaction_epoch": 82056,
@@ -646,8 +646,8 @@
         "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
       },
       "proof_kind": "driver_visible_explain_validation",
-      "result_contract_hash": "sha256:63d24da69e99ae1287ebb19a087c0d5a7a9894af3f5c6059c7f3f663373d4bc6",
-      "evidence_digest": "sha256:439944d5208de2109fa5ac27cc8827122f0142f95bd7014acf261dce54c7d64a",
+      "result_contract_hash": "sha256:770af0bf02a4450a5f33866dded0f8ea71691031421bd12f2eaea6423fb1cdf9",
+      "evidence_digest": "sha256:ada1c6a0c0945d321f9eb3feff0dd126f88ee61af1d27bf344b28e42ff7512be",
       "catalog_epoch": 62057,
       "security_epoch": 72057,
       "redaction_epoch": 82057,
@@ -700,8 +700,8 @@
         "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
       },
       "proof_kind": "reference_comparison_artifact_validation",
-      "result_contract_hash": "sha256:413211d3124a281b2af661f87cbae7b11e24578ac09b928dda0460876b59fa78",
-      "evidence_digest": "sha256:eb064877c2ece92c995842c59cd13ddc7ffba385956cd0883281024b345b045c",
+      "result_contract_hash": "sha256:d7e440c5baff950fa34597e0265d610b94e26237ec0cbcf00f9e476a243340cb",
+      "evidence_digest": "sha256:d4f404f8bd9387b1e4b946d6b92e03b02121cec6f5757eb17d24dcc04de43c75",
       "catalog_epoch": 62058,
       "security_epoch": 72058,
       "redaction_epoch": 82058,
@@ -747,8 +747,8 @@
         "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
       },
       "proof_kind": "governed_memory_feedback_validation",
-      "result_contract_hash": "sha256:5cb5af264cbd9a2b9f884e85398186ed38ccdd2febe53327b22c381c69da4e5c",
-      "evidence_digest": "sha256:241e73ce60826e10ed0289e8357e474b867fc6986da2635fa02e8de46e896049",
+      "result_contract_hash": "sha256:efd2c32ec6b9d6303addd041ba45834499e14240d37de2b83c6c3bddb9ccaf12",
+      "evidence_digest": "sha256:b195c556f76823cb8fb195861af2e874d27567d1adc9b13c3b2e748576d1893e",
       "catalog_epoch": 62059,
       "security_epoch": 72059,
       "redaction_epoch": 82059,
@@ -797,8 +797,8 @@
         "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
       },
       "proof_kind": "index_readiness_coupling_validation",
-      "result_contract_hash": "sha256:f4fa3038d6f9f95506ba98e63c2a5684fb9a855006e64679d3b81ef97309fb75",
-      "evidence_digest": "sha256:11f1a8d8f5fc204a5c056fdd65be1a7e731ec330dbaf9dc5845c7235199c0d3f",
+      "result_contract_hash": "sha256:04e4e8f240d843c80b9bb060060ccdf65bda2c747e78edd034054697691a65c1",
+      "evidence_digest": "sha256:b7cf013ed81942bc6f109b0437bc1deaf219c9a0fb6dd4e69971bd89a6bd9493",
       "catalog_epoch": 62060,
       "security_epoch": 72060,
       "redaction_epoch": 82060,
@@ -849,8 +849,8 @@
         "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
       },
       "proof_kind": "llvm_foreign_memory_accounting_validation",
-      "result_contract_hash": "sha256:8b844720a77e4b8ccf0742d08aeb1494aa7a08ad6b55bb5300972e612fe1a686",
-      "evidence_digest": "sha256:461fade063a101249e62408c553c7e3a07e01683f200ce94a23011e85defcf11",
+      "result_contract_hash": "sha256:dd3c82bcd6ceeb38c7ba0849dad59c82e87728a1c415d0cd01670098d5e8b11d",
+      "evidence_digest": "sha256:b6452e8a9c9aad6cb1e0b6be71a557a12dccbb75b2b4e6fdc62f100d6077530d",
       "catalog_epoch": 62061,
       "security_epoch": 72061,
       "redaction_epoch": 82061,
@@ -887,7 +887,7 @@
       "slice_id": "CEIC-050",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
       "status": "present"
     },
     {
@@ -1207,7 +1207,7 @@
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
       "bytes": 1152
     },
     {

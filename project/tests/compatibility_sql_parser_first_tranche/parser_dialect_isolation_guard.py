@@ -48,6 +48,7 @@ DIALECTS = (
     "xtdb",
 )
 EXTERNAL_REFERENCE_SKIP_CODE = 77
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 
 DISTINCTIVE_PROBES = {
     "firebird": "RECREATE TABLE fb_iso_t (id INTEGER)",
@@ -112,10 +113,10 @@ KNOWN_FAMILY_OVERLAPS = {
 SBSQL_NEGATIVE_PROBE = "PLAN FORMAT json"
 SOURCE_SUFFIXES = (".cpp", ".hpp")
 MATRIX_REL = (
-    "public_execution_plan/DIALECT_ISOLATION_GUARD_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/DIALECT_ISOLATION_GUARD_MATRIX.csv"
 )
-TRACKER_REL = "public_execution_plan"
-GATES_REL = "public_execution_plan"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
+GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
 MANIFEST_REL = "project/src/parsers/compatibility/CompatibilityProfileManifest.csv"
 
 EXPECTED_MATRIX_COUNTS = {
@@ -198,7 +199,10 @@ def udr_package(compatibility: str) -> str:
 
 
 def binary_path(build_root: pathlib.Path, compatibility: str) -> pathlib.Path:
-    return build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    configured_path = build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    if configured_path.exists():
+        return configured_path
+    return build_root / "output/linux/bin" / f"sbp_{compatibility}"
 
 
 def diagnostic_prefix(compatibility: str) -> str:

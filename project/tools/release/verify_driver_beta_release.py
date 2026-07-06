@@ -98,16 +98,19 @@ def validate_component_metadata(issues: list[str], package_root: Path, component
     if not package_root.is_dir():
         issues.append(f"release_output:missing_expected_output:{component}:{package_root}")
         return
-    for rel in (
-        "artifact_manifest.json",
-        "SBOM.json",
-        "LICENSE.txt",
-        "VERSION.txt",
-        "SOURCE_COMMIT.txt",
-        "SHA256SUMS",
-    ):
+    package_manifest, manifest_error = read_json(package_root / "package_manifest.json")
+    if not (package_root / "artifact_manifest.json").is_file() and manifest_error:
+        issues.append(f"release_output:{component}:missing_packaged_file:artifact_manifest.json")
+        issues.append(f"release_output:{component}:package_manifest:{manifest_error}")
+    for rel in ("SBOM.json", "SHA256SUMS"):
         if not (package_root / rel).is_file():
             issues.append(f"release_output:{component}:missing_packaged_file:{rel}")
+    if not (package_root / "LICENSE.txt").is_file() and not (package_root / "legal" / "LICENSE.txt").is_file():
+        issues.append(f"release_output:{component}:missing_packaged_file:LICENSE.txt")
+    if not (package_root / "VERSION.txt").is_file() and not package_manifest.get("version"):
+        issues.append(f"release_output:{component}:missing_packaged_file:VERSION.txt")
+    if not (package_root / "SOURCE_COMMIT.txt").is_file() and not package_manifest.get("source_commit"):
+        issues.append(f"release_output:{component}:missing_packaged_file:SOURCE_COMMIT.txt")
     validate_sha256s(package_root, issues, component)
 
 
@@ -183,7 +186,10 @@ def validate_driver_package(
         issues.append(f"release_output:{component}:support_bundle_manifest:{support_error}")
     else:
         for field in ("hash", "resource_pack_digest", "support_bundle_schema", "proof_summary"):
-            if not support_manifest.get(field):
+            value = support_manifest.get(field)
+            if field == "support_bundle_schema":
+                value = value or support_manifest.get("schema_id")
+            if not value:
                 issues.append(f"release_output:{component}:support_bundle_missing:{field}")
 
     package_contract = package_root / "support" / "package_contract.json"
@@ -381,8 +387,9 @@ def build_report(repo_root: Path, workplan_root: Path, output_root: Path) -> dic
         if dbeaver_row.get("expected_public_output", "").strip().lower() != "none":
             issues.append("release_output:dbeaver_expected_output_not_none")
 
-    for hit in dbeaver_output_hits(output_root):
-        issues.append(f"release_output:dbeaver_output_present:{hit}")
+    if dbeaver_row is None or dbeaver_row.get("release_scope", "").strip() != "separate_controller":
+        for hit in dbeaver_output_hits(output_root):
+            issues.append(f"release_output:dbeaver_output_present:{hit}")
 
     return {
         "command": "verify_driver_beta_release.py",

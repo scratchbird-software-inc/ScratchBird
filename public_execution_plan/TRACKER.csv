@@ -1,0 +1,3 @@
+slice_id,phase,title,status,outputs,acceptance
+DPDE-P0,truth,Active compatibility enterprise blocker truth,active,all blocker matrices remain visible,route-only descriptor-only generic-text and generic-default completion claims are blocked
+DPDE-P1,implementation,Parser executable SBLR closure,pending,project/tests compatibility parser proof,all compatibility bodies lower to executable UUID-bound SBLR

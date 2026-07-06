@@ -127,7 +127,7 @@ NON_CLUSTER_DISPOSITIONS = {
 
 ENGINE_SBLR_MATRIX = "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml"
 SBSQL_COMPATIBILITY_BACKFILL_REGISTER = (
-    "public_execution_plan/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
+    "public_execution_plan/final-sblr-sbsql-parser-remap-closure/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
 )
 EXTERNAL_REFERENCE_SKIP_CODE = 77
 
@@ -252,7 +252,7 @@ def main() -> int:
                 sblr_operation.startswith("SBLR_"),
                 f"{dialect} {operation_family}: malformed SBLR operation {sblr_operation}",
             )
-            if sblr_operation.startswith("SBLR_COMPATIBILITY_"):
+            if sblr_operation.startswith(("SBLR_COMPAT_", "SBLR_COMPATIBILITY_")):
                 require(
                     sblr_operation in sbsql_backfill_symbols,
                     f"{dialect} {operation_family}: compatibility SBLR symbol "

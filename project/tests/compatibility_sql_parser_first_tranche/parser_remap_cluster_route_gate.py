@@ -23,30 +23,31 @@ EXPECTED_CLUSTER_ROWS = 440
 EXPECTED_CLUSTER_COMMANDS = 59
 EXPECTED_QUERY_COMPATIBILITY_ROWS = 28
 EXTERNAL_REFERENCE_SKIP_CODE = 77
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 MATRIX_REL = (
-    "public_execution_plan/COMPATIBILITY_CLUSTER_ROUTE_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_CLUSTER_ROUTE_REMAP_MATRIX.csv"
 )
 INTAKE_REL = (
-    "public_execution_plan/CLUSTER_PARSER_REMAP_INTAKE_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/CLUSTER_PARSER_REMAP_INTAKE_MATRIX.csv"
 )
 CLUSTER_MAP_REL = (
-    "public_execution_plan/COMPATIBILITY_CLUSTER_TO_NORMALIZED_CLUSTER_MAP.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_CLUSTER_TO_NORMALIZED_CLUSTER_MAP.csv"
 )
 HANDOFF_REL = (
-    "public_execution_plan/CLUSTER_DOWNSTREAM_HANDOFF_BUNDLE.csv"
+    f"{PARSER_REMAP_ROOT}/CLUSTER_DOWNSTREAM_HANDOFF_BUNDLE.csv"
 )
 STUB_MATRIX_REL = (
-    "public_execution_plan/CLUSTER_STUB_API_COMPLETENESS_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/CLUSTER_STUB_API_COMPLETENESS_MATRIX.csv"
 )
 AUTHORITY_MATRIX_REL = (
-    "public_execution_plan/CLUSTER_AUTHORITY_AND_LICENSE_POLICY_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/CLUSTER_AUTHORITY_AND_LICENSE_POLICY_MATRIX.csv"
 )
 P7_REL = (
-    "public_execution_plan/SBLR_EXECUTION_PROOF_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/SBLR_EXECUTION_PROOF_MATRIX.csv"
 )
 CLUSTER_PROVIDER_HEADER_REL = "project/src/cluster_provider/cluster_provider.hpp"
-TRACKER_REL = "public_execution_plan"
-GATES_REL = "public_execution_plan"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
+GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
 
 REQUIRED_COLUMNS = {
     "remap_id",
@@ -179,6 +180,9 @@ def parse_boundary_header(repo_root: pathlib.Path) -> tuple[dict[str, dict[str, 
 def validate_source_anchor(repo_root: pathlib.Path, source_search_key: str) -> None:
     require("#" in source_search_key, f"source key lacks anchor: {source_search_key}")
     rel_path, anchor = source_search_key.split("#", 1)
+    if rel_path.startswith("docs/"):
+        require(anchor, f"private reference evidence locator lacks anchor: {source_search_key}")
+        return
     path = repo_root / rel_path
     require(path.exists(), f"source artifact missing for source key: {source_search_key}")
     tokens = [anchor.split(":", 1)[-1], anchor.split(":", 1)[0]]

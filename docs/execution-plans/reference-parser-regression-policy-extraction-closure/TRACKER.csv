@@ -1,0 +1,2 @@
+slice_id,phase,title,status,owner,outputs,acceptance
+DRP-P0,P0,Reference regression source locator controller,source_locator_verified,reference parser evidence controller,source/native/destination matrices,All 25 reference ids are present including OpenSearch REST and SQL/PPL

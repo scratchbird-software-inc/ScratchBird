@@ -1,0 +1,26 @@
+gate_id,phase,status,requirement,evidence
+OPENSEARCHSQLPPL-GATE-001,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 001,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-002,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 002,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-003,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 003,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-004,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 004,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-005,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 005,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-006,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 006,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-007,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 007,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-008,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 008,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-009,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 009,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-010,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 010,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-011,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 011,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-012,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 012,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-019,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 019,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-020,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 020,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-021,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 021,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-022,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 022,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-023,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 023,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-024,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 024,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-025,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 025,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-026,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 026,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-027,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 027,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-028,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 028,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-029,manifest,accepted,opensearch_sql_ppl compatibility parser manifest gate 029,project/tests/reference_regression manifests and parser source contracts
+OPENSEARCHSQLPPL-GATE-MGMT-ABI,manifest,accepted,opensearch_sql_ppl management ABI manifest is present and checked by CTest,project/tests/reference_regression management_package_abi manifest
+OPENSEARCH-SQL-PPL-GATE-LIVE-MIGRATION-METHOD,manifest,accepted,opensearch_sql_ppl live migration method gate is represented for manifest validation,project/tests/reference_regression enterprise_completion manifest

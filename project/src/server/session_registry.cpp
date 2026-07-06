@@ -1439,6 +1439,15 @@ bool TakeoverClaimsMatch(const ServerSessionRecord& session,
 
 }  // namespace
 
+engine_api::EngineMaterializedAuthorizationContext
+MaterializeDurableManagementAuthorizationContext(
+    const ServerSessionRecord& session,
+    const engine_api::EngineRequestContext& context) {
+  const auto durable = MaterializeDurableAuthorizationForSession(session, context);
+  if (!durable.ok) return {};
+  return durable.context;
+}
+
 const char* ServerChannelStateName(ServerChannelState state) {
   switch (state) {
     case ServerChannelState::kProtocolAdmitted: return "protocol_admitted";

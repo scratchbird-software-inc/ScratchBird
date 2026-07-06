@@ -705,7 +705,7 @@ std::string FirebirdConnectionSandboxEvidenceJson(
       << "\"dialect\":\"firebird\","
       << "\"statement_family\":\"" << EscapeJson(statement_family) << "\","
       << "\"operation_family\":\"" << EscapeJson(operation_family) << "\","
-      << "\"connection_sandbox_contract\":\"reference_connection_schema_root_v1\","
+      << "\"connection_sandbox_contract\":\"compatibility_connection_schema_root_v1\","
       << "\"schema_root_source\":\"listener_engine_materialized_attach_context\","
       << "\"user_object_resolution\":\"relative_to_connection_schema_root\","
       << "\"unqualified_name_root\":\"reference_schema_branch_root\","

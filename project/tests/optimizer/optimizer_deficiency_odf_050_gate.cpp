@@ -366,8 +366,13 @@ void PageLocalHotKeepsStableRowHead() {
       {{"note", TextValue("page-local-hot")}});
   RequireOk(updated, "ODF-050 page-local update failed");
   Require(updated.updated_count == 1, "ODF-050 page-local update count mismatch");
-  Require(HasEvidence(updated.evidence, "hot_plus_decision", "page_local_hot"),
-          "ODF-050 page-local HOT decision evidence missing");
+  if (!HasEvidence(updated.evidence, "hot_plus_decision", "page_local_hot")) {
+    std::cerr << "ODF-050 page-local evidence:\n";
+    for (const auto& item : updated.evidence) {
+      std::cerr << item.evidence_kind << '=' << item.evidence_id << '\n';
+    }
+    Fail("ODF-050 page-local HOT decision evidence missing");
+  }
   Require(EvidenceValue(updated.evidence, "hot_plus_exact_secondary_churn_avoided") != "0",
           "ODF-050 exact secondary churn was not avoided");
   Require(EvidenceValue(updated.evidence, "hot_plus_mga_visibility_proof_accepted") == "1",

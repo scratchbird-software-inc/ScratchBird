@@ -14,6 +14,7 @@
 #include "management/support_bundle_api.hpp"
 #include "process_association_registry.hpp"
 #include "security/authorization_api.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
 #include <map>
@@ -240,6 +241,16 @@ MaterializeManagementSessionAuthorizationContext(
   principal.subject_uuid = authorization.principal_uuid;
   principal.subject_kind = "principal";
   authorization.effective_subjects.push_back(std::move(principal));
+
+  auto durable_context =
+      MaterializeDurableManagementAuthorizationContext(session, context);
+  if (durable_context.present &&
+      (!durable_context.grants.empty() ||
+       durable_context.effective_subjects.size() > 1)) {
+    durable_context.evidence_tags.push_back(
+        "server.management.durable_authorization_context");
+    return durable_context;
+  }
 
   for (const auto& tag : session.engine_authorization_trace_tags) {
     authorization.evidence_tags.push_back(tag);

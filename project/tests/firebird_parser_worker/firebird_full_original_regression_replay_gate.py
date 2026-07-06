@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import types
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,12 @@ PERCENT_MAPPING_PATTERN = re.compile(
 class ExtractedScript:
     source_kind: str
     text: str
+
+
+@dataclass(frozen=True)
+class QaAssetRef:
+    path: Path
+    member: str | None = None
 
 
 RUNTIME_MARKER_COMMANDS = {
@@ -145,6 +152,8 @@ def percent_format_mapping(template: str, mapping: dict[str, Any]) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group("name")
         value = mapping.get(name, "DYNAMIC_VALUE")
+        if value is None:
+            value = "DYNAMIC_VALUE"
         try:
             return ("%" + match.group("format")) % value
         except (TypeError, ValueError):
@@ -194,6 +203,15 @@ def literal_value(node: ast.AST, env: dict[str, Any]) -> Any:
         if any(value is None for value in values):
             return None
         return values
+    if isinstance(node, ast.Dict):
+        values: dict[str, Any] = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            key = literal_value(key_node, env) if key_node is not None else None
+            if not isinstance(key, str):
+                return None
+            value = literal_value(value_node, env)
+            values[key] = "DYNAMIC_VALUE" if value is None else value
+        return values
     if isinstance(node, ast.Call):
         call_name = function_name(node.func)
         if call_name.endswith(".join") and node.args:
@@ -237,7 +255,7 @@ def collect_module_env(tree: ast.Module) -> dict[str, Any]:
             if value_node is None:
                 continue
             value = literal_value(value_node, env)
-            if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, (str, int, float, bool, dict)):
                 for name in names:
                     env[name] = value
     return env
@@ -336,7 +354,7 @@ def collect_function_env(function: ast.FunctionDef, base_env: dict[str, Any]) ->
             if value_node is None:
                 continue
             value = literal_value(value_node, env)
-            if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, (str, int, float, bool, dict)):
                 for name in names:
                     env[name] = value
     return env
@@ -743,7 +761,11 @@ def extract_trace_execution_scripts(path: Path) -> tuple[list[ExtractedScript], 
     with tempfile.TemporaryDirectory(prefix="sb_fbqa_trace_") as temp_name:
         temp_root = Path(temp_name)
         qa_root = next(
-            (parent for parent in path.parents if parent.name == "firebird-qa"),
+            (
+                parent
+                for parent in path.parents
+                if parent.name in {"firebird-qa", "original_firebird_qa"}
+            ),
             path.parent,
         )
         files_dir = qa_root / "files"
@@ -1049,6 +1071,164 @@ def extract_temp_file_write_scripts(
     return scripts
 
 
+def qa_files_root_for_source(path: Path) -> Path:
+    qa_root = next(
+        (
+            parent
+            for parent in path.parents
+            if parent.name in {"firebird-qa", "original_firebird_qa"}
+        ),
+        path.parent,
+    )
+    return qa_root / "files"
+
+
+def resolve_filesystem_path_expr(
+    node: ast.AST,
+    env: dict[str, Any],
+    files_root: Path,
+) -> Path | None:
+    if isinstance(node, ast.Name):
+        value = env.get(node.id)
+        if isinstance(value, QaAssetRef) and value.member is None:
+            return value.path
+        if isinstance(value, Path):
+            return value
+        if isinstance(value, str):
+            return Path(value)
+        return None
+    if isinstance(node, ast.Attribute) and node.attr == "files_dir":
+        return files_root
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return Path(node.value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = resolve_filesystem_path_expr(node.left, env, files_root)
+        right = literal_value(node.right, env)
+        if left is not None and isinstance(right, str):
+            return left / right
+    return None
+
+
+def resolve_asset_ref_expr(
+    node: ast.AST,
+    env: dict[str, Any],
+    files_root: Path,
+) -> QaAssetRef | None:
+    if isinstance(node, ast.Name):
+        value = env.get(node.id)
+        return value if isinstance(value, QaAssetRef) else None
+    if isinstance(node, ast.Call) and function_name(node.func).split(".")[-1] == "Path":
+        if not node.args:
+            return None
+        archive_path = resolve_filesystem_path_expr(node.args[0], env, files_root)
+        member = None
+        for keyword in node.keywords:
+            if keyword.arg == "at":
+                value = literal_value(keyword.value, env)
+                if isinstance(value, str):
+                    member = value
+        if archive_path is not None and member:
+            return QaAssetRef(archive_path, member)
+    file_path = resolve_filesystem_path_expr(node, env, files_root)
+    if file_path is not None:
+        return QaAssetRef(file_path)
+    return None
+
+
+def read_asset_ref(asset: QaAssetRef, encoding: str = "utf-8") -> str | None:
+    try:
+        if asset.member:
+            with zipfile.ZipFile(asset.path) as archive:
+                return archive.read(asset.member).decode(encoding, errors="replace")
+        return asset.path.read_text(encoding=encoding, errors="replace")
+    except (KeyError, OSError, UnicodeError, zipfile.BadZipFile):
+        return None
+
+
+def read_asset_text_expr(
+    node: ast.AST,
+    env: dict[str, Any],
+    files_root: Path,
+) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "read_text":
+        return None
+    encoding = "utf-8"
+    for keyword in node.keywords:
+        if keyword.arg == "encoding":
+            value = literal_value(keyword.value, env)
+            if isinstance(value, str):
+                encoding = value
+    asset = resolve_asset_ref_expr(node.func.value, env, files_root)
+    return read_asset_ref(asset, encoding=encoding) if asset else None
+
+
+def extract_file_asset_scripts(
+    source_path: Path,
+    tree: ast.Module,
+    env: dict[str, Any],
+    db_initializers: dict[str, str],
+    action_databases: dict[str, str],
+) -> list[ExtractedScript]:
+    scripts: list[ExtractedScript] = []
+    files_root = qa_files_root_for_source(source_path)
+    init = next(iter(db_initializers.values()), None)
+
+    for function in [node for node in tree.body if isinstance(node, ast.FunctionDef)]:
+        local_env = collect_function_env(function, env)
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                names = assign_targets(node)
+                value_node = node.value
+                asset = resolve_asset_ref_expr(value_node, local_env, files_root)
+                text = read_asset_text_expr(value_node, local_env, files_root)
+                for name in names:
+                    if text is not None:
+                        local_env[name] = text
+                    elif asset is not None:
+                        local_env[name] = asset
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if text is not None:
+                    for target in targets:
+                        if isinstance(target, ast.Attribute) and target.attr == "script":
+                            scripts.append(
+                                ExtractedScript(
+                                    "qa_file_asset",
+                                    combine_script(init, text),
+                                )
+                            )
+                continue
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "isql":
+                continue
+            action_name = node.func.value.id if isinstance(node.func.value, ast.Name) else ""
+            db_name = action_databases.get(action_name)
+            for keyword in node.keywords:
+                if keyword.arg == "input_file":
+                    asset = resolve_asset_ref_expr(keyword.value, local_env, files_root)
+                    text = read_asset_ref(asset) if asset else None
+                    if text is not None:
+                        scripts.append(
+                            ExtractedScript(
+                                "act.isql.input_file_asset",
+                                combine_script(db_initializers.get(db_name or ""), text),
+                            )
+                        )
+                    continue
+                if keyword.arg == "input":
+                    value = literal_value(keyword.value, local_env)
+                    if isinstance(value, str) and looks_like_sql_text(value):
+                        scripts.append(
+                            ExtractedScript(
+                                "act.isql.input_file_asset",
+                                combine_script(db_initializers.get(db_name or ""), value),
+                            )
+                        )
+    return scripts
+
+
 def has_call(tree: ast.Module, *names: str) -> bool:
     return any(isinstance(node, ast.Call) and is_call_named(node, *names) for node in ast.walk(tree))
 
@@ -1209,6 +1389,9 @@ def extract_scripts(path: Path) -> tuple[list[ExtractedScript], str, str]:
     scripts.extend(extract_python_driver_scripts(tree, env, db_initializers))
     scripts.extend(extract_action_script_scripts(tree, env, db_initializers))
     scripts.extend(extract_temp_file_write_scripts(tree, env, db_initializers))
+    scripts.extend(
+        extract_file_asset_scripts(path, tree, env, db_initializers, action_databases)
+    )
     if scripts:
         if any(has_unresolved_static_sql_fragment(script.text) for script in scripts):
             traced_scripts, trace_note = extract_trace_execution_scripts(path)

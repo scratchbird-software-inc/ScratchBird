@@ -8,12 +8,16 @@
 
 // ODF-113 NoSQL family benchmark closure gate.
 
+#include "database_lifecycle.hpp"
+#include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
 #include "nosql/graph_api.hpp"
 #include "nosql/key_value_api.hpp"
 #include "nosql/search_api.hpp"
 #include "nosql/time_series_api.hpp"
 #include "nosql/vector_api.hpp"
+#include "transaction_inventory.hpp"
+#include "uuid.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -31,6 +35,10 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
+namespace mga = scratchbird::transaction::mga;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 
 #ifndef ODF113_OUTPUT_JSON
 #define ODF113_OUTPUT_JSON "optimizer_deficiency_odf_113_gate.json"
@@ -180,12 +188,67 @@ std::filesystem::path UniqueTempDir(std::string_view name) {
   return path;
 }
 
+platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, 1779530000000ull + salt);
+  Require(generated.ok(), "ODF-113 could not generate native UUID");
+  return generated.value;
+}
+
+mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
+                                              mga::TransactionState state) {
+  auto identity = mga::MakeTransactionIdentity(
+      mga::MakeLocalTransactionId(local_id),
+      NewUuid(platform::UuidKind::transaction, local_id),
+      mga::TransactionScope::local_node);
+  Require(identity.ok(), "ODF-113 could not create transaction identity");
+
+  mga::TransactionInventoryEntry entry;
+  entry.identity = identity.identity;
+  entry.state = state;
+  entry.begin_unix_epoch_millis = 1779530000000ull + local_id;
+  if (state == mga::TransactionState::committed ||
+      state == mga::TransactionState::archived ||
+      state == mga::TransactionState::rolled_back ||
+      state == mga::TransactionState::failed_terminal) {
+    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
+    entry.evidence_record_written = true;
+  }
+  return entry;
+}
+
+void CreateDatabaseFixture(const std::filesystem::path& path) {
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid = NewUuid(platform::UuidKind::database, 1);
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
+  create.creation_unix_epoch_millis = 1779530000000ull;
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "ODF-113 could not create native test database");
+}
+
+void PersistTransactionInventory(const std::filesystem::path& database_path,
+                                 mga::TransactionState writer_state) {
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  inventory.entries.push_back(InventoryEntry(113, writer_state));
+  inventory.entries.push_back(InventoryEntry(130, mga::TransactionState::active));
+  inventory.next_local_transaction_id = 131;
+  const auto persisted =
+      db::PersistLocalTransactionInventoryToDatabase(database_path.string(),
+                                                     inventory);
+  Require(persisted.ok(), "ODF-113 could not persist transaction inventory");
+}
+
 struct TempDatabase {
   std::filesystem::path dir;
   std::filesystem::path path;
 
   explicit TempDatabase(std::string_view name) : dir(UniqueTempDir(name)) {
     path = dir / "odf113.sbdb";
+    CreateDatabaseFixture(path);
   }
 
   ~TempDatabase() {
@@ -210,11 +273,11 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
 }
 
 void SeedCrudTransaction(const std::filesystem::path& database_path) {
-  std::ofstream crud(database_path, std::ios::binary | std::ios::trunc);
-  crud << "SBCRUD1\tTX_BEGIN\t113\todf113-transaction-113\n";
-  crud << "SBCRUD1\tTX_BEGIN\t130\todf113-transaction-130\n";
-  crud.flush();
-  Require(static_cast<bool>(crud), "ODF-113 could not seed CRUD transaction log");
+  PersistTransactionInventory(database_path, mga::TransactionState::active);
+}
+
+void CommitCrudTransaction(const std::filesystem::path& database_path) {
+  PersistTransactionInventory(database_path, mga::TransactionState::committed);
 }
 
 void RequireNoForbiddenEvidence(const api::EngineApiResult& result,
@@ -820,6 +883,7 @@ ScenarioEvidence DocumentPhysicalProviderScenario() {
                   {"line_items.0.sku", "SKU-3"},
                   {"line_items.1.sku", "SKU-4"},
                   {"private.ssn", "redacted"}});
+  CommitCrudTransaction(database.path);
 
   api::EngineDocumentFindRequest exact;
   exact.context = Context(database.path, 130);

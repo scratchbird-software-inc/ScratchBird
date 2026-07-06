@@ -2207,11 +2207,6 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     result.decision = OrdinaryHotPlusDecision();
     return result;
   }
-  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
-    result.ok = true;
-    result.decision = OrdinaryHotPlusDecision();
-    return result;
-  }
 
   const bool parser_or_reference_authority =
       ParserOrReferenceAuthorityForHotProof(request);
@@ -2348,9 +2343,6 @@ std::uint64_t CountUnaffectedExactIndexChurnAvoided(
     const mga::HotStableRowHeadDecisionResult& decision,
     const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
   if (!HotPlusDecisionAvoidsExactChurn(decision)) {
-    return 0;
-  }
-  if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     return 0;
   }
   std::uint64_t avoided = 0;
@@ -2585,21 +2577,92 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
     }
   }
   if (!append_batches.empty()) {
+    std::vector<MgaIndexEntryAppendBatch> locality_batches;
+    locality_batches.reserve(append_batches.size());
+    for (const auto& exact_batch : append_batches) {
+      MgaIndexEntryAppendBatch locality_batch;
+      locality_batch.index = exact_batch.index;
+      locality_batch.table_uuid = exact_batch.table_uuid;
+      locality_batch.rows.reserve(exact_batch.entries.size());
+      for (const auto& entry : exact_batch.entries) {
+        MgaIndexEntryRowInput row;
+        row.row_uuid = entry.row_uuid;
+        row.version_uuid = entry.version_uuid;
+        row.values.push_back({exact_batch.index.column_name,
+                              entry.payload_value});
+        locality_batch.rows.push_back(std::move(row));
+      }
+      locality_batches.push_back(std::move(locality_batch));
+    }
+    const auto locality_plan = PlanLocalityAwareIndexApplyBatches(locality_batches);
+    if (locality_plan.diagnostic.error) {
+      return locality_plan.diagnostic;
+    }
+    std::vector<std::vector<bool>> exact_entry_used;
+    exact_entry_used.reserve(append_batches.size());
+    for (const auto& batch : append_batches) {
+      exact_entry_used.emplace_back(batch.entries.size(), false);
+    }
+    std::vector<MgaExactIndexEntryAppendBatch> planned_exact_batches;
+    planned_exact_batches.reserve(locality_plan.batches.size());
+    for (const auto& planned_batch : locality_plan.batches) {
+      MgaExactIndexEntryAppendBatch exact_batch;
+      exact_batch.index = planned_batch.index;
+      exact_batch.table_uuid = planned_batch.table_uuid;
+      for (const auto& planned_row : planned_batch.rows) {
+        const std::string payload_value =
+            CrudFieldValue(planned_row.values, planned_batch.index.column_name);
+        bool matched = false;
+        for (std::size_t batch_index = 0;
+             batch_index < append_batches.size() && !matched;
+             ++batch_index) {
+          const auto& source_batch = append_batches[batch_index];
+          if (source_batch.index.index_uuid != planned_batch.index.index_uuid) {
+            continue;
+          }
+          for (std::size_t entry_index = 0;
+               entry_index < source_batch.entries.size();
+               ++entry_index) {
+            if (exact_entry_used[batch_index][entry_index]) {
+              continue;
+            }
+            const auto& source = source_batch.entries[entry_index];
+            if (source.row_uuid != planned_row.row_uuid ||
+                source.version_uuid != planned_row.version_uuid ||
+                source.payload_value != payload_value) {
+              continue;
+            }
+            exact_batch.entries.push_back(source);
+            exact_entry_used[batch_index][entry_index] = true;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          return MakeInvalidRequestDiagnostic("dml.update_rows",
+                                              "index_apply_locality_exact_entry_mapping_failed");
+        }
+      }
+      if (!exact_batch.entries.empty()) {
+        planned_exact_batches.push_back(std::move(exact_batch));
+      }
+    }
     if (evidence != nullptr) {
       std::uint64_t entry_count = 0;
       for (const auto& batch : append_batches) {
         entry_count += static_cast<std::uint64_t>(batch.entries.size());
       }
+      AddLocalityAwareIndexApplyEvidence(locality_plan, evidence);
       evidence->push_back({"update_index_apply", "exact_key_cache_reuse"});
       evidence->push_back({"update_index_apply_exact_entry_count",
                            std::to_string(entry_count)});
     }
     if (append_context != nullptr) {
-      return append_context->AppendExactIndexEntryBatches(append_batches);
+      return append_context->AppendExactIndexEntryBatches(planned_exact_batches);
     }
     MgaRelationHotAppendContext local_append_context(context);
     const auto appended =
-        local_append_context.AppendExactIndexEntryBatches(append_batches);
+        local_append_context.AppendExactIndexEntryBatches(planned_exact_batches);
     if (appended.error) { return appended; }
     return local_append_context.FlushIndexEntries();
   }
@@ -3398,6 +3461,9 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     for (const auto& [decision, count] : compacted_hot_decisions) {
       result.evidence.push_back({"hot_plus_decision_count." + decision,
                                  std::to_string(count)});
+      if (count == 1) {
+        result.evidence.push_back({"hot_plus_decision", decision});
+      }
     }
   }
   mark_update_phase("update_trace_evidence");

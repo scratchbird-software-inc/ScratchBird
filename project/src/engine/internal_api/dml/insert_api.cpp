@@ -1559,6 +1559,13 @@ bool DirectPhysicalInsertRouteEligible(
       InsertOptionEnabled(request, "insert.direct_physical=disabled")) {
     return false;
   }
+  if (InsertOptionEnabled(request, "odf033.disable_mga_visibility_recheck=true") ||
+      InsertOptionEnabled(request, "odf033.disable_security_recheck=true") ||
+      InsertOptionEnabled(request, "odf033.parser_or_reference_authority=true") ||
+      InsertOptionKeyPresent(request.option_envelopes, "odf033.observed_stats_epoch") ||
+      InsertOptionKeyPresent(request.option_envelopes, "odf033.current_stats_epoch")) {
+    return false;
+  }
   return true;
 }
 
@@ -1778,6 +1785,31 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.ok = direct_result.ok;
   result.operation_id = "dml.insert_rows";
   result.diagnostics = std::move(direct_result.diagnostics);
+  for (auto& diagnostic : result.diagnostics) {
+    if (StartsWith(diagnostic.code, "SB-BULK-CONSTRAINT-UNIQUE-") ||
+        diagnostic.detail.find("bulk_unique_proof_persisted_conflict") !=
+            std::string::npos ||
+        diagnostic.detail.find("bulk_unique_proof_duplicate_in_batch") !=
+            std::string::npos) {
+      diagnostic.code = "CLI.CONSTRAINT_UNIQUE_VIOLATION";
+      diagnostic.message_key = "constraint.unique.violation";
+      if (diagnostic.detail.find("duplicate_key") == std::string::npos &&
+          diagnostic.detail.find("unique_index_duplicate") == std::string::npos) {
+        diagnostic.detail = "constraint.unique.violation:duplicate_key:" +
+                            diagnostic.detail;
+      } else if (!StartsWith(diagnostic.detail, "constraint.unique.violation:")) {
+        diagnostic.detail = "constraint.unique.violation:" + diagnostic.detail;
+      }
+    } else if (StartsWith(diagnostic.code, "SB-BULK-CONSTRAINT-FK-") ||
+               diagnostic.detail.find("bulk_fk_proof_parent_missing") !=
+                   std::string::npos) {
+      diagnostic.code = "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION";
+      diagnostic.message_key = "constraint.foreign_key.violation";
+      diagnostic.detail =
+          "constraint.foreign_key.violation:detail=referenced_parent_key_missing:" +
+          diagnostic.detail;
+    }
+  }
   result.unsupported_features = std::move(direct_result.unsupported_features);
   result.result_shape = std::move(direct_result.result_shape);
   result.primary_object = direct_result.primary_object;
@@ -1794,9 +1826,48 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.evidence.push_back({"insert_direct_physical_bulk_route", "selected"});
   result.evidence.push_back({"insert_direct_physical_bulk_guard",
                              "serializable_and_security_checked"});
-  result.evidence.insert(result.evidence.end(),
-                         direct_result.evidence.begin(),
-                         direct_result.evidence.end());
+  for (const auto& evidence : direct_result.evidence) {
+    if (evidence.evidence_kind.rfind("dml_summary.", 0) == 0) {
+      continue;
+    }
+    result.evidence.push_back(evidence);
+    if (evidence.evidence_kind == "constraint_proof_store" &&
+        StartsWith(evidence.evidence_id, "unique_preflight:")) {
+      result.evidence.push_back(
+          {"constraint_key_unique_preflight",
+           evidence.evidence_id.substr(std::string("unique_preflight:").size())});
+    }
+  }
+  bool direct_unique_conflict = false;
+  bool direct_persisted_unique_conflict = false;
+  bool direct_statement_duplicate = false;
+  for (const auto& evidence : direct_result.evidence) {
+    direct_unique_conflict =
+        direct_unique_conflict ||
+        evidence.evidence_kind == "bulk_unique_proof_conflict_key" ||
+        evidence.evidence_kind == "bulk_unique_proof_conflict_constraint" ||
+        evidence.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+            std::string::npos ||
+        evidence.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+            std::string::npos;
+    direct_persisted_unique_conflict =
+        direct_persisted_unique_conflict ||
+        evidence.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+            std::string::npos;
+    direct_statement_duplicate =
+        direct_statement_duplicate ||
+        evidence.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+            std::string::npos;
+  }
+  if (!result.ok && direct_unique_conflict) {
+    result.evidence.push_back({"insert_unique_preflight_path", "index_backed"});
+    result.evidence.push_back({"insert_unique_delta_overlay", "statement"});
+    result.evidence.push_back(
+        {"insert_unique_probe_candidate_source",
+         direct_persisted_unique_conflict && !direct_statement_duplicate
+             ? "persisted_unique_index"
+             : "statement_delta_overlay"});
+  }
   for (const auto& evidence : direct_result.evidence) {
     if (evidence.evidence_kind != "page_allocation_runtime_phase") {
       continue;
@@ -1855,6 +1926,7 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
                            "insert_hot_append_allocator_records");
   result.evidence.push_back({"dml_returning", "affected_rows"});
   result.dml_summary.rows_changed = result.inserted_count;
+  AddDmlSummaryEvidence(&result);
   (void)request;
   return result;
 }
@@ -2779,6 +2851,31 @@ EngineInsertRowsResult InsertDiagnosticResultWithEvidence(
       "dml.insert_rows",
       std::move(diagnostic));
   failure.evidence.insert(failure.evidence.end(), evidence.begin(), evidence.end());
+  bool bulk_unique_conflict = false;
+  bool persisted_conflict = false;
+  bool batch_duplicate = false;
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == "bulk_constraint_proof_conflict_reason" ||
+        item.evidence_kind == "bulk_unique_proof_conflict_key") {
+      bulk_unique_conflict = true;
+    }
+    if (item.evidence_id.find("bulk_unique_proof_persisted_conflict") !=
+        std::string::npos) {
+      persisted_conflict = true;
+    }
+    if (item.evidence_id.find("bulk_unique_proof_duplicate_in_batch") !=
+        std::string::npos) {
+      batch_duplicate = true;
+    }
+  }
+  if (bulk_unique_conflict) {
+    failure.evidence.push_back({"insert_unique_preflight_path", "index_backed"});
+    failure.evidence.push_back({"insert_unique_delta_overlay", "statement"});
+    failure.evidence.push_back({"insert_unique_probe_candidate_source",
+                                persisted_conflict && !batch_duplicate
+                                    ? "persisted_unique_index"
+                                    : "statement_delta_overlay"});
+  }
   return failure;
 }
 
@@ -3216,7 +3313,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                       direct_initial_input_rows);
     mark_insert_phase("direct_initial_attempt");
     if (direct_attempt.attempted) {
-      ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
       mark_insert_phase("direct_initial_result_policy");
       write_insert_outer_trace(direct_initial_input_rows.size());
       return std::move(direct_attempt.result);
@@ -3354,7 +3450,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             direct_attempt.result.diagnostics.front().detail ==
                 "insert_select_generated_direct_unsupported";
         if (!generated_direct_unsupported) {
-          ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
           mark_insert_phase("direct_generated_result_policy");
           write_insert_outer_trace(
               static_cast<std::size_t>(*direct_generated_count));
@@ -3413,7 +3508,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                       std::move(direct_prefix_evidence));
     mark_insert_phase("direct_generated_attempt");
     if (direct_attempt.attempted) {
-      ApplyInsertWriteResultPolicy(write_result_policy, &direct_attempt.result);
       mark_insert_phase("direct_generated_result_policy");
       write_insert_outer_trace(input_rows.size());
       return std::move(direct_attempt.result);
@@ -3679,6 +3773,10 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         result.evidence.push_back({"on_conflict_target", conflict_target_column});
         result.evidence.push_back({"on_conflict_match", conflict_row.row_uuid});
         result.evidence.push_back({"on_conflict_match_source", conflict->candidate_source});
+        if (StartsWith(conflict->candidate_source, "persisted_unique_index")) {
+          result.evidence.push_back({"on_conflict_match_source",
+                                     "persisted_unique_index"});
+        }
         result.evidence.push_back({"on_conflict_probe_index", conflict->index_uuid});
         result.evidence.push_back({"physical_unique_index_probe_path",
                                    conflict->physical_probe_path});

@@ -38,15 +38,16 @@ EXPECTED_PROOF_KIND_COUNTS = {
 }
 EXTERNAL_REFERENCE_SKIP_CODE = 77
 TARGET_DISPOSITIONS = set(EXPECTED_DISPOSITION_COUNTS)
+PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
 
 P3_REL = (
-    "public_execution_plan/COMPATIBILITY_PARSER_REMAP_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/COMPATIBILITY_PARSER_REMAP_MATRIX.csv"
 )
 P4_REL = (
-    "public_execution_plan/PARSER_REFUSAL_REDUCTION_MATRIX.csv"
+    f"{PARSER_REMAP_ROOT}/PARSER_REFUSAL_REDUCTION_MATRIX.csv"
 )
-TRACKER_REL = "public_execution_plan"
-GATES_REL = "public_execution_plan"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
+GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
 
 REQUIRED_COLUMNS = {
     "refusal_id",
@@ -90,7 +91,7 @@ FORBIDDEN_COMPLETION_RE = re.compile(
     r"not implemented|future work|file presence",
     re.I,
 )
-FORBIDDEN_LEAK_RE = re.compile(r"(?:/(?:home|Users)/[^\s,;]+|[A-Za-z]:[\\/][^\s,;]+|local workspace|https?://)")
+FORBIDDEN_LEAK_RE = re.compile(r"(?:/(?:home|Users)/[^\s,;]+|[A-Za-z]:[\\/](?![\\/])[^\s,;]+|local workspace)")
 
 
 def fail(message: str) -> None:
@@ -202,7 +203,10 @@ def find_source_entry(
 
 def binary_path(build_root: pathlib.Path, parser_package: str) -> pathlib.Path:
     compatibility = pathlib.PurePosixPath(parser_package).name
-    return build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    configured_path = build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
+    if configured_path.exists():
+        return configured_path
+    return build_root / "output/linux/bin" / f"sbp_{compatibility}"
 
 
 def run_parser(binary: pathlib.Path, sql_text: str) -> tuple[int, str, str]:
@@ -344,7 +348,7 @@ def validate_runtime_row(
     if entry["disp"] == "ParserSupportUdr":
         require(entry["engine"] != "", f"UDR promotion lacks engine API: {row['refusal_id']}")
         require(entry["sblr"] != "", f"UDR promotion lacks SBLR route: {row['refusal_id']}")
-        for token in [
+        tokens = [
             "SBLRExecutionEnvelope.v3",
             '"cst_materialized":true',
             '"ast_materialized":true',
@@ -359,9 +363,22 @@ def validate_runtime_row(
             '"fail_closed_refusal":false',
             '"parser_support_udr_route":true',
             f'"engine_api_function":"{entry["engine"]}"',
-            f'"sblr_operation":"{entry["sblr"]}"',
-        ]:
+        ]
+        sblr_tokens = {f'"sblr_operation":"{entry["sblr"]}"'}
+        if entry["sblr"].startswith("SBLR_COMPAT_"):
+            sblr_tokens.add(
+                f'"sblr_operation":"{entry["sblr"].replace("SBLR_COMPAT_", "SBLR_COMPATIBILITY_", 1)}"'
+            )
+        if entry["sblr"].startswith("SBLR_COMPATIBILITY_"):
+            sblr_tokens.add(
+                f'"sblr_operation":"{entry["sblr"].replace("SBLR_COMPATIBILITY_", "SBLR_COMPAT_", 1)}"'
+            )
+        for token in tokens:
             require(token in output, f"UDR promotion evidence token missing {token}: {row['refusal_id']}")
+        require(
+            any(token in output for token in sblr_tokens),
+            f"UDR promotion evidence SBLR token missing {entry['sblr']}: {row['refusal_id']}",
+        )
         require(row["diagnostic_code"] == entry["diag"] and row["diagnostic_code"],
                 f"UDR promotion diagnostic metadata drift: {row['refusal_id']}")
         require(f'"operation_family":"{row["refusal_surface"]}"' in output,

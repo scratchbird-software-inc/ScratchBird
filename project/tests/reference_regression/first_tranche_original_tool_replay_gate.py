@@ -1777,6 +1777,7 @@ def assert_source_fragment(repo_root: pathlib.Path, case: ReplayCase) -> dict[st
         or case.source_rel == "public_input_snapshot"
     ):
         return {
+            "source": case.source_rel,
             "reference_material_publication": "not_packaged_in_public_repo",
             "reference_locator": case.source_rel,
             "reference_fragment_digest": hashlib.sha256(
