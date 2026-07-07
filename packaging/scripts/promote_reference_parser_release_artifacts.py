@@ -214,12 +214,14 @@ def verify_source_basis(path: Path, source_basis: dict[str, Any], issues: list[s
     ):
         issues.append(f"legacy_source_commit_field:{path.name}")
     container = payload.get("source") if isinstance(payload.get("source"), dict) else payload
-    for key in (
-        "source_commit_basis",
-        "source_tree_digest",
-        "source_tree_digest_algorithm",
-        "source_file_count",
+    source_commit_basis = container.get("source_commit_basis")
+    if not (
+        isinstance(source_commit_basis, str)
+        and len(source_commit_basis) == 40
+        and all(char in "0123456789abcdef" for char in source_commit_basis)
     ):
+        issues.append(f"invalid_source_basis_commit:{path.name}")
+    for key in ("source_tree_digest", "source_tree_digest_algorithm", "source_file_count"):
         if container.get(key) != source_basis.get(key):
             issues.append(f"source_basis_mismatch:{path.name}:{key}")
 
