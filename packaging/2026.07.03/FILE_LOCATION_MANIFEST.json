@@ -24323,14 +24323,14 @@
       "installer_destination_hint": "reference parser package inputs",
       "path": "reference-parsers/SBOM.json",
       "role": "reference_parser",
-      "sha256": "add686c0c4c563fe335267456ab70e877ed1031e5fc43a274390f21c6c988ff4"
+      "sha256": "f71674ee7515f1914fa9f03336a9577ffbd21d113a30c3917981dcf740ab44fe"
     },
     {
       "bytes": 2891,
       "installer_destination_hint": "reference parser package inputs",
       "path": "reference-parsers/SHA256SUMS",
       "role": "reference_parser",
-      "sha256": "ca1554fdd9ce5ee04e402b00b7ec55121d796c73366a4964e6776cc5545e2991"
+      "sha256": "3c31373248e0811497bc1a9797ced4d73c1f3f9930fde7f539942f93fdac01c3"
     },
     {
       "bytes": 1224696,
@@ -24533,7 +24533,7 @@
       "installer_destination_hint": "reference parser package inputs",
       "path": "reference-parsers/package_manifest.json",
       "role": "reference_parser",
-      "sha256": "4534e759edc4819b12ddae150ca838120d49854f3ec916a17cb627146699a06f"
+      "sha256": "84cc21098a904178cc8bf5b4c00db3869bffab45ab4f1316eb0d1ca883ccd6c3"
     },
     {
       "bytes": 1309,
@@ -29576,7 +29576,7 @@
       "sha256": "6670494ec312d3086dc265d8fd01031edf0b446a617ac8b4c51505d986ae9df6"
     }
   ],
-  "generated_at_utc": "2026-07-07T14:09:22+00:00",
+  "generated_at_utc": "2026-07-07T14:13:45+00:00",
   "release_date": "2026.07.03",
   "schema_id": "scratchbird.prerelease_file_location_manifest.v1"
 }

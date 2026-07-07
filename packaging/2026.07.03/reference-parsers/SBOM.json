@@ -149,7 +149,7 @@
     {
       "bytes": 1944,
       "path": "package_manifest.json",
-      "sha256": "4534e759edc4819b12ddae150ca838120d49854f3ec916a17cb627146699a06f"
+      "sha256": "84cc21098a904178cc8bf5b4c00db3869bffab45ab4f1316eb0d1ca883ccd6c3"
     },
     {
       "bytes": 1309,
@@ -167,7 +167,7 @@
       "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
     }
   ],
-  "generated_at_utc": "2026-07-07T14:09:20+00:00",
+  "generated_at_utc": "2026-07-07T14:13:44+00:00",
   "name": "reference-parsers",
   "schema_id": "scratchbird.release_package_sbom.v1"
 }

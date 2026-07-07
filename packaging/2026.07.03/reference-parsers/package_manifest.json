@@ -37,7 +37,7 @@
   "schema_id": "scratchbird.reference_parser_release_package_manifest.v1",
   "source_basis_semantics": "source_commit_basis is the checked-out implementation revision used when staging this temporary package; source_tree_digest is the verifiable parser implementation/test surface identity.",
   "source_branch_basis": "main",
-  "source_commit_basis": "856f3368fc03c6155a3c1707d5e14ed6ea1ad249",
+  "source_commit_basis": "afa5046b64422b34d0c88cb830cc5c6f513f5daf",
   "source_file_count": 985,
   "source_reference_manifest": "support/reference_parser_source_reference_manifest.json",
   "source_roots": [
@@ -48,7 +48,7 @@
     "project/tests/reference_regression",
     "public_execution_plan"
   ],
-  "source_tree_digest": "bb616b4041945006545d31b4b9861b7364800c3923c2d6becc5f9c5415911e9e",
+  "source_tree_digest": "6fcd9d27fa73a34ca842b3220f07ca41612a8e464bd7042f6dd7e481b73d35a6",
   "source_tree_digest_algorithm": "sha256(path\\0bytes\\0sha256\\n)",
   "support_udr_package": "../udr/optional-parser-support",
   "third_party_notices": "legal/THIRD_PARTY_NOTICES.md"
