@@ -273,12 +273,22 @@ def run_matrices(args: argparse.Namespace, repo_root: Path, project_root: Path) 
     return records
 
 
+def short_windows_work_root(build_root: Path, work_root: Path, name: str) -> Path:
+    if os.name != "nt":
+        return work_root
+    return build_root / "_short" / name
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    project_root = args.project_root.resolve()
-    build_root = args.build_root.resolve()
-    args.work_root = args.work_root.resolve()
-    output = args.output.resolve()
+    repo_root = stable_absolute(args.repo_root)
+    project_root = stable_absolute(args.project_root)
+    build_root = stable_absolute(args.build_root)
+    args.work_root = stable_absolute(args.work_root)
+    output = stable_absolute(args.output)
     if not repo_root.is_dir() or not project_root.is_dir() or not build_root.is_dir():
         fail("input_root_missing")
     if project_root.name != "project":
@@ -288,6 +298,7 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
     except ValueError:
         fail("output_must_be_under_build_root")
     reject_private_reference(output_record, "output")
+    args.work_root = short_windows_work_root(build_root, args.work_root, "p113")
 
     controls = check_project_controls(repo_root, project_root)
     script_coverage = check_gate_script_coverage(repo_root, project_root)
@@ -337,10 +348,10 @@ def main() -> int:
     args = parser.parse_args()
 
     evidence = build_evidence(args)
-    output = args.output.resolve()
+    output = stable_absolute(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"public_production_feature_audit_output={output.relative_to(args.build_root.resolve()).as_posix()}")
+    print(f"public_production_feature_audit_output={output.relative_to(stable_absolute(args.build_root)).as_posix()}")
     print(f"public_production_feature_audit_sha256={evidence['evidence_sha256']}")
     print("public_production_feature_audit_gate=passed")
     return 0

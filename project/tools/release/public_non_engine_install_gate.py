@@ -67,6 +67,17 @@ def reject_private_reference(value: str, context: str) -> None:
             fail(f"private_reference_recorded:{context}:{value}")
 
 
+def io_path(path: Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
 def run(command: list[str], *, cwd: Path) -> str:
     result = subprocess.run(
         command,
@@ -87,7 +98,7 @@ def safe_rmtree(path: Path, work_root: Path) -> None:
     root = work_root.resolve()
     require(resolved == root or root in resolved.parents, f"refusing_to_remove:{resolved}")
     if resolved.exists():
-        shutil.rmtree(resolved)
+        shutil.rmtree(io_path(resolved), ignore_errors=True)
 
 
 def require_file(path: Path, root: Path, label: str) -> str:
@@ -96,7 +107,7 @@ def require_file(path: Path, root: Path, label: str) -> str:
 
 
 def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[Path, Path]:
-    nested_build = work_root / "nested-build"
+    nested_build = work_root / "build"
     prefix = work_root / "install"
     configure_command = [
         str(args.cmake),
@@ -152,6 +163,16 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
     return nested_build, prefix
 
 
+def short_windows_work_root(build_root: Path, work_root: Path, name: str) -> Path:
+    if os.name != "nt":
+        return work_root
+    return build_root / "_short" / name
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
 def validate_install(prefix: Path) -> dict[str, Any]:
     required_files: list[str] = []
     for required in REQUIRED_NON_ENGINE_FILES:
@@ -170,11 +191,11 @@ def validate_install(prefix: Path) -> dict[str, Any]:
 
 
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    project_root = args.project_root.resolve()
-    build_root = args.build_root.resolve()
-    work_root = args.work_root.resolve()
-    output = args.output.resolve()
+    repo_root = stable_absolute(args.repo_root)
+    project_root = stable_absolute(args.project_root)
+    build_root = stable_absolute(args.build_root)
+    work_root = stable_absolute(args.work_root)
+    output = stable_absolute(args.output)
     require(repo_root.is_dir() and project_root.is_dir() and build_root.is_dir(),
             "input_root_missing")
     require(project_root == repo_root / "project", "project_root_mismatch")
@@ -191,7 +212,12 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
 
     safe_rmtree(work_root, work_root)
     work_root.mkdir(parents=True, exist_ok=True)
-    nested_build, prefix = configure_build_install(args, work_root)
+    nested_work_root = short_windows_work_root(build_root, work_root, "p140")
+    if nested_work_root != work_root:
+        safe_rmtree(nested_work_root, build_root)
+        nested_work_root.mkdir(parents=True, exist_ok=True)
+    args.project_root = project_root
+    nested_build, prefix = configure_build_install(args, nested_work_root)
     install_evidence = validate_install(prefix)
 
     return {
@@ -227,11 +253,11 @@ def main() -> int:
     args = parser.parse_args()
 
     evidence = build_evidence(args)
-    output = args.output.resolve()
+    output = stable_absolute(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
-    print(f"public_non_engine_install_output={output.relative_to(args.build_root.resolve()).as_posix()}")
+    print(f"public_non_engine_install_output={output.relative_to(stable_absolute(args.build_root)).as_posix()}")
     print("public_non_engine_install_gate=passed")
     return 0
 

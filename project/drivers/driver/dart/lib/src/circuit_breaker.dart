@@ -28,7 +28,7 @@ class CircuitBreaker {
   int _failureCount = 0;
   int _successCount = 0;
   int _halfOpenRequests = 0;
-  int? _lastFailureAt;
+  Stopwatch? _openClock;
 
   CircuitBreaker([CircuitBreakerConfig? config]) : config = config ?? CircuitBreakerConfig();
 
@@ -39,7 +39,7 @@ class CircuitBreaker {
       return true;
     }
     if (_state == CircuitState.open) {
-      if (_lastFailureAt != null && (DateTime.now().millisecondsSinceEpoch - _lastFailureAt!) >= config.recoveryTimeoutMs) {
+      if (_openClock != null && _openClock!.elapsedMilliseconds >= config.recoveryTimeoutMs) {
         _transitionToHalfOpen();
         return _allowHalfOpenRequest();
       }
@@ -76,7 +76,12 @@ class CircuitBreaker {
       return;
     }
     if (_state == CircuitState.open) {
-      _lastFailureAt = DateTime.now().millisecondsSinceEpoch;
+      final clock = _openClock;
+      if (clock != null) {
+        clock
+          ..reset()
+          ..start();
+      }
     }
   }
 
@@ -97,11 +102,12 @@ class CircuitBreaker {
     _failureCount = 0;
     _successCount = 0;
     _halfOpenRequests = 0;
+    _openClock = null;
   }
 
   void _transitionToOpen() {
     _state = CircuitState.open;
-    _lastFailureAt = DateTime.now().millisecondsSinceEpoch;
+    _openClock = Stopwatch()..start();
   }
 
   void _transitionToClosed() {
@@ -109,6 +115,6 @@ class CircuitBreaker {
     _failureCount = 0;
     _successCount = 0;
     _halfOpenRequests = 0;
-    _lastFailureAt = null;
+    _openClock = null;
   }
 }

@@ -16,3 +16,6 @@ packaging/**/*.so -diff -text
 packaging/**/*.dylib -diff -text
 packaging/**/*.lib -diff -text
 packaging/**/*.a -diff -text
+
+project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack/** text eol=lf
+project/drivers/adaptor/scratchbird-dbeaver-driver/plugins/org.jkiss.dbeaver.ext.scratchbird/resources/** text eol=lf

@@ -172,12 +172,20 @@ END
     private static string LocateFixture(string relative)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        var stagedRelative = relative.StartsWith("project/", StringComparison.Ordinal)
+            ? relative["project/".Length..]
+            : relative;
         while (dir != null)
         {
             var candidate = Path.Combine(dir.FullName, relative);
             if (File.Exists(candidate))
             {
                 return candidate;
+            }
+            var stagedCandidate = Path.Combine(dir.FullName, stagedRelative);
+            if (File.Exists(stagedCandidate))
+            {
+                return stagedCandidate;
             }
             dir = dir.Parent;
         }

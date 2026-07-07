@@ -160,8 +160,13 @@ def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def ensure_build_path(repo_root: Path, path: Path) -> Path:
+def ensure_build_path(repo_root: Path, build_root: Path, path: Path) -> Path:
     resolved = path.resolve()
+    try:
+        resolved.relative_to(build_root.resolve())
+        return resolved
+    except ValueError:
+        pass
     try:
         rel = resolved.relative_to(repo_root)
     except ValueError as exc:
@@ -425,12 +430,14 @@ def generate_fixture(
     repo_root: Path,
     artifact_root: Path,
     *,
+    build_root: Path | None = None,
     suite_root: Path | None = None,
     target_script_ids: list[str] | None = None,
     run_id: str = "IPAR_DETERMINISTIC_CONTRACT_FIXTURE",
 ) -> list[Path]:
     repo_root = repo_root.resolve()
-    artifact_root = ensure_build_path(repo_root, artifact_root)
+    build_root = (build_root or repo_root / "build").resolve()
+    artifact_root = ensure_build_path(repo_root, build_root, artifact_root)
     suite_root = (suite_root or repo_root / SUITE_ROOT_REL).resolve()
     schema = load_json(suite_root / SCHEMA_NAME)
     manifest = load_json(suite_root / MANIFEST_NAME)
@@ -456,6 +463,7 @@ def generate_fixture(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
+    parser.add_argument("--build-root", type=Path)
     parser.add_argument("--suite-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--target-script", action="append", default=[])
@@ -468,6 +476,7 @@ def main() -> int:
     paths = generate_fixture(
         args.repo_root,
         args.artifact_root,
+        build_root=args.build_root,
         suite_root=args.suite_root,
         target_script_ids=args.target_script or None,
         run_id=args.run_id,

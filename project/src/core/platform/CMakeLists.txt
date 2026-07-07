@@ -72,12 +72,15 @@ endif()
 if(SB_LLVM_LINK_MODE STREQUAL "disabled")
   set(SB_LLVM_LIBRARY "" CACHE FILEPATH "ScratchBird LLVM library" FORCE)
 elseif(NOT SB_LLVM_LIBRARY)
-  if(EXISTS "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-23.so")
-    set(SB_LLVM_LIBRARY "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-23.so" CACHE FILEPATH
+  if(EXISTS "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.so")
+    set(SB_LLVM_LIBRARY "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.so" CACHE FILEPATH
+      "ScratchBird LLVM library" FORCE)
+  elseif(EXISTS "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a")
+    set(SB_LLVM_LIBRARY "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a" CACHE FILEPATH
       "ScratchBird LLVM library" FORCE)
   else()
     find_library(SB_LLVM_LIBRARY
-      NAMES LLVM LLVM-23 LLVM-21 LLVM-20 LLVM-19 LLVM-18 LLVM-15
+      NAMES LLVM LLVM-${SB_LLVM_MIN_MAJOR}git LLVM-${SB_LLVM_MIN_MAJOR} LLVM-23git LLVM-23 LLVM-21 LLVM-20 LLVM-19 LLVM-18 LLVM-15
       HINTS
         "${SB_LLVM_TOOLS_ROOT}/lib"
         "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib"
@@ -89,18 +92,46 @@ elseif(NOT SB_LLVM_LIBRARY)
     )
     if(NOT SB_LLVM_LIBRARY)
       foreach(SB_LLVM_SONAME_CANDIDATE IN ITEMS
+          "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_TOOLS_ROOT}/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.dll.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}git.a"
+          "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
           "/usr/lib/x86_64-linux-gnu/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"

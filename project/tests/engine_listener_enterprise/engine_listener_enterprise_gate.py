@@ -16,12 +16,14 @@ import csv
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import shlex
 import subprocess
 import sys
+import time
 from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
@@ -10464,7 +10466,8 @@ def package_json_errors(path: Path,
                         expected_target: str) -> list[str]:
     relative = path.relative_to(package_root).as_posix()
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        with open(native_package_io_path(path), "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
     except json.JSONDecodeError as exc:
         return [f"package_json_invalid:{relative}:{exc}"]
     if not isinstance(loaded, dict):
@@ -10528,7 +10531,7 @@ def package_json_errors(path: Path,
 def package_csv_errors(path: Path, package_root: Path, expected_target: str) -> list[str]:
     relative = path.relative_to(package_root).as_posix()
     try:
-        with path.open(newline="", encoding="utf-8") as handle:
+        with open(native_package_io_path(path), newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
     except csv.Error as exc:
         return [f"package_csv_invalid:{relative}:{exc}"]
@@ -10567,7 +10570,7 @@ def validate_native_proof_package_content(package_root: Path,
         return [f"unknown_native_package_target:{expected_target}"]
     for artifact in NATIVE_PLATFORM_RETURN_ARTIFACTS:
         path = package_root / artifact
-        if not path.exists() or not path.is_file():
+        if not native_package_is_file(path):
             errors.append(f"package_required_artifact_missing:{artifact}")
     if errors:
         return errors
@@ -10642,18 +10645,45 @@ def junit_fixture_text(test_name: str,
     )
 
 
+def native_package_io_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = str(path.resolve())
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    return "\\\\?\\" + resolved
+
+
+def write_native_package_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(native_package_io_path(path), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def native_package_is_file(path: Path) -> bool:
+    if os.name != "nt":
+        return path.is_file()
+    return os.path.isfile(native_package_io_path(path))
+
+
 def write_synthetic_native_proof_package(package_root: Path,
                                          expected_target: str,
                                          mutation: str | None = None) -> None:
-    package_root.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(5):
+        package_root.mkdir(parents=True, exist_ok=True)
+        if package_root.is_dir():
+            break
+        time.sleep(0.1)
     for artifact in NATIVE_PLATFORM_JUNIT_ARTIFACTS:
-        (package_root / artifact).write_text(
+        artifact_path = package_root / artifact
+        write_native_package_text(
+            artifact_path,
             junit_fixture_text(expected_target, mutation, artifact),
-            encoding="utf-8",
         )
     system_name, system_processor = NATIVE_PLATFORM_PACKAGE_TARGET_CACHE[expected_target]
     pointer_size = "4" if mutation == "cmake_32_bit" else "8"
-    (package_root / "CMakeCache.txt").write_text(
+    write_native_package_text(
+        package_root / "CMakeCache.txt",
         "\n".join(
             (
                 f"CMAKE_SYSTEM_NAME:STRING={system_name}",
@@ -10664,12 +10694,10 @@ def write_synthetic_native_proof_package(package_root: Path,
                 "",
             )
         ),
-        encoding="utf-8",
     )
     log_marker = "unsupported-profile" if mutation == "unsupported_profile_marker" else "all native gates passed"
     log_path = package_root / "Testing/Temporary/LastTest.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(log_marker + "\n", encoding="utf-8")
+    write_native_package_text(log_path, log_marker + "\n")
     gate_dir = package_root / "tests/engine_listener_enterprise"
     gate_dir.mkdir(parents=True, exist_ok=True)
     handoff = {
@@ -10715,20 +10743,22 @@ def write_synthetic_native_proof_package(package_root: Path,
         ),
         "product_completion_claim": False,
     }
-    (gate_dir / "engine_listener_native_platform_handoff_gate.json").write_text(
+    write_native_package_text(
+        gate_dir / "engine_listener_native_platform_handoff_gate.json",
         json.dumps(handoff, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    (gate_dir / "engine_listener_gold_enterprise_readiness_gate.json").write_text(
+    write_native_package_text(
+        gate_dir / "engine_listener_gold_enterprise_readiness_gate.json",
         json.dumps(gold, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    (gate_dir / "engine_listener_third_audit_evidence_package_gate.json").write_text(
+    write_native_package_text(
+        gate_dir / "engine_listener_third_audit_evidence_package_gate.json",
         json.dumps(third_audit, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    with (gate_dir / "engine_listener_native_platform_handoff_gate.csv").open(
-        "w", newline="", encoding="utf-8"
+    csv_path = gate_dir / "engine_listener_native_platform_handoff_gate.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(
+        native_package_io_path(csv_path), "w", newline="", encoding="utf-8"
     ) as handle:
         fieldnames = [
             "platform",
@@ -10741,7 +10771,7 @@ def write_synthetic_native_proof_package(package_root: Path,
         writer.writeheader()
         writer.writerows(handoff["rows"])
     if mutation == "missing_required_artifact":
-        (package_root / "native-sblr-surface.xml").unlink()
+        os.unlink(native_package_io_path(package_root / "native-sblr-surface.xml"))
 
 
 def validate_native_platform_proof_package_import(project_root: Path,
@@ -10759,9 +10789,15 @@ def validate_native_platform_proof_package_import(project_root: Path,
             f"expected={','.join(sorted(expected_targets))}:"
             f"actual={','.join(sorted(handoff_targets))}"
         )
-    fixture_root = build_root / "tests/engine_listener_enterprise/native_platform_proof_package_import_contract"
+    fixture_root = build_root / "tests/eler_np_import"
     if fixture_root.exists():
-        shutil.rmtree(fixture_root)
+        shutil.rmtree(fixture_root, ignore_errors=True)
+    for _attempt in range(5):
+        if not fixture_root.exists():
+            break
+        time.sleep(0.1)
+        shutil.rmtree(fixture_root, ignore_errors=True)
+    fixture_root.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     try:
         for target in sorted(expected_targets):
@@ -10827,7 +10863,7 @@ def validate_native_platform_proof_package_import(project_root: Path,
             )
     finally:
         if fixture_root.exists():
-            shutil.rmtree(fixture_root)
+            shutil.rmtree(fixture_root, ignore_errors=True)
     return {
         "schema_version": 1,
         "gate": "ELER-005-NATIVE-PROOF-PACKAGE-IMPORT",

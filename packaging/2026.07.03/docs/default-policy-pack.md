@@ -7,7 +7,7 @@ The pack is create-time input only. `CREATE DATABASE` validates the pack manifes
 - Policy pack: `default-local-password`
 - Policy generation: `1`
 - Default policy count: `58`
-- Content SHA-256: `1dfb45dd2e167a65f2094be9d70775f3add122b3065c727db434e1549a420b93`
+- Content SHA-256: `7773d76bb23126e65711f80e23d3e6a7d25b7956f008199b159df3d1d4d2d2c8`
 - Source catalog: `policies/default_policy_catalog.json`
 - Defaults resource: `policies/policy_defaults.json`
 

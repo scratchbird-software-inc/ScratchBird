@@ -392,7 +392,7 @@ def validate_compiled_sample(
                 "__SB_ROUTE__": "listener-parser",
                 "__SB_PARSER_MODE__": "server-parser",
                 "__SB_PAGE_SIZE__": "8k",
-                "__SB_ARTIFACT_ROOT__": str((output_root / "artifacts").resolve()),
+                "__SB_ARTIFACT_ROOT__": str((output_root / "artifacts").absolute()),
             },
             namespace_ancestor_mode="chain",
             surface_profile=surface_profile,
@@ -499,7 +499,7 @@ def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve()
     suite_root = args.suite_root.resolve()
-    output_root = args.output_root.resolve()
+    output_root = args.output_root.absolute()
 
     errors: list[str] = []
     language_manifest: dict[str, Any] | None = None

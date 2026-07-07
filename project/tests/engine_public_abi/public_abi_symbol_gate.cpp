@@ -16,6 +16,18 @@
 namespace {
 
 std::string shell_quote(const std::string& input) {
+#ifdef _WIN32
+  std::string out = "\"";
+  for (char c : input) {
+    if (c == '"') {
+      out += "\\\"";
+    } else {
+      out += c;
+    }
+  }
+  out += '"';
+  return out;
+#else
   std::string out = "'";
   for (char c : input) {
     if (c == '\'') {
@@ -26,6 +38,7 @@ std::string shell_quote(const std::string& input) {
   }
   out += "'";
   return out;
+#endif
 }
 
 std::vector<std::string> command_lines(const std::string& command) {
@@ -69,7 +82,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::string library_path = argv[1];
+#ifdef _WIN32
+  auto lines = command_lines("objdump -p " + shell_quote(library_path));
+#else
   auto lines = command_lines("nm -D --defined-only " + shell_quote(library_path));
+#endif
   if (lines.empty()) {
     return 3;
   }

@@ -110,12 +110,27 @@ def rel(path: Path, root: Path) -> str:
     return relative
 
 
+def io_path(path: Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
 def safe_rmtree(path: Path, allowed_root: Path) -> None:
     resolved = path.resolve()
     root = allowed_root.resolve()
     require(resolved == root or root in resolved.parents, f"refusing_to_remove:{resolved}")
     if resolved.exists():
-        shutil.rmtree(resolved)
+        shutil.rmtree(io_path(resolved), ignore_errors=True)
 
 
 def run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -287,10 +302,10 @@ def run_required_ctests(args: argparse.Namespace, repo_root: Path, build_root: P
 
 
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    build_root = args.build_root.resolve()
-    work_root = args.work_root.resolve()
-    output = args.output.resolve()
+    repo_root = stable_absolute(args.repo_root)
+    build_root = stable_absolute(args.build_root)
+    work_root = stable_absolute(args.work_root)
+    output = stable_absolute(args.output)
     require(repo_root.is_dir(), "repo_root_missing")
     require((repo_root / "project").is_dir(), "repo_project_missing")
     require(build_root.is_dir(), "build_root_missing")
@@ -362,7 +377,7 @@ def main() -> int:
     args = parser.parse_args()
 
     evidence = build_evidence(args)
-    output = args.output.resolve()
+    output = stable_absolute(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"public_example_smoke_operations={len(evidence['operations'])}")

@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <sstream>
 #include <string>
 #include <vector>
 

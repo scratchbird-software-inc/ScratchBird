@@ -320,6 +320,7 @@ def validate_tool_matrix(
 
 def validate_artifacts(
     repo_root: Path,
+    build_root: Path,
     artifact_root: Path,
     gate_input: dict[str, Any],
     *,
@@ -347,11 +348,14 @@ def validate_artifacts(
     for summary_path in run_dirs:
         run_root = summary_path.parent
         try:
-            rel = run_root.relative_to(repo_root)
-            if not rel.parts or rel.parts[0] != "build":
-                errors.append(f"artifact_schema:run_artifacts_outside_build:{run_root}")
+            run_root.relative_to(build_root)
         except ValueError:
-            errors.append(f"artifact_schema:run_artifacts_outside_repo:{run_root}")
+            try:
+                rel = run_root.relative_to(repo_root)
+                if not rel.parts or rel.parts[0] != "build":
+                    errors.append(f"artifact_schema:run_artifacts_outside_build:{run_root}")
+            except ValueError:
+                errors.append(f"artifact_schema:run_artifacts_outside_repo:{run_root}")
         for filename in required:
             if not (run_root / filename).is_file():
                 errors.append(f"artifact_schema:{run_root}:missing:{filename}")
@@ -663,6 +667,7 @@ def write_report(path: Path, mode: str, errors: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
+    parser.add_argument("--build-root", type=Path)
     parser.add_argument(
         "--mode",
         choices=("gate-input", "tool-inventory", "artifact-schema", "all"),
@@ -675,6 +680,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
+    build_root = (args.build_root or repo_root / "build").resolve()
     errors: list[str] = []
     try:
         gate_input = load_json(repo_root / INPUT_REL)
@@ -703,6 +709,7 @@ def main() -> int:
         errors.extend(
             validate_artifacts(
                 repo_root,
+                build_root,
                 artifact_root,
                 gate_input,
                 require_complete_matrix=args.require_complete_matrix,

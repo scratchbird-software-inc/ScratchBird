@@ -74,8 +74,13 @@ def child_env(repo_root: Path) -> dict[str, str]:
     return env
 
 
-def ensure_build_path(repo_root: Path, path: Path) -> Path:
+def ensure_build_path(repo_root: Path, build_root: Path, path: Path) -> Path:
     resolved = path.resolve()
+    try:
+        resolved.relative_to(build_root.resolve())
+        return resolved
+    except ValueError:
+        pass
     try:
         rel = resolved.relative_to(repo_root)
     except ValueError as exc:
@@ -85,28 +90,28 @@ def ensure_build_path(repo_root: Path, path: Path) -> Path:
     return resolved
 
 
-def artifact_inputs(repo_root: Path, artifact_roots: list[Path], shapes: set[str]) -> list[Path]:
+def artifact_inputs(repo_root: Path, build_root: Path, artifact_roots: list[Path], shapes: set[str]) -> list[Path]:
     inputs: list[Path] = []
     for root in artifact_roots:
-        build_root = ensure_build_path(repo_root, root)
+        artifact_root = ensure_build_path(repo_root, build_root, root)
         for shape in ("json", "jsonl", "csv"):
             if shape not in shapes:
                 continue
-            candidate = build_root / IPAR_ARTIFACT_NAMES[shape]
+            candidate = artifact_root / IPAR_ARTIFACT_NAMES[shape]
             if candidate.is_file():
                 inputs.append(candidate)
     return inputs
 
 
-def artifact_shape_presence(repo_root: Path, artifact_roots: list[Path], shapes: set[str]) -> tuple[list[str], list[str]]:
+def artifact_shape_presence(repo_root: Path, build_root: Path, artifact_roots: list[Path], shapes: set[str]) -> tuple[list[str], list[str]]:
     present: list[str] = []
     missing: list[str] = []
     for root in artifact_roots:
-        build_root = ensure_build_path(repo_root, root)
+        artifact_root = ensure_build_path(repo_root, build_root, root)
         for shape in ("json", "jsonl", "csv"):
             if shape not in shapes:
                 continue
-            candidate = build_root / IPAR_ARTIFACT_NAMES[shape]
+            candidate = artifact_root / IPAR_ARTIFACT_NAMES[shape]
             if candidate.is_file() and candidate.stat().st_size > 0:
                 present.append(str(candidate))
             else:
@@ -114,14 +119,14 @@ def artifact_shape_presence(repo_root: Path, artifact_roots: list[Path], shapes:
     return present, missing
 
 
-def missing_artifact_shapes(repo_root: Path, artifact_roots: list[Path], shapes: set[str]) -> list[str]:
+def missing_artifact_shapes(repo_root: Path, build_root: Path, artifact_roots: list[Path], shapes: set[str]) -> list[str]:
     missing: list[str] = []
     for root in artifact_roots:
-        build_root = ensure_build_path(repo_root, root)
+        artifact_root = ensure_build_path(repo_root, build_root, root)
         for shape in ("json", "jsonl", "csv"):
             if shape not in shapes:
                 continue
-            candidate = build_root / IPAR_ARTIFACT_NAMES[shape]
+            candidate = artifact_root / IPAR_ARTIFACT_NAMES[shape]
             if not candidate.is_file() or candidate.stat().st_size == 0:
                 missing.append(str(candidate))
     return missing
@@ -353,6 +358,7 @@ def validate_driver_route_artifacts(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
+    parser.add_argument("--build-root", type=Path)
     parser.add_argument("--artifact-root", type=Path, action="append", default=[])
     parser.add_argument("--metrics-input", type=Path, action="append", default=[])
     parser.add_argument("--output-root", type=Path)
@@ -388,6 +394,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve()
+    build_root = (args.build_root or repo_root / "build").resolve()
     output_root = (
         args.output_root
         or repo_root / "build" / "ipar-performance-proof" / "driver-metrics-gate"
@@ -401,30 +408,32 @@ def main() -> int:
     generated_fixture_files: list[Path] = []
 
     try:
-        ensure_build_path(repo_root, output_root)
-        ensure_build_path(repo_root, report_path)
+        ensure_build_path(repo_root, build_root, output_root)
+        ensure_build_path(repo_root, build_root, report_path)
         shapes = {"json", "jsonl", "csv"} if args.shape == "all" else {args.shape}
         if args.generate_deterministic_fixture:
             if not args.artifact_root:
                 args.artifact_root = [repo_root / "build" / "drivers" / "ipar-metrics-proof"]
-            generated_fixture_root = ensure_build_path(repo_root, args.artifact_root[0])
+            generated_fixture_root = ensure_build_path(repo_root, build_root, args.artifact_root[0])
             generated_fixture_files = generate_fixture(
                 repo_root,
                 generated_fixture_root,
+                build_root=build_root,
                 target_script_ids=args.target_script or None,
             )
         elif args.generate_fixture_if_missing:
             if not args.artifact_root:
                 args.artifact_root = [repo_root / "build" / "drivers" / "ipar-metrics-proof"]
-            present_shapes, _missing_shapes = artifact_shape_presence(repo_root, args.artifact_root, shapes)
+            present_shapes, _missing_shapes = artifact_shape_presence(repo_root, build_root, args.artifact_root, shapes)
             if not present_shapes:
-                generated_fixture_root = ensure_build_path(repo_root, args.artifact_root[0])
+                generated_fixture_root = ensure_build_path(repo_root, build_root, args.artifact_root[0])
                 generated_fixture_files = generate_fixture(
                     repo_root,
                     generated_fixture_root,
+                    build_root=build_root,
                     target_script_ids=args.target_script or None,
                 )
-        present_shapes, missing_shapes = artifact_shape_presence(repo_root, args.artifact_root, shapes)
+        present_shapes, missing_shapes = artifact_shape_presence(repo_root, build_root, args.artifact_root, shapes)
         if args.skip_if_no_artifacts and args.artifact_root and not present_shapes:
             print("driver_ipar_metrics_gate=skip:no_artifacts")
             return 77
@@ -432,8 +441,8 @@ def main() -> int:
             raise ValueError(
                 "IPAR artifact root missing required shape(s): " + ", ".join(missing_shapes)
             )
-        inputs = artifact_inputs(repo_root, args.artifact_root, shapes)
-        inputs.extend(ensure_build_path(repo_root, item) for item in args.metrics_input)
+        inputs = artifact_inputs(repo_root, build_root, args.artifact_root, shapes)
+        inputs.extend(ensure_build_path(repo_root, build_root, item) for item in args.metrics_input)
         if args.skip_if_no_artifacts and not inputs:
             print("driver_ipar_metrics_gate=skip:no_artifacts")
             return 77
@@ -452,6 +461,8 @@ def main() -> int:
         str(IPAR_GATE),
         "--repo-root",
         str(repo_root),
+        "--build-root",
+        str(build_root),
         "--mode",
         "validate-artifacts",
         "--output-root",

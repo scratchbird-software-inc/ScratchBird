@@ -108,9 +108,15 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def ensure_output_policy(repo_root: Path, output_root: Path) -> None:
+def ensure_output_policy(repo_root: Path, build_root: Path, output_root: Path) -> None:
     resolved_repo = repo_root.resolve()
+    resolved_build = build_root.resolve()
     resolved_output = output_root.resolve()
+    try:
+        resolved_output.relative_to(resolved_build)
+        return
+    except ValueError:
+        pass
     try:
         rel = resolved_output.relative_to(resolved_repo)
     except ValueError as exc:
@@ -1168,6 +1174,7 @@ def unknown_requested_scripts(schema: dict[str, Any], requested: list[str] | Non
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
+    parser.add_argument("--build-root", type=Path)
     parser.add_argument("--suite-root", type=Path, default=SUITE_ROOT)
     parser.add_argument("--schema", type=Path)
     parser.add_argument("--output-root", type=Path)
@@ -1188,8 +1195,9 @@ def main() -> int:
     suite_root = args.suite_root.resolve()
     schema_path = (args.schema or suite_root / SCHEMA_NAME).resolve()
     output_root = (args.output_root or repo_root / "build" / "ipar-performance-proof").resolve()
+    build_root = (args.build_root or repo_root / "build").resolve()
     try:
-        ensure_output_policy(repo_root, output_root)
+        ensure_output_policy(repo_root, build_root, output_root)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1

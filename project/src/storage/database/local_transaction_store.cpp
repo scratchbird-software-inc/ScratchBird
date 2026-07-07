@@ -50,6 +50,7 @@ namespace core_hash = scratchbird::core::hash;
 using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
+using scratchbird::core::platform::byte;
 using scratchbird::core::platform::u16;
 using scratchbird::storage::disk::FileDevice;
 using scratchbird::storage::disk::FileOpenMode;
@@ -82,6 +83,11 @@ Status StoreOkStatus();
 struct TransactionInventoryCacheSignature {
   std::uintmax_t file_size = 0;
   std::int64_t write_time_count = 0;
+  bool publish_journal_present = false;
+  std::uintmax_t publish_journal_size = 0;
+  std::int64_t publish_journal_write_time_count = 0;
+  std::string publish_journal_hash;
+  std::string inventory_root_body_hash;
 };
 
 struct CachedTransactionInventory {
@@ -98,6 +104,52 @@ std::mutex& TransactionInventoryCacheMutex() {
 std::map<std::string, CachedTransactionInventory>& TransactionInventoryCache() {
   static std::map<std::string, CachedTransactionInventory> cache;
   return cache;
+}
+
+std::string Sha256BytesHex(const byte* payload, std::size_t size) {
+  const auto digest = core_hash::ComputeSha256Digest(payload, size);
+  return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
+}
+
+std::string ReadWholeFileHash(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+  const std::string content((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+  return Sha256BytesHex(reinterpret_cast<const byte*>(content.data()), content.size());
+}
+
+std::string ReadTransactionInventoryRootBodyHash(const std::string& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+  SerializedDatabaseHeader header_bytes{};
+  input.read(reinterpret_cast<char*>(header_bytes.data()),
+             static_cast<std::streamsize>(header_bytes.size()));
+  if (static_cast<std::size_t>(input.gcount()) != header_bytes.size()) {
+    return {};
+  }
+  const auto parsed_header = ParseDatabaseHeader(header_bytes);
+  if (!parsed_header.ok() ||
+      parsed_header.header.page_size <= kPageHeaderSerializedBytes) {
+    return {};
+  }
+  const auto body_offset = CheckedPageBodyOffset(parsed_header.header.page_size,
+                                                 kTransactionInventoryPageNumber,
+                                                 kPageHeaderSerializedBytes);
+  if (!body_offset.ok()) {
+    return {};
+  }
+  std::vector<byte> body(parsed_header.header.page_size - kPageHeaderSerializedBytes, 0);
+  input.seekg(static_cast<std::streamoff>(body_offset.offset), std::ios::beg);
+  input.read(reinterpret_cast<char*>(body.data()), static_cast<std::streamsize>(body.size()));
+  if (static_cast<std::size_t>(input.gcount()) != body.size()) {
+    return {};
+  }
+  return Sha256BytesHex(body.data(), body.size());
 }
 
 std::optional<TransactionInventoryCacheSignature> ReadTransactionInventoryCacheSignature(
@@ -118,6 +170,20 @@ std::optional<TransactionInventoryCacheSignature> ReadTransactionInventoryCacheS
   signature.file_size = file_size;
   signature.write_time_count =
       static_cast<std::int64_t>(write_time.time_since_epoch().count());
+  const std::filesystem::path publish_journal_path(path + ".sb.txn_publish");
+  const auto journal_size = std::filesystem::file_size(publish_journal_path, ignored);
+  if (!ignored) {
+    const auto journal_write_time =
+        std::filesystem::last_write_time(publish_journal_path, ignored);
+    if (!ignored) {
+      signature.publish_journal_present = true;
+      signature.publish_journal_size = journal_size;
+      signature.publish_journal_write_time_count =
+          static_cast<std::int64_t>(journal_write_time.time_since_epoch().count());
+      signature.publish_journal_hash = ReadWholeFileHash(publish_journal_path);
+    }
+  }
+  signature.inventory_root_body_hash = ReadTransactionInventoryRootBodyHash(path);
   return signature;
 }
 
@@ -125,7 +191,12 @@ bool SameTransactionInventoryCacheSignature(
     const TransactionInventoryCacheSignature& lhs,
     const TransactionInventoryCacheSignature& rhs) {
   return lhs.file_size == rhs.file_size &&
-         lhs.write_time_count == rhs.write_time_count;
+         lhs.write_time_count == rhs.write_time_count &&
+         lhs.publish_journal_present == rhs.publish_journal_present &&
+         lhs.publish_journal_size == rhs.publish_journal_size &&
+         lhs.publish_journal_write_time_count == rhs.publish_journal_write_time_count &&
+         lhs.publish_journal_hash == rhs.publish_journal_hash &&
+         lhs.inventory_root_body_hash == rhs.inventory_root_body_hash;
 }
 
 std::optional<LocalTransactionStoreResult> TryLoadCachedTransactionInventory(
@@ -281,10 +352,7 @@ TypedUuid MakeTyped(UuidKind kind, scratchbird::core::platform::Uuid value) {
 }
 
 std::string Sha256Hex(std::string_view payload) {
-  const auto digest = core_hash::ComputeSha256Digest(
-      reinterpret_cast<const scratchbird::core::platform::byte*>(payload.data()),
-      payload.size());
-  return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
+  return Sha256BytesHex(reinterpret_cast<const byte*>(payload.data()), payload.size());
 }
 
 std::filesystem::path PublishJournalPathForDevice(const FileDevice* device) {

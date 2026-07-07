@@ -194,6 +194,27 @@ EVIDENCE_CHECKS: tuple[dict[str, Any], ...] = (
 )
 
 
+def io_path(path: Path) -> str:
+    text = str(path.resolve())
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def normal_path(path: Path) -> Path:
+    text = str(path)
+    if os.name == "nt":
+        if text.startswith("\\\\?\\UNC\\"):
+            return Path("\\\\" + text.removeprefix("\\\\?\\UNC\\"))
+        if text.startswith("\\\\?\\"):
+            return Path(text.removeprefix("\\\\?\\"))
+    return path
+
+
 def fail(message: str) -> None:
     print(f"public_secret_scan_gate=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
@@ -237,15 +258,16 @@ def iter_public_files(repo_root: Path) -> Iterable[Path]:
         if root.is_file():
             yield root
             continue
-        for dirpath, dirnames, filenames in os.walk(root):
+        walk_root = io_path(root) if os.name == "nt" else str(root)
+        for dirpath, dirnames, filenames in os.walk(walk_root):
             dirnames[:] = [
                 name
                 for name in dirnames
                 if name not in SKIP_DIRS and not name.startswith(DOT_GIT)
             ]
             for filename in filenames:
-                path = Path(dirpath) / filename
-                relative_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
+                path = normal_path(Path(dirpath) / filename)
+                relative_path = path.relative_to(repo_root).as_posix()
                 if any(relative_path.startswith(prefix) for prefix in SKIP_PATH_PREFIXES):
                     continue
                 if relative_path in PRIVATE_LEGAL_WORKING_FILES:
@@ -257,7 +279,7 @@ def iter_public_files(repo_root: Path) -> Iterable[Path]:
 
 def rel(path: Path, repo_root: Path) -> str:
     try:
-        value = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        value = path.relative_to(repo_root).as_posix()
     except ValueError:
         fail(f"path_outside_repo:{path.name}")
     reject_private_reference(value, "scan_path")
@@ -327,8 +349,11 @@ def validate_static_scan(repo_root: Path) -> dict[str, Any]:
     for path in iter_public_files(repo_root):
         relative_path = rel(path, repo_root)
         try:
-            text = path.read_text(encoding="utf-8")
+            with open(io_path(path), "r", encoding="utf-8") as handle:
+                text = handle.read()
         except UnicodeDecodeError:
+            continue
+        except FileNotFoundError:
             continue
         scanned_files += 1
         scanned_bytes += len(text.encode("utf-8"))

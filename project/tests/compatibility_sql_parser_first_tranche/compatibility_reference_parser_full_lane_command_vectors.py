@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -199,6 +200,17 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def parser_binary(parser_bin_root: Path, lane: str) -> Path:
+    binary = parser_bin_root / f"sbp_{lane}"
+    candidates = [binary]
+    if os.name == "nt" and binary.suffix.lower() != ".exe":
+        candidates.append(binary.with_name(binary.name + ".exe"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
 def read_manifest(path: Path) -> dict[str, dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -355,7 +367,7 @@ def verify_envelope(
 
 def verify_table_lane(repo_root: Path, parser_bin_root: Path, lane: str) -> dict[str, object]:
     source = repo_root / f"project/src/parsers/compatibility/{lane}/{lane}_dialect.cpp"
-    binary = parser_bin_root / f"sbp_{lane}"
+    binary = parser_binary(parser_bin_root, lane)
     rows = parse_patterns(source)
     failures: list[str] = []
     vectors = []
@@ -463,7 +475,7 @@ def verify_firebird_refusal(stderr: str, vector: dict[str, object]) -> None:
 
 
 def verify_firebird_lane(parser_bin_root: Path) -> dict[str, object]:
-    binary = parser_bin_root / "sbp_firebird"
+    binary = parser_binary(parser_bin_root, "firebird")
     vectors = []
     failures: list[str] = []
     for index, vector in enumerate(FIREBIRD_VECTORS, start=1):

@@ -8,7 +8,10 @@ import importlib
 import json
 import os
 from pathlib import Path
-import resource
+try:
+    import resource
+except ModuleNotFoundError:
+    resource = None
 import sys
 import time
 import traceback
@@ -93,7 +96,7 @@ def digest_rows(rows: list[Any]) -> str:
 
 
 def process_metrics() -> dict[str, dict[str, int]]:
-    rss_kb = max(1, int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+    rss_kb = max(1, int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)) if resource else 1
     vsize_kb = rss_kb
     try:
         statm = Path("/proc/self/statm").read_text(encoding="utf-8").split()

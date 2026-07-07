@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <memory>

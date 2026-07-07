@@ -17,23 +17,30 @@ import 'dart:io';
 import 'package:scratchbird/scratchbird.dart';
 import 'package:test/test.dart';
 
+File? locateFixture(String suffix) {
+  final stagedSuffix = suffix.startsWith('project/')
+      ? suffix.substring('project/'.length)
+      : suffix;
+  for (var dir = Directory.current;; dir = dir.parent) {
+    for (final candidateSuffix in [suffix, stagedSuffix]) {
+      final candidate = File('${dir.path}/$candidateSuffix');
+      if (candidate.existsSync()) {
+        return candidate;
+      }
+    }
+    if (dir.path == dir.parent.path) {
+      return null;
+    }
+  }
+}
+
 void main() {
   // Locate the shared fixture by walking up from the current directory until
   // the conformance fixture is found, so the test is runnable from any working
   // directory (the package root, the repo root, an IDE, etc.).
   const fixtureSuffix =
       'project/tests/conformance/drivers/chunker_conformance/cases.json';
-  File? fixture;
-  for (var dir = Directory.current;; dir = dir.parent) {
-    final candidate = File('${dir.path}/$fixtureSuffix');
-    if (candidate.existsSync()) {
-      fixture = candidate;
-      break;
-    }
-    if (dir.path == dir.parent.path) {
-      break; // reached filesystem root
-    }
-  }
+  final fixture = locateFixture(fixtureSuffix);
   if (fixture == null) {
     fail('could not locate $fixtureSuffix from ${Directory.current.path}');
   }
@@ -57,17 +64,7 @@ void main() {
 
   const chainFixtureSuffix =
       'project/tests/conformance/drivers/chunker_conformance/chain_cases.json';
-  File? chainFixture;
-  for (var dir = Directory.current;; dir = dir.parent) {
-    final candidate = File('${dir.path}/$chainFixtureSuffix');
-    if (candidate.existsSync()) {
-      chainFixture = candidate;
-      break;
-    }
-    if (dir.path == dir.parent.path) {
-      break;
-    }
-  }
+  final chainFixture = locateFixture(chainFixtureSuffix);
   if (chainFixture == null) {
     fail('could not locate $chainFixtureSuffix from ${Directory.current.path}');
   }

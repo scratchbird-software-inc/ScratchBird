@@ -183,6 +183,7 @@ function(sb_add_driver_native_full_surface_gate test_name mode)
     COMMAND
       "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_GATE}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--build-root" "${SB_DRIVER_BUILD_ROOT}"
       "--mode" "${mode}"
   )
   set_tests_properties("${test_name}" PROPERTIES
@@ -197,6 +198,7 @@ function(sb_add_driver_native_full_surface_artifact_schema_gate test_name)
     COMMAND
       "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_GATE}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--build-root" "${SB_DRIVER_BUILD_ROOT}"
       "--mode" "artifact-schema"
       "--artifact-root" "${SB_DRIVER_BUILD_ROOT}/native-artifact-schema-fixture"
       "--generate-deterministic-fixture"
@@ -314,6 +316,9 @@ function(sb_add_driver_native_tool_stage_gate test_name)
   if(SB_DRIVER_STRICT_STAGED_RUNTIMES)
     list(APPEND stage_args "--strict-runtimes")
   endif()
+  if(SB_DRIVER_ALLOW_TOOLCHAIN_WAIVERS)
+    list(APPEND stage_args "--allow-toolchain-waivers")
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -368,6 +373,7 @@ function(sb_add_driver_ipar_performance_proof_gate test_name mode)
     COMMAND
       "${Python3_EXECUTABLE}" "${SB_DRIVER_IPAR_PERFORMANCE_PROOF_GATE}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--build-root" "${SB_DRIVER_BUILD_ROOT}"
       "--mode" "${mode}"
       "--output-root" "${SB_DRIVER_BUILD_ROOT}/ipar-performance-proof/${test_name}"
   )
@@ -383,6 +389,7 @@ function(sb_add_driver_ipar_artifact_gate test_name)
     COMMAND
       "${Python3_EXECUTABLE}" "${SB_DRIVER_IPAR_METRICS_GATE}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--build-root" "${SB_DRIVER_BUILD_ROOT}"
       "--artifact-root" "${SB_DRIVER_BUILD_ROOT}/ipar-metrics-proof"
       "--shape" "all"
       "--output-root" "${SB_DRIVER_BUILD_ROOT}/ipar-performance-proof/${test_name}"

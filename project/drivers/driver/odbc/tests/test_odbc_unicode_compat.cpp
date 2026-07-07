@@ -8,8 +8,9 @@
 
 #include <gtest/gtest.h>
 
-#include <string>
 #include <memory>
+#include <sstream>
+#include <string>
 
 #define private public
 #include "scratchbird/odbc/odbc_handles.h"

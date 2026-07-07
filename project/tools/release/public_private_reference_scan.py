@@ -64,6 +64,27 @@ GIT_REFERENCE_ALLOWLIST = {
 }
 
 
+def io_path(path: Path) -> str:
+    text = str(path.resolve())
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def normal_path(path: Path) -> Path:
+    text = str(path)
+    if os.name == "nt":
+        if text.startswith("\\\\?\\UNC\\"):
+            return Path("\\\\" + text.removeprefix("\\\\?\\UNC\\"))
+        if text.startswith("\\\\?\\"):
+            return Path(text.removeprefix("\\\\?\\"))
+    return path
+
+
 def allow_git_reference(rel: Path) -> bool:
     if rel.name == "." + "gitignore":
         return True
@@ -84,10 +105,11 @@ def banned_needles() -> list[tuple[str, str]]:
 
 
 def iter_files(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
+    walk_root = io_path(root) if os.name == "nt" else str(root)
+    for dirpath, dirnames, filenames in os.walk(walk_root):
       dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
       for filename in filenames:
-          path = Path(dirpath) / filename
+          path = normal_path(Path(dirpath) / filename)
           rel = path.relative_to(root)
           if any(rel == prefix or prefix in rel.parents for prefix in SKIP_PATH_PREFIXES):
               continue
@@ -100,8 +122,11 @@ def scan(root: Path) -> list[str]:
     findings: list[str] = []
     for path in iter_files(root):
         try:
-            text = path.read_text(encoding="utf-8")
+            with open(io_path(path), "r", encoding="utf-8") as handle:
+                text = handle.read()
         except UnicodeDecodeError:
+            continue
+        except FileNotFoundError:
             continue
         rel = path.relative_to(root)
         for label, needle in banned_needles():

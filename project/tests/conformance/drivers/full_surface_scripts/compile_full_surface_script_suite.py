@@ -15,6 +15,7 @@ import argparse
 import csv
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -391,8 +392,10 @@ def compile_suite(
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     suite_root = suite_root.resolve()
-    output_root = output_root.resolve()
+    output_root = output_root.absolute()
     ensure_output_policy(repo_root, output_root)
+    if output_root.exists():
+        shutil.rmtree(output_root)
 
     manifest = load_json(suite_root / MANIFEST_NAME)
     output_scripts = output_root / "scripts"

@@ -293,6 +293,18 @@ def rel(path: Path, repo_root: Path) -> str:
         return path.as_posix()
 
 
+def sha256_with_lf_checkout_fallback(path: Path, expected: str) -> str:
+    payload = path.read_bytes()
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual.lower() == expected.lower():
+        return actual
+    try:
+        normalized = payload.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeDecodeError:
+        return actual
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def reject_private_value(value: str, context: str, issues: list[str]) -> None:
     if Path(value).is_absolute():
         issues.append(f"{context}:absolute_path:{value}")
@@ -937,7 +949,7 @@ def check_language_resources(repo_root: Path, adapter_root: Path) -> tuple[list[
                 issues.append(f"language_pack_hash_resource_missing:{rel_path}")
                 continue
             expected = parts[0].removeprefix("sha256:")
-            actual = hashlib.sha256(payload_path.read_bytes()).hexdigest()
+            actual = sha256_with_lf_checkout_fallback(payload_path, expected)
             if actual.lower() != expected.lower():
                 issues.append(f"language_pack_hash_mismatch:{rel_path}")
             summary["hash_rows_checked"] += 1

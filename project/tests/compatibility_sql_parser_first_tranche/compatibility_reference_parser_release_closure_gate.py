@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -94,7 +95,14 @@ def parse_json_stdout(result: subprocess.CompletedProcess[str], label: str) -> d
 
 
 def parser_binary(parser_bin_root: Path, lane: str) -> Path:
-    return parser_bin_root / f"sbp_{lane}"
+    binary = parser_bin_root / f"sbp_{lane}"
+    candidates = [binary]
+    if os.name == "nt" and binary.suffix.lower() != ".exe":
+        candidates.append(binary.with_name(binary.name + ".exe"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
 def verify_identity_and_surface(repo_root: Path,
@@ -258,7 +266,7 @@ def verify_reference_packaging(repo_root: Path,
     require((package_root / "proofs/reference_parser_packaging_handoff.json").is_file(),
             "reference parser handoff proof missing")
     for lane in lanes:
-        require((package_root / "bin" / f"sbp_{lane}").is_file(),
+        require(parser_binary(package_root / "bin", lane).is_file(),
                 f"{lane}: packaged parser worker missing")
         require((release_root / "udr/optional-parser-support/lib" / f"libsbu_{lane}_parser_support.a").is_file(),
                 f"{lane}: packaged support UDR missing")
@@ -270,7 +278,11 @@ def verify_reference_packaging(repo_root: Path,
         if isinstance(row, dict)
     }
     for lane in lanes:
-        require(f"reference-parsers/bin/sbp_{lane}" in paths,
+        parser_paths = {
+            f"reference-parsers/bin/sbp_{lane}",
+            f"reference-parsers/bin/sbp_{lane}.exe",
+        }
+        require(any(path in paths for path in parser_paths),
                 f"{lane}: file location manifest missing parser worker")
     return {"package_root": str(package_root), "lane_count": len(lanes)}
 

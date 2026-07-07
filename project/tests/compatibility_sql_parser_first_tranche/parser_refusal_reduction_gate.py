@@ -15,6 +15,7 @@ import argparse
 import collections
 import csv
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -201,12 +202,29 @@ def find_source_entry(
     fail(f"runtime source entry does not match P4 implementation route: {row['refusal_id']}")
 
 
+def existing_executable(path: pathlib.Path) -> pathlib.Path:
+    candidates = [path]
+    if os.name == "nt" and path.suffix.lower() != ".exe":
+        candidates.append(path.with_name(path.name + ".exe"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
 def binary_path(build_root: pathlib.Path, parser_package: str) -> pathlib.Path:
     compatibility = pathlib.PurePosixPath(parser_package).name
     configured_path = build_root / "src/parsers/compatibility" / compatibility / f"sbp_{compatibility}"
-    if configured_path.exists():
-        return configured_path
-    return build_root / "output/linux/bin" / f"sbp_{compatibility}"
+    for candidate in (
+        configured_path,
+        build_root / "output/windows/bin" / f"sbp_{compatibility}",
+        build_root / "output/linux/bin" / f"sbp_{compatibility}",
+        build_root / "output/freebsd/bin" / f"sbp_{compatibility}",
+    ):
+        resolved = existing_executable(candidate)
+        if resolved.exists():
+            return resolved
+    return existing_executable(build_root / "output/windows/bin" / f"sbp_{compatibility}")
 
 
 def run_parser(binary: pathlib.Path, sql_text: str) -> tuple[int, str, str]:

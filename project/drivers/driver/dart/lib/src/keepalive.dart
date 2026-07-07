@@ -22,16 +22,18 @@ class KeepaliveConfig {
 
 class KeepaliveTracker {
   final KeepaliveConfig config;
-  int _lastActivity = DateTime.now().millisecondsSinceEpoch;
+  final Stopwatch _idleClock = Stopwatch()..start();
 
   KeepaliveTracker(this.config);
 
   void markActive() {
-    _lastActivity = DateTime.now().millisecondsSinceEpoch;
+    _idleClock
+      ..reset()
+      ..start();
   }
 
   bool needsValidation() {
-    return DateTime.now().millisecondsSinceEpoch - _lastActivity > config.maxIdleBeforeCheckMs;
+    return _idleClock.elapsedMilliseconds > config.maxIdleBeforeCheckMs;
   }
 }
 

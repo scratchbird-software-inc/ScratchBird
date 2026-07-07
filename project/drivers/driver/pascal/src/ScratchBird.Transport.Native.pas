@@ -16,6 +16,9 @@ interface
 uses
   SysUtils,
   sockets,
+  {$IFDEF MSWINDOWS}
+  winsock,
+  {$ENDIF}
   {$IFDEF UNIX}
   netdb,
   {$ENDIF}
@@ -30,6 +33,9 @@ type
     FTlsContext: TTlsContext;
     FConnected: Boolean;
     FPlainSocket: TSocketHandle;
+    {$IFDEF MSWINDOWS}
+    FWinsockStarted: Boolean;
+    {$ENDIF}
     function ParseTlsMode(const SSLMode: string): TTlsMode;
     procedure RaiseTlsFailure(const Stage: string; const Status: TTlsStatus);
     function UseIpcSocket: Boolean;
@@ -57,6 +63,9 @@ begin
   FTlsConfig := DefaultTlsConfig;
   FConnected := False;
   FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
+  {$IFDEF MSWINDOWS}
+  FWinsockStarted := False;
+  {$ENDIF}
 end;
 
 function TNativeScratchBirdTransport.ParseTlsMode(const SSLMode: string): TTlsMode;
@@ -144,8 +153,15 @@ end;
 
 procedure TNativeScratchBirdTransport.ConnectPlain;
 var
+  {$IFDEF MSWINDOWS}
+  WsaData: TWSAData;
+  RawAddr: LongInt;
+  HostEntry: PHostEnt;
+  HostNameBytes: AnsiString;
+  {$ELSE}
   HostAddr: THostAddr;
   HostEntry: THostEntry;
+  {$ENDIF}
   Address: TInetSockAddr;
 begin
   if UseIpcSocket then
@@ -160,12 +176,27 @@ begin
     FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
   end;
 
+  {$IFDEF MSWINDOWS}
+  if not FWinsockStarted then
+  begin
+    if WSAStartup($0202, WsaData) <> 0 then
+      raise EScratchbirdConnectionError.CreateWithInfo(
+        'native socket startup failed',
+        '08001', '', '');
+    FWinsockStarted := True;
+  end;
+  {$ENDIF}
+
   FPlainSocket := fpSocket(AF_INET, SOCK_STREAM, 0);
   if FPlainSocket < 0 then
     raise EScratchbirdConnectionError.CreateWithInfo(
       'native socket create failed: ' + IntToStr(SocketError),
       '08001', '', '');
 
+  {$IFDEF MSWINDOWS}
+  HostNameBytes := AnsiString(FConfig.Host);
+  RawAddr := winsock.inet_addr(PAnsiChar(HostNameBytes));
+  {$ELSE}
   HostAddr := StrToHostAddr(FConfig.Host);
   if HostAddr.s_bytes[1] = 0 then
   begin
@@ -179,11 +210,30 @@ begin
     end;
     HostAddr := HostEntry.Addr;
   end;
+  {$ENDIF}
 
   FillChar(Address, SizeOf(Address), 0);
   Address.sin_family := AF_INET;
   Address.sin_port := ShortHostToNet(FTlsConfig.Port);
+  {$IFDEF MSWINDOWS}
+  if RawAddr = LongInt(INADDR_NONE) then
+  begin
+    HostEntry := winsock.gethostbyname(PAnsiChar(HostNameBytes));
+    if (HostEntry = nil) or (HostEntry^.h_addr_list = nil) or (HostEntry^.h_addr_list^ = nil) then
+    begin
+      CloseSocket(FPlainSocket);
+      FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
+      raise EScratchbirdConnectionError.CreateWithInfo(
+        'native socket resolve failed: ' + FConfig.Host,
+        '08001', '', '');
+    end;
+    Move(HostEntry^.h_addr_list^^, Address.sin_addr.s_addr, SizeOf(Address.sin_addr.s_addr));
+  end
+  else
+    Address.sin_addr.s_addr := RawAddr;
+  {$ELSE}
   Address.sin_addr.s_addr := HostToNet(HostAddr.s_addr);
+  {$ENDIF}
 
   if fpConnect(FPlainSocket, @Address, SizeOf(Address)) <> 0 then
   begin
@@ -254,6 +304,13 @@ begin
     CloseSocket(FPlainSocket);
     FPlainSocket := INVALID_TLS_SOCKET_HANDLE;
   end;
+  {$IFDEF MSWINDOWS}
+  if FWinsockStarted then
+  begin
+    WSACleanup;
+    FWinsockStarted := False;
+  end;
+  {$ENDIF}
 end;
 
 procedure TNativeScratchBirdTransport.Connect;

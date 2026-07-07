@@ -286,6 +286,14 @@ bool SyncRuntimeDirectory(const std::filesystem::path& dir) {
 }
 #endif
 
+bool FileReadableRegular(const std::filesystem::path& path) {
+  if (path.empty()) return false;
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+  std::ifstream probe(path, std::ios::binary);
+  return static_cast<bool>(probe);
+}
+
 bool WriteAtomicPrivateText(const std::filesystem::path& path, const std::string& content) {
   const auto dir = path.parent_path();
   std::error_code ec;
@@ -662,11 +670,6 @@ bool RecvExactWithTimeout(int fd, std::uint8_t* data, std::size_t size, std::uin
     got += static_cast<std::size_t>(rc);
   }
   return true;
-}
-
-bool FileReadableRegular(const std::filesystem::path& path) {
-  std::error_code ec;
-  return !path.empty() && std::filesystem::is_regular_file(path, ec);
 }
 
 int CreateTcpListener(const std::string& bind_address, std::uint16_t port, int backlog, std::vector<proto::Diagnostic>* diagnostics) {

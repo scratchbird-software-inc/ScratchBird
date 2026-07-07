@@ -28,7 +28,7 @@ GATE = REPO_ROOT / "project" / "tools" / "release" / "dbeaver_management_platfor
 
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+    path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8", newline="\n")
 
 
 class DBeaverManagementPlatformGateTests(unittest.TestCase):
@@ -305,7 +305,7 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
         for rel_path, content in files.items():
             path = language_root / rel_path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            path.write_text(content, encoding="utf-8", newline="\n")
             file_rows.append(
                 {
                     "path": rel_path,
@@ -329,13 +329,17 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
             "files": file_rows,
         }
         manifest_text = json.dumps(manifest, sort_keys=True) + "\n"
-        (language_root / "manifest.sblrp.json").write_text(manifest_text, encoding="utf-8")
+        (language_root / "manifest.sblrp.json").write_text(
+            manifest_text, encoding="utf-8", newline="\n"
+        )
         hash_lines = [
             "sha256:" + hashlib.sha256(manifest_text.encode("utf-8")).hexdigest() + " manifest.sblrp.json"
         ]
         for rel_path, content in files.items():
             hash_lines.append("sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest() + f" {rel_path}")
-        (language_root / "hashes.sha256").write_text("\n".join(hash_lines) + "\n", encoding="utf-8")
+        (language_root / "hashes.sha256").write_text(
+            "\n".join(hash_lines) + "\n", encoding="utf-8", newline="\n"
+        )
 
     def _write_language_resource_source_fixture(self) -> None:
         model_src = (

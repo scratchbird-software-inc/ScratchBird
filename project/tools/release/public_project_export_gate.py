@@ -125,7 +125,7 @@ CLEANUP_MANIFEST_REL = RELEASE_METADATA_DIR / "public-export-cleanup-manifest.js
 
 
 def io_path(path: Path) -> str:
-    text = str(path.resolve())
+    text = os.path.normpath(str(path.absolute()))
     if os.name != "nt":
         return text
     if text.startswith("\\\\?\\"):
@@ -160,7 +160,7 @@ def copytree_public(src: Path, dst: Path) -> None:
 
 def rmtree_public(path: Path) -> None:
     if path.exists():
-        shutil.rmtree(io_path(path))
+        shutil.rmtree(io_path(path), ignore_errors=True)
 
 
 def dot_git() -> str:
@@ -604,6 +604,23 @@ def write_cleanup_outputs(
     write_text_file(external_file_list_path, "\n".join(relative_files(stage_root)) + "\n")
 
 
+def build_tree_root_from_staging(staging_root: Path) -> Path:
+    for parent in staging_root.parents:
+        if parent.name == "tests":
+            return parent.parent
+    return staging_root.parent
+
+
+def short_windows_gate_root(staging_root: Path, name: str) -> Path:
+    if os.name != "nt":
+        return staging_root
+    return build_tree_root_from_staging(staging_root) / "_short" / name
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, required=True)
@@ -615,11 +632,13 @@ def main() -> int:
     parser.add_argument("--parallel", type=int, default=1)
     args = parser.parse_args()
 
-    repo_root = args.repo_root.resolve()
-    stage_root = args.staging_root.resolve() / "public-export"
-    build_root = args.staging_root.resolve() / "public-export-build"
-    file_list_path = args.staging_root.resolve() / "public-export-file-list.txt"
-    cleanup_manifest_path = args.staging_root.resolve() / "public-export-cleanup-manifest.json"
+    repo_root = stable_absolute(args.repo_root)
+    staging_root = stable_absolute(args.staging_root)
+    short_root = short_windows_gate_root(staging_root, "p001")
+    stage_root = short_root / "public-export"
+    build_root = short_root / "build"
+    file_list_path = staging_root / "public-export-file-list.txt"
+    cleanup_manifest_path = staging_root / "public-export-cleanup-manifest.json"
 
     try:
         copy_public_tree(repo_root, stage_root)

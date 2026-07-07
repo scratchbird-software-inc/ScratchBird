@@ -209,7 +209,7 @@ def display_path(path: Path, root: Path) -> str:
 
 def git_tracked_paths(ctx: Context, root: Path) -> set[str]:
     try:
-        rel_root = str(root.relative_to(ctx.repo_root))
+        rel_root = root.relative_to(ctx.repo_root).as_posix()
     except ValueError:
         return set()
     result = subprocess.run(
@@ -226,7 +226,7 @@ def git_tracked_paths(ctx: Context, root: Path) -> set[str]:
 
 def is_tracked_source_path(path: Path, ctx: Context, tracked_paths: set[str]) -> bool:
     try:
-        rel = str(path.relative_to(ctx.repo_root))
+        rel = path.relative_to(ctx.repo_root).as_posix()
     except ValueError:
         return False
     if rel in tracked_paths:

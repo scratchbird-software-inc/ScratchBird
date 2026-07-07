@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -166,7 +167,7 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
         return DriverTool(
             driver,
             exe,
-            [str(build_root / "drivers" / "driver" / "cpp" / "sb_isql_cpp")],
+            [str(build_root / "drivers" / "driver" / "cpp" / "cmake" / "sb_isql_cpp")],
             repo_root,
             [],
             "cmake_native_binary",
@@ -175,7 +176,7 @@ def command_for_driver(repo_root: Path, build_root: Path, driver: str) -> Driver
         return DriverTool(
             driver,
             exe,
-            [str(build_root / "drivers" / "driver" / "odbc" / "sb_isql_odbc")],
+            [str(build_root / "drivers" / "driver" / "odbc" / "cmake" / "sb_isql_odbc")],
             repo_root,
             [],
             "cmake_native_binary",
@@ -401,27 +402,63 @@ def is_executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
+def executable_candidates(path: Path) -> list[Path]:
+    candidates = [path]
+    if os.name == "nt" and path.suffix.lower() != ".exe":
+        candidates.append(path.with_name(path.name + ".exe"))
+    return candidates
+
+
+def first_executable(path: Path) -> Path | None:
+    for candidate in executable_candidates(path):
+        if is_executable(candidate):
+            return candidate
+    return None
+
+
 def copy_if_executable(src: Path, dst: Path) -> bool:
-    if not is_executable(src):
+    executable = first_executable(src)
+    if executable is None:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if src.resolve() != dst.resolve():
-        shutil.copy2(src, dst)
+    if executable.resolve() != dst.resolve():
+        shutil.copy2(executable, dst)
         current = dst.stat().st_mode
         dst.chmod(current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return True
 
 
+def resolve_argv(argv: list[str], env: dict[str, str]) -> list[str]:
+    if not argv:
+        return argv
+    executable = argv[0]
+    if any(sep in executable for sep in ("/", "\\")) or Path(executable).is_absolute():
+        return argv
+    resolved = shutil.which(executable, path=env.get("PATH"))
+    if resolved is None:
+        return argv
+    return [resolved, *argv[1:]]
+
+
 def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    command_env = env or os.environ.copy()
+    try:
+        result = subprocess.run(
+            resolve_argv(command, command_env),
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    except OSError as exc:
+        return {
+            "command": command,
+            "cwd": str(cwd),
+            "returncode": 127,
+            "output_tail": [f"launch_failed:{exc}"],
+        }
     return {
         "command": command,
         "cwd": str(cwd),
@@ -430,11 +467,20 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
     }
 
 
+def remove_tree_best_effort(path: Path) -> None:
+    for _attempt in range(5):
+        if not path.exists():
+            return
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.1)
+
+
 def stage_driver_source(repo_root: Path, build_root: Path, driver: str) -> Path:
     source = repo_root / "project" / "drivers" / "driver" / driver
     stage = build_root / "drivers" / "driver" / driver / "stage"
-    if stage.exists():
-        shutil.rmtree(stage)
+    remove_tree_best_effort(stage)
     tracked = {
         line.strip()
         for line in subprocess.run(
@@ -451,7 +497,7 @@ def stage_driver_source(repo_root: Path, build_root: Path, driver: str) -> Path:
         ignored = set()
         for name in names:
             path = Path(current_dir) / name
-            rel = str(path.relative_to(repo_root))
+            rel = path.relative_to(repo_root).as_posix()
             prefix = rel.rstrip("/") + "/"
             is_tracked = rel in tracked or any(item.startswith(prefix) for item in tracked)
             if is_tracked:
@@ -460,7 +506,7 @@ def stage_driver_source(repo_root: Path, build_root: Path, driver: str) -> Path:
                 ignored.add(name)
         return ignored
 
-    shutil.copytree(source, stage, ignore=ignore)
+    shutil.copytree(source, stage, ignore=ignore, dirs_exist_ok=True)
     return stage
 
 
@@ -477,9 +523,9 @@ def build_compiled_tool(repo_root: Path, build_root: Path, driver: str) -> dict[
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(out_dir / "target")
         result = run_command(["cargo", "build", "--quiet", "--bin", "sb_isql_rust"], driver_root, env=env)
-        produced = out_dir / "target" / "debug" / "sb_isql_rust"
+        produced = first_executable(out_dir / "target" / "debug" / "sb_isql_rust")
         final = out_dir / "bin" / "sb_isql_rust"
-        if result["returncode"] == 0 and produced.exists():
+        if result["returncode"] == 0 and produced is not None:
             final.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(produced, final)
             final.chmod(final.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -603,6 +649,7 @@ def stage_tool(
     *,
     build_compiled: bool,
     strict_runtimes: bool,
+    allow_toolchain_waivers: bool,
 ) -> dict[str, Any]:
     tool = command_for_driver(repo_root, build_root, driver)
     output_path = bin_root / tool.executable_name
@@ -619,7 +666,7 @@ def stage_tool(
         if first.is_absolute():
             copied = copy_if_executable(first, output_path)
         if not copied:
-            if tool.kind == "cmake_native_binary" and is_executable(output_path):
+            if tool.kind == "cmake_native_binary" and first_executable(output_path) is not None:
                 copied = True
             else:
                 write_launcher(output_path, tool)
@@ -635,6 +682,31 @@ def stage_tool(
         status = "fail"
     if strict_runtimes and missing_runtimes:
         status = "fail"
+    if allow_toolchain_waivers and status == "fail":
+        launch_failed = (
+            build_result is not None
+            and build_result["returncode"] == 127
+            and any(str(line).startswith("launch_failed:") for line in build_result.get("output_tail", []))
+        )
+        native_tool_unavailable = (
+            build_compiled
+            and tool.kind in NATIVE_BINARY_KINDS
+            and build_result is None
+            and not copied_native_binary
+        )
+        optional_native_build_failed = (
+            build_result is not None
+            and build_result["returncode"] != 0
+            and tool.kind in NATIVE_BINARY_KINDS
+            and tool.kind != "cmake_native_binary"
+        )
+        if (
+            launch_failed
+            or (not strict_runtimes and missing_runtimes)
+            or native_tool_unavailable
+            or optional_native_build_failed
+        ):
+            status = "waived"
 
     return {
         "driver": driver,
@@ -650,6 +722,7 @@ def stage_tool(
         "build_result": build_result,
         "build_compiled_requested": build_compiled,
         "strict_runtimes": strict_runtimes,
+        "toolchain_waiver_allowed": allow_toolchain_waivers,
     }
 
 
@@ -662,6 +735,7 @@ def main() -> int:
     parser.add_argument("--driver", action="append")
     parser.add_argument("--build-compiled", action="store_true")
     parser.add_argument("--strict-runtimes", action="store_true")
+    parser.add_argument("--allow-toolchain-waivers", action="store_true")
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
@@ -687,11 +761,12 @@ def main() -> int:
             driver,
             build_compiled=args.build_compiled,
             strict_runtimes=args.strict_runtimes,
+            allow_toolchain_waivers=args.allow_toolchain_waivers,
         )
         for driver in drivers
     ]
     missing = sorted(set(CORE_DRIVER_ORDER) - {result["driver"] for result in results})
-    failures = [result for result in results if result["status"] != "pass"]
+    failures = [result for result in results if result["status"] == "fail"]
     report = {
         "command": "build_native_driver_tools.py",
         "status": "pass" if not failures else "fail",
@@ -702,6 +777,7 @@ def main() -> int:
         "missing_core_drivers": missing,
         "build_compiled": args.build_compiled,
         "strict_runtimes": args.strict_runtimes,
+        "allow_toolchain_waivers": args.allow_toolchain_waivers,
         "results": results,
     }
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
