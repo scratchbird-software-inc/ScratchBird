@@ -74,6 +74,7 @@ class RuntimeSettings:
     max_requests_per_window: int = 100
     max_mutations_per_window: int = 20
     max_cost_units_per_window: int = 1000
+    require_server_revalidated_artifacts: bool = False
     supported_server_versions: tuple[str, ...] = ("native-http-bridge-preview",)
     supported_parser_compiler_versions: tuple[str, ...] = ("native-only",)
     supported_driver_runtime_versions: tuple[str, ...] = ("builtin",)
@@ -98,6 +99,7 @@ class RuntimeSettings:
         "https_sse_server_stream",
         "websocket_bidirectional",
     )
+    remote_mcp_allow_preauthenticated_context: bool = False
 
     def normalized_mode(self) -> str:
         mode = self.adapter_mode.strip().lower()
@@ -237,6 +239,12 @@ def load_runtime_settings() -> RuntimeSettings:
         max_cost_units_per_window = int(max_cost_raw)
     except ValueError:
         max_cost_units_per_window = 1000
+    require_server_revalidated_artifacts = (
+        os.getenv("SCRATCHBIRD_AI_REQUIRE_SERVER_REVALIDATED_ARTIFACTS", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
 
     dialects_raw = os.getenv(
         "SCRATCHBIRD_AI_HTTP_DIALECTS",
@@ -295,6 +303,12 @@ def load_runtime_settings() -> RuntimeSettings:
             "https_json_request_response,https_sse_server_stream,websocket_bidirectional",
         )
     )
+    allow_preauth_context = (
+        os.getenv("SCRATCHBIRD_AI_REMOTE_MCP_ALLOW_PREAUTHENTICATED_CONTEXT", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
 
     return RuntimeSettings(
         adapter_mode=mode,
@@ -326,6 +340,7 @@ def load_runtime_settings() -> RuntimeSettings:
         max_requests_per_window=max(1, max_requests_per_window),
         max_mutations_per_window=max(1, max_mutations_per_window),
         max_cost_units_per_window=max(1, max_cost_units_per_window),
+        require_server_revalidated_artifacts=require_server_revalidated_artifacts,
         supported_server_versions=supported_server_versions or ("native-http-bridge-preview",),
         supported_parser_compiler_versions=(
             supported_parser_compiler_versions or ("native-only",)
@@ -360,4 +375,5 @@ def load_runtime_settings() -> RuntimeSettings:
                 "websocket_bidirectional",
             )
         ),
+        remote_mcp_allow_preauthenticated_context=allow_preauth_context,
     )

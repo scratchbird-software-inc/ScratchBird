@@ -39,7 +39,9 @@ class SettingsTests(unittest.TestCase):
             "SCRATCHBIRD_AI_AUDIT_DELEGATED_ATTESTATION_SECRET": "delegated-secret",
             "SCRATCHBIRD_AI_AUDIT_DELEGATED_ATTESTATION_ATTESTOR_ID": "external-attestor",
             "SCRATCHBIRD_AI_AUDIT_EXTERNAL_REFERENCE_BASE_URL": "https://approvals.example.com",
+            "SCRATCHBIRD_AI_REQUIRE_SERVER_REVALIDATED_ARTIFACTS": "true",
             "SCRATCHBIRD_AI_REMOTE_MCP_AUTH_TOKEN": "secret-token",
+            "SCRATCHBIRD_AI_REMOTE_MCP_ALLOW_PREAUTHENTICATED_CONTEXT": "true",
             "SCRATCHBIRD_AI_REMOTE_MCP_SESSION_TTL_SEC": "1200",
             "SCRATCHBIRD_AI_REMOTE_MCP_HEARTBEAT_INTERVAL_SEC": "45",
             "SCRATCHBIRD_AI_REMOTE_MCP_PROTOCOL_VERSIONS": "v0,v1-preview",
@@ -83,6 +85,8 @@ class SettingsTests(unittest.TestCase):
             "https://approvals.example.com",
         )
         self.assertEqual(settings.remote_mcp_auth_token, "secret-token")
+        self.assertTrue(settings.require_server_revalidated_artifacts)
+        self.assertTrue(settings.remote_mcp_allow_preauthenticated_context)
         self.assertEqual(settings.remote_mcp_session_ttl_sec, 1200)
         self.assertEqual(settings.remote_mcp_heartbeat_interval_sec, 45)
         self.assertEqual(settings.remote_mcp_protocol_versions, ("v0", "v1-preview"))

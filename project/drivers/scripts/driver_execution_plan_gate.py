@@ -54,6 +54,7 @@ DRIVERS = [
 ]
 
 ADAPTORS = [
+    "scratchbird-ai-mcp",
     "scratchbird-airbyte",
     "scratchbird-dbeaver-driver",
     "scratchbird-dbt-adapter",
@@ -103,6 +104,7 @@ DRIVER_FAMILIES = {
     "superset",
     "typeorm",
     "airbyte",
+    "ai_mcp",
     "dbt",
     "looker",
     "powerbi",
@@ -142,6 +144,7 @@ COMPONENT_TOOLCHAINS = {
     "driver:rust": ["cargo"],
     "driver:swift": ["swift"],
     "adaptor:scratchbird-airbyte": ["python3"],
+    "adaptor:scratchbird-ai-mcp": ["python3"],
     "adaptor:scratchbird-dbeaver-driver": ["mvn", "java", "zip"],
     "adaptor:scratchbird-dbt-adapter": ["python3"],
     "adaptor:scratchbird-hibernate-dialect": ["mvn", "java"],

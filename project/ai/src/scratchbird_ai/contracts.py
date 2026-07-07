@@ -42,6 +42,8 @@ class CompileResult:
     dialect: str
     statement_kind: Literal["read", "mutation", "unknown"]
     sblr_hash: str
+    prepared_artifact: dict[str, Any] = field(default_factory=dict)
+    server_revalidation_state: str = "server_revalidation_required"
     diagnostics: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -55,6 +57,7 @@ class ExecuteResult:
     compile_artifact_id: str
     rows: list[dict[str, Any]]
     row_count: int
+    server_revalidation_state: str = "server_revalidation_required"
     notices: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

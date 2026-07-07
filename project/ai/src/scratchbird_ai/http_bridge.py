@@ -25,6 +25,11 @@ from uuid import UUID
 
 from .service import ScratchBirdAIService, build_default_service
 from .settings import load_runtime_settings
+from .sblr_artifacts import (
+    SERVER_REVALIDATED,
+    SERVER_REVALIDATION_REQUIRED,
+    build_prepared_artifact,
+)
 
 
 DEFAULT_DIALECTS = ("native",)
@@ -170,6 +175,8 @@ class BridgeCompileResult:
     sblr_hash: str
     diagnostics: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    prepared_artifact: dict[str, Any] = field(default_factory=dict)
+    server_revalidation_state: str = SERVER_REVALIDATION_REQUIRED
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -642,9 +649,12 @@ class ScratchBirdDriverBackend:
         warnings: list[str] = []
         diagnostics: list[str] = []
         sblr_hash = fallback_hash
+        server_revalidation_state = SERVER_REVALIDATION_REQUIRED
 
-        # Compile probe is performed only for read statements to avoid accidental side effects.
-        if statement_kind == "read":
+        probe_allowed = statement_kind == "read" or self.settings.strict_compile or bool(
+            context.get("compile_probe_mutations", False)
+        )
+        if probe_allowed:
             try:
                 server_hash = self._probe_compile_sblr_hash(
                     dialect=dialect,
@@ -653,6 +663,7 @@ class ScratchBirdDriverBackend:
                 )
                 if server_hash:
                     sblr_hash = server_hash
+                    server_revalidation_state = SERVER_REVALIDATED
                 else:
                     warnings.append("Compile probe returned no SBLR hash; using fallback hash.")
             except Exception as exc:
@@ -660,13 +671,36 @@ class ScratchBirdDriverBackend:
                     raise BridgeError(status_code=400, message=f"Compile probe failed: {exc}") from exc
                 warnings.append(f"Compile probe unavailable: {exc}")
         else:
-            warnings.append("Mutation/unknown compile path uses local statement classification only.")
+            warnings.append("Mutation/unknown compile path requires server revalidation before release use.")
+
+        security_context = context.get("security_context", {})
+        security_context_digest = hashlib.sha256(
+            json.dumps(security_context, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        provisional_compile_id = hashlib.sha256(
+            f"{dialect}\n{sblr_hash}\n{security_context_digest}".encode("utf-8")
+        ).hexdigest()
+        prepared_artifact = build_prepared_artifact(
+            compile_artifact_id=f"bridge_{provisional_compile_id[:24]}",
+            dialect=dialect,
+            statement_kind=statement_kind,
+            sblr_hash=sblr_hash,
+            security_context_hash=security_context_digest,
+            adapter_mode="http_bridge",
+            context=context,
+            adapter_artifact={
+                "server_revalidation_state": server_revalidation_state,
+                "source": "scratchbird_python_driver_bridge",
+            },
+        ).to_dict()
 
         return BridgeCompileResult(
             statement_kind=statement_kind,
             sblr_hash=sblr_hash,
             diagnostics=diagnostics,
             warnings=warnings,
+            prepared_artifact=prepared_artifact,
+            server_revalidation_state=server_revalidation_state,
         )
 
     def execute_query(
@@ -677,7 +711,6 @@ class ScratchBirdDriverBackend:
         options: dict[str, Any],
         compile_artifact_id: str,
     ) -> BridgeExecuteResult:
-        del compile_artifact_id
         params = options.get("params")
         max_rows_value = options.get("max_rows", 0)
         try:
@@ -697,6 +730,12 @@ class ScratchBirdDriverBackend:
             notices.append(f"rowcount={rowcount}")
         if max_rows > 0 and len(out_rows) >= max_rows:
             notices.append(f"max_rows={max_rows} limit reached")
+        notices.append(f"compile_artifact_id={compile_artifact_id}")
+        prepared_artifact = options.get("_scratchbird_prepared_artifact")
+        if isinstance(prepared_artifact, dict):
+            state = str(prepared_artifact.get("server_revalidation_state", "")).strip()
+            if state:
+                notices.append(f"server_revalidation_state={state}")
         return BridgeExecuteResult(rows=out_rows, notices=notices)
 
     @staticmethod

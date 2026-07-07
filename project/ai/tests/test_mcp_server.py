@@ -45,6 +45,16 @@ class _FakeService:
                 return {"tools": []}
             if name == "get_provider_profiles":
                 return {"profiles": []}
+            if name == "get_sbsql_language_resource_manifest":
+                return {"resource_identity": "sbsql.common_resource_pack.v1"}
+            if name == "list_sbsql_language_profiles":
+                return {"profiles": [{"exact_tag": "en-US"}]}
+            if name == "get_sbsql_predictive_grammar":
+                return {"predictive_grammar": {"states": []}}
+            if name == "get_metadata_resolution_contract":
+                return {"resolution_authority": "server_authorization_filtered_sys_information"}
+            if name == "generate_ai_mcp_support_bundle":
+                return {"schema_id": "scratchbird.ai_mcp_support_bundle_manifest.v1"}
             if name == "get_compatibility_manifest":
                 return {"compatibility": True}
             if name == "export_certification_manifest":
@@ -206,6 +216,11 @@ class McpServerTests(unittest.TestCase):
                 "get_capabilities",
                 "get_tool_descriptors",
                 "get_provider_profiles",
+                "get_sbsql_language_resource_manifest",
+                "list_sbsql_language_profiles",
+                "get_sbsql_predictive_grammar",
+                "get_metadata_resolution_contract",
+                "generate_ai_mcp_support_bundle",
                 "get_compatibility_manifest",
                 "export_certification_manifest",
                 "negotiate_compatibility",
@@ -268,6 +283,25 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(tools["get_capabilities"]()["service"], "scratchbird-ai")
         self.assertEqual(tools["get_tool_descriptors"]()["tools"], [])
         self.assertEqual(tools["get_provider_profiles"]()["profiles"], [])
+        self.assertEqual(
+            tools["get_sbsql_language_resource_manifest"]()["resource_identity"],
+            "sbsql.common_resource_pack.v1",
+        )
+        self.assertEqual(
+            tools["list_sbsql_language_profiles"]()["profiles"][0]["exact_tag"],
+            "en-US",
+        )
+        self.assertIn("states", tools["get_sbsql_predictive_grammar"]()["predictive_grammar"])
+        self.assertEqual(
+            tools["get_metadata_resolution_contract"](security_context)[
+                "resolution_authority"
+            ],
+            "server_authorization_filtered_sys_information",
+        )
+        self.assertEqual(
+            tools["generate_ai_mcp_support_bundle"]()["schema_id"],
+            "scratchbird.ai_mcp_support_bundle_manifest.v1",
+        )
         self.assertTrue(tools["get_compatibility_manifest"]()["compatibility"])
         self.assertTrue(tools["export_certification_manifest"]()["certification"])
         self.assertEqual(tools["negotiate_compatibility"]({"client": "codex"})["decision"], "allow")

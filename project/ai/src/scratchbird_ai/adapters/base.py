@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
@@ -20,6 +20,7 @@ class AdapterCompileResult:
     sblr_hash: str
     diagnostics: list[str]
     warnings: list[str]
+    prepared_artifact: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

@@ -19,12 +19,28 @@
         "SB_BUILD_TESTS": "ON",
         "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF"
       }
+    },
+    {
+      "name": "ai-mcp-release-proof-linux",
+      "displayName": "AI MCP Release Proof Linux",
+      "description": "Configures the public release profile with AI MCP runtime and live-native hard-fail release proof gates.",
+      "inherits": "public-release-linux",
+      "binaryDir": "${sourceParentDir}/build/ai-mcp-release-proof-linux",
+      "cacheVariables": {
+        "SB_AI_REQUIRE_MCP_RUNTIME": "ON",
+        "SB_AI_REQUIRE_LIVE_NATIVE": "ON"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "public-release-linux",
       "configurePreset": "public-release-linux",
+      "jobs": 4
+    },
+    {
+      "name": "ai-mcp-release-proof-linux",
+      "configurePreset": "ai-mcp-release-proof-linux",
       "jobs": 4
     }
   ],
@@ -34,6 +50,21 @@
       "configurePreset": "public-release-linux",
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ai-mcp-release-proof-linux",
+      "configurePreset": "ai-mcp-release-proof-linux",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "name": "^ai_"
+        }
       },
       "execution": {
         "noTestsAction": "error"

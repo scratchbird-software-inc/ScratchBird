@@ -37,6 +37,16 @@ REQUIRED_CAP_FIELDS = {
     "metadata_introspection",
     "vector_ops",
     "graph_ops",
+    "compile_execute_split",
+    "prepared_sblr_uuid_artifacts",
+    "server_revalidation",
+    "tls_inet",
+    "ipc_route",
+    "shared_language_resources",
+    "predictive_prompting",
+    "authorized_metadata_resolution",
+    "resource_budgets",
+    "cluster_boundary_fail_closed",
     "last_verified_at",
     "compat_version",
 }
@@ -72,6 +82,16 @@ def validate_capability(dialect: str, cap: dict[str, Any]) -> None:
         "metadata_introspection",
         "vector_ops",
         "graph_ops",
+        "compile_execute_split",
+        "prepared_sblr_uuid_artifacts",
+        "server_revalidation",
+        "tls_inet",
+        "ipc_route",
+        "shared_language_resources",
+        "predictive_prompting",
+        "authorized_metadata_resolution",
+        "resource_budgets",
+        "cluster_boundary_fail_closed",
     ]:
         if not isinstance(cap[field], bool):
             fail(f"dialect '{dialect}' field '{field}' must be boolean")

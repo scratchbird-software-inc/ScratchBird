@@ -54,6 +54,7 @@ COMPONENT_TOOLCHAINS = {
     "driver:rust": ["cargo"],
     "driver:swift": ["swift"],
     "adaptor:scratchbird-airbyte": ["python3"],
+    "adaptor:scratchbird-ai-mcp": ["python3"],
     "adaptor:scratchbird-dbeaver-driver": ["mvn", "java", "zip"],
     "adaptor:scratchbird-dbt-adapter": ["python3"],
     "adaptor:scratchbird-hibernate-dialect": ["mvn", "java"],
@@ -161,6 +162,19 @@ class Context:
 
     @property
     def source_dir(self) -> Path:
+        manifest = self.project_root / "drivers" / "DriverPackageManifest.csv"
+        if manifest.is_file():
+            with manifest.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    if row.get("component_id") != self.component:
+                        continue
+                    source_path = str(row.get("source_path", "")).strip()
+                    if not source_path:
+                        break
+                    candidate = Path(source_path)
+                    if candidate.is_absolute():
+                        return candidate
+                    return self.repo_root / candidate
         return self.project_root / "drivers" / self.category / self.name
 
     @property
@@ -930,6 +944,7 @@ RUNNERS: dict[str, Callable[[Context], int]] = {
     "driver:rust": run_rust,
     "driver:swift": run_swift,
     "adaptor:scratchbird-airbyte": run_contract_package,
+    "adaptor:scratchbird-ai-mcp": run_contract_package,
     "adaptor:scratchbird-dbeaver-driver": run_dbeaver,
     "adaptor:scratchbird-dbt-adapter": run_contract_package,
     "adaptor:scratchbird-hibernate-dialect": run_maven,

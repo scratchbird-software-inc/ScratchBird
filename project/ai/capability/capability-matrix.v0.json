@@ -11,6 +11,16 @@
       "metadata_introspection": true,
       "vector_ops": true,
       "graph_ops": true,
+      "compile_execute_split": true,
+      "prepared_sblr_uuid_artifacts": true,
+      "server_revalidation": true,
+      "tls_inet": true,
+      "ipc_route": true,
+      "shared_language_resources": true,
+      "predictive_prompting": true,
+      "authorized_metadata_resolution": true,
+      "resource_budgets": true,
+      "cluster_boundary_fail_closed": true,
       "last_verified_at": "2026-04-20",
       "compat_version": "sb-ai-0.1"
     }

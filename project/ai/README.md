@@ -1,10 +1,10 @@
 # ScratchBird AI
 
-ScratchBird AI is the AI integration layer for ScratchBird.
-This repository contains the MCP-oriented service layer, dialect-aware query orchestration, HTTP adapter and bridge runtime, and deterministic governance helpers used to connect AI workflows to ScratchBird parser/compiler and execution paths.
+ScratchBird AI is the first-class AI MCP adaptor lane for ScratchBird.
+This repository contains the MCP-oriented service layer, dialect-aware query orchestration, HTTP adapter and bridge runtime, deterministic governance helpers, shared SBsql language-resource access, and release gates used to connect AI workflows to ScratchBird parser/compiler and execution paths.
 
-Current release track: **current early beta / technical Beta 1 review baseline** (`0.1.0`)
-Status timestamp: **April 20, 2026**
+Current release track: **AI MCP release-candidate lane for the public source-review beta** (`0.1.0`)
+Status timestamp: **July 7, 2026**
 
 ## Support Policy
 
@@ -13,7 +13,8 @@ ScratchBird AI supports **ScratchBird native engine workflows only**.
 - Native-only AI support is in scope for this repository.
 - Emulated external engines are out of scope for this repository's AI layer.
 - Non-native dialect requests are rejected with explicit policy errors.
-- ScratchBird engine execution boundary remains `ServerSession`; SQL must be compiled to SBLR before engine submission.
+- ScratchBird engine execution boundary remains SBLR/UUID only. SQL is parsed/lowered outside the engine by a driver, parser, or UDR, and original SQL text may be carried only as data/reference payload.
+- AI MCP, drivers, and parser layers are untrusted. The server revalidates authentication, authorization, descriptor, UUID, policy, cache, schema, and MGA transaction authority before execution.
 
 ## Current Early-Beta Surface
 
@@ -21,7 +22,9 @@ Included in the current baseline:
 
 - MCP-oriented service orchestration with canonical tool declarations.
 - Safe-by-default policy path with read-only mode and approval-gated mutation mode.
-- Compile/execute split orchestration with artifact identifiers, trace IDs, and audit bundles.
+- Compile/execute split orchestration with prepared SBLR/UUID artifact identifiers, trace IDs, and audit bundles.
+- Server-revalidation state reporting for every prepared SBLR/UUID artifact.
+- Shared SBsql language-resource pack loading for language profiles, predictive grammar, and canonical fallback metadata.
 - Dialect capability matrix loader and native-only routing gates.
 - HTTP adapter mode (`mock`, `http`, `hybrid`) for parser/executor integration.
 - Local HTTP bridge implementation for adapter contract testing and live driver-backed access.
@@ -36,14 +39,16 @@ Included in the current baseline:
 - Deterministic plan hashing, execution-mode evaluation, audit replay, and cluster-routing helpers.
 - ScratchBird-native control surface publication for graph operations, remote MCP, registry/routing controls, and bridge/runtime management families.
 - Remote MCP session lifecycle with advertised auth families including bearer, OAuth2/JWT bearer, workload identity, proxy principal, LDAP bind, Kerberos/GSSAPI, RADIUS PAP, PAM conversation, and preauthenticated context.
+- Preauthenticated remote MCP context is refused unless explicitly enabled by runtime policy.
 - Expanded live-native harness depth for service-internal explain/workload/audit replay and retrieval contract probes.
 - Release evidence generation and validation for the implemented early-beta surface.
 
-Not included in this release:
+Release proof requirements:
 
-- Production-grade authz depth, third-party signing infrastructure, and full multi-tenant hard isolation.
-- AI support for non-native emulated engine modes.
-- Automatic live certification for runtime modes not exposed in the active test environment.
+- MCP runtime support must be proven when building an MCP release package.
+- Live-native claims must be backed by a configured live ScratchBird target and generated evidence.
+- Mock or unconfigured classifications are accepted for development gates only and are refused by release-required gates.
+- AI support for non-native emulated engine modes is not part of this AI MCP lane.
 
 Current truth note:
 

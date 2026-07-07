@@ -94,6 +94,7 @@ class RemoteSessionManagerTests(unittest.TestCase):
         manager = RemoteSessionManager(
             auth_token=None,
             supported_auth_types=("preauthenticated_context", "proxy_principal"),
+            allow_preauthenticated_context=True,
         )
         request = self._request()
         request["auth_envelope"] = {
@@ -106,6 +107,24 @@ class RemoteSessionManagerTests(unittest.TestCase):
             capability_advertisement=self._capabilities(),
         )
         self.assertEqual(opened["negotiated_transport"], "https_json_request_response")
+
+    def test_open_session_rejects_preauthenticated_context_without_policy(self) -> None:
+        manager = RemoteSessionManager(
+            auth_token=None,
+            supported_auth_types=("preauthenticated_context",),
+        )
+        request = self._request()
+        request["auth_envelope"] = {
+            "auth_type": "preauthenticated_context",
+            "security_context": request["security_context_hint"],
+        }
+
+        with self.assertRaises(ToolContractError) as ctx:
+            manager.open_session(
+                request,
+                capability_advertisement=self._capabilities(),
+            )
+        self.assertEqual(ctx.exception.policy_rule_id, "REMOTE-AUTH-005")
 
     def test_open_session_accepts_proxy_principal_auth(self) -> None:
         request = self._request()

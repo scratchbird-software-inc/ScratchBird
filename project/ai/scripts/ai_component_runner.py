@@ -169,7 +169,13 @@ def write_junit(path: Path, suite_name: str, result: RecordingResult, duration_s
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
-def run_unittest_mode(repo_root: Path, output_dir: Path, mode: str) -> int:
+def run_unittest_mode(
+    repo_root: Path,
+    output_dir: Path,
+    mode: str,
+    *,
+    require_mcp_runtime: bool = False,
+) -> int:
     configure_runtime_paths(output_dir)
     patterns = ["test_*.py"]
     if mode == "optional-mcp":
@@ -189,6 +195,8 @@ def run_unittest_mode(repo_root: Path, output_dir: Path, mode: str) -> int:
     classification = "tested"
     if mode == "optional-mcp" and skipped == result.testsRun and result.testsRun > 0:
         classification = "optional_runtime_unavailable"
+        if require_mcp_runtime:
+            status = "FAIL"
 
     payload = {
         "generated_at_utc": utc_now(),
@@ -205,6 +213,8 @@ def run_unittest_mode(repo_root: Path, output_dir: Path, mode: str) -> int:
     write_junit(output_dir / f"{mode}.junit.xml", f"scratchbird_ai_{mode}", result, duration)
 
     if status != "PASS":
+        if require_mcp_runtime and classification == "optional_runtime_unavailable":
+            print("MCP runtime is required for this release gate", file=sys.stderr)
         for _, message in result.failures + result.errors:
             print(message, file=sys.stderr)
         return 1
@@ -215,7 +225,12 @@ def run_unittest_mode(repo_root: Path, output_dir: Path, mode: str) -> int:
     return 0
 
 
-def run_live_native_classification(repo_root: Path, output_dir: Path) -> int:
+def run_live_native_classification(
+    repo_root: Path,
+    output_dir: Path,
+    *,
+    require_live_native: bool = False,
+) -> int:
     configure_runtime_paths(output_dir)
     live_dir = output_dir / "live_native_conformance"
     env = os.environ.copy()
@@ -252,7 +267,11 @@ def run_live_native_classification(repo_root: Path, output_dir: Path) -> int:
         if result.returncode == 0 or expected_unconfigured:
             payload.update(
                 {
-                    "status": "PASS",
+                    "status": (
+                        "FAIL"
+                        if require_live_native and result.returncode != 0
+                        else "PASS"
+                    ),
                     "classification": "live_native_passed" if result.returncode == 0 else "live_native_unconfigured",
                     "summary_status": summary.get("status"),
                     "failed_checks": failed,
@@ -284,13 +303,32 @@ def main() -> int:
         choices=("unit", "optional-mcp", "live-native-classification"),
         required=True,
     )
+    parser.add_argument(
+        "--require-mcp-runtime",
+        action="store_true",
+        help="Fail optional-mcp mode when the MCP runtime package is unavailable.",
+    )
+    parser.add_argument(
+        "--require-live-native",
+        action="store_true",
+        help="Fail live-native classification when the live target is unconfigured.",
+    )
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
     output_dir = Path(args.output_dir).resolve()
 
     if args.mode in {"unit", "optional-mcp"}:
-        return run_unittest_mode(repo_root, output_dir, args.mode)
-    return run_live_native_classification(repo_root, output_dir)
+        return run_unittest_mode(
+            repo_root,
+            output_dir,
+            args.mode,
+            require_mcp_runtime=bool(args.require_mcp_runtime),
+        )
+    return run_live_native_classification(
+        repo_root,
+        output_dir,
+        require_live_native=bool(args.require_live_native),
+    )
 
 
 if __name__ == "__main__":

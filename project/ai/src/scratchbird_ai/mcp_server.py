@@ -68,6 +68,55 @@ def create_server(service: ScratchBirdAIService | None = None):
         )
 
     @mcp.tool()
+    def get_sbsql_language_resource_manifest(verify_hashes: bool = True) -> dict:
+        payload = {"verify_hashes": verify_hashes}
+        return _tool_call(
+            tool_name="get_sbsql_language_resource_manifest",
+            payload=payload,
+            fn=lambda: svc.get_sbsql_language_resource_manifest(
+                verify_hashes=verify_hashes,
+            ),
+        )
+
+    @mcp.tool()
+    def list_sbsql_language_profiles(verify_hashes: bool = True) -> dict:
+        payload = {"verify_hashes": verify_hashes}
+        return _tool_call(
+            tool_name="list_sbsql_language_profiles",
+            payload=payload,
+            fn=lambda: svc.list_sbsql_language_profiles(verify_hashes=verify_hashes),
+        )
+
+    @mcp.tool()
+    def get_sbsql_predictive_grammar(verify_hashes: bool = True) -> dict:
+        payload = {"verify_hashes": verify_hashes}
+        return _tool_call(
+            tool_name="get_sbsql_predictive_grammar",
+            payload=payload,
+            fn=lambda: svc.get_sbsql_predictive_grammar(verify_hashes=verify_hashes),
+        )
+
+    @mcp.tool()
+    def get_metadata_resolution_contract(security_context: dict | None = None) -> dict:
+        payload = {"security_context": security_context or {}}
+        return _tool_call(
+            tool_name="get_metadata_resolution_contract",
+            payload=payload,
+            fn=lambda: svc.get_metadata_resolution_contract(
+                security_context=security_context or None,
+            ),
+        )
+
+    @mcp.tool()
+    def generate_ai_mcp_support_bundle(output_dir: str = "") -> dict:
+        payload = {"output_dir": output_dir}
+        return _tool_call(
+            tool_name="generate_ai_mcp_support_bundle",
+            payload=payload,
+            fn=lambda: svc.generate_ai_mcp_support_bundle(output_dir=output_dir or None),
+        )
+
+    @mcp.tool()
     def get_compatibility_manifest() -> dict:
         return _tool_call(
             tool_name="get_compatibility_manifest",

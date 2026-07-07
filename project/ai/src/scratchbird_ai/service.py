@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .adapters.base import DialectAdapter
@@ -33,6 +34,8 @@ from .deterministic import deterministic_id
 from .environment_manifest import build_certification_manifest
 from .execution_mode import ApprovalEvidence, validate_approval
 from .interface_profiles import INTERFACE_COMPATIBILITY_VERSION, get_interface_profiles
+from .language_resources import LanguageResourcePack
+from .metadata_resolution import build_metadata_resolution_contract
 from .operation_streams import LongRunningOperationManager
 from .operational_controls import OperationalControlEngine
 from .operator_bundle import build_runtime_diagnostics, generate_operator_runbook_bundle
@@ -48,7 +51,13 @@ from .scratchbird_core_surface import (
     build_scratchbird_core_surface_packet,
 )
 from .settings import RuntimeSettings, load_runtime_settings
+from .sblr_artifacts import (
+    SERVER_REVALIDATED,
+    build_prepared_artifact,
+    validate_prepared_artifact,
+)
 from .structured_logging import StructuredEventLogger
+from .support_bundle import build_support_bundle_manifest
 from .tool_schema import (
     TOOL_DESCRIPTOR_VERSION,
     ToolContractError,
@@ -71,6 +80,7 @@ class CompileRecord:
     context: dict[str, Any]
     security_context: dict[str, Any]
     security_context_hash: str
+    prepared_artifact: dict[str, Any]
 
 
 class ScratchBirdAIService:
@@ -187,6 +197,11 @@ class ScratchBirdAIService:
                 "graph_ops": True,
                 "bridge_runtime": True,
                 "server_policy_bound_authorization": True,
+                "prepared_sblr_uuid_artifacts": True,
+                "server_revalidation_required_for_untrusted_artifacts": True,
+                "shared_sbsql_language_resources": True,
+                "predictive_sbsql_prompting": True,
+                "authorization_filtered_uuid_path_resolution": True,
                 "structured_runtime_logging": True,
                 "operator_runbook_packaging": True,
                 "audit_attestation": True,
@@ -238,6 +253,58 @@ class ScratchBirdAIService:
 
     def get_tool_descriptors(self) -> dict[str, Any]:
         return {"tools": get_tool_descriptors()}
+
+    def get_sbsql_language_resource_manifest(
+        self,
+        *,
+        verify_hashes: bool = True,
+    ) -> dict[str, Any]:
+        pack = LanguageResourcePack.load(verify_hashes=verify_hashes)
+        return pack.canonical_summary()
+
+    def list_sbsql_language_profiles(self, *, verify_hashes: bool = True) -> dict[str, Any]:
+        pack = LanguageResourcePack.load(verify_hashes=verify_hashes)
+        return {
+            "resource_identity": pack.manifest.get("resource_identity"),
+            "profiles": pack.list_profiles(),
+        }
+
+    def get_sbsql_predictive_grammar(self, *, verify_hashes: bool = True) -> dict[str, Any]:
+        pack = LanguageResourcePack.load(verify_hashes=verify_hashes)
+        grammar = pack.predictive_grammar()
+        return {
+            "resource_identity": pack.manifest.get("resource_identity"),
+            "topology_profile_uuid": pack.manifest.get("topology_profile_uuid"),
+            "predictive_grammar": grammar,
+        }
+
+    def get_metadata_resolution_contract(
+        self,
+        *,
+        security_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return build_metadata_resolution_contract(security_context=security_context)
+
+    def generate_ai_mcp_support_bundle(
+        self,
+        *,
+        output_dir: str | None = None,
+    ) -> dict[str, Any]:
+        return build_support_bundle_manifest(
+            runtime_settings={
+                "adapter_mode": self._runtime_settings.adapter_mode,
+                "http_base_url": self._runtime_settings.http_base_url,
+                "http_timeout_sec": self._runtime_settings.http_timeout_sec,
+                "remote_mcp_auth_token": self._runtime_settings.remote_mcp_auth_token,
+                "require_server_revalidated_artifacts": (
+                    self._runtime_settings.require_server_revalidated_artifacts
+                ),
+                "remote_mcp_allow_preauthenticated_context": (
+                    self._runtime_settings.remote_mcp_allow_preauthenticated_context
+                ),
+            },
+            output_dir=Path(output_dir) if output_dir else None,
+        )
 
     def get_provider_profiles(self) -> dict[str, Any]:
         return {"profiles": get_provider_profiles()}
@@ -1456,6 +1523,24 @@ class ScratchBirdAIService:
         statement_kind = compiled.statement_kind
         if statement_kind not in {"read", "mutation", "unknown"}:
             statement_kind = "unknown"
+        prepared_artifact_obj = build_prepared_artifact(
+            compile_artifact_id=compile_artifact_id,
+            dialect=dialect,
+            statement_kind=statement_kind,
+            sblr_hash=compiled.sblr_hash,
+            security_context_hash=sec_hash,
+            adapter_mode=self.adapter_mode,
+            context=query_context,
+            adapter_artifact=compiled.prepared_artifact,
+        )
+        prepared_artifact = prepared_artifact_obj.to_dict()
+        artifact_errors = validate_prepared_artifact(prepared_artifact)
+        if artifact_errors:
+            raise ToolContractError(
+                error_code="E_PROVIDER_CONTRACT_UNSUPPORTED",
+                message="invalid prepared SBLR/UUID artifact: " + "; ".join(artifact_errors),
+                policy_rule_id="AI-MCP-SBLR-ARTIFACT-001",
+            )
 
         self._compile_store[compile_artifact_id] = CompileRecord(
             dialect=dialect,
@@ -1465,6 +1550,7 @@ class ScratchBirdAIService:
             context=query_context,
             security_context=security_context,
             security_context_hash=sec_hash,
+            prepared_artifact=prepared_artifact,
         )
 
         return CompileResult(
@@ -1472,6 +1558,8 @@ class ScratchBirdAIService:
             dialect=dialect,
             statement_kind=statement_kind,
             sblr_hash=compiled.sblr_hash,
+            prepared_artifact=prepared_artifact,
+            server_revalidation_state=prepared_artifact_obj.server_revalidation_state,
             diagnostics=compiled.diagnostics,
             warnings=compiled.warnings + compile_repair_warnings,
         )
@@ -1515,15 +1603,26 @@ class ScratchBirdAIService:
             opts = dict(decision.normalized_options)
         if "max_rows" in opts and "limit" not in opts:
             opts["limit"] = int(opts["max_rows"])
+        if (
+            self._runtime_settings.require_server_revalidated_artifacts
+            and record.prepared_artifact.get("server_revalidation_state") != SERVER_REVALIDATED
+        ):
+            raise ToolContractError(
+                error_code="E_POLICY_DENY",
+                message="release execution requires server-revalidated SBLR/UUID artifact",
+                policy_rule_id="AI-MCP-SBLR-ARTIFACT-002",
+            )
 
         required_cap = "write_dml" if is_mutation else "read_select"
         self.router.require_capability(record.dialect, required_cap)
 
         adapter = self.adapters[record.dialect]
+        adapter_options = dict(opts)
+        adapter_options["_scratchbird_prepared_artifact"] = dict(record.prepared_artifact)
         executed = adapter.executor.execute_compiled(
             compile_artifact_id=compile_artifact_id,
             query_text=record.query_text,
-            options=opts,
+            options=adapter_options,
         )
 
         attempt_index = self._execution_attempts.get(compile_artifact_id, 0) + 1
@@ -1542,7 +1641,16 @@ class ScratchBirdAIService:
             compile_artifact_id=compile_artifact_id,
             rows=executed.rows,
             row_count=len(executed.rows),
-            notices=executed.notices,
+            server_revalidation_state=str(
+                record.prepared_artifact.get("server_revalidation_state", "")
+            ),
+            notices=executed.notices
+            + [
+                "prepared_sblr_uuid_artifact="
+                + str(record.prepared_artifact.get("prepared_handle", "")),
+                "server_revalidation_state="
+                + str(record.prepared_artifact.get("server_revalidation_state", "")),
+            ],
         )
 
     def run_query(
@@ -2282,6 +2390,30 @@ class ScratchBirdAIService:
             return self.get_tool_descriptors()
         if tool_name == "get_provider_profiles":
             return self.get_provider_profiles()
+        if tool_name == "get_sbsql_language_resource_manifest":
+            return self.get_sbsql_language_resource_manifest(
+                verify_hashes=bool(arguments.get("verify_hashes", True))
+            )
+        if tool_name == "list_sbsql_language_profiles":
+            return self.list_sbsql_language_profiles(
+                verify_hashes=bool(arguments.get("verify_hashes", True))
+            )
+        if tool_name == "get_sbsql_predictive_grammar":
+            return self.get_sbsql_predictive_grammar(
+                verify_hashes=bool(arguments.get("verify_hashes", True))
+            )
+        if tool_name == "get_metadata_resolution_contract":
+            return self.get_metadata_resolution_contract(
+                security_context=(
+                    dict(arguments["security_context"])
+                    if isinstance(arguments.get("security_context"), dict)
+                    else None
+                )
+            )
+        if tool_name == "generate_ai_mcp_support_bundle":
+            return self.generate_ai_mcp_support_bundle(
+                output_dir=str(arguments.get("output_dir", "")).strip() or None
+            )
         if tool_name == "get_compatibility_manifest":
             return self.get_compatibility_manifest()
         if tool_name == "export_certification_manifest":
@@ -2806,6 +2938,9 @@ def build_default_service(settings: RuntimeSettings | None = None) -> ScratchBir
         supported_protocol_versions=runtime_settings.remote_mcp_protocol_versions,
         supported_auth_types=runtime_settings.remote_mcp_supported_auth_types,
         supported_transports=runtime_settings.remote_mcp_supported_transports,
+        allow_preauthenticated_context=(
+            runtime_settings.remote_mcp_allow_preauthenticated_context
+        ),
     )
     retrieval_store = InMemoryRetrievalStore(
         catalog_path=runtime_settings.retrieval_catalog_path,

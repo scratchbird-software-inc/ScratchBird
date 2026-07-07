@@ -160,6 +160,18 @@ class ServiceTests(unittest.TestCase):
         )
         self.assertIn("get_tool_descriptors", capabilities["supports"]["canonical_tools"])
         self.assertIn("get_provider_profiles", capabilities["supports"]["canonical_tools"])
+        self.assertIn(
+            "get_sbsql_language_resource_manifest",
+            capabilities["supports"]["canonical_tools"],
+        )
+        self.assertIn(
+            "get_sbsql_predictive_grammar",
+            capabilities["supports"]["canonical_tools"],
+        )
+        self.assertIn(
+            "get_metadata_resolution_contract",
+            capabilities["supports"]["canonical_tools"],
+        )
         self.assertIn("get_compatibility_manifest", capabilities["supports"]["canonical_tools"])
         self.assertIn("export_certification_manifest", capabilities["supports"]["canonical_tools"])
         self.assertIn("negotiate_compatibility", capabilities["supports"]["canonical_tools"])
@@ -223,6 +235,8 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(capabilities["supports"]["graph_ops"])
         self.assertTrue(capabilities["supports"]["bridge_runtime"])
         self.assertTrue(capabilities["supports"]["server_policy_bound_authorization"])
+        self.assertTrue(capabilities["supports"]["prepared_sblr_uuid_artifacts"])
+        self.assertTrue(capabilities["supports"]["shared_sbsql_language_resources"])
         self.assertTrue(capabilities["supports"]["structured_runtime_logging"])
         self.assertTrue(capabilities["supports"]["operator_runbook_packaging"])
         self.assertTrue(capabilities["supports"]["audit_attestation"])
@@ -693,7 +707,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(bundle["actor_id"], "actor_remote")
 
     def test_remote_session_accepts_preauthenticated_context_without_local_token(self) -> None:
-        service = build_default_service()
+        service = build_default_service(
+            settings=RuntimeSettings(remote_mcp_allow_preauthenticated_context=True)
+        )
         opened = service.open_remote_session(
             {
                 "request_id": "req_remote_preauth_open",
@@ -714,6 +730,26 @@ class ServiceTests(unittest.TestCase):
             }
         )
         self.assertEqual(opened["negotiated_transport"], "websocket_bidirectional")
+
+    def test_remote_session_rejects_preauthenticated_context_by_default(self) -> None:
+        service = build_default_service()
+        with self.assertRaises(ToolContractError) as ctx:
+            service.open_remote_session(
+                {
+                    "request_id": "req_remote_preauth_refuse",
+                    "interface_profile_id": "mcp_remote_v0",
+                    "protocol_version": "v0",
+                    "requested_transport": "websocket_bidirectional",
+                    "auth_envelope": {
+                        "auth_type": "preauthenticated_context",
+                        "security_context": {
+                            "tenant_id": "tenant_remote",
+                            "actor_id": "actor_remote",
+                        },
+                    },
+                }
+            )
+        self.assertEqual(ctx.exception.policy_rule_id, "REMOTE-AUTH-005")
 
     def test_remote_session_stream_request_fails_closed(self) -> None:
         service = build_default_service(
@@ -1140,6 +1176,9 @@ class ServiceTests(unittest.TestCase):
             context=context,
         )
         self.assertEqual(first.compile_artifact_id, second.compile_artifact_id)
+        self.assertEqual(first.prepared_artifact["execution_authority"], "engine_sblr_uuid_only")
+        self.assertFalse(first.prepared_artifact["local_sql_execution_authority"])
+        self.assertEqual(first.server_revalidation_state, "test_only_mock")
 
     def test_execution_artifact_id_changes_with_attempt_index(self) -> None:
         context = {
@@ -1167,6 +1206,62 @@ class ServiceTests(unittest.TestCase):
             mode="ai_analysis",
         )
         self.assertNotEqual(first.execution_artifact_id, second.execution_artifact_id)
+        self.assertEqual(first.server_revalidation_state, "test_only_mock")
+        self.assertTrue(
+            any(item.startswith("prepared_sblr_uuid_artifact=") for item in first.notices)
+        )
+
+    def test_release_mode_rejects_non_server_revalidated_artifact(self) -> None:
+        service = build_default_service(
+            settings=RuntimeSettings(
+                require_server_revalidated_artifacts=True,
+                approval_ledger_path=str(Path(self._tmp_dir.name) / "release-approval.json"),
+                structured_event_log_path=str(Path(self._tmp_dir.name) / "release-events.jsonl"),
+                operator_bundle_output_dir=str(Path(self._tmp_dir.name) / "release-bundle"),
+            )
+        )
+        compiled = service.compile_query(
+            dialect="native",
+            query_text="SELECT 1",
+            context={"security_context": self.security_context},
+        )
+        with self.assertRaises(ToolContractError) as ctx:
+            service.execute_compiled(
+                compile_artifact_id=compiled.compile_artifact_id,
+                mode="ai_analysis",
+            )
+        self.assertEqual(ctx.exception.policy_rule_id, "AI-MCP-SBLR-ARTIFACT-002")
+
+    def test_sbsql_language_resources_are_loaded_from_shared_pack(self) -> None:
+        manifest = self.service.get_sbsql_language_resource_manifest(verify_hashes=False)
+        self.assertIn("en-US", manifest["profile_tags"])
+        self.assertTrue(manifest["authority"]["local_sblr_uuid_streams_are_untrusted"])
+        profiles = self.service.list_sbsql_language_profiles(verify_hashes=False)
+        self.assertGreaterEqual(len(profiles["profiles"]), 7)
+        predictive = self.service.get_sbsql_predictive_grammar(verify_hashes=False)
+        self.assertEqual(predictive["resource_identity"], "sbsql.common_resource_pack.v1")
+
+    def test_metadata_resolution_contract_is_authorization_filtered(self) -> None:
+        contract = self.service.get_metadata_resolution_contract(
+            security_context=self.security_context
+        )
+        self.assertEqual(
+            contract["resolution_authority"],
+            "server_authorization_filtered_sys_information",
+        )
+        self.assertTrue(contract["required_server_revalidation"])
+
+    def test_support_bundle_redacts_secret_like_fields(self) -> None:
+        service = build_default_service(
+            settings=RuntimeSettings(
+                remote_mcp_auth_token="super-secret-token",
+                approval_ledger_path=str(Path(self._tmp_dir.name) / "support-approval.json"),
+                structured_event_log_path=str(Path(self._tmp_dir.name) / "support-events.jsonl"),
+                operator_bundle_output_dir=str(Path(self._tmp_dir.name) / "support-bundle"),
+            )
+        )
+        bundle = service.generate_ai_mcp_support_bundle()
+        self.assertEqual(bundle["runtime_settings"]["remote_mcp_auth_token"], "<redacted>")
 
 
 if __name__ == "__main__":

@@ -72,6 +72,7 @@ class RemoteSessionManager:
             "https_sse_server_stream",
             "websocket_bidirectional",
         ),
+        allow_preauthenticated_context: bool = False,
     ) -> None:
         self.auth_token = (auth_token or "").strip() or None
         self.session_ttl_sec = max(60, int(session_ttl_sec))
@@ -94,6 +95,7 @@ class RemoteSessionManager:
             "https_sse_server_stream",
             "websocket_bidirectional",
         )
+        self.allow_preauthenticated_context = bool(allow_preauthenticated_context)
         self._sessions: dict[str, RemoteSession] = {}
         self._closed_sessions: set[str] = set()
 
@@ -262,6 +264,14 @@ class RemoteSessionManager:
                 error_code="E_PROVIDER_CONTRACT_UNSUPPORTED",
                 message=f"unsupported remote auth type: {auth_type}",
                 policy_rule_id="REMOTE-AUTH-002",
+            )
+        if auth_type == "preauthenticated_context" and not self.allow_preauthenticated_context:
+            raise ToolContractError(
+                error_code="E_POLICY_DENY",
+                message=(
+                    "preauthenticated_context requires explicit runtime policy admission"
+                ),
+                policy_rule_id="REMOTE-AUTH-005",
             )
 
         if self.auth_token is not None and auth_type in {

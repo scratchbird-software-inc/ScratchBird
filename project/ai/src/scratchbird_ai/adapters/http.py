@@ -173,6 +173,7 @@ class ScratchBirdHttpCompilerAdapter(CompilerAdapter):
         sblr_hash = str(doc.get("sblr_hash", ""))
         diagnostics = doc.get("diagnostics", [])
         warnings = doc.get("warnings", [])
+        prepared_artifact = doc.get("prepared_artifact", {})
 
         if statement_kind not in {"read", "mutation", "unknown"}:
             statement_kind = "unknown"
@@ -187,12 +188,15 @@ class ScratchBirdHttpCompilerAdapter(CompilerAdapter):
 
         if not sblr_hash:
             raise HttpAdapterError("compile response missing sblr_hash")
+        if not isinstance(prepared_artifact, dict):
+            raise HttpAdapterError("compile response field 'prepared_artifact' must be an object")
 
         return AdapterCompileResult(
             statement_kind=statement_kind,
             sblr_hash=sblr_hash,
             diagnostics=diagnostics,
             warnings=warnings,
+            prepared_artifact=prepared_artifact,
         )
 
 

@@ -22,6 +22,7 @@ from .base import (
     ExecutorAdapter,
     MetadataAdapter,
 )
+from ..sblr_artifacts import TEST_ONLY_MOCK
 
 
 class MockCompilerAdapter(CompilerAdapter):
@@ -56,6 +57,10 @@ class MockCompilerAdapter(CompilerAdapter):
             sblr_hash=sblr_hash,
             diagnostics=[],
             warnings=["mock compiler in use"],
+            prepared_artifact={
+                "server_revalidation_state": TEST_ONLY_MOCK,
+                "source": "mock_adapter",
+            },
         )
 
 
