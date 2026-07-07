@@ -1,0 +1,28 @@
+{
+  "binary": "bin/sb_isql_r2dbc",
+  "binary_sha256": "597e87f19ffc1bcdd81c81c11ea63eb8cc0f1a6bbad6a8da3571d33b0dab885d",
+  "component_id": "driver:r2dbc",
+  "driver": "r2dbc",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/proof_summary.json"
+  ],
+  "runtime_payloads": [],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.driver_release_package_manifest.v1",
+  "source_commit": "d8da29e88ee3223aa1e65f398a6c100f954b23c1",
+  "source_path": "project/drivers/driver/r2dbc",
+  "support_materials": [
+    "support/README.md",
+    "support/BASELINE_REQUIREMENT_MAPPING.md",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0029-7000-8000-000000000029"
+}

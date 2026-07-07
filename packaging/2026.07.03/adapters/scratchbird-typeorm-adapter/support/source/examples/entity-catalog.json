@@ -1,0 +1,28 @@
+{
+  "schemas": [
+    {
+      "name": "sys",
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {
+              "name": "id",
+              "type": "BIGINT",
+              "nullable": false,
+              "identity": true
+            },
+            {
+              "name": "email",
+              "type": "VARCHAR",
+              "nullable": false
+            }
+          ],
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    }
+  ]
+}

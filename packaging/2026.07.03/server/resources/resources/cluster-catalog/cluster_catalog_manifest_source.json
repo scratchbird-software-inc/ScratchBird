@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "manifest_id": "sb.cluster_catalog.public_source.v1",
+  "manifest_version": 1,
+  "policy": {
+    "engine_owned": true,
+    "uuid_only_identity": true,
+    "external_provider_required": true,
+    "local_runtime_execution_enabled": false,
+    "mutable_by_local_core": false,
+    "cluster_production_execution": "external_provider_only",
+    "transaction_inventory_remains_finality_authority": true,
+    "resolver_rows_own_names": true,
+    "comment_rows_own_comments": true,
+    "property_bags_allowed": false,
+    "untyped_json_allowed": false
+  },
+  "base_tables": [
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "node",
+      "stable_table_id": "cluster_catalog.node",
+      "record_family": "node",
+      "primary_key": ["node_uuid"],
+      "columns": [
+        {"name": "node_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "node_role_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "engine_instance_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "default_filespace_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "security_epoch", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "role",
+      "stable_table_id": "cluster_catalog.role",
+      "record_family": "role",
+      "primary_key": ["role_uuid"],
+      "columns": [
+        {"name": "role_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "role_code", "type": "role_code"},
+        {"name": "role_generation", "type": "uint64"},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "capability",
+      "stable_table_id": "cluster_catalog.capability",
+      "record_family": "capability",
+      "primary_key": ["capability_uuid"],
+      "columns": [
+        {"name": "capability_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "role_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "capability_code", "type": "capability_code"},
+        {"name": "capability_generation", "type": "uint64"},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "filespace",
+      "stable_table_id": "cluster_catalog.filespace",
+      "record_family": "filespace",
+      "primary_key": ["cluster_filespace_uuid"],
+      "columns": [
+        {"name": "cluster_filespace_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "filespace_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "owner_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "filespace_role_code", "type": "filespace_role_code"},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "page_family",
+      "stable_table_id": "cluster_catalog.page_family",
+      "record_family": "page_family",
+      "primary_key": ["page_family_uuid"],
+      "columns": [
+        {"name": "page_family_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "filespace_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "page_family_code", "type": "page_family_code"},
+        {"name": "placement_profile_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "route",
+      "stable_table_id": "cluster_catalog.route",
+      "record_family": "route",
+      "primary_key": ["route_uuid"],
+      "columns": [
+        {"name": "route_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "source_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "target_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "route_profile_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "route_generation", "type": "uint64"},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "route_decision",
+      "stable_table_id": "cluster_catalog.route_decision",
+      "record_family": "route_decision",
+      "primary_key": ["route_decision_uuid"],
+      "columns": [
+        {"name": "route_decision_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "decision_proof_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "source_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "target_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "route_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "fence_token_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "status", "type": "status_code"},
+        {"name": "decision_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "fence_token",
+      "stable_table_id": "cluster_catalog.fence_token",
+      "record_family": "fence_token",
+      "primary_key": ["fence_token_uuid"],
+      "columns": [
+        {"name": "fence_token_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "route_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "fence_epoch", "type": "uint64"},
+        {"name": "fence_generation", "type": "uint64"},
+        {"name": "status", "type": "status_code"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.catalog",
+      "table_name": "shard_topology",
+      "stable_table_id": "cluster_catalog.shard_topology",
+      "record_family": "shard_topology",
+      "primary_key": ["shard_uuid"],
+      "columns": [
+        {"name": "shard_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "page_family_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "placement_profile_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "primary_node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "replica_set_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "topology_epoch", "type": "uint64"},
+        {"name": "topology_generation", "type": "uint64"},
+        {"name": "status", "type": "status_code"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.security",
+      "table_name": "node_binding",
+      "stable_table_id": "cluster_security.node_binding",
+      "record_family": "node_binding",
+      "primary_key": ["node_binding_uuid"],
+      "columns": [
+        {"name": "node_binding_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "principal_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "security_policy_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "credential_material_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "status", "type": "status_code"},
+        {"name": "security_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    },
+    {
+      "schema_path": "cluster.sys.metrics",
+      "table_name": "node_metric_profile",
+      "stable_table_id": "cluster_metrics.node_metric_profile",
+      "record_family": "node_metric_profile",
+      "primary_key": ["metric_profile_uuid"],
+      "columns": [
+        {"name": "metric_profile_uuid", "type": "uuid", "uuid_identity": true},
+        {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "metric_family_code", "type": "metric_family_code"},
+        {"name": "retention_policy_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "redaction_policy_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+        {"name": "status", "type": "status_code"},
+        {"name": "metric_epoch", "type": "uint64"},
+        {"name": "catalog_generation", "type": "uint64"},
+        {"name": "provider_record_digest", "type": "digest"}
+      ]
+    }
+  ],
+  "role_profile_common_columns": [
+    {"name": "role_profile_uuid", "type": "uuid", "uuid_identity": true},
+    {"name": "cluster_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+    {"name": "node_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+    {"name": "role_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+    {"name": "role_code", "type": "role_code"},
+    {"name": "capability_set_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+    {"name": "placement_profile_uuid", "type": "uuid", "uuid_identity": true, "authority_reference": true},
+    {"name": "status", "type": "status_code"},
+    {"name": "catalog_epoch", "type": "uint64"},
+    {"name": "catalog_generation", "type": "uint64"},
+    {"name": "provider_record_digest", "type": "digest"}
+  ],
+  "role_profiles": [
+    {"role_code": "coordinator", "columns": [{"name": "decision_service_uuid", "type": "uuid"}, {"name": "leadership_epoch", "type": "uint64"}, {"name": "route_policy_uuid", "type": "uuid"}]},
+    {"role_code": "storage", "columns": [{"name": "filespace_uuid", "type": "uuid"}, {"name": "page_family_uuid", "type": "uuid"}, {"name": "shard_set_uuid", "type": "uuid"}]},
+    {"role_code": "query", "columns": [{"name": "executor_capability_uuid", "type": "uuid"}, {"name": "optimizer_profile_uuid", "type": "uuid"}, {"name": "memory_governance_uuid", "type": "uuid"}]},
+    {"role_code": "router", "columns": [{"name": "route_table_uuid", "type": "uuid"}, {"name": "fence_policy_uuid", "type": "uuid"}, {"name": "topology_view_uuid", "type": "uuid"}]},
+    {"role_code": "witness", "columns": [{"name": "quorum_profile_uuid", "type": "uuid"}, {"name": "vote_epoch", "type": "uint64"}, {"name": "fence_token_uuid", "type": "uuid"}]},
+    {"role_code": "security", "columns": [{"name": "security_epoch", "type": "uint64"}, {"name": "node_binding_uuid", "type": "uuid"}, {"name": "credential_policy_uuid", "type": "uuid"}]},
+    {"role_code": "metrics", "columns": [{"name": "metric_profile_uuid", "type": "uuid"}, {"name": "retention_policy_uuid", "type": "uuid"}, {"name": "redaction_policy_uuid", "type": "uuid"}]},
+    {"role_code": "backup", "columns": [{"name": "backup_profile_uuid", "type": "uuid"}, {"name": "archive_filespace_uuid", "type": "uuid"}, {"name": "restore_reachability_uuid", "type": "uuid"}]}
+  ],
+  "projection_policy": {
+    "schema_path": "sys.catalog.cluster_cache",
+    "source_sets": ["base_tables", "role_profiles"],
+    "projection_only": true,
+    "source_authority_required": true,
+    "cluster_authority": false,
+    "required_columns": [
+      "projection_uuid",
+      "source_cluster_uuid",
+      "source_record_uuid",
+      "source_table_path",
+      "source_authority_epoch",
+      "source_generation",
+      "source_digest",
+      "invalidation_epoch",
+      "freshness_epoch_millis",
+      "projection_generated_epoch_millis",
+      "status"
+    ]
+  },
+  "descriptors": [
+    {"code": "decision_service_config", "category": "decision", "schema_path": "cluster.sys.catalog", "table_name": "decision_service_config", "primary_key": ["decision_service_config_uuid"], "columns": ["decision_service_uuid", "decision_policy_uuid", "quorum_profile_uuid", "provider_abi_epoch"]},
+    {"code": "decision_request", "category": "decision", "schema_path": "cluster.sys.catalog", "table_name": "decision_request", "primary_key": ["decision_request_uuid"], "columns": ["request_uuid", "source_node_uuid", "target_node_uuid", "route_uuid", "fence_token_uuid", "request_epoch"]},
+    {"code": "decision_proof_projection", "category": "decision", "schema_path": "cluster.sys.catalog", "table_name": "decision_proof_projection", "primary_key": ["decision_proof_projection_uuid"], "columns": ["decision_proof_uuid", "decision_request_uuid", "proof_digest", "projection_generation", "invalidation_epoch"]},
+    {"code": "route_publish", "category": "route", "schema_path": "cluster.sys.catalog", "table_name": "route_publish", "primary_key": ["route_publish_uuid"], "columns": ["route_uuid", "source_node_uuid", "target_node_uuid", "route_profile_uuid", "route_epoch", "route_generation"]},
+    {"code": "route_binding", "category": "route", "schema_path": "cluster.sys.catalog", "table_name": "route_binding", "primary_key": ["route_binding_uuid"], "columns": ["route_uuid", "shard_uuid", "owner_node_uuid", "participant_node_uuid", "binding_generation"]},
+    {"code": "fence_token_state", "category": "fence", "schema_path": "cluster.sys.catalog", "table_name": "fence_token_state", "primary_key": ["fence_token_uuid"], "columns": ["route_uuid", "node_uuid", "fence_epoch", "fence_generation", "expiry_epoch"]},
+    {"code": "shard_placement", "category": "topology", "schema_path": "cluster.sys.catalog", "table_name": "shard_placement", "primary_key": ["shard_placement_uuid"], "columns": ["shard_uuid", "page_family_uuid", "primary_node_uuid", "replica_set_uuid", "placement_generation"]},
+    {"code": "replica_topology", "category": "topology", "schema_path": "cluster.sys.catalog", "table_name": "replica_topology", "primary_key": ["replica_topology_uuid"], "columns": ["shard_uuid", "replica_set_uuid", "replica_node_uuid", "replica_role_code", "topology_generation"]},
+    {"code": "cleanup_low_water_mark", "category": "cleanup", "schema_path": "cluster.sys.catalog", "table_name": "cleanup_low_water_mark", "primary_key": ["cleanup_low_water_uuid"], "columns": ["page_family_uuid", "cleanup_epoch", "cleanup_generation", "low_water_transaction_number", "limbo_blocker_count"]},
+    {"code": "limbo_reconciliation", "category": "cleanup", "schema_path": "cluster.sys.catalog", "table_name": "limbo_reconciliation", "primary_key": ["limbo_reconciliation_uuid"], "columns": ["transaction_uuid", "participant_uuid", "reconciliation_epoch", "finality_state_code", "decision_proof_uuid"]},
+    {"code": "cluster_security_binding", "category": "security", "schema_path": "cluster.sys.security", "table_name": "binding_authority", "primary_key": ["security_binding_uuid"], "columns": ["node_binding_uuid", "principal_uuid", "security_policy_uuid", "credential_material_uuid", "role_uuid", "security_epoch"]},
+    {"code": "cluster_metric_profile_binding", "category": "metrics", "schema_path": "cluster.sys.metrics", "table_name": "metric_profile_binding", "primary_key": ["metric_binding_uuid"], "columns": ["metric_profile_uuid", "metric_family_code", "producer_profile_uuid", "retention_policy_uuid", "redaction_policy_uuid", "metric_epoch"]},
+    {"code": "authority_provenance", "category": "authority_provenance", "schema_path": "cluster.sys.catalog", "table_name": "authority_provenance", "primary_key": ["authority_provenance_record_uuid"], "columns": ["provider_evidence_uuid", "provider_epoch", "provider_generation", "source_manifest_digest", "signature_envelope_uuid", "compatibility_digest"]}
+  ],
+  "metric_common_labels": [
+    "cluster_uuid",
+    "node_uuid",
+    "external_provider_uuid",
+    "provider_epoch",
+    "authority_provenance_uuid",
+    "result"
+  ],
+  "metrics": [
+    {"family": "sb_cluster_decision_request_total", "namespace_path": "cluster.sys.metrics.decision", "labels": ["decision_service_uuid", "decision_request_uuid"]},
+    {"family": "sb_cluster_decision_proof_projection_total", "namespace_path": "cluster.sys.metrics.decision", "labels": ["decision_proof_uuid", "projection_generation"]},
+    {"family": "sb_cluster_route_publish_total", "namespace_path": "cluster.sys.metrics.route", "labels": ["route_uuid", "route_generation"]},
+    {"family": "sb_cluster_route_binding_state", "namespace_path": "cluster.sys.metrics.route", "labels": ["route_binding_uuid", "shard_uuid"]},
+    {"family": "sb_cluster_fence_token_state", "namespace_path": "cluster.sys.metrics.fence", "labels": ["fence_token_uuid", "fence_generation"]},
+    {"family": "sb_cluster_shard_placement_state", "namespace_path": "cluster.sys.metrics.topology", "labels": ["shard_uuid", "placement_generation"]},
+    {"family": "sb_cluster_replica_topology_generation", "namespace_path": "cluster.sys.metrics.topology", "labels": ["replica_topology_uuid", "topology_generation"]},
+    {"family": "sb_cluster_cleanup_low_water_lag_transactions", "namespace_path": "cluster.sys.metrics.cleanup", "labels": ["cleanup_low_water_uuid", "page_family_uuid"]},
+    {"family": "sb_cluster_limbo_reconciliation_total", "namespace_path": "cluster.sys.metrics.cleanup", "labels": ["limbo_reconciliation_uuid", "finality_state_code"]},
+    {"family": "sb_cluster_security_binding_state", "namespace_path": "cluster.sys.metrics.security", "labels": ["security_binding_uuid", "security_policy_uuid"]},
+    {"family": "sb_cluster_metric_profile_binding_state", "namespace_path": "cluster.sys.metrics.metrics", "labels": ["metric_binding_uuid", "metric_family_code"]},
+    {"family": "sb_cluster_authority_provenance_gap_total", "namespace_path": "cluster.sys.metrics.provenance", "labels": ["provider_generation", "source_manifest_digest"]},
+    {"family": "sb_cluster_provider_boundary_refusal_total", "namespace_path": "cluster.sys.metrics.provider_boundary", "labels": ["operation", "reason"]}
+  ],
+  "codec": {
+    "record_magic": "SBCCAT01",
+    "current_version": 1,
+    "min_supported_version": 1,
+    "max_supported_version": 1,
+    "max_payload_bytes": 65536,
+    "required_diagnostics": [
+      "SB-CLUSTER-CATALOG-RECORD-VERSION-UNSUPPORTED",
+      "SB-CLUSTER-CATALOG-RECORD-CHECKSUM-MISMATCH",
+      "SB-CLUSTER-CATALOG-RECORD-RESOLVER-MISSING",
+      "SB-CLUSTER-CATALOG-RECORD-COMMENT-MISSING",
+      "SB-CLUSTER-CATALOG-RECORD-USER-TEXT-REFUSED",
+      "SB-CLUSTER-CATALOG-RECORD-PROPERTY-BAG-REFUSED"
+    ]
+  },
+  "public_tests": [
+    {"name": "public_cluster_catalog_manifest_gate", "gate": "PCR-GATE-093"},
+    {"name": "public_cluster_schema_projection_gate", "gate": "PCR-GATE-094"},
+    {"name": "public_cluster_catalog_codec_resolver_gate", "gate": "PCR-GATE-095"},
+    {"name": "public_cluster_descriptor_manifest_gate", "gate": "PCR-GATE-096"},
+    {"name": "public_cluster_provider_boundary_cleanup_gate", "gate": "PCR-GATE-097"},
+    {"name": "public_cluster_catalog_readiness_suite", "gate": "PCR-GATE-098"},
+    {"name": "public_cluster_manifest_source_gate", "gate": "PCR-GATE-099"}
+  ],
+  "generated_outputs": [
+    "cluster_catalog_manifest_matrix.csv",
+    "cluster_catalog_manifest_source_proof.json",
+    "cluster_catalog_manifest_readable.md"
+  ]
+}

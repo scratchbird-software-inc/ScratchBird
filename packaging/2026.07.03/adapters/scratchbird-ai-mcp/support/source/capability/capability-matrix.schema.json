@@ -1,0 +1,61 @@
+{
+  "title": "ScratchBird AI Dialect Capability Matrix",
+  "type": "object",
+  "required": ["version", "dialects"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}\\.[0-9]+$"
+    },
+    "dialects": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/dialectCapabilities" },
+      "propertyNames": {
+        "enum": ["native"]
+      }
+    }
+  },
+  "$defs": {
+    "dialectCapabilities": {
+      "type": "object",
+      "required": [
+        "status",
+        "read_select",
+        "write_dml",
+        "ddl",
+        "transactions",
+        "prepare_bind",
+        "metadata_introspection",
+        "vector_ops",
+        "graph_ops",
+        "last_verified_at",
+        "compat_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["unavailable", "experimental", "partial", "baseline", "full"]
+        },
+        "read_select": { "type": "boolean" },
+        "write_dml": { "type": "boolean" },
+        "ddl": { "type": "boolean" },
+        "transactions": { "type": "boolean" },
+        "prepare_bind": { "type": "boolean" },
+        "metadata_introspection": { "type": "boolean" },
+        "vector_ops": { "type": "boolean" },
+        "graph_ops": { "type": "boolean" },
+        "last_verified_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "compat_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

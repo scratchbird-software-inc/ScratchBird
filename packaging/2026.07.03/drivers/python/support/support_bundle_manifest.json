@@ -1,0 +1,8 @@
+{
+  "component_id": "driver:python",
+  "driver": "python",
+  "hash": "73dfea30b8bf176925340573e694a6deef5c8fda4ff4d920ad94cd856ed345f2",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
+}

@@ -1,0 +1,8 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-airbyte",
+  "hash": "e5f52ab2523ef9d7c59134a61f7872a8c67ff83ec649042a93eff08f5d3846ed",
+  "name": "scratchbird-airbyte",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1"
+}

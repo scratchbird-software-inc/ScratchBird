@@ -1,0 +1,8 @@
+{
+  "component_id": "driver:julia",
+  "driver": "julia",
+  "hash": "3b59703d3ca65a945f5ef0786b22ae13ec1f7d1aebc6895f6c017a2716af826d",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
+}

@@ -1,0 +1,8 @@
+{
+  "component_id": "driver:go",
+  "driver": "go",
+  "hash": "bf4b1593baea1b314b2b9d7370be40ac7e092b4edb611c357d6855d7648cd68d",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
+}

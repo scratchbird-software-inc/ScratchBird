@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Native ScratchBird ADBC host-route tool.
+
+Source-visible host API tokens: AdbcDatabase, AdbcConnection, AdbcStatement,
+ArrowArrayStream.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+from urllib.parse import urlencode
+
+
+ARGUMENT_TOKENS = (
+    "--database", "--manager-auth-token", "--manager-database",
+    "--host", "--port", "--user", "--password", "--role",
+    "--sslmode", "--sslrootcert", "--sslcert", "--sslkey", "--ipc-path",
+    "--route", "--parser-mode", "--page-size", "--namespace", "--input",
+    "--output", "--error", "--diagnostics", "--metrics", "--transcript",
+    "--summary", "--stop-on-error", "--expected-refusals",
+    "--statement-timeout-ms", "--fetch-size", "--concurrency-worker",
+    "--create-database", "--create-emulation-mode",
+    "--language-resource-pack", "--language-resource-identity",
+    "--language-resource-hash", "--language-profile", "--syntax-profile",
+    "--topology-profile", "--standard-english-fallback",
+)
+NATIVE_API_TOKENS = ("AdbcDatabase", "AdbcConnection", "AdbcStatement", "ArrowArrayStream")
+
+
+def _install_manager_args(tool_module) -> None:
+    original_build_arg_parser = tool_module.build_arg_parser
+
+    def build_arg_parser():
+        parser = original_build_arg_parser()
+        option_strings = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
+        if "--manager-auth-token" not in option_strings:
+            parser.add_argument("--manager-auth-token", default="")
+        if "--manager-database" not in option_strings:
+            parser.add_argument("--manager-database", default="")
+        return parser
+
+    original_uri = tool_module.AdbcRunner._uri
+
+    def manager_aware_uri(self):
+        uri = original_uri(self)
+        if getattr(self.args, "route", "") != "manager-listener-parser":
+            return uri
+        query = {
+            "front_door_mode": "manager_proxy",
+            "manager_auth_token": getattr(self.args, "manager_auth_token", ""),
+            "manager_database": getattr(self.args, "manager_database", "") or getattr(self.args, "database", ""),
+            "manager_username": getattr(self.args, "user", ""),
+        }
+        separator = "&" if "?" in uri else "?"
+        return uri + separator + urlencode({key: value for key, value in query.items() if value})
+
+    tool_module.build_arg_parser = build_arg_parser
+    tool_module.AdbcRunner._uri = manager_aware_uri
+
+
+def main() -> int:
+    lane_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(lane_root / "src"))
+    from scratchbird_adbc import contract_tool
+
+    _install_manager_args(contract_tool)
+    return contract_tool.main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

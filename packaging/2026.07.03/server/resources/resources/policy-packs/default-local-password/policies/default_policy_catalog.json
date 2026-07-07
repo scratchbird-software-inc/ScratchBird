@@ -1,0 +1,1595 @@
+{
+  "schema_version": 1,
+  "policy_generation": 1,
+  "identity_authority": "uuid",
+  "catalog_authority": "durable_catalog_after_create",
+  "create_time_only": true,
+  "post_create_filesystem_authority": false,
+  "default_policy_count": 58,
+  "policies": [
+    {
+      "ordinal": 1,
+      "policy_key": "policy.catalog.bootstrap",
+      "default_profile": "strict_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "generation_start",
+        "missing_policy",
+        "unknown_policy",
+        "mutation_requires_audit",
+        "policy_rows_uuidv7"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "policy_key": "database.identity",
+      "default_profile": "uuidv7_local_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "database_uuid",
+        "row_uuid",
+        "name_uuid_registry",
+        "uuid_order_not_finality"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "policy_key": "database.create.failure_cleanup",
+      "default_profile": "remove_or_quarantine_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "on_tx1_failure",
+        "preserve_evidence",
+        "guess_identity=false"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "policy_key": "database.bootstrap.tx1",
+      "default_profile": "system_structure_seed_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "tx_number",
+        "sys_schema",
+        "users_schema",
+        "users_public",
+        "remote_schema",
+        "emulated_schema",
+        "cluster_schema"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "policy_key": "database.first_open.tx2_activation",
+      "default_profile": "runtime_activation_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "tx_number",
+        "start_agents_after_tx2",
+        "start_ipc_after_policy_load",
+        "ordinary_work_before_tx2"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 6,
+      "policy_key": "schema.bootstrap.roots",
+      "default_profile": "local_roots_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "roots",
+        "cluster_roots",
+        "all_objects_uuidv7",
+        "common_name_uuid_tables"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "policy_key": "security.authority_selection",
+      "default_profile": "database_local_internal_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "authority_class",
+        "fallback_security_database",
+        "no_security_database_policy",
+        "embedded_bootstrap_allowed"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 8,
+      "policy_key": "security.authentication_provider",
+      "default_profile": "engine_hash_provider_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "plugin_required",
+        "cleartext_password_storage",
+        "compare_password_hash",
+        "provider_failure"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 9,
+      "policy_key": "security.bootstrap_password",
+      "default_profile": "must_change_or_replace_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "initial_sysarch_equivalent",
+        "password_policy",
+        "default_password_allowed",
+        "hash_only"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 10,
+      "policy_key": "security.authorization_default",
+      "default_profile": "default_deny_explicit_allow_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "default_action",
+        "grant_sources",
+        "deny_rules_supported",
+        "hidden_object_disclosure"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 11,
+      "policy_key": "security.principal_role_group_seed",
+      "default_profile": "sysarch_public_user_home_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "bootstrap_sysarch_equivalent",
+        "public_group",
+        "users_public_schema",
+        "new_user_home_schema"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 12,
+      "policy_key": "security.user_home_schema",
+      "default_profile": "users_tree_default_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "home_root",
+        "default_home_path",
+        "allow_alternate_home_root",
+        "cluster_users"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 13,
+      "policy_key": "security.audit",
+      "default_profile": "security_activity_audit_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "audit_security_events",
+        "audit_policy_mutation",
+        "audit_create_database",
+        "tamper_evidence",
+        "failure_behavior"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 14,
+      "policy_key": "security.redaction",
+      "default_profile": "least_disclosure_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "client_default",
+        "operator_requires_right",
+        "protected_material",
+        "parser_sql_text"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 15,
+      "policy_key": "security.protected_material",
+      "default_profile": "reference_only_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "store_secret_material",
+        "secret_refs_allowed",
+        "key_release_requires_authority",
+        "diagnostic_redaction"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 16,
+      "policy_key": "security.encryption_key_admission",
+      "default_profile": "unencrypted_default_key_required_if_encrypted_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "database_encryption_default",
+        "filespace_key_from_database",
+        "encrypted_open_without_key",
+        "key_cache_purge_on_shutdown"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 17,
+      "policy_key": "configuration.source_precedence",
+      "default_profile": "compiled_then_durable_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "pre_mount_order",
+        "post_mount_durable_wins",
+        "silent_fallback_on_invalid",
+        "unknown_key"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 18,
+      "policy_key": "configuration.override_reload",
+      "default_profile": "safe_reload_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "bootstrap_override_after_mount",
+        "reload_requires_generation",
+        "stale_policy",
+        "unsafe_reload"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 19,
+      "policy_key": "resource.seed_i18n",
+      "default_profile": "required_seed_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "timezone",
+        "charset",
+        "collation",
+        "locale",
+        "missing_resource_blocks_ordinary_open"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 20,
+      "policy_key": "resource.signature_provenance",
+      "default_profile": "unsigned_local_seed_allowed_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "pack_signature_required",
+        "source_hash_required",
+        "version_required",
+        "unsupported_version"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 21,
+      "policy_key": "storage.filespace_profile",
+      "default_profile": "single_active_primary_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "first_filespace_uuid",
+        "active_primary_required",
+        "secondary_filespaces",
+        "path_not_identity"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 22,
+      "policy_key": "storage.filespace_lifecycle",
+      "default_profile": "strict_identity_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "stale_missing_duplicate",
+        "verify_no_repair_without_authority",
+        "drop_active_pins",
+        "quarantine_on_ambiguous"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 23,
+      "policy_key": "storage.allocation_freespace_pagemap",
+      "default_profile": "durable_map_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "free_space_map",
+        "page_ownership",
+        "reusable_space_after_mga_cleanup",
+        "physical_order_not_authority"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 24,
+      "policy_key": "lifecycle.ownership_stale_owner",
+      "default_profile": "exclusive_owner_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "single_owner",
+        "heartbeat_required",
+        "ambiguous_owner",
+        "stale_proof_required"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 25,
+      "policy_key": "lifecycle.recovery_dirty_open",
+      "default_profile": "mga_recovery_first_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "clean_open",
+        "dirty_open",
+        "ambiguous",
+        "corrupt",
+        "wal_not_authority"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 26,
+      "policy_key": "lifecycle.maintenance_restricted",
+      "default_profile": "authorized_fence_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "enter_requires_authority",
+        "ordinary_attach_blocked",
+        "verify_allowed",
+        "repair_requires_explicit_authority"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 27,
+      "policy_key": "lifecycle.shutdown_graceful_drain",
+      "default_profile": "drain_then_close_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "default_drain_ms",
+        "fence_new_work",
+        "notify_associated_components",
+        "close_after_commit_or_rollback",
+        "timeout_without_force"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 28,
+      "policy_key": "lifecycle.shutdown_force",
+      "default_profile": "explicit_force_only_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "implicit_escalation",
+        "terminate_target_database_scope_only",
+        "preserve_mga_recovery_evidence",
+        "unrelated_database_protected"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 29,
+      "policy_key": "transaction.admission",
+      "default_profile": "engine_mga_admission_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "requires_ownership",
+        "requires_security",
+        "requires_policy_generation",
+        "requires_catalog_snapshot",
+        "requires_filespace_valid"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 30,
+      "policy_key": "transaction.default_isolation_snapshot",
+      "default_profile": "read_committed_mga_snapshot_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "default_isolation",
+        "snapshot_source",
+        "security_epoch_captured",
+        "catalog_epoch_captured"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 31,
+      "policy_key": "transaction.commit_durability",
+      "default_profile": "inventory_sync_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "commit_authority",
+        "success_after_sync_policy",
+        "wal_finality",
+        "cache_flush_not_finality"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 32,
+      "policy_key": "transaction.rollback_savepoint_limbo",
+      "default_profile": "mga_owned_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "rollback_engine_owned",
+        "savepoints_transaction_local",
+        "disconnect_unknown_outcome",
+        "limbo_requires_recovery_policy"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 33,
+      "policy_key": "transaction.mga_gc_retention",
+      "default_profile": "safe_bounded_cleanup_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "cleanup_requires_horizon",
+        "backup_hold_respected",
+        "archive_hold_respected",
+        "unknown_outcome_protected",
+        "bounded_memory"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 34,
+      "policy_key": "concurrency.lock_wait_deadlock",
+      "default_profile": "bounded_wait_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "default_lock_wait_ms",
+        "deadlock_detection",
+        "disconnect_cleanup",
+        "victim_policy"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 35,
+      "policy_key": "cache.checkpoint_preload_flush",
+      "default_profile": "evidence_not_finality_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "preload_after_tx2",
+        "flush_on_shutdown",
+        "checkpoint_is_clean_close_evidence_only",
+        "cache_not_finality"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 36,
+      "policy_key": "backup.archive_restore_snapshot_shadow",
+      "default_profile": "engine_owned_no_live_shortcut_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "backup_requires_engine_path",
+        "live_file_shortcut",
+        "restore_inspection_mode",
+        "legal_hold_respected"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 37,
+      "policy_key": "workload.resource_quota",
+      "default_profile": "safe_local_default_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "max_connections",
+        "max_active_requests",
+        "max_open_cursors_per_session",
+        "memory_pressure"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 38,
+      "policy_key": "temp.spill_workspace",
+      "default_profile": "bounded_cleanup_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "temp_catalog_durable",
+        "cleanup_on_commit",
+        "cleanup_on_rollback",
+        "cleanup_on_disconnect",
+        "spill_encryption"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 39,
+      "policy_key": "session.disconnect_timeout",
+      "default_profile": "explicit_unknown_outcome_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "idle_timeout_ms",
+        "statement_timeout_ms",
+        "disconnect_does_not_commit",
+        "unknown_outcome_message_vector"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 40,
+      "policy_key": "server.route_listener_startup",
+      "default_profile": "local_disabled_until_configured_v1",
+      "state": "enabled",
+      "override_class": "create_database_only",
+      "required_properties": [
+        "network_listener_default",
+        "loopback_default",
+        "native_port",
+        "start_after_security_policy"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 41,
+      "policy_key": "listener.bind_tls_pool",
+      "default_profile": "secure_bind_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "tls_required_for_inet",
+        "unix_socket_allowed_local",
+        "parser_pool_min",
+        "parser_pool_max",
+        "reuseaddr_policy"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 42,
+      "policy_key": "parser.package_admission",
+      "default_profile": "registered_packages_only_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "unregistered_parser",
+        "sbsql_profile",
+        "reference_profile",
+        "parser_auth_authority"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 43,
+      "policy_key": "ipc.frame_auth_backpressure",
+      "default_profile": "authenticated_framed_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "max_frame_bytes",
+        "malformed_frame",
+        "backpressure",
+        "endpoint_descriptor_required"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 44,
+      "policy_key": "udr.extension_trust_resource",
+      "default_profile": "cxx_registered_only_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "trusted_udr_language",
+        "dynamic_load_requires_policy",
+        "resource_limits",
+        "unload_or_quiesce_required"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 45,
+      "policy_key": "executable.side_effect",
+      "default_profile": "side_effects_disabled_by_default_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "routine_side_effects",
+        "trigger_side_effects",
+        "external_outbox_requires_policy",
+        "definer_rights"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 46,
+      "policy_key": "sequence.generator_cache",
+      "default_profile": "bounded_nonfinality_cache_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "default_cache_size",
+        "cache_not_transaction_finality",
+        "crash_gaps_allowed",
+        "reference_mapping_requires_profile"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 47,
+      "policy_key": "event.queue_notification",
+      "default_profile": "bounded_volatile_default_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "max_payload_bytes",
+        "max_queued_events",
+        "retention_seconds",
+        "overflow_behavior",
+        "security_filtering"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 48,
+      "policy_key": "diagnostics.message_vector",
+      "default_profile": "canonical_redacted_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "raw_strings_forbidden",
+        "redaction_required",
+        "reference_mapping_generic_on_failure",
+        "correlation_id_required"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 49,
+      "policy_key": "observability.metrics_log",
+      "default_profile": "local_metrics_enabled_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "metrics_enabled",
+        "flush_interval_ms",
+        "local_root",
+        "cluster_metrics_absent_without_cluster",
+        "private_paths_redacted"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 50,
+      "policy_key": "support.bundle",
+      "default_profile": "disabled_until_authorized_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "default_enabled",
+        "requires_operator_right",
+        "redaction_required",
+        "retention_days",
+        "protected_material_excluded"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 51,
+      "policy_key": "evidence.retention",
+      "default_profile": "audit_minimum_v1",
+      "state": "enabled",
+      "override_class": "security_admin",
+      "required_properties": [
+        "lifecycle_evidence_days",
+        "security_audit_days",
+        "diagnostic_evidence_days",
+        "legal_hold_overrides_cleanup"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 52,
+      "policy_key": "job.scheduler",
+      "default_profile": "start_after_tx2_v1",
+      "state": "enabled",
+      "override_class": "policy_defined",
+      "required_properties": [
+        "normal_jobs_after_tx2",
+        "startup_recovery_jobs_first",
+        "maintenance_participation",
+        "failure_policy",
+        "retry_backoff_ms"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 53,
+      "policy_key": "capability.feature_gate",
+      "default_profile": "installed_enabled_else_fail_closed_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "unknown_capability",
+        "edition_gate_required",
+        "parser_profile_requires_package",
+        "downgrade_refusal"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 54,
+      "policy_key": "upgrade.migration_refusal",
+      "default_profile": "explicit_supported_only_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "unknown_format",
+        "ambiguous_identity",
+        "supported_migration_requires_plan",
+        "guess_identity=false"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 55,
+      "policy_key": "admin.management_command_authorization",
+      "default_profile": "sysarch_or_delegated_v1",
+      "state": "enabled",
+      "override_class": "sysarch",
+      "required_properties": [
+        "lifecycle_commands_require_authority",
+        "force_shutdown_requires_explicit_right",
+        "inspect_redacted_by_default",
+        "audit_required"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 56,
+      "policy_key": "reference.emulation_profile",
+      "default_profile": "strict_not_authority_v1",
+      "state": "enabled",
+      "override_class": "no_override",
+      "required_properties": [
+        "reference_sql_exec_inside_engine",
+        "unsupported_reference_feature",
+        "reference_catalog_overlay_not_authority",
+        "cross_dialect_dependency"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 57,
+      "policy_key": "replication.cdc_changefeed_boundary",
+      "default_profile": "disabled_fail_closed_v1",
+      "state": "fail_closed",
+      "override_class": "cluster_only",
+      "required_properties": [
+        "replication_enabled",
+        "cdc_enabled",
+        "changefeed_enabled",
+        "live_ingest_enabled",
+        "slot_create",
+        "publication_create"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    },
+    {
+      "ordinal": 58,
+      "policy_key": "cluster.boundary_fail_closed",
+      "default_profile": "standalone_fail_closed_v1",
+      "state": "enabled",
+      "override_class": "cluster_only",
+      "required_properties": [
+        "cluster_schema_created",
+        "cluster_metrics_created",
+        "cluster_routes",
+        "cluster_transactions",
+        "cluster_agents"
+      ],
+      "tx1_seed": {
+        "required": true,
+        "policy_generation": 1,
+        "created_txn": "tx1",
+        "uuid_source": "fresh_uuidv7"
+      },
+      "authority_invariants": [
+        "policy_catalog_is_authority",
+        "mga_visibility_required",
+        "wal_not_authority",
+        "parser_not_authority",
+        "reference_not_authority",
+        "uuid_order_not_finality"
+      ]
+    }
+  ]
+}

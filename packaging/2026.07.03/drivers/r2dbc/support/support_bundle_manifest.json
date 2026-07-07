@@ -1,0 +1,8 @@
+{
+  "component_id": "driver:r2dbc",
+  "driver": "r2dbc",
+  "hash": "597e87f19ffc1bcdd81c81c11ea63eb8cc0f1a6bbad6a8da3571d33b0dab885d",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
+}

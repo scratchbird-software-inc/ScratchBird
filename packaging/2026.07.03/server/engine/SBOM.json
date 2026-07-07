@@ -1,0 +1,198 @@
+{
+  "component_id": "server:engine",
+  "components": [
+    {
+      "bytes": 136,
+      "path": "README.md",
+      "sha256": "8e8989a2f7bf03f3e1b0fd674fb5760b98fdf03be4d7aa258bc7b5cb699cd292"
+    },
+    {
+      "bytes": 16726,
+      "path": "legal/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "legal/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 1864,
+      "path": "legal/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 35915376,
+      "path": "lib/libSBcore.so",
+      "sha256": "9511b884dbf73ec96ae98b4366d173ac0fdd08b4e3d77c1187c52604e7b7da60"
+    },
+    {
+      "bytes": 242724,
+      "path": "lib/libSBcore_static.a",
+      "sha256": "90c424cc0d6f38712b5e29a8dc26f01362bb50f2c8a7f63b53c985e9e261110c"
+    },
+    {
+      "bytes": 319094,
+      "path": "lib/libpublic_page_type_truth_runtime.a",
+      "sha256": "7b4df8f21ff2f08d54f229298b708b82a6e74a1e7eecf5d32a3690104cc7b2c6"
+    },
+    {
+      "bytes": 127384,
+      "path": "lib/libpublic_row_data_page_runtime.a",
+      "sha256": "d985a728c8fe8c7fa634c18a8bf2609191767772d70d47e0ae27fbc72f9720e0"
+    },
+    {
+      "bytes": 8154860,
+      "path": "lib/libsb_core_agents.a",
+      "sha256": "86ecae3402894a2b0800c2c6fccc371a17e71c0cfc798278a918c630c07362ca"
+    },
+    {
+      "bytes": 136112,
+      "path": "lib/libsb_core_agents_cluster_boundary.a",
+      "sha256": "6e8475751e1f01465bbb31ef956efa5d6db316df2de5c8d824414e4022753ba9"
+    },
+    {
+      "bytes": 355800,
+      "path": "lib/libsb_core_bulk_load.a",
+      "sha256": "ba6ebd95a193f9abbab89f6a756b710f7ab37f22dc33b3c117f8aade3e8e8beb"
+    },
+    {
+      "bytes": 1531638,
+      "path": "lib/libsb_core_catalog.a",
+      "sha256": "da55164968ee2f1c88d1a904352eea3a2a31d9a9fb3ae4708ddcff8567b5073e"
+    },
+    {
+      "bytes": 1574922,
+      "path": "lib/libsb_core_datatypes.a",
+      "sha256": "7de086d88f1615575958db4eec930d5aa6633e9d9bd4fdec2359dacc1fc58b8d"
+    },
+    {
+      "bytes": 31136,
+      "path": "lib/libsb_core_hash.a",
+      "sha256": "37cc499e172fb3c721bb25b7bf1b8ff30d5a9fe6c04a8b22a1de732a518d012d"
+    },
+    {
+      "bytes": 13113386,
+      "path": "lib/libsb_core_index.a",
+      "sha256": "724a054d31af50ae1a55a8f886d4ce36ed37cb03445e69dffd15fa30e916158c"
+    },
+    {
+      "bytes": 4404464,
+      "path": "lib/libsb_core_memory.a",
+      "sha256": "53334fd89bdd78d3a25f1ce53321e0c8be9bcb6d272cae2a7e92411e0fee8493"
+    },
+    {
+      "bytes": 1442690,
+      "path": "lib/libsb_core_metrics.a",
+      "sha256": "c6d6c2dbd8b5576a9b52aec4f538df2ee6229abc83eb2cb14ceebc3c61feab05"
+    },
+    {
+      "bytes": 248248,
+      "path": "lib/libsb_core_platform.a",
+      "sha256": "ad0681fd4c127cb7c8f92f1a9ed7f46a5df3a727ed218ce4e5bcb918ff65d698"
+    },
+    {
+      "bytes": 186348,
+      "path": "lib/libsb_core_resource_governance.a",
+      "sha256": "7795828466637977a6663bfc9c3678c23d8cbb094cb27e5ea64b795f1fa12c1b"
+    },
+    {
+      "bytes": 315458,
+      "path": "lib/libsb_core_resources.a",
+      "sha256": "3c122589d0394add316ceb8fa9e6aa40e99fb225964b9e52d93d3b331db408c8"
+    },
+    {
+      "bytes": 96746,
+      "path": "lib/libsb_core_uuid.a",
+      "sha256": "6388ad661b522ec4e255b069cf6b90a8ea8ec855231d3c5e0632a4dcc629275e"
+    },
+    {
+      "bytes": 3148136,
+      "path": "lib/libsb_engine_executor.a",
+      "sha256": "464e90a72c479e8341460a8962b752d087afcfcf2d1200bdbf000a603441b7b1"
+    },
+    {
+      "bytes": 7043182,
+      "path": "lib/libsb_engine_functions.a",
+      "sha256": "c7b2a0926903585e87d23ae0d9268abae13efeb2e30dea51671da7ac77a594cc"
+    },
+    {
+      "bytes": 219892,
+      "path": "lib/libsb_engine_gpu_acceleration.a",
+      "sha256": "0e78e3de210b4023d9e70ac86bafd34a628c228fdbe3811dc8a41d918207c912"
+    },
+    {
+      "bytes": 36860596,
+      "path": "lib/libsb_engine_internal_api.a",
+      "sha256": "45c280d4146d94032451a424e4ef7410dfbb8b11127ae9e5bb0eb03314e99a30"
+    },
+    {
+      "bytes": 308700,
+      "path": "lib/libsb_engine_native_compile.a",
+      "sha256": "6c1fdb91011c7ddc7e76dcabf556a4d6d6e81dfe3e462b9b2a0621cb434d863e"
+    },
+    {
+      "bytes": 79438,
+      "path": "lib/libsb_engine_nosql_provider_contract.a",
+      "sha256": "6200272738c0d133ff277372b07fd693ac9399673a8ffcef14f2a9e073ab69ac"
+    },
+    {
+      "bytes": 6981542,
+      "path": "lib/libsb_engine_optimizer_contract_only.a",
+      "sha256": "baa8ed6625e63300137bbdd706e0d36efd82032ee15a2e4fab4fc9790c285465"
+    },
+    {
+      "bytes": 60836,
+      "path": "lib/libsb_engine_plan_shapes.a",
+      "sha256": "3309e049cf2fab6c5d0787c1af16cfa0bfb02b5867b978053d70188741d302f8"
+    },
+    {
+      "bytes": 4806670,
+      "path": "lib/libsb_engine_sblr.a",
+      "sha256": "350d92dfd9eff6156a4f5927b2ecdfa76042916f431fa2844fc72139ea3834f2"
+    },
+    {
+      "bytes": 2432798,
+      "path": "lib/libsb_storage_database.a",
+      "sha256": "509b79077b6f5604a87b8332baff27b7397b9c40a20843acab23a66b30558de8"
+    },
+    {
+      "bytes": 339226,
+      "path": "lib/libsb_storage_disk.a",
+      "sha256": "5e326a714167a3e30f1ef44c47909811c7ad34a354edbe00cc8ce40aa5ff5be6"
+    },
+    {
+      "bytes": 1588418,
+      "path": "lib/libsb_storage_filespace.a",
+      "sha256": "67a2f14692dd4b34102462b136830f271dcd134518dbbac17942219153bf92d3"
+    },
+    {
+      "bytes": 4886754,
+      "path": "lib/libsb_storage_page.a",
+      "sha256": "1de06afe5404ccaea5d9bfba9871473941c5ebe5ac13cc3706b8b69a823bba21"
+    },
+    {
+      "bytes": 2036668,
+      "path": "lib/libsb_transaction_mga.a",
+      "sha256": "cd91027a268bab8732f90dd94199b75cde3f6cd9c67cc7496873e2e6d95462af"
+    },
+    {
+      "bytes": 1540,
+      "path": "package_manifest.json",
+      "sha256": "18e89bf1994ebfe718796798e75cad524340452eec1e8adba9d0a584dddf1b62"
+    },
+    {
+      "bytes": 1931,
+      "path": "support/root-SBOM.json",
+      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+    },
+    {
+      "bytes": 3562267,
+      "path": "support/scratchbird-engine-source.tar.gz",
+      "sha256": "c9b8274de502ffffe2beef60f77cf9a1b733e263beb2c73a1db1576cc8909b31"
+    }
+  ],
+  "generated_at_utc": "2026-07-07T02:13:04+00:00",
+  "name": "engine",
+  "schema_id": "scratchbird.release_package_sbom.v1"
+}

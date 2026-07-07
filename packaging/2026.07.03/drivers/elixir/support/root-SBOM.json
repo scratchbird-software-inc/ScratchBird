@@ -1,0 +1,40 @@
+{
+  "schema": "scratchbird.public_source_review_sbom.v1",
+  "release_scope": "early_beta_public_source_review",
+  "generated": false,
+  "note": "Static seed SBOM. Regenerate with project/tools/release/public_dependency_sbom.py during release validation.",
+  "components": [
+    {
+      "component_id": "scratchbird-public-source",
+      "type": "source-tree",
+      "license": "see LICENSE and NOTICE",
+      "scope": "public source-review repository"
+    },
+    {
+      "component_id": "reference-system-test-material",
+      "type": "external-test-fixture",
+      "license": "upstream notices apply to externally supplied fixture material",
+      "scope": "external compatibility and refusal testing fixture consumed by ScratchBird-owned harnesses",
+      "tracked_in_public_repository": false
+    },
+    {
+      "component_id": "sbsql-language-resource-pack",
+      "type": "generated-resource-pack",
+      "license": "MPL-2.0",
+      "scope": "canonical SBsql language resources, exact language profiles, UD-derived topology summaries, predictive grammar, renderer templates, diagnostics, resolver policy, and provenance",
+      "tracked_in_public_repository": true,
+      "source": "ScratchBird SBsql generated registry, ScratchBird system-object baseline, and derived Universal Dependencies PUD topology metrics",
+      "third_party_source_material_included": false,
+      "third_party_derived_topology_metadata_included": true
+    },
+    {
+      "component_id": "universal-dependencies-pud-topology-reference",
+      "type": "external-reference-derived-metadata",
+      "license": "CC BY-SA 3.0",
+      "scope": "derived dependency-direction and phrase-topology metrics for English, French, German, Italian, and Spanish SBsql language profiles",
+      "tracked_in_public_repository": true,
+      "raw_treebank_material_tracked_in_public_repository": false,
+      "source": "Universal Dependencies PUD treebanks"
+    }
+  ]
+}

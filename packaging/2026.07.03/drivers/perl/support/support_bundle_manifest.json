@@ -1,0 +1,8 @@
+{
+  "component_id": "driver:perl",
+  "driver": "perl",
+  "hash": "aaa31a0fa2d3d7f45dab46d72a75c3f06757078c957f6c22bb1a6c3a166ea2be",
+  "proof_summary": "../proofs/proof_summary.json",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
+}

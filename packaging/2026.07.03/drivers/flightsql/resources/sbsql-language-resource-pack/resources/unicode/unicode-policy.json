@@ -1,0 +1,1 @@
+{"hidden_object_disclosure_allowed":false,"normalization":"preserve_source_bytes_canonicalize_before_uuid_resolution_only_when_profile_allows","schema_version":"sbsql.unicode_policy.v1","unsafe_cases_fail_closed":["malformed_utf8","orphan_combining_mark","bidi_control","mixed_script_confusable","mirrored_punctuation_ambiguity"]}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$ROOT/support/source/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "${PYTHON_BIN:-python3}" "$ROOT/support/source/tools/sb_isql_flightsql" "$@"

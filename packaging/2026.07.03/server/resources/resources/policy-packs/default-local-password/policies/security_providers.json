@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000010",
+      "provider_family": "local_password",
+      "enabled_by_default": true,
+      "authority": "durable_catalog_row",
+      "credential_verifier_policy": "local_password_verifier_required",
+      "external_provider": false
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000011",
+      "provider_family": "ldap_ad",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000012",
+      "provider_family": "oidc_jwt",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000013",
+      "provider_family": "saml",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000014",
+      "provider_family": "kerberos_pac",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000015",
+      "provider_family": "pam",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000016",
+      "provider_family": "radius",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000017",
+      "provider_family": "webauthn",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000018",
+      "provider_family": "certificate_mtls",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-000000000019",
+      "provider_family": "workload_identity",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-00000000001a",
+      "provider_family": "managed_identity",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    },
+    {
+      "provider_uuid": "018f7a10-1280-7000-8000-00000000001b",
+      "provider_family": "custom_cpp_plugin",
+      "enabled_by_default": false,
+      "authority": "unsupported_by_default",
+      "external_provider": true
+    }
+  ]
+}

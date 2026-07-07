@@ -1,0 +1,23 @@
+{
+  "schema_id": "scratchbird.ai_mcp_dependency_policy.v1",
+  "component_id": "adaptor:scratchbird-ai-mcp",
+  "python_requires": ">=3.11",
+  "runtime_dependency_groups": {
+    "core": [],
+    "mcp_release": [
+      {
+        "package": "mcp",
+        "version_floor": "1.0.0",
+        "purpose": "MCP stdio/http runtime for release MCP package execution",
+        "release_required": true
+      }
+    ]
+  },
+  "dependency_authority": "packaging_lock_or_environment_manifest",
+  "network_fetch_policy": "build_time_only_not_runtime",
+  "runtime_cache_policy": "no_source_tree_writes",
+  "verification": [
+    "ai_mcp_release_integration_gate",
+    "ai_mcp_dependency_policy_gate"
+  ]
+}

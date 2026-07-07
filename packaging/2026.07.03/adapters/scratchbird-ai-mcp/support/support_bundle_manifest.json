@@ -1,0 +1,8 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-ai-mcp",
+  "hash": "8a571e8eae3b348b14bcb1c074c0cbdadbb4f4aec7991e735ce96c89d6bc07a5",
+  "name": "scratchbird-ai-mcp",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1"
+}

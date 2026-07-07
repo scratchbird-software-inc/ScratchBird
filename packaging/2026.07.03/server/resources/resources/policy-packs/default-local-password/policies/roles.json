@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "identity_authority": "uuid",
+  "roles": [
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000100",
+      "role_code": "ROLE_APP_RUNTIME",
+      "description": "Application runtime role for connect and event delivery.",
+      "default_assignment": "group:APP"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "role_code": "ROLE_DBA",
+      "description": "Database administration role for local database objects.",
+      "default_assignment": "group:DBA"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "role_code": "ROLE_SECURITY_ADMIN",
+      "description": "Security administration role for identities, grants, and policies.",
+      "default_assignment": "group:SEC"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000103",
+      "role_code": "ROLE_AUDIT_READER",
+      "description": "Audit and lineage inspection role.",
+      "default_assignment": "group:AUD"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000104",
+      "role_code": "ROLE_OPERATOR",
+      "description": "Operational management and observability role.",
+      "default_assignment": "group:OPS"
+    }
+  ]
+}

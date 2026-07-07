@@ -1,0 +1,37 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratchbird-ai"
+version = "0.1.0"
+description = "AI integration layer for ScratchBird native workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "ScratchBird AI Team" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+mcp = [
+  "mcp>=1.0.0"
+]
+
+[project.scripts]
+scratchbird-ai-mcp = "scratchbird_ai.mcp_server:main"
+scratchbird-ai-http-bridge = "scratchbird_ai.http_bridge:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

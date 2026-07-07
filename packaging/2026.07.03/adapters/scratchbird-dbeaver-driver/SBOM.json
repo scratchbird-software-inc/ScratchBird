@@ -1,0 +1,1023 @@
+{
+  "component_id": "adaptor:scratchbird-dbeaver-driver",
+  "components": [
+    {
+      "bytes": 131,
+      "path": "bin/README.md",
+      "sha256": "0d80c58bfedef9c2a28389e1fb567ab61bedfbcbf4f1f8cda199a7e8d5a69420"
+    },
+    {
+      "bytes": 58,
+      "path": "examples/README.md",
+      "sha256": "05578e26a49a48f7af3bd649c4874ee1785b4f91206f77a37327dcdf1f479d9f"
+    },
+    {
+      "bytes": 471,
+      "path": "examples/test/org.jkiss.dbeaver.ext.scratchbird.test/META-INF/MANIFEST.MF",
+      "sha256": "2036fc8c78296155490ac412f9f2bf81607aae83e1c3af39c1b5806711349b31"
+    },
+    {
+      "bytes": 87,
+      "path": "examples/test/org.jkiss.dbeaver.ext.scratchbird.test/build.properties",
+      "sha256": "5767d9323fb1d258e6b714c50e641cc520d5087af1325e2749979351668d2c99"
+    },
+    {
+      "bytes": 659,
+      "path": "examples/test/org.jkiss.dbeaver.ext.scratchbird.test/pom.xml",
+      "sha256": "4a3905f1cf13b3491283d3f826529857c54fd9a41178f4b5e50cffeddb6b9741"
+    },
+    {
+      "bytes": 174252,
+      "path": "examples/test/org.jkiss.dbeaver.ext.scratchbird.test/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdIntegrationTest.java",
+      "sha256": "73d9183d16d6bdc844cad9e5d47246413d1bc696b8ebf714d64298e07696c004"
+    },
+    {
+      "bytes": 16726,
+      "path": "legal/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "path": "legal/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 1864,
+      "path": "legal/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 1259,
+      "path": "package_manifest.json",
+      "sha256": "7b76a6f286184e0aee5a956f2c849e9f778af25381910013ed603ee469d38398"
+    },
+    {
+      "bytes": 8362,
+      "path": "proofs/driver_complete_coverage_checklist.json",
+      "sha256": "3a888493c6135e4523dc8199cf604acb3fa1e0784478001cef0433cd61bc8048"
+    },
+    {
+      "bytes": 4103,
+      "path": "proofs/driver_complete_coverage_tests.json",
+      "sha256": "372b43492a270a552e4aa4a03ac6f24b467f19fa469b9c70e7600c23ceca901f"
+    },
+    {
+      "bytes": 10808,
+      "path": "proofs/driver_complete_delta_implementation.json",
+      "sha256": "47b17e74048c9874f62fa7508b2ace7094ea4e0240fa133ff5d3f080e1260797"
+    },
+    {
+      "bytes": 774,
+      "path": "proofs/driver_wiki_documentation.json",
+      "sha256": "32b96a3fa865d55aef2672583660ad979f68e30c52c8d8d96c99bd529026f7b7"
+    },
+    {
+      "bytes": 389,
+      "path": "proofs/proof_summary.json",
+      "sha256": "981824966c98077382c824f5e1e74ab14002d1bf50ecd78801a2b640ebddab78"
+    },
+    {
+      "bytes": 4992,
+      "path": "resources/sbsql-language-resource-pack/hashes.sha256",
+      "sha256": "4edfd9da5c482fe7d96545a992a179fb32ff2e824f4a07e29595ff314f3bd190"
+    },
+    {
+      "bytes": 9888,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+      "sha256": "a7a30e7650ad7d4f2402bf3ab502d37cb8ff8b0dde171752320ee288aaab9ec2"
+    },
+    {
+      "bytes": 621,
+      "path": "resources/sbsql-language-resource-pack/manifest.sblrp.sig",
+      "sha256": "d87565f20b39b465f18e464983255a0d61fec596edc6026ca43119750a10531f"
+    },
+    {
+      "bytes": 4413637,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.json",
+      "sha256": "45fa541bbbd94583109c357141e228a36a700a844ae30cfda7fca1a2878a1d4a"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/sbsql-dialect-baseline.schema.json",
+      "sha256": "0b8544561fc29d692dec80b0201e2e5666fcad4c3205d15aee29bbbc15d6d741"
+    },
+    {
+      "bytes": 34811,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.json",
+      "sha256": "5006c7c7ee277f78faa90d578d7648a74f26b5adcb175c92ea7de7fc39ef0a85"
+    },
+    {
+      "bytes": 187,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/system-object-name-registry.schema.json",
+      "sha256": "ea78ce9c707af7fe8891414c2b6c57428c3e29ce2388b231fa632cb555ed530c"
+    },
+    {
+      "bytes": 1734421,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.jsonl",
+      "sha256": "602455d771dd5d7d3fad3a55515c90fcb7de6514c1f19e3dc0a904987a7e7535"
+    },
+    {
+      "bytes": 216,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-source-corpus.schema.json",
+      "sha256": "a76f533f14a2c990b832acfcbfea9afccba451939d70278f2a1e87707535d0ad"
+    },
+    {
+      "bytes": 435,
+      "path": "resources/sbsql-language-resource-pack/resources/canonical/translation-style-guide.en-US.json",
+      "sha256": "07c8cfabc34fdb961fc54f9cf4ca8e63228e425a9fea5502629193ded5122143"
+    },
+    {
+      "bytes": 787,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.json",
+      "sha256": "f3f77403977732ccf54db7325934d4a729c87927c5815f5d0aa6666f645e3f4c"
+    },
+    {
+      "bytes": 168,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/conformance-corpus.schema.json",
+      "sha256": "3cce77cf8740259bdedb0b20676f649639226a73e676dceec4889cb133a2c0b9"
+    },
+    {
+      "bytes": 18358,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.json",
+      "sha256": "69ea6801e45dcb95030bef66862e851a7b59eb429c4c93dfe3f3eb0037909179"
+    },
+    {
+      "bytes": 188,
+      "path": "resources/sbsql-language-resource-pack/resources/conformance/online-translation-verification-corpus.schema.json",
+      "sha256": "dfb1f43eed7e1858e9f638bc08cdbe2c2e4bec00ec66d1eca9d9ddf7c36db832"
+    },
+    {
+      "bytes": 56283,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.json",
+      "sha256": "42beda9743aa8718a6ea7759bf81cdedb9b9aaccfe129b2dbfcac3e76582972e"
+    },
+    {
+      "bytes": 174,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/database-message-catalog.schema.json",
+      "sha256": "7dbc9080046e0edac31b79a7f9fd210d70974dbbfd11b6eb995b8f2ca7d6e985"
+    },
+    {
+      "bytes": 1190,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-messages.json",
+      "sha256": "b4db2b166510816dbe04da12fa78fcb74d90e3f1cda6fc9a52fd87e07079bc1e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/diagnostics/diagnostic-resource.schema.json",
+      "sha256": "6e400c4dc1599fd2d8aeadb0de7396eceaf7c8b113efcdd163a770173daf6d73"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/dialect-resource.schema.json",
+      "sha256": "863d4d7105cb26b25305b6c488cb803d01a172f200552031e4602d32dcc41455"
+    },
+    {
+      "bytes": 204,
+      "path": "resources/sbsql-language-resource-pack/resources/dialects/sbsql-v3-dialect-profile.json",
+      "sha256": "effa8cfbd163c0171bb353edd6d2248fcf9a5d9f3e920fc3cd497fb5899037dd"
+    },
+    {
+      "bytes": 1023749,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/de-DE/language-profile.json",
+      "sha256": "ffc513675f527dcc623f298033a9fda0d6b2e689007df70ffa33b84b6aa0e0ea"
+    },
+    {
+      "bytes": 881751,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-CA/language-profile.json",
+      "sha256": "eab8d6e62212cd7603e427424ab5895e61bda5e42bbb181dcc27e76aaca8c0be"
+    },
+    {
+      "bytes": 881699,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/en-US/language-profile.json",
+      "sha256": "a75964375e4813cd1451f4e99f1c866d38bf0b433b5d7e8e2034a683cf94850f"
+    },
+    {
+      "bytes": 1062818,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/es-ES/language-profile.json",
+      "sha256": "7052f4a7bacb17750bc2df8963edaa60ec644590de6bb8e91ec7fb2dfdfacf9f"
+    },
+    {
+      "bytes": 1061685,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-CA/language-profile.json",
+      "sha256": "04c20d723f029e11dcc8e358ce4657acf5db458ecff7c4e3dd4983ceeaf5fd80"
+    },
+    {
+      "bytes": 1061696,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/fr-FR/language-profile.json",
+      "sha256": "298c84543566a75a0d908bfaf61d7427283d9d68494718d6c5fce3973a46f521"
+    },
+    {
+      "bytes": 1062582,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/it-IT/language-profile.json",
+      "sha256": "320dd593e44978b61d8232ab2d551cbf6227d415cb99b88d2819ba5159614204"
+    },
+    {
+      "bytes": 208,
+      "path": "resources/sbsql-language-resource-pack/resources/languages/language-profile.schema.json",
+      "sha256": "788a8501cd9829ae045832682a094209dbc82d59723392c881bfbbd574f3523a"
+    },
+    {
+      "bytes": 162,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-resource.schema.json",
+      "sha256": "4eec3c766a496008c836fdfe892066ab71ba14f20730bef9e66004c49ee8e184"
+    },
+    {
+      "bytes": 544676,
+      "path": "resources/sbsql-language-resource-pack/resources/phrases/phrase-table.json",
+      "sha256": "edabb9045077bd5b3e33bb6986494acf169ced5e5d8ba52a7e44e6fc9c2e0d1c"
+    },
+    {
+      "bytes": 379026,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-grammar.json",
+      "sha256": "96328383c33cfa11fe96c2eef2e898a61f612feb317b4f285db6a23bfb40a74e"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/predictive/predictive-resource.schema.json",
+      "sha256": "fbb5aceb9018fcc924df4ce4d013a1d611a951fa691637deceed02dfa6901828"
+    },
+    {
+      "bytes": 1309,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/native-review-status.json",
+      "sha256": "1678b6cbc25a7fa54acc6f0e3c178609983c4808c4f6716157d9a6725125ec41"
+    },
+    {
+      "bytes": 3237,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.json",
+      "sha256": "42ec0974a57782d86d006c1bf1d5cc97f8cb5f04880bb362ccdb1b9e60bd3a36"
+    },
+    {
+      "bytes": 160,
+      "path": "resources/sbsql-language-resource-pack/resources/provenance/provenance.schema.json",
+      "sha256": "9148aba1e23d1487c1638073ab94b3bbaf6688acb8b49cea29a7acef2095e6d7"
+    },
+    {
+      "bytes": 169,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-resource.schema.json",
+      "sha256": "0ed31a799abf3fb73c676fa580d3f313fa987bc2886d580af4143f2635855be6"
+    },
+    {
+      "bytes": 2155,
+      "path": "resources/sbsql-language-resource-pack/resources/rendering/rendering-templates.json",
+      "sha256": "10d34d2727ac1dc7dd902cc5e010d104cf20e256589bf97f31360bc63837643e"
+    },
+    {
+      "bytes": 313,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-policy.json",
+      "sha256": "bb092258850c88f3e99ad032d2bb6a9e4221ba0d1ac53220ae1b4f62b282d14e"
+    },
+    {
+      "bytes": 165,
+      "path": "resources/sbsql-language-resource-pack/resources/resolver/resolver-resource.schema.json",
+      "sha256": "16d3e367dcc032682d89d62472fda69e87896a3cb6be555cb9f21e9269b1bff7"
+    },
+    {
+      "bytes": 166,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profile.schema.json",
+      "sha256": "4f87e007054b5f7ecae71d7078ff523c4c01f17de2f4bc933f8f01a922003746"
+    },
+    {
+      "bytes": 11648,
+      "path": "resources/sbsql-language-resource-pack/resources/topology/topology-profiles.json",
+      "sha256": "c7071321821a796a33726f9175f0b84d7cc7115c8b8df91a9c164963a69fa47d"
+    },
+    {
+      "bytes": 331,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.json",
+      "sha256": "5f83d357934d33c6927c39402362d453470143a830329664929b464dd81afab1"
+    },
+    {
+      "bytes": 164,
+      "path": "resources/sbsql-language-resource-pack/resources/unicode/unicode-policy.schema.json",
+      "sha256": "53fdd80098f9938eda12c233e7f70d02582ca2328a3c6738ea40ac4105fd004a"
+    },
+    {
+      "bytes": 857954,
+      "path": "runtime/artifacts/dist/scratchbird-dbeaver-update-site-20260705T221930.zip",
+      "sha256": "a0ea19198e4b1aa91036542aa5d3f09608b9eb400bbe44a97aa0650bda65b71f"
+    },
+    {
+      "bytes": 17578,
+      "path": "support/README.md",
+      "sha256": "c6b533739b28292b93a2393380f41b6f756e6717271682b129164338d431eb12"
+    },
+    {
+      "bytes": 2849,
+      "path": "support/pom.xml",
+      "sha256": "a89a47ae203dbcbf1b890c72d2038e85b8b38959985695b83ce9a854315aa14c"
+    },
+    {
+      "bytes": 1931,
+      "path": "support/root-SBOM.json",
+      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+    },
+    {
+      "bytes": 254,
+      "path": "support/source/.gitignore",
+      "sha256": "5932ea661f7e07b6685fbec4ed46ce1ccd0029fdd4a016cd9995ae6a700b1c38"
+    },
+    {
+      "bytes": 17578,
+      "path": "support/source/README.md",
+      "sha256": "c6b533739b28292b93a2393380f41b6f756e6717271682b129164338d431eb12"
+    },
+    {
+      "bytes": 27,
+      "path": "support/source/features/org.jkiss.dbeaver.ext.scratchbird.feature/build.properties",
+      "sha256": "dc2907e0006d5551ffd5b604a95f2085be1ecadc412a1bbb867e40181a522d02"
+    },
+    {
+      "bytes": 863,
+      "path": "support/source/features/org.jkiss.dbeaver.ext.scratchbird.feature/feature.xml",
+      "sha256": "a3e3a0ce44660bdd00868cf074554d037dc674f9bc47ba5c017405550e196364"
+    },
+    {
+      "bytes": 657,
+      "path": "support/source/features/org.jkiss.dbeaver.ext.scratchbird.feature/pom.xml",
+      "sha256": "163f699dff61b12616c45a9c230773af213a4d25dfe7104b6e8f544fbf96ab09"
+    },
+    {
+      "bytes": 659,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/META-INF/MANIFEST.MF",
+      "sha256": "64a9c78f76dab0ed572deb52b4dc4672ade51aa46b7fc66315357b13aca75c53"
+    },
+    {
+      "bytes": 1163,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/OSGI-INF/l10n/bundle.properties",
+      "sha256": "d31e32a456df474fe079d70692ca22a94cff4db179514c895fd8f02544b5fca1"
+    },
+    {
+      "bytes": 192,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/build.properties",
+      "sha256": "78570c437feb14f332ff100e889a7610784f0a2b01f607f4d28483c108f58d47"
+    },
+    {
+      "bytes": 23,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/drivers/.gitkeep",
+      "sha256": "8534047b47ba292cb846d7d3488dfb7b747508fa76ac9baad6eeb335c4a26cff"
+    },
+    {
+      "bytes": 858,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png",
+      "sha256": "44eb4d53b8836d017c72ae88a744327ae19aa09b42800acb6276c64160161e33"
+    },
+    {
+      "bytes": 6642,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon_big.png",
+      "sha256": "c1f1b806fab73338f5ad2a311e1c77ce077bf0e41883150c1d532207f9ef709e"
+    },
+    {
+      "bytes": 331,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg",
+      "sha256": "65fd2f74aed29eec3acc0f1acba9384e1acae678d4261a62582e2464f7e7cffc"
+    },
+    {
+      "bytes": 364,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg",
+      "sha256": "068981d3803e725a65ba457eadf1a32fe526f72ebe8471b0137c252ceae4b073"
+    },
+    {
+      "bytes": 312,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg",
+      "sha256": "1495ea5121e989b702faae43693055e842157fda0643803ee00036faf9b4cf52"
+    },
+    {
+      "bytes": 320,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg",
+      "sha256": "353aa5ab191b3581fe28de21fbafd891b0a7ef739c69ada54cc8df37e2708270"
+    },
+    {
+      "bytes": 27184,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/plugin.xml",
+      "sha256": "04dae8533b6e430bad6df70e4b40a8f14d716cef52e13750a3361627b8ba05b9"
+    },
+    {
+      "bytes": 648,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/pom.xml",
+      "sha256": "6c926997459a716c31a401188258749b925ff5957e587ae5d7ab6b3a8c2ec95c"
+    },
+    {
+      "bytes": 6499,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdActionAdmission.java",
+      "sha256": "bfcbe8c3237e31fee7dabb55a7cf0180620cfe1810c5794d43e4ad9463ed7dea"
+    },
+    {
+      "bytes": 21965,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdAdminExecutor.java",
+      "sha256": "509b93e3d69abdaa8323386ff08b8a5b9c2816f5db5eaa9f61a5cb3552fd3173"
+    },
+    {
+      "bytes": 14123,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdAuthorizationContext.java",
+      "sha256": "56932b3e1601600fd315892d7d616ab5a3c024642ea6847ca9c842707bce0338"
+    },
+    {
+      "bytes": 7717,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdAuthorizedResolverCache.java",
+      "sha256": "159e6fc45288a8750662324569078690547953de86fe2a49da7bce21dadd4a2c"
+    },
+    {
+      "bytes": 26231,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdBranchProfile.java",
+      "sha256": "f45c0b21a99774b43aa8588763b312cdb270667a30c6a2133966bf507b72028b"
+    },
+    {
+      "bytes": 20688,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalog.java",
+      "sha256": "9d770c33744463182ce35fed84f99f0dbf4ad10253ce19da600e3ea07523105b"
+    },
+    {
+      "bytes": 4675,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalogObjectReference.java",
+      "sha256": "22e44d9f1e1330b77f1cd00c61f7e56968f2cee165344b983751d0aafe71903f"
+    },
+    {
+      "bytes": 5432,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataEditorContract.java",
+      "sha256": "fd990c5b8b3dd88f55a9b660b1d8cc93b13cb2b5d5a21732b0e302255380a5b3"
+    },
+    {
+      "bytes": 3109,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataSource.java",
+      "sha256": "a79b7dc02f96b243444e74cf6f1d45f3f77d46b47deb2e600227b94429cc05ba"
+    },
+    {
+      "bytes": 7000,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataSourceProvider.java",
+      "sha256": "323dd16e1196301d4089d766cfac8d93a7d1a4638193957f5c5f784dcd17f611"
+    },
+    {
+      "bytes": 4355,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataTransferContract.java",
+      "sha256": "f175cd9c600f2d602274dfb672cf87133b0000b4f31d1aba162ab9e54d865b46"
+    },
+    {
+      "bytes": 3424,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDestructivePlan.java",
+      "sha256": "4f4e4233f267b624993f66f8917a5d3863c5fb7ad2ee715a0a3918959112177a"
+    },
+    {
+      "bytes": 2837,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDomainDataType.java",
+      "sha256": "d44a282368f991914e0b1d8b1ea6213c82f4969f9de08c4ccfdd21242c647037"
+    },
+    {
+      "bytes": 14416,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdEditorPageCatalog.java",
+      "sha256": "ba633d2ff61029d0ee5d193b3b44c3c880a3f7e9d929c0d89dc13ab98e83495f"
+    },
+    {
+      "bytes": 6982,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFeatureBoundary.java",
+      "sha256": "641a1661ca5119e53f0b56f35211ddd060809774e60e8f2c3dd08766687c10a6"
+    },
+    {
+      "bytes": 5228,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFeatureBoundaryStatus.java",
+      "sha256": "8fbe18b8e048e2f188c9ab62c29ca1d55143a34731c1115c40ba836d4107b4eb"
+    },
+    {
+      "bytes": 1746,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFormDefinition.java",
+      "sha256": "19fbe9c4350ce7c954a2463258d145967453bc57cd17a7909962e0b920f80776"
+    },
+    {
+      "bytes": 1120,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFormMode.java",
+      "sha256": "84b032905f8c7887aadcf214354aac405c998b87c7e298dfbe3fcc31013b7a08"
+    },
+    {
+      "bytes": 17960,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFormPanelCatalog.java",
+      "sha256": "7e5f339964175801b7d8c3365e272b581cf0abb4bc5744d261a7296eb7174751"
+    },
+    {
+      "bytes": 25001,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdFormRegistry.java",
+      "sha256": "b88bcd966f189b53a901a4201c1d61a7c672df88513d77560bd5a1eac0ff8cd8"
+    },
+    {
+      "bytes": 23107,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdLiveProbe.java",
+      "sha256": "213e76bf58ff2c7cad70d62fefd4b25ec08719e3cd253a47a93026461142e633"
+    },
+    {
+      "bytes": 5945,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdManagementActionEnvelope.java",
+      "sha256": "d32a85a1bb0a2eed39bb5cbba17a540d0c328033b02250b488b032b039c5e512"
+    },
+    {
+      "bytes": 5113,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdMetaModel.java",
+      "sha256": "a287d0943b53c5c46d4ff18473f87cf4adeac6cfa838d043fd83c7eaec8802f3"
+    },
+    {
+      "bytes": 2205,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdMetricSourceResolver.java",
+      "sha256": "05f89c71fcb483e2d868043ec7c7210d0d81c96b45dca89f05430ae269036d83"
+    },
+    {
+      "bytes": 6763,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdMutationApplyExecutor.java",
+      "sha256": "d94582cb89fed3733d673ad94633667a9d2dc2ac9d3aa4951373430c758be6ec"
+    },
+    {
+      "bytes": 5763,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdNamespaceSemantics.java",
+      "sha256": "1712a2d6807e5a56e568079a9a289ef26ecfb9cf9b3a514741d0f311a46b2b1a"
+    },
+    {
+      "bytes": 2444,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdNavigatorActionRegistry.java",
+      "sha256": "e73f7d8bb78c6e8881dfe7a3aabc9f35d4644a3aed64ac6547916c17be1f0c5f"
+    },
+    {
+      "bytes": 3378,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdNetworkPolicy.java",
+      "sha256": "3e666b56a74e8f714c60e6c7359c40a6afea04a1062129673dee882e69ca5dfb"
+    },
+    {
+      "bytes": 10212,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdObjectFormContext.java",
+      "sha256": "165c33bccb5187dcb657ddf9cab32a9c77355ca401e025ac6a84f81a8f9e9fda"
+    },
+    {
+      "bytes": 3625,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdObjectGraphContract.java",
+      "sha256": "57e96eda119eace243bc8a2332331e38599afe3ea462f417074ba341a0be8e72"
+    },
+    {
+      "bytes": 2812,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdObjectPath.java",
+      "sha256": "0bc14d22f20d35e6612065dd62893470aa4ad4358f403bf499c026e6f0790e7f"
+    },
+    {
+      "bytes": 10842,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdPermissionProbe.java",
+      "sha256": "b6459d7706c42fa29fa52c2020d36dff1651a5cee92ee1f0772c1b971ea34f16"
+    },
+    {
+      "bytes": 18412,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdProbeHistory.java",
+      "sha256": "65747aa64cd80f225af3e8576cfdee0520a76943837295f49049e0fc1a97fceb"
+    },
+    {
+      "bytes": 4132,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdQualifiedNames.java",
+      "sha256": "7104f90f8ffec2c6e72bd647351d3f93f1d01033cb2424f0272bb2ffa2ea9af4"
+    },
+    {
+      "bytes": 3745,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdRefusalModel.java",
+      "sha256": "24d81ea1088ee59f68d7c04912eac412fb76caa9e1e77eaee63d721e4175dd2e"
+    },
+    {
+      "bytes": 21850,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdReportCatalog.java",
+      "sha256": "ae04854710c86b9044ca68e369f03b32007f9ffb0be5a6e1776cc95c82de3739"
+    },
+    {
+      "bytes": 1572,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdReportDefinition.java",
+      "sha256": "f315858eccb76ba6a068f6e2b0f4ddb7b4faea9c70961bd9bcf93db847f0c6ac"
+    },
+    {
+      "bytes": 5750,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdReportPlan.java",
+      "sha256": "223b52dd3d220983454020cd30657febe079bac00906a99befbd0c7846e3431d"
+    },
+    {
+      "bytes": 5400,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSQLDialect.java",
+      "sha256": "3cbd0a712b428a699c7e3ac2636403d8ced68738f245f7c11f67c0485fc36e64"
+    },
+    {
+      "bytes": 1972,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchema.java",
+      "sha256": "a1a99fc7e472a69ee225170391c71b620c6b6b76c6bc70c8f4d3a975a9af6f5a"
+    },
+    {
+      "bytes": 18352,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaNode.java",
+      "sha256": "434e0498ae12b3c88cd0fdd49f4c6b665e1796f98cedb0540b3b08270557c95d"
+    },
+    {
+      "bytes": 9568,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaTreeBuilder.java",
+      "sha256": "df5b6855112b73efe8a0f59225544f6bfcec7d9229e7e55a7b2e796f16cc11cd"
+    },
+    {
+      "bytes": 4013,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaTreeSmoke.java",
+      "sha256": "a38a7e8d3950b04f2d00b6ca3788f7fc268deb190318ee1a1b94e3f15cbb4893"
+    },
+    {
+      "bytes": 6936,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSecurityRedactor.java",
+      "sha256": "dcd55d1640be766e87e7d69246a83c6afa7c21d23681d8542fa0a853906871c3"
+    },
+    {
+      "bytes": 7343,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSessionScope.java",
+      "sha256": "53f1c6530bc63077bf140d850eda5b95afa0de8b394f5944b5abdbb6a10d0f6d"
+    },
+    {
+      "bytes": 7377,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSqlPromptPlanner.java",
+      "sha256": "59bb962f685de026f8856472388a24615d1237f0fb4172a9c7774a2a2f0a29df"
+    },
+    {
+      "bytes": 4101,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdTable.java",
+      "sha256": "19669a75fa20c974e38bb2457d3062c4462dc25439f976977948a990a4e20683"
+    },
+    {
+      "bytes": 15289,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdTaskCatalog.java",
+      "sha256": "2a1fc5f4051fc015201b3386b1441f2a771f718b430237f4d2534e2732b922b2"
+    },
+    {
+      "bytes": 3248,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdTaskDefinition.java",
+      "sha256": "b33e3cfda9c36d9c2b50366701baca90b80b4b14e71a2179fc85f5b6cb216d6c"
+    },
+    {
+      "bytes": 113798,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdValidationBridge.java",
+      "sha256": "326fa300ea04a6c40e2921c6cabf11fdae5944c46cc5d27f3c1956026af0c7e8"
+    },
+    {
+      "bytes": 5535,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdValueBinding.java",
+      "sha256": "b6251280b94c85186ad25e0226236705d5a793519725176d940560445b07d89a"
+    },
+    {
+      "bytes": 12087,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdValueProfile.java",
+      "sha256": "fd3969e8d25f80b675ccfc9c79e46452e9f41a2abc0ba2501d6e44ae95c19eab"
+    },
+    {
+      "bytes": 4096,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdView.java",
+      "sha256": "52688b20960fd2a1d240a4937c9dc382c9b0eb9f181fb3a61c4372bb3f838a6e"
+    },
+    {
+      "bytes": 1543,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/data/ScratchBirdBinaryValueHandler.java",
+      "sha256": "002aabbfb05b6f5dff5765ca82eae50fc984a304c6966bd44b73282086ac3d53"
+    },
+    {
+      "bytes": 3816,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/data/ScratchBirdStructuredContentValueHandler.java",
+      "sha256": "80a3fa96ed036aff54a092c43d29a1b71848b7b7a25b1c7f68163f9285b682a0"
+    },
+    {
+      "bytes": 1387,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/data/ScratchBirdStructuredTextValueHandler.java",
+      "sha256": "dc591fadf238301a3d6eeb2290a344b72cb1836b48fd8300230974a874c5d8db"
+    },
+    {
+      "bytes": 2027,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/data/ScratchBirdTypedContent.java",
+      "sha256": "abc05e82a491379c003aced640a05cb0ea0dbddd057cc57c1f2fb57dd82a6975"
+    },
+    {
+      "bytes": 2320,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/data/ScratchBirdValueHandlerProvider.java",
+      "sha256": "6702d8aa4777808e31aefe922155664d19dbfa8d613c1829f5fc4f2f6f1d3704"
+    },
+    {
+      "bytes": 3229,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdConstraintManager.java",
+      "sha256": "f633a0292e31f391a25a82a3f1440fd6f62b14f84ea450aacf12ddbfec78b4ec"
+    },
+    {
+      "bytes": 5526,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdDomainManager.java",
+      "sha256": "159ad3ed3efe7432b500e1b8ab4f98ffd6bd791a2b6f49294cb75e99cc8a9cd9"
+    },
+    {
+      "bytes": 2262,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdDraftCheckConstraint.java",
+      "sha256": "974d8957f754342b002fcffb88751d06fd9574177140c402c5672667322bfb01"
+    },
+    {
+      "bytes": 1813,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdDraftTableTrigger.java",
+      "sha256": "b8e6e074b1f194b296dbeb02f1ccafffc19c59b3c2a6da4a510e287d51c8ddfb"
+    },
+    {
+      "bytes": 4717,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdForeignKeyManager.java",
+      "sha256": "399966e10f0c63b30d9eac0a2dc2754a33d515029d2c66169b98f8d9542e09a0"
+    },
+    {
+      "bytes": 3877,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdIndexManager.java",
+      "sha256": "fc317624dcb483c033af8ff3511edaa71b3fe3b549f4a8f5651e30a2908565cf"
+    },
+    {
+      "bytes": 10992,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdManagerSupport.java",
+      "sha256": "c1359a4e294c6a2b27bbf4ce59024e4b9443feaecfed1ed44062f201ad4f3de1"
+    },
+    {
+      "bytes": 4311,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdProcedureManager.java",
+      "sha256": "b79745f47ad222a50a075735744dbb2a2a271b336e4300d07bc3736adccc88c6"
+    },
+    {
+      "bytes": 6356,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdSchemaNodeManager.java",
+      "sha256": "ca822608e1cc733cab92d8ce7a40c87188a6918095cc8e2808237b17ff68e6e3"
+    },
+    {
+      "bytes": 4368,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdSequenceManager.java",
+      "sha256": "c7de93849c67268fe896658e0bb693212300d7ea0f19c2515d8bb693158dfd94"
+    },
+    {
+      "bytes": 4316,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdTableColumnManager.java",
+      "sha256": "9a036f25396bca46f323c38be395701228a55a590c5e6fcaefae258db04aaabe"
+    },
+    {
+      "bytes": 2985,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdTableManager.java",
+      "sha256": "d583372b4d01c6923469c3f583f4ae21261ad18123a42ae9ce968b151cab66de"
+    },
+    {
+      "bytes": 3927,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdTableTriggerManager.java",
+      "sha256": "21b5930a6193ca10ad74bca17814057de6ac921b68a3b71a7e9a7a49857b6d2b"
+    },
+    {
+      "bytes": 3305,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdViewManager.java",
+      "sha256": "84948338ae96b1e63e866ff102e8e894d1f68b39b006d80d6cda65ae8661ac42"
+    },
+    {
+      "bytes": 570,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Completion.java",
+      "sha256": "5c70e094034906e85990d70515e307d772a7689814ad75c39eadb996f368775b"
+    },
+    {
+      "bytes": 1030,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Diagnostic.java",
+      "sha256": "e1fa6a3cf720dc658338ed543ea86ae3599ba3375ed4efc3de5da187ec966c78"
+    },
+    {
+      "bytes": 18655,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Lexer.java",
+      "sha256": "70a26d8ac2e35adf7bea71841b9bc70d45f3a5eb123e5cb1dbb5f5e866bccfae"
+    },
+    {
+      "bytes": 861,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3ParseResult.java",
+      "sha256": "cb5a618790f2896ea106aa152b632ef5045fdb9fd104dcf170d66b2416ba69bb"
+    },
+    {
+      "bytes": 35254,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Parser.java",
+      "sha256": "5d10f12813060c6b35e3e6c129a07fa8b0ea8f2e3e3eb8159657868ed2be3546"
+    },
+    {
+      "bytes": 698,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3SourceLocation.java",
+      "sha256": "d58202b6cec5b29198445f22c1bb8d3ff9ec85aa564c05ce4c932708da30399b"
+    },
+    {
+      "bytes": 663,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3SourceSpan.java",
+      "sha256": "b2b9faaca65928cf5a27c042dbbfced5887b565bd615a4526019a4b8d6dc8708"
+    },
+    {
+      "bytes": 866,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Statement.java",
+      "sha256": "f7fca51c6886a9b74e8e68a96b10ffe475ffb25bca7b538c64b1a6a9d461e8b3"
+    },
+    {
+      "bytes": 12782,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3StatementCatalog.java",
+      "sha256": "83f542d0fda9e9a46c36346b8f8e7fafebb0d6454dfc05d54c0a803de05078ce"
+    },
+    {
+      "bytes": 693,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3StatementFamily.java",
+      "sha256": "b9a95213a94ce7e2ad815876f7b6129156c5d0ca8acc07994c1db97c31b8df68"
+    },
+    {
+      "bytes": 1445,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3StatementKind.java",
+      "sha256": "2a1c47a2221f5039b927747db331db031141349e3f3b6fa1f3a79e54141064b9"
+    },
+    {
+      "bytes": 972,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3Token.java",
+      "sha256": "4d3accfa0f26c22c10da220dc715acb189f971abb2e08f053cabb2b3fb952b07"
+    },
+    {
+      "bytes": 2512,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/parser/v3/ScratchBirdV3TokenType.java",
+      "sha256": "c25a5adc6b583b6f4705c74249ba6ba1c6df281367300f9799da5f18cb05172d"
+    },
+    {
+      "bytes": 736,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/META-INF/MANIFEST.MF",
+      "sha256": "e6aaabdd415ceb2a82f64ec2ce743927134a43412b66a4461ec7669b24124007"
+    },
+    {
+      "bytes": 1622,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/OSGI-INF/l10n/bundle.properties",
+      "sha256": "9de7d7f04a8ce8628bc8776b8e8b2da16c89ca4fd08b95bed879edf298cf702b"
+    },
+    {
+      "bytes": 142,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/build.properties",
+      "sha256": "0c790c885da93420412cad48b64097afe5ec0710240e42a55d85aedbf64fcedb"
+    },
+    {
+      "bytes": 12593,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/plugin.xml",
+      "sha256": "19858a3457ce2369ec42159024c9082250135a0dbe6b38023aeeae89a0a0b16c"
+    },
+    {
+      "bytes": 697,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/pom.xml",
+      "sha256": "7f4054ec3e6b47c55b65336d4141fba190f7d1d64471bc30fe6e75be863ac8fa"
+    },
+    {
+      "bytes": 80598,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementDialog.java",
+      "sha256": "c5c5b8cdcff33c821569141047ad087d1a16afb4876d20ee4bf0d75010a117a9"
+    },
+    {
+      "bytes": 19977,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementWorkflow.java",
+      "sha256": "8b1b5cb7e2631f57e9a5bad68520482a7c469b89f35506713b8d4271c2f686db"
+    },
+    {
+      "bytes": 3769,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdSelectionUtils.java",
+      "sha256": "2c8b2bd361721fa36357e11f709e02bdf1d7f8f4a086adc6cb7b71e087590780"
+    },
+    {
+      "bytes": 17346,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdSqlEditorAddIn.java",
+      "sha256": "958f2de777cd05edc0d78325b5616a6acb2b5120dcac653cea31e2906a8ad450"
+    },
+    {
+      "bytes": 10374,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdSqlQuickAssistProcessor.java",
+      "sha256": "2e427886c4bedbc369b41d4a87852c0165ab9811b5923713599125423f1fa107"
+    },
+    {
+      "bytes": 3216,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdUiPropertyTester.java",
+      "sha256": "a90a6c36a85be9b5b1a1945b69f0eebc26d355b845a2007161c38f25b1175051"
+    },
+    {
+      "bytes": 627,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdAlterHandler.java",
+      "sha256": "cd97852097e3c0c58c99bea5817b43d998b940bef32164630854643d2814e8d8"
+    },
+    {
+      "bytes": 630,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdDeleteHandler.java",
+      "sha256": "fa4b732024b5e9cb4e9eabcb0d1eea9d3ae33ab5b67e72b45e464b31c2159b10"
+    },
+    {
+      "bytes": 2737,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdNavigatorCommandHandler.java",
+      "sha256": "811d4216e981dfde0245e1e76413ea015416a679a5c63a939b67517249acfaea"
+    },
+    {
+      "bytes": 621,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdNewHandler.java",
+      "sha256": "5a41778945959265ec1da5e14363a578340ff8e2325aca82cbffecdc50f05ba8"
+    },
+    {
+      "bytes": 630,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdOpenHandler.java",
+      "sha256": "f28dd13474e71a194c5b81816d8506cc81abf60579040da44d9e0bfe7a330454"
+    },
+    {
+      "bytes": 633,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdReportsHandler.java",
+      "sha256": "f6f7faaa99b364baf2e25ac7384c169afae090873306998e407994f9691b5023"
+    },
+    {
+      "bytes": 649,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdSourceStatusHandler.java",
+      "sha256": "2b412c3cc3484d0c9c7873cff54cf932082f16b5156cff8a2d8fb7ef1a8c8d08"
+    },
+    {
+      "bytes": 2602,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdSqlContentAssistHandler.java",
+      "sha256": "8442073826358bf5eaa76a336f056538ec65dbcb66fc39b6ba24cae8824e40c5"
+    },
+    {
+      "bytes": 627,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdTasksHandler.java",
+      "sha256": "16f5618e23bc30c819eadeaa131ba7749407ba8723090089787f57b0fe9e7bc3"
+    },
+    {
+      "bytes": 11829,
+      "path": "support/source/plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdValidateSqlHandler.java",
+      "sha256": "a956a9b920d24c22e622e6cd2e25fbda9f837020650be39e551e7cfa9c8ec760"
+    },
+    {
+      "bytes": 2849,
+      "path": "support/source/pom.xml",
+      "sha256": "a89a47ae203dbcbf1b890c72d2038e85b8b38959985695b83ce9a854315aa14c"
+    },
+    {
+      "bytes": 366,
+      "path": "support/source/repository/category.xml",
+      "sha256": "fc283ac9ada6c91344723ba8ebf4421e7b5ef01091f0d4f6e36cdafff37017b9"
+    },
+    {
+      "bytes": 1341,
+      "path": "support/source/repository/pom.xml",
+      "sha256": "fb97c86063366aab10f67d968d18b17ad8e4502798d5984c9978481b1f0a48fc"
+    },
+    {
+      "bytes": 5067,
+      "path": "support/source/scripts/build-p2-update-site.sh",
+      "sha256": "e7cac51f7bfdf8777c02f527cf3a02bd977881928c5cbb84d72332e045a8429b"
+    },
+    {
+      "bytes": 6528,
+      "path": "support/source/scripts/build-stock-test-bundle.sh",
+      "sha256": "1edbc0be3b01cf4228d0dae9a2f00d15e289b856c64ce8db99b7a07a8973e83c"
+    },
+    {
+      "bytes": 16155,
+      "path": "support/source/scripts/check-current-project-design.py",
+      "sha256": "a2a66d479f655cb2b4159b827a03d7c1b1cb2a16b8c392c432d2dbb8e34acf14"
+    },
+    {
+      "bytes": 1863,
+      "path": "support/source/scripts/generate-plugin-icons.sh",
+      "sha256": "99d230d7ee15d912997461fda88135884a5863c69f7995adb58c0b6a7b8fc241"
+    },
+    {
+      "bytes": 14343,
+      "path": "support/source/scripts/generate-release-proofs.py",
+      "sha256": "7283265bb8f4ec8d625e309d95a366cea83efe0384dc5cdbef6169c5488c1a98"
+    },
+    {
+      "bytes": 10298,
+      "path": "support/source/scripts/install-into-dbeaver.sh",
+      "sha256": "7b7b1af63607292edb589ad3e45b94e81b39582570ff86d3632e9cdc7db2609d"
+    },
+    {
+      "bytes": 4729,
+      "path": "support/source/scripts/install-into-stock-dbeaver.bat",
+      "sha256": "468504674ffc38ebdad6d8afeaeaff7f49dfe9ba5318b14d76b3732ee2ac8ec8"
+    },
+    {
+      "bytes": 9875,
+      "path": "support/source/scripts/install-into-stock-dbeaver.sh",
+      "sha256": "348c3519f0f1e4896bb1e21262a3006cbe97db3db196b47f9ea6db8b0eeaf2ee"
+    },
+    {
+      "bytes": 4051,
+      "path": "support/source/scripts/uninstall-from-stock-dbeaver.bat",
+      "sha256": "79ab3559ce1f6aca51e586a06b3616f78e150f6ac36f0f741e38cc7a600589d1"
+    },
+    {
+      "bytes": 5427,
+      "path": "support/source/scripts/uninstall-from-stock-dbeaver.sh",
+      "sha256": "910f807c92e840eb9198ce0a5928171cf1a1be7eecef3d06e32483bb4f80fc87"
+    },
+    {
+      "bytes": 471,
+      "path": "support/source/test/org.jkiss.dbeaver.ext.scratchbird.test/META-INF/MANIFEST.MF",
+      "sha256": "2036fc8c78296155490ac412f9f2bf81607aae83e1c3af39c1b5806711349b31"
+    },
+    {
+      "bytes": 87,
+      "path": "support/source/test/org.jkiss.dbeaver.ext.scratchbird.test/build.properties",
+      "sha256": "5767d9323fb1d258e6b714c50e641cc520d5087af1325e2749979351668d2c99"
+    },
+    {
+      "bytes": 659,
+      "path": "support/source/test/org.jkiss.dbeaver.ext.scratchbird.test/pom.xml",
+      "sha256": "4a3905f1cf13b3491283d3f826529857c54fd9a41178f4b5e50cffeddb6b9741"
+    },
+    {
+      "bytes": 174252,
+      "path": "support/source/test/org.jkiss.dbeaver.ext.scratchbird.test/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdIntegrationTest.java",
+      "sha256": "73d9183d16d6bdc844cad9e5d47246413d1bc696b8ebf714d64298e07696c004"
+    },
+    {
+      "bytes": 363,
+      "path": "support/support_bundle_manifest.json",
+      "sha256": "a8a16e49e3c967b612bb17473b7dee4d04055c720bdd9ed099301fdb92d7d906"
+    }
+  ],
+  "generated_at_utc": "2026-07-07T02:13:08+00:00",
+  "name": "scratchbird-dbeaver-driver",
+  "schema_id": "scratchbird.release_package_sbom.v1"
+}

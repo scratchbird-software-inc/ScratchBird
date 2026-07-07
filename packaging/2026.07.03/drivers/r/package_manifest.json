@@ -1,0 +1,28 @@
+{
+  "binary": "bin/sb_isql_r",
+  "binary_sha256": "8188154e9ccea4f94c1b906013756116a2b61c6436eb627d445cca9fb5c8a7d4",
+  "component_id": "driver:r",
+  "driver": "r",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/proof_summary.json"
+  ],
+  "runtime_payloads": [],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.driver_release_package_manifest.v1",
+  "source_commit": "d8da29e88ee3223aa1e65f398a6c100f954b23c1",
+  "source_path": "project/drivers/driver/r",
+  "support_materials": [
+    "support/README.md",
+    "support/BASELINE_REQUIREMENT_MAPPING.md",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0013-7000-8000-000000000013"
+}

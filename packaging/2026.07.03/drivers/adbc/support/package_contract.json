@@ -1,0 +1,68 @@
+{
+  "component_id": "driver:adbc",
+  "category": "driver",
+  "name": "adbc",
+  "driver_family": "adbc",
+  "status": "beta_2",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "api_surface": [
+    "AdbcDatabase",
+    "AdbcConnection",
+    "AdbcStatement",
+    "ArrowArrayStream",
+    "catalog_objects",
+    "bulk_ingest"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "package_files": [
+    "package_contract.json",
+    "README.md",
+    "BASELINE_REQUIREMENT_MAPPING.md",
+    "pyproject.toml",
+    "src/scratchbird_adbc/__init__.py",
+    "src/scratchbird_adbc/contract_tool.py",
+    "tools/sb_isql_adbc",
+    "tests/test_adbc_contract_tool.py"
+  ],
+  "runner_status": "executable_host_api_route_runner",
+  "runtime_dependency_policy": {
+    "required_python_packages": [
+      "adbc_driver_manager"
+    ],
+    "required_environment": [
+      "SCRATCHBIRD_ADBC_DRIVER"
+    ],
+    "missing_dependency_behavior": "nonzero_exit_with_diagnostics_and_complete_artifacts"
+  },
+  "runtime_boundaries": [
+    "embedded_cpp_library_boundary_absent_in_python_lane",
+    "create_database_requires_live_adbc_extension_surface",
+    "standalone_parser_and_driver_sblr_uuid_modes_refuse_client_finality"
+  ],
+  "release_readiness": {
+    "package_status": "route_runner_available",
+    "promotion_evidence_required": "live_scratchbird_adbc_driver_conformance"
+  }
+}

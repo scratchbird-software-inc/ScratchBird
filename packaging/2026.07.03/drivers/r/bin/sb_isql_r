@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "${RSCRIPT_BIN:-Rscript}" "$ROOT/support/source/tools/sb_isql_r.R" "$@"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CP="$ROOT/runtime/jdbc/classes"
+if [ -d "$ROOT/runtime/jdbc/resources" ]; then CP="$CP:$ROOT/runtime/jdbc/resources"; fi
+exec "${JAVA_BIN:-java}" -cp "$CP" com.scratchbird.jdbc.tools.SBIsqlJdbc "$@"

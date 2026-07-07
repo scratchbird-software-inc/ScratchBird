@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratchbird-r2dbc-route-tool"
+version = "0.0.0"
+description = "ScratchBird R2DBC host-route driver lane tool"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]

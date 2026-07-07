@@ -1,0 +1,8 @@
+{
+  "category": "adaptor",
+  "component_id": "adaptor:scratchbird-prisma-adapter",
+  "hash": "b04ddb40fc8fc2db19d49d65a98385d9f2df7377b5581469d5cc69fbfb25b050",
+  "name": "scratchbird-prisma-adapter",
+  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "schema_id": "scratchbird.component_support_bundle_manifest.v1"
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "protocol_version": "sbwp-1.1",
+  "suite": "sbwp-v1.1-native-parser-cli-sample",
+  "requires": ["tls", "auth", "native_parser", "prepare_bind", "txn", "resilience"],
+  "tests": [
+    {
+      "id": "handshake",
+      "kind": "native_query",
+      "sql": "SELECT 1",
+      "expect_rows": 1
+    },
+    {
+      "id": "auth",
+      "kind": "auth"
+    },
+    {
+      "id": "prepare_bind",
+      "kind": "native_prepare_bind",
+      "sql": "SELECT $1::int32",
+      "params": [42]
+    },
+    {
+      "id": "typed_assert_basic_table",
+      "kind": "native_query",
+      "sql": "SELECT id FROM basic_table WHERE id = 1",
+      "expect_row_count": 1,
+      "expect_columns": ["id"],
+      "expect_column_type_oids": [23],
+      "expect_first_row_json": [1],
+      "expect_first_row_types": ["integer"],
+      "expect_rows_json": [[1]]
+    },
+    {
+      "id": "txn_commit_verify",
+      "kind": "txn_exec",
+      "sql": "INSERT INTO basic_table (id) VALUES (7100)",
+      "txn_end": "commit",
+      "expect_rows_affected": 1,
+      "verify_sql": "SELECT id FROM basic_table WHERE id = 7100",
+      "verify_expect_rows": 1,
+      "cleanup_sql": "DELETE FROM basic_table WHERE id = 7100"
+    },
+    {
+      "id": "txn_rollback_verify",
+      "kind": "txn_exec",
+      "sql": "INSERT INTO basic_table (id) VALUES (7200)",
+      "txn_end": "rollback",
+      "expect_rows_affected": 1,
+      "verify_sql": "SELECT id FROM basic_table WHERE id = 7200",
+      "verify_expect_rows": 0
+    },
+    {
+      "id": "res_loop_smoke",
+      "kind": "res_loop_exec",
+      "sql": "SELECT 1",
+      "loop_iterations": 25,
+      "expect_total_rows_affected": 25,
+      "expect_total_rows": 25
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "binary": "bin/sb_isql_rust",
+  "binary_sha256": "2564a078a545e39de3d23d1ade16cd4d91b6a3282d42e85bd45b941ebdbff134",
+  "component_id": "driver:rust",
+  "driver": "rust",
+  "examples": [
+    "examples/README.md"
+  ],
+  "language_resource_pack": "resources/sbsql-language-resource-pack",
+  "language_resource_pack_sha256": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
+  "license": "legal/LICENSE.txt",
+  "notice": "legal/NOTICE",
+  "proofs": [
+    "proofs/proof_summary.json"
+  ],
+  "runtime_payloads": [],
+  "sbom": "SBOM.json",
+  "schema_id": "scratchbird.driver_release_package_manifest.v1",
+  "source_commit": "d8da29e88ee3223aa1e65f398a6c100f954b23c1",
+  "source_path": "project/drivers/driver/rust",
+  "support_materials": [
+    "support/README.md",
+    "support/BASELINE_REQUIREMENT_MAPPING.md",
+    "support/root-SBOM.json"
+  ],
+  "third_party_notices": "legal/THIRD_PARTY_NOTICES.md",
+  "version": "019e12a0-0015-7000-8000-000000000015"
+}

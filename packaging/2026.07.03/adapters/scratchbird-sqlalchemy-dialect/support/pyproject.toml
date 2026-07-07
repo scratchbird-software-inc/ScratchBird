@@ -1,0 +1,44 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratchbird-sqlalchemy"
+version = "0.1.0"
+description = "ScratchBird SQLAlchemy dialect"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+keywords = ["scratchbird", "sqlalchemy", "sbwp"]
+authors = [
+  {name = "ScratchBird Project"},
+]
+dependencies = [
+  "scratchbird>=0.1.0",
+  "SQLAlchemy>=1.4,<3.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+tooling = ["pytest"]
+
+[project.entry-points."sqlalchemy.dialects"]
+scratchbird = "scratchbird_sqlalchemy.dialect:ScratchBirdDialect"
+
+[tool.setuptools]
+packages = ["scratchbird_sqlalchemy"]
+
+[tool.setuptools.data-files]
+"share/scratchbird-sqlalchemy" = ["package_contract.json"]

@@ -1,0 +1,20 @@
+{
+  "name": "scratchbird",
+  "version": "0.1.0",
+  "description": "ScratchBird Node.js/TypeScript driver (native protocol)",
+  "license": "MPL-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test",
+    "test:integration": "node --test test/integration.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "typescript": "^5.4.5"
+  }
+}

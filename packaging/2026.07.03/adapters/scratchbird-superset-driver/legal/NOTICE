@@ -1,0 +1,22 @@
+ScratchBird Open Core Notice
+
+ScratchBird is licensed by ScratchBird Software Inc. under the Mozilla Public
+License, v. 2.0. The unmodified MPL-2.0 license text is distributed in the
+top-level LICENSE file.
+
+ScratchBird was architected, designed, and authored by Dalton Calford.
+Ownership of and licensing authority over the software vest in ScratchBird
+Software Inc.; this attribution does not transfer ownership.
+
+The covered open-core components are the ScratchBird single-core database
+engine suite, standalone embeddable library, database parsers, drivers and
+adapters, open remote-database connectors, open function libraries, open AI MCP
+server, benchmark suite, installer/setup files, cluster API stub, tests, and
+proofs, in each case only where marked with the MPL-2.0 source header and SPDX
+tag.
+
+The full cluster suite, closed commercial database bridges, extended
+scientific/statistical UDR plug-ins, cube/OLAP support, AI client layer,
+ScratchBird trademarks, and the ScratchBird-Legacy repository are not licensed
+under the MPL-2.0 license by this repository unless expressly marked otherwise
+in their own files.
