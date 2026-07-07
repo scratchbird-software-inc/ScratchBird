@@ -12,6 +12,12 @@ operation in the beta parser declarations is either mapped to ScratchBird
 authority, emulated through a controlled ScratchBird route, handled as
 parser-only metadata/presentation, or refused with a deterministic diagnostic.
 
+Per-parser searchable surface status is generated under
+[`parsers/`](parsers/README.md). Open the parser page for the compatibility
+surface you are using and search for the functionality name to see its exact
+implementation status, route/SBLR target, refusal policy, diagnostic, and source
+anchor.
+
 This is not a drop-in compatibility claim. It is a parser-boundary and
 conformance-gate claim for the current beta source tree.
 

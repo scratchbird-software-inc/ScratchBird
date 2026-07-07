@@ -28,6 +28,7 @@ LEGAL_SOURCE_FILES = ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")
 ROOT_SBOM_REL = Path("SBOM.json")
 ROOT_METADATA = {"RELEASE_MANIFEST.json", "SHA256SUMS"}
 REFERENCE_SOURCE_RELS = (
+    "docs/compatibility-parsers",
     "packaging/scripts/promote_reference_parser_release_artifacts.py",
     "project/src/parsers/compatibility",
     "project/src/udr",

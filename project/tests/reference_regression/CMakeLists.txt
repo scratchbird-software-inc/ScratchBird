@@ -28,6 +28,9 @@ set(SB_REFERENCE_NATIVE_TOOL_HARNESS_CONTRACT_GATE
 set(SB_REFERENCE_RELEASE_COMPLETION_BLOCKER_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/reference_release_completion_blocker_gate.py"
 )
+set(SB_COMPATIBILITY_PARSER_DOCS_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/generate_compatibility_parser_docs.py"
+)
 
 function(sb_add_reference_gate test_name mode labels)
   add_test(
@@ -139,6 +142,20 @@ add_test(
 )
 set_tests_properties(reference_release_completion_blocker_conformance PROPERTIES
   LABELS "reference_release_regression_gate;reference_release_completion_blocker_gate;reference_original_regression_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME compatibility_parser_public_docs_surface_conformance
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${SB_COMPATIBILITY_PARSER_DOCS_GATE}"
+    "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+    "--check"
+    "--evidence-file"
+    "${CMAKE_BINARY_DIR}/tests/reference_regression/compatibility_parser_public_docs_surface_evidence.json"
+)
+set_tests_properties(compatibility_parser_public_docs_surface_conformance PROPERTIES
+  LABELS "reference_release_regression_gate;reference_parser_docs_gate;reference_original_regression_gate"
 )
 
 sb_add_reference_gate(
