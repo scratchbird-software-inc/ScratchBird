@@ -147,9 +147,9 @@
       "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
     },
     {
-      "bytes": 1944,
+      "bytes": 1979,
       "path": "package_manifest.json",
-      "sha256": "84cc21098a904178cc8bf5b4c00db3869bffab45ab4f1316eb0d1ca883ccd6c3"
+      "sha256": "ab3c230de26456ada2212156b35dca5f4fa326bd29bf55591f35953fb8cf57fe"
     },
     {
       "bytes": 1309,
@@ -157,9 +157,9 @@
       "sha256": "2439be95458c1bf1aedb4a90e55d3d80a56c2501afd53fa159b6f3c45b3bfdd9"
     },
     {
-      "bytes": 1417,
+      "bytes": 1533,
       "path": "support/reference_parser_source_reference_manifest.json",
-      "sha256": "260fe4edb2b8dfdd2ec88f598a9f2bfe39662f97ee405341e1a495772935b4e2"
+      "sha256": "9e8c6e9b7f3a86f210ac2fc18661f77e30e9380d6e2290ebb6f8162efc05bb9a"
     },
     {
       "bytes": 1931,
@@ -167,7 +167,7 @@
       "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
     }
   ],
-  "generated_at_utc": "2026-07-07T14:13:44+00:00",
+  "generated_at_utc": "2026-07-07T15:39:08+00:00",
   "name": "reference-parsers",
   "schema_id": "scratchbird.release_package_sbom.v1"
 }

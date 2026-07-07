@@ -3,6 +3,10 @@
   "public_source_paths": [
     {
       "kind": "public_scratchbird_source_or_test_contract",
+      "path": "docs/compatibility-parsers"
+    },
+    {
+      "kind": "public_scratchbird_source_or_test_contract",
       "path": "packaging/scripts/promote_reference_parser_release_artifacts.py"
     },
     {
