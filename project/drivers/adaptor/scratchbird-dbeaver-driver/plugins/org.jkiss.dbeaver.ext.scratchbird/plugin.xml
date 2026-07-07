@@ -241,7 +241,7 @@
                     <parameter name="supports-indexes" value="true"/>
                     <parameter name="supports-references" value="true"/>
                     <parameter name="supports-table-constraints" value="true"/>
-                    <parameter name="supports-stored-code" value="false"/>
+                    <parameter name="supports-stored-code" value="true"/>
                     <parameter name="stored-unquoted-case" value="lower"/>
                 </driver>
 

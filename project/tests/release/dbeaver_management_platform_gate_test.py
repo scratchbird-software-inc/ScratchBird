@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -255,7 +256,7 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
             """,
         )
         for script, text in {
-            "build-p2-update-site.sh": "scratchbird-jdbc.jar repository/target/repository scratchbird-dbeaver-update-site-",
+            "build-p2-update-site.sh": "scratchbird-jdbc.jar repository/target/repository scratchbird-dbeaver-update-site- stage_language_resource_pack sbsql-language-resource-pack",
             "build-stock-test-bundle.sh": "install-into-stock-dbeaver.sh uninstall-from-stock-dbeaver.sh install-into-stock-dbeaver.bat uninstall-from-stock-dbeaver.bat SHA256SUMS.txt THIRD-PARTY-NOTICES.txt scratchbird-jdbc.jar",
             "install-into-dbeaver.sh": "plugins/org.jkiss.dbeaver.ext.scratchbird plugins/org.jkiss.dbeaver.ext.scratchbird.ui scratchbird-jdbc.jar",
             "install-into-stock-dbeaver.sh": "org.eclipse.equinox.p2.director -repository \"jar:file:${ZIP_PATH}!/\" -installIU org.jkiss.dbeaver.ext.scratchbird.feature.feature.group -uninstallIU org.jkiss.dbeaver.ext.scratchbird.feature.feature.group -purgeHistory -listInstalledRoots ScratchBird install completed successfully Installed root confirmed",
@@ -265,6 +266,151 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
                 self.adapter / "scripts" / script,
                 "# SPDX-License-Identifier: MPL-2.0\n" + text + "\n",
             )
+        write(
+            self.adapter / "plugins/org.jkiss.dbeaver.ext.scratchbird/build.properties",
+            """
+            bin.includes = META-INF/,.,plugin.xml,resources/
+            """,
+        )
+        self._write_language_pack_fixture()
+        self._write_language_resource_source_fixture()
+
+    def _write_language_pack_fixture(self) -> None:
+        language_root = (
+            self.repo
+            / "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+        )
+        profiles = ["en-US", "en-CA", "fr-CA", "fr-FR", "de-DE", "es-ES", "it-IT"]
+        files: dict[str, str] = {
+            "resources/predictive/predictive-grammar.json": '{"max_table_entries": 2645}\n',
+            "resources/phrases/phrase-table.json": '{"phrases":[{"canonical_text":"INSERT"}]}\n',
+            "resources/canonical/translation-source-corpus.jsonl": '{"source_family":"sbsql_surface","source_text":"INSERT"}\n',
+        }
+        for profile in profiles:
+            files[f"resources/languages/{profile}/language-profile.json"] = json.dumps(
+                {
+                    "exact_tag": profile,
+                    "translations": [
+                        {
+                            "source_family": "sbsql_surface",
+                            "source_text": "INSERT",
+                            "localized_text": "insérer" if profile.startswith("fr") else "INSERT",
+                        }
+                    ],
+                },
+                sort_keys=True,
+            ) + "\n"
+
+        file_rows = []
+        for rel_path, content in files.items():
+            path = language_root / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            file_rows.append(
+                {
+                    "path": rel_path,
+                    "sha256": "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "size_bytes": len(content.encode("utf-8")),
+                }
+            )
+        manifest = {
+            "schema_version": "sbsql.language_resource_pack_manifest.v1",
+            "resource_identity": "sbsql.common_resource_pack.v1",
+            "common_resource_hash": "sha256:test",
+            "registry_row_count": 2645,
+            "profiles": [
+                {
+                    "exact_tag": profile,
+                    "resource_path": f"resources/languages/{profile}/language-profile.json",
+                    "support_state": "test_fixture",
+                }
+                for profile in profiles
+            ],
+            "files": file_rows,
+        }
+        manifest_text = json.dumps(manifest, sort_keys=True) + "\n"
+        (language_root / "manifest.sblrp.json").write_text(manifest_text, encoding="utf-8")
+        hash_lines = [
+            "sha256:" + hashlib.sha256(manifest_text.encode("utf-8")).hexdigest() + " manifest.sblrp.json"
+        ]
+        for rel_path, content in files.items():
+            hash_lines.append("sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest() + f" {rel_path}")
+        (language_root / "hashes.sha256").write_text("\n".join(hash_lines) + "\n", encoding="utf-8")
+
+    def _write_language_resource_source_fixture(self) -> None:
+        model_src = (
+            self.adapter
+            / "plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model"
+        )
+        ui_src = (
+            self.adapter
+            / "plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui"
+        )
+        write(
+            model_src / "ScratchBirdLanguageResourcePack.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.model;
+            public final class ScratchBirdLanguageResourcePack {
+                static final String RESOURCE_IDENTITY = "sbsql.common_resource_pack.v1";
+                static final String ENV = "SCRATCHBIRD_SBSQL_LANGUAGE_RESOURCE_PACK";
+                Object localizedCompletionsByProfile;
+                boolean hashVerificationPassed() { return verifyHashes(); }
+                boolean verifyHashes() { return "[^\\\\p{L}\\\\p{N}_]+".length() > 0; }
+            }
+            """,
+        )
+        write(
+            model_src / "ScratchBirdSqlPromptPlanner.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.model;
+            public final class ScratchBirdSqlPromptPlanner {
+                Object x = ScratchBirdLanguageResourcePack.defaultLanguageTag();
+                Object y = ScratchBirdLanguageResourcePack.shared().completionCandidates(null, 0, null);
+            }
+            """,
+        )
+        write(
+            model_src / "ScratchBirdSQLDialect.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.model;
+            public final class ScratchBirdSQLDialect {
+                Object x = ScratchBirdLanguageResourcePack.shared().keywordTokens();
+            }
+            """,
+        )
+        write(
+            model_src / "ScratchBirdValidationBridge.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.model;
+            public final class ScratchBirdValidationBridge {
+                Object x = ScratchBirdSqlPromptPlanner.completionCandidates(null, 0);
+            }
+            """,
+        )
+        write(
+            ui_src / "ScratchBirdSqlQuickAssistProcessor.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.ui;
+            public final class ScratchBirdSqlQuickAssistProcessor {
+                Object x = ScratchBirdSqlPromptPlanner.completionCandidates(null, 0);
+            }
+            """,
+        )
+        write(
+            ui_src / "handlers/ScratchBirdValidateSqlHandler.java",
+            """
+            // SPDX-License-Identifier: MPL-2.0
+            package org.jkiss.dbeaver.ext.scratchbird.ui.handlers;
+            public final class ScratchBirdValidateSqlHandler {
+                Object x = ScratchBirdSqlPromptPlanner.completionCandidates(null, 0);
+            }
+            """,
+        )
 
     def _write_contract(self) -> None:
         self.contract.write_text(
@@ -510,6 +656,10 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
         core_plugin = self.root / "core-plugin.jar"
         with zipfile.ZipFile(core_plugin, "w") as archive:
             archive.writestr("drivers/scratchbird/scratchbird-jdbc.jar", b"jdbc")
+            archive.writestr(
+                "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+                b'{"resource_identity":"sbsql.common_resource_pack.v1"}\n',
+            )
             archive.writestr("META-INF/MANIFEST.MF", "Bundle-SymbolicName: org.jkiss.dbeaver.ext.scratchbird\n")
         ui_plugin = self.root / "ui-plugin.jar"
         with zipfile.ZipFile(ui_plugin, "w") as archive:
@@ -698,6 +848,10 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
         update_site = artifact_root / "scratchbird-dbeaver-update-site-20260613T000000.zip"
         core_plugin = self.root / "core-plugin-without-driver.jar"
         with zipfile.ZipFile(core_plugin, "w") as archive:
+            archive.writestr(
+                "resources/sbsql-language-resource-pack/manifest.sblrp.json",
+                b'{"resource_identity":"sbsql.common_resource_pack.v1"}\n',
+            )
             archive.writestr("META-INF/MANIFEST.MF", "Bundle-SymbolicName: org.jkiss.dbeaver.ext.scratchbird\n")
         with zipfile.ZipFile(update_site, "w") as archive:
             archive.writestr("content.jar", b"content")

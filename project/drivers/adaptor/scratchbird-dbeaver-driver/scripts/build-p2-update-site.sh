@@ -47,6 +47,8 @@ JDBC_BUILD_ROOT="${SCRATCHBIRD_JDBC_BUILD_ROOT:-${BUILD_ROOT}/jdbc}"
 MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-${BUILD_ROOT}/maven-repo}"
 PLUGIN_DIR="${BUILD_INTEGRATION_DIR}/plugins/org.jkiss.dbeaver.ext.scratchbird"
 PLUGIN_DRIVER_DIR="${PLUGIN_DIR}/drivers/scratchbird"
+LANGUAGE_PACK_SRC="${PROJECT_ROOT}/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+PLUGIN_LANGUAGE_PACK_DIR="${PLUGIN_DIR}/resources/sbsql-language-resource-pack"
 
 cleanup_staged_driver() {
   rm -f "${PLUGIN_DRIVER_DIR}/scratchbird-jdbc.jar"
@@ -119,6 +121,16 @@ stage_jdbc_driver() {
   cp "${jdbc_jar}" "${PLUGIN_DRIVER_DIR}/scratchbird-jdbc.jar"
 }
 
+stage_language_resource_pack() {
+  if [[ ! -f "${LANGUAGE_PACK_SRC}/manifest.sblrp.json" ]]; then
+    echo "ScratchBird SBsql language resource pack not found: ${LANGUAGE_PACK_SRC}" >&2
+    exit 1
+  fi
+  rm -rf "${PLUGIN_LANGUAGE_PACK_DIR}"
+  mkdir -p "$(dirname "${PLUGIN_LANGUAGE_PACK_DIR}")"
+  cp -a "${LANGUAGE_PACK_SRC}" "${PLUGIN_LANGUAGE_PACK_DIR}"
+}
+
 trap cleanup_staged_driver EXIT
 
 choose_maven() {
@@ -149,6 +161,7 @@ fi
 copy_tree_for_build "${INTEGRATION_DIR}" "${BUILD_INTEGRATION_DIR}"
 
 stage_jdbc_driver
+stage_language_resource_pack
 
 ${MAVEN} -f "${BUILD_INTEGRATION_DIR}/pom.xml" \
   -Dmaven.repo.local="${MAVEN_REPO_LOCAL}" \

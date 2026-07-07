@@ -73,7 +73,19 @@ public final class ScratchBirdSqlPromptPlanner {
 
     @NotNull
     public static List<ScratchBirdV3Completion> completionCandidates(@NotNull String sql, int offset) {
-        return distinctCompletions(ScratchBirdV3Parser.completionsAt(sql, clamp(offset, 0, sql.length())));
+        return completionCandidates(sql, offset, ScratchBirdLanguageResourcePack.defaultLanguageTag());
+    }
+
+    @NotNull
+    public static List<ScratchBirdV3Completion> completionCandidates(
+        @NotNull String sql,
+        int offset,
+        @NotNull String languageTag
+    ) {
+        int safeOffset = clamp(offset, 0, sql.length());
+        List<ScratchBirdV3Completion> completions = new ArrayList<>(ScratchBirdV3Parser.completionsAt(sql, safeOffset));
+        completions.addAll(ScratchBirdLanguageResourcePack.shared().completionCandidates(sql, safeOffset, languageTag));
+        return distinctCompletions(completions);
     }
 
     @NotNull

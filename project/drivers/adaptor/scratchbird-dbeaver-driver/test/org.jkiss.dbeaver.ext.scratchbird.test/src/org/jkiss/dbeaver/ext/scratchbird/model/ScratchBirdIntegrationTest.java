@@ -152,7 +152,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("id=\"dormant_reattach_token\""));
         Assert.assertTrue(pluginXml.contains("id=\"metadataExpandSchemaParents\""));
         Assert.assertTrue(pluginXml.contains("id=\"metadata_fixture_catalog\""));
-        Assert.assertTrue(pluginXml.contains("defaultValue=\"driver_test\""));
+        Assert.assertTrue(pluginXml.contains("<property id=\"metadata_fixture_catalog\" label=\"Metadata Fixture Catalog\" type=\"string\" defaultValue=\"\"/>"));
+        Assert.assertTrue(pluginXml.contains("name=\"supports-stored-code\" value=\"true\""));
         Assert.assertTrue(pluginXml.contains("execKeywords\" value=\"CALL,ANALYZE,BACKUP,CHECKPOINT,CLUSTER"));
         Assert.assertFalse(pluginXml.contains("COPY,DESC"));
         Assert.assertFalse(pluginXml.contains("DESCRIBE,DO"));
@@ -188,6 +189,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(source.contains("return new ScratchBirdSchema("));
         Assert.assertTrue(source.contains("return new ScratchBirdView("));
         Assert.assertTrue(source.contains("return new ScratchBirdTable("));
+        Assert.assertTrue(source.contains("public boolean supportsSequences"));
+        Assert.assertTrue(source.contains("return true;"));
     }
 
     @Test
@@ -434,6 +437,38 @@ public class ScratchBirdIntegrationTest {
         Assert.assertEquals("", ScratchBirdSqlPromptPlanner.proposalInsertion("SHOW MANAGEMENT", 15, "MANAGEMENT"));
         Assert.assertEquals("SCHEMA", ScratchBirdSqlPromptPlanner.proposalInsertion("SHOW ", 5, "SCHEMA"));
         Assert.assertEquals("MANAGEMENT", ScratchBirdSqlPromptPlanner.proposalInsertion("ALTER ", 6, "MANAGEMENT"));
+    }
+
+    @Test
+    public void sharedLanguageResourcePackFeedsDialectAndMultilingualCompletions() {
+        ScratchBirdLanguageResourcePack pack = ScratchBirdLanguageResourcePack.shared();
+        Assert.assertTrue(pack.loadStatus(), pack.available());
+        Assert.assertEquals(ScratchBirdLanguageResourcePack.RESOURCE_IDENTITY, pack.resourceIdentity());
+        Assert.assertEquals("sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc", pack.commonResourceHash());
+        Assert.assertTrue(pack.hashVerificationErrors().toString(), pack.hashVerificationPassed());
+        Assert.assertTrue(pack.supportedProfiles().containsAll(List.of("en-US", "en-CA", "fr-CA", "fr-FR", "de-DE", "it-IT", "es-ES")));
+        Assert.assertTrue(pack.registryRowCount() >= 2645);
+        Assert.assertTrue(pack.predictiveStateCount() >= 2645);
+        Assert.assertTrue(pack.canonicalCompletionCount() >= 2600);
+        Assert.assertTrue(pack.localizedCompletionCount("fr-CA") >= 2600);
+        Assert.assertTrue(pack.keywordTokens().contains("INSERT"));
+        Assert.assertTrue(pack.keywordTokens().contains("TABLE"));
+        Assert.assertTrue(pack.keywordTokens().contains("INSÉRER"));
+        Assert.assertTrue(pack.keywordTokens().contains("EINFÜGEN"));
+
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("ins", 3, "en-CA").stream()
+            .anyMatch(completion -> "INSERT".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("ins", 3, "fr-CA").stream()
+            .anyMatch(completion -> "insérer".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("aff", 3, "fr-FR").stream()
+            .anyMatch(completion -> "afficher".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("ein", 3, "de-DE").stream()
+            .anyMatch(completion -> "einfügen".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("mos", 3, "es-ES").stream()
+            .anyMatch(completion -> "mostrar".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("ins", 3, "it-IT").stream()
+            .anyMatch(completion -> "inserire".equalsIgnoreCase(completion.label())));
+        Assert.assertTrue(ScratchBirdSqlPromptPlanner.completionCandidates("SHOW STATUS ", 12).isEmpty());
     }
 
     @Test
@@ -1737,7 +1772,7 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(validationHandlerSource.contains("ScratchBirdValidationBridge.contextHintsFor(target.sql(), target.caretOffset())"));
         Assert.assertTrue(validationHandlerSource.contains("ScratchBirdValidationBridge.serverProbeHintsFor(target.sql(), target.caretOffset())"));
         Assert.assertTrue(validationHandlerSource.contains("ScratchBirdValidationBridge.formHintsFor(target.sql(), target.caretOffset())"));
-        Assert.assertTrue(validationHandlerSource.contains("ScratchBirdV3Parser.completionsAt(target.sql(), target.caretOffset())"));
+        Assert.assertTrue(validationHandlerSource.contains("ScratchBirdSqlPromptPlanner.completionCandidates("));
         Assert.assertTrue(validationHandlerSource.contains("Copy Report"));
 
         String contentAssistHandlerSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdSqlContentAssistHandler.java");
@@ -1762,6 +1797,7 @@ public class ScratchBirdIntegrationTest {
         String promptPlannerSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSqlPromptPlanner.java");
         Assert.assertTrue(promptPlannerSource.contains("record PromptPlan"));
         Assert.assertTrue(promptPlannerSource.contains("ScratchBirdV3Parser.completionsAt"));
+        Assert.assertTrue(promptPlannerSource.contains("ScratchBirdLanguageResourcePack.shared().completionCandidates"));
         Assert.assertTrue(promptPlannerSource.contains("completionCandidates"));
         Assert.assertTrue(promptPlannerSource.contains("proposalInsertion"));
         Assert.assertTrue(promptPlannerSource.contains("Tab/Right accepts the inline prompt."));

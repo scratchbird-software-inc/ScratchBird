@@ -144,6 +144,7 @@ public class ScratchBirdSQLDialect extends GenericSQLDialect {
     public ScratchBirdSQLDialect() {
         super("ScratchBird", "scratchbird");
         addKeywords(ScratchBirdV3Parser.dialectKeywords(), DBPKeywordType.KEYWORD);
+        addKeywords(ScratchBirdLanguageResourcePack.shared().keywordTokens(), DBPKeywordType.KEYWORD);
         addDataTypes(Arrays.asList(SCRATCHBIRD_TYPES));
         addFunctions(Arrays.asList(SCRATCHBIRD_FUNCTIONS));
     }
@@ -151,6 +152,7 @@ public class ScratchBirdSQLDialect extends GenericSQLDialect {
     public void initDriverSettings(JDBCSession session, JDBCDataSource dataSource, JDBCDatabaseMetaData metaData) {
         super.initDriverSettings(session, dataSource, metaData);
         addKeywords(ScratchBirdV3Parser.dialectKeywords(), DBPKeywordType.KEYWORD);
+        addKeywords(ScratchBirdLanguageResourcePack.shared().keywordTokens(), DBPKeywordType.KEYWORD);
         addDataTypes(Arrays.asList(SCRATCHBIRD_TYPES));
         addFunctions(Arrays.asList(SCRATCHBIRD_FUNCTIONS));
     }

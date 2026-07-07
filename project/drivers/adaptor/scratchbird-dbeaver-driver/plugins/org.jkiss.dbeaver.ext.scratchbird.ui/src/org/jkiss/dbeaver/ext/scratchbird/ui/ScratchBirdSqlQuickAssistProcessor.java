@@ -31,8 +31,8 @@ import org.eclipse.jface.text.contentassist.ICompletionProposal;
 import org.eclipse.jface.text.quickassist.IQuickAssistInvocationContext;
 import org.eclipse.jface.text.quickassist.IQuickAssistProcessor;
 import org.eclipse.jface.text.source.Annotation;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSqlPromptPlanner;
 import org.jkiss.dbeaver.ext.scratchbird.parser.v3.ScratchBirdV3Completion;
-import org.jkiss.dbeaver.ext.scratchbird.parser.v3.ScratchBirdV3Parser;
 import org.jkiss.code.NotNull;
 import org.jkiss.code.Nullable;
 
@@ -160,7 +160,9 @@ public class ScratchBirdSqlQuickAssistProcessor implements IQuickAssistProcessor
     ) throws BadLocationException {
         int caretOffset = Math.max(0, Math.min(invocationOffset, document.getLength()));
         ReplacementTarget target = findReplacementTarget(document, caretOffset);
-        List<ScratchBirdV3Completion> completions = ScratchBirdV3Parser.completionsAt(document.get(), caretOffset);
+        List<ScratchBirdV3Completion> completions = ScratchBirdSqlPromptPlanner.completionCandidates(
+            document.get(),
+            caretOffset);
         Set<String> seen = new LinkedHashSet<>();
         proposals.stream()
             .map(ICompletionProposal::getDisplayString)

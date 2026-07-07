@@ -48,9 +48,9 @@ import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.handlers.HandlerUtil;
 import org.jkiss.code.NotNull;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDataSource;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSqlPromptPlanner;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdValidationBridge;
 import org.jkiss.dbeaver.ext.scratchbird.parser.v3.ScratchBirdV3Completion;
-import org.jkiss.dbeaver.ext.scratchbird.parser.v3.ScratchBirdV3Parser;
 import org.jkiss.dbeaver.model.DBPDataSource;
 import org.jkiss.dbeaver.model.DBPDataSourceContainer;
 import org.jkiss.dbeaver.model.sql.SQLScriptElement;
@@ -83,7 +83,9 @@ public class ScratchBirdValidateSqlHandler extends AbstractHandler {
         }
 
         List<String> diagnostics = ScratchBirdValidationBridge.diagnosticsFor(target.sql());
-        List<ScratchBirdV3Completion> completions = ScratchBirdV3Parser.completionsAt(target.sql(), target.caretOffset());
+        List<ScratchBirdV3Completion> completions = ScratchBirdSqlPromptPlanner.completionCandidates(
+            target.sql(),
+            target.caretOffset());
         new ScratchBirdSqlValidationDialog(shell, target, diagnostics, completions).open();
         return null;
     }

@@ -21,6 +21,7 @@ evidence artifacts before reporting final closure support.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -37,6 +38,9 @@ FIXTURE_SCHEMA_ID = "scratchbird.dbeaver_management.install_lifecycle_fixture.v1
 REPORT_SCHEMA_ID = "scratchbird.dbeaver_management.release_gate_report.v1"
 FINAL_EVIDENCE_SCHEMA_ID = "scratchbird.dbeaver_management.final_evidence.v1"
 ADAPTER_REL = Path("project/drivers/adaptor/scratchbird-dbeaver-driver")
+LANGUAGE_PACK_REL = Path(
+    "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+)
 DEFAULT_CONTRACT_REL = Path("project/tools/release/dbeaver_management_release_contract.json")
 DEFAULT_FIXTURE_REL = Path(
     "project/tests/release/dbeaver_management_install_lifecycle_fixture.json"
@@ -47,6 +51,7 @@ DEFAULT_FINAL_EVIDENCE_REL = Path("build/reports/dbeaver_management_final_eviden
 SUPPORTED_WORKPLAN_IDS = (
     "DBEAVER-MGMT-003",
     "DBEAVER-MGMT-006",
+    "DBEAVER-MGMT-011",
     "DBEAVER-MGMT-023",
     "DBEAVER-MGMT-026",
     "DBEAVER-MGMT-027",
@@ -68,6 +73,7 @@ ISSUE_WORKPLAN_PREFIX_IDS = {
         "DBEAVER-MGMT-046",
     ),
     "secure_properties": ("DBEAVER-MGMT-006", "DBEAVER-MGMT-029", "DBEAVER-MGMT-046"),
+    "language_resources": ("DBEAVER-MGMT-011", "DBEAVER-MGMT-046"),
     "license_ip": ("DBEAVER-MGMT-034", "DBEAVER-MGMT-046"),
     "network_egress": ("DBEAVER-MGMT-044", "DBEAVER-MGMT-046"),
     "release_artifacts": ("DBEAVER-MGMT-023", "DBEAVER-MGMT-046"),
@@ -420,7 +426,7 @@ def zip_contains_prefix_suffix(members: set[str], prefix: str, suffix: str) -> b
 
 def inspect_update_site_zip(path: Path, issues: list[str], context: str) -> dict[str, Any]:
     members = zip_member_names(path, issues, context)
-    summary = {"members": len(members), "nested_jdbc_jar": False}
+    summary = {"members": len(members), "nested_jdbc_jar": False, "nested_language_pack": False}
     if not members:
         return summary
 
@@ -449,6 +455,8 @@ def inspect_update_site_zip(path: Path, issues: list[str], context: str) -> dict
                     with zipfile.ZipFile(io.BytesIO(archive.read(member))) as plugin_archive:
                         if "drivers/scratchbird/scratchbird-jdbc.jar" in plugin_archive.namelist():
                             summary["nested_jdbc_jar"] = True
+                        if "resources/sbsql-language-resource-pack/manifest.sblrp.json" in plugin_archive.namelist():
+                            summary["nested_language_pack"] = True
                             break
                 except zipfile.BadZipFile:
                     issues.append(f"{context}:core_plugin_jar_invalid:{member}")
@@ -457,6 +465,8 @@ def inspect_update_site_zip(path: Path, issues: list[str], context: str) -> dict
 
     if not summary["nested_jdbc_jar"]:
         issues.append(f"{context}:update_site_core_plugin_missing_scratchbird_jdbc_jar")
+    if not summary["nested_language_pack"]:
+        issues.append(f"{context}:update_site_core_plugin_missing_sbsql_language_pack")
     return summary
 
 
@@ -863,6 +873,117 @@ def check_secure_properties(
         "driver_properties": len(driver_properties),
         "provider_properties": len(provider_properties),
     }
+    return issues, summary
+
+
+def check_language_resources(repo_root: Path, adapter_root: Path) -> tuple[list[str], dict[str, Any]]:
+    issues: list[str] = []
+    language_root = repo_root / LANGUAGE_PACK_REL
+    model_src = (
+        adapter_root
+        / "plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model"
+    )
+    ui_src = (
+        adapter_root
+        / "plugins/org.jkiss.dbeaver.ext.scratchbird.ui/src/org/jkiss/dbeaver/ext/scratchbird/ui"
+    )
+    required_profiles = {"en-US", "en-CA", "fr-CA", "fr-FR", "de-DE", "es-ES", "it-IT"}
+    summary: dict[str, Any] = {
+        "language_pack": rel(language_root, repo_root),
+        "required_profiles": sorted(required_profiles),
+        "profiles": [],
+        "hash_rows_checked": 0,
+    }
+
+    manifest_path = language_root / "manifest.sblrp.json"
+    hashes_path = language_root / "hashes.sha256"
+    if not manifest_path.is_file():
+        issues.append(f"language_pack_manifest_missing:{rel(manifest_path, repo_root)}")
+    else:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            manifest = {}
+            issues.append(f"language_pack_manifest_invalid:{exc}")
+        if manifest.get("resource_identity") != "sbsql.common_resource_pack.v1":
+            issues.append("language_pack_identity_mismatch")
+        profiles = {
+            row.get("exact_tag")
+            for row in manifest.get("profiles", [])
+            if isinstance(row, dict) and isinstance(row.get("exact_tag"), str)
+        }
+        summary["profiles"] = sorted(profile for profile in profiles if profile)
+        missing_profiles = required_profiles.difference(profiles)
+        if missing_profiles:
+            issues.append(f"language_pack_profiles_missing:{','.join(sorted(missing_profiles))}")
+        for profile in required_profiles:
+            profile_path = language_root / f"resources/languages/{profile}/language-profile.json"
+            if not profile_path.is_file():
+                issues.append(f"language_profile_missing:{profile}")
+
+    if not hashes_path.is_file():
+        issues.append(f"language_pack_hashes_missing:{rel(hashes_path, repo_root)}")
+    else:
+        for line_number, line in enumerate(hashes_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2 or not parts[0].startswith("sha256:"):
+                issues.append(f"language_pack_hash_row_invalid:{line_number}")
+                continue
+            rel_path = parts[1].strip()
+            payload_path = language_root / rel_path
+            if not payload_path.is_file():
+                issues.append(f"language_pack_hash_resource_missing:{rel_path}")
+                continue
+            expected = parts[0].removeprefix("sha256:")
+            actual = hashlib.sha256(payload_path.read_bytes()).hexdigest()
+            if actual.lower() != expected.lower():
+                issues.append(f"language_pack_hash_mismatch:{rel_path}")
+            summary["hash_rows_checked"] += 1
+
+    source_requirements = {
+        model_src / "ScratchBirdLanguageResourcePack.java": (
+            "RESOURCE_IDENTITY = \"sbsql.common_resource_pack.v1\"",
+            "SCRATCHBIRD_SBSQL_LANGUAGE_RESOURCE_PACK",
+            "hashVerificationPassed",
+            "verifyHashes",
+            "localizedCompletionsByProfile",
+            "[^\\\\p{L}\\\\p{N}_]+",
+        ),
+        model_src / "ScratchBirdSqlPromptPlanner.java": (
+            "ScratchBirdLanguageResourcePack.defaultLanguageTag()",
+            "ScratchBirdLanguageResourcePack.shared().completionCandidates",
+        ),
+        model_src / "ScratchBirdSQLDialect.java": (
+            "ScratchBirdLanguageResourcePack.shared().keywordTokens()",
+        ),
+        model_src / "ScratchBirdValidationBridge.java": (
+            "ScratchBirdSqlPromptPlanner.completionCandidates",
+        ),
+        ui_src / "ScratchBirdSqlQuickAssistProcessor.java": (
+            "ScratchBirdSqlPromptPlanner.completionCandidates",
+        ),
+        ui_src / "handlers/ScratchBirdValidateSqlHandler.java": (
+            "ScratchBirdSqlPromptPlanner.completionCandidates",
+        ),
+        adapter_root / "plugins/org.jkiss.dbeaver.ext.scratchbird/build.properties": (
+            "resources/",
+        ),
+        adapter_root / "scripts/build-p2-update-site.sh": (
+            "stage_language_resource_pack",
+            "sbsql-language-resource-pack",
+        ),
+    }
+    for path, tokens in source_requirements.items():
+        if not path.is_file():
+            issues.append(f"source_missing:{rel(path, repo_root)}")
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in tokens:
+            if token not in source:
+                issues.append(f"source_token_missing:{rel(path, repo_root)}:{token}")
+
     return issues, summary
 
 
@@ -1342,6 +1463,7 @@ def build_report(
             ("version_matrix", check_version_matrix(repo_root, adapter_root, contract)),
             ("api_drift", check_api_drift(adapter_root, contract)),
             ("secure_properties", check_secure_properties(adapter_root, contract)),
+            ("language_resources", check_language_resources(repo_root, adapter_root)),
             (
                 "install_lifecycle",
                 check_install_lifecycle(
@@ -1381,6 +1503,7 @@ def build_report(
         "gate_support": {
             "DBEAVER-MGMT-GATE-004": "dbeaver_release_controller_static_gate",
             "DBEAVER-MGMT-GATE-006": "secure_dbeaver_provider_property_check",
+            "DBEAVER-MGMT-GATE-011": "shared_sbsql_language_resource_pack_source_and_hash_check",
             "DBEAVER-MGMT-GATE-021": "final_evidence_live_server_dbeaver_management_corpus",
             "DBEAVER-MGMT-GATE-022": "final_evidence_stock_dbeaver_gui_automation_and_screenshots",
             "DBEAVER-MGMT-GATE-023": "packaging_script_and_artifact_mode_checks",

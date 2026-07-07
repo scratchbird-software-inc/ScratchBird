@@ -359,7 +359,7 @@ public final class ScratchBirdValidationBridge {
             return List.of("No SQL text supplied.");
         }
         int safeOffset = Math.max(0, Math.min(offset, sql.length()));
-        List<ScratchBirdV3Completion> completions = ScratchBirdV3Parser.completionsAt(sql, safeOffset);
+        List<ScratchBirdV3Completion> completions = ScratchBirdSqlPromptPlanner.completionCandidates(sql, safeOffset);
         if (completions.isEmpty()) {
             return List.of("No parser completions for the current context.");
         }
