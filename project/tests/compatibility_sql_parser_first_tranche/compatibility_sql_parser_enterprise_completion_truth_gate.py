@@ -160,6 +160,7 @@ CSV_ENTERPRISE_CLAIM_PHRASES = (
 )
 
 NATIVE_REPLAY_COMPLETION_STATUSES = {
+    "native_tool_replay_passed",
     "native_replay_passed",
     "original_compatibility_replay_passed",
     "original_compatibility_tool_replay_passed",

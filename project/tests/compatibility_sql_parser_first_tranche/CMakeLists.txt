@@ -892,6 +892,7 @@ add_test(
     --repo-root "${PROJECT_SOURCE_DIR}/.."
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/compatibility_sql_parser_enterprise_completion_truth_evidence.json"
     --first-tranche-replay-evidence "${CMAKE_BINARY_DIR}/tests/compatibility_regression/compatibility_sql_first_tranche_original_tool_replay_evidence.json"
+    --strict-release
 )
 set_tests_properties(compatibility_sql_parser_enterprise_completion_truth_gate PROPERTIES
   DEPENDS compatibility_sql_first_tranche_original_tool_replay_gate
@@ -906,6 +907,7 @@ add_test(
     "${CMAKE_CURRENT_SOURCE_DIR}/compatibility_procedural_datatype_enterprise_truth_gate.py"
     --repo-root "${PROJECT_SOURCE_DIR}/.."
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/compatibility_procedural_datatype_enterprise_truth_evidence.json"
+    --strict-release
 )
 set_tests_properties(compatibility_procedural_datatype_enterprise_truth_gate PROPERTIES
   LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_enterprise_blocker_truth_gate;compatibility_parser_release_evidence;compatibility_procedural_datatype_enterprise_truth;compatibility_parser_exact_datatype_gate;compatibility_parser_procedural_body_gate;mga_transaction_regression"

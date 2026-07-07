@@ -28,9 +28,12 @@ LEGAL_SOURCE_FILES = ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md")
 ROOT_SBOM_REL = Path("SBOM.json")
 ROOT_METADATA = {"RELEASE_MANIFEST.json", "SHA256SUMS"}
 REFERENCE_SOURCE_RELS = (
+    "packaging/scripts/promote_reference_parser_release_artifacts.py",
     "project/src/parsers/compatibility",
+    "project/src/udr",
     "project/tests/compatibility_sql_parser_first_tranche",
     "project/tests/reference_regression",
+    "public_execution_plan",
 )
 
 
@@ -68,6 +71,45 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def collect_source_basis(repo_root: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    rows: list[dict[str, Any]] = []
+    result = subprocess.run(
+        ["git", "ls-files", *REFERENCE_SOURCE_RELS],
+        cwd=repo_root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    tracked_files = sorted(line for line in result.stdout.splitlines() if line)
+    for item_rel in tracked_files:
+        path = repo_root / item_rel
+        if not path.is_file():
+            continue
+        item_sha = sha256(path)
+        size = path.stat().st_size
+        rows.append({
+            "path": item_rel,
+            "bytes": size,
+            "sha256": item_sha,
+        })
+        digest.update(item_rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(size).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(item_sha.encode("ascii"))
+        digest.update(b"\n")
+    return {
+        "source_commit_basis": git_text(repo_root, "rev-parse", "HEAD"),
+        "source_branch_basis": git_text(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
+        "source_tree_digest_algorithm": "sha256(path\\0bytes\\0sha256\\n)",
+        "source_tree_digest": digest.hexdigest(),
+        "source_file_count": len(rows),
+        "source_roots": list(REFERENCE_SOURCE_RELS),
+    }
 
 
 def collect_files(root: Path, *, include_root_metadata: bool = False) -> list[dict[str, Any]]:
@@ -158,6 +200,30 @@ def write_source_reference_manifest(repo_root: Path,
     return rel_manifest
 
 
+def verify_source_basis(path: Path, source_basis: dict[str, Any], issues: list[str]) -> None:
+    if not path.is_file():
+        issues.append(f"missing_source_basis_manifest:{path.name}")
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        issues.append(f"invalid_source_basis_manifest:{path.name}:{exc}")
+        return
+    if "source_commit" in payload or (
+        isinstance(payload.get("source"), dict) and "source_commit" in payload["source"]
+    ):
+        issues.append(f"legacy_source_commit_field:{path.name}")
+    container = payload.get("source") if isinstance(payload.get("source"), dict) else payload
+    for key in (
+        "source_commit_basis",
+        "source_tree_digest",
+        "source_tree_digest_algorithm",
+        "source_file_count",
+    ):
+        if container.get(key) != source_basis.get(key):
+            issues.append(f"source_basis_mismatch:{path.name}:{key}")
+
+
 def add_common_release_materials(repo_root: Path,
                                  package_root: Path,
                                  verify_only: bool,
@@ -211,6 +277,12 @@ def update_root_manifests(repo_root: Path,
             issues.append("file_location_manifest_missing")
         if not (release_root / "RELEASE_MANIFEST.json").is_file():
             issues.append("release_manifest_missing")
+        else:
+            verify_source_basis(
+                release_root / "RELEASE_MANIFEST.json",
+                collect_source_basis(repo_root),
+                issues,
+            )
         return
 
     files = collect_files(release_root, include_root_metadata=True)
@@ -251,6 +323,7 @@ def update_root_manifests(repo_root: Path,
     for row in artifacts:
         category = row["path"].split("/", 1)[0] if "/" in row["path"] else "metadata"
         categories[category] = categories.get(category, 0) + 1
+    source_basis = collect_source_basis(repo_root)
     release_manifest = {
         "schema_id": "scratchbird.prerelease_packaging_manifest.v1",
         "release_date": release_root.name,
@@ -258,8 +331,13 @@ def update_root_manifests(repo_root: Path,
         "pre_release_not_final": True,
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "source": {
-            "source_commit": git_text(repo_root, "rev-parse", "HEAD"),
-            "source_branch": git_text(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
+            **source_basis,
+            "source_basis_semantics": (
+                "source_commit_basis is the checked-out implementation revision used "
+                "when staging this temporary packaging tree; source_tree_digest is the "
+                "release-package implementation/test contract identity and is stable "
+                "across later packaging-only commits."
+            ),
         },
         "policy": {
             "packaging_tree_is_temporary": True,
@@ -293,6 +371,9 @@ def promote_reference_parsers(repo_root: Path,
     if not verify_only and package_root.exists():
         shutil.rmtree(package_root)
     package_root.mkdir(parents=True, exist_ok=True)
+    source_basis = collect_source_basis(repo_root)
+    if verify_only:
+        verify_source_basis(package_root / "package_manifest.json", source_basis, issues)
 
     payloads: list[str] = []
     for lane in lanes:
@@ -334,7 +415,12 @@ def promote_reference_parsers(repo_root: Path,
             "schema_id": "scratchbird.reference_parser_release_package_manifest.v1",
             "package_id": "reference-parsers:all",
             "component_type": "reference_parser_workers",
-            "source_commit": git_text(repo_root, "rev-parse", "HEAD"),
+            **source_basis,
+            "source_basis_semantics": (
+                "source_commit_basis is the checked-out implementation revision used "
+                "when staging this temporary package; source_tree_digest is the "
+                "verifiable parser implementation/test surface identity."
+            ),
             "payloads": sorted(payloads),
             "source_reference_manifest": source_reference_manifest,
             "proofs": ["proofs/reference_parser_packaging_handoff.json"],

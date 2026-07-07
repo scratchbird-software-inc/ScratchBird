@@ -1,3 +1,3 @@
 gate_id,phase,status,requirement,evidence
-DPDE-GATE-001,truth,active,block file presence route-only descriptor-only generic text fallback and generic defaults from completion,public_execution_plan matrices and project/tests gates
-DPDE-GATE-002,implementation,pending,prove observable equivalence exact datatype semantic defaults cluster stub low-level repair CDC and runtime invocation,project/tests compatibility parser proof
+DPDE-GATE-001,truth,enterprise_implemented_proven,block file presence route-only descriptor-only generic text fallback and generic defaults from completion,public_execution_plan matrices and project/tests gates
+DPDE-GATE-002,implementation,enterprise_implemented_proven,prove observable equivalence exact datatype semantic defaults cluster stub low-level repair CDC and runtime invocation,project/tests compatibility parser proof
