@@ -150,9 +150,9 @@ std::string KeywordClass(std::string_view text) {
       "BEGIN",     "BY",        "CALL",       "CASE",       "CAST",
       "COMMIT",    "CREATE",    "DEALLOCATE", "DELETE",     "DISTINCT",   "DROP",
       "ELSE",      "END",       "EXCEPT",     "EXECUTE",    "EXISTS",
-      "FALSE",     "FROM",      "FULL",       "GROUP",      "HAVING",
-      "IN",        "INNER",     "INSERT",     "INTERSECT",  "INTO",
-      "IS",        "JOIN",      "LEFT",       "LIKE",       "LIMIT",
+      "ENABLE",    "FALSE",     "FROM",       "FULL",       "GROUP",      "HAVING",
+      "IN",        "INNER",     "INSERT",     "INSPECT",    "INSTALL",    "INTERSECT",  "INTO",
+      "IS",        "JOIN",      "LEFT",       "LIKE",       "LIMIT",      "LOAD",
       "MERGE",     "NOT",       "NULL",       "OFFSET",     "ON",
       "OR",        "ORDER",     "OUTER",      "PREPARE",    "REGISTER",   "RETURNING",  "RIGHT",
       "ROLLBACK",  "SAVEPOINT", "SELECT",     "SET",        "SHOW",
@@ -161,7 +161,7 @@ std::string KeywordClass(std::string_view text) {
 
       "ARCHIVE",     "ARRAY",       "BINARY",      "BOOLEAN",     "BUFFER",
       "CACHE",       "CATALOG",     "CHANGEFEED",  "COLLATE",     "CONFIG",
-      "CANCEL",      "DATABASE",    "DATE",        "DEFAULT",     "DESCRIPTOR",  "DEVICE",
+      "CANCEL",      "DATABASE",    "DATE",        "DEFAULT",     "DESCRIPTOR",  "DEVICE",      "DISABLE",
       "DOCUMENT",    "DOMAIN",      "FILES",       "FILESPACE",   "FILTER",
       "FUNCTION",    "GPU",         "GRAPH",       "IDENTITY",    "INDEX",
       "INTERVAL",    "JSON",        "JOB",         "LANGUAGE",    "LLVM",
@@ -171,7 +171,7 @@ std::string KeywordClass(std::string_view text) {
       "REPLICATION", "RESTORE",     "RESUME",      "ROLE",        "ROUTINE",     "RUN",         "SCHEDULE",
       "SCHEMA",      "SECURITY",    "SESSION",     "SUPPORT",     "SYSTEM",
       "TIME",        "TIMESTAMP",   "TIMEZONE",    "TRANSACTION", "TRIGGER",
-      "TUPLE",       "TYPE",        "UDR",         "UUID",        "VECTOR",
+      "TUPLE",       "TYPE",        "UDR",         "UNINSTALL",   "UNLOAD",      "UUID",        "VECTOR",
       "VIEW",        "WINDOW",      "XML",         "ZONE",
   };
   static const std::unordered_set<std::string> private_only = {

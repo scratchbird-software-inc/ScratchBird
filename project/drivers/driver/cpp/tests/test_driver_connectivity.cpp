@@ -275,11 +275,11 @@ std::vector<uint8_t> buildAuthContinuePayload(scratchbird::protocol::AuthMethod 
 }
 
 std::vector<uint8_t> buildAuthOkPayload(const std::vector<uint8_t>& info = {}) {
-    std::vector<uint8_t> payload(20 + info.size(), 0);
+    std::vector<uint8_t> payload(20, 0);
     payload[0] = 0x42;
     writeU32Le(payload, 16, static_cast<uint32_t>(info.size()));
     if (!info.empty()) {
-        std::memcpy(payload.data() + 20, info.data(), info.size());
+        payload.insert(payload.end(), info.begin(), info.end());
     }
     return payload;
 }

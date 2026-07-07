@@ -376,22 +376,23 @@ When integration code changes:
 3. Reinstall/update in DBeaver via `Help` -> `Install New Software...`
 4. If you reseed a DBeaver source checkout, rerun `./scripts/install-into-dbeaver.sh`
 
-## Remaining Open Validation
+## Validation Gates
 
-- deeper GUI validation of recursive navigator browse, datatype presentation,
-  SQL editor behavior, and future admin/dashboard surfaces
-- Phase B and Phase C work beyond the now-proven live connection bootstrap
-- broader semantic lint policy beyond the current route-aware DDL/DML/DCL and
-  transaction-publication/dual-anchor and uncommitted-metadata-read checks,
-  scheduler/security lifecycle routing, protected-surface DML warnings,
-  collection-surface DML warnings, unrooted DML warnings,
-  DCL securable-object warnings, DCL securable collection-surface warnings,
-  DCL broad-surface warnings, DCL ON-target scoping, DCL broad-principal
-  warnings, transaction-publication warnings, dual-anchor schema/security
-  mutation warnings, uncommitted-metadata-read warnings, alias migrations,
-  parser completion proposals, Ctrl+Space popup, object-model hints, and
-  live-evidence hints
-- server implementation and live result evidence for
-  `sys.security.permission_probe`
-- human GUI screenshot evidence plus live stock install/remove traces for the
-  current stock QA bundle
+The current plugin release path is gate-driven:
+
+- `check-current-project-design.py` validates the DBeaver model, SQL dialect,
+  navigator, secure property, lifecycle, dashboard, and package metadata.
+- `dbeaver_management_platform_gate.py --mode static` validates the static
+  management-platform contract.
+- `dbeaver_management_platform_gate.py --mode release` validates the generated
+  p2 update site, stock-test bundle, checksums, and lifecycle proof files.
+- `dbeaver_management_platform_gate.py --mode final` additionally requires
+  explicit final evidence for live server corpus execution, stock GUI
+  automation/screenshots, manual QA signoff, server-authorized apply/verify,
+  and workspace cleanup/redaction.
+- `dbeaver_management_ui_proof.py`,
+  `dbeaver_management_model_security_test.py`, and
+  `validate_dbeaver_management_platform_corpus.py` validate UI contracts,
+  security/refusal behavior, and management corpus coverage.
+- The CTest DBeaver slice runs the release gate, UI proof, model-security
+  proof, platform-corpus gate, and Python unit tests as one CI-visible group.

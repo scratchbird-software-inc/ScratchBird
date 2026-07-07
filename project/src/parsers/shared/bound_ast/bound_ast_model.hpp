@@ -57,6 +57,14 @@ struct BoundShowIdentity {
       scratchbird::parser::ast::ShowIdentityKind::kVersion;
 };
 
+struct BoundStatementFamilyEvidence {
+  BoundHeader header;
+  scratchbird::parser::ast::AstFamily ast_family =
+      scratchbird::parser::ast::AstFamily::kRefusal;
+  std::string descriptor_profile;
+  std::string message_vector_shape;
+};
+
 struct BindResult {
   std::variant<BoundShowIdentity, BindingDiagnostic> value;
   bool ok() const;
@@ -64,8 +72,19 @@ struct BindResult {
 
 BindResult BindShowIdentityAst(const scratchbird::parser::ast::ShowIdentityAst& ast,
                                const BindingContext& context);
+BoundStatementFamilyEvidence MakeBoundStatementFamilyEvidence(
+    scratchbird::parser::ast::AstFamily ast_family,
+    std::string surface_key,
+    std::string command_family,
+    std::string required_right,
+    std::string scope_mode,
+    std::string descriptor_profile,
+    std::string sblr_operation_key,
+    std::string result_shape,
+    const BindingContext& context);
 
 std::string SerializeToJson(const BoundShowIdentity& bound);
+std::string SerializeToJson(const BoundStatementFamilyEvidence& bound);
 std::string SerializeDiagnosticToJson(const BindingDiagnostic& diagnostic);
 std::string SerializeBindResultToJson(const BindResult& result);
 

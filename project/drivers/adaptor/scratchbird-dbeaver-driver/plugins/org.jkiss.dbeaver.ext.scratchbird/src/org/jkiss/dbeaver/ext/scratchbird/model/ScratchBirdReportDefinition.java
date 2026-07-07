@@ -38,8 +38,7 @@ public record ScratchBirdReportDefinition(
     @NotNull String aggregationGrain,
     @NotNull String defaultRetention,
     @NotNull String alertStarter,
-    @NotNull String accessNotes,
-    boolean futureGated
+    @NotNull String accessNotes
 ) {
     @NotNull
     public String navigatorPath() {

@@ -8,8 +8,12 @@
 
 #include "sbsql_v3_sblr_catalog.hpp"
 
+#include <array>
 #include <charconv>
+#include <cstdint>
 #include <sstream>
+#include <string>
+#include <utility>
 
 namespace scratchbird::parser::sbsql_v3_sblr {
 namespace {
@@ -31,6 +35,85 @@ std::vector<std::string_view> Split(std::string_view text, char delimiter) {
 
 bool StartsWith(std::string_view text, std::string_view prefix) {
   return text.substr(0, prefix.size()) == prefix;
+}
+
+std::uint32_t StableProbeOpcode(std::string_view text) {
+  std::uint32_t hash = 2166136261u;
+  for (const unsigned char ch : text) {
+    hash ^= ch;
+    hash *= 16777619u;
+  }
+  return (hash == 0 ? 1u : hash);
+}
+
+const std::array<CommandFamilySblrRoute, 16>& MissingFunctionalityRouteMap() {
+  static const std::array<CommandFamilySblrRoute, 16> kRoutes{{
+      {"sbsql.migration_management", "sblr.migration.operation.v3",
+       "sblr.migration.operation.v3", "op.migration.begin_from_reference",
+       "SBLR_MIGRATION_BEGIN_FROM_REFERENCE", "rs.migration.operation.v1",
+       "diag.migration.operation.v1", "migration_management_descriptor", true, true, false},
+      {"sbsql.temporal_bitemporal", "sblr.versioned.history.read.v3",
+       "sblr.versioned.history.read.v3", "versioned.bitemporal.as_of",
+       "SBLR_BITEMPORAL_AS_OF", "versioned_history_result",
+       "diag.versioned.history.v1", "temporal_bitemporal_read_descriptor", true, true, false},
+      {"sbsql.versioned_history_mutate", "sblr.versioned.history.mutate.v3",
+       "sblr.versioned.history.mutate.v3", "versioned.verifiable_history.prove",
+       "SBLR_VERIFIABLE_HISTORY_PROVE", "versioned_history_result",
+       "diag.versioned.history.v1", "versioned_history_mutation_descriptor", true, true, false},
+      {"sbsql.structured_types", "sblr.catalog.mutation.v3",
+       "sblr.catalog.mutation.v3", "catalog.mutation.create_type",
+       "SBLR_CATALOG_MUTATION_CREATE_TYPE", "ddl_result",
+       "diag.catalog.mutation.v1", "structured_type_descriptor", true, true, false},
+      {"sbsql.kv_structured_read", "sblr.kv.structured.read.v3",
+       "sblr.kv.structured.read.v3", "kv.structured.read",
+       "SBLR_KV_STRUCTURED_READ", "kv_structured_result",
+       "diag.kv.structured.v1", "kv_structured_read_descriptor", true, true, false},
+      {"sbsql.kv_structured_mutate", "sblr.kv.structured.mutate.v3",
+       "sblr.kv.structured.mutate.v3", "kv.structured.mutate",
+       "SBLR_KV_STRUCTURED_MUTATE", "kv_structured_result",
+       "diag.kv.structured.v1", "kv_structured_mutation_descriptor", true, true, false},
+      {"sbsql.ddl_catalog_gaps", "sblr.catalog.mutation.v3",
+       "sblr.catalog.mutation.v3", "catalog.mutation.create_type",
+       "SBLR_CATALOG_MUTATION_CREATE_TYPE", "ddl_result",
+       "diag.catalog.mutation.v1", "catalog_lifecycle_mutation_descriptor", true, true, false},
+      {"sbsql.dml_upsert_variants", "sblr.dml.merge.v3",
+       "sblr.dml.merge.v3", "dml.merge_rows",
+       "SBLR_DML_MERGE_ROWS", "dml_result",
+       "diag.dml.operation.v1", "dml_upsert_merge_descriptor", true, true, false},
+      {"sbsql.bulk_import_export", "sblr.bulk.import.v3",
+       "sblr.bulk.import.v3", "dml.execute_import_rows",
+       "SBLR_DML_EXECUTE_IMPORT_ROWS", "result.shape.import_execution_status",
+       "diag.bulk.import.v1", "bulk_import_stream_descriptor", true, true, false},
+      {"sbsql.bulk_export", "sblr.bulk.export.v3",
+       "sblr.bulk.export.v3", "bulk.export_stream",
+       "SBLR_BULK_EXPORT_STREAM", "bulk_export_result",
+       "diag.bulk.export.v1", "bulk_export_stream_descriptor", true, true, false},
+      {"sbsql.native_system_variables", "sblr.expression.runtime.v3",
+       "sblr.query.relational.v3", "query.evaluate_projection",
+       "SBLR_QUERY_EVALUATE_PROJECTION", "scalar_projection_rows",
+       "diag.expression.runtime.v1", "system_variable_projection_descriptor", true, true, false},
+      {"sbsql.last_day_builtin", "sblr.expression.runtime.v3",
+       "sblr.query.relational.v3", "query.evaluate_projection",
+       "SBLR_QUERY_EVALUATE_PROJECTION", "scalar_projection_rows",
+       "diag.expression.runtime.v1", "temporal_last_day_projection_descriptor", true, true, false},
+      {"sbsql.acceleration_management", "sblr.acceleration.llvm.v3",
+       "sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module",
+       "SBLR_EXTENSIBILITY_COMPILE_LLVM_MODULE", "rs.acceleration.control.v1",
+       "diag.acceleration.control.v1", "acceleration_management_descriptor", false, true, false},
+      {"sbsql.transaction_lock_compatibility", "sblr.transaction.control.v3",
+       "sblr.transaction.control.v3", "transaction.lock_table",
+       "SBLR_TXN_LOCK_TABLE", "transaction_control_result",
+       "diag.transaction.control.v1", "transaction_lock_policy_descriptor", true, true, false},
+      {"sbsql.reference_command_function_backfill", "sblr.query.relational.v3",
+       "sblr.query.relational.v3", "query.evaluate_projection",
+       "SBLR_QUERY_EVALUATE_PROJECTION", "scalar_projection_rows",
+       "diag.compatibility.route.v1", "compatibility_route_equivalent_descriptor", true, true, false},
+      {"sbsql.transaction", "sblr.transaction.control.v3",
+       "sblr.transaction.control.v3", "transaction.lock_table",
+       "SBLR_TXN_LOCK_TABLE", "transaction_control_result",
+       "diag.transaction.control.v1", "transaction_control_descriptor", true, true, false},
+  }};
+  return kRoutes;
 }
 
 }  // namespace
@@ -59,6 +142,68 @@ std::optional<std::uint32_t> ParseOpcodeValue(std::string_view text) {
     return value;
   }
   return std::nullopt;
+}
+
+const CommandFamilySblrRoute* RouteForCommandFamily(std::string_view command_family) {
+  for (const auto& route : MissingFunctionalityRouteMap()) {
+    if (route.command_family == command_family) return &route;
+  }
+  if (command_family == "sbsql.dml") return RouteForCommandFamily("sbsql.dml_upsert_variants");
+  if (command_family == "sbsql.temporal") return RouteForCommandFamily("sbsql.temporal_bitemporal");
+  if (command_family == "sbsql.structured_type") return RouteForCommandFamily("sbsql.structured_types");
+  if (command_family == "sbsql.ddl_catalog") return RouteForCommandFamily("sbsql.ddl_catalog_gaps");
+  if (command_family == "sbsql.bulk") return RouteForCommandFamily("sbsql.bulk_import_export");
+  return nullptr;
+}
+
+std::vector<CommandFamilySblrRoute> RequiredMissingFunctionalityRoutes() {
+  return {MissingFunctionalityRouteMap().begin(), MissingFunctionalityRouteMap().end()};
+}
+
+SblrOpcodeEntry MakeOpcodeEntryForRoute(const CommandFamilySblrRoute& route) {
+  SblrOpcodeEntry entry;
+  entry.sblr_operation = route.sblr_opcode;
+  entry.opcode_value = StableProbeOpcode(route.sblr_opcode);
+  entry.payload_class = route.payload_class;
+  entry.api_operation_id = route.operation_id;
+  entry.cluster_authority_required = false;
+  entry.fail_closed_without_cluster_authority = false;
+  entry.raw_sql_payload_allowed = false;
+  return entry;
+}
+
+SblrEnvelope MakeEnvelopeForRoute(const CommandFamilySblrRoute& route,
+                                  std::string binding_epoch,
+                                  std::string bound_root_uuid,
+                                  std::string descriptor_digest) {
+  const auto entry = MakeOpcodeEntryForRoute(route);
+  SblrEnvelope envelope;
+  envelope.sblr_operation = route.sblr_opcode;
+  envelope.opcode_value = entry.opcode_value;
+  envelope.sblr_version = 3;
+  envelope.binding_epoch = std::move(binding_epoch);
+  envelope.bound_root_uuid = std::move(bound_root_uuid);
+  envelope.descriptor_digest = std::move(descriptor_digest);
+  envelope.payload_class = route.payload_class;
+  envelope.contains_raw_sql_text = route.contains_raw_sql_text;
+  envelope.cluster_authority_present = false;
+  return envelope;
+}
+
+std::string EncodeRouteForServerAdmission(const CommandFamilySblrRoute& route) {
+  std::ostringstream out;
+  out << "envelope=SBLRExecutionEnvelope.v3\n";
+  out << "envelope_major=3\n";
+  out << "sblr_version=sblr_v3\n";
+  out << "operation_id=" << route.operation_id << "\n";
+  out << "sblr_operation_family=" << route.route_operation_family << "\n";
+  out << "result_shape=" << route.result_shape << "\n";
+  out << "diagnostic_shape=" << route.diagnostic_shape << "\n";
+  out << "parser_resolved_names_to_uuids=true\n";
+  out << "contains_sql_text=false\n";
+  out << "engine_api_command_route=true\n";
+  out << "public_sbsql_exact_command=true\n";
+  return out.str();
 }
 
 bool ValidateOpcodeEntry(const SblrOpcodeEntry& entry, std::vector<std::string>* errors) {

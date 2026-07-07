@@ -738,6 +738,8 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "CREATE" && second == "TRIGGER") canonical_name = "create_trigger_stmt";
   else if (keyword == "CREATE" && second == "VECTOR" && third == "COLLECTION") {
     canonical_name = "create_vector_collection";
+  } else if (keyword == "CREATE" && second == "UDR" && third == "PACKAGE") {
+    canonical_name = "udr_package_stmt";
   } else if (keyword == "CREATE") canonical_name = "create_object";
   else if (keyword == "REINDEX" && second == "VECTOR" && third == "COLLECTION") {
     canonical_name = "vector_op_stmt";
@@ -753,6 +755,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "MAINTENANCE") canonical_name = "maintenance_stmt";
   else if (keyword == "VERIFY") canonical_name = "verify_options";
   else if (keyword == "REPAIR") canonical_name = "repair_options";
+  else if (keyword == "ALTER" && second == "UDR" && third == "PACKAGE") canonical_name = "udr_package_stmt";
   else if (keyword == "ALTER" && second == "AGENT") canonical_name = "agent_control_stmt";
   else if (keyword == "ALTER" && second == "GPU") canonical_name = "public_exact_alter_gpu";
   else if (keyword == "ALTER" && second == "NATIVE" && third == "COMPILE") canonical_name = "public_exact_alter_native_compile";
@@ -786,6 +789,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
            (keyword == "CRYPTOGRAPHIC" && second == "ERASE" && third == "FILESPACE")) {
     canonical_name = "public_exact_encryption_maintenance";
   }
+  else if (keyword == "DROP" && second == "UDR" && third == "PACKAGE") canonical_name = "udr_package_stmt";
   else if (keyword == "DROP" && second == "JOB") canonical_name = "drop_job_stmt";
   else if (keyword == "DROP") canonical_name = "drop_object";
   else if (keyword == "RENAME") canonical_name = "rename_object_stmt";
@@ -817,6 +821,12 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
               second == "LLVM" || second == "MANAGEMENT")) {
     canonical_name = "public_exact_show";
   } else if (keyword == "SHOW") canonical_name = "show";
+  else if ((keyword == "INSPECT" || keyword == "LOAD" || keyword == "UNLOAD" ||
+            keyword == "ENABLE" || keyword == "DISABLE" ||
+            keyword == "INSTALL" || keyword == "UNINSTALL") &&
+           second == "UDR" && third == "PACKAGE") {
+    canonical_name = "udr_package_stmt";
+  }
   else if (keyword == "REGISTER" && second == "UDR") canonical_name = "udr_package_stmt";
   else if (keyword == "DESCRIBE") canonical_name = "describe";
   else if (keyword == "EXPLAIN") canonical_name = "explain";
@@ -1021,6 +1031,10 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "GPU") canonical_name = "gpu_stmt";
   else if (keyword == "LLVM") canonical_name = "llvm_stmt";
   else if (keyword == "LOAD" && second == "DATA") canonical_name = "load_data_clause";
+  else if (keyword == "LOAD" && (second == "CSV" || second == "XML")) canonical_name = "load_data_clause";
+  else if (keyword == "BULK" && second == "IMPORT") canonical_name = "load_data_clause";
+  else if (keyword == "INGEST" &&
+           (second == "LINE_PROTOCOL" || second == "LINE")) canonical_name = "load_data_clause";
   else if (keyword == "REFRESH" && second == "MATERIALIZED" && third == "VIEW") {
     canonical_name = "refresh_materialized_view_stmt";
   }
@@ -1785,7 +1799,10 @@ AstDocument BuildAst(const CstDocument& cst) {
              (raw_keyword == "GRAPH" && raw_second == "DELETE") ||
              (raw_keyword == "DOCUMENT" && (raw_second == "UPDATE" || raw_second == "BULK")) ||
              (raw_keyword == "GPU" && raw_second == "WORKLOAD") ||
-             (raw_keyword == "LOAD" && raw_second == "DATA")) {
+             (raw_keyword == "LOAD" && (raw_second == "DATA" || raw_second == "CSV" || raw_second == "XML")) ||
+             (raw_keyword == "BULK" && raw_second == "IMPORT") ||
+             (raw_keyword == "INGEST" &&
+              (raw_second == "LINE_PROTOCOL" || raw_second == "LINE"))) {
     ast.family = StatementFamily::kUpdate;
     ast.registry_family = "sbsql.dml.operation.v3";
     ast.operation_family = "sblr.dml.operation.v3";
@@ -1887,6 +1904,20 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.statement_behavior_descriptor_key =
         "behavior.language_resource.parser_surface_server_revalidation";
     ast.diagnostic_key = "diagnostic.canonical_message_vector";
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+  } else if (((keyword == "INSPECT" || keyword == "LOAD" ||
+               keyword == "UNLOAD" || keyword == "ENABLE" ||
+               keyword == "DISABLE" || keyword == "INSTALL" ||
+               keyword == "UNINSTALL") &&
+              second == "UDR" && third == "PACKAGE") ||
+             (keyword == "CREATE" && second == "UDR" && third == "PACKAGE") ||
+             (keyword == "ALTER" && second == "UDR" && third == "PACKAGE") ||
+             (keyword == "DROP" && second == "UDR" && third == "PACKAGE") ||
+             (keyword == "REGISTER" && second == "UDR")) {
+    ast.family = StatementFamily::kRuntimeManagement;
+    ast.registry_family = "sbsql.extensibility.operation.v3";
+    ast.operation_family = "sblr.udr.operation.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
   } else if (sbsfc079_general_residual) {
@@ -2117,7 +2148,10 @@ AstDocument BuildAst(const CstDocument& cst) {
              (raw_keyword == "GRAPH" && second == "DELETE") ||
              (raw_keyword == "DOCUMENT" && (second == "UPDATE" || second == "BULK")) ||
              (raw_keyword == "GPU" && second == "WORKLOAD") ||
-             (raw_keyword == "LOAD" && second == "DATA")) {
+             (raw_keyword == "LOAD" && (second == "DATA" || second == "CSV" || second == "XML")) ||
+             (raw_keyword == "BULK" && second == "IMPORT") ||
+             (raw_keyword == "INGEST" &&
+              (second == "LINE_PROTOCOL" || second == "LINE"))) {
     ast.family = StatementFamily::kUpdate;
     ast.registry_family = "sbsql.dml.operation.v3";
     ast.operation_family = "sblr.dml.operation.v3";

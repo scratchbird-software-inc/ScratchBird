@@ -16,6 +16,10 @@ namespace scratchbird::engine::internal_api {
 struct EngineDeleteRowsRequest : EngineApiRequest {
   EngineObjectReference target_table;
   EnginePredicateEnvelope delete_predicate;
+  std::string delete_surface_variant = "delete";
+  std::string batch_on_column;
+  EngineApiU64 batch_limit_rows = 0;
+  std::string series_name;
   bool tombstone_only = true;
 };
 struct EngineDeleteRowsResult : EngineApiResult {

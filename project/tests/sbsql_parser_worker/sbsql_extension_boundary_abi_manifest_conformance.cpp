@@ -7,13 +7,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cluster_provider/cluster_provider.hpp"
+#include "database_lifecycle.hpp"
 #include "extensibility/extension_boundary_manifest.hpp"
 #include "extensibility/parser_package_api.hpp"
 #include "extensibility/udr_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 #include "sb_udr_runtime.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,16 +31,34 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace cluster_provider = scratchbird::engine::cluster_provider;
+namespace platform = scratchbird::core::platform;
 namespace sblr = scratchbird::engine::sblr;
 namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
 namespace udr_runtime = scratchbird::udr::runtime;
+namespace uuid = scratchbird::core::uuid;
 
 constexpr std::string_view kDatabaseUuid = "019f6c00-0000-7000-8000-000000000020";
+
+std::string g_database_uuid = std::string(kDatabaseUuid);
+std::uint64_t g_local_transaction_id = 0;
+api::EngineUuid g_transaction_uuid;
+std::uint64_t g_snapshot_visible_through_local_transaction_id = 0;
+std::string g_transaction_isolation_level;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(EXIT_FAILURE);
+  }
+}
+
+template <typename TResult>
+void RequireOk(const TResult& result, std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Require(false, message);
   }
 }
 
@@ -52,17 +74,78 @@ std::filesystem::path MakeTempDir() {
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
                                   std::uint64_t tx = 77) {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.request_id = "sbsql-extension-boundary-abi-manifest";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
+  context.database_uuid.canonical = g_database_uuid;
   context.principal_uuid.canonical = "019f6c00-0000-7000-8000-000000000201";
   context.session_uuid.canonical = "019f6c00-0000-7000-8000-000000000202";
-  context.transaction_uuid.canonical = "019f6c00-0000-7000-8000-000000000203";
-  context.local_transaction_id = tx;
+  if (tx == 77 && g_local_transaction_id != 0) {
+    context.transaction_uuid = g_transaction_uuid;
+    context.local_transaction_id = g_local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id =
+        g_snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = g_transaction_isolation_level;
+  } else {
+    context.local_transaction_id = tx;
+    if (tx != 0) {
+      context.transaction_uuid.canonical = "019f6c00-0000-7000-8000-000000000203";
+    }
+  }
   context.security_context_present = true;
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 8;
   context.security_epoch = 8;
   context.resource_epoch = 8;
+  context.name_resolution_epoch = 8;
   return context;
+}
+
+std::uint64_t NowMillis() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, millis);
+  return generated.ok() ? generated.value : platform::TypedUuid{};
+}
+
+void CreateBoundaryDatabase(const std::filesystem::path& database_path) {
+  std::filesystem::remove(database_path);
+  std::filesystem::remove(database_path.string() + ".sb.owner.lock");
+  std::filesystem::remove(database_path.string() + ".sb.api_events");
+  std::filesystem::remove(database_path.string() + ".sb.crud_events");
+
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  const auto seed = NowMillis();
+  create.path = database_path.string();
+  create.database_uuid = Generate(platform::UuidKind::database, seed);
+  create.filespace_uuid = Generate(platform::UuidKind::filespace, seed + 1);
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
+          "failed to generate UUIDs for extension boundary database");
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "failed to create extension boundary database");
+  g_database_uuid = uuid::UuidToString(create.database_uuid.value);
+}
+
+void BeginBoundaryTransaction(const std::filesystem::path& database_path) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = Context(database_path, 0);
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  RequireOk(begun, "failed to begin extension boundary MGA transaction");
+  g_local_transaction_id = begun.local_transaction_id;
+  g_transaction_uuid = begun.transaction_uuid;
+  g_snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  g_transaction_isolation_level = begun.isolation_level;
 }
 
 api::EngineLocalizedName LocalizedName(std::string name,
@@ -113,7 +196,10 @@ void SeedActiveTransaction(const std::filesystem::path& database_path,
                            std::uint64_t tx) {
   std::ofstream out(database_path.string() + ".sb.crud_events",
                     std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t" << tx << "\textension_boundary_abi_manifest\n";
+  const std::uint64_t effective_tx =
+      tx == 77 && g_local_transaction_id != 0 ? g_local_transaction_id : tx;
+  out << "SBCRUD1\tTX_BEGIN\t" << effective_tx
+      << "\textension_boundary_abi_manifest\n";
   Require(static_cast<bool>(out),
           "failed to seed MGA transaction evidence for extension boundary test");
 }
@@ -137,7 +223,7 @@ TRequest UdrRequest(const std::filesystem::path& database_path,
                     const udr_runtime::UdrPackageDescriptor& descriptor) {
   TRequest request;
   request.context = Context(database_path);
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid.canonical = g_database_uuid;
   request.target_database.object_kind = "database";
   request.target_object.uuid.canonical = descriptor.package_uuid;
   request.target_object.object_kind = "udr_package";
@@ -210,7 +296,7 @@ void TestManifestRows() {
 void TestParserPackageBoundary(const std::filesystem::path& database_path) {
   api::EngineRegisterParserPackageRequest request;
   request.context = Context(database_path);
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid.canonical = g_database_uuid;
   request.target_database.object_kind = "database";
   request.target_object.uuid.canonical =
       "019f6c00-0000-7000-8000-000000000301";
@@ -387,6 +473,8 @@ int main() {
 
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "extension_boundary_abi.sbdb";
+  CreateBoundaryDatabase(database_path);
+  BeginBoundaryTransaction(database_path);
   SeedActiveTransaction(database_path, 77);
   TestParserPackageBoundary(database_path);
   TestTrustedParserSupportUdrBoundary(database_path);

@@ -104,6 +104,7 @@ std::optional<UdrPackageDescriptor> FindPackageDescriptor(std::string_view packa
 std::optional<UdrPackageRuntimeState> GetPackageState(std::string_view package_uuid);
 UdrStatus LoadPackage(std::string_view package_uuid);
 UdrStatus UnloadPackage(std::string_view package_uuid);
+UdrStatus UnregisterPackage(std::string_view package_uuid);
 UdrStatus AcquireInvocationRef(std::string_view package_uuid, UdrInvocationLease* out_lease);
 UdrCallResult InvokePackage(const UdrCallInput& input);
 UdrCallResult InvokePackageWithReservedWorkspace(

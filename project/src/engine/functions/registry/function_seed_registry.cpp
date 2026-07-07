@@ -460,15 +460,15 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
     // ScratchBird parses only to refuse: OVERLAPS (SQL standard temporal
     // interval predicate requiring full predicate-grammar work) and IDENTITY
     // (T-SQL reference metadata reference outside ScratchBird's identity column
-    // model). Native implementation deferred; refusal route shipped.
+    // model). Release behavior is an explicit policy refusal.
     {"sb.scalar.refusal_overlaps", "019dffbb-f001-7354-8a00-000000001654", "data.scalar", "policy_refusal_overlaps",
      FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal, FunctionPackageState::core},
     {"sb.scalar.refusal_identity", "019dffbb-f001-7355-8a00-000000001655", "data.scalar", "policy_refusal_identity",
      FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal, FunctionPackageState::core},
     // SBSFC-027R-A through SBSFC-027R-E remaining function/operator/variable
     // surfaces with sblr.expression.runtime.v3 family. Each is a reference or
-    // grammar-only artifact that the public engine refuses; native lowering
-    // for these (if any) is deferred.
+    // grammar-only artifact that the public engine refuses. Any later support
+    // requires a new explicit implementation row, not a hidden fallback.
     {"sb.scalar.refusal_array_subquery", "019dffbb-f001-7356-8a00-000000001656", "data.scalar", "policy_refusal_array_subquery",
      FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal, FunctionPackageState::core},
     {"sb.scalar.refusal_customer_table", "019dffbb-f001-7357-8a00-000000001657", "data.scalar", "policy_refusal_customer_table",
@@ -1258,7 +1258,8 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
     // data_scalar_functions_07_dispatch_entrypoints.inc:72 (only fnv64/hash64/
     // checksum64 have non-crypto success path). FunctionImplementationState is
     // implemented_policy_security_or_dependency_runtime_refusal — the refusal
-    // IS the implemented behavior pending crypto provider configuration.
+    // IS the implemented behavior until a configured crypto provider supplies
+    // stronger per-deployment entropy guarantees.
     {"sb.scalar.md5", "019dffbb-f001-701d-8a00-00000000001d", "data.scalar", "md5",
      FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal, FunctionPackageState::core},
     {"sb.scalar.sha1", "019dffbb-f001-701e-8a00-00000000001e", "data.scalar", "sha1",
@@ -1430,9 +1431,8 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
     // data_scalar_functions_06_system_session_catalog.inc: now/current_timestamp
     // at line 22, current_date at line 26, current_time at line 30, current_user
     // at line 14 (rewritten from id== to IdIs() in this slice), date_trunc at
-    // line 66. current_catalog/current_schema/date_part/uuid_v1/v4/v7 canonical
-    // records exist but engine implementations are pending and are deferred to
-    // later sub-streams.
+    // line 66. current_catalog/current_schema/date_part/uuid_v1/v4/v7 are
+    // implemented by the second- and third-pass rows below.
     {"sb.temporal.now", "019de5fc-2400-7654-add6-ca942f8e7000", "data.scalar", "now",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.temporal.current_timestamp", "019de5fc-2400-7e69-bb23-613f117660a1", "data.scalar", "current_timestamp",
@@ -2036,9 +2036,9 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
     // UnaryText helpers) and make_date/make_time/make_timestamp (temporal
     // constructor family — engine impls at data_scalar_functions_06:39/49/59).
     // make_timestamptz and reverse(text) are sibling surfaces; reverse(text)
-    // normalizes to reverse and matches sb.scalar.reverse; make_timestamptz
-    // is a separate timestamp-with-timezone variant whose canonical record
-    // is deferred to a later sub-stream.
+    // normalizes to reverse and matches sb.scalar.reverse. make_timestamptz
+    // remains outside this seeded core row group until it has an explicit
+    // canonical record and execution proof.
     {"sb.scalar.ltrim", "019dffbb-f001-7012-8a00-000000000012", "data.scalar", "ltrim",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.rtrim", "019dffbb-f001-7013-8a00-000000000013", "data.scalar", "rtrim",

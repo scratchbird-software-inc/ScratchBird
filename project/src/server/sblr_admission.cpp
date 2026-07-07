@@ -340,7 +340,10 @@ bool IsPublicExactOperationId(std::string_view operation_id) {
          operation_id == "op.sbsql.surface_replay" ||
          operation_id == "op.show.users" ||
          operation_id == "op.show.version" ||
-         operation_id == "op.show.wait_events";
+         operation_id == "op.show.wait_events" ||
+         operation_id == "versioned.bitemporal.show_periods" ||
+         operation_id == "versioned.bitemporal.show_history" ||
+         operation_id == "dml.for_portion_of_period";
 }
 
 std::optional<std::string> FamilyForClusterOperationId(std::string_view operation_id) {
@@ -377,6 +380,13 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
       operation_id == "op.show.migration" ||
       operation_id == "op.show.migrations") {
     return "sblr.migration.operation.v3";
+  }
+  if (operation_id == "versioned.bitemporal.show_periods" ||
+      operation_id == "versioned.bitemporal.show_history") {
+    return "sblr.management.report.v3";
+  }
+  if (operation_id == "dml.for_portion_of_period") {
+    return "sblr.dml.update.v3";
   }
   if (operation_id == "op.show.audit" ||
       operation_id == "op.show.discovery_rights" ||
@@ -487,6 +497,7 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "dml.update_rows" ||
          operation_id == "dml.delete_rows" ||
          operation_id == "dml.merge_rows" ||
+         operation_id == "dml.for_portion_of_period" ||
          operation_id == "dml.plan_import_rows" ||
          operation_id == "dml.execute_import_rows" ||
          operation_id == "dml.execute_native_bulk_ingest" ||
@@ -503,11 +514,17 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "catalog.lookup_object" ||
          operation_id == "catalog.list_children" ||
          operation_id == "catalog.get_dependencies" ||
+         operation_id == "catalog.type.show" ||
+         operation_id == "catalog.type.show_all" ||
          operation_id == "query.bind_expression" ||
          operation_id == "query.bind_predicate" ||
          operation_id == "query.bind_projection" ||
          operation_id == "query.cast_value" ||
          operation_id == "query.extract_value" ||
+         operation_id == "query.structured_type.constructor" ||
+         operation_id == "query.structured_type.cast" ||
+         operation_id == "query.structured_type.compare" ||
+         operation_id == "query.structured_type.serialize" ||
          operation_id == "query.set_operation" ||
          operation_id == "query.apply_numeric_operation" ||
          operation_id == "query.canonicalize_document_value" ||
@@ -564,8 +581,10 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          StartsWith(operation_id, "filespace.") ||
          operation_id == "extensibility.register_parser_package" ||
          StartsWith(operation_id, "extensibility.register_udr_package") ||
+         StartsWith(operation_id, "extensibility.alter_udr_package") ||
          StartsWith(operation_id, "extensibility.load_udr_package") ||
          StartsWith(operation_id, "extensibility.unload_udr_package") ||
+         StartsWith(operation_id, "extensibility.drop_udr_package") ||
          StartsWith(operation_id, "extensibility.inspect_udr_packages") ||
          StartsWith(operation_id, "extensibility.invoke_udr_package") ||
          operation_id == "routine.procedure_invoke" ||
@@ -1038,7 +1057,9 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id == "catalog.map_uuid_to_name" ||
       operation_id == "catalog.lookup_object" ||
       operation_id == "catalog.list_children" ||
-      operation_id == "catalog.get_dependencies") {
+      operation_id == "catalog.get_dependencies" ||
+      operation_id == "catalog.type.show" ||
+      operation_id == "catalog.type.show_all") {
     return "sblr.catalog.introspect.v3";
   }
   if (operation_id.starts_with("ddl.") ||
@@ -1146,6 +1167,16 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id.starts_with("nosql.kv")) {
     return "sblr.query.kv.v3";
   }
+  if (operation_id == "kv.structured.read" ||
+      operation_id == "kv.structured.scan" ||
+      operation_id == "kv.structured.stream_read") {
+    return "sblr.query.kv.v3";
+  }
+  if (operation_id == "kv.structured.mutate" ||
+      operation_id == "kv.structured.stream_append" ||
+      operation_id == "kv.structured.timeseries") {
+    return "sblr.query.kv.v3";
+  }
   if (operation_id.starts_with("nosql.document")) return "sblr.query.document.v3";
   if (operation_id.starts_with("nosql.graph")) return "sblr.query.graph.v3";
   if (operation_id.starts_with("nosql.search")) return "sblr.query.search.v3";
@@ -1156,6 +1187,32 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   }
   if (operation_id.starts_with("nosql.fulltext")) return "sblr.fulltext.execution.v3";
   if (operation_id.starts_with("nosql.")) return std::nullopt;
+  if (operation_id == "versioned.bitemporal.as_of" ||
+      operation_id == "versioned.bitemporal.as_of_valid_time" ||
+      operation_id == "versioned.bitemporal.period_overlap" ||
+      operation_id == "versioned.bitemporal.for_versions_between" ||
+      operation_id == "versioned.bitemporal.show_periods" ||
+      operation_id == "versioned.bitemporal.show_history" ||
+      operation_id == "versioned.diff" ||
+      operation_id == "versioned.hash_read" ||
+      operation_id == "versioned.status_read") {
+    if (operation_id == "versioned.bitemporal.show_periods" ||
+        operation_id == "versioned.bitemporal.show_history") {
+      return "sblr.management.report.v3";
+    }
+    return "sblr.query.relational.v3";
+  }
+  if (operation_id == "dml.for_portion_of_period") return "sblr.dml.update.v3";
+  if (operation_id == "versioned.branch.create" ||
+      operation_id == "versioned.branch.delete" ||
+      operation_id == "versioned.tag" ||
+      operation_id == "versioned.revert" ||
+      operation_id == "versioned.reset" ||
+      operation_id == "versioned.verifiable_history.prove" ||
+      operation_id == "versioned.verify_proof_descriptor" ||
+      operation_id == "versioned.merge") {
+    return "sblr.catalog.mutation.v3";
+  }
   if (operation_id == "query.plan_operation") return "sblr.optimizer.plan.v3";
   if (operation_id == "query.canonicalize_document_value") {
     return "sblr.query.document.v3";
@@ -1175,8 +1232,10 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   }
   if (operation_id.starts_with("session.")) return "sblr.session.management.v3";
   if (operation_id.starts_with("extensibility.register_udr_package") ||
+      operation_id.starts_with("extensibility.alter_udr_package") ||
       operation_id.starts_with("extensibility.load_udr_package") ||
       operation_id.starts_with("extensibility.unload_udr_package") ||
+      operation_id.starts_with("extensibility.drop_udr_package") ||
       operation_id.starts_with("extensibility.inspect_udr_packages") ||
       operation_id.starts_with("extensibility.invoke_udr_package")) {
     return "sblr.udr.operation.v3";

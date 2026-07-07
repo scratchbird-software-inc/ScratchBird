@@ -36,6 +36,58 @@ SBSQL public route contract snapshot.
 SBLR public execution contract snapshot.
 Parser authority remains under public source inputs and checked-in generated evidence.
 
+SBSQL_MISSING_FUNCTIONALITY_PUBLIC_REGISTRY_SNAPSHOT
+missing_functionality_registry_contract:
+  migration_management:
+    sblr_family: sblr.migration.operation.v3
+    result_shape: rs.migration.operation.v1
+    diagnostics: MIGRATION.POLICY_GATE_DENIED
+  temporal_bitemporal:
+    read_family: sblr.versioned.history.read.v3
+    mutate_family: sblr.versioned.history.mutate.v3
+    opcode_family: versioned-history-execution
+    result_shape: versioned_history_result
+  structured_types:
+    read_family: sblr.kv.structured.read.v3
+    mutate_family: sblr.kv.structured.mutate.v3
+    opcode_family: kv-structured-execution
+    descriptor_shape: create_type_descriptor
+  transaction_lock_compatibility:
+    sblr_family: sblr.transaction.control.v3
+    opcode_family: transaction-control
+    advisory_route: transaction.lock.acquire
+  ddl_catalog_gaps:
+    sblr_family: sblr.catalog.mutation.v3
+    result_shape: ddl_result
+    opcode_family: catalog-ddl
+  dml_upsert_variants:
+    sblr_family: sblr.dml.operation.v3
+    operation: data.upsert
+    legacy_opcode: SBLR_MERGE
+  bulk_import_export:
+    import_family: sblr.bulk.import.v3
+    export_family: sblr.bulk.export.v3
+    import_opcode: SBLR_BULK_IMPORT_STREAM
+    export_opcode: SBLR_BULK_EXPORT_STREAM
+  native_system_variables:
+    sblr_operation: expression.system_variable_read
+    opcode: SBLR_SYSTEM_VARIABLE_READ
+    identity_field: canonical_variable_id
+  reference_variable_translation:
+    reference_family: variable_alias
+    identity_field: canonical_variable_id
+    opcode: SBLR_SYSTEM_VARIABLE_READ
+  last_day_builtin:
+    sblr_family: sblr.expr.temporal_last_day.v3
+    fixtures: SBSFC012-last_day-leap; SBSFC012-last_day-null
+  acceleration_management:
+    llvm_family: sblr.acceleration.llvm.v3
+    gpu_family: sblr.acceleration.gpu.v3
+    result_shape: rs.acceleration.control.v1
+  reference_command_function_backfill:
+    alias_function: sb.scalar.upsert
+    alias_evidence: reference_alias_preserved
+
 PUBLIC-P1-CLOUD-FOUNDATION-CONTRACT
 public_p1_cloud_foundation
 

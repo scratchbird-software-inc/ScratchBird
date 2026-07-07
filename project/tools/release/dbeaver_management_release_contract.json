@@ -1,7 +1,7 @@
 {
   "schema_id": "scratchbird.dbeaver_management.release_contract.v1",
   "component_id": "adaptor:scratchbird-dbeaver-driver",
-  "contract_scope": "DBeaver management static/release preflight contract. This contract does not by itself prove live-server, stock-GUI, manual-QA, or management mutation apply/verify closure.",
+  "contract_scope": "DBeaver management static/release/final gate contract. Static and release modes are preflight checks; final mode requires explicit live-server, stock-GUI, manual-QA, management mutation apply/verify, and workspace cleanup evidence.",
   "expected_build": {
     "adapter_version_prefix": "1.0.1",
     "java_execution_environment": "JavaSE-21",
@@ -18,7 +18,7 @@
       "os": "linux",
       "arch": "x86_64",
       "support_status": "supported_static_contract",
-      "expected_outcome": "static preflight validates version, API drift, install lifecycle fixtures, license/IP, network policy, and optional release artifacts; live server and stock GUI proof remain required before release closure",
+      "expected_outcome": "static preflight validates version, API drift, install lifecycle fixtures, license/IP, network policy, and optional release artifacts; final mode requires live server and stock GUI proof before closure",
       "proof_anchor": "project/tools/release/dbeaver_management_platform_gate.py#check_version_matrix",
       "proof_scope": "static_contract_only_not_live_gui_or_live_server"
     },
@@ -64,7 +64,7 @@
   ],
   "proof_boundaries": {
     "static_gate": "project/tools/release/dbeaver_management_platform_gate.py validates contract inputs and optional release artifacts only.",
-    "does_not_prove": [
+    "static_and_release_modes_do_not_prove": [
       "live ScratchBird server management corpus",
       "stock DBeaver GUI automation",
       "DBeaver source-checkout execution",
@@ -72,6 +72,7 @@
       "management mutation apply/verify",
       "workspace secure-storage cleanup/redaction"
     ],
+    "final_gate": "project/tools/release/dbeaver_management_platform_gate.py --mode final requires final evidence sections for live server corpus, stock GUI screenshots, manual QA signoff, server-authorized apply/verify, and workspace cleanup/redaction.",
     "required_before_final_closure": [
       "project/tests/conformance/drivers/fixtures/dbeaver_management_platform/manifest.json#requires_live_server_before_closure",
       "project/tests/gui/dbeaver_management_manual_qa.md#DBEAVER-MGMT-035-MANUAL-QA-CHECKLIST"

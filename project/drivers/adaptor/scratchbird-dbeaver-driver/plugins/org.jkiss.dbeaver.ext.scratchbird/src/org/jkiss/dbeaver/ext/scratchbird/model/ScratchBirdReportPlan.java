@@ -55,9 +55,6 @@ public record ScratchBirdReportPlan(
         builder.append("-- Aggregation: ").append(report.aggregationGrain()).append('\n');
         builder.append("-- Retention: ").append(report.defaultRetention()).append('\n');
         builder.append("-- Source status: ").append(sourceStatus.kind()).append(" - ").append(sourceStatus.message()).append('\n');
-        if (report.futureGated()) {
-            builder.append("-- Future gated: backing server surface is not available yet.\n");
-        }
         for (String query : sourceQueries) {
             builder.append(query).append('\n');
         }
@@ -76,7 +73,6 @@ public record ScratchBirdReportPlan(
         lines.add("Alert starter: " + report.alertStarter());
         lines.add("Access notes: " + report.accessNotes());
         lines.add("Source status: " + sourceStatus.kind() + " - " + sourceStatus.message());
-        lines.add("Future gated: " + report.futureGated());
         return List.copyOf(lines);
     }
 
@@ -102,10 +98,6 @@ public record ScratchBirdReportPlan(
 
     @NotNull
     private static String alertExpressionFor(@NotNull ScratchBirdReportDefinition report) {
-        if (report.futureGated()) {
-            return "-- Future gated alert for " + report.id() + ": enable when " +
-                String.join(", ", report.sourceSurfaces()) + " is published.";
-        }
         return "-- Alert starter for " + report.id() + ": " + report.alertStarter();
     }
 

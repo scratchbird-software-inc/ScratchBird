@@ -57,6 +57,9 @@ bool SupportedSourceKind(const std::string& value) {
         "reference_dump_replay",
         "reference_bulk_api",
         "live_ingest_stream",
+        "bulk_import_job",
+        "xml_stream",
+        "line_protocol_stream",
     });
 }
 
@@ -71,12 +74,15 @@ bool SupportedFormatFamily(const std::string& value) {
         "reference_dump",
         "reference_bulk",
         "live_ingest",
+        "xml",
+        "line_protocol",
+        "bulk_job",
     });
 }
 
 bool SourceFormatPairAllowed(const std::string& source_kind, const std::string& format_family) {
     if (source_kind == "native_sbsql_import") {
-        return OneOf(format_family, {"csv", "delimited_text", "fixed_width", "jsonl", "document", "binary_typed_rows"});
+        return OneOf(format_family, {"csv", "delimited_text", "fixed_width", "jsonl", "document", "binary_typed_rows", "xml", "line_protocol", "bulk_job"});
     }
     if (source_kind == "csv_stream") {
         return format_family == "csv";
@@ -103,7 +109,16 @@ bool SourceFormatPairAllowed(const std::string& source_kind, const std::string& 
         return format_family == "reference_bulk";
     }
     if (source_kind == "live_ingest_stream") {
-        return format_family == "live_ingest";
+        return OneOf(format_family, {"live_ingest", "line_protocol"});
+    }
+    if (source_kind == "bulk_import_job") {
+        return OneOf(format_family, {"bulk_job", "csv", "jsonl", "binary_typed_rows"});
+    }
+    if (source_kind == "xml_stream") {
+        return format_family == "xml";
+    }
+    if (source_kind == "line_protocol_stream") {
+        return format_family == "line_protocol";
     }
     return false;
 }
@@ -116,6 +131,12 @@ std::string InsertModeForSource(const std::string& source_kind) {
         return "native_bulk";
     }
     if (source_kind == "live_ingest_stream") {
+        return "copy_import";
+    }
+    if (source_kind == "bulk_import_job") {
+        return "native_bulk";
+    }
+    if (source_kind == "line_protocol_stream") {
         return "copy_import";
     }
     return "copy_import";

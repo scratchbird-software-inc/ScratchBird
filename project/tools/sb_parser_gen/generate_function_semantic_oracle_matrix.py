@@ -2496,6 +2496,63 @@ def read_yaml(path: Path) -> dict:
         return yaml.safe_load(handle)
 
 
+def read_yaml_or_empty_public_snapshot(path: Path) -> dict:
+    try:
+        data = read_yaml(path)
+    except yaml.YAMLError:
+        if path.name == "public_contract_snapshot":
+            return {"records": []}
+        raise
+    if data is None and path.name == "public_contract_snapshot":
+        return {"records": []}
+    if not isinstance(data, dict):
+        if path.name == "public_contract_snapshot":
+            return {"records": []}
+        fail(f"required YAML root is not a mapping: {path}")
+    return data
+
+
+def read_public_oracle_snapshot(path: Path) -> dict[str, dict[str, str]]:
+    if not path.is_file():
+        return {}
+    rows = read_csv(path)
+    snapshot: dict[str, dict[str, str]] = {}
+    for row in rows:
+        surface_id = row.get("surface_id", "")
+        if not surface_id:
+            fail(f"public oracle snapshot row without surface_id: {path}")
+        if surface_id in snapshot:
+            fail(f"duplicate public oracle snapshot surface_id: {surface_id}")
+        snapshot[surface_id] = row
+    return snapshot
+
+
+def public_snapshot_classification(
+    surface: dict[str, str],
+    snapshot_row: dict[str, str],
+) -> dict[str, str]:
+    classification = {
+        key: snapshot_row.get(key, "")
+        for key in COLUMNS
+        if key
+        not in {
+            "surface_id",
+            "canonical_name",
+            "surface_kind",
+            "status",
+            "cluster_scope",
+            "sblr_operation_family",
+        }
+    }
+    if not classification.get("normalized_name"):
+        classification["normalized_name"] = normalize_name(surface["canonical_name"])
+    if not classification.get("oracle_authority_status"):
+        classification["oracle_authority_status"] = "public_oracle_snapshot"
+    if not classification.get("notes"):
+        classification["notes"] = "oracle restored from repo-local public function semantic oracle snapshot."
+    return classification
+
+
 def normalize_name(canonical_name: str) -> str:
     name = canonical_name.strip().lower()
     paren = name.find("(")
@@ -2961,10 +3018,12 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     surfaces = read_csv(root / REGISTRY_CSV)
-    expr_data = read_yaml(root / EXPR_REGISTRY)
-    special_data = read_yaml(root / SPECIAL_FORM_REGISTRY)
-    binding_data = read_yaml(root / BINDING_REGISTRY)
-    window_data = read_yaml(root / WINDOW_REGISTRY)
+    output_path = artifact_root / OUTPUT_NAME
+    public_oracle_snapshot = read_public_oracle_snapshot(output_path)
+    expr_data = read_yaml_or_empty_public_snapshot(root / EXPR_REGISTRY)
+    special_data = read_yaml_or_empty_public_snapshot(root / SPECIAL_FORM_REGISTRY)
+    binding_data = read_yaml_or_empty_public_snapshot(root / BINDING_REGISTRY)
+    window_data = read_yaml_or_empty_public_snapshot(root / WINDOW_REGISTRY)
 
     expr_by_surface_id: dict[str, dict] = {}
     expr_by_signature: dict[str, dict] = {}
@@ -3024,20 +3083,24 @@ def main() -> int:
     kind_counts: dict[str, int] = {}
 
     for surface in sorted(expression_runtime_surfaces, key=lambda r: r["surface_id"]):
-        classification = classify(
-            surface,
-            expr_by_surface_id,
-            expr_by_signature,
-            expr_by_name,
-            special_by_id,
-            window_by_surface_id,
-            binding_by_id,
-        )
+        snapshot_row = public_oracle_snapshot.get(surface["surface_id"])
+        if snapshot_row is not None:
+            classification = public_snapshot_classification(surface, snapshot_row)
+        else:
+            classification = classify(
+                surface,
+                expr_by_surface_id,
+                expr_by_signature,
+                expr_by_name,
+                special_by_id,
+                window_by_surface_id,
+                binding_by_id,
+            )
         ledger_row = {
             "surface_id": surface["surface_id"],
             "canonical_name": surface["canonical_name"],
             "surface_kind": surface["surface_kind"],
-            "status": surface["status"],
+            "status": surface.get("source_status") or surface["status"],
             "cluster_scope": surface["cluster_scope"],
             "sblr_operation_family": surface["sblr_operation_family"],
         }
@@ -3048,7 +3111,6 @@ def main() -> int:
         authority_counts[status_key] = authority_counts.get(status_key, 0) + 1
         kind_counts[surface["surface_kind"]] = kind_counts.get(surface["surface_kind"], 0) + 1
 
-    output_path = artifact_root / OUTPUT_NAME
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=COLUMNS, lineterminator="\n")

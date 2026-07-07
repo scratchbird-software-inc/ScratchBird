@@ -440,6 +440,8 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
     const EngineRequestContext& context,
     const std::vector<std::string>& table_uuids);
+std::uint64_t CurrentMgaRelationMetadataEventSequence(
+    const EngineRequestContext& context);
 MgaRelationIndexOnlyProofEligibilityResult
 CanUseMgaRelationIndexOnlyProofForInsertTarget(
     const EngineRequestContext& context,

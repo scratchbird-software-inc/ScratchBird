@@ -313,4 +313,66 @@
         </dialect>
     </extension>
 
+    <extension point="org.jkiss.dbeaver.dashboard">
+        <dashboard
+            id="scratchbird.sessions"
+            label="ScratchBird sessions"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="true"
+            description="Active ScratchBird session count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Sessions" FROM sys.sessions</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.transactions"
+            label="ScratchBird transactions"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="true"
+            description="Active ScratchBird transaction count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Transactions" FROM sys.transactions</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.locks"
+            label="ScratchBird locks"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="false"
+            description="Current ScratchBird lock count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Locks" FROM sys.locks</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.performance"
+            label="ScratchBird query latency"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="false"
+            description="SBsql metrics snapshot">
+            <datasource id="scratchbird"/>
+            <query>SHOW METRICS</query>
+        </dashboard>
+    </extension>
+
 </plugin>

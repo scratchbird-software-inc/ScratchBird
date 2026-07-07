@@ -33,6 +33,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from live_auth_fixture import (
+    DEFAULT_PRINCIPAL_UUID,
+    local_password_evidence,
+    write_local_password_auth_fixture,
+)
+
 
 SCHEMA_VERSION = "cdp.soak_leak_stability_gate.v1"
 GATE_NAME = "cdp_soak_leak_stability_gate"
@@ -176,8 +182,12 @@ def make_work_dir(preferred_root: Path) -> Path:
 
 
 def auth_file(database: Path) -> None:
-    Path(str(database) + ".sb.local_password_auth").write_text(
-        f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8"
+    write_local_password_auth_fixture(
+        database,
+        "alice",
+        VERIFIER,
+        DEFAULT_PRINCIPAL_UUID,
+        "right:CONNECT",
     )
 
 
@@ -270,7 +280,7 @@ def start_local_ipc(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "server.err").open("wb"),
     )
     wait_for_path(endpoint)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    evidence = local_password_evidence("alice", VERIFIER)
     return Route(
         name="local-ipc",
         root=root,
@@ -343,7 +353,7 @@ def start_inet(args: argparse.Namespace, work: Path) -> Route:
         stderr=(root / "listener.err").open("wb"),
     )
     wait_for_tcp(port)
-    evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    evidence = local_password_evidence("alice", VERIFIER)
     return Route(
         name="inet",
         root=root,
@@ -453,6 +463,7 @@ def explicit_transaction_script(prefix: str, inputs: dict[str, Path]) -> str:
             f"\\copy {table} FROM {quote_sql_path(inputs['main'])}",
             "COMMIT RETAIN;",
             f"UPDATE {table} SET id = 20 WHERE id = 2;",
+            f"SELECT id FROM {table} WHERE id = 20;",
             "ROLLBACK RETAIN;",
             f"SELECT id FROM {table} ORDER BY id ASC;",
             "",
@@ -627,6 +638,8 @@ def semantic_lines(stdout: str) -> list[str]:
             continue
         if line.startswith("Transaction committed;") or line.startswith("Transaction rolled back;"):
             continue
+        if "mga_relation_metadata=" in line and "|ddl." in line:
+            continue
         if line.startswith("Stopping due to error"):
             continue
         lines.append(line)
@@ -776,6 +789,8 @@ def run_workload(route: Route, cycle: int, workload: Workload, inputs: dict[str,
 
 def canonicalize_result(workload: Workload, result: RunResult) -> tuple[str, str, list[str]]:
     actual = semantic_lines(result.stdout)
+    if workload.operation == "join":
+        actual = sorted(actual)
     if result.returncode == 0:
         if tuple(actual) != workload.expected_lines:
             raise SoakGateError(

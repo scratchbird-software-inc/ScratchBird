@@ -4821,6 +4821,8 @@ if(TARGET sb_server_core)
         sb_engine_internal_api
         sb_server_core
         sb_udr_runtime
+        sb_storage_database
+        sb_core_uuid
         sbu_firebird_parser_support
         sbu_sbsql_parser_support
     )

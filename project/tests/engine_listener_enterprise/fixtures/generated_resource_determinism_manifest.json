@@ -2,29 +2,29 @@
   "schema_id": "scratchbird.engine_listener.generated_resource_determinism.v1",
   "resources": [
     {
-      "path": "public_contract_snapshot",
-      "resource_kind": "parser_facing_sblr_opcode_registry",
-      "sha256": "69dc653370dbaa44d2d99fbcb32fc5a7de59470b554d9b4251dd5aa63a102091"
+            "path": "public_contract_snapshot",
+            "resource_kind": "parser_facing_sblr_opcode_registry",
+            "sha256": "e581b21e7fa6e7774db047fb517b55473b80c5af8dbb04277e8b6b70e6cb2f79"
     },
     {
-      "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
-      "resource_kind": "engine_sblr_opcode_registry",
-      "sha256": "295f8e60cbdca0cfe71b78f2fc6c916d6a2aa17c1484b30348a1be179b75e304"
+            "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
+            "resource_kind": "engine_sblr_opcode_registry",
+            "sha256": "fe33f3ffc717d68c4276b139957188ead04e87c6c13fa0776d410184852227c9"
     },
     {
-      "path": "project/src/server/sblr_admission.cpp",
-      "resource_kind": "server_sblr_admission_surface",
-      "sha256": "c794cea80098121093654ddff5eaa898d803ba839e84dbb30193cf024f803af0"
+            "path": "project/src/server/sblr_admission.cpp",
+            "resource_kind": "server_sblr_admission_surface",
+            "sha256": "80a817e5c39d9b0ede3a7d97252fdb702dd6fadeb15eec7fe5c01dd63a13d668"
     },
     {
-      "path": "project/src/server/sblr_dispatch_server.cpp",
-      "resource_kind": "server_sblr_dispatch_surface",
-      "sha256": "d20619fa2a3149ee7f2e0fa7147778b2dc6bffec4811291a3655afb56d659f92"
+            "path": "project/src/server/sblr_dispatch_server.cpp",
+            "resource_kind": "server_sblr_dispatch_surface",
+            "sha256": "8dd40f71ac2bf3ec872c035a469bd5844ce26143f86023ef192c021a40e28090"
     },
     {
-      "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
-      "resource_kind": "parser_facing_strict_row_coverage_ledger",
-      "sha256": "37dd4dafa6914194c06a193547392f74c1eb675ed835ae9f06016bcda1fd5ad7"
+            "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
+            "resource_kind": "parser_facing_strict_row_coverage_ledger",
+            "sha256": "e996dcabcec3eba8a44df386f5e4a30b1f8c0597d0d37ed77bf80c8ed8d58dcd"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
@@ -47,9 +47,9 @@
       "sha256": "a4fa0de2898694e5ee275212a460d252d9e3e887aeff6fb70fcb8da19fc731e4"
     },
     {
-      "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
-      "resource_kind": "parser_facing_contract_freeze_manifest",
-      "sha256": "31ce8cfe643aa6ac5b38645a874193f242683c31e908d5bb2794a475964b4bfd"
+            "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
+            "resource_kind": "parser_facing_contract_freeze_manifest",
+            "sha256": "a1af1aa08adca9c2e990be7aa8a96fc651f51b3f1e1560f0889aa29902539bd2"
     },
     {
       "path": "project/tests/engine_listener_enterprise/fixtures/external_review_closure_manifest.json",

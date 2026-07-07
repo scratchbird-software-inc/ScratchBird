@@ -25,6 +25,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from live_auth_fixture import (
+    DEFAULT_PRINCIPAL_UUID,
+    local_password_evidence,
+    write_local_password_auth_fixture,
+)
+
 
 SCHEMA_VERSION = "cdp.config_defaults_rollback_gate.v1"
 EXPECTED_DISABLED = "DML.NATIVE_BULK_INGEST.DISABLED"
@@ -176,13 +182,17 @@ def stop_process(proc: subprocess.Popen[bytes] | None) -> None:
 
 
 def write_auth_file(database: Path) -> None:
-    Path(str(database) + ".sb.local_password_auth").write_text(
-        f"alice\tlocal_password\t{VERIFIER}\n", encoding="utf-8"
+    write_local_password_auth_fixture(
+        database,
+        "alice",
+        VERIFIER,
+        DEFAULT_PRINCIPAL_UUID,
+        "right:CONNECT",
     )
 
 
 def auth_evidence() -> str:
-    return f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
+    return local_password_evidence("alice", VERIFIER)
 
 
 def start_embedded(args: argparse.Namespace, work: Path) -> Route:
@@ -342,6 +352,10 @@ def data_lines(stdout: str) -> list[str]:
         if not line or line.startswith("Rows affected:") or line.startswith("Stopping due to error"):
             continue
         if line.startswith("NATIVE_BULK_INGEST ") or line.startswith("COPY "):
+            continue
+        if line.startswith("Transaction committed;") or line.startswith("Transaction rolled back;"):
+            continue
+        if "mga_relation_metadata=" in line and "|ddl." in line:
             continue
         lines.append(line)
     return lines

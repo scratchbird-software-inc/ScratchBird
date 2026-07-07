@@ -327,6 +327,18 @@ void AddDdlPublicationResult(EngineApiResult* result,
   UpsertRowField(row, "ddl_rollback_recovery_authority", "durable_transaction_inventory");
   UpsertRowField(row, "ddl_parser_sql_authority", "false");
   UpsertRowField(row, "ddl_mga_finality_authority", "durable_transaction_inventory");
+  UpsertRowField(row, "ddl_lifecycle_transition_registry",
+                 effective_operation + ":" + effective_kind + ":" + object_uuid);
+  UpsertRowField(row, "ddl_mga_root_mutation_registry",
+                 "local_transaction_id:" + std::to_string(result->local_transaction_id));
+  UpsertRowField(row, "ddl_implementation_flavour_registry",
+                 "engine_internal_api.sblr_uuid_bound");
+  UpsertRowField(row, "ddl_catalog_mutation_audit",
+                 "catalog.ddl.mutation:" + publish_packet_id);
+  UpsertRowField(row, "ddl_filespace_diagnostic",
+                 effective_kind == "filespace"
+                     ? "filespace_catalog_mutation_recorded:" + object_uuid
+                     : "not_filespace_scoped");
 
   AddApiBehaviorEvidence(result, "ddl_publish_packet", publish_packet_id);
   AddApiBehaviorEvidence(result, "ddl_publish_packet_order", kPublishOrder);
@@ -347,6 +359,18 @@ void AddDdlPublicationResult(EngineApiResult* result,
   AddApiBehaviorEvidence(result, "ddl_dependency_invalidation_scope", effective_invalidation_scope);
   AddApiBehaviorEvidence(result, "ddl_parser_sql_authority", "false");
   AddApiBehaviorEvidence(result, "ddl_mga_finality_authority", "durable_transaction_inventory");
+  AddApiBehaviorEvidence(result, "ddl_lifecycle_transition_registry",
+                         effective_operation + ":" + effective_kind + ":" + object_uuid);
+  AddApiBehaviorEvidence(result, "ddl_mga_root_mutation_registry",
+                         "local_transaction_id:" + std::to_string(result->local_transaction_id));
+  AddApiBehaviorEvidence(result, "ddl_implementation_flavour_registry",
+                         "engine_internal_api.sblr_uuid_bound");
+  AddApiBehaviorEvidence(result, "ddl_catalog_mutation_audit",
+                         "catalog.ddl.mutation:" + publish_packet_id);
+  AddApiBehaviorEvidence(result, "ddl_filespace_diagnostic",
+                         effective_kind == "filespace"
+                             ? "filespace_catalog_mutation_recorded:" + object_uuid
+                             : "not_filespace_scoped");
 }
 
 std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,

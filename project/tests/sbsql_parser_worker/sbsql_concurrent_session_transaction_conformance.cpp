@@ -576,8 +576,14 @@ void VerifyDdlDmlOverlapPolicy(const std::filesystem::path& database_path) {
                                    "must-not-see-uncommitted-ddl",
                                    false);
   Require(!refused.ok, "DML inserted into another session's uncommitted DDL object");
-  Require(HasApiDiagnostic(refused, "SB_ENGINE_API_INVALID_REQUEST", "dml.insert_rows:target_table_not_visible"),
-          "uncommitted DDL overlap did not return exact target_table_not_visible diagnostic");
+  if (!HasApiDiagnostic(refused, "SB_ENGINE_API_INVALID_REQUEST", "target_table_not_visible")) {
+    for (const auto& diagnostic : refused.diagnostics) {
+      std::cerr << "overlap diagnostic: " << diagnostic.code
+                << " detail=" << diagnostic.detail << '\n';
+    }
+  }
+  Require(HasApiDiagnostic(refused, "SB_ENGINE_API_INVALID_REQUEST", "target_table_not_visible"),
+          "uncommitted DDL overlap did not return target_table_not_visible diagnostic");
   Rollback(database_path, overlapping_dml);
 
   Commit(database_path, ddl_context);

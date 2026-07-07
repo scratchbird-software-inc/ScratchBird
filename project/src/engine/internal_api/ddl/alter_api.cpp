@@ -306,6 +306,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       updated.localized_names = request.localized_names;
       updated.default_name = SchemaTreeDefaultName(updated.localized_names, updated.default_name);
     }
+    std::vector<std::string> schema_extension_payload;
     for (const auto& option : request.option_envelopes) {
       if (StartsWith(option, "comment:")) {
         updated.localized_comments.push_back({"und", option.substr(8)});
@@ -319,6 +320,22 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               MakeInvalidRequestDiagnostic("ddl.alter_object", "localized_comment_requires_language_and_text"));
         }
         updated.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
+      } else if (StartsWith(option, "schema_union_member:")) {
+        schema_extension_payload.push_back("schema_union_member=" + option.substr(20));
+      } else if (StartsWith(option, "schema_union_policy:")) {
+        schema_extension_payload.push_back("schema_union_policy=" + option.substr(20));
+      } else if (StartsWith(option, "schema_union_root:")) {
+        schema_extension_payload.push_back("schema_union_root=" + option.substr(18));
+      } else if (StartsWith(option, "lifecycle_transition:")) {
+        schema_extension_payload.push_back("lifecycle_transition=" + option.substr(21));
+      } else if (StartsWith(option, "mga_root_mutation_registry:")) {
+        schema_extension_payload.push_back("mga_root_mutation_registry=" + option.substr(27));
+      } else if (StartsWith(option, "implementation_flavour:")) {
+        schema_extension_payload.push_back("implementation_flavour=" + option.substr(22));
+      } else if (StartsWith(option, "filespace_diagnostic:")) {
+        schema_extension_payload.push_back("filespace_diagnostic=" + option.substr(21));
+      } else if (StartsWith(option, "catalog_ddl_mutation_audit:")) {
+        schema_extension_payload.push_back("catalog_ddl_mutation_audit=" + option.substr(27));
       } else {
         return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
             request.context,
@@ -337,6 +354,10 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           MakeInvalidRequestDiagnostic("ddl.alter_object", "schema_path_ambiguous:" + *conflict));
     }
     updated.payload = SchemaTreePayload(updated.parent_schema_uuid, updated.localized_names, updated.localized_comments);
+    for (const auto& extension : schema_extension_payload) {
+      if (!updated.payload.empty()) { updated.payload.push_back(';'); }
+      updated.payload.append(extension);
+    }
     const auto appended = PersistSchemaTreeRecord(request.context, updated, "ddl.alter_schema");
     if (appended.error) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", appended);
@@ -364,6 +385,11 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
     AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.alter_schema");
     AddApiBehaviorEvidence(&result, "schema_identity_preserved", updated.schema_uuid);
+    for (const auto& extension : schema_extension_payload) {
+      const auto pos = extension.find('=');
+      if (pos == std::string::npos) { continue; }
+      AddApiBehaviorEvidence(&result, extension.substr(0, pos), extension.substr(pos + 1));
+    }
     AddApiBehaviorRow(&result, {{"object_uuid", updated.schema_uuid},
                                 {"object_kind", "schema"},
                                 {"name", updated.default_name},

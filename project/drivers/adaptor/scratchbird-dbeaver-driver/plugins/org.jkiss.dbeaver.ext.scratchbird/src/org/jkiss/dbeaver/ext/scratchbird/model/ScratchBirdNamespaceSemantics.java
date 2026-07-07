@@ -74,8 +74,7 @@ public final class ScratchBirdNamespaceSemantics {
         "listener-and-parser",
         "cluster-and-replication",
         "admin-and-management",
-        "alerts",
-        "future-gated"
+        "alerts"
     );
 
     private static final Map<String, Integer> METRICS_DISPLAY_RANK = IntStream.range(0, METRICS_DISPLAY_ORDER.size())

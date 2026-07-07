@@ -204,10 +204,15 @@ def main() -> int:
                 errors.append(f"{sid} manifest field {field} is blank")
 
         for field in REGISTRY_FIELDS:
-            if row.get(field, "") != reg.get(field, ""):
-                errors.append(f"{sid} manifest {field} drift: registry={reg.get(field, '')} manifest={row.get(field, '')}")
-            if led and led.get(field, "") != reg.get(field, ""):
-                errors.append(f"{sid} ledger {field} drift: registry={reg.get(field, '')} ledger={led.get(field, '')}")
+            registry_value = (
+                reg.get("source_status", "")
+                if field == "status"
+                else reg.get(field, "")
+            )
+            if row.get(field, "") != registry_value:
+                errors.append(f"{sid} manifest {field} drift: registry={registry_value} manifest={row.get(field, '')}")
+            if led and led.get(field, "") != registry_value:
+                errors.append(f"{sid} ledger {field} drift: registry={registry_value} ledger={led.get(field, '')}")
 
         cluster_scope = row.get("cluster_scope", "")
         allowed_states = allowed_final_states(status, cluster_scope)

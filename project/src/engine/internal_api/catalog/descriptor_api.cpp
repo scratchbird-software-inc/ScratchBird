@@ -179,6 +179,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
         MakeInvalidRequestDiagnostic("catalog.get_descriptor", "descriptor_uuid_required"));
   }
   const auto observer_tx = request.context.local_transaction_id;
+  std::optional<EngineGetDescriptorResult> catalog_object_fallback;
   const auto catalog_objects = LoadCatalogObjectLifecycleState(request.context);
   if (catalog_objects.ok) {
     for (const auto& object : catalog_objects.state.objects) {
@@ -198,8 +199,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.evidence.push_back({"catalog_object_descriptor_lookup", object.object_uuid});
       if (object.object_kind == "synonym") {
         result.evidence.push_back({"catalog_table", "sys.catalog.synonym"});
+        return result;
       }
-      return result;
+      catalog_object_fallback = std::move(result);
+      break;
     }
   }
   if (const auto domain = FindVisibleDomain(request.context, descriptor_uuid, observer_tx)) {
@@ -260,6 +263,9 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
     result.result_shape.columns.push_back(result.descriptor);
     result.evidence.push_back({"api_behavior_descriptor_lookup", record->object_uuid});
     return result;
+  }
+  if (catalog_object_fallback.has_value()) {
+    return std::move(*catalog_object_fallback);
   }
   return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(
       request.context,

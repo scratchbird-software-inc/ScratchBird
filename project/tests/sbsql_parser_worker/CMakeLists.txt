@@ -420,6 +420,47 @@ set_tests_properties(sbsql_missing_functionality_registry_allocation_gate PROPER
 )
 
 add_test(
+  NAME sbsql_reference_route_backfill_conformance_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_reference_route_backfill_conformance_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_reference_route_backfill_conformance_gate PROPERTIES
+  LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-014;sbsql_reference_route_backfill;sbsql_parser_worker"
+)
+
+add_test(
+  NAME sbsql_message_result_shape_diagnostic_closure_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_message_result_shape_diagnostic_closure_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_message_result_shape_diagnostic_closure_gate PROPERTIES
+  LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-015;sbsql_message_result_shape_diagnostic_closure;sbsql_parser_worker"
+)
+
+add_test(
+  NAME sbsql_integrated_crash_recovery_certification_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_integrated_crash_recovery_certification_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_integrated_crash_recovery_certification_gate PROPERTIES
+  LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-016;sbsql_integrated_crash_recovery_certification;sbsql_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_long_soak_security_packaging_support_audit_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_long_soak_security_packaging_support_audit_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_long_soak_security_packaging_support_audit_gate PROPERTIES
+  LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-017;sbsql_long_soak_security_packaging_support_audit;sbsql_parser_worker;release_gate;mga_transaction_regression"
+  DEPENDS "sbsql_sml_067_081_release_certification_gate;cdp_config_defaults_rollback_gate;cdp_soak_leak_stability_gate;engine_listener_support_bundle_redaction_gate"
+)
+
+add_test(
   NAME dpc_workload_corpus_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/dpc_workload_corpus_closure_gate.py"
@@ -1661,6 +1702,241 @@ set_tests_properties(sbp_sbsql_cst_ast_conformance_probe PROPERTIES
   LABELS "sbsql_cst_ast_conformance;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(NOT TARGET sb_parser_ast_model)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/ast"
+    "${CMAKE_CURRENT_BINARY_DIR}/shared_ast_for_sbsql_missing_functionality_tests"
+  )
+endif()
+if(NOT TARGET sb_parser_bound_ast_model)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/bound_ast"
+    "${CMAKE_CURRENT_BINARY_DIR}/shared_bound_ast_for_sbsql_missing_functionality_tests"
+  )
+endif()
+if(NOT TARGET sb_sbsql_v3_ast_catalog)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/sbsql_v3_ast"
+    "${CMAKE_CURRENT_BINARY_DIR}/sbsql_v3_ast_for_sbsql_missing_functionality_tests"
+  )
+endif()
+if(NOT TARGET sb_sbsql_v3_binding_catalog)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/sbsql_v3_binding"
+    "${CMAKE_CURRENT_BINARY_DIR}/sbsql_v3_binding_for_sbsql_missing_functionality_tests"
+  )
+endif()
+if(NOT TARGET sb_sbsql_v3_sblr_catalog)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/sbsql_v3_sblr"
+    "${CMAKE_CURRENT_BINARY_DIR}/sbsql_v3_sblr_for_sbsql_missing_functionality_tests"
+  )
+endif()
+if(NOT TARGET sb_parser_sblr_lowering AND TARGET sb_engine_internal_api)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/lowering"
+    "${CMAKE_CURRENT_BINARY_DIR}/shared_lowering_for_sbsql_missing_functionality_tests"
+  )
+endif()
+add_executable(
+  sbsql_missing_functionality_ast_boundast_contract_conformance
+  sbsql_missing_functionality_ast_boundast_contract_conformance.cpp
+)
+target_compile_features(
+  sbsql_missing_functionality_ast_boundast_contract_conformance
+  PRIVATE
+    cxx_std_23
+)
+target_link_libraries(
+  sbsql_missing_functionality_ast_boundast_contract_conformance
+  PRIVATE
+    sb_parser_ast_model
+    sb_parser_bound_ast_model
+    sb_sbsql_v3_ast_catalog
+    sb_sbsql_v3_binding_catalog
+)
+add_test(
+  NAME sbsql_missing_functionality_ast_boundast_contract_conformance
+  COMMAND sbsql_missing_functionality_ast_boundast_contract_conformance
+)
+set_tests_properties(sbsql_missing_functionality_ast_boundast_contract_conformance PROPERTIES
+  LABELS "SBSQL-MISS-GATE-002;sbsql_ast_boundast_contract;sbsql_parser_worker"
+)
+
+if(TARGET sb_parser_sblr_lowering AND TARGET sb_engine_sblr AND TARGET sb_server_core)
+  add_executable(
+    sbsql_missing_functionality_sblr_lowering_dispatch_conformance
+    sbsql_missing_functionality_sblr_lowering_dispatch_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_sblr_lowering_dispatch_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_sblr_lowering_dispatch_conformance
+    PRIVATE
+      sb_parser_ast_model
+      sb_parser_bound_ast_model
+      sb_parser_sblr_lowering
+      sb_sbsql_v3_binding_catalog
+      sb_sbsql_v3_sblr_catalog
+      sb_engine_sblr
+      sb_server_core
+  )
+  add_test(
+    NAME sbsql_missing_functionality_sblr_lowering_dispatch_conformance
+    COMMAND sbsql_missing_functionality_sblr_lowering_dispatch_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_sblr_lowering_dispatch_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-003;sbsql_sblr_lowering_dispatch;sbsql_parser_worker"
+  )
+endif()
+
+if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND TARGET sb_server_core AND TARGET sb_transaction_mga AND TARGET sb_storage_database)
+  add_executable(
+    sbsql_missing_functionality_temporal_bitemporal_conformance
+    sbsql_missing_functionality_temporal_bitemporal_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_temporal_bitemporal_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_temporal_bitemporal_conformance
+    PRIVATE
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_transaction_mga
+  )
+  add_test(
+    NAME sbsql_missing_functionality_temporal_bitemporal_conformance
+    COMMAND sbsql_missing_functionality_temporal_bitemporal_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_temporal_bitemporal_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-005;sbsql_temporal_bitemporal;sbsql_parser_worker;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_missing_functionality_structured_type_conformance
+    sbsql_missing_functionality_structured_type_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_structured_type_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_structured_type_conformance
+    PRIVATE
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_transaction_mga
+  )
+  add_test(
+    NAME sbsql_missing_functionality_structured_type_conformance
+    COMMAND sbsql_missing_functionality_structured_type_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_structured_type_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-006;sbsql_structured_type;sbsql_parser_worker;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_missing_functionality_ddl_catalog_gap_conformance
+    ddl_catalog/sbsql_missing_functionality_ddl_catalog_gap_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_ddl_catalog_gap_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_ddl_catalog_gap_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_transaction_mga
+  )
+  add_test(
+    NAME sbsql_missing_functionality_ddl_catalog_gap_conformance
+    COMMAND sbsql_missing_functionality_ddl_catalog_gap_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_ddl_catalog_gap_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-007;sbsql_ddl_catalog_gap;sbsql_parser_worker;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_missing_functionality_dml_upsert_variants_conformance
+    dml/sbsql_missing_functionality_dml_upsert_variants_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_dml_upsert_variants_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_dml_upsert_variants_conformance
+    PRIVATE
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_transaction_mga
+  )
+  target_compile_definitions(
+    sbsql_missing_functionality_dml_upsert_variants_conformance
+    PRIVATE
+      SB_MISS008_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  add_test(
+    NAME sbsql_missing_functionality_dml_upsert_variants_conformance
+    COMMAND sbsql_missing_functionality_dml_upsert_variants_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_dml_upsert_variants_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-008;sbsql_dml_upsert_variants;sbsql_parser_worker;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_missing_functionality_bulk_import_export_conformance
+    bulk/sbsql_missing_functionality_bulk_import_export_conformance.cpp
+  )
+  target_compile_features(
+    sbsql_missing_functionality_bulk_import_export_conformance
+    PRIVATE
+      cxx_std_23
+  )
+  target_link_libraries(
+    sbsql_missing_functionality_bulk_import_export_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_transaction_mga
+  )
+  target_compile_definitions(
+    sbsql_missing_functionality_bulk_import_export_conformance
+    PRIVATE
+      SB_MISS009_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  add_test(
+    NAME sbsql_missing_functionality_bulk_import_export_conformance
+    COMMAND sbsql_missing_functionality_bulk_import_export_conformance
+  )
+  set_tests_properties(sbsql_missing_functionality_bulk_import_export_conformance PROPERTIES
+    LABELS "SBSQL-MISS-GATE-009;sbsql_bulk_import_export;sbsql_parser_worker;mga_transaction_regression"
+  )
+endif()
+
 add_executable(
   sbp_sbsql_expression_builtin_conformance_probe
   generated/expression/sbsql_expression_builtin_conformance_probe.cpp
@@ -1857,6 +2133,8 @@ if(TARGET sb_engine_sblr)
       sb_engine_sblr
       sbu_sbsql_parser_support
       sb_udr_runtime
+      sb_storage_database
+      sb_core_uuid
     )
     add_test(
       NAME sbsql_extension_boundary_abi_manifest_conformance
@@ -3781,6 +4059,8 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sb_server_core
       sb_engine_sblr
       sb_udr_runtime
+      sb_storage_database
+      sb_core_uuid
   )
   add_test(
     NAME sbsql_udr_package_management_exact_route_conformance
@@ -5148,3 +5428,54 @@ if(TARGET sbu_sbsql_parser_support)
     LABELS "sbu_sbsql_parser_support_conformance;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker"
   )
 endif()
+
+if(TARGET sb_udr_builtin_packages AND TARGET sb_udr_runtime)
+  add_executable(
+    udr_builtin_package_catalog_conformance
+    udr_builtin_package_catalog_conformance.cpp
+  )
+  target_compile_features(udr_builtin_package_catalog_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    udr_builtin_package_catalog_conformance
+    PRIVATE
+      sb_udr_builtin_packages
+      sb_udr_runtime
+  )
+  add_test(
+    NAME udr_builtin_package_catalog_conformance
+    COMMAND udr_builtin_package_catalog_conformance
+  )
+  set_tests_properties(udr_builtin_package_catalog_conformance PROPERTIES
+    LABELS "udr_builtin_package_catalog_conformance;udr_implementation_coverage;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker;release_gate"
+  )
+endif()
+
+if(TARGET sb_engine_functions)
+  add_executable(
+    udr_function_classification_dispatch_gate
+    udr_function_classification_dispatch_gate.cpp
+  )
+  target_compile_features(udr_function_classification_dispatch_gate PRIVATE cxx_std_20)
+  target_link_libraries(
+    udr_function_classification_dispatch_gate
+    PRIVATE
+      sb_engine_functions
+  )
+  add_test(
+    NAME udr_function_classification_dispatch_gate
+    COMMAND udr_function_classification_dispatch_gate
+  )
+  set_tests_properties(udr_function_classification_dispatch_gate PROPERTIES
+    LABELS "udr_function_classification_dispatch;udr_implementation_coverage;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker;release_gate"
+  )
+endif()
+
+add_test(
+  NAME udr_implementation_coverage_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/udr_implementation_coverage_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(udr_implementation_coverage_gate PROPERTIES
+  LABELS "udr_implementation_coverage;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker;release_gate"
+)

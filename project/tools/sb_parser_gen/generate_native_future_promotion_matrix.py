@@ -171,7 +171,10 @@ def main() -> int:
         artifact_root = root / artifact_root
 
     surfaces = read_csv(root / REGISTRY)
-    native_future = [r for r in surfaces if r["status"] == "native_future"]
+    native_future = [
+        r for r in surfaces
+        if (r.get("source_status") or r.get("status", "")) == "native_future"
+    ]
 
     if not native_future:
         output_path = artifact_root / OUTPUT_NAME
@@ -191,7 +194,7 @@ def main() -> int:
         output_rows.append({
             "surface_id": surface["surface_id"],
             "canonical_name": surface["canonical_name"],
-            "current_status": surface["status"],
+            "current_status": surface.get("source_status") or surface["status"],
             "surface_kind": surface["surface_kind"],
             "family": surface["family"],
             "sblr_operation_family": surface["sblr_operation_family"],

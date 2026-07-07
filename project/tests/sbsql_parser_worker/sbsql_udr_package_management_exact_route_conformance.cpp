@@ -9,6 +9,7 @@
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
+#include "database_lifecycle.hpp"
 #include "extensibility/udr_api.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -16,9 +17,12 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sb_udr_runtime.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -32,6 +36,8 @@ namespace {
 
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 namespace sblr = scratchbird::engine::sblr;
 namespace udr_runtime = scratchbird::udr::runtime;
 
@@ -40,6 +46,12 @@ constexpr std::string_view kPackageName = "sbup_demo";
 constexpr std::string_view kDatabasePath =
     "/tmp/sbsql_udr_package_management_exact_route_conformance.sbdb";
 
+std::string g_database_uuid = "019f0000-0000-7000-8000-000000003801";
+std::uint64_t g_local_transaction_id = 0;
+scratchbird::engine::internal_api::EngineUuid g_transaction_uuid;
+std::uint64_t g_snapshot_visible_through_local_transaction_id = 0;
+std::string g_transaction_isolation_level;
+
 struct UdrRowEvidence {
   std::string_view surface_id;
   std::string_view canonical_name;
@@ -47,6 +59,14 @@ struct UdrRowEvidence {
   std::string_view expected_field;
   std::string_view expected_value;
   bool contains{false};
+};
+
+struct UdrLifecycleRouteCase {
+  std::string_view sql;
+  std::string_view operation_id;
+  std::string_view opcode;
+  std::string_view surface_variant;
+  bool mutation;
 };
 
 constexpr std::array<UdrRowEvidence, 6> kUdrRows{{
@@ -85,6 +105,44 @@ constexpr std::array<UdrRowEvidence, 6> kUdrRows{{
      "SBSQL-SURFACE-AA7130CCC0F5",
      "entrypoints",
      "sb_udr_demo_entry",
+    true},
+}};
+
+constexpr std::array<UdrLifecycleRouteCase, 7> kLifecycleRoutes{{
+    {"INSPECT UDR PACKAGE sbup_demo",
+     "extensibility.inspect_udr_packages",
+     "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES",
+     "inspect_udr_package",
+     false},
+    {"CREATE UDR PACKAGE sbup_demo LANGUAGE C++ ABI VERSION 'sb_udr_v1' BINARY 'sha256:sbup-demo' WITH ENTRY POINTS (sb_udr_demo_entry)",
+     "extensibility.register_udr_package",
+     "SBLR_EXTENSIBILITY_REGISTER_UDR_PACKAGE",
+     "create_udr_package",
+     true},
+    {"ALTER UDR PACKAGE sbup_demo SET SIGNATURE 'trusted-test-signature'",
+     "extensibility.alter_udr_package",
+     "SBLR_EXTENSIBILITY_ALTER_UDR_PACKAGE",
+     "alter_udr_package",
+     true},
+    {"LOAD UDR PACKAGE sbup_demo",
+     "extensibility.load_udr_package",
+     "SBLR_EXTENSIBILITY_LOAD_UDR_PACKAGE",
+     "load_udr_package",
+     true},
+    {"UNLOAD UDR PACKAGE sbup_demo",
+     "extensibility.unload_udr_package",
+     "SBLR_EXTENSIBILITY_UNLOAD_UDR_PACKAGE",
+     "unload_udr_package",
+     true},
+    {"DROP UDR PACKAGE sbup_demo",
+     "extensibility.drop_udr_package",
+     "SBLR_EXTENSIBILITY_DROP_UDR_PACKAGE",
+     "drop_udr_package",
+     true},
+    {"UNINSTALL UDR PACKAGE sbup_demo",
+     "extensibility.drop_udr_package",
+     "SBLR_EXTENSIBILITY_DROP_UDR_PACKAGE",
+     "uninstall_udr_package",
      true},
 }};
 
@@ -101,10 +159,31 @@ std::string EvidenceMessage(const UdrRowEvidence& row,
   return rendered;
 }
 
+std::string RouteMessage(const UdrLifecycleRouteCase& route,
+                         std::string_view phase,
+                         std::string_view message) {
+  std::string rendered(route.surface_variant);
+  rendered += ' ';
+  rendered += phase;
+  rendered += ": ";
+  rendered += message;
+  return rendered;
+}
+
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(EXIT_FAILURE);
+  }
+}
+
+template <typename TResult>
+void RequireOk(const TResult& result, std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Require(false, message);
   }
 }
 
@@ -281,22 +360,172 @@ void RequireExactLowering(const UdrRowEvidence& row) {
           EvidenceMessage(row, "server_admission", "server admission family mismatch"));
 }
 
+void RequireLifecycleLowering(const UdrLifecycleRouteCase& route) {
+  const auto artifacts = RunPipeline(route.sql);
+  if (!artifacts.bound.bound) {
+    std::cerr << "route_sql=" << route.sql << '\n'
+              << "ast_surface=" << artifacts.ast.statement_surface_name << '\n'
+              << "ast_category=" << artifacts.ast.statement_parser_category << '\n'
+              << "ast_requires_name_resolution="
+              << (artifacts.ast.requires_name_resolution ? "true" : "false") << '\n'
+              << "bound_surface=" << artifacts.bound.statement_surface_name << '\n'
+              << "bound_category=" << artifacts.bound.statement_parser_category << '\n'
+              << "bound_requires_name_resolution="
+              << (artifacts.bound.requires_name_resolution ? "true" : "false") << '\n';
+    for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.severity << ':'
+                << diagnostic.message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << "  " << field.name << '=' << field.value << '\n';
+      }
+    }
+  }
+  Require(artifacts.bound.bound,
+          RouteMessage(route, "parser_bind_lower", "UDR lifecycle route did not bind"));
+  if (!artifacts.verifier.admitted) {
+    std::cerr << "route_sql=" << route.sql << '\n'
+              << "operation_id=" << artifacts.envelope.operation_id << '\n'
+              << "operation_family=" << artifacts.envelope.operation_family << '\n'
+              << "sblr_operation_key=" << artifacts.envelope.sblr_operation_key << '\n'
+              << "opcode=" << artifacts.envelope.sblr_opcode << '\n'
+              << "payload=" << artifacts.envelope.payload << '\n';
+    for (const auto& diagnostic : artifacts.verifier.messages.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.severity << ':'
+                << diagnostic.message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << "  " << field.name << '=' << field.value << '\n';
+      }
+    }
+  }
+  Require(artifacts.verifier.admitted,
+          RouteMessage(route, "parser_bind_lower", "UDR lifecycle verifier rejected route"));
+  Require(artifacts.envelope.operation_family == "sblr.udr.operation.v3",
+          RouteMessage(route, "parser_bind_lower", "operation family mismatch"));
+  Require(artifacts.envelope.operation_id == route.operation_id,
+          RouteMessage(route, "parser_bind_lower", "operation id mismatch"));
+  Require(artifacts.envelope.engine_api_operation_id == route.operation_id,
+          RouteMessage(route, "parser_bind_lower", "engine API operation id mismatch"));
+  Require(artifacts.envelope.sblr_opcode == route.opcode,
+          RouteMessage(route, "parser_bind_lower", "opcode mismatch"));
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   route.mutation ? "authority.engine.udr_manage_api_required"
+                                  : "authority.engine.udr_inspect_api_required"),
+          RouteMessage(route, "parser_bind_lower", "UDR authority step missing"));
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_udr_execution"),
+          RouteMessage(route, "parser_bind_lower", "parser no-UDR-execution step missing"));
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_sql_text_execution"),
+          RouteMessage(route, "parser_bind_lower", "parser no-SQL-execution step missing"));
+  Require(HasValue(artifacts.envelope.required_rights,
+                   route.mutation ? "right.udr_manage" : "right.udr_inspect"),
+          RouteMessage(route, "parser_bind_lower", "required right mismatch"));
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_package_registry"),
+          RouteMessage(route, "parser_bind_lower", "UDR package registry descriptor missing"));
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.udr_runtime_descriptor"),
+          RouteMessage(route, "parser_bind_lower", "UDR runtime descriptor missing"));
+  Require(!artifacts.envelope.parser_executes_sql,
+          RouteMessage(route, "no_sql_engine_execution",
+                       "UDR lifecycle lowering allowed parser SQL execution"));
+  Require(!artifacts.envelope.real_file_effects,
+          RouteMessage(route, "no_file_effects",
+                       "UDR lifecycle lowering allowed parser file effects"));
+  Require(!Contains(artifacts.envelope.payload, route.sql),
+          RouteMessage(route, "no_sql_text_authority",
+                       "UDR lifecycle envelope embedded source SQL"));
+  Require(Contains(artifacts.envelope.payload,
+                   route.mutation ? "\"udr_envelope_kind\":\"udr_package_lifecycle\""
+                                  : "\"udr_envelope_kind\":\"udr_package_inspect\""),
+          RouteMessage(route, "parser_bind_lower", "UDR envelope kind missing"));
+  Require(Contains(artifacts.envelope.payload, route.surface_variant),
+          RouteMessage(route, "parser_bind_lower", "surface variant missing from payload"));
+  Require(Contains(artifacts.envelope.payload, "\"udr_package_name\":\"sbup_demo\""),
+          RouteMessage(route, "parser_bind_lower", "UDR package name missing from payload"));
+
+  const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
+  Require(admission.admitted,
+          RouteMessage(route, "server_admission", "server admission rejected UDR lifecycle route"));
+  Require(admission.requires_public_abi_dispatch,
+          RouteMessage(route, "server_admission",
+                       "server admission did not require engine public ABI dispatch"));
+  Require(admission.operation_id == route.operation_id,
+          RouteMessage(route, "server_admission", "server admission operation id mismatch"));
+  Require(admission.operation_family == "sblr.udr.operation.v3",
+          RouteMessage(route, "server_admission", "server admission family mismatch"));
+}
+
 api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsql-udr-package-management-exact-route";
   context.security_context_present = true;
   context.trace_tags.push_back("right:UDR_MANAGE");
   context.trace_tags.push_back("right:UDR_INSPECT");
   context.database_path = std::string(kDatabasePath);
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000003801";
+  context.database_uuid.canonical = g_database_uuid;
   context.session_uuid.canonical = "019f0000-0000-7000-8000-000000003802";
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000003803";
-  context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000003804";
-  context.local_transaction_id = 77;
+  if (g_local_transaction_id != 0) {
+    context.transaction_uuid = g_transaction_uuid;
+    context.local_transaction_id = g_local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id =
+        g_snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = g_transaction_isolation_level;
+  }
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 43;
   context.security_epoch = 47;
   context.resource_epoch = 53;
+  context.name_resolution_epoch = 59;
   return context;
+}
+
+std::uint64_t NowMillis() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, millis);
+  return generated.ok() ? generated.value : platform::TypedUuid{};
+}
+
+void CreateRouteDatabase() {
+  std::remove(std::string(kDatabasePath).c_str());
+  std::remove((std::string(kDatabasePath) + ".sb.owner.lock").c_str());
+  std::remove((std::string(kDatabasePath) + ".sb.api_events").c_str());
+  std::remove((std::string(kDatabasePath) + ".sb.crud_events").c_str());
+
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  const auto seed = NowMillis();
+  create.path = std::string(kDatabasePath);
+  create.database_uuid = Generate(platform::UuidKind::database, seed);
+  create.filespace_uuid = Generate(platform::UuidKind::filespace, seed + 1);
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
+          "failed to generate database/filespace UUIDs for UDR route test");
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "failed to create database for UDR route test");
+  g_database_uuid = uuid::UuidToString(create.database_uuid.value);
+}
+
+void BeginRouteTransaction() {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = EngineContext();
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  RequireOk(begun, "failed to begin MGA transaction for UDR route test");
+  g_local_transaction_id = begun.local_transaction_id;
+  g_transaction_uuid = begun.transaction_uuid;
+  g_snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  g_transaction_isolation_level = begun.isolation_level;
 }
 
 api::EngineLocalizedName LocalizedName(std::string name) {
@@ -347,7 +576,8 @@ void AddManageUdrOptions(api::EngineApiRequest* request,
 void SeedActiveTransaction() {
   std::ofstream out(std::string(kDatabasePath) + ".sb.crud_events",
                     std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t77\tsbsql_udr_package_management_exact_route\n";
+  out << "SBCRUD1\tTX_BEGIN\t" << g_local_transaction_id
+      << "\tsbsql_udr_package_management_exact_route\n";
   Require(static_cast<bool>(out), "failed to seed MGA transaction evidence for UDR route test");
 }
 
@@ -359,7 +589,7 @@ void RegisterDemoPackage() {
 
   api::EngineRegisterUdrPackageRequest request;
   request.context = EngineContext();
-  request.target_database.uuid.canonical = request.context.database_uuid.canonical;
+  request.target_database.uuid.canonical = g_database_uuid;
   request.target_database.object_kind = "database";
   request.target_object.uuid.canonical = descriptor.package_uuid;
   request.target_object.object_kind = "udr_package";
@@ -376,6 +606,80 @@ void RegisterDemoPackage() {
   Require(ApiResultHasEvidence(registered, "authority_boundary",
                                "mga_sblr_uuid_security_transaction_preserved"),
           "UDR registration did not preserve MGA/SBLR/UUID/security authority evidence");
+}
+
+template <typename TRequest>
+TRequest UdrRequest(const udr_runtime::UdrPackageDescriptor& descriptor) {
+  TRequest request;
+  request.context = EngineContext();
+  request.target_database.uuid.canonical = g_database_uuid;
+  request.target_database.object_kind = "database";
+  request.target_object.uuid.canonical = descriptor.package_uuid;
+  request.target_object.object_kind = "udr_package";
+  request.localized_names.push_back(LocalizedName(descriptor.package_name));
+  AddManageUdrOptions(&request, descriptor);
+  return request;
+}
+
+void RequireLifecycleEngineApis() {
+  const auto descriptor = DemoDescriptor();
+
+  auto alter_request = UdrRequest<api::EngineAlterUdrPackageRequest>(descriptor);
+  alter_request.option_envelopes.push_back("alter_action:set_signature");
+  const auto altered = api::EngineAlterUdrPackage(alter_request);
+  for (const auto& diagnostic : altered.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+              << diagnostic.detail << '\n';
+  }
+  Require(altered.ok, "engine refused trusted C++ UDR package alter");
+  Require(ApiResultHasEvidence(altered, "udr_catalog", "uuid_identity_preserved"),
+          "UDR alter did not preserve UUID catalog identity");
+  Require(ApiResultHasEvidence(altered, "authority_boundary",
+                               "mga_sblr_uuid_security_transaction_preserved"),
+          "UDR alter did not preserve authority-boundary evidence");
+
+  const auto loaded = api::EngineLoadUdrPackage(
+      UdrRequest<api::EngineLoadUdrPackageRequest>(descriptor));
+  for (const auto& diagnostic : loaded.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+              << diagnostic.detail << '\n';
+  }
+  Require(loaded.ok, "engine refused trusted C++ UDR package load");
+  Require(ApiResultHasEvidence(loaded, "udr_entrypoints", "dispatch_table_published"),
+          "UDR load did not publish entrypoint evidence");
+
+  const auto unloaded = api::EngineUnloadUdrPackage(
+      UdrRequest<api::EngineUnloadUdrPackageRequest>(descriptor));
+  for (const auto& diagnostic : unloaded.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+              << diagnostic.detail << '\n';
+  }
+  Require(unloaded.ok, "engine refused trusted C++ UDR package unload");
+  Require(ApiResultHasEvidence(unloaded, "udr_entrypoints", "dispatch_table_removed"),
+          "UDR unload did not remove entrypoint evidence");
+
+  const auto dropped = api::EngineDropUdrPackage(
+      UdrRequest<api::EngineDropUdrPackageRequest>(descriptor));
+  for (const auto& diagnostic : dropped.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+              << diagnostic.detail << '\n';
+  }
+  Require(dropped.ok, "engine refused trusted C++ UDR package drop");
+  Require(ApiResultHasEvidence(dropped, "udr_loader", "runtime_descriptor_unregistered"),
+          "UDR drop did not unregister runtime descriptor");
+  Require(ApiResultHasEvidence(dropped, "authority_boundary",
+                               "mga_sblr_uuid_security_transaction_preserved"),
+          "UDR drop did not preserve authority-boundary evidence");
+  Require(!udr_runtime::GetPackageState(descriptor.package_uuid).has_value(),
+          "UDR drop left runtime package state registered");
+
+  api::EngineInspectUdrPackageRequest inspect;
+  inspect.context = EngineContext();
+  inspect.option_envelopes.push_back("permission:inspect_udr");
+  const auto inspected = api::EngineInspectUdrPackages(inspect);
+  Require(inspected.ok, "UDR inspect after drop failed");
+  Require(!ApiResultHasField(inspected, "object_uuid", descriptor.package_uuid, false),
+          "dropped UDR package remained visible");
 }
 
 sblr::SblrOperationEnvelope EngineEnvelope() {
@@ -428,16 +732,19 @@ void RequireEngineDispatch(const UdrRowEvidence& row) {
 }  // namespace
 
 int main() {
-  std::remove(std::string(kDatabasePath).c_str());
-  std::remove((std::string(kDatabasePath) + ".sb.api_events").c_str());
-  std::remove((std::string(kDatabasePath) + ".sb.crud_events").c_str());
   udr_runtime::ResetRuntimeForTest();
+  CreateRouteDatabase();
+  BeginRouteTransaction();
   RegisterDemoPackage();
+  for (const auto& route : kLifecycleRoutes) {
+    RequireLifecycleLowering(route);
+  }
   for (const auto& row : kUdrRows) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row);
     RequireEngineDispatch(row);
   }
+  RequireLifecycleEngineApis();
   std::cout << "sbsql_udr_package_management_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

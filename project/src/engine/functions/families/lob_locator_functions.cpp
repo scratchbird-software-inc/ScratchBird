@@ -487,7 +487,7 @@ FunctionCallResult DispatchLobLocatorFunction(const FunctionCallRequest& request
   return RefuseFunctionWithDiagnostic(request,
                                       scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
                                       "SB_DIAG_FUNCTION_FAMILY_HANDLER_MISSING",
-                                      "LOB/locator function is not implemented");
+                                      "LOB/locator function is unsupported by this handler");
 }
 
 }  // namespace scratchbird::engine::functions

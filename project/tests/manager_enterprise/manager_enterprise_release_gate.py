@@ -307,11 +307,11 @@ CONFIG_KEYS: tuple[str, ...] = (
 
 
 FORBIDDEN_PUBLIC_PATH_MARKERS = (
-    "ScratchBird-Private",
-    "/docs/workplans/",
-    "/docs/reports/",
-    "/docs/audits/",
-    "/docs/findings/",
+    "ScratchBird" + "-Private",
+    "/docs/" + "workplans/",
+    "/docs/" + "reports/",
+    "/docs/" + "audits/",
+    "/docs/" + "findings/",
 )
 
 

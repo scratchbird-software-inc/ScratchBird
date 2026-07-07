@@ -715,7 +715,6 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         addField(container, "Alert starter", report.alertStarter());
         addField(container, "Access notes", report.accessNotes());
         addField(container, "Source status", sourceStatus.kind() + ": " + sourceStatus.message());
-        addField(container, "Future gated", Boolean.toString(report.futureGated()));
         addField(container, "Sources", String.join("\n", report.sourceSurfaces()));
         addField(container, "Source previews", String.join("\n", reportPlan.sourceQueries()));
         addList(container, "Drilldown fields", reportPlan.drilldownFields());

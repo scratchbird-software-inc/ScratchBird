@@ -21,16 +21,36 @@ const std::map<std::string_view, std::string_view>& AstMap() {
       {"sbsql.identity_session", "IdentitySessionAst"},
       {"sbsql.transaction", "TransactionControlAst"},
       {"sbsql.query_dml", "QueryDmlAst"},
+      {"sbsql.dml", "DmlAst"},
+      {"sbsql.dml_upsert_variants", "DmlAst"},
+      {"sbsql.temporal", "TemporalPeriodSpecAst"},
+      {"sbsql.temporal_bitemporal", "TemporalPeriodSpecAst"},
+      {"sbsql.versioned_history_mutate", "VersionedHistoryMutationAst"},
+      {"sbsql.structured_type", "StructuredTypeAst"},
+      {"sbsql.structured_types", "StructuredTypeAst"},
+      {"sbsql.kv_structured_read", "KvStructuredReadAst"},
+      {"sbsql.kv_structured_mutate", "KvStructuredMutateAst"},
       {"sbsql.ddl_schema_tree", "SchemaTreeDdlAst"},
       {"sbsql.ddl_database_storage", "DatabaseStorageDdlAst"},
       {"sbsql.ddl_table_index_domain", "TableIndexDomainDdlAst"},
       {"sbsql.ddl_routine_udr", "RoutineUdrDdlAst"},
+      {"sbsql.ddl_catalog", "DdlCatalogAst"},
+      {"sbsql.ddl_catalog_gaps", "DdlCatalogAst"},
+      {"sbsql.bulk", "BulkImportExportAst"},
+      {"sbsql.bulk_import_export", "BulkImportExportAst"},
+      {"sbsql.bulk_export", "BulkExportAst"},
+      {"sbsql.native_system_variables", "SystemVariableReferenceAst"},
+      {"sbsql.last_day_builtin", "TemporalLastDayBuiltinAst"},
       {"sbsql.security_dcl", "SecurityDclAst"},
       {"sbsql.policy", "PolicyAst"},
       {"sbsql.observability", "ObservabilityAst"},
       {"sbsql.management", "ManagementAst"},
+      {"sbsql.migration_management", "MigrationManagementAst"},
       {"sbsql.acceleration", "AccelerationAst"},
+      {"sbsql.acceleration_management", "AccelerationManagementAst"},
       {"sbsql.archive_replication_migration", "ArchiveReplicationMigrationAst"},
+      {"sbsql.transaction_lock_compatibility", "TransactionLockCompatibilityAst"},
+      {"sbsql.reference_command_function_backfill", "CompatibilityRouteBackfillAst"},
       {"sbsql.private_cluster", "PrivateClusterAst"},
   };
   return kMap;
@@ -69,16 +89,31 @@ std::vector<std::string> RequiredFieldsForCommandFamily(std::string_view command
   if (command_family == "sbsql.identity_session") return {"show_target", "session_scope", "context_key"};
   if (command_family == "sbsql.transaction") return {"transaction_action", "isolation_level", "read_only", "savepoint_name", "transaction_options"};
   if (command_family == "sbsql.query_dml") return {"query_kind", "target_relation", "projection_tree", "predicate_tree", "returning_clause", "query_modifiers"};
+  if (command_family == "sbsql.dml" || command_family == "sbsql.dml_upsert_variants") return {"dml_action", "target_relation", "descriptor_refs", "predicate_tree", "assignment_vector", "excluded_scope", "returning_clause", "result_shape"};
+  if (command_family == "sbsql.temporal" || command_family == "sbsql.temporal_bitemporal") return {"period_descriptor", "time_axis", "history_visibility", "mga_snapshot_ref", "mask_rls_order", "rights_profile"};
+  if (command_family == "sbsql.versioned_history_mutate") return {"history_action", "target_ref", "proof_descriptor", "mga_snapshot_ref", "audit_event", "rights_profile"};
+  if (command_family == "sbsql.structured_type" || command_family == "sbsql.structured_types") return {"type_family", "type_descriptor", "constructor_descriptor", "cast_comparison_descriptor", "serialization_profile", "mutation_rule"};
+  if (command_family == "sbsql.kv_structured_read") return {"store_ref", "key_descriptor", "projection_descriptor", "mga_snapshot_ref", "result_shape"};
+  if (command_family == "sbsql.kv_structured_mutate") return {"store_ref", "key_descriptor", "mutation_descriptor", "conflict_policy", "result_shape"};
   if (command_family == "sbsql.ddl_schema_tree") return {"ddl_action", "schema_path", "object_name", "localized_names", "schema_tree_options"};
   if (command_family == "sbsql.ddl_database_storage") return {"ddl_action", "database_ref", "filespace_ref", "page_profile", "storage_options"};
   if (command_family == "sbsql.ddl_table_index_domain") return {"ddl_action", "object_ref", "columns", "constraints", "index_definition", "domain_descriptor", "storage_profile"};
   if (command_family == "sbsql.ddl_routine_udr") return {"ddl_action", "routine_ref", "parameters", "return_descriptor", "sblr_body_ref", "udr_package_ref"};
+  if (command_family == "sbsql.ddl_catalog" || command_family == "sbsql.ddl_catalog_gaps") return {"ddl_action", "catalog_object_kind", "object_ref", "lifecycle_transition", "mga_root_mutation_profile", "audit_event"};
+  if (command_family == "sbsql.bulk" || command_family == "sbsql.bulk_import_export") return {"bulk_action", "target_relation", "format_descriptor", "stream_frame_descriptor", "reject_policy", "job_policy", "result_shape"};
+  if (command_family == "sbsql.bulk_export") return {"bulk_action", "source_relation", "format_descriptor", "stream_frame_descriptor", "redaction_policy", "result_shape"};
+  if (command_family == "sbsql.native_system_variables") return {"canonical_variable_id", "session_scope", "evaluation_epoch", "result_descriptor"};
+  if (command_family == "sbsql.last_day_builtin") return {"function_id", "argument_descriptor", "calendar_policy", "null_semantics", "result_descriptor"};
   if (command_family == "sbsql.security_dcl") return {"security_action", "principal_ref", "grant_payload", "auth_source", "membership_options"};
   if (command_family == "sbsql.policy") return {"policy_action", "policy_ref", "policy_kind", "target_object_ref", "policy_payload"};
   if (command_family == "sbsql.observability") return {"show_target", "scope_mode", "filter_predicate", "metrics_family", "explain_options"};
   if (command_family == "sbsql.management") return {"management_target", "management_action", "target_ref", "control_options", "inspect_scope"};
+  if (command_family == "sbsql.migration_management") return {"management_target", "migration_action", "reference_package_ref", "policy_gate", "capability_descriptor", "result_shape"};
   if (command_family == "sbsql.acceleration") return {"acceleration_family", "acceleration_action", "target_ref", "profile_ref", "capability_options"};
+  if (command_family == "sbsql.acceleration_management") return {"acceleration_family", "acceleration_action", "target_ref", "profile_ref", "capability_options", "cache_invalidation_epoch"};
   if (command_family == "sbsql.archive_replication_migration") return {"operation_kind", "target_ref", "policy_ref", "lineage_options", "migration_options"};
+  if (command_family == "sbsql.transaction_lock_compatibility") return {"lock_action", "lock_target", "compatibility_policy", "advisory_scope", "mga_visibility_impact"};
+  if (command_family == "sbsql.reference_command_function_backfill") return {"reference_family", "native_surface_ref", "compatibility_policy", "refusal_diagnostic", "sblr_equivalent"};
   if (command_family == "sbsql.private_cluster") return {"cluster_target", "cluster_action", "cluster_ref", "epoch_ref", "decision_ref", "route_ref"};
   return {};
 }

@@ -238,6 +238,37 @@ UdrStatus UnloadPackage(std::string_view package_uuid) {
   return Ok();
 }
 
+UdrStatus UnregisterPackage(std::string_view package_uuid) {
+  UdrLifecycleCallback shutdown = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    RuntimePackage* package = FindLocked(package_uuid);
+    if (package == nullptr) {
+      return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+    }
+    if (package->active_invocations != 0) {
+      return Error("UDR.UNLOAD_BLOCKED", std::string(package_uuid));
+    }
+    if (package->loaded) {
+      shutdown = package->descriptor.shutdown;
+    }
+  }
+
+  if (shutdown != nullptr) {
+    const auto stopped = shutdown(package_uuid);
+    if (!stopped.ok) return stopped;
+  }
+
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  auto& registry = Registry();
+  const auto it = registry.find(std::string(package_uuid));
+  if (it == registry.end()) {
+    return Error("UDR.RUNTIME.PACKAGE_NOT_REGISTERED", std::string(package_uuid));
+  }
+  registry.erase(it);
+  return Ok();
+}
+
 UdrStatus AcquireInvocationRef(std::string_view package_uuid, UdrInvocationLease* out_lease) {
   if (out_lease == nullptr) {
     return Error("UDR.RUNTIME.LEASE_OUTPUT_REQUIRED", std::string(package_uuid));

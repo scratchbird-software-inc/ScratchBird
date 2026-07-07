@@ -458,6 +458,7 @@ int main() {
   function_request.target_object.uuid.canonical = kFunctionUuid;
   function_request.target_object.object_kind = "function";
   function_request.localized_names.push_back(Name("fspe011d_function"));
+  function_request.option_envelopes.push_back("permission:manage_executable");
   auto function = Dispatch(database_path,
                            "ddl.create_function",
                            "SBLR_DDL_CREATE_FUNCTION",

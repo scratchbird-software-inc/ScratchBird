@@ -295,7 +295,7 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        status = surface["status"]
+        status = surface.get("source_status") or surface["status"]
         oracle_row = oracle_by_id.get(surface_id)
         oracle_status = oracle_row["oracle_authority_status"] if oracle_row else "not_in_oracle_matrix_non_expression_runtime_surface"
         sblr_binding = oracle_row["sblr_binding"] if oracle_row else ""

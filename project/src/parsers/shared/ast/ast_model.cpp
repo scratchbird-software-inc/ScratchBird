@@ -65,6 +65,16 @@ std::string ToString(ReferenceMode value) {
 std::string ToString(AstFamily value) {
   switch (value) {
     case AstFamily::kShowIdentity: return "ShowIdentityAst";
+    case AstFamily::kDml: return "DmlAst";
+    case AstFamily::kTemporalBitemporal: return "TemporalPeriodSpecAst";
+    case AstFamily::kStructuredType: return "StructuredTypeAst";
+    case AstFamily::kDdlCatalog: return "DdlCatalogAst";
+    case AstFamily::kBulkImportExport: return "BulkImportExportAst";
+    case AstFamily::kMigrationManagement: return "MigrationManagementAst";
+    case AstFamily::kSystemVariable: return "SystemVariableReferenceAst";
+    case AstFamily::kAcceleration: return "AccelerationManagementAst";
+    case AstFamily::kTransactionControl: return "TransactionControlAst";
+    case AstFamily::kCompatibilityRouteBackfill: return "CompatibilityRouteBackfillAst";
     case AstFamily::kRefusal: return "RefusalAst";
   }
   return "unknown";

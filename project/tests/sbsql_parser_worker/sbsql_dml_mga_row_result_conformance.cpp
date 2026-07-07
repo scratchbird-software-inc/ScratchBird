@@ -319,6 +319,10 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
   return result;
 }
 
+void RequestFullPayload(api::EngineApiRequest* request) {
+  request->option_envelopes.push_back("result_payload_policy:full_payload");
+}
+
 api::EngineTypedValue TextValue(std::string value, bool is_null = false) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
@@ -2777,6 +2781,7 @@ api::EngineApiResult InsertRowIntoTable(const std::filesystem::path& database_pa
   request.target_object.uuid.canonical = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(Row(std::move(row_uuid), std::move(id), std::move(note)));
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2799,6 +2804,7 @@ api::EngineApiResult InsertIdOnlyRowIntoTable(const std::filesystem::path& datab
   request.target_object.uuid.canonical = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(IdOnlyRow(std::move(row_uuid), std::move(id)));
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2821,6 +2827,7 @@ api::EngineApiResult InsertBulkRowsIntoTable(const std::filesystem::path& databa
   request.rows.push_back(Row(kBulkRowA, "9", "bulk-direct-a"));
   request.rows.push_back(Row(kBulkRowB, "10", "bulk-direct-b"));
   request.option_envelopes.push_back("sblr.canonical_rowset_shared_shape=true");
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2871,6 +2878,7 @@ api::EngineApiResult InsertAggregateRowIntoTable(const std::filesystem::path& da
                                       std::move(id),
                                       std::move(dept),
                                       std::move(cost)));
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2901,6 +2909,7 @@ api::EngineApiResult InsertBoolAggregateRowIntoTable(const std::filesystem::path
                                           std::move(dept),
                                           std::move(flag),
                                           flag_is_null));
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2925,6 +2934,7 @@ api::EngineApiResult InsertInt64FieldsRowIntoTable(
   request.target_object.uuid.canonical = std::move(table_uuid);
   request.target_object.object_kind = "table";
   request.rows.push_back(Int64FieldsRow(std::move(row_uuid), fields));
+  RequestFullPayload(&request);
   auto inserted = Dispatch(database_path,
                            "dml.insert_rows",
                            "SBLR_DML_INSERT_ROWS",
@@ -2983,6 +2993,7 @@ api::EngineApiResult UpdateByRowUuid(const std::filesystem::path& database_path,
   request.predicate.predicate_kind = "row_uuid_match";
   request.predicate.canonical_predicate_envelope = std::move(row_uuid);
   request.assignments.push_back({"note", TextValue(std::move(note))});
+  RequestFullPayload(&request);
   auto updated = Dispatch(database_path,
                           "dml.update_rows",
                           "SBLR_DML_UPDATE_ROWS",
@@ -3009,6 +3020,7 @@ api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
   request.assignments.push_back({"note", TextValue(std::move(note))});
   request.option_envelopes.push_back("update_when_matched:true");
   request.option_envelopes.push_back("insert_when_not_matched:true");
+  RequestFullPayload(&request);
   auto merged = Dispatch(database_path,
                          "dml.merge_rows",
                          "SBLR_DML_MERGE_ROWS",
@@ -3030,6 +3042,7 @@ api::EngineApiResult DeleteByRowUuid(const std::filesystem::path& database_path,
   request.target_object.object_kind = "table";
   request.predicate.predicate_kind = "row_uuid_match";
   request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  RequestFullPayload(&request);
   auto deleted = Dispatch(database_path,
                           "dml.delete_rows",
                           "SBLR_DML_DELETE_ROWS",
@@ -3058,6 +3071,7 @@ api::EngineApiResult ExecuteImportRows(const std::filesystem::path& database_pat
   request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
   request.option_envelopes.push_back("resume_policy:fail_closed");
   request.option_envelopes.push_back("checkpoint_mode:disabled");
+  RequestFullPayload(&request);
   auto executed = Dispatch(database_path,
                            "dml.execute_import_rows",
                            "SBLR_DML_EXECUTE_IMPORT_ROWS",
@@ -3097,6 +3111,7 @@ api::EngineApiResult ExecuteFailFastImportRows(const std::filesystem::path& data
   request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
   request.option_envelopes.push_back("resume_policy:fail_closed");
   request.option_envelopes.push_back("checkpoint_mode:disabled");
+  RequestFullPayload(&request);
   auto executed = Dispatch(database_path,
                            "dml.execute_import_rows",
                            "SBLR_DML_EXECUTE_IMPORT_ROWS",
@@ -3136,6 +3151,7 @@ api::EngineApiResult ExecuteRejectedImportRows(const std::filesystem::path& data
   request.option_envelopes.push_back("reject_payload_policy:diagnostic_only");
   request.option_envelopes.push_back("resume_policy:fail_closed");
   request.option_envelopes.push_back("checkpoint_mode:disabled");
+  RequestFullPayload(&request);
   auto executed = Dispatch(database_path,
                            "dml.execute_import_rows",
                            "SBLR_DML_EXECUTE_IMPORT_ROWS",

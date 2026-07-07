@@ -121,6 +121,7 @@ add_library(sb_engine_internal_api
   catalog/pinned_descriptor_cache.cpp
   catalog/schema_tree_api.cpp
   catalog/sbsql_language_elements_catalog.cpp
+  catalog/structured_type_api.cpp
   catalog/sys_information_projection.cpp
   catalog/wire_driver_metadata_api.cpp
   cluster/cluster_control_api.cpp
@@ -159,6 +160,7 @@ add_library(sb_engine_internal_api
   dml/page_allocation_runtime_bridge.cpp
   dml/select_api.cpp
   dml/serializable_mutation_guard.cpp
+  dml/temporal_bitemporal_api.cpp
   dml/update_batch.cpp
   dml/update_delete_optimized.cpp
   dml/update_api.cpp

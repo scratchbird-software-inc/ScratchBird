@@ -4702,6 +4702,10 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (result.skipped_count != 0) {
     result.evidence.push_back({"mga_row_store", "row_conflict_skipped"});
   }
+  result.evidence.push_back({"audit_event", "data.dml_change"});
+  result.evidence.push_back({"dml_surface_variant", "insert"});
+  result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
+                                                                       : "rs.dml.returning.v1"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});

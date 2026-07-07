@@ -56,6 +56,8 @@ inline bool EngineExtensionOptionContains(const EngineApiRequest& request,
     if (key == "cluster" &&
         (EngineExtensionExplicitBoolOption(option, "requires_cluster_authority") ||
          EngineExtensionExplicitBoolOption(option, "cluster_authority") ||
+         EngineExtensionExplicitBoolOption(option, "cluster_deploy") ||
+         EngineExtensionExplicitBoolOption(option, "cluster_provider_deploy") ||
          EngineExtensionExplicitValueOption(option, "scope", "cluster") ||
          EngineExtensionExplicitValueOption(option, "authority_domain", "cluster") ||
          EngineExtensionExplicitValueOption(option, "deployment_scope", "cluster") ||

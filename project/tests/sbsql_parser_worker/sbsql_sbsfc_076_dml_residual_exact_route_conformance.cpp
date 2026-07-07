@@ -427,6 +427,7 @@ void SeedDmlTargetTableAndRows(const api::EngineRequestContext& context) {
   insert.requires_transaction_context = true;
   insert.contains_sql_text = false;
   insert.parser_resolved_names_to_uuids = true;
+  insert.operands.push_back({"text", "result_payload_policy", "full_payload"});
   const auto insert_result =
       sblr::DispatchSblrOperation({context, insert, insert_request});
   PrintDispatchDiagnostics(insert_result);

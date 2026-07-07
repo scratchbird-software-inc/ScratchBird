@@ -24,14 +24,14 @@ ROUND_MATRIX = "SBLR_BINARY_ROUND_TRIP_MATRIX.csv"
 LEDGER = "STRICT_ROW_COVERAGE_LEDGER.csv"
 MANIFEST = "PER_ROW_EVIDENCE_MANIFEST.csv"
 REGISTRY = "public_input_snapshot"
-STATUS = "public_input_snapshot"
-OP_MATRIX = "public_input_snapshot"
 AUTH_DIR = "project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route"
 ROUND_DIR = "project/tests/sbsql_parser_worker/generated/full_surface/sblr_binary_round_trip"
-BRIDGE_SPEC = "public_contract_snapshot"
-AST_SPEC = "public_contract_snapshot"
-GRAMMAR_SPEC = "public_contract_snapshot"
 CMAKE = "project/tests/sbsql_parser_worker/CMakeLists.txt"
+BRIDGE_SURFACE_MODULE = "project/tools/sb_parser_gen/sbsql_bridge_command_surface.py"
+OPCODE_REGISTRY_SOURCE = "project/src/engine/sblr/sblr_opcode_registry.cpp"
+SERVER_DISPATCH_SOURCE = "project/src/server/sblr_dispatch_server.cpp"
+LOWERING_SOURCE = "project/src/parsers/sbsql_worker/lowering/lowering.cpp"
+SBSQL_UDR_SOURCE = "project/src/udr/sbu_sbsql_parser_support/sbu_sbsql_parser_support.cpp"
 
 
 def fail(message: str) -> None:
@@ -104,8 +104,6 @@ def main() -> int:
         fail(f"bridge command surface definition count drift: {len(expected_ids)}")
 
     registry = index_by_surface("SBSQL_SURFACE_REGISTRY", read_csv(root / REGISTRY))
-    status = index_by_surface("SBSQL_SURFACE_STATUS_MATRIX", read_csv(root / STATUS))
-    op_matrix = index_by_surface("SBSQL_TO_SBLR_OPERATION_MATRIX", read_csv(root / OP_MATRIX))
     ledger = index_by_surface("STRICT_ROW_COVERAGE_LEDGER", read_csv(artifact_root / LEDGER))
     manifest = index_by_surface("PER_ROW_EVIDENCE_MANIFEST", read_csv(artifact_root / MANIFEST))
     auth = index_by_surface("AUTHENTICATED_FULL_ROUTE_MATRIX", read_csv(artifact_root / AUTH_MATRIX))
@@ -116,8 +114,6 @@ def main() -> int:
         surface_id = bridge.surface_id
         for label, rows in (
             ("registry", registry),
-            ("status", status),
-            ("operation_matrix", op_matrix),
             ("strict_ledger", ledger),
             ("manifest", manifest),
             ("authenticated_route_matrix", auth),
@@ -137,16 +133,6 @@ def main() -> int:
             errors.append(f"{surface_id} registry cluster_scope drift")
         if reg.get("sblr_operation_family") != "sblr.bridge.operation.v3":
             errors.append(f"{surface_id} registry SBLR family drift")
-
-        op = op_matrix.get(surface_id, {})
-        op_text = ";".join(op.values())
-        for token in (
-            f"operation_id={bridge.operation_id}",
-            f"opcode={bridge.opcode}",
-            f"requires_transaction_context={str(bridge.requires_transaction_context).lower()}",
-            f"cluster_route={str(bridge.cluster_route).lower()}",
-        ):
-            require_contains(errors, f"{surface_id} operation matrix", op_text, token)
 
         led = ledger.get(surface_id, {})
         man = manifest.get(surface_id, {})
@@ -181,6 +167,19 @@ def main() -> int:
 
         auth_fields = parse_fixture(root / AUTH_DIR / f"{surface_id}.route.yaml")
         round_fields = parse_fixture(root / ROUND_DIR / f"{surface_id}.round_trip.yaml")
+        route_text = ";".join(auth_fields.values())
+        round_text = ";".join(round_fields.values())
+        operation_evidence = route_text + ";" + round_text + ";" + final_text
+        for token in (
+            f"operation_id={bridge.operation_id}",
+            f"opcode={bridge.opcode}",
+            f"requires_transaction_context={str(bridge.requires_transaction_context).lower()}",
+        ):
+            require_contains(errors, f"{surface_id} generated bridge operation evidence", operation_evidence, token)
+        if bridge.cluster_route:
+            require_contains(errors, f"{surface_id} generated cluster bridge evidence", operation_evidence, "cluster_provider_gate=compile_time")
+        else:
+            require_contains(errors, f"{surface_id} generated noncluster bridge evidence", operation_evidence, "private_cluster_execution=false")
         for fields, kind in ((auth_fields, "authenticated_route"), (round_fields, "sblr_binary_round_trip")):
             if fields.get("fixture_status") != "e2e_passed":
                 errors.append(f"{surface_id} {kind} fixture not promoted")
@@ -198,15 +197,23 @@ def main() -> int:
                 errors.append(f"{surface_id} cluster round-trip refusal requirement drift")
 
     ctest_source = (root / "project/tests/sbsql_parser_worker/sbsql_bridge_command_route_conformance.cpp").read_text(encoding="utf-8")
+    opcode_registry_source = (root / OPCODE_REGISTRY_SOURCE).read_text(encoding="utf-8")
+    server_dispatch_source = (root / SERVER_DISPATCH_SOURCE).read_text(encoding="utf-8")
+    lowering_source = (root / LOWERING_SOURCE).read_text(encoding="utf-8")
+    sbsql_udr_source = (root / SBSQL_UDR_SOURCE).read_text(encoding="utf-8")
     for bridge in bridges:
         require_contains(errors, "route conformance source", ctest_source, bridge.sql)
         require_contains(errors, "route conformance source", ctest_source, bridge.operation_id)
         require_contains(errors, "route conformance source", ctest_source, bridge.opcode)
+        require_contains(errors, OPCODE_REGISTRY_SOURCE, opcode_registry_source, bridge.operation_id)
+        require_contains(errors, OPCODE_REGISTRY_SOURCE, opcode_registry_source, bridge.opcode)
+        require_contains(errors, SERVER_DISPATCH_SOURCE, server_dispatch_source, bridge.operation_id)
+        require_contains(errors, SERVER_DISPATCH_SOURCE, server_dispatch_source, bridge.opcode)
+        require_contains(errors, LOWERING_SOURCE, lowering_source, bridge.opcode)
+        require_contains(errors, SBSQL_UDR_SOURCE, sbsql_udr_source, bridge.opcode)
 
     specs = {
-        BRIDGE_SPEC: (root / BRIDGE_SPEC).read_text(encoding="utf-8"),
-        AST_SPEC: (root / AST_SPEC).read_text(encoding="utf-8"),
-        GRAMMAR_SPEC: (root / GRAMMAR_SPEC).read_text(encoding="utf-8"),
+        BRIDGE_SURFACE_MODULE: (root / BRIDGE_SURFACE_MODULE).read_text(encoding="utf-8"),
         CMAKE: (root / CMAKE).read_text(encoding="utf-8"),
     }
     for path, text in specs.items():
@@ -219,8 +226,8 @@ def main() -> int:
         "BRIDGE STREAM OPEN PHYSICAL PAGE COPY",
         "BRIDGE CLUSTER ROUTE",
     ):
-        require_contains(errors, BRIDGE_SPEC, specs[BRIDGE_SPEC], token)
-        require_contains(errors, AST_SPEC, specs[AST_SPEC], token)
+        require_contains(errors, BRIDGE_SURFACE_MODULE, specs[BRIDGE_SURFACE_MODULE], token)
+        require_contains(errors, "route conformance source", ctest_source, token)
     require_contains(errors, CMAKE, specs[CMAKE], "sbsql_bridge_command_surface_tracking_gate")
 
     if errors:

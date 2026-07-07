@@ -7,14 +7,15 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Static release preflight for the ScratchBird DBeaver management adapter.
+"""Release gate for the ScratchBird DBeaver management adapter.
 
 The gate validates the DBeaver-specific release controller inputs that can be
 checked without launching DBeaver: supported-version policy, API drift anchors,
 installer lifecycle fixtures, license/IP boundaries, and runtime network egress
 policy. Release mode can additionally require built package artifacts. This
 preflight does not prove live-server, stock-GUI, manual-QA, or mutation
-apply/verify closure by itself.
+apply/verify closure by itself. Final mode requires explicit live/manual
+evidence artifacts before reporting final closure support.
 """
 
 from __future__ import annotations
@@ -34,12 +35,14 @@ import zipfile
 SCHEMA_ID = "scratchbird.dbeaver_management.release_contract.v1"
 FIXTURE_SCHEMA_ID = "scratchbird.dbeaver_management.install_lifecycle_fixture.v1"
 REPORT_SCHEMA_ID = "scratchbird.dbeaver_management.release_gate_report.v1"
+FINAL_EVIDENCE_SCHEMA_ID = "scratchbird.dbeaver_management.final_evidence.v1"
 ADAPTER_REL = Path("project/drivers/adaptor/scratchbird-dbeaver-driver")
 DEFAULT_CONTRACT_REL = Path("project/tools/release/dbeaver_management_release_contract.json")
 DEFAULT_FIXTURE_REL = Path(
     "project/tests/release/dbeaver_management_install_lifecycle_fixture.json"
 )
 DEFAULT_REPORT_REL = Path("build/reports/dbeaver_management_platform_gate.json")
+DEFAULT_FINAL_EVIDENCE_REL = Path("build/reports/dbeaver_management_final_evidence.json")
 
 SUPPORTED_WORKPLAN_IDS = (
     "DBEAVER-MGMT-003",
@@ -68,6 +71,42 @@ ISSUE_WORKPLAN_PREFIX_IDS = {
     "license_ip": ("DBEAVER-MGMT-034", "DBEAVER-MGMT-046"),
     "network_egress": ("DBEAVER-MGMT-044", "DBEAVER-MGMT-046"),
     "release_artifacts": ("DBEAVER-MGMT-023", "DBEAVER-MGMT-046"),
+    "final_evidence": (
+        "DBEAVER-MGMT-021",
+        "DBEAVER-MGMT-022",
+        "DBEAVER-MGMT-030",
+        "DBEAVER-MGMT-035",
+        "DBEAVER-MGMT-037",
+        "DBEAVER-MGMT-046",
+    ),
+}
+
+REQUIRED_FINAL_EVIDENCE = {
+    "live_server_dbeaver_management_corpus": (
+        "DBEAVER-MGMT-GATE-021",
+        "DBEAVER-MGMT-GATE-036",
+        "DBEAVER-MGMT-GATE-037",
+        "DBEAVER-MGMT-GATE-038",
+        "DBEAVER-MGMT-GATE-039",
+        "DBEAVER-MGMT-GATE-040",
+        "DBEAVER-MGMT-GATE-041",
+        "DBEAVER-MGMT-GATE-042",
+        "DBEAVER-MGMT-GATE-045",
+    ),
+    "stock_dbeaver_gui_automation_and_screenshots": (
+        "DBEAVER-MGMT-GATE-022",
+        "DBEAVER-MGMT-GATE-030",
+        "DBEAVER-MGMT-GATE-032",
+    ),
+    "manual_qa_signoff": ("DBEAVER-MGMT-GATE-035",),
+    "server_authorized_management_apply_verify_evidence": (
+        "DBEAVER-MGMT-GATE-037",
+        "DBEAVER-MGMT-GATE-038",
+    ),
+    "workspace_redaction_and_cleanup_evidence": (
+        "DBEAVER-MGMT-GATE-029",
+        "DBEAVER-MGMT-GATE-043",
+    ),
 }
 
 REQUIRED_LIFECYCLE_PHASES = {
@@ -1203,12 +1242,92 @@ def check_release_artifacts(
     return issues, summary
 
 
+def check_final_evidence(
+    repo_root: Path,
+    final_evidence_path: Path | None,
+    require_evidence: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    issues: list[str] = []
+    summary: dict[str, Any] = {"required": require_evidence}
+    if not require_evidence:
+        summary["status"] = "not_required_outside_final_mode"
+        return issues, summary
+
+    evidence_path = final_evidence_path or repo_root / DEFAULT_FINAL_EVIDENCE_REL
+    if not evidence_path.is_absolute():
+        evidence_path = repo_root / evidence_path
+    summary["evidence_path"] = rel(evidence_path, repo_root)
+    if not evidence_path.is_file():
+        issues.append(f"final_evidence:evidence_file_missing:{summary['evidence_path']}")
+        return issues, summary
+
+    try:
+        payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        issues.append(f"final_evidence:evidence_json_invalid:{summary['evidence_path']}:{exc}")
+        return issues, summary
+    if not isinstance(payload, dict):
+        issues.append(f"final_evidence:evidence_json_not_object:{summary['evidence_path']}")
+        return issues, summary
+    if payload.get("schema_id") != FINAL_EVIDENCE_SCHEMA_ID:
+        issues.append(
+            "final_evidence:schema_id_mismatch:"
+            f"{payload.get('schema_id') or '<missing>'}"
+        )
+
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, dict):
+        issues.append("final_evidence:evidence_object_missing")
+        evidence = {}
+
+    summary["required_evidence"] = sorted(REQUIRED_FINAL_EVIDENCE)
+    summary["gate_map"] = REQUIRED_FINAL_EVIDENCE
+    passed: list[str] = []
+    for evidence_id in sorted(REQUIRED_FINAL_EVIDENCE):
+        row = evidence.get(evidence_id)
+        if not isinstance(row, dict):
+            issues.append(f"final_evidence:required_section_missing:{evidence_id}")
+            continue
+        status = normalize_proof_status(row.get("status") or row.get("proof_status"))
+        if status not in ACCEPTED_PROOF_STATUSES:
+            issues.append(
+                f"final_evidence:required_section_not_passed:{evidence_id}:{status or '<missing>'}"
+            )
+        else:
+            passed.append(evidence_id)
+        for key in ("summary", "command", "reviewer", "build_id"):
+            value = row.get(key)
+            if isinstance(value, str):
+                reject_private_value(value, f"final_evidence:{evidence_id}:{key}", issues)
+        artifact_paths = row.get("artifacts") or row.get("artifact_paths") or []
+        if not isinstance(artifact_paths, list) or not artifact_paths:
+            issues.append(f"final_evidence:artifact_paths_missing:{evidence_id}")
+            continue
+        for artifact in artifact_paths:
+            if not isinstance(artifact, str) or not artifact.strip():
+                issues.append(f"final_evidence:artifact_path_invalid:{evidence_id}")
+                continue
+            artifact_value = artifact.strip()
+            reject_private_value(artifact_value, f"final_evidence:{evidence_id}:artifact", issues)
+            artifact_path = resolve_proof_artifact(repo_root, evidence_path.parent, artifact_value)
+            if not artifact_path.is_file() and not artifact_path.is_dir():
+                issues.append(f"final_evidence:artifact_missing:{evidence_id}:{artifact_value}")
+
+    extra = sorted(set(evidence) - set(REQUIRED_FINAL_EVIDENCE))
+    if extra:
+        summary["extra_evidence_sections"] = extra
+    summary["passed_evidence"] = passed
+    summary["passed_count"] = len(passed)
+    return issues, summary
+
+
 def build_report(
     repo_root: Path,
     contract_path: Path,
     fixture_path: Path,
     mode: str,
     artifact_root: Path | None,
+    final_evidence_path: Path | None,
 ) -> dict[str, Any]:
     contract = load_json(contract_path)
     fixture = load_json(fixture_path)
@@ -1230,14 +1349,18 @@ def build_report(
                     adapter_root,
                     fixture,
                     artifact_root,
-                    mode == "release",
+                    mode in {"release", "final"},
                 ),
             ),
             ("license_ip", check_license_ip(repo_root, adapter_root, contract)),
             ("network_egress", check_network_egress(repo_root, adapter_root, contract)),
             (
                 "release_artifacts",
-                check_release_artifacts(repo_root, artifact_root, mode == "release"),
+                check_release_artifacts(repo_root, artifact_root, mode in {"release", "final"}),
+            ),
+            (
+                "final_evidence",
+                check_final_evidence(repo_root, final_evidence_path, mode == "final"),
             ),
         )
         for name, (check_issues, summary) in checks:
@@ -1258,22 +1381,35 @@ def build_report(
         "gate_support": {
             "DBEAVER-MGMT-GATE-004": "dbeaver_release_controller_static_gate",
             "DBEAVER-MGMT-GATE-006": "secure_dbeaver_provider_property_check",
+            "DBEAVER-MGMT-GATE-021": "final_evidence_live_server_dbeaver_management_corpus",
+            "DBEAVER-MGMT-GATE-022": "final_evidence_stock_dbeaver_gui_automation_and_screenshots",
             "DBEAVER-MGMT-GATE-023": "packaging_script_and_artifact_mode_checks",
             "DBEAVER-MGMT-GATE-026": "supported_version_matrix_contract_check",
             "DBEAVER-MGMT-GATE-027": "install_lifecycle_fixture_and_script_check",
             "DBEAVER-MGMT-GATE-028": "api_drift_manifest_feature_plugin_check",
             "DBEAVER-MGMT-GATE-029": "secure_storage_and_redaction_property_contract_check",
+            "DBEAVER-MGMT-GATE-030": "final_evidence_ui_responsiveness_budget",
+            "DBEAVER-MGMT-GATE-032": "final_evidence_accessibility_and_localization",
             "DBEAVER-MGMT-GATE-034": "license_ip_spdx_notice_boundary_check",
+            "DBEAVER-MGMT-GATE-035": "final_evidence_manual_qa_signoff",
+            "DBEAVER-MGMT-GATE-036": "final_evidence_multi_session_isolation",
+            "DBEAVER-MGMT-GATE-037": "final_evidence_server_authorized_management_apply_verify",
+            "DBEAVER-MGMT-GATE-038": "final_evidence_preview_apply_conflict_parity",
+            "DBEAVER-MGMT-GATE-039": "final_evidence_data_editor_crud_transaction_path",
+            "DBEAVER-MGMT-GATE-040": "final_evidence_long_running_operation_lifecycle",
+            "DBEAVER-MGMT-GATE-041": "final_evidence_import_export_data_transfer",
+            "DBEAVER-MGMT-GATE-042": "final_evidence_object_graph_search_ddl_sbsql_explain",
             "DBEAVER-MGMT-GATE-043": "workspace_migration_fixture_check",
             "DBEAVER-MGMT-GATE-044": "network_egress_policy_check",
-            "DBEAVER-MGMT-GATE-046": "static_or_release_preflight_summary_not_final_closure",
+            "DBEAVER-MGMT-GATE-045": "final_evidence_feature_boundary_refusal_ui",
+            "DBEAVER-MGMT-GATE-046": "static_release_or_final_closure_summary",
         },
         "summary": summaries,
         "closure_support": {
             "can_support_static_preflight": mode == "static" and not issues,
             "can_support_release_preflight": mode == "release" and not issues,
-            "can_support_final_closure": False,
-            "final_closure_requires": [
+            "can_support_final_closure": mode == "final" and not issues,
+            "final_closure_requires": [] if mode == "final" and not issues else [
                 "live_server_dbeaver_management_corpus",
                 "stock_dbeaver_gui_automation_and_screenshots",
                 "manual_qa_signoff",
@@ -1292,8 +1428,9 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
     parser.add_argument("--contract", type=Path)
     parser.add_argument("--fixture", type=Path)
-    parser.add_argument("--mode", choices=("static", "release"), default="static")
+    parser.add_argument("--mode", choices=("static", "release", "final"), default="static")
     parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--final-evidence", type=Path)
     parser.add_argument("--output", "--evidence-output", dest="output", type=Path)
     args = parser.parse_args()
 
@@ -1309,7 +1446,14 @@ def main() -> int:
         output = repo_root / output
 
     try:
-        report = build_report(repo_root, contract_path, fixture_path, args.mode, args.artifact_root)
+        report = build_report(
+            repo_root,
+            contract_path,
+            fixture_path,
+            args.mode,
+            args.artifact_root,
+            args.final_evidence,
+        )
     except (OSError, ValueError) as exc:
         return fail(str(exc))
     write_report(output, report)

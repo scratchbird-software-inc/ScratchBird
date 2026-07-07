@@ -20,6 +20,7 @@
 #include "physical_plan.hpp"
 #include "relational_planner.hpp"
 
+#include <cctype>
 #include <optional>
 #include <map>
 #include <span>
@@ -67,6 +68,23 @@ std::string MergeOptionValue(const EngineMergeRowsRequest& request,
     }
   }
   return {};
+}
+
+std::string MergeSurfaceVariant(const EngineMergeRowsRequest& request) {
+  std::string variant = request.merge_surface_variant;
+  if (variant.empty()) {
+    variant = MergeOptionValue(request, "dml_surface_variant:");
+  }
+  if (variant.empty()) {
+    variant = MergeOptionValue(request, "merge_surface_variant:");
+  }
+  if (variant.empty()) {
+    variant = "merge";
+  }
+  for (char& c : variant) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return variant;
 }
 
 EngineTypedValue MergeTypedValueFromCrudValue(const std::string& encoded) {
@@ -740,8 +758,19 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   }
   const EngineObjectReference target = MergeTarget(request);
   std::vector<EngineRowValue> source_rows = MergeRows(request);
+  const std::string merge_surface_variant = MergeSurfaceVariant(request);
   if (target.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_uuid_required"));
+  }
+  if (merge_surface_variant != "merge" &&
+      merge_surface_variant != "upsert" &&
+      merge_surface_variant != "cypher_merge") {
+    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
+        request.context,
+        "dml.merge_rows",
+        MakeInvalidRequestDiagnostic("dml.merge_rows",
+                                     "unsupported_merge_surface_variant:" +
+                                         merge_surface_variant));
   }
   bool delete_branch_requested = request.delete_when_matched;
   for (const auto& option : request.option_envelopes) {
@@ -810,6 +839,29 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
                          loaded.evidence.end());
+  result.evidence.push_back({"dml_surface_variant", merge_surface_variant});
+  result.evidence.push_back({"audit_event", "data.dml_change"});
+  result.evidence.push_back({"dml_result_shape", "rs.dml.returning.v1"});
+  if (merge_surface_variant == "upsert") {
+    result.evidence.push_back({"upsert_canonical_route", "dml.merge_rows"});
+    result.evidence.push_back({"excluded_pseudo_relation", "source_row_descriptor_bound"});
+    if (!request.on_conflict_action.empty()) {
+      result.evidence.push_back({"upsert_conflict_action", request.on_conflict_action});
+    } else {
+      const auto option_action = MergeOptionValue(request, "on_conflict_action:");
+      if (!option_action.empty()) {
+        result.evidence.push_back({"upsert_conflict_action", option_action});
+      }
+    }
+    if (!request.conflict_target_column.empty()) {
+      result.evidence.push_back({"upsert_conflict_target", request.conflict_target_column});
+    } else {
+      const auto option_target = MergeOptionValue(request, "conflict_target_column:");
+      if (!option_target.empty()) {
+        result.evidence.push_back({"upsert_conflict_target", option_target});
+      }
+    }
+  }
   result.evidence.push_back({"relation_state_full_loads",
                              loaded.full_state_load ? "1" : "0"});
   result.evidence.push_back({"relation_state_scoped_loads",
@@ -1115,9 +1167,11 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   result.result_shape.result_kind = "dml_affected_rows";
   result.result_shape.rows = std::move(affected_rows);
   result.evidence.push_back({"merge_surface",
-                             delete_branch_requested
-                                 ? "matched_delete_or_not_matched_insert"
-                                 : "matched_update_or_not_matched_insert"});
+                             merge_surface_variant == "upsert"
+                                 ? "upsert_matched_update_or_insert"
+                                 : (delete_branch_requested
+                                        ? "matched_delete_or_not_matched_insert"
+                                        : "matched_update_or_not_matched_insert")});
   result.evidence.push_back({"dml_returning", "affected_rows"});
   RecordMergeMetric("matched", static_cast<double>(result.matched_count));
   RecordMergeMetric("inserted", static_cast<double>(result.inserted_count));

@@ -3555,7 +3555,7 @@ RuntimeResult ManagerRuntime::Run() {
 #ifdef _WIN32
   if (config_.service && !config_.validate_config) {
     result.exit_code = 2;
-    result.diagnostics.push_back(Diag("MANAGER.SERVICE_MODE_UNSUPPORTED", "Windows service-control handoff is not implemented in this build."));
+    result.diagnostics.push_back(Diag("MANAGER.SERVICE_MODE_UNSUPPORTED", "Windows service-control handoff is provided by the native Windows platform package."));
     return result;
   }
 #else

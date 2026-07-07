@@ -4569,6 +4569,7 @@ std::size_t DirectRequestRowCount(const DirectPhysicalBulkAppendRequest& request
 
 struct DirectAppendIndexEntryCacheRecord {
   std::uint64_t row_version_count = 0;
+  std::uint64_t metadata_event_sequence = 0;
   std::vector<CrudIndexEntryRecord> entries;
   std::map<std::string, std::set<std::string>> keys_by_index;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
@@ -4578,6 +4579,7 @@ struct DirectAppendIndexEntryCacheRecord {
 
 struct DirectBulkAppendContextCacheRecord {
   std::uint64_t row_version_count = 0;
+  std::uint64_t metadata_event_sequence = 0;
   std::shared_ptr<const CrudState> state;
   std::vector<CrudIndexRecord> visible_indexes;
   MgaRelationStorageDescriptor relation_descriptor;
@@ -4649,11 +4651,14 @@ bool DirectLookupAppendIndexEntryCache(const EngineRequestContext& context,
       entry_by_index_key == nullptr) {
     return false;
   }
+  const std::uint64_t metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   const auto found = DirectAppendIndexEntryCache().find(
       DirectAppendIndexEntryCacheKey(context, table_uuid));
   if (found == DirectAppendIndexEntryCache().end() ||
-      found->second.row_version_count != row_version_count) {
+      found->second.row_version_count != row_version_count ||
+      found->second.metadata_event_sequence != metadata_event_sequence) {
     return false;
   }
   if (entries != nullptr) {
@@ -4672,11 +4677,14 @@ bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
                                           const std::string& table_uuid,
                                           std::uint64_t row_version_count,
                                           bool require_entry_lookup = false) {
+  const std::uint64_t metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   const auto found = DirectAppendIndexEntryCache().find(
       DirectAppendIndexEntryCacheKey(context, table_uuid));
   return found != DirectAppendIndexEntryCache().end() &&
          found->second.row_version_count == row_version_count &&
+         found->second.metadata_event_sequence == metadata_event_sequence &&
          (!require_entry_lookup || found->second.entry_lookup_materialized);
 }
 
@@ -4692,11 +4700,14 @@ void DirectBuildAppendIndexConflictCaches(
   if (keys_by_index == nullptr && entry_by_index_key == nullptr) {
     return;
   }
+  const std::uint64_t metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   const auto found = DirectAppendIndexEntryCache().find(
       DirectAppendIndexEntryCacheKey(context, table_uuid));
   if (found == DirectAppendIndexEntryCache().end() ||
-      found->second.row_version_count != row_version_count) {
+      found->second.row_version_count != row_version_count ||
+      found->second.metadata_event_sequence != metadata_event_sequence) {
     return;
   }
   const auto& record = found->second;
@@ -4735,11 +4746,14 @@ bool DirectLookupBulkAppendContextCache(
     std::uint64_t row_version_count,
     DirectBulkAppendContextCacheRecord* record) {
   if (record == nullptr) return false;
+  const std::uint64_t metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   const auto found = DirectBulkAppendContextCache().find(
       DirectBulkAppendContextCacheKey(context, table_uuid));
   if (found == DirectBulkAppendContextCache().end() ||
       found->second.row_version_count != row_version_count ||
+      found->second.metadata_event_sequence != metadata_event_sequence ||
       !found->second.state) {
     return false;
   }
@@ -4758,6 +4772,8 @@ void DirectStoreBulkAppendContextCache(
     bool append_index_cache_hit) {
   DirectBulkAppendContextCacheRecord record;
   record.row_version_count = row_version_count;
+  record.metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   record.state = std::make_shared<CrudState>(state);
   record.visible_indexes = visible_indexes;
   record.relation_descriptor = relation_descriptor;
@@ -4776,11 +4792,14 @@ bool DirectAdvanceBulkAppendContextCache(
     std::uint64_t next_row_version_count,
     bool index_entries_authoritative,
     bool append_index_cache_hit) {
+  const std::uint64_t metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
   const auto found = DirectBulkAppendContextCache().find(
       DirectBulkAppendContextCacheKey(context, table_uuid));
   if (found == DirectBulkAppendContextCache().end() ||
       found->second.row_version_count != previous_row_version_count ||
+      found->second.metadata_event_sequence != metadata_event_sequence ||
       !found->second.state) {
     return false;
   }
@@ -4800,6 +4819,8 @@ void DirectStoreAppendIndexEntryCache(
       DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
                                                                   table_uuid)];
   record.row_version_count = row_version_count;
+  record.metadata_event_sequence =
+      CurrentMgaRelationMetadataEventSequence(context);
   record.entries.clear();
   record.keys_by_index = DirectBuildIndexKeyCache(entries);
   record.entry_by_index_key = DirectBuildIndexEntryKeyCache(entries);
@@ -11666,6 +11687,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   result.dml_summary.rows_changed = result.inserted_rows;
   result.evidence.push_back({"mga_row_version", "row_insert"});
   result.evidence.push_back({"mga_row_store", "row_insert"});
+  result.evidence.push_back({"audit_event", "data.dml_change"});
+  result.evidence.push_back({"dml_surface_variant", "insert"});
+  result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
+                                                                       : "rs.dml.returning.v1"});
   if (hot_counters.index_entries_appended != 0) {
     result.evidence.push_back({"mga_index_store", "row_insert"});
   }

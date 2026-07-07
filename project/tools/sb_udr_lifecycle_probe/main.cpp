@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "extensibility/udr_api.hpp"
+#include "sb_udr_runtime.hpp"
 #include "transaction/transaction_api.hpp"
 #include "database_lifecycle.hpp"
 #include "uuid.hpp"
@@ -18,8 +19,11 @@
 #include <string>
 
 using namespace scratchbird::engine::internal_api;
+namespace udr_runtime = scratchbird::udr::runtime;
 
 namespace {
+
+std::string g_database_uuid = "00000000-0000-7000-8000-000000001601";
 
 std::string TempPath() {
   const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -47,19 +51,30 @@ bool CreateDatabase(const std::string& path) {
   create.require_resource_seed_pack = false;
   create.allow_minimal_resource_bootstrap = true;
   create.allow_overwrite = true;
-  return create.database_uuid.valid() && create.filespace_uuid.valid() &&
-         scratchbird::storage::database::CreateDatabaseFile(create).ok();
+  const bool created = create.database_uuid.valid() && create.filespace_uuid.valid() &&
+                       scratchbird::storage::database::CreateDatabaseFile(create).ok();
+  if (created) {
+    g_database_uuid = scratchbird::core::uuid::UuidToString(create.database_uuid.value);
+  }
+  return created;
 }
 
 EngineRequestContext BaseContext(const std::string& path, bool secure) {
   EngineRequestContext context;
-  context.trust_mode = EngineTrustMode::embedded_in_process;
+  context.trust_mode = EngineTrustMode::server_isolated;
   context.security_context_present = secure;
   context.request_id = secure ? "udr-lifecycle-secure" : "udr-lifecycle-open";
   context.database_path = path;
-  context.database_uuid.canonical = "00000000-0000-7000-8000-000000001601";
+  context.database_uuid.canonical = g_database_uuid;
   context.session_uuid.canonical = secure ? "00000000-0000-7000-8000-000000001602" : "00000000-0000-7000-8000-000000001603";
   context.principal_uuid.canonical = secure ? "00000000-0000-7000-8000-000000001604" : "";
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -105,9 +120,38 @@ bool RowFieldEquals(const EngineApiResult& result, const std::string& field_name
   return false;
 }
 
+udr_runtime::UdrCallResult EchoEntrypoint(const udr_runtime::UdrCallInput& input) {
+  udr_runtime::UdrCallResult result;
+  result.ok = true;
+  result.payload = input.payload;
+  result.message_vector_json = "{\"diagnostics\":[]}";
+  return result;
+}
+
+udr_runtime::UdrPackageDescriptor RuntimeDescriptor(const std::string& uuid,
+                                                   const std::string& name) {
+  udr_runtime::UdrPackageDescriptor descriptor;
+  descriptor.package_uuid = uuid;
+  descriptor.package_name = name;
+  descriptor.abi_version = "sb_udr_v1";
+  descriptor.source_revision = "src-rev-" + name;
+  descriptor.binary_hash = "sha256:" + name;
+  descriptor.signature_policy = "trusted-test-signature";
+  descriptor.capability_role = "parser_support";
+  descriptor.runtime_language = "cpp";
+  descriptor.trusted_cpp = true;
+  descriptor.entrypoints.push_back({"echo", "parser_support", EchoEntrypoint});
+  return descriptor;
+}
+
+bool SeedRuntimeDescriptor(const std::string& uuid, const std::string& name) {
+  return udr_runtime::RegisterPackage(RuntimeDescriptor(uuid, name)).ok;
+}
+
 EngineRegisterUdrPackageRequest RegisterRequest(const EngineRequestContext& context,
                                                 const std::string& uuid,
                                                 const std::string& name) {
+  const auto descriptor = RuntimeDescriptor(uuid, name);
   EngineRegisterUdrPackageRequest request;
   request.context = context;
   request.target_object.uuid.canonical = uuid;
@@ -116,7 +160,11 @@ EngineRegisterUdrPackageRequest RegisterRequest(const EngineRequestContext& cont
   request.option_envelopes.push_back("permission:manage_udr");
   request.option_envelopes.push_back("trust:trusted_cpp");
   request.option_envelopes.push_back("abi:sb_udr_1");
-  request.option_envelopes.push_back("binary_digest:sha256:00112233445566778899aabbccddeeff");
+  request.option_envelopes.push_back("linked_udr_package:true");
+  request.option_envelopes.push_back("source_revision:" + descriptor.source_revision);
+  request.option_envelopes.push_back("binary_hash:" + descriptor.binary_hash);
+  request.option_envelopes.push_back("signature_policy:" + descriptor.signature_policy);
+  request.option_envelopes.push_back("capability_role:" + descriptor.capability_role);
   return request;
 }
 
@@ -160,6 +208,7 @@ void PrintBool(const std::string& name, bool value, bool comma) {
 }  // namespace
 
 int main() {
+  udr_runtime::ResetRuntimeForTest();
   const auto path = TempPath();
   const bool database_created = CreateDatabase(path);
 
@@ -191,10 +240,13 @@ int main() {
   const bool bad_commit = Commit(bad_context);
 
   auto dep_register_context = Begin(path, true);
+  const bool dependency_descriptor_seeded =
+      SeedRuntimeDescriptor(dependency_uuid, "dependency_udr");
   const auto dependency_result = EngineRegisterUdrPackage(RegisterRequest(dep_register_context, dependency_uuid, "dependency_udr"));
   const bool dependency_commit = Commit(dep_register_context);
 
   auto main_register_context = Begin(path, true);
+  const bool main_descriptor_seeded = SeedRuntimeDescriptor(main_uuid, "main_udr");
   auto main_register = RegisterRequest(main_register_context, main_uuid, "main_udr");
   main_register.related_objects.push_back({{dependency_uuid}, "udr_package"});
   const auto main_register_result = EngineRegisterUdrPackage(main_register);
@@ -250,14 +302,14 @@ int main() {
   const bool permission_required = !no_permission_result.ok && HasDiagnosticCode(no_permission_result, "SB_ENGINE_API_UDR_PERMISSION_REQUIRED");
   const bool abi_rejected = !bad_abi_result.ok && HasDiagnosticCode(bad_abi_result, "SB_ENGINE_API_UDR_ABI_UNSUPPORTED");
   const bool bypass_rejected = !bypass_result.ok && HasDiagnosticCode(bypass_result, "SB_ENGINE_API_UDR_AUTHORITY_BYPASS_REFUSED");
-  const bool dependency_registered = dependency_result.ok && HasEvidence(dependency_result, "udr_audit", "registration_evidence_recorded");
-  const bool main_registered = main_register_result.ok && HasEvidence(main_register_result, "udr_abi", "supported");
+  const bool dependency_registered = dependency_descriptor_seeded && dependency_result.ok && HasEvidence(dependency_result, "udr_audit", "registration_evidence_recorded");
+  const bool main_registered = main_descriptor_seeded && main_register_result.ok && HasEvidence(main_register_result, "udr_abi", "supported");
   const bool missing_dependency_rejected = !missing_dependency_result.ok && HasDiagnosticCode(missing_dependency_result, "SB_ENGINE_API_UDR_DEPENDENCY_MISSING");
   const bool cluster_denied = !cluster_result.ok && cluster_result.cluster_authority_required;
   const bool loaded = load_result.ok && HasEvidence(load_result, "extension_behavior", "loaded") && HasEvidence(load_result, "authority_boundary");
   const bool direct_invoke_rejected = !direct_invoke_result.ok && HasDiagnosticCode(direct_invoke_result, "SB_ENGINE_API_UDR_SBLR_INVOCATION_REQUIRED");
   const bool budget_invoke_rejected = !budget_invoke_result.ok && HasDiagnosticCode(budget_invoke_result, "SB_ENGINE_API_UDR_RESOURCE_LIMIT_EXCEEDED");
-  const bool invoked = invoke_result.ok && HasEvidence(invoke_result, "sblr_authority", "SBLR_UDR_INVOKE") && RowFieldEquals(invoke_result, "invocation_result", "udr_entrypoint_admitted");
+  const bool invoked = invoke_result.ok && HasEvidence(invoke_result, "sblr_authority", "SBLR_UDR_INVOKE") && RowFieldEquals(invoke_result, "invocation_result", "udr_entrypoint_invoked");
   const bool inspect_loaded = inspect_result.ok && RowFieldEquals(inspect_result, "state", "loaded");
   const bool unloaded = unload_result.ok && HasEvidence(unload_result, "extension_behavior", "unloaded");
   const bool inspect_unloaded = post_inspect_result.ok && RowFieldEquals(post_inspect_result, "state", "unloaded");

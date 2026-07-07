@@ -74,6 +74,9 @@ def read_text(path: Path) -> str:
 
 
 def corpus(root: Path, suffixes: set[str]) -> str:
+    if root.is_file():
+        return read_text(root) if root.suffix in suffixes or root.suffix == "" else ""
+
     pieces: list[str] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix not in suffixes:

@@ -113,10 +113,10 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("objectType=\"org.jkiss.dbeaver.ext.generic.model.GenericDataType\""));
         Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dataTypeProvider\">"));
         Assert.assertTrue(pluginXml.contains("ScratchBirdValueHandlerProvider"));
-        Assert.assertFalse(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
-        Assert.assertFalse(pluginXml.contains("scratchbird.sessions"));
-        Assert.assertFalse(pluginXml.contains("scratchbird.performance"));
-        Assert.assertFalse(pluginXml.contains("<query>SHOW METRICS</query>"));
+        Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
+        Assert.assertTrue(pluginXml.contains("scratchbird.sessions"));
+        Assert.assertTrue(pluginXml.contains("scratchbird.performance"));
+        Assert.assertTrue(pluginXml.contains("<query>SHOW METRICS</query>"));
         Assert.assertFalse(pluginXml.contains("sys.performance"));
         Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
         Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
@@ -1392,12 +1392,6 @@ public class ScratchBirdIntegrationTest {
             "metrics.alerts");
         Assert.assertEquals(ScratchBirdRefusalModel.Kind.UNSUPPORTED, metricsTask.kind());
 
-        ScratchBirdRefusalModel futureReport = ScratchBirdPermissionProbe.probe(
-            ScratchBirdFormRegistry.require("SBDV-FRM-903"),
-            ScratchBirdFormMode.REPORT,
-            "metrics.future-gated.SBDV-RPT-FUTURE-001");
-        Assert.assertEquals(ScratchBirdRefusalModel.Kind.MISSING_SOURCE, futureReport.kind());
-
         ScratchBirdAdminExecutor.ExecutionPlan createPlan = ScratchBirdAdminExecutor.plan(
             domainForm,
             ScratchBirdFormMode.CREATE,
@@ -1619,7 +1613,7 @@ public class ScratchBirdIntegrationTest {
 
     @Test
     public void reportCatalogBuildsMetricsTreeLeavesAndSourceStatus() {
-        Assert.assertEquals(52, ScratchBirdReportCatalog.allReports().size());
+        Assert.assertEquals(45, ScratchBirdReportCatalog.allReports().size());
         Assert.assertEquals(
             1 + ScratchBirdReportCatalog.METRICS_BRANCHES.size() + ScratchBirdReportCatalog.allReports().size(),
             ScratchBirdReportCatalog.metricTreePaths().size());
@@ -1627,8 +1621,6 @@ public class ScratchBirdIntegrationTest {
             .contains("metrics.health-scorecards.SBDV-RPT-CORE-001"));
         Assert.assertTrue(ScratchBirdReportCatalog.metricTreePaths()
             .contains("metrics.alerts.SBDV-ALERT-016"));
-        Assert.assertTrue(ScratchBirdReportCatalog.metricTreePaths()
-            .contains("metrics.future-gated.SBDV-RPT-FUTURE-007"));
         ScratchBirdReportDefinition health = ScratchBirdReportCatalog.findByNavigatorPath(
             "metrics.health-scorecards.SBDV-RPT-CORE-001");
         Assert.assertNotNull(health);
@@ -1667,14 +1659,6 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(alertPlan.scriptPreview().contains("SHOW METRICS"));
         Assert.assertFalse(alertPlan.scriptPreview().contains("SHOW METRICS WHERE"));
         Assert.assertTrue(alertPlan.summaryLines().stream().anyMatch(line -> line.contains("threshold")));
-
-        ScratchBirdReportDefinition future = ScratchBirdReportCatalog.findByNavigatorPath(
-            "metrics.future-gated.SBDV-RPT-FUTURE-001");
-        Assert.assertNotNull(future);
-        ScratchBirdRefusalModel futureStatus = ScratchBirdMetricSourceResolver.sourceStatus(future);
-        Assert.assertEquals(ScratchBirdRefusalModel.Kind.MISSING_SOURCE, futureStatus.kind());
-        Assert.assertTrue(futureStatus.message().contains("Future-gated"));
-        Assert.assertTrue(ScratchBirdReportPlan.forReport(future).scriptPreview().contains("Future gated"));
     }
 
     @Test
@@ -1698,9 +1682,6 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(executive.isClientOnly());
         Assert.assertFalse(executive.isCatalogBacked());
 
-        ScratchBirdSchemaTreeBuilder.Node futureGated = findNodeByName(metrics.getChildren(), "future-gated");
-        Assert.assertNotNull(futureGated);
-        Assert.assertNotNull(findNodeByName(futureGated.getChildren(), "SBDV-RPT-FUTURE-001"));
     }
 
     @Test

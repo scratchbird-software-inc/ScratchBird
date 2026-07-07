@@ -141,8 +141,15 @@ def main() -> int:
     promotion = read_csv(artifact_root / PROMOTION_MATRIX_NAME)
     manifest_counts = parse_manifest(root / GENERATED_MANIFEST)
 
-    canonical_by_id = {r["surface_id"]: r["status"] for r in surfaces}
-    canonical_native_future = {r["surface_id"] for r in surfaces if r["status"] == "native_future"}
+    canonical_by_id = {
+        r["surface_id"]: (r.get("source_status") or r["status"])
+        for r in surfaces
+    }
+    canonical_native_future = {
+        r["surface_id"]
+        for r in surfaces
+        if (r.get("source_status") or r["status"]) == "native_future"
+    }
 
     errors: list[str] = []
 
@@ -156,10 +163,12 @@ def main() -> int:
                 errors.append(f"{label} row {sid} not in canonical registry")
                 continue
             observed = row.get(status_field, "")
+            if not observed and status_field != "source_status":
+                observed = row.get("source_status", "")
             if observed and observed != canonical:
                 errors.append(f"{label} row {sid} status drift: canonical={canonical} observed={observed}")
 
-    cross_check("SBSQL_SURFACE_STATUS_MATRIX", status_matrix)
+    cross_check("SBSQL_SURFACE_STATUS_MATRIX", status_matrix, status_field="source_status")
     cross_check("STRICT_ROW_COVERAGE_LEDGER", ledger)
     cross_check("FUNCTION_SEMANTIC_ORACLE_MATRIX", oracle)
     cross_check("AUTHENTICATED_FULL_ROUTE_MATRIX", route)
@@ -201,7 +210,7 @@ def main() -> int:
         errors.append(f"NATIVE_FUTURE_PROMOTION_MATRIX contains {len(extra_promotion)} non-native_future ids")
 
     # Generated registry manifest counts must agree with canonical.
-    canonical_counts = Counter(r["status"] for r in surfaces)
+    canonical_counts = Counter((r.get("source_status") or r["status"]) for r in surfaces)
     if manifest_counts.get("surface_count") != sum(canonical_counts.values()):
         errors.append(
             f"generated_registry_manifest.surface_count={manifest_counts.get('surface_count')} disagrees with canonical total={sum(canonical_counts.values())}"

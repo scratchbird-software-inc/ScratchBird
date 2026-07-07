@@ -42,14 +42,4 @@ ServerDiagnostic ForbiddenResponsibilityDiagnostic(ForbiddenServerResponsibility
       {{"responsibility", ResponsibilityName(responsibility)}, {"detail", std::move(detail)}}};
 }
 
-ServerDiagnostic SkeletonNextStageDiagnostic(std::string requested_operation,
-                                             std::string owning_execution_plan) {
-  return ServerDiagnostic{
-      "SERVER.SKELETON.NEXT_STAGE_REQUIRED",
-      "server.skeleton.next_stage_required",
-      ServerDiagnosticSeverity::kError,
-      "The sb_server product skeleton is present, but this operation is owned by a later server implementation execution_plan.",
-      {{"operation", std::move(requested_operation)}, {"owning_execution_plan", std::move(owning_execution_plan)}}};
-}
-
 }  // namespace scratchbird::server

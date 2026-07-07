@@ -8,5 +8,5 @@
 
 add_executable(sb_udr_lifecycle_probe main.cpp)
 target_compile_features(sb_udr_lifecycle_probe PRIVATE cxx_std_20)
-target_link_libraries(sb_udr_lifecycle_probe PRIVATE sb_engine_internal_api sb_storage_database sb_core_uuid)
+target_link_libraries(sb_udr_lifecycle_probe PRIVATE sb_engine_internal_api sb_storage_database sb_core_uuid sb_udr_runtime)
 add_test(NAME sb_udr_lifecycle_probe COMMAND sb_udr_lifecycle_probe)

@@ -9,6 +9,7 @@
 #include "bound_ast_model.hpp"
 
 #include <sstream>
+#include <utility>
 
 namespace scratchbird::parser::bound_ast {
 namespace {
@@ -125,6 +126,37 @@ BindResult BindShowIdentityAst(const scratchbird::parser::ast::ShowIdentityAst& 
   return BindResult{std::move(bound)};
 }
 
+BoundStatementFamilyEvidence MakeBoundStatementFamilyEvidence(
+    scratchbird::parser::ast::AstFamily ast_family,
+    std::string surface_key,
+    std::string command_family,
+    std::string required_right,
+    std::string scope_mode,
+    std::string descriptor_profile,
+    std::string sblr_operation_key,
+    std::string result_shape,
+    const BindingContext& context) {
+  BoundStatementFamilyEvidence bound;
+  bound.ast_family = ast_family;
+  bound.header.surface_key = std::move(surface_key);
+  bound.header.command_family = std::move(command_family);
+  bound.header.database_uuid = context.database_uuid;
+  bound.header.principal_uuid = context.principal_uuid;
+  bound.header.catalog_epoch = context.catalog_epoch;
+  bound.header.registry_snapshot_uuid = context.registry_snapshot_uuid;
+  bound.header.required_right = std::move(required_right);
+  bound.header.scope_mode = std::move(scope_mode);
+  bound.header.edition_gate_result = "allowed";
+  bound.header.profile_gate_result = "allowed";
+  bound.header.sblr_operation_key = std::move(sblr_operation_key);
+  bound.header.result_shape = std::move(result_shape);
+  bound.header.diagnostic_shape = "diag.generic.success.v1";
+  bound.header.trace_key = "SBSQL-MISS-002-FAMILY-CONTRACT";
+  bound.descriptor_profile = std::move(descriptor_profile);
+  bound.message_vector_shape = bound.header.result_shape;
+  return bound;
+}
+
 std::string SerializeToJson(const BoundShowIdentity& bound) {
   std::ostringstream out;
   out << "{\n";
@@ -147,6 +179,28 @@ std::string SerializeToJson(const BoundShowIdentity& bound) {
   out << "  \"fields\": {\n";
   out << "    \"show_kind\": \"" << JsonEscape(scratchbird::parser::ast::ToString(bound.show_kind)) << "\"\n";
   out << "  }\n";
+  out << "}\n";
+  return out.str();
+}
+
+std::string SerializeToJson(const BoundStatementFamilyEvidence& bound) {
+  std::ostringstream out;
+  out << "{\n";
+  out << "  \"bound_ast_format_version\": " << bound.header.bound_ast_format_version << ",\n";
+  out << "  \"bound_ast_node\": \"BoundStatementFamilyEvidence\",\n";
+  out << "  \"ast_node\": \"" << JsonEscape(scratchbird::parser::ast::ToString(bound.ast_family)) << "\",\n";
+  out << "  \"surface_key\": \"" << JsonEscape(bound.header.surface_key) << "\",\n";
+  out << "  \"command_family\": \"" << JsonEscape(bound.header.command_family) << "\",\n";
+  out << "  \"database_uuid\": \"" << JsonEscape(bound.header.database_uuid) << "\",\n";
+  out << "  \"principal_uuid\": \"" << JsonEscape(bound.header.principal_uuid) << "\",\n";
+  out << "  \"catalog_epoch\": \"" << JsonEscape(bound.header.catalog_epoch) << "\",\n";
+  out << "  \"registry_snapshot_uuid\": \"" << JsonEscape(bound.header.registry_snapshot_uuid) << "\",\n";
+  out << "  \"required_right\": \"" << JsonEscape(bound.header.required_right) << "\",\n";
+  out << "  \"scope_mode\": \"" << JsonEscape(bound.header.scope_mode) << "\",\n";
+  out << "  \"descriptor_profile\": \"" << JsonEscape(bound.descriptor_profile) << "\",\n";
+  out << "  \"sblr_operation_key\": \"" << JsonEscape(bound.header.sblr_operation_key) << "\",\n";
+  out << "  \"result_shape\": \"" << JsonEscape(bound.header.result_shape) << "\",\n";
+  out << "  \"message_vector_shape\": \"" << JsonEscape(bound.message_vector_shape) << "\"\n";
   out << "}\n";
   return out.str();
 }

@@ -38,6 +38,16 @@ enum class ReferenceMode {
 
 enum class AstFamily {
   kShowIdentity,
+  kDml,
+  kTemporalBitemporal,
+  kStructuredType,
+  kDdlCatalog,
+  kBulkImportExport,
+  kMigrationManagement,
+  kSystemVariable,
+  kAcceleration,
+  kTransactionControl,
+  kCompatibilityRouteBackfill,
   kRefusal,
 };
 

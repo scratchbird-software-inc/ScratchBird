@@ -4725,8 +4725,8 @@ int main() {
                        "merge");
   RequireExactLowering("UPSERT INTO customer VALUES (1)",
                        "sblr.dml.operation.v3",
-                       "dml.insert_rows",
-                       "SBLR_DML_INSERT_ROWS",
+                       "dml.merge_rows",
+                       "SBLR_DML_MERGE_ROWS",
                        "right.write",
                        "upsert");
   RequireExactLowering("COPY customer FROM STDIN",

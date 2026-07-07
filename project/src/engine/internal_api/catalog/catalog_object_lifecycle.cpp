@@ -8,6 +8,7 @@
 
 #include "catalog/catalog_object_lifecycle.hpp"
 
+#include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 
@@ -1607,6 +1608,12 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   auto result = SuccessResult<EngineCatalogCreateObjectResult>(request.context, kOperation);
   FillObjectResult(&result, request.context, record, epoch);
   AddEvidence(&result, "resolver_boundary", "SBNAME1:" + object_uuid);
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          object_kind,
+                          object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          object_kind);
   return result;
 }
 
@@ -1664,6 +1671,12 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
   FillObjectResult(&result, request.context, *existing, epoch);
   AddEvidence(&result, "constraint_catalog_route", "sys.constraint_descriptor");
   AddEvidence(&result, "constraint_apply_count", std::to_string(request.constraints.size()));
+  AddDdlPublicationResult(&result,
+                          operation_id,
+                          "constraint",
+                          owner_object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          "constraint_descriptor");
   return result;
 }
 
@@ -1759,6 +1772,12 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
 
   auto result = SuccessResult<EngineCatalogAlterObjectResult>(request.context, kOperation);
   FillObjectResult(&result, request.context, replacement, epoch);
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          replacement.object_kind,
+                          object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          replacement.object_kind);
   return result;
 }
 
@@ -1815,6 +1834,12 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
   auto result = SuccessResult<EngineCatalogRenameObjectResult>(request.context, kOperation);
   FillObjectResult(&result, request.context, replacement, epoch);
   AddEvidence(&result, "resolver_boundary", "SBNAME1:" + object_uuid);
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          replacement.object_kind,
+                          object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          replacement.object_kind);
   return result;
 }
 
@@ -1870,6 +1895,12 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   AddEvidence(&result, "catalog_metadata_epoch", std::to_string(epoch));
   AddEvidence(&result, "metadata_cache_invalidation", object_uuid + ":" + std::to_string(epoch));
   AddRow(&result, {{"object_uuid", object_uuid}, {"object_kind", existing->object_kind}, {"lifecycle_state", "dropped"}});
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          existing->object_kind,
+                          object_uuid,
+                          result.catalog_row_uuid.canonical,
+                          existing->object_kind);
   return result;
 }
 

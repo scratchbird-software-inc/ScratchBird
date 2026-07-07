@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //
-// SBSQL source-layout landing zone. This file intentionally introduces no
-// runtime semantics in the layout-hardening execution_plan. Future work must add
-// family-specific implementation here rather than growing broad catch-all files.
+// SBSQL bounded source-layout anchor. Runtime behavior for this family is
+// implemented by the active planner diagnostics modules linked beside this
+// translation unit and covered by the corresponding proof gates. Keep
+// family-specific growth in this bounded area or in the named shared runtime
+// module, not in broad catch-all files.

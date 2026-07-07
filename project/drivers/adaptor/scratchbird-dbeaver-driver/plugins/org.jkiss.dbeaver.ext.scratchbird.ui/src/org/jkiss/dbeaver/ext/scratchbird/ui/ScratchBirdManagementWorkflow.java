@@ -248,9 +248,6 @@ final class ScratchBirdManagementWorkflow {
         if (permission.isDeterministicRefusal()) {
             return permission.kind() + ": " + permission.message();
         }
-        if (report != null && report.futureGated()) {
-            return "MISSING_SOURCE: Future-gated report source is visible only as a feature boundary.";
-        }
         return "NO_REFUSAL_RECORDED: current static posture admits inspection; server execution can still refuse.";
     }
 

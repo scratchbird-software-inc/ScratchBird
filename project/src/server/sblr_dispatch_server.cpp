@@ -3417,6 +3417,14 @@ const char* CatalogMutationPublicAbiOpcodeForOperation(std::string_view operatio
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
   if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
+  if (operation_id == "catalog.mutation.alter_type") return "SBLR_CATALOG_MUTATION_ALTER_TYPE";
+  if (operation_id == "catalog.mutation.drop_type") return "SBLR_CATALOG_MUTATION_DROP_TYPE";
+  if (operation_id == "catalog.type.show") return "SBLR_SHOW_TYPE";
+  if (operation_id == "catalog.type.show_all") return "SBLR_SHOW_TYPES";
+  if (operation_id == "query.structured_type.constructor") return "SBLR_QUERY_STRUCTURED_TYPE_CONSTRUCTOR";
+  if (operation_id == "query.structured_type.cast") return "SBLR_QUERY_STRUCTURED_TYPE_CAST";
+  if (operation_id == "query.structured_type.compare") return "SBLR_QUERY_STRUCTURED_TYPE_COMPARE";
+  if (operation_id == "query.structured_type.serialize") return "SBLR_QUERY_STRUCTURED_TYPE_SERIALIZE";
   if (operation_id == "catalog.mutation.alter_view") return "SBLR_CATALOG_MUTATION_ALTER_VIEW";
   if (operation_id == "catalog.mutation.create_udr") return "SBLR_CATALOG_MUTATION_CREATE_UDR";
   if (operation_id == "catalog.mutation.create_tenant") return "SBLR_CATALOG_MUTATION_CREATE_TENANT";
@@ -3699,8 +3707,10 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "lifecycle.shutdown_acknowledge") return "SBLR_LIFECYCLE_SHUTDOWN_ACKNOWLEDGE";
   if (operation_id == "lifecycle.drop_database") return "SBLR_LIFECYCLE_DROP_DATABASE";
   if (operation_id == "extensibility.register_udr_package") return "SBLR_EXTENSIBILITY_REGISTER_UDR_PACKAGE";
+  if (operation_id == "extensibility.alter_udr_package") return "SBLR_EXTENSIBILITY_ALTER_UDR_PACKAGE";
   if (operation_id == "extensibility.load_udr_package") return "SBLR_EXTENSIBILITY_LOAD_UDR_PACKAGE";
   if (operation_id == "extensibility.unload_udr_package") return "SBLR_EXTENSIBILITY_UNLOAD_UDR_PACKAGE";
+  if (operation_id == "extensibility.drop_udr_package") return "SBLR_EXTENSIBILITY_DROP_UDR_PACKAGE";
   if (operation_id == "extensibility.inspect_udr_packages") return "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES";
   if (operation_id == "extensibility.invoke_udr_package") return "SBLR_UDR_INVOKE";
   if (operation_id == "ddl.create_schema") return "SBLR_DDL_CREATE_SCHEMA";
@@ -3917,6 +3927,8 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
   if (family == "sblr.transaction.control.v3") return SblrOperationFamily::transaction_control;
   if (family == "sblr.query.relational.v3") return SblrOperationFamily::relational_query;
   if (family == "sblr.query.kv.v3") return SblrOperationFamily::structured_kv;
+  if (family == "sblr.kv.structured.read.v3") return SblrOperationFamily::structured_kv;
+  if (family == "sblr.kv.structured.mutate.v3") return SblrOperationFamily::structured_kv;
   if (family == "sblr.query.document.v3") return SblrOperationFamily::document;
   if (family == "sblr.query.graph.v3") return SblrOperationFamily::graph;
   if (family == "sblr.query.search.v3") return SblrOperationFamily::search;
@@ -3947,6 +3959,8 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
   if (family == "sblr.replication.consumer.v3") return SblrOperationFamily::replication_operation;
   if (family == "sblr.acceleration.gpu.v3") return SblrOperationFamily::acceleration_management;
   if (family == "sblr.acceleration.llvm.v3") return SblrOperationFamily::acceleration_management;
+  if (family == "sblr.versioned.history.read.v3") return SblrOperationFamily::versioned_history;
+  if (family == "sblr.versioned.history.mutate.v3") return SblrOperationFamily::versioned_history;
   if (family == "sblr.cluster.control.v3") return SblrOperationFamily::cluster_placement;
   if (family == "sblr.cluster.report.v3") return SblrOperationFamily::cluster_placement;
   return SblrOperationFamily::management_inspect;
@@ -3992,8 +4006,10 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
           operation_id != "transaction.set_characteristics" &&
           operation_id.starts_with("transaction.")) ||
          operation_id.starts_with("extensibility.register_udr_package") ||
+         operation_id.starts_with("extensibility.alter_udr_package") ||
          operation_id.starts_with("extensibility.load_udr_package") ||
          operation_id.starts_with("extensibility.unload_udr_package") ||
+         operation_id.starts_with("extensibility.drop_udr_package") ||
          operation_id.starts_with("extensibility.inspect_udr_packages") ||
          operation_id.starts_with("extensibility.invoke_udr_package") ||
          operation_id == "security.membership.grant" ||
@@ -4708,6 +4724,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "encoding", "line_ending", "delimiter", "quote", "escape",
         "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
         "limit", "offset",
+        "batch_on_column", "batch_limit", "series_name",
         "result_projection", "aggregate_function", "aggregate_source_column",
         "assertion_id", "actual_source_column", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
@@ -5917,8 +5934,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id.starts_with("extensibility.register_udr_package") ||
+      dispatch_operation_id.starts_with("extensibility.alter_udr_package") ||
       dispatch_operation_id.starts_with("extensibility.load_udr_package") ||
       dispatch_operation_id.starts_with("extensibility.unload_udr_package") ||
+      dispatch_operation_id.starts_with("extensibility.drop_udr_package") ||
       dispatch_operation_id.starts_with("extensibility.inspect_udr_packages") ||
       dispatch_operation_id.starts_with("extensibility.invoke_udr_package")) {
     constexpr std::string_view kUdrFields[] = {

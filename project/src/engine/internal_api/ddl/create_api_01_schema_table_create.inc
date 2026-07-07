@@ -236,6 +236,7 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   record.parent_schema_uuid = parent_schema_uuid;
   record.localized_names = names;
   record.default_name = SchemaTreeDefaultName(names, "unnamed_schema");
+  std::vector<std::string> schema_extension_payload;
   for (const auto& option : request.option_envelopes) {
     if (StartsWithLocal(option, "unresolved_schema_parent_path:")) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
@@ -255,6 +256,22 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
             MakeInvalidRequestDiagnostic("ddl.create_schema", "localized_comment_requires_language_and_text"));
       }
       record.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
+    } else if (StartsWithLocal(option, "schema_union_member:")) {
+      schema_extension_payload.push_back("schema_union_member=" + option.substr(20));
+    } else if (StartsWithLocal(option, "schema_union_policy:")) {
+      schema_extension_payload.push_back("schema_union_policy=" + option.substr(20));
+    } else if (StartsWithLocal(option, "schema_union_root:")) {
+      schema_extension_payload.push_back("schema_union_root=" + option.substr(18));
+    } else if (StartsWithLocal(option, "lifecycle_transition:")) {
+      schema_extension_payload.push_back("lifecycle_transition=" + option.substr(21));
+    } else if (StartsWithLocal(option, "mga_root_mutation_registry:")) {
+      schema_extension_payload.push_back("mga_root_mutation_registry=" + option.substr(27));
+    } else if (StartsWithLocal(option, "implementation_flavour:")) {
+      schema_extension_payload.push_back("implementation_flavour=" + option.substr(22));
+    } else if (StartsWithLocal(option, "filespace_diagnostic:")) {
+      schema_extension_payload.push_back("filespace_diagnostic=" + option.substr(21));
+    } else if (StartsWithLocal(option, "catalog_ddl_mutation_audit:")) {
+      schema_extension_payload.push_back("catalog_ddl_mutation_audit=" + option.substr(27));
     } else {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context,

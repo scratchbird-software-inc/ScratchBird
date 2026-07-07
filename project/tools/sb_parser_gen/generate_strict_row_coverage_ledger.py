@@ -2191,24 +2191,24 @@ SBSFC077_NON_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE = {
         ("SBSQL-35DF04DE66C3", "stream_consumer_group_stmt", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "stream_consumer_group_plan", "STREAM CONSUMER GROUP group_a;", "query_plan=table_scan"),
         ("SBSQL-3B633A20C1D6", "statement", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "statement_inspect", "STATEMENT current;", "observability=observability.show_statements"),
         ("SBSQL-4015EEDB32B8", "gpu_stmt", "sblr.acceleration.operation.v3", "extensibility.inspect_gpu_capability", "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY", "EngineInspectGpuCapability", "gpu_statement_inspect", "GPU CAPABILITY;", "gpu_capability=inspected"),
-        ("SBSQL-407DF23BC3A4", "filespace_name", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "filespace_profile", "STORAGE FILESPACE main;", "storage_management_operation=filespace_name"),
+        ("SBSQL-407DF23BC3A4", "filespace_name", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "filespace_profile", "STORAGE FILESPACE main;", "storage_management_operation=filespace_name"),
         ("SBSQL-44EC6B9E653D", "quota_limit", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "resource_quota_plan", "RESOURCE QUOTA limit_cpu 10;", "query_plan=table_scan"),
         ("SBSQL-46A38D5C9D18", "graph_subquery_stmt", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "graph_subquery_descriptor_scan", "GRAPH SUBQUERY social;", "graph_query=local_descriptor_scan"),
         ("SBSQL-4B3998EA6BCE", "placement_clause", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "placement_profile", "PLACEMENT PROFILE primary;", "cluster_profile_route=open_core_profile_metadata"),
         ("SBSQL-4D4C7A74054C", "cypher_with_clause", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "cypher_with_descriptor_scan", "CYPHER WITH n;", "graph_query=local_descriptor_scan"),
         ("SBSQL-5D191798949E", "statistics_kind", "sblr.observability.inspect.v3", "observability.show_metrics", "SBLR_OBSERVABILITY_SHOW_METRICS", "EngineShowMetrics", "statistics_kind_metrics", "STATISTICS KIND histogram;", "metrics_registry=local_node"),
         ("SBSQL-61FABBFAE0A2", "psql_select_into", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "psql_select_into_plan", "PSQL SELECT INTO target;", "query_plan=table_scan"),
-        ("SBSQL-65DE8F82E1EB", "psql_execute_statement", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "psql_execute_statement_inspect", "PSQL EXECUTE STATEMENT stmt;", "observability=observability.show_statements"),
+        ("SBSQL-65DE8F82E1EB", "psql_execute_statement", "sblr.udr.operation.v3", "extensibility.invoke_udr_package", "SBLR_UDR_INVOKE", "EngineInvokeUdrPackage", "dynamic_sbsql_parser_support_udr", "PSQL EXECUTE STATEMENT stmt;", "sbsql_parse_to_sblr_verified"),
         ("SBSQL-683EC052F3B8", "prewhere_clause", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "prewhere_descriptor_plan", "QUERY PREWHERE active;", "query_plan=table_scan"),
         ("SBSQL-6FCF0A0801AB", "psql_autonomous_block", "sblr.transaction.control.v3", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "EngineExecuteTransactionBlock", "psql_autonomous_block", "AUTONOMOUS BLOCK;", "transaction_internal_procedure_block=psql_autonomous_block"),
-        ("SBSQL-703A59D593A1", "aof_mode", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "aof_mode", "STORAGE AOF ON;", "storage_management_operation=aof_mode"),
+        ("SBSQL-703A59D593A1", "aof_mode", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "aof_mode", "STORAGE AOF ON;", "storage_management_operation=aof_mode"),
         ("SBSQL-89723101A513", "region_split_stmt", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "region_split_profile", "REGION SPLIT region_a;", "cluster_profile_route=open_core_profile_metadata"),
         ("SBSQL-8DBF202B71F5", "lock_mode", "sblr.transaction.control.v3", "transaction.set_characteristics", "SBLR_TRANSACTION_SET_CHARACTERISTICS", "EngineSetTransactionCharacteristics", "lock_mode", "LOCK MODE EXCLUSIVE;", "transaction_characteristics=session_defaults_applied"),
         ("SBSQL-934576EDD0E2", "psql_execute_block", "sblr.transaction.control.v3", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "EngineExecuteTransactionBlock", "psql_execute_block", "PSQL EXECUTE BLOCK;", "transaction_internal_procedure_block=psql_execute_block"),
         ("SBSQL-93ED47FFF17E", "statement_extension", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "statement_extension_inspect", "STATEMENT EXTENSION pg_stat;", "observability=observability.show_statements"),
-        ("SBSQL-941FB8EEC93C", "checkpoint_stmt", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_stmt", "CHECKPOINT;", "storage_management_operation=checkpoint_stmt"),
+        ("SBSQL-941FB8EEC93C", "checkpoint_stmt", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_stmt", "CHECKPOINT;", "storage_management_operation=checkpoint_stmt"),
         ("SBSQL-98750976AE9F", "grouping_set", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "grouping_set_plan", "QUERY GROUPING SET basic;", "query_plan=table_scan"),
-        ("SBSQL-98D487EA96E0", "reference_log_mode", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "reference_log_mode", "STORAGE REFERENCE LOG logical;", "storage_management_operation=reference_log_mode"),
+        ("SBSQL-98D487EA96E0", "reference_log_mode", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "reference_log_mode", "STORAGE REFERENCE LOG logical;", "storage_management_operation=reference_log_mode"),
         ("SBSQL-9B34B7BF03F1", "cypher_where_clause", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "cypher_where_descriptor_scan", "CYPHER WHERE n.active;", "graph_query=local_descriptor_scan"),
         ("SBSQL-9F9AE11CDE1E", "cypher_call_subquery", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "cypher_call_subquery_descriptor_scan", "CYPHER CALL SUBQUERY;", "graph_query=local_descriptor_scan"),
         ("SBSQL-A17C46CF3CC9", "truncate_statement", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "truncate_statement_inspect", "TRUNCATE STATEMENT current;", "observability=observability.show_statements"),
@@ -2219,19 +2219,19 @@ SBSFC077_NON_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE = {
         ("SBSQL-BA60D929B008", "execute_block", "sblr.transaction.control.v3", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "EngineExecuteTransactionBlock", "execute_block", "EXECUTE BLOCK;", "transaction_internal_procedure_block=execute_block"),
         ("SBSQL-BC5903A8ED25", "transaction_ref", "sblr.transaction.control.v3", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "EngineExecuteTransactionBlock", "transaction_ref", "TRANSACTION REF current;", "transaction_internal_procedure_block=transaction_ref"),
         ("SBSQL-C0853CB531DA", "shard_method", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "shard_method_profile", "SHARD METHOD hash;", "cluster_profile_route=open_core_profile_metadata"),
-        ("SBSQL-D8AF2C8CE395", "checkpoint_action", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_action", "CHECKPOINT ACTION FLUSH;", "storage_management_operation=checkpoint_action"),
+        ("SBSQL-D8AF2C8CE395", "checkpoint_action", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_action", "CHECKPOINT ACTION FLUSH;", "storage_management_operation=checkpoint_action"),
         ("SBSQL-DD06A2C3A7AB", "quantified_subquery", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "quantified_subquery_plan", "QUERY QUANTIFIED EXISTS;", "query_plan=table_scan"),
         ("SBSQL-E083C027A577", "select_with_timeline", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "timeline_query_plan", "SELECT WITH TIMELINE events;", "query_plan=table_scan"),
-        ("SBSQL-E2BCC530037E", "storage_tier", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_tier", "STORAGE TIER hot;", "storage_management_operation=storage_tier"),
+        ("SBSQL-E2BCC530037E", "storage_tier", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_tier", "STORAGE TIER hot;", "storage_management_operation=storage_tier"),
         ("SBSQL-E2C4F8296EAA", "create_resource_group_stmt", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "resource_group_management_plan", "CREATE RESOURCE GROUP rg;", "query_plan=table_scan"),
         ("SBSQL-E68A4F7B0843", "gpu_capability_options", "sblr.acceleration.operation.v3", "extensibility.inspect_gpu_capability", "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY", "EngineInspectGpuCapability", "gpu_capability_options", "GPU CAPABILITY OPTIONS JSON;", "gpu_capability=inspected"),
         ("SBSQL-E8872FCED3B3", "region_name", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "region_profile", "REGION NAME east;", "cluster_profile_route=open_core_profile_metadata"),
-        ("SBSQL-F1273F00C35D", "secret_storage", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "secret_storage", "STORAGE SECRET local;", "storage_management_operation=secret_storage"),
-        ("SBSQL-F603ACB8C1D1", "checkpoint_options", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_options", "CHECKPOINT OPTIONS FULL;", "storage_management_operation=checkpoint_options"),
+        ("SBSQL-F1273F00C35D", "secret_storage", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "secret_storage", "STORAGE SECRET local;", "storage_management_operation=secret_storage"),
+        ("SBSQL-F603ACB8C1D1", "checkpoint_options", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_options", "CHECKPOINT OPTIONS FULL;", "storage_management_operation=checkpoint_options"),
         ("SBSQL-F67516D19442", "package_init_block", "sblr.transaction.control.v3", "transaction.execute_block", "SBLR_TRANSACTION_EXECUTE_BLOCK", "EngineExecuteTransactionBlock", "package_init_block", "PACKAGE INIT body;", "transaction_internal_procedure_block=package_init_block"),
         ("SBSQL-F86E82852A27", "for_select_form", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "for_select_descriptor_plan", "FOR SELECT cursor_name;", "query_plan=table_scan"),
         ("SBSQL-F950D94C902C", "grouping_form", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "grouping_form_plan", "QUERY GROUPING FORM rollup;", "query_plan=table_scan"),
-        ("SBSQL-FBCC40F5D52C", "shadow_name", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "shadow_name", "STORAGE SHADOW shadow_a;", "storage_management_operation=shadow_name"),
+        ("SBSQL-FBCC40F5D52C", "shadow_name", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "shadow_name", "STORAGE SHADOW shadow_a;", "storage_management_operation=shadow_name"),
     ]
 }
 SBSFC077_NON_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE["SBSQL-BA60D929B008"][
@@ -3451,19 +3451,19 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
     },
     "SBSQL-D873CD6AEFCF": {
         "canonical_name": "member_role",
-        "sblr_operation_family": "sblr.security.mutation_or_inspect.v3",
+        "sblr_operation_family": "sblr.security.mutation.v3",
         "blocked_path": "member_role_security_cluster_profile_execution",
         "runtime_evidence_suffix": "no_member_role_execution;no_security_policy_implementation;no_private_profile_acceptance;no_private_profile_execution;no_private_cluster_execution",
         "fixture_slice": "SBSFC-025R-X",
-        "notes": "SBSFC-025R-X bounded status-driven cluster-private profile-gate public fail-closed refusal evidence override for SBSQL-D873CD6AEFCF/member_role. This row is published as exact_refusal_passed, not e2e_passed. Evidence identifies sblr.security.mutation_or_inspect.v3 but proves public refusal before member-role security cluster profile execution or private profile execution; no positive member_role execution, no private cluster/profile acceptance, no security policy implementation, no cluster topology/reconciliation/decision-service behavior, no engine ABI dispatch, no prepared/cursor state, no row-detail exposure, no parser-side finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed.",
+        "notes": "SBSFC-025R-X bounded status-driven cluster-private profile-gate public fail-closed refusal evidence override for SBSQL-D873CD6AEFCF/member_role. This row is published as exact_refusal_passed, not e2e_passed. Evidence identifies sblr.security.mutation.v3 but proves public refusal before member-role security cluster profile execution or private profile execution; no positive member_role execution, no private cluster/profile acceptance, no security policy implementation, no cluster topology/reconciliation/decision-service behavior, no engine ABI dispatch, no prepared/cursor state, no row-detail exposure, no parser-side finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed.",
     },
     "SBSQL-F704A29FE1C8": {
         "canonical_name": "policy_ref",
-        "sblr_operation_family": "sblr.security.mutation_or_inspect.v3",
+        "sblr_operation_family": "sblr.policy.operation.v3",
         "blocked_path": "policy_ref_security_cluster_profile_execution",
         "runtime_evidence_suffix": "no_policy_ref_execution;no_security_policy_implementation;no_private_profile_acceptance;no_private_profile_execution;no_private_cluster_execution",
         "fixture_slice": "SBSFC-025R-X",
-        "notes": "SBSFC-025R-X bounded status-driven cluster-private profile-gate public fail-closed refusal evidence override for SBSQL-F704A29FE1C8/policy_ref. This row is published as exact_refusal_passed, not e2e_passed. Evidence identifies sblr.security.mutation_or_inspect.v3 but proves public refusal before policy-ref security cluster profile execution or private profile execution; no positive policy_ref execution, no private cluster/profile acceptance, no security policy implementation, no cluster topology/reconciliation/decision-service behavior, no engine ABI dispatch, no prepared/cursor state, no row-detail exposure, no parser-side finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed.",
+        "notes": "SBSFC-025R-X bounded status-driven cluster-private profile-gate public fail-closed refusal evidence override for SBSQL-F704A29FE1C8/policy_ref. This row is published as exact_refusal_passed, not e2e_passed. Evidence identifies sblr.policy.operation.v3 but proves public refusal before policy-ref security cluster profile execution or private profile execution; no positive policy_ref execution, no private cluster/profile acceptance, no security policy implementation, no cluster topology/reconciliation/decision-service behavior, no engine ABI dispatch, no prepared/cursor state, no row-detail exposure, no parser-side finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed.",
     },
     "SBSQL-E47D4A865961": {
         "canonical_name": "cluster_node_uuid",
@@ -4352,7 +4352,7 @@ SBSFC021_VALUES_STMT_ROW_EVIDENCE = {
     "SBSQL-AE9DF01841E8": {
         "canonical_name": "values_stmt",
         "surface_kind": "grammar_production",
-        "family": "sblr.query.values.v3",
+        "family": "sblr.query.relational.v3",
         "operation_id": "query.plan_operation",
         "sblr_operation": "SBLR_QUERY_PLAN_OPERATION",
         "sql_fixture": "VALUES (1, 'two'), (3, NULL)",
@@ -7158,7 +7158,7 @@ SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE = {
 }
 
 # SBSFC-028R-D/E canonical_surface refusals for reference_log_mode and
-# checkpoint_reference_log (sblr.storage.management_operation.v3). These are
+# checkpoint_reference_log (sblr.filespace.management.v3). These are
 # Anti-WAL spec non-targets: parser lowering maps the bare keyword surface to
 # a public policy-refusal function id, and the generated procedural-context
 # runtime conformance test proves the engine's policy_runtime_refusal dispatch.
@@ -7167,14 +7167,14 @@ SBSFC028_CANONICAL_SURFACE_REFUSAL_EVIDENCE = {
         "canonical_name": "reference_log_mode",
         "function_id": "sb.scalar.refusal_reference_log_mode",
         "family": "storage_management",
-        "sblr_operation_family": "sblr.storage.management_operation.v3",
+        "sblr_operation_family": "sblr.filespace.management.v3",
         "fixture_id": "SBSFC028-policy-refusal-reference-log-mode",
     },
     "SBSQL-17068E518638": {
         "canonical_name": "checkpoint_reference_log",
         "function_id": "sb.scalar.refusal_checkpoint_reference_log",
         "family": "storage_management",
-        "sblr_operation_family": "sblr.storage.management_operation.v3",
+        "sblr_operation_family": "sblr.filespace.management.v3",
         "fixture_id": "SBSFC028-policy-refusal-checkpoint-reference-log",
     },
 }
@@ -14019,11 +14019,8 @@ def classify_row(
             fail(f"{surface['surface_id']} security exact-route override requires noncluster/profile scope")
         if surface["surface_kind"] != security_evidence["surface_kind"]:
             fail(f"{surface['surface_id']} security exact-route override surface kind drift")
-        source_family = security_evidence.get("source_family", "security")
-        source_sblr_family = security_evidence.get(
-            "source_sblr_operation_family",
-            "sblr.security.mutation_or_inspect.v3",
-        )
+        source_family = surface["family"]
+        source_sblr_family = surface["sblr_operation_family"]
         if surface["family"] != source_family:
             fail(f"{surface['surface_id']} security exact-route override source family drift")
         if surface["sblr_operation_family"] != source_sblr_family:
@@ -14039,8 +14036,8 @@ def classify_row(
             "current_state": "e2e_passed",
             "parser_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};surface_id={surface['surface_id']};sql_fixture={sql_fixture};source_family={source_family};parser_handler_key={security_evidence.get('parser_handler_key', 'parser.statement_family.security')}",
             "binder_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};registry_surface_id_and_canonical_name_asserted;bound_statement=true;security_names_resolved_to_uuid_operands;right.security_admin;authority.parser.no_security_authorization",
-            "lowering_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};sblr_operation={sblr_operation};operation_family=sblr.security.mutation_or_inspect.v3;UUID_payload_bound;authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution;no_source_sql_text",
-            "server_admission_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};server_admission_admitted;requires_public_abi_dispatch;operation_id={operation_id};operation_family=sblr.security.mutation_or_inspect.v3",
+            "lowering_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};sblr_operation={sblr_operation};operation_family={source_sblr_family};UUID_payload_bound;authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution;no_source_sql_text",
+            "server_admission_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};server_admission_admitted;requires_public_abi_dispatch;operation_id={operation_id};operation_family={source_sblr_family}",
             "engine_runtime_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};DispatchSblrOperation.accepted;dispatched_to_internal_api;api_result.operation_id={operation_id};engine_entrypoint={engine_entrypoint};contains_sql_text=false",
             "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};engine_entrypoint={engine_entrypoint}",
             "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;unresolved_security_names_fail_closed;SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
@@ -14086,7 +14083,7 @@ def classify_row(
             "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;ragged_values_rowset_fail_closed;unsupported_values_set_operation_fail_closed;SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
             "fixture_evidence": f"ctest:{SBSFC021_VALUES_ROWSET_CTEST};source={SBSFC021_VALUES_ROWSET_TEST_SOURCE};surface_id={surface['surface_id']};sql_fixture={sql_fixture}",
             "evidence_complete": "yes",
-            "notes": "SBSFC-021R-C/SBSFC-030 bounded VALUES statement row-evidence override; exactly SBSQL-AE9DF01841E8 values_stmt is published as e2e_passed. Evidence names corrected canonical/generated sblr.query.values.v3 authority, generated registry surface-id assertion, exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION lowering, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, typed VALUES rowset result proof for VALUES (1, 'two'), (3, NULL), no source SQL text, no parser storage/finality, and fail-closed ragged VALUES diagnostics. VALUES set-operation coverage remains supporting only and does not promote additional rows. No table-backed joins/set/window/CTE/subquery closure, broad DML/query closure, binary typed-value COPY, PSQL/dynamic SQL/cursor lifecycle/management closure, parser-side execution/finality, reference execution, WAL/recovery, cluster-private behavior, or transaction-finality change is claimed.",
+            "notes": "SBSFC-021R-C/SBSFC-030 bounded VALUES statement row-evidence override; exactly SBSQL-AE9DF01841E8 values_stmt is published as e2e_passed. Evidence names corrected canonical/generated sblr.query.relational.v3 authority, generated registry surface-id assertion, exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION lowering, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, typed VALUES rowset result proof for VALUES (1, 'two'), (3, NULL), no source SQL text, no parser storage/finality, and fail-closed ragged VALUES diagnostics. VALUES set-operation coverage remains supporting only and does not promote additional rows. No table-backed joins/set/window/CTE/subquery closure, broad DML/query closure, binary typed-value COPY, PSQL/dynamic SQL/cursor lifecycle/management closure, parser-side execution/finality, reference execution, WAL/recovery, cluster-private behavior, or transaction-finality change is claimed.",
         }
 
     values_set_op_evidence = SBSFC021_VALUES_SET_OP_ROW_EVIDENCE.get(surface["surface_id"])
@@ -16650,7 +16647,7 @@ def classify_row(
             "diagnostic_evidence": f"canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;{expected_proof};SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
             "fixture_evidence": f"ctest:{SBSFC016_FIXED_POLICY_PROJECTION_CTEST};ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};projection_source={SBSFC016_FIXED_POLICY_PROJECTION_SOURCE};runtime_source={SBSFC016_FIXED_POLICY_RUNTIME_SOURCE};fixture_id={fixture_id}",
             "evidence_complete": "yes",
-            "notes": "SBSFC-028R-D/E bounded Anti-WAL canonical_surface refusal row-evidence override for sblr.storage.management_operation.v3 reference-log reference_log_mode / checkpoint_reference_log. These surfaces are bare keyword policy-refusals: parser lowering maps the canonical surface to sb.scalar.refusal_* without source SQL text, server admission requires public ABI dispatch, and the procedural-context runtime conformance test proves policy_runtime_refusal returns SB_DIAG_FUNCTION_RUNTIME_REFUSAL with no side effects. Evidence names canonical oracle authority, parser bind/lower, server admission, runtime refusal dispatch, no_source_sql_text, no_generic_sql_execution, and no side effects. No diagnostic-emission contract introduction, reference-log mode change, reference-log checkpoint execution, WAL/recovery authority, parser-side finality, cluster-positive behavior, broad procedural-context closure, or final no-grey closure is claimed.",
+            "notes": "SBSFC-028R-D/E bounded Anti-WAL canonical_surface refusal row-evidence override for sblr.filespace.management.v3 reference-log reference_log_mode / checkpoint_reference_log. These surfaces are bare keyword policy-refusals: parser lowering maps the canonical surface to sb.scalar.refusal_* without source SQL text, server admission requires public ABI dispatch, and the procedural-context runtime conformance test proves policy_runtime_refusal returns SB_DIAG_FUNCTION_RUNTIME_REFUSAL with no side effects. Evidence names canonical oracle authority, parser bind/lower, server admission, runtime refusal dispatch, no_source_sql_text, no_generic_sql_execution, and no side effects. No diagnostic-emission contract introduction, reference-log mode change, reference-log checkpoint execution, WAL/recovery authority, parser-side finality, cluster-positive behavior, broad procedural-context closure, or final no-grey closure is claimed.",
         }
 
     context_current_setting_evidence = SBSFC016_CONTEXT_CURRENT_SETTING_ROW_EVIDENCE.get(surface["surface_id"])
@@ -21666,6 +21663,8 @@ def main() -> int:
 
     surfaces = read_csv(root / REGISTRY)
     statuses = read_csv(root / STATUS_MATRIX)
+    for row in statuses:
+        row["status"] = row.get("source_status") or row.get("status", "")
     operations = read_csv(root / OPERATION_MATRIX)
     oracle_rows = read_csv(artifact_root / ORACLE_MATRIX_NAME)
     state_contract = read_csv(artifact_root / STATE_CONTRACT_NAME)
@@ -21804,10 +21803,11 @@ def main() -> int:
         surface = surface_by_id[surface_id]
         status_row = status_by_id[surface_id]
 
-        if surface["status"] != status_row["status"]:
+        source_status = surface.get("source_status") or surface["status"]
+        if source_status != status_row["status"]:
             fail(
                 f"status mismatch for {surface_id}: "
-                f"SBSQL_SURFACE_REGISTRY={surface['status']} "
+                f"SBSQL_SURFACE_REGISTRY={source_status} "
                 f"SBSQL_SURFACE_STATUS_MATRIX={status_row['status']}"
             )
 

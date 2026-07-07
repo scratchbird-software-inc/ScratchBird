@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Threads REQUIRED)
 
 if(NOT TARGET sb_storage_disk)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/disk
@@ -19,6 +20,34 @@ endif()
 if(NOT TARGET sb_storage_filespace)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/filespace
                    ${CMAKE_CURRENT_BINARY_DIR}/src_storage_filespace)
+endif()
+if(NOT TARGET sbl_listener_control_plane)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/listener
+                   ${CMAKE_CURRENT_BINARY_DIR}/src_listener_control_plane)
+endif()
+if(NOT TARGET sbl_listener_runtime)
+  add_library(sbl_listener_runtime
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_config.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_metrics.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_socket_identity.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_support_bundle.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_tls_policy.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/dbbt_lpreface.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/handoff_claim_reader.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/sbps_preauth.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/parser_pool.cpp
+    ${PROJECT_SOURCE_DIR}/src/listener/listener_runtime.cpp
+  )
+  target_include_directories(sbl_listener_runtime PUBLIC ${PROJECT_SOURCE_DIR}/src/listener)
+  target_compile_features(sbl_listener_runtime PUBLIC cxx_std_23)
+  target_link_libraries(sbl_listener_runtime PUBLIC
+    sbl_listener_control_plane
+    sbl_manager_protocol
+    Threads::Threads
+  )
+  if(WIN32)
+    target_link_libraries(sbl_listener_runtime PUBLIC ws2_32)
+  endif()
 endif()
 
 include_directories(

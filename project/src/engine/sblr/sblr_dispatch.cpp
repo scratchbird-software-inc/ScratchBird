@@ -1158,8 +1158,10 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "cluster.validate_insert_route_fence") return "SBLR_CLUSTER_VALIDATE_INSERT_ROUTE_FENCE";
   if (operation_id == "cluster.profile_operation") return "SBLR_CLUSTER_PROFILE_OPERATION";
   if (operation_id == "extensibility.register_udr_package") return "SBLR_EXTENSIBILITY_REGISTER_UDR_PACKAGE";
+  if (operation_id == "extensibility.alter_udr_package") return "SBLR_EXTENSIBILITY_ALTER_UDR_PACKAGE";
   if (operation_id == "extensibility.load_udr_package") return "SBLR_EXTENSIBILITY_LOAD_UDR_PACKAGE";
   if (operation_id == "extensibility.unload_udr_package") return "SBLR_EXTENSIBILITY_UNLOAD_UDR_PACKAGE";
+  if (operation_id == "extensibility.drop_udr_package") return "SBLR_EXTENSIBILITY_DROP_UDR_PACKAGE";
   if (operation_id == "extensibility.inspect_udr_packages") return "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES";
   if (operation_id == "extensibility.invoke_udr_package") return "SBLR_UDR_INVOKE";
   if (operation_id == "extensibility.register_parser_package") return "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE";
@@ -4071,6 +4073,19 @@ api::EngineDeleteRowsRequest TypedDeleteRowsRequest(const SblrDispatchRequest& r
   EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
   typed.delete_predicate = std::move(base.predicate);
+  typed.delete_surface_variant = api::SecurityOptionValue(base, "dml_surface_variant:");
+  if (typed.delete_surface_variant.empty()) {
+    typed.delete_surface_variant = api::SecurityOptionValue(base, "delete_surface_variant:");
+  }
+  if (typed.delete_surface_variant.empty()) {
+    typed.delete_surface_variant = "delete";
+  }
+  typed.batch_on_column = api::SecurityOptionValue(base, "batch_on_column:");
+  typed.batch_limit_rows = DispatchOptionU64(base, "batch_limit:");
+  if (typed.batch_limit_rows == 0) {
+    typed.batch_limit_rows = DispatchOptionU64(base, "limit:");
+  }
+  typed.series_name = api::SecurityOptionValue(base, "series_name:");
   static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
@@ -4083,6 +4098,18 @@ api::EngineMergeRowsRequest TypedMergeRowsRequest(const SblrDispatchRequest& req
   typed.match_predicate = std::move(base.predicate);
   typed.input_rows = std::move(base.rows);
   typed.update_assignments = std::move(base.assignments);
+  typed.merge_surface_variant = api::SecurityOptionValue(base, "dml_surface_variant:");
+  if (typed.merge_surface_variant.empty()) {
+    typed.merge_surface_variant = api::SecurityOptionValue(base, "merge_surface_variant:");
+  }
+  if (typed.merge_surface_variant.empty()) {
+    typed.merge_surface_variant = "merge";
+  }
+  typed.conflict_target_column = api::SecurityOptionValue(base, "conflict_target_column:");
+  if (typed.conflict_target_column.empty()) {
+    typed.conflict_target_column = api::SecurityOptionValue(base, "on_conflict_target_column:");
+  }
+  typed.on_conflict_action = api::SecurityOptionValue(base, "on_conflict_action:");
   typed.update_when_matched = api::SecurityOptionBool(base, "update_when_matched:", true);
   typed.insert_when_not_matched = api::SecurityOptionBool(base, "insert_when_not_matched:", true);
   static_cast<api::EngineApiRequest&>(typed) = std::move(base);
@@ -5163,8 +5190,10 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
            op == "filespace.salvage") result.api_result = api::EngineFilespaceLifecycleOperation(TypedRequest<api::EngineFilespaceLifecycleRequest>(request));
   else if (op == "storage.manage_operation") result.api_result = api::EngineStorageManagementOperation(TypedRequest<api::EngineStorageManagementRequest>(request));
   else if (op == "extensibility.register_udr_package") result.api_result = api::EngineRegisterUdrPackage(TypedRequest<api::EngineRegisterUdrPackageRequest>(request));
+  else if (op == "extensibility.alter_udr_package") result.api_result = api::EngineAlterUdrPackage(TypedRequest<api::EngineAlterUdrPackageRequest>(request));
   else if (op == "extensibility.load_udr_package") result.api_result = api::EngineLoadUdrPackage(TypedRequest<api::EngineLoadUdrPackageRequest>(request));
   else if (op == "extensibility.unload_udr_package") result.api_result = api::EngineUnloadUdrPackage(TypedRequest<api::EngineUnloadUdrPackageRequest>(request));
+  else if (op == "extensibility.drop_udr_package") result.api_result = api::EngineDropUdrPackage(TypedRequest<api::EngineDropUdrPackageRequest>(request));
   else if (op == "extensibility.inspect_udr_packages") result.api_result = api::EngineInspectUdrPackages(TypedRequest<api::EngineInspectUdrPackageRequest>(request));
   else if (op == "extensibility.invoke_udr_package") result.api_result = api::EngineInvokeUdrPackage(TypedRequest<api::EngineInvokeUdrPackageRequest>(request));
   else if (op == "extensibility.register_parser_package") result.api_result = api::EngineRegisterParserPackage(TypedRequest<api::EngineRegisterParserPackageRequest>(request));

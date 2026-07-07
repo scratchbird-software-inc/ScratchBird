@@ -8,13 +8,17 @@
 
 #include "extensibility/udr_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "database_lifecycle.hpp"
 #include "metric_registry.hpp"
 #include "parser_package_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sbu_firebird_parser_support.hpp"
 #include "sbu_sbsql_parser_support.hpp"
 #include "sb_udr_runtime.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +31,8 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
 namespace metrics = scratchbird::core::metrics;
 namespace server = scratchbird::server;
 namespace udr_runtime = scratchbird::udr::runtime;
@@ -34,11 +40,28 @@ namespace firebird_udr = scratchbird::udr::firebird_parser_support;
 namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
 
 constexpr std::string_view kDatabaseUuid = "019e13b0-0000-7000-8000-000000000001";
+constexpr std::uint64_t kDefaultLifecycleTransactionMarker = 10;
+
+std::string g_lifecycle_database_uuid = std::string(kDatabaseUuid);
+std::uint64_t g_lifecycle_local_transaction_id = 0;
+api::EngineUuid g_lifecycle_transaction_uuid;
+std::uint64_t g_lifecycle_snapshot_visible_through_local_transaction_id = 0;
+std::string g_lifecycle_isolation_level;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(EXIT_FAILURE);
+  }
+}
+
+template <typename TResult>
+void RequireOk(const TResult& result, std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Require(false, message);
   }
 }
 
@@ -145,19 +168,90 @@ void ReplaceOption(std::vector<std::string>* options,
 }
 
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
-                                  std::uint64_t tx = 10) {
+                                  std::uint64_t tx = kDefaultLifecycleTransactionMarker) {
+  const bool use_lifecycle_tx =
+      tx == kDefaultLifecycleTransactionMarker &&
+      g_lifecycle_local_transaction_id != 0;
+  const std::uint64_t effective_tx =
+      use_lifecycle_tx ? g_lifecycle_local_transaction_id : tx;
   api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.request_id = "udr-lifecycle-conformance";
   context.database_path = database_path.string();
-  context.database_uuid.canonical = std::string(kDatabaseUuid);
+  context.database_uuid.canonical = g_lifecycle_database_uuid;
   context.principal_uuid.canonical = "019e13b0-0000-7000-8000-000000000201";
   context.session_uuid.canonical = "019e13b0-0000-7000-8000-000000000202";
-  context.transaction_uuid.canonical = "019e13b0-0000-7000-8000-000000000203";
-  context.local_transaction_id = tx;
+  if (use_lifecycle_tx) {
+    context.transaction_uuid = g_lifecycle_transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id =
+        g_lifecycle_snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = g_lifecycle_isolation_level;
+  } else if (effective_tx != 0) {
+    context.transaction_uuid.canonical = "019e13b0-0000-7000-8000-000000000203";
+  }
+  context.local_transaction_id = effective_tx;
   context.security_context_present = true;
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 3;
   context.security_epoch = 3;
   context.resource_epoch = 3;
+  context.name_resolution_epoch = 3;
   return context;
+}
+
+std::uint64_t NowMillis() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+
+platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
+  const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(kind, millis);
+  return generated.ok() ? generated.value : platform::TypedUuid{};
+}
+
+void CreateLifecycleDatabase(const std::filesystem::path& database_path) {
+  std::filesystem::remove(database_path);
+  std::filesystem::remove(database_path.string() + ".sb.owner.lock");
+  std::filesystem::remove(database_path.string() + ".sb.api_events");
+  std::filesystem::remove(database_path.string() + ".sb.crud_events");
+
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  const auto seed = NowMillis();
+  create.path = database_path.string();
+  create.database_uuid = Generate(platform::UuidKind::database, seed);
+  create.filespace_uuid = Generate(platform::UuidKind::filespace, seed + 1);
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
+          "failed to generate UUIDs for UDR lifecycle database");
+  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+          "failed to create UDR lifecycle database");
+  g_lifecycle_database_uuid = uuid::UuidToString(create.database_uuid.value);
+}
+
+void BeginLifecycleTransaction(const std::filesystem::path& database_path) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = Context(database_path, 0);
+  begin.context.transaction_uuid.canonical.clear();
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  RequireOk(begun, "failed to begin UDR lifecycle MGA transaction");
+  g_lifecycle_local_transaction_id = begun.local_transaction_id;
+  g_lifecycle_transaction_uuid = begun.transaction_uuid;
+  g_lifecycle_snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  g_lifecycle_isolation_level = begun.isolation_level;
+}
+
+void CommitLifecycleTransaction(const std::filesystem::path& database_path) {
+  api::EngineCommitTransactionRequest commit;
+  commit.context = Context(database_path);
+  RequireOk(api::EngineCommitTransaction(commit),
+            "failed to commit UDR lifecycle MGA transaction");
 }
 
 api::EngineLocalizedName LocalizedName(std::string name) {
@@ -176,7 +270,7 @@ TRequest UdrRequest(const std::filesystem::path& database_path,
                     std::uint64_t tx = 10) {
   TRequest request;
   request.context = Context(database_path, tx);
-  request.target_database.uuid.canonical = std::string(kDatabaseUuid);
+  request.target_database.uuid.canonical = g_lifecycle_database_uuid;
   request.target_database.object_kind = "database";
   request.target_object.uuid.canonical = std::string(uuid);
   request.target_object.object_kind = "udr_package";
@@ -222,7 +316,11 @@ std::string ReadFile(const std::filesystem::path& path) {
 
 void SeedActiveTransaction(const std::filesystem::path& database_path, std::uint64_t tx) {
   std::ofstream out(database_path.string() + ".sb.crud_events", std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t" << tx << "\tudr_lifecycle_test\n";
+  const std::uint64_t effective_tx =
+      tx == kDefaultLifecycleTransactionMarker && g_lifecycle_local_transaction_id != 0
+          ? g_lifecycle_local_transaction_id
+          : tx;
+  out << "SBCRUD1\tTX_BEGIN\t" << effective_tx << "\tudr_lifecycle_test\n";
   Require(static_cast<bool>(out), "failed to seed MGA transaction evidence for UDR test");
 }
 
@@ -484,8 +582,9 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(RowFieldContains(inspected, "runtime_language", "cpp"),
           "UDR inspect did not expose the C++ runtime-language inventory");
 
+  CommitLifecycleTransaction(database_path);
   const auto restart_catalog = api::VisibleApiBehaviorRecords(
-      Context(database_path, 200), "udr_package", 200);
+      Context(database_path, 0), "udr_package", 0);
   Require(restart_catalog.size() >= 2,
           "restart catalog reload did not reconstruct UDR package rows");
 
@@ -530,6 +629,8 @@ int main() {
 
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "udr_lifecycle.sbdb";
+  CreateLifecycleDatabase(database_path);
+  BeginLifecycleTransaction(database_path);
   TestEngineOwnedUdrLifecycle(database_path);
   TestServerSblrUdrAdmission();
   std::filesystem::remove_all(temp_dir);

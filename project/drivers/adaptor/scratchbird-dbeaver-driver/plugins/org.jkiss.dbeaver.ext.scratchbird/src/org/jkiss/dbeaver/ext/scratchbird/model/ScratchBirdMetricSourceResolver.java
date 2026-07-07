@@ -35,12 +35,6 @@ public final class ScratchBirdMetricSourceResolver {
 
     @NotNull
     public static ScratchBirdRefusalModel sourceStatus(@NotNull ScratchBirdReportDefinition report) {
-        if (report.futureGated()) {
-            return ScratchBirdFeatureBoundaryStatus.unavailable(
-                "report:" + report.id(),
-                "Future-gated report: backing sys view or management surface is not yet published.",
-                String.join(", ", report.sourceSurfaces())).toRefusalModel();
-        }
         if (requiresRawHistogram(report.sourceSurfaces())) {
             return ScratchBirdFeatureBoundaryStatus.requiresServerAdmission(
                 "report:" + report.id(),

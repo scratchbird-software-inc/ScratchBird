@@ -362,7 +362,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "::umask(0027)",
             "::chdir(\"/\")",
             "\"/dev/null\"",
-            "Windows service-control handoff is not implemented in this build.",
+            "Windows service-control handoff is provided by the native Windows platform package.",
             "MANAGER.SERVICE_MODE_UNSUPPORTED",
             "config_.service && !config_.validate_config",
         ),

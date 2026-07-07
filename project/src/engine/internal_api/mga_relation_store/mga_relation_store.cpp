@@ -4938,6 +4938,15 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
                                                 false);
 }
 
+std::uint64_t CurrentMgaRelationMetadataEventSequence(
+    const EngineRequestContext& context) {
+  if (context.database_path.empty()) {
+    return 0;
+  }
+  const std::uint64_t next = ScanNextMetadataEventSequence(context);
+  return next == 0 ? 0 : next - 1;
+}
+
 MgaRelationIndexOnlyProofEligibilityResult
 CanUseMgaRelationIndexOnlyProofForInsertTarget(
     const EngineRequestContext& context,

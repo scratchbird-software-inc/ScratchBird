@@ -8,6 +8,7 @@
 
 #include "ddl/drop_api.hpp"
 
+#include "api_unsupported.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
@@ -88,6 +89,16 @@ EngineDropObjectResult DropCatalogBackedObject(const EngineDropObjectRequest& re
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_DROP_API_BEHAVIOR
 EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) {
   const std::string kind = request.target_object.object_kind.empty() ? "object" : request.target_object.object_kind;
+  if ((kind == "cluster" || kind == "node") && !request.context.cluster_authority_available) {
+    auto result = MakeClusterAuthorityUnavailableResult<EngineDropObjectResult>(
+        request,
+        "ddl.drop_object");
+    result.primary_object = request.target_object;
+    result.primary_object.object_kind = kind;
+    result.evidence.push_back({"cluster_provider_dispatch", "false"});
+    result.evidence.push_back({"ddl_drop_topology_kind", kind});
+    return result;
+  }
   if (kind == "synonym") {
     return DropCatalogBackedObject(request, kind);
   }

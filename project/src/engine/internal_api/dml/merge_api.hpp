@@ -18,6 +18,9 @@ struct EngineMergeRowsRequest : EngineApiRequest {
   EnginePredicateEnvelope match_predicate;
   std::vector<EngineRowValue> input_rows;
   std::vector<std::pair<std::string, EngineTypedValue>> update_assignments;
+  std::string merge_surface_variant = "merge";
+  std::string conflict_target_column;
+  std::string on_conflict_action;
   bool update_when_matched = true;
   bool insert_when_not_matched = true;
   bool delete_when_matched = false;

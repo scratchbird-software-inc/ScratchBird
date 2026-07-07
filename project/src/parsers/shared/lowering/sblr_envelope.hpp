@@ -30,14 +30,20 @@ struct Operand {
 struct LogicalEnvelope {
   std::uint32_t envelope_format_version = 1;
   std::string envelope_kind = "sblr_show_self_or_baseline";
+  std::string operation_family;
+  std::string canonical_operation_family;
   std::string operation_key;
+  std::string sblr_opcode;
   std::uint32_t operation_version = 1;
   std::string database_uuid;
   std::string principal_uuid;
   std::string registry_snapshot_uuid;
   std::string result_shape;
   std::string diagnostic_shape;
+  std::string payload_class;
   std::string trace_key;
+  bool requires_public_abi_dispatch = false;
+  bool contains_raw_sql_text = false;
   std::vector<Operand> operands;
 };
 
@@ -53,6 +59,8 @@ struct LoweringResult {
 
 LoweringResult LowerBoundShowIdentity(
     const scratchbird::parser::bound_ast::BoundShowIdentity& bound);
+LoweringResult LowerBoundStatementFamilyEvidence(
+    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound);
 
 std::string SerializeToJson(const LogicalEnvelope& envelope);
 std::string SerializeDiagnosticToJson(const LoweringDiagnostic& diagnostic);

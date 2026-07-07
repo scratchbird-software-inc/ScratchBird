@@ -26,7 +26,5 @@ enum class ForbiddenServerResponsibility {
 
 ServerDiagnostic ForbiddenResponsibilityDiagnostic(ForbiddenServerResponsibility responsibility,
                                                    std::string detail);
-ServerDiagnostic SkeletonNextStageDiagnostic(std::string requested_operation,
-                                             std::string owning_execution_plan);
 
 }  // namespace scratchbird::server

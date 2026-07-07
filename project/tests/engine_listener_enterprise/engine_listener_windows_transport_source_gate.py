@@ -154,7 +154,7 @@ def main() -> None:
     for token in (
         "config_.service && !config_.validate_config",
         "MANAGER.SERVICE_MODE_UNSUPPORTED",
-        "Windows service-control handoff is not implemented in this build.",
+        "Windows service-control handoff is provided by the native Windows platform package.",
         "DaemonizeService",
         "::fork()",
         "::setsid()",

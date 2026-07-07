@@ -13,6 +13,10 @@
     }
   }
   record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names, record.localized_comments);
+  for (const auto& extension : schema_extension_payload) {
+    if (!record.payload.empty()) { record.payload.push_back(';'); }
+    record.payload.append(extension);
+  }
   const auto appended = PersistSchemaTreeRecord(request.context, record, "ddl.create_schema");
   if (appended.error) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(request.context, "ddl.create_schema", appended);
@@ -33,6 +37,11 @@
   result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.create_schema");
   AddApiBehaviorEvidence(&result, "schema", record.schema_uuid);
+  for (const auto& extension : schema_extension_payload) {
+    const auto pos = extension.find('=');
+    if (pos == std::string::npos) { continue; }
+    AddApiBehaviorEvidence(&result, extension.substr(0, pos), extension.substr(pos + 1));
+  }
   AddApiBehaviorRow(&result, {{"object_uuid", record.schema_uuid},
                               {"object_kind", "schema"},
                               {"name", record.default_name},

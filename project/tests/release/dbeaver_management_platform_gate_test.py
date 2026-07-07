@@ -559,6 +559,42 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
         )
         return artifact_root
 
+    def _write_final_evidence(self) -> Path:
+        final_root = self.repo / "final-evidence"
+        final_root.mkdir(parents=True, exist_ok=True)
+        required = [
+            "live_server_dbeaver_management_corpus",
+            "stock_dbeaver_gui_automation_and_screenshots",
+            "manual_qa_signoff",
+            "server_authorized_management_apply_verify_evidence",
+            "workspace_redaction_and_cleanup_evidence",
+        ]
+        evidence: dict[str, dict[str, object]] = {}
+        for evidence_id in required:
+            artifact = final_root / f"{evidence_id}.json"
+            artifact.write_text(
+                json.dumps({"status": "passed", "evidence_id": evidence_id}, indent=2),
+                encoding="utf-8",
+            )
+            evidence[evidence_id] = {
+                "status": "passed",
+                "summary": f"{evidence_id} passed",
+                "artifacts": [f"final-evidence/{artifact.name}"],
+            }
+        evidence_path = self.repo / "build/reports/dbeaver_management_final_evidence.json"
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "scratchbird.dbeaver_management.final_evidence.v1",
+                    "evidence": evidence,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return evidence_path
+
     def test_gate_accepts_minimal_contract(self) -> None:
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -572,6 +608,33 @@ class DBeaverManagementPlatformGateTests(unittest.TestCase):
         result = self.run_gate("--mode", "release", "--artifact-root", str(artifact_root))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.report()["status"], "pass")
+
+    def test_final_mode_accepts_release_artifacts_and_complete_final_evidence(self) -> None:
+        self._mark_fixture_release_proof_passed()
+        artifact_root = self._write_release_artifacts()
+        final_evidence = self._write_final_evidence()
+        result = self.run_gate(
+            "--mode",
+            "final",
+            "--artifact-root",
+            str(artifact_root),
+            "--final-evidence",
+            str(final_evidence),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.report()["status"], "pass")
+        self.assertTrue(self.report()["closure_support"]["can_support_final_closure"])
+        self.assertEqual([], self.report()["closure_support"]["final_closure_requires"])
+
+    def test_final_mode_rejects_missing_final_evidence_packet(self) -> None:
+        self._mark_fixture_release_proof_passed()
+        artifact_root = self._write_release_artifacts()
+        result = self.run_gate("--mode", "final", "--artifact-root", str(artifact_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any("final_evidence:evidence_file_missing" in issue for issue in self.report()["issues"]),
+            self.report()["issues"],
+        )
 
     def test_gate_rejects_runtime_http_client_import(self) -> None:
         write(

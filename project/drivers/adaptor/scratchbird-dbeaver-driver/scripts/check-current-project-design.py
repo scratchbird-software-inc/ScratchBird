@@ -283,9 +283,9 @@ def require_plugin_surface() -> int:
     if missing_provider:
         return fail("provider-properties missing adapter fields: " + ", ".join(missing_provider))
 
-    if root.find(".//extension[@point='org.jkiss.dbeaver.dashboard']") is not None:
-        return fail("live dashboard extension must not be registered until metrics/catalog dashboard queries are implemented")
-    blocked_dashboard_tokens = (
+    if root.find(".//extension[@point='org.jkiss.dbeaver.dashboard']") is None:
+        return fail("live dashboard extension must be registered for the management platform")
+    required_dashboard_tokens = (
         "scratchbird.sessions",
         "scratchbird.transactions",
         "scratchbird.locks",
@@ -296,9 +296,9 @@ def require_plugin_surface() -> int:
         "<query>SHOW METRICS</query>",
     )
     plugin_text = PLUGIN_XML.read_text(encoding="utf-8")
-    for token in blocked_dashboard_tokens:
-        if token in plugin_text:
-            return fail(f"plugin.xml still registers unsupported dashboard query {token!r}")
+    for token in required_dashboard_tokens:
+        if token not in plugin_text:
+            return fail(f"plugin.xml missing dashboard declaration token {token!r}")
 
     if "sys.performance" in plugin_text:
         return fail("plugin.xml still references removed sys.performance surface")

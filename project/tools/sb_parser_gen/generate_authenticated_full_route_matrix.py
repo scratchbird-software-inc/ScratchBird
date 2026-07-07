@@ -144,7 +144,7 @@ def fixture_status_for(root: Path, fixture_path: str, surface_id: str) -> str:
 
 def classify(surface: dict[str, str]) -> dict[str, str]:
     surface_id = surface["surface_id"]
-    status = surface["status"]
+    status = surface.get("source_status") or surface["status"]
     cluster_scope = surface["cluster_scope"]
 
     fixture_path = f"project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route/{surface_id}.route.yaml"
@@ -240,9 +240,9 @@ def main() -> int:
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         classification = classify(surface)
         ledger_row = {
-            "surface_id": surface["surface_id"],
-            "canonical_name": surface["canonical_name"],
-            "status": surface["status"],
+        "surface_id": surface["surface_id"],
+        "canonical_name": surface["canonical_name"],
+        "status": surface.get("source_status") or surface["status"],
             "cluster_scope": surface["cluster_scope"],
             "surface_kind": surface["surface_kind"],
             "sblr_operation_family": surface["sblr_operation_family"],
@@ -251,10 +251,11 @@ def main() -> int:
         ledger_row["fixture_status"] = fixture_status_for(root, ledger_row["fixture_path"], surface["surface_id"])
         output_rows.append(ledger_row)
 
-        status_counts[surface["status"]] = status_counts.get(surface["status"], 0) + 1
+        source_status = surface.get("source_status") or surface["status"]
+        status_counts[source_status] = status_counts.get(source_status, 0) + 1
         outcome = (
             "accepted_route_required"
-            if surface["status"] == "native_now" and surface["cluster_scope"] != "cluster_private"
+            if source_status == "native_now" and surface["cluster_scope"] != "cluster_private"
             else "fail_closed_only"
         )
         accepted_counts[outcome] = accepted_counts.get(outcome, 0) + 1

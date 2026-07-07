@@ -38,8 +38,30 @@ struct SblrEnvelope {
   bool cluster_authority_present = false;
 };
 
+struct CommandFamilySblrRoute {
+  std::string command_family;
+  std::string canonical_operation_family;
+  std::string route_operation_family;
+  std::string operation_id;
+  std::string sblr_opcode;
+  std::string result_shape;
+  std::string diagnostic_shape;
+  std::string payload_class;
+  bool requires_transaction_context = true;
+  bool requires_public_abi_dispatch = true;
+  bool contains_raw_sql_text = false;
+};
+
 bool IsUuidV7(std::string_view uuid_text);
 std::optional<std::uint32_t> ParseOpcodeValue(std::string_view text);
+const CommandFamilySblrRoute* RouteForCommandFamily(std::string_view command_family);
+std::vector<CommandFamilySblrRoute> RequiredMissingFunctionalityRoutes();
+SblrOpcodeEntry MakeOpcodeEntryForRoute(const CommandFamilySblrRoute& route);
+SblrEnvelope MakeEnvelopeForRoute(const CommandFamilySblrRoute& route,
+                                  std::string binding_epoch,
+                                  std::string bound_root_uuid,
+                                  std::string descriptor_digest);
+std::string EncodeRouteForServerAdmission(const CommandFamilySblrRoute& route);
 bool ValidateOpcodeEntry(const SblrOpcodeEntry& entry, std::vector<std::string>* errors);
 bool ValidateEnvelope(const SblrOpcodeEntry& entry, const SblrEnvelope& envelope, std::vector<std::string>* errors);
 std::string EncodeEnvelopeForProbe(const SblrEnvelope& envelope);

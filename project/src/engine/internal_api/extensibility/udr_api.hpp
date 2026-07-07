@@ -17,6 +17,10 @@ struct EngineRegisterUdrPackageRequest : EngineApiRequest {};
 struct EngineRegisterUdrPackageResult : EngineApiResult {};
 EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrPackageRequest& request);
 
+struct EngineAlterUdrPackageRequest : EngineApiRequest {};
+struct EngineAlterUdrPackageResult : EngineApiResult {};
+EngineAlterUdrPackageResult EngineAlterUdrPackage(const EngineAlterUdrPackageRequest& request);
+
 struct EngineLoadUdrPackageRequest : EngineApiRequest {};
 struct EngineLoadUdrPackageResult : EngineApiResult {};
 EngineLoadUdrPackageResult EngineLoadUdrPackage(const EngineLoadUdrPackageRequest& request);
@@ -24,6 +28,10 @@ EngineLoadUdrPackageResult EngineLoadUdrPackage(const EngineLoadUdrPackageReques
 struct EngineUnloadUdrPackageRequest : EngineApiRequest {};
 struct EngineUnloadUdrPackageResult : EngineApiResult {};
 EngineUnloadUdrPackageResult EngineUnloadUdrPackage(const EngineUnloadUdrPackageRequest& request);
+
+struct EngineDropUdrPackageRequest : EngineApiRequest {};
+struct EngineDropUdrPackageResult : EngineApiResult {};
+EngineDropUdrPackageResult EngineDropUdrPackage(const EngineDropUdrPackageRequest& request);
 
 struct EngineInspectUdrPackageRequest : EngineApiRequest {};
 struct EngineInspectUdrPackageResult : EngineApiResult {};

@@ -750,6 +750,9 @@ struct DmlRouteInfo {
   std::string insert_select_counter_predicate;
   std::string insert_select_source_uuid_0;
   std::string insert_select_source_uuid_1;
+  std::string delete_batch_on_column;
+  std::string delete_batch_limit;
+  std::string delete_series_name;
   std::vector<std::string> insert_select_projections;
   std::string assertion_id;
   std::string actual_column_name;
@@ -3846,6 +3849,14 @@ std::string CatalogOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
   if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
+  if (operation_id == "catalog.mutation.alter_type") return "SBLR_CATALOG_MUTATION_ALTER_TYPE";
+  if (operation_id == "catalog.mutation.drop_type") return "SBLR_CATALOG_MUTATION_DROP_TYPE";
+  if (operation_id == "catalog.type.show") return "SBLR_SHOW_TYPE";
+  if (operation_id == "catalog.type.show_all") return "SBLR_SHOW_TYPES";
+  if (operation_id == "query.structured_type.constructor") return "SBLR_QUERY_STRUCTURED_TYPE_CONSTRUCTOR";
+  if (operation_id == "query.structured_type.cast") return "SBLR_QUERY_STRUCTURED_TYPE_CAST";
+  if (operation_id == "query.structured_type.compare") return "SBLR_QUERY_STRUCTURED_TYPE_COMPARE";
+  if (operation_id == "query.structured_type.serialize") return "SBLR_QUERY_STRUCTURED_TYPE_SERIALIZE";
   if (operation_id == "catalog.mutation.alter_view") return "SBLR_CATALOG_MUTATION_ALTER_VIEW";
   if (operation_id == "catalog.mutation.create_udr") return "SBLR_CATALOG_MUTATION_CREATE_UDR";
   if (operation_id == "catalog.mutation.create_tenant") return "SBLR_CATALOG_MUTATION_CREATE_TENANT";
@@ -4006,11 +4017,17 @@ std::string UdrOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "extensibility.register_udr_package") {
     return "SBLR_EXTENSIBILITY_REGISTER_UDR_PACKAGE";
   }
+  if (operation_id == "extensibility.alter_udr_package") {
+    return "SBLR_EXTENSIBILITY_ALTER_UDR_PACKAGE";
+  }
   if (operation_id == "extensibility.load_udr_package") {
     return "SBLR_EXTENSIBILITY_LOAD_UDR_PACKAGE";
   }
   if (operation_id == "extensibility.unload_udr_package") {
     return "SBLR_EXTENSIBILITY_UNLOAD_UDR_PACKAGE";
+  }
+  if (operation_id == "extensibility.drop_udr_package") {
+    return "SBLR_EXTENSIBILITY_DROP_UDR_PACKAGE";
   }
   if (operation_id == "extensibility.inspect_udr_packages") {
     return "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES";
@@ -4107,8 +4124,10 @@ bool IsSupportedArchiveReplicationOperation(std::string_view operation_id) {
 bool IsSupportedUdrPackageOperation(std::string_view operation_id) {
   return operation_id == "extensibility.inspect_udr_packages" ||
          operation_id == "extensibility.register_udr_package" ||
+         operation_id == "extensibility.alter_udr_package" ||
          operation_id == "extensibility.load_udr_package" ||
          operation_id == "extensibility.unload_udr_package" ||
+         operation_id == "extensibility.drop_udr_package" ||
          operation_id == "extensibility.invoke_udr_package";
 }
 
@@ -6695,11 +6714,68 @@ UdrPackageRouteInfo AnalyzeUdrPackageRoute(const CstDocument& cst) {
   if (tokens.size() < 2) return info;
   const std::string first = ToUpperAscii(tokens[0]->text);
   const std::string second = ToUpperAscii(tokens[1]->text);
-
-  if (first == "SHOW" && second == "UDR") {
+  const auto is_package_token = [&](std::size_t index) {
+    return index < tokens.size() &&
+           ToUpperAscii(tokens[index]->text) == "PACKAGE";
+  };
+  const auto package_name_after = [&](std::size_t index) {
+    if (index >= tokens.size()) return std::string{};
+    if (ToUpperAscii(tokens[index]->text) == "IF" && index + 2 < tokens.size() &&
+        ToUpperAscii(tokens[index + 1]->text) == "NOT" &&
+        ToUpperAscii(tokens[index + 2]->text) == "EXISTS") {
+      index += 3;
+    } else if (ToUpperAscii(tokens[index]->text) == "IF" && index + 1 < tokens.size() &&
+               ToUpperAscii(tokens[index + 1]->text) == "EXISTS") {
+      index += 2;
+    }
+    if (index >= tokens.size()) return std::string{};
+    const std::string candidate = ToUpperAscii(tokens[index]->text);
+    if (candidate == "LANGUAGE" || candidate == "FROM" || candidate == "WITH" ||
+        candidate == "SET" || candidate == "CASCADE" || candidate == "RESTRICT") {
+      return std::string{};
+    }
+    return LowerAscii(tokens[index]->text);
+  };
+  const auto token_after = [&](std::size_t index, std::string_view keyword) {
+    for (; index + 1 < tokens.size(); ++index) {
+      if (ToUpperAscii(tokens[index]->text) == keyword) {
+        return ToUpperAscii(tokens[index + 1]->text);
+      }
+    }
+    return std::string{};
+  };
+  const auto has_cpp_language = [&](std::size_t index) {
+    for (; index + 1 < tokens.size(); ++index) {
+      if (ToUpperAscii(tokens[index]->text) != "LANGUAGE") continue;
+      std::string language = ToUpperAscii(tokens[index + 1]->text);
+      language.erase(std::remove(language.begin(), language.end(), '\''), language.end());
+      language.erase(std::remove(language.begin(), language.end(), '"'), language.end());
+      if (language == "CPP" || language == "CXX" || language == "C++") return true;
+      if (language == "C" && index + 2 < tokens.size()) {
+        const std::string next = ToUpperAscii(tokens[index + 2]->text);
+        if (next == "++") return true;
+        if (next == "+" && index + 3 < tokens.size() &&
+            ToUpperAscii(tokens[index + 3]->text) == "+") {
+          return true;
+        }
+      }
+      return false;
+    }
+    return false;
+  };
+  const auto has_non_cpp_language = [&](std::size_t index) {
+    const std::string language = token_after(index, "LANGUAGE");
+    return !language.empty() && !has_cpp_language(index);
+  };
+  const auto set_common = [&](std::string operation_id,
+                              std::string surface_variant,
+                              bool mutation) {
     info.active = true;
-    info.operation_id = "extensibility.inspect_udr_packages";
+    info.valid = true;
+    info.mutation = mutation;
+    info.operation_id = std::move(operation_id);
     info.opcode = UdrOpcodeForOperation(info.operation_id);
+    info.surface_variant = std::move(surface_variant);
     info.row_surface_ids = {
         "SBSQL-F0CF86A4B3AF",
         "SBSQL-A3D801F6079D",
@@ -6708,9 +6784,18 @@ UdrPackageRouteInfo AnalyzeUdrPackageRoute(const CstDocument& cst) {
         "SBSQL-2FA96214E399",
         "SBSQL-7152B9A9B751",
     };
+  };
+  const auto require_package_name = [&]() {
+    if (info.package_name.empty()) {
+      info.valid = false;
+      info.invalid_reason = info.surface_variant + "_requires_package_name";
+    }
+  };
+
+  if (first == "SHOW" && second == "UDR") {
+    set_common("extensibility.inspect_udr_packages", "show_udr", false);
     if (tokens.size() == 3 && ToUpperAscii(tokens[2]->text) == "PACKAGES") {
       info.surface_variant = "show_udr_packages";
-      info.valid = true;
       return info;
     }
     if (tokens.size() == 4 && ToUpperAscii(tokens[2]->text) == "PACKAGE") {
@@ -6721,6 +6806,31 @@ UdrPackageRouteInfo AnalyzeUdrPackageRoute(const CstDocument& cst) {
       return info;
     }
     info.invalid_reason = "show_udr_requires_packages_or_package_name";
+    return info;
+  }
+
+  if (first == "INSPECT" && second == "UDR" && is_package_token(2)) {
+    set_common("extensibility.inspect_udr_packages", "inspect_udr_package", false);
+    info.package_name = package_name_after(3);
+    require_package_name();
+    return info;
+  }
+
+  if ((first == "CREATE" || first == "REGISTER") && second == "UDR" &&
+      (is_package_token(2) || has_cpp_language(2) || has_non_cpp_language(2))) {
+    const std::size_t name_index = is_package_token(2) ? 3 : 2;
+    set_common("extensibility.register_udr_package",
+               first == "CREATE" ? "create_udr_package" : "register_udr_package",
+               true);
+    info.package_name = package_name_after(name_index);
+    require_package_name();
+    if (!has_cpp_language(name_index)) {
+      info.valid = false;
+      info.invalid_reason = has_non_cpp_language(name_index)
+                                ? "non_cpp_udr_runtime_not_permitted"
+                                : "udr_package_requires_language_cpp";
+    }
+    info.row_surface_ids.push_back("SBSQL-E56EBC2407A0");
     return info;
   }
 
@@ -6740,6 +6850,55 @@ UdrPackageRouteInfo AnalyzeUdrPackageRoute(const CstDocument& cst) {
         break;
       }
     }
+    return info;
+  }
+
+  if (first == "ALTER" && second == "UDR" && is_package_token(2)) {
+    set_common("extensibility.alter_udr_package", "alter_udr_package", true);
+    info.package_name = package_name_after(3);
+    require_package_name();
+    info.row_surface_ids.push_back("SBSQL-78DE35FE41D9");
+    return info;
+  }
+
+  if ((first == "LOAD" || first == "ENABLE") && second == "UDR" && is_package_token(2)) {
+    set_common("extensibility.load_udr_package",
+               first == "LOAD" ? "load_udr_package" : "enable_udr_package",
+               true);
+    info.package_name = package_name_after(3);
+    require_package_name();
+    return info;
+  }
+
+  if ((first == "UNLOAD" || first == "DISABLE") && second == "UDR" && is_package_token(2)) {
+    set_common("extensibility.unload_udr_package",
+               first == "UNLOAD" ? "unload_udr_package" : "disable_udr_package",
+               true);
+    info.package_name = package_name_after(3);
+    require_package_name();
+    return info;
+  }
+
+  if ((first == "DROP" || first == "UNINSTALL") && second == "UDR" && is_package_token(2)) {
+    set_common("extensibility.drop_udr_package",
+               first == "DROP" ? "drop_udr_package" : "uninstall_udr_package",
+               true);
+    info.package_name = package_name_after(3);
+    require_package_name();
+    return info;
+  }
+
+  if (first == "INSTALL" && second == "UDR" && is_package_token(2) &&
+      tokens.size() >= 5 && ToUpperAscii(tokens[3]->text) == "FROM") {
+    set_common("extensibility.register_udr_package", "install_udr_package", true);
+    for (std::size_t index = 5; index + 1 < tokens.size(); ++index) {
+      if (ToUpperAscii(tokens[index]->text) == "INTO") {
+        info.package_name = package_name_after(index + 1);
+        break;
+      }
+    }
+    if (info.package_name.empty()) info.package_name = LowerAscii(tokens[4]->text);
+    require_package_name();
     return info;
   }
 
@@ -8841,11 +9000,46 @@ void AnalyzeUpdateAssignmentPredicate(const CstDocument& cst, DmlRouteInfo* info
 }
 
 void AnalyzeDeletePredicate(const CstDocument& cst, DmlRouteInfo* info) {
-  if (info == nullptr || info->read || info->surface_variant != "delete") return;
+  if (info == nullptr || info->read ||
+      (info->surface_variant != "delete" &&
+       info->surface_variant != "batch_delete" &&
+       info->surface_variant != "erase" &&
+       info->surface_variant != "drop_series")) {
+    return;
+  }
   const auto tokens = MeaningfulTokenPtrs(cst);
-  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "DELETE") return;
+  if (tokens.empty()) return;
 
   std::size_t index = 1;
+  const std::string first = ToUpperAscii(tokens.front()->text);
+  if (first == "BATCH") {
+    if (!TokenTextEquals(tokens, index, "ON")) return;
+    ++index;
+    std::string batch_column;
+    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &batch_column)) return;
+    info->delete_batch_on_column = std::move(batch_column);
+    if (!TokenTextEquals(tokens, index, "LIMIT") ||
+        index + 1 >= tokens.size() ||
+        !IsUnsignedIntegerLiteral(*tokens[index + 1])) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "batch_delete_limit_required";
+      return;
+    }
+    info->delete_batch_limit = tokens[index + 1]->text;
+    index += 2;
+    if (!TokenTextEquals(tokens, index, "DELETE")) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "batch_delete_delete_keyword_required";
+      return;
+    }
+    ++index;
+  } else if (first == "DROP") {
+    if (!TokenTextEquals(tokens, index, "SERIES")) return;
+    info->delete_series_name = "series";
+    ++index;
+  } else if (first != "DELETE" && first != "ERASE") {
+    return;
+  }
   if (TokenTextEquals(tokens, index, "FROM")) ++index;
   std::string ignored_table_leaf;
   if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table_leaf)) return;
@@ -10050,6 +10244,27 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
     info.requires_target_uuid = true;
     AppendIfMissing(&info.keyword_surface_ids, "SBSQL-5B33579F1F80");
     AnalyzeDeletePredicate(cst, &info);
+  } else if (first == "BATCH" && ContainsWord(words, "DELETE")) {
+    info.active = true;
+    info.operation_id = "dml.delete_rows";
+    info.surface_variant = "batch_delete";
+    info.requires_target_uuid = true;
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-5B33579F1F80");
+    AnalyzeDeletePredicate(cst, &info);
+  } else if (first == "ERASE") {
+    info.active = true;
+    info.operation_id = "dml.delete_rows";
+    info.surface_variant = "erase";
+    info.requires_target_uuid = true;
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-5B33579F1F80");
+    AnalyzeDeletePredicate(cst, &info);
+  } else if (first == "DROP" && words.size() >= 2 && words[1] == "SERIES") {
+    info.active = true;
+    info.operation_id = "dml.delete_rows";
+    info.surface_variant = "drop_series";
+    info.requires_target_uuid = true;
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-5B33579F1F80");
+    AnalyzeDeletePredicate(cst, &info);
   } else if (first == "MERGE") {
     info.active = true;
     info.operation_id = "dml.merge_rows";
@@ -10065,7 +10280,7 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
   } else if (first == "UPSERT") {
     info.active = true;
     info.upsert_surface = true;
-    info.operation_id = "dml.insert_rows";
+    info.operation_id = "dml.merge_rows";
     info.surface_variant = "upsert";
     info.requires_target_uuid = true;
     AnalyzeInsertValues(cst, &info);
@@ -10087,6 +10302,40 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
     info.requires_target_uuid = true;
     info.import_source_kind = "native_sbsql_import";
     info.import_format_family = ContainsWord(words, "JSONL") ? "jsonl" : "csv";
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-DB993AE8EDBB");
+  } else if (first == "LOAD" && words.size() >= 2 &&
+             (words[1] == "CSV" || words[1] == "XML")) {
+    info.active = true;
+    info.import_planning = true;
+    info.operation_id = "dml.plan_import_rows";
+    info.surface_variant = words[1] == "XML" ? "load_xml" : "load_csv";
+    info.requires_target_uuid = true;
+    info.import_source_kind = words[1] == "XML" ? "xml_stream" : "csv_stream";
+    info.import_format_family = words[1] == "XML" ? "xml" : "csv";
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-DB993AE8EDBB");
+  } else if (first == "BULK" && words.size() >= 2 && words[1] == "IMPORT") {
+    info.active = true;
+    info.import_planning = true;
+    info.operation_id = "dml.plan_import_rows";
+    info.surface_variant = ContainsWord(words, "JOB") ? "bulk_import_job"
+                                                      : "bulk_import";
+    info.requires_target_uuid = true;
+    info.import_source_kind = "bulk_import_job";
+    info.import_format_family = ContainsWord(words, "JSONL") ? "jsonl"
+                                                              : (ContainsWord(words, "BINARY") ? "binary_typed_rows"
+                                                                                                : "bulk_job");
+    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-DB993AE8EDBB");
+  } else if (first == "INGEST" && words.size() >= 2 &&
+             (words[1] == "LINE_PROTOCOL" ||
+              (words[1] == "LINE" && words.size() >= 3 &&
+               words[2] == "PROTOCOL"))) {
+    info.active = true;
+    info.import_planning = true;
+    info.operation_id = "dml.plan_import_rows";
+    info.surface_variant = "ingest_line_protocol";
+    info.requires_target_uuid = true;
+    info.import_source_kind = "line_protocol_stream";
+    info.import_format_family = "line_protocol";
     AppendIfMissing(&info.keyword_surface_ids, "SBSQL-DB993AE8EDBB");
   } else if (first == "CYPHER" && words.size() >= 2 && words[1] == "LOAD") {
     info.active = true;
@@ -31758,6 +32007,15 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
   if (info.has_limit) {
     out << "\"limit\":\"" << EscapeJson(info.limit) << "\",";
   }
+  if (!info.delete_batch_on_column.empty()) {
+    out << "\"batch_on_column\":\"" << EscapeJson(info.delete_batch_on_column) << "\",";
+  }
+  if (!info.delete_batch_limit.empty()) {
+    out << "\"batch_limit\":\"" << EscapeJson(info.delete_batch_limit) << "\",";
+  }
+  if (!info.delete_series_name.empty()) {
+    out << "\"series_name\":\"" << EscapeJson(info.delete_series_name) << "\",";
+  }
   if (info.has_top_clause) {
     out << "\"bounded_top_clause\":true,";
   }
@@ -31877,7 +32135,8 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
   }
   if (info.upsert_surface) {
     out << "\"duplicate_mode\":\"update\","
-        << "\"on_conflict_action\":\"do_update\",";
+        << "\"on_conflict_action\":\"do_update\","
+        << "\"excluded_pseudo_relation\":\"source_row_descriptor_bound\",";
   }
   if (info.has_insert_values) {
     constexpr std::size_t kPerCellInsertValueEvidenceLimit = 128;
@@ -32605,10 +32864,13 @@ void AppendEventNotificationJson(std::ostream& out,
 
 void AppendUdrPackageJson(std::ostream& out, const UdrPackageRouteInfo& info) {
   if (!info.active || !info.valid) return;
-  out << "\"udr_envelope_kind\":\"udr_package_inspect\","
+  out << "\"udr_envelope_kind\":\""
+      << (info.mutation ? "udr_package_lifecycle" : "udr_package_inspect")
+      << "\","
       << "\"udr_authority\":\"engine.extensibility.udr\","
       << "\"udr_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"udr_surface_variant\":\"" << EscapeJson(info.surface_variant) << "\","
+      << "\"udr_lifecycle_action\":\"" << EscapeJson(info.surface_variant) << "\","
       << "\"udr_control_mutation\":" << (info.mutation ? "true" : "false") << ','
       << "\"runtime_component\":\"udr_packages\",";
   if (!info.package_name.empty()) {
@@ -34062,9 +34324,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto transaction_lock_route = AnalyzeTransactionLockRoute(cst);
   const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
   const auto language_control_route = AnalyzeLanguageControlRoute(cst);
+  const auto udr_package_route = AnalyzeUdrPackageRoute(cst);
   const auto catalog_descriptor_mutation =
       (transaction_lock_route.active || exact_command_route.active ||
-       language_control_route.active)
+       language_control_route.active || udr_package_route.active)
           ? CatalogDescriptorMutationInfo{}
           : AnalyzeCatalogDescriptorMutation(cst, bound.resolved_object_uuids);
   const auto index_template_ddl =
@@ -34079,7 +34342,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       AnalyzeSimpleDropObjectDdl(cst, bound.resolved_object_uuids);
   const auto synonym_ddl = AnalyzeSynonymDdl(cst);
   const auto agent_route = AnalyzeAgentRuntimeRoute(cst);
-  const auto udr_package_route = AnalyzeUdrPackageRoute(cst);
   const auto management_route = AnalyzeManagementRuntimeRoute(cst);
   const auto engine_api_command_route = AnalyzeEngineApiCommandRoute(cst);
   const auto bridge_route = AnalyzeBridgeRoute(cst);
@@ -35082,7 +35344,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
   if (udr_package_route.active && !udr_package_route.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.UDR_PACKAGE.UNSUPPORTED_SHAPE",
-                     "UDR package management must match SHOW UDR PACKAGES or SHOW UDR PACKAGE name; UDR registration requires a trusted C++ runtime descriptor",
+                     "UDR package management must match SHOW/INSPECT/CREATE/ALTER/DROP/REGISTER/LOAD/UNLOAD/INSTALL/UNINSTALL/ENABLE/DISABLE UDR PACKAGE forms and trusted C++ runtime descriptor requirements",
                      {{"feature", udr_package_route.invalid_reason}});
   }
   if (transaction_characteristics.active && !transaction_characteristics.valid) {
@@ -36699,10 +36961,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_udr_execution") ||
         !HasValue(envelope.descriptor_refs, "sys.udr_package_registry") ||
         (!dynamic_udr_route &&
-         (envelope.payload.find("\"udr_envelope_kind\":\"udr_package_inspect\"") ==
+         (envelope.payload.find("\"runtime_component\":\"udr_packages\"") ==
               std::string::npos ||
-          envelope.payload.find("\"runtime_component\":\"udr_packages\"") ==
-              std::string::npos)) ||
+          (envelope.payload.find("\"udr_envelope_kind\":\"udr_package_inspect\"") ==
+               std::string::npos &&
+           envelope.payload.find("\"udr_envelope_kind\":\"udr_package_lifecycle\"") ==
+               std::string::npos))) ||
         (dynamic_udr_route &&
          (envelope.payload.find(
               "\"udr_envelope_kind\":\"dynamic_sbsql_parser_support_udr\"") ==
@@ -37923,9 +38187,17 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
     if (envelope.operation_id == "dml.plan_import_rows" &&
         (envelope.payload.find("\"import_execution_deferred\":true") == std::string::npos ||
-         envelope.payload.find("\"source_kind\":\"native_sbsql_import\"") == std::string::npos ||
+         (envelope.payload.find("\"source_kind\":\"native_sbsql_import\"") == std::string::npos &&
+          envelope.payload.find("\"source_kind\":\"csv_stream\"") == std::string::npos &&
+          envelope.payload.find("\"source_kind\":\"xml_stream\"") == std::string::npos &&
+          envelope.payload.find("\"source_kind\":\"bulk_import_job\"") == std::string::npos &&
+          envelope.payload.find("\"source_kind\":\"line_protocol_stream\"") == std::string::npos) ||
          (envelope.payload.find("\"format_family\":\"csv\"") == std::string::npos &&
-          envelope.payload.find("\"format_family\":\"jsonl\"") == std::string::npos) ||
+          envelope.payload.find("\"format_family\":\"jsonl\"") == std::string::npos &&
+          envelope.payload.find("\"format_family\":\"xml\"") == std::string::npos &&
+          envelope.payload.find("\"format_family\":\"line_protocol\"") == std::string::npos &&
+          envelope.payload.find("\"format_family\":\"bulk_job\"") == std::string::npos &&
+          envelope.payload.find("\"format_family\":\"binary_typed_rows\"") == std::string::npos) ||
          envelope.payload.find("\"source_handle_included\":false") == std::string::npos ||
          envelope.payload.find("\"row_persistence_claimed\":false") == std::string::npos ||
          envelope.payload.find("\"parser_decodes_bytes\":false") == std::string::npos ||

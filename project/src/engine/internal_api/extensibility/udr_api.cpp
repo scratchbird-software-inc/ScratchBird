@@ -27,8 +27,10 @@ namespace udr_runtime = scratchbird::udr::runtime;
 
 constexpr const char* kUdrKind = "udr_package";
 constexpr const char* kRegisterOperation = "extensibility.register_udr_package";
+constexpr const char* kAlterOperation = "extensibility.alter_udr_package";
 constexpr const char* kLoadOperation = "extensibility.load_udr_package";
 constexpr const char* kUnloadOperation = "extensibility.unload_udr_package";
+constexpr const char* kDropOperation = "extensibility.drop_udr_package";
 constexpr const char* kInspectOperation = "extensibility.inspect_udr_packages";
 constexpr const char* kInvokeOperation = "extensibility.invoke_udr_package";
 constexpr const char* kMetricProducer = "udr_runtime";
@@ -598,6 +600,67 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
   return result;
 }
 
+EngineAlterUdrPackageResult EngineAlterUdrPackage(const EngineAlterUdrPackageRequest& request) {
+  auto authority = ValidateUdrAuthority<EngineAlterUdrPackageResult>(
+      request,
+      kAlterOperation,
+      true,
+      false);
+  if (!authority.ok) { return authority; }
+  std::string requested_runtime_language;
+  if (RequestsNonCppRuntime(request, &requested_runtime_language)) {
+    EmitUdrMetric("sb_udr_non_cpp_refusal_total", request, "refused", "alter", requested_runtime_language);
+    return MakeUdrFailure<EngineAlterUdrPackageResult>(
+        request.context,
+        kAlterOperation,
+        "SB_ENGINE_API_UDR_NON_CPP_RUNTIME_FORBIDDEN",
+        "trusted_cpp_udr_runtime_required:" + requested_runtime_language);
+  }
+  ApiBehaviorRecord existing;
+  auto visible = RequireVisibleUdr<EngineAlterUdrPackageResult>(request, kAlterOperation, &existing);
+  if (!visible.ok) { return visible; }
+  if (HasOptionPrefix(request, "abi:") && !HasSupportedUdrAbi(request, &existing)) {
+    return MakeUdrFailure<EngineAlterUdrPackageResult>(
+        request.context,
+        kAlterOperation,
+        "SB_ENGINE_API_UDR_ABI_UNSUPPORTED",
+        "supported_udr_abi_required");
+  }
+  const auto descriptor = udr_runtime::FindPackageDescriptor(request.target_object.uuid.canonical);
+  if (HasOptionToken(request, "linked_udr_package:true")) {
+    if (!descriptor) {
+      EmitUdrMetric("sb_udr_alter_total", request, "refused", "alter", "runtime_descriptor_required");
+      return MakeUdrFailure<EngineAlterUdrPackageResult>(
+          request.context,
+          kAlterOperation,
+          "SB_ENGINE_API_UDR_RUNTIME_DESCRIPTOR_REQUIRED",
+          "linked_udr_package_descriptor_required");
+    }
+    const auto provenance =
+        ValidateRuntimeDescriptorProvenance<EngineAlterUdrPackageResult>(
+            request, kAlterOperation, *descriptor);
+    if (!provenance.ok) {
+      EmitUdrMetric("sb_udr_alter_total", request, "refused", "alter", "descriptor_mismatch");
+      return provenance;
+    }
+  }
+  auto result = PersistedRecordResult<EngineAlterUdrPackageResult>(
+      request,
+      kAlterOperation,
+      kUdrKind,
+      true,
+      existing.state.empty() ? "altered" : existing.state);
+  if (result.ok) {
+    AddUdrLifecycleEvidence(&result, "altered", "preserved", "alter_evidence_recorded");
+    AddApiBehaviorEvidence(&result, "udr_descriptor", descriptor ? "runtime_descriptor_checked"
+                                                                 : "metadata_only_alter");
+    AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
+    AddApiBehaviorEvidence(&result, "udr_catalog", "uuid_identity_preserved");
+    EmitUdrMetric("sb_udr_alter_total", request, "ok", "alter");
+  }
+  return result;
+}
+
 EngineLoadUdrPackageResult EngineLoadUdrPackage(const EngineLoadUdrPackageRequest& request) {
   auto authority = ValidateUdrAuthority<EngineLoadUdrPackageResult>(
       request,
@@ -675,6 +738,46 @@ EngineUnloadUdrPackageResult EngineUnloadUdrPackage(const EngineUnloadUdrPackage
     AddApiBehaviorEvidence(&result, "udr_entrypoints", "dispatch_table_removed");
     AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
     EmitUdrMetric("sb_udr_unload_total", request, "ok", "unload");
+  }
+  return result;
+}
+
+EngineDropUdrPackageResult EngineDropUdrPackage(const EngineDropUdrPackageRequest& request) {
+  auto authority = ValidateUdrAuthority<EngineDropUdrPackageResult>(
+      request,
+      kDropOperation,
+      true,
+      false,
+      false,
+      true);
+  if (!authority.ok) { return authority; }
+  ApiBehaviorRecord existing;
+  auto visible = RequireVisibleUdr<EngineDropUdrPackageResult>(request, kDropOperation, &existing);
+  if (!visible.ok) { return visible; }
+  const auto runtime_unregistered =
+      udr_runtime::UnregisterPackage(request.target_object.uuid.canonical);
+  if (!runtime_unregistered.ok &&
+      runtime_unregistered.diagnostic_code != "UDR.RUNTIME.PACKAGE_NOT_REGISTERED") {
+    EmitUdrMetric("sb_udr_drop_total", request, "refused", "drop", runtime_unregistered.diagnostic_code);
+    return RuntimeStatusFailure<EngineDropUdrPackageResult>(
+        request.context,
+        kDropOperation,
+        runtime_unregistered,
+        "SB_ENGINE_API_UDR_DROP_FAILED");
+  }
+  auto result = PersistedRecordResult<EngineDropUdrPackageResult>(
+      request,
+      kDropOperation,
+      kUdrKind,
+      true,
+      "dropped",
+      true);
+  if (result.ok) {
+    AddUdrLifecycleEvidence(&result, "dropped", "removed", "drop_evidence_recorded");
+    AddApiBehaviorEvidence(&result, "udr_loader", "runtime_descriptor_unregistered");
+    AddApiBehaviorEvidence(&result, "udr_entrypoints", "dispatch_table_removed");
+    AddApiBehaviorEvidence(&result, "udr_cache", "udr_package_generation_invalidated");
+    EmitUdrMetric("sb_udr_drop_total", request, "ok", "drop");
   }
   return result;
 }

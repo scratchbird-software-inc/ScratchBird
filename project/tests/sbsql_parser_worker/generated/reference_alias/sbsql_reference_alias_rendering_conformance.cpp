@@ -155,6 +155,13 @@ bool RequireColumns(const CsvTable& table,
   return ok;
 }
 
+std::filesystem::path ReferenceAliasMatrixPath(const std::filesystem::path& canonicalization_root,
+                                               const std::filesystem::path& artifact_root) {
+  const auto canonical = canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv";
+  if (std::filesystem::exists(canonical)) return canonical;
+  return artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv";
+}
+
 std::unordered_map<std::string, const CsvRow*> IndexUnique(const CsvTable& table,
                                                            std::string_view column,
                                                            Harness* harness) {
@@ -388,7 +395,7 @@ int main(int argc, char** argv) {
                      &harness);
     ValidateFixturePolicy(fixture_policy, &harness);
     ValidateReferenceMatrices(
-        ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"),
+        ReadCsv(ReferenceAliasMatrixPath(canonicalization_root, artifact_root)),
         ReadCsv(artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv"),
         fixture_policy,
         &harness);

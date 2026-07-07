@@ -565,7 +565,8 @@ void ValidateHiddenAsMissingSourceContract(const std::filesystem::path& repo_roo
   harness->Check(in.good(), "server IPC source could not be opened");
   const std::string source((std::istreambuf_iterator<char>(in)),
                            std::istreambuf_iterator<char>());
-  harness->Check(Contains(source, "normalized == \"sys.version\""),
+  harness->Check(Contains(source, "normalized == \"sys.version\"") ||
+                     Contains(source, "normalized_name == \"sys.version\""),
                  "name resolver lost visible sys.version allow-list");
   harness->Check(Contains(source, "EncodePsNameResolvePayload(\"not_found_or_not_visible\""),
                  "name resolver does not collapse hidden and missing names");

@@ -189,8 +189,9 @@ def main() -> int:
     ):
         require(report_catalog, dashboard_id, "dashboard contract declaration")
         require_java_string(report_catalog, query, "dashboard contract query")
-    if 'extension point="org.jkiss.dbeaver.dashboard"' in model_xml:
-        raise AssertionError("dashboard contract must not register live dashboards before server admission")
+        require(model_xml, dashboard_id, "registered dashboard declaration")
+        require(model_xml, query, "registered dashboard query")
+    require(model_xml, 'extension point="org.jkiss.dbeaver.dashboard"', "DBeaver dashboard extension point")
     if "sys.performance" in model_xml:
         raise AssertionError("dashboard declarations must not use stale sys.performance placeholder")
 

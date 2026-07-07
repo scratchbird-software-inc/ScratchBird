@@ -33,6 +33,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -542,6 +543,44 @@ std::uint64_t DeleteOptionU64(const EngineDeleteRowsRequest& request,
     }
   }
   return fallback;
+}
+
+std::string DeleteOptionValue(const EngineDeleteRowsRequest& request,
+                              std::string_view prefix) {
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, prefix)) {
+      return option.substr(prefix.size());
+    }
+  }
+  return {};
+}
+
+std::string DeleteSurfaceVariant(const EngineDeleteRowsRequest& request) {
+  std::string variant = request.delete_surface_variant;
+  if (variant.empty()) {
+    variant = DeleteOptionValue(request, "dml_surface_variant:");
+  }
+  if (variant.empty()) {
+    variant = DeleteOptionValue(request, "delete_surface_variant:");
+  }
+  if (variant.empty()) {
+    variant = "delete";
+  }
+  for (char& c : variant) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return variant;
+}
+
+EngineApiU64 DeleteBatchLimitRows(const EngineDeleteRowsRequest& request) {
+  if (request.batch_limit_rows != 0) {
+    return request.batch_limit_rows;
+  }
+  EngineApiU64 limit = DeleteOptionU64(request, "batch_limit:", 0);
+  if (limit == 0) {
+    limit = DeleteOptionU64(request, "limit:", 0);
+  }
+  return limit;
 }
 
 bool IsUpdateEqualityPredicate(const EnginePredicateEnvelope& predicate) {
@@ -3468,6 +3507,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   mark_update_phase("update_trace_evidence");
   result.evidence.push_back({"mga_row_version", "row_update"});
+  result.evidence.push_back({"audit_event", "data.dml_change"});
+  result.evidence.push_back({"dml_surface_variant", "update"});
+  result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
+                                                                       : "rs.dml.returning.v1"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
   result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   result.evidence.push_back({"dml_returning", "affected_rows"});
@@ -3522,6 +3565,30 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_uuid_required"));
+  }
+  const std::string delete_surface_variant = DeleteSurfaceVariant(request);
+  if (delete_surface_variant != "delete" &&
+      delete_surface_variant != "batch_delete" &&
+      delete_surface_variant != "erase" &&
+      delete_surface_variant != "drop_series" &&
+      delete_surface_variant != "cypher_delete" &&
+      delete_surface_variant != "graph_delete_node" &&
+      delete_surface_variant != "graph_delete_edge") {
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        MakeInvalidRequestDiagnostic("dml.delete_rows",
+                                     "unsupported_delete_surface_variant:" +
+                                         delete_surface_variant));
+  }
+  const EngineApiU64 batch_limit_rows =
+      delete_surface_variant == "batch_delete" ? DeleteBatchLimitRows(request) : 0;
+  if (delete_surface_variant == "batch_delete" && batch_limit_rows == 0) {
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        MakeInvalidRequestDiagnostic("dml.delete_rows",
+                                     "batch_delete_limit_required"));
   }
   const auto write_result_policy =
       ResolveWriteResultPolicy(request, "dml.delete_rows");
@@ -3606,6 +3673,34 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   result.evidence.insert(result.evidence.end(),
                          serializable_admission.evidence.begin(),
                          serializable_admission.evidence.end());
+  result.evidence.push_back({"dml_surface_variant", delete_surface_variant});
+  result.evidence.push_back({"audit_event", "data.dml_change"});
+  result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
+                                                                       : "rs.dml.returning.v1"});
+  if (delete_surface_variant == "batch_delete") {
+    result.evidence.push_back({"delete_chunked_limit_applied", "true"});
+    result.evidence.push_back({"delete_batch_limit_rows", std::to_string(batch_limit_rows)});
+    if (!request.batch_on_column.empty()) {
+      result.evidence.push_back({"delete_batch_on_column", request.batch_on_column});
+    } else {
+      const auto option_batch_on = DeleteOptionValue(request, "batch_on_column:");
+      if (!option_batch_on.empty()) {
+        result.evidence.push_back({"delete_batch_on_column", option_batch_on});
+      }
+    }
+  } else if (delete_surface_variant == "erase") {
+    result.evidence.push_back({"erase_semantics", "audit_safe_valid_time_close"});
+  } else if (delete_surface_variant == "drop_series") {
+    result.evidence.push_back({"drop_series_semantics", "series_tombstone"});
+    if (!request.series_name.empty()) {
+      result.evidence.push_back({"drop_series_name", request.series_name});
+    } else {
+      const auto option_series_name = DeleteOptionValue(request, "series_name:");
+      if (!option_series_name.empty()) {
+        result.evidence.push_back({"drop_series_name", option_series_name});
+      }
+    }
+  }
   AddMutationOptimizerEvidence("delete", request.context.local_transaction_id != 0, true, &result.evidence);
   auto candidate_stream = BuildDeleteTargetCandidateStream(request,
                                                            state,
@@ -3671,6 +3766,10 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     row_record.deleted = true;
     row_record.values = row.values;
     staged_delete_rows.push_back({std::move(row_record), row});
+    if (batch_limit_rows != 0 &&
+        staged_delete_rows.size() >= static_cast<std::size_t>(batch_limit_rows)) {
+      break;
+    }
   }
 
   if (!staged_delete_rows.empty()) {

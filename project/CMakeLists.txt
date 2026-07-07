@@ -193,6 +193,7 @@ option(SB_BUILD_SBSQL_V3_GRAPH_TIMESERIES_PROBE "Build the SBSQL V3 graph/time-s
 option(SB_BUILD_SBSQL_V3_LLVM_GPU_PROBE "Build the SBSQL V3 LLVM/GPU extension command probe" OFF)
 option(SB_BUILD_SBSQL_V3_UDR_PARSER_PACKAGE_PROBE "Build the SBSQL V3 UDR/parser package extension command probe" OFF)
 option(SB_BUILD_UDR_LIFECYCLE_PROBE "Build the UDR lifecycle authority probe" OFF)
+option(SB_BUILD_UDR_BUILTIN_PACKAGES "Build the trusted builtin UDR package catalog" OFF)
 option(SB_BUILD_LLVM_RUNTIME_PROBE "Build the LLVM JIT/AOT runtime probe" OFF)
 option(SB_BUILD_GPU_PROFILE_PROBE "Build the optional GPU profile probe" OFF)
 option(SB_BUILD_ENGINE_LIFECYCLE_PROBE "Build the engine lifecycle state-machine probe" OFF)
@@ -2988,6 +2989,9 @@ if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
     FORCE)
 endif()
 if(SB_BUILD_TESTS)
+  set(SB_BUILD_UDR_BUILTIN_PACKAGES ON CACHE BOOL
+    "Build the trusted builtin UDR package catalog"
+    FORCE)
   set(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS ON CACHE BOOL
     "Build compatibility SQL parser and parser-support UDR proof gates"
     FORCE)
@@ -3258,6 +3262,13 @@ endif()
 
 if(SB_BUILD_SBSQL_PARSER_WORKER_TESTS AND NOT TARGET sbu_sbsql_parser_support)
   add_subdirectory(src/udr/sbu_sbsql_parser_support)
+endif()
+
+if((SB_BUILD_UDR_BUILTIN_PACKAGES OR SB_BUILD_SBSQL_PARSER_WORKER_TESTS) AND NOT TARGET sb_udr_builtin_packages)
+  if(NOT TARGET sb_udr_runtime)
+    add_subdirectory(src/udr/runtime)
+  endif()
+  add_subdirectory(src/udr/packages/builtin)
 endif()
 
 if(SB_BUILD_SBSQL_PARSER_WORKER_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_parser_worker/CMakeLists.txt")
@@ -3546,6 +3557,9 @@ endif()
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   if(NOT TARGET sb_udr_runtime)
     add_subdirectory(src/udr/runtime)
+  endif()
+  if(NOT TARGET sb_udr_builtin_packages)
+    add_subdirectory(src/udr/packages/builtin)
   endif()
   if(NOT TARGET sbl_sbsql_parser_worker_core)
     add_subdirectory(src/parsers/sbsql_worker)

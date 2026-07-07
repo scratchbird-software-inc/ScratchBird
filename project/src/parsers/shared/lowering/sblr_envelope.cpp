@@ -8,6 +8,8 @@
 
 #include "sblr_envelope.hpp"
 
+#include "sbsql_v3_sblr_catalog.hpp"
+
 #include <sstream>
 
 namespace scratchbird::parser::lowering {
@@ -77,19 +79,61 @@ LoweringResult LowerBoundShowIdentity(
   return LoweringResult{std::move(envelope)};
 }
 
+LoweringResult LowerBoundStatementFamilyEvidence(
+    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound) {
+  const auto* route =
+      scratchbird::parser::sbsql_v3_sblr::RouteForCommandFamily(bound.header.command_family);
+  if (route == nullptr) {
+    return LoweringResult{Error("SBLRLOW_COMMAND_FAMILY_UNMAPPED",
+                                "bound AST command family has no SBLR route")};
+  }
+  if (bound.header.database_uuid.empty() || bound.header.principal_uuid.empty()) {
+    return LoweringResult{Error("SBLRLOW_IDENTITY_CONTEXT_MISSING",
+                                "bound AST is missing database or principal identity")};
+  }
+
+  LogicalEnvelope envelope;
+  envelope.envelope_kind = "SBLRExecutionEnvelope.v3";
+  envelope.operation_family = route->route_operation_family;
+  envelope.canonical_operation_family = route->canonical_operation_family;
+  envelope.operation_key = route->operation_id;
+  envelope.sblr_opcode = route->sblr_opcode;
+  envelope.operation_version = 3;
+  envelope.database_uuid = bound.header.database_uuid;
+  envelope.principal_uuid = bound.header.principal_uuid;
+  envelope.registry_snapshot_uuid = bound.header.registry_snapshot_uuid;
+  envelope.result_shape = route->result_shape;
+  envelope.diagnostic_shape = route->diagnostic_shape;
+  envelope.payload_class = route->payload_class;
+  envelope.trace_key = bound.header.trace_key.empty() ? "SBSQL-MISS-003-LOWERING-CONTRACT"
+                                                      : bound.header.trace_key;
+  envelope.requires_public_abi_dispatch = route->requires_public_abi_dispatch;
+  envelope.contains_raw_sql_text = route->contains_raw_sql_text;
+  envelope.operands.push_back({"descriptor_profile", "descriptor_profile", bound.descriptor_profile});
+  envelope.operands.push_back({"operation_family", "canonical_operation_family", route->canonical_operation_family});
+  envelope.operands.push_back({"operation_family", "route_operation_family", route->route_operation_family});
+  return LoweringResult{std::move(envelope)};
+}
+
 std::string SerializeToJson(const LogicalEnvelope& envelope) {
   std::ostringstream out;
   out << "{\n";
   out << "  \"envelope_format_version\": " << envelope.envelope_format_version << ",\n";
   out << "  \"envelope_kind\": \"" << JsonEscape(envelope.envelope_kind) << "\",\n";
+  out << "  \"operation_family\": \"" << JsonEscape(envelope.operation_family) << "\",\n";
+  out << "  \"canonical_operation_family\": \"" << JsonEscape(envelope.canonical_operation_family) << "\",\n";
   out << "  \"operation_key\": \"" << JsonEscape(envelope.operation_key) << "\",\n";
+  out << "  \"sblr_opcode\": \"" << JsonEscape(envelope.sblr_opcode) << "\",\n";
   out << "  \"operation_version\": " << envelope.operation_version << ",\n";
   out << "  \"database_uuid\": \"" << JsonEscape(envelope.database_uuid) << "\",\n";
   out << "  \"principal_uuid\": \"" << JsonEscape(envelope.principal_uuid) << "\",\n";
   out << "  \"registry_snapshot_uuid\": \"" << JsonEscape(envelope.registry_snapshot_uuid) << "\",\n";
   out << "  \"result_shape\": \"" << JsonEscape(envelope.result_shape) << "\",\n";
   out << "  \"diagnostic_shape\": \"" << JsonEscape(envelope.diagnostic_shape) << "\",\n";
+  out << "  \"payload_class\": \"" << JsonEscape(envelope.payload_class) << "\",\n";
   out << "  \"trace_key\": \"" << JsonEscape(envelope.trace_key) << "\",\n";
+  out << "  \"requires_public_abi_dispatch\": " << (envelope.requires_public_abi_dispatch ? "true" : "false") << ",\n";
+  out << "  \"contains_raw_sql_text\": " << (envelope.contains_raw_sql_text ? "true" : "false") << ",\n";
   out << "  \"operands\": [\n";
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];

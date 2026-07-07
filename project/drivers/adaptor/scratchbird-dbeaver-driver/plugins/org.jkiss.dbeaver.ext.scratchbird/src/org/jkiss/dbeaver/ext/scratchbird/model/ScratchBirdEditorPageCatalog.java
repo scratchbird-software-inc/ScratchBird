@@ -175,7 +175,7 @@ public final class ScratchBirdEditorPageCatalog {
             "Metrics, Report, And Alert Page",
             "Renders report source status, chart intent, drilldown fields, and alert starter expressions for metrics/report nodes.",
             List.of("time range", "refresh action", "source preview", "chart intent", "alert starter", "drilldown selector"),
-            List.of("missing source banner", "future-gated marker", "raw metric family requirement"),
+            List.of("server admission banner", "source visibility status", "raw metric family requirement"),
             List.of(targetPath, "SHOW METRICS", "SBsql metrics snapshot", "SBDV-ALERT-*"));
     }
 

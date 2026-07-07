@@ -5,7 +5,7 @@
   "consumer_interfaces": [
     "dbeaver_management_platform_corpus_gate",
     "driver_lane_conformance_gate",
-    "future_live_server_dbeaver_gate"
+    "live_server_dbeaver_management_gate"
   ],
   "corpora": [
     {

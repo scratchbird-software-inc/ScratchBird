@@ -64,7 +64,7 @@ REQUIRED_PATTERNS = {
     "project/src/manager/node/manager_runtime.cpp": [
         "MANAGER.OWNER_DATABASE_SCOPE_INVALID",
         "MANAGER.SERVICE_MODE_UNSUPPORTED",
-        "Windows service-control handoff is not implemented in this build.",
+        "Windows service-control handoff is provided by the native Windows platform package.",
         "DaemonizeService",
         "owner_database_runtime_scope_id=",
         "ResolveManagerRuntimePaths",

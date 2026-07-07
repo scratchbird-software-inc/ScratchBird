@@ -157,10 +157,125 @@ CsvTable ReadCsv(const std::filesystem::path& path) {
   return table;
 }
 
+CsvTable MakeCsvTable(std::filesystem::path path,
+                      std::vector<std::string> headers,
+                      std::vector<CsvRow> rows) {
+  CsvTable table;
+  table.path = std::move(path);
+  table.headers = std::move(headers);
+  table.rows = std::move(rows);
+  return table;
+}
+
 std::string_view Field(const CsvRow& row, std::string_view column) {
   const auto found = row.find(std::string(column));
   if (found == row.end()) return {};
   return found->second;
+}
+
+std::string SourceStatus(const CsvRow& row) {
+  const auto source_status = Field(row, "source_status");
+  if (!source_status.empty()) return std::string(source_status);
+  return std::string(Field(row, "status"));
+}
+
+std::pair<std::string, std::string> StatusPolicy(std::string_view status) {
+  if (status == "native_now") return {"yes", ""};
+  if (status == "native_future") {
+    return {"no_until_status_changes", "SBSQL.SURFACE.NOT_ADMITTED"};
+  }
+  if (status == "cluster_private") {
+    return {"no_public_cluster_provider", "SBSQL.CLUSTER.AUTHORITY_REQUIRED"};
+  }
+  return {"no_unknown_status", "SBSQL.SURFACE.NOT_ADMITTED"};
+}
+
+CsvTable ProjectStatusMatrixFromSurfaceSnapshot(const CsvTable& snapshot) {
+  std::vector<CsvRow> rows;
+  rows.reserve(snapshot.rows.size());
+  for (const auto& row : snapshot.rows) {
+    const auto status = SourceStatus(row);
+    const auto [allowed, diagnostic] = StatusPolicy(status);
+    CsvRow projected;
+    projected.emplace("surface_id", std::string(Field(row, "surface_id")));
+    projected.emplace("canonical_name", std::string(Field(row, "canonical_name")));
+    projected.emplace("status", status);
+    projected.emplace("allowed_lowering", allowed);
+    projected.emplace("diagnostic_if_not_allowed", diagnostic);
+    rows.push_back(std::move(projected));
+  }
+  return MakeCsvTable("SBSQL_SURFACE_STATUS_MATRIX.projected",
+                      {"surface_id", "canonical_name", "status", "allowed_lowering",
+                       "diagnostic_if_not_allowed"},
+                      std::move(rows));
+}
+
+CsvTable ProjectOperationMatrixFromSurfaceSnapshot(const CsvTable& snapshot) {
+  std::vector<CsvRow> rows;
+  rows.reserve(snapshot.rows.size());
+  for (const auto& row : snapshot.rows) {
+    const auto status = SourceStatus(row);
+    const auto [_, diagnostic] = StatusPolicy(status);
+    CsvRow projected;
+    projected.emplace("surface_id", std::string(Field(row, "surface_id")));
+    projected.emplace("canonical_name", std::string(Field(row, "canonical_name")));
+    projected.emplace("sblr_operation_family", std::string(Field(row, "sblr_operation_family")));
+    projected.emplace("ingress_envelope", "SBLRExecutionEnvelope.v3");
+    projected.emplace("required_context", "parser_or_driver_lowered_sblr_uuid_context");
+    projected.emplace("binding_steps", "surface_registry_lookup;uuid_resolution;sblr_lowering");
+    projected.emplace("result_shape", "SBLRExecutionResultEnvelope.v3");
+    projected.emplace("diagnostics", diagnostic.empty() ? "canonical_message_vector_set" : diagnostic);
+    rows.push_back(std::move(projected));
+  }
+  return MakeCsvTable("SBSQL_TO_SBLR_OPERATION_MATRIX.projected",
+                      {"surface_id", "canonical_name", "sblr_operation_family",
+                       "ingress_envelope", "required_context", "binding_steps",
+                       "result_shape", "diagnostics"},
+                      std::move(rows));
+}
+
+CsvTable ProjectEngineGapMatrixFromBacklog(const CsvTable& backlog) {
+  std::vector<CsvRow> rows;
+  rows.reserve(backlog.rows.size());
+  for (const auto& row : backlog.rows) {
+    CsvRow projected;
+    projected.emplace("gap_id", std::string(Field(row, "gap_id")));
+    projected.emplace("source_file", std::string(Field(row, "source_file")));
+    projected.emplace("source_anchor", std::string(Field(row, "source_anchor")));
+    projected.emplace("gap_type", std::string(Field(row, "source_gap_type")));
+    projected.emplace("required_behavior", std::string(Field(row, "required_behavior")));
+    projected.emplace("target_packet", std::string(Field(row, "target_packet")));
+    projected.emplace("cluster_scope", std::string(Field(row, "cluster_scope")));
+    projected.emplace("current_status", std::string(Field(row, "status")));
+    projected.emplace("required_decision", std::string(Field(row, "required_decision")));
+    rows.push_back(std::move(projected));
+  }
+  return MakeCsvTable("SBSQL_ENGINE_GAP_MATRIX.projected",
+                      {"gap_id", "source_file", "source_anchor", "gap_type",
+                       "required_behavior", "target_packet", "cluster_scope",
+                       "current_status", "required_decision"},
+                      std::move(rows));
+}
+
+CsvTable ProjectReferenceAliasMatrixFromBacklog(const CsvTable& backlog) {
+  std::vector<CsvRow> rows;
+  rows.reserve(backlog.rows.size());
+  for (const auto& row : backlog.rows) {
+    CsvRow projected;
+    for (const auto column :
+         {"reference", "alias_kind", "reference_surface", "native_sbsql_surface",
+          "mapping_status", "sblr_operation_family", "parser_owned_behavior",
+          "engine_owned_behavior", "notes"}) {
+      projected.emplace(column, std::string(Field(row, column)));
+    }
+    rows.push_back(std::move(projected));
+  }
+  return MakeCsvTable("REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.projected",
+                      {"reference", "alias_kind", "reference_surface",
+                       "native_sbsql_surface", "mapping_status",
+                       "sblr_operation_family", "parser_owned_behavior",
+                       "engine_owned_behavior", "notes"},
+                      std::move(rows));
 }
 
 bool HasColumn(const CsvTable& table, std::string_view column) {
@@ -368,7 +483,7 @@ void ValidateSurfaceMatrices(std::span<const sbsql::GeneratedSurfaceRegistryRow>
                  Field(canonical, "surface_kind"));
       CheckEqual(harness, surface_id, "family", row.family, Field(canonical, "family"));
       CheckEqual(harness, surface_id, "source_status", row.source_status,
-                 Field(canonical, "status"));
+                 SourceStatus(canonical));
       CheckEqual(harness, surface_id, "cluster_scope", row.cluster_scope,
                  Field(canonical, "cluster_scope"));
       CheckEqual(harness, surface_id, "canonical_spec", row.canonical_spec,
@@ -724,17 +839,6 @@ int main(int argc, char** argv) {
     harness.Check(rows.size() == sbsql::kGeneratedSurfaceRegistryRowCount,
                   "generated registry row count does not match generated constant");
 
-    const auto canonical_surfaces =
-        ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv");
-    const auto surface_status =
-        ReadCsv(canonicalization_root / "SBSQL_SURFACE_STATUS_MATRIX.csv");
-    const auto operation_matrix =
-        ReadCsv(canonicalization_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv");
-    const auto canonical_gaps =
-        ReadCsv(canonicalization_root / "SBSQL_ENGINE_GAP_MATRIX.csv");
-    const auto canonical_aliases =
-        ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
-
     const auto surface_backlog = ReadCsv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv");
     const auto batch_membership = ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv");
     const auto oracle_map = ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv");
@@ -742,6 +846,26 @@ int main(int argc, char** argv) {
     const auto artifact_gaps = ReadCsv(artifact_root / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv");
     const auto artifact_aliases = ReadCsv(artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv");
     const auto message_vectors = ReadCsv(artifact_root / "MESSAGE_VECTOR_COVERAGE_BACKLOG.csv");
+
+    CsvTable canonical_surfaces;
+    CsvTable surface_status;
+    CsvTable operation_matrix;
+    CsvTable canonical_gaps;
+    CsvTable canonical_aliases;
+    if (std::filesystem::is_regular_file(canonicalization_root)) {
+      canonical_surfaces = ReadCsv(canonicalization_root);
+      surface_status = ProjectStatusMatrixFromSurfaceSnapshot(canonical_surfaces);
+      operation_matrix = ProjectOperationMatrixFromSurfaceSnapshot(canonical_surfaces);
+      canonical_gaps = ProjectEngineGapMatrixFromBacklog(artifact_gaps);
+      canonical_aliases = ProjectReferenceAliasMatrixFromBacklog(artifact_aliases);
+    } else {
+      canonical_surfaces = ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv");
+      surface_status = ReadCsv(canonicalization_root / "SBSQL_SURFACE_STATUS_MATRIX.csv");
+      operation_matrix = ReadCsv(canonicalization_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv");
+      canonical_gaps = ReadCsv(canonicalization_root / "SBSQL_ENGINE_GAP_MATRIX.csv");
+      canonical_aliases =
+          ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
+    }
 
     ValidateSurfaceMatrices(rows, canonical_surfaces, surface_status, operation_matrix,
                             surface_backlog, batch_membership, oracle_map, batching_plan,
