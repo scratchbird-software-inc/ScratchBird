@@ -1,8 +1,0 @@
-gate_id,phase,status,requirement,evidence
-DRP-GATE-001,P0,accepted_source_locators_verified,Every reference source locator must be verified before extraction,REFERENCE_REGRESSION_SOURCE_LOCATION_MATRIX.csv
-DRP-GATE-002,P1,native_tool_inventory_manifest_generated,Every reference native test tool/client runner must be identified or recorded absent,REFERENCE_NATIVE_TEST_TOOL_INDEX.csv
-DRP-GATE-003,P2,project_test_manifests_generated,Project test destinations are declared for every reference,PROJECT_TEST_DESTINATION_MATRIX.csv
-DRP-GATE-004,P3,manifest_generated_pending_import_or_exclusion_execution,Regression import or reason-coded exclusion must execute,project/tests/reference_regression
-DRP-GATE-005,P4,manifest_generated_pending_native_replay_execution,Native replay must execute,project/tests/reference_regression/*/native_tool_harness
-DRP-GATE-006,P5,policy_manifest_generated_pending_fixture_execution,Policy fixtures must execute,project/tests/reference_regression/*/security_operations
-DRP-GATE-008,P7,blocked_pending_final_no_open_reference_audit,Final audit remains blocking,GO_NO_GO.md

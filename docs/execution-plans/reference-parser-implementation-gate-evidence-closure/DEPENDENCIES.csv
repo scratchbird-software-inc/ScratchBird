@@ -1,2 +1,0 @@
-dependency_id,used_by,type,status,dependency_path,decision
-DPGEC-DEP-001,all,project_test_manifests,manifest_generated_pending_execution,project/tests/reference_regression,Use public test manifests only; no private path authority in public evidence

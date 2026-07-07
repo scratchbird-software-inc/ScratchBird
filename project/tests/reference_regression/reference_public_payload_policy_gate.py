@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import pathlib
 import subprocess
 import sys
@@ -49,6 +50,26 @@ def tracked_files(repo_root: pathlib.Path) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def declared_native_tools(repo_root: pathlib.Path) -> set[str]:
+    allowed: set[str] = set()
+    manifests = sorted(
+        (repo_root / REFERENCE_TEST_PREFIX).glob(
+            "*/native_tool_harness/native_tool_harness_manifest.csv"
+        )
+    )
+    for manifest in manifests:
+        with manifest.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                locator = (row.get("tool_locator") or "").strip()
+                if not locator.startswith(REFERENCE_TEST_PREFIX):
+                    continue
+                if NATIVE_TOOL_COMPONENT not in locator:
+                    continue
+                allowed.add(locator)
+    return allowed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
@@ -56,6 +77,7 @@ def main() -> int:
 
     repo_root = pathlib.Path(args.repo_root).resolve()
     failures: list[str] = []
+    allowed_tools = declared_native_tools(repo_root)
 
     for rel in tracked_files(repo_root):
         if not rel.startswith(REFERENCE_ACQUISITION_PREFIX):
@@ -74,7 +96,8 @@ def main() -> int:
     for rel in tracked_files(repo_root):
         if NATIVE_TOOL_COMPONENT not in rel:
             continue
-        failures.append(f"{rel}: reference native tool payloads must not be tracked")
+        if rel not in allowed_tools:
+            failures.append(f"{rel}: tracked reference native tool is not declared in a harness manifest")
 
     if failures:
         print("\n".join(failures[:300]))

@@ -124,18 +124,16 @@ add_test(
     "--check"
 )
 set_tests_properties(reference_parser_start_evidence_manifest_conformance PROPERTIES
-  SKIP_RETURN_CODE 77
-  LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate"
+  LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate;reference_implementation_start_gate"
 )
 
 add_test(
-  NAME reference_parser_gate_evidence_no_go_conformance
+  NAME reference_parser_implementation_start_handoff_conformance
   COMMAND
     "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/reference_parser_gate_evidence_closure_gate.py"
     "--repo-root" "${PROJECT_SOURCE_DIR}/.."
 )
-set_tests_properties(reference_parser_gate_evidence_no_go_conformance PROPERTIES
-  SKIP_RETURN_CODE 77
-  LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate"
+set_tests_properties(reference_parser_implementation_start_handoff_conformance PROPERTIES
+  LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate;reference_implementation_start_gate"
 )

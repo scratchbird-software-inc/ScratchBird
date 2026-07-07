@@ -1,2 +1,0 @@
-slice_id,phase,title,status,owner,outputs,acceptance
-DPGEC-P0,P0,Reference parser evidence controller,blocked_no_go_controller_active,reference parser evidence controller,controller CSVs and no-go reports,No skipped gate; parser start remains no-go until proof executes
