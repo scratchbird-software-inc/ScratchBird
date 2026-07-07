@@ -4,7 +4,7 @@
       "bytes": 1292961,
       "category": "metadata",
       "path": "FILE_LOCATION_MANIFEST.json",
-      "sha256": "dc2c10556901a3fc8b1a0b8b0c17779bcecc13b59a1f43ccc7129ada8ffd27e6"
+      "sha256": "f4d3a47fa1a860d26f81c73478014e2c41d57e7a7cb78957445b6e61d261c85f"
     },
     {
       "bytes": 181,
@@ -20860,13 +20860,13 @@
       "bytes": 5338,
       "category": "reference-parsers",
       "path": "reference-parsers/SBOM.json",
-      "sha256": "4153d1f1606e6a63ad3c873e5c4abbeb1cc3b8e7c31cdc75c53538b29865d203"
+      "sha256": "add686c0c4c563fe335267456ab70e877ed1031e5fc43a274390f21c6c988ff4"
     },
     {
       "bytes": 2891,
       "category": "reference-parsers",
       "path": "reference-parsers/SHA256SUMS",
-      "sha256": "e2d4de207bb54c3f0d930ef6759e58d043046ba80c1d4d7e56e757109395e3ae"
+      "sha256": "ca1554fdd9ce5ee04e402b00b7ec55121d796c73366a4964e6776cc5545e2991"
     },
     {
       "bytes": 1224696,
@@ -21037,10 +21037,10 @@
       "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
     },
     {
-      "bytes": 1207,
+      "bytes": 1944,
       "category": "reference-parsers",
       "path": "reference-parsers/package_manifest.json",
-      "sha256": "eba88c26a414bfd06f11e4834e72570fe486730b65749d0257a205baceca5312"
+      "sha256": "4534e759edc4819b12ddae150ca838120d49854f3ec916a17cb627146699a06f"
     },
     {
       "bytes": 1309,
@@ -21049,10 +21049,10 @@
       "sha256": "2439be95458c1bf1aedb4a90e55d3d80a56c2501afd53fa159b6f3c45b3bfdd9"
     },
     {
-      "bytes": 1048,
+      "bytes": 1417,
       "category": "reference-parsers",
       "path": "reference-parsers/support/reference_parser_source_reference_manifest.json",
-      "sha256": "b7d77df5a5a3859ecc944cdc8c8e83a65153949c8cdd96a03023c7c3018b6134"
+      "sha256": "260fe4edb2b8dfdd2ec88f598a9f2bfe39662f97ee405341e1a495772935b4e2"
     },
     {
       "bytes": 1931,
@@ -25374,7 +25374,7 @@
     "udr": 34
   },
   "channel": "temporary_prerelease_packaging",
-  "generated_at_utc": "2026-07-07T13:10:27+00:00",
+  "generated_at_utc": "2026-07-07T14:09:23+00:00",
   "policy": {
     "installer_builders_consume_file_location_manifest": true,
     "packaging_tree_is_temporary": true
@@ -25395,7 +25395,19 @@
   "release_date": "2026.07.03",
   "schema_id": "scratchbird.prerelease_packaging_manifest.v1",
   "source": {
-    "source_branch": "main",
-    "source_commit": "92c75541f1740bfd319aa4859a865cfada37738b"
+    "source_basis_semantics": "source_commit_basis is the checked-out implementation revision used when staging this temporary packaging tree; source_tree_digest is the release-package implementation/test contract identity and is stable across later packaging-only commits.",
+    "source_branch_basis": "main",
+    "source_commit_basis": "856f3368fc03c6155a3c1707d5e14ed6ea1ad249",
+    "source_file_count": 985,
+    "source_roots": [
+      "packaging/scripts/promote_reference_parser_release_artifacts.py",
+      "project/src/parsers/compatibility",
+      "project/src/udr",
+      "project/tests/compatibility_sql_parser_first_tranche",
+      "project/tests/reference_regression",
+      "public_execution_plan"
+    ],
+    "source_tree_digest": "bb616b4041945006545d31b4b9861b7364800c3923c2d6becc5f9c5415911e9e",
+    "source_tree_digest_algorithm": "sha256(path\\0bytes\\0sha256\\n)"
   }
 }
