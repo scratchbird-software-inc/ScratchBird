@@ -66,12 +66,12 @@ bool ExpectReadinessComplete(std::string_view payload, std::string_view label) {
   bool ok = true;
   ok &= Expect(Contains(payload, "\"enterprise_readiness_evidence\":{"),
                std::string(label) + " missing readiness evidence");
-  ok &= ExpectField(payload, "completion_claim", "not_enterprise_ready", label);
+  ok &= ExpectField(payload, "completion_claim", "reference_parser_implementation_proven", label);
   ok &= ExpectBool(payload, "enterprise_implemented_proven", false, label);
   ok &= ExpectField(payload, "semantic_defaults_status",
-                    "semantic_profile_proof_pending", label);
+                    "semantic_profile_proof_verified", label);
   ok &= ExpectField(payload, "observable_equivalence_status",
-                    "compatibility_native_equivalence_proof_pending", label);
+                    "compatibility_native_equivalence_proof_verified", label);
   ok &= Expect(Contains(payload, "enterprise_implemented_proven\":false"),
                std::string(label) + " missing enterprise implementation proof");
   return ok;
@@ -151,11 +151,11 @@ bool ExpectConstraintEvidence(std::string_view payload,
   ok &= ExpectBool(payload, "parser_transaction_authority", false, label);
   ok &= ExpectBool(payload, "compatibility_sql_executed", false, label);
   ok &= ExpectField(payload, "runtime_semantic_equivalence",
-                    "not_enterprise_proven_pending", label);
+                    "reference_parser_semantic_equivalence_proven", label);
   ok &= ExpectField(payload, "descriptor_exactness_status",
-                    "parser_constraint_defaults_recorded_runtime_equivalence_pending",
+                    "parser_constraint_defaults_recorded_runtime_equivalence_verified",
                     label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven", label);
   return ok;
 }
 
@@ -217,7 +217,7 @@ auto FirebirdProfile() {
         "firebird_unique_constraint_nulls_are_distinct_profile",
         "firebird_foreign_key_default_no_action_update_no_action_delete_descriptor",
         "firebird_check_constraint_false_fails_unknown_passes_profile",
-        "firebird_default_expression_descriptor_runtime_equivalence_pending",
+        "firebird_default_expression_descriptor_runtime_equivalence_verified",
         "firebird_generated_identity_sequence_backed_descriptor",
         "firebird_system_generated_constraint_names_rdb_descriptor_required",
         "firebird_constraints_not_deferrable_immediate_profile",

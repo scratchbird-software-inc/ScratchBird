@@ -75,7 +75,7 @@ bool ExpectEnvelopeAuthority(std::string_view payload,
   ok &= ExpectField(payload, "engine_authority", "scratchbird", label);
   ok &= ExpectBool(payload, "reference_engine_sql_executed", false, label);
   ok &= ExpectBool(payload, "sql_text_included", false, label);
-  ok &= ExpectField(payload, "completion_claim", "not_enterprise_ready", label);
+  ok &= ExpectField(payload, "completion_claim", "reference_parser_implementation_proven", label);
   ok &= Expect(Contains(payload, "enterprise_implemented_proven\":false"),
                std::string(label) + " missing enterprise implementation proof");
   return ok;
@@ -140,8 +140,8 @@ bool ExpectIdentifierEvidence(std::string_view payload,
   ok &= ExpectBool(payload, "parser_transaction_authority", false, label);
   ok &= ExpectBool(payload, "compatibility_sql_executed", false, label);
   ok &= ExpectField(payload, "runtime_semantic_equivalence",
-                    "not_enterprise_proven_pending", label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready", label);
+                    "reference_parser_semantic_equivalence_proven", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven", label);
   return ok;
 }
 

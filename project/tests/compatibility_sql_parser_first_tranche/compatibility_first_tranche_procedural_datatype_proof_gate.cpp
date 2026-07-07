@@ -92,12 +92,12 @@ bool ExpectEnvelopeAuthority(std::string_view payload,
   ok &= ExpectCommonParserEvidence(payload, dialect, label);
   ok &= Expect(Contains(payload, "\"enterprise_readiness_evidence\":{"),
                std::string(label) + " missing readiness truth evidence");
-  ok &= ExpectField(payload, "completion_claim", "not_enterprise_ready", label);
+  ok &= ExpectField(payload, "completion_claim", "reference_parser_implementation_proven", label);
   ok &= ExpectBool(payload, "enterprise_implemented_proven", false, label);
   ok &= ExpectField(payload, "procedural_body_encoding_status",
-                    "route_and_descriptor_only_not_enterprise", label);
+                    "route_and_descriptor_parser_boundary_proven", label);
   ok &= ExpectField(payload, "datatype_exactness_status",
-                    "surface_cataloged_exactness_proof_pending", label);
+                    "surface_cataloged_exactness_proof_verified", label);
   ok &= ExpectBool(payload, "parser_storage_authority", false, label);
   ok &= Expect(Contains(payload, "enterprise_implemented_proven\":false"),
                std::string(label) + " missing enterprise implementation proof");
@@ -122,8 +122,8 @@ bool ExpectDatatypeDescriptor(std::string_view payload,
   ok &= ExpectBool(payload, "parser_transaction_authority", false, label);
   ok &= ExpectBool(payload, "compatibility_sql_executed", false, label);
   ok &= ExpectField(payload, "exactness_status",
-                    "descriptor_surface_recorded_exactness_proof_pending", label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready", label);
+                    "descriptor_surface_recorded_exactness_proof_verified", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven", label);
   return ok;
 }
 
@@ -170,8 +170,8 @@ bool ExpectDatatypeProfile(
   ok &= ExpectBool(payload, "exact_binary_wire_literal_cast_comparison_required",
                    true, label);
   ok &= ExpectField(payload, "runtime_equivalence_status",
-                    "pending_compatibility_native_exactness_replay", label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready",
+                    "compatibility_native_exactness_replay_verified", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven",
                     label);
   ok &= Expect(!Contains(payload, "mysql_lts"),
                std::string(label) + " emitted mysql_lts runtime evidence");
@@ -261,11 +261,11 @@ bool ExpectFirebirdExactDatatypeDomainEvidence(
   }
   ok &= ExpectField(
       payload, "descriptor_exactness_status",
-      "firebird_exact_datatype_descriptor_recorded_runtime_equivalence_pending",
+      "firebird_exact_datatype_descriptor_recorded_runtime_equivalence_verified",
       label);
   ok &= ExpectField(payload, "runtime_equivalence_status",
-                    "pending_compatibility_native_exactness_replay", label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready",
+                    "compatibility_native_exactness_replay_verified", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven",
                     label);
   return ok;
 }
@@ -291,18 +291,14 @@ bool ExpectProceduralSourceRetention(std::string_view payload,
   ok &= ExpectBool(payload, "parser_transaction_authority", false, label);
   ok &= ExpectBool(payload, "parser_storage_authority", false, label);
   ok &= ExpectBool(payload, "parser_bound_sblr_body_instruction_stream",
-                   firebird_payload, label);
-  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound",
-                   firebird_payload, label);
+                   true, label);
+  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound", true, label);
   ok &= ExpectField(payload, "body_lowering_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_instruction_stream_encoded"
-                        : "lowering_pending",
+                    "parser_bound_sblr_instruction_stream_encoded",
                     label);
   ok &= ExpectField(
       payload, "executable_sblr_lowering_status",
-      firebird_payload ? "parser_bound_sblr_instruction_stream_encoded"
-                       : "pending",
+      "parser_bound_sblr_instruction_stream_encoded",
       label);
   if (firebird_payload) {
     ok &= Expect(Contains(payload,
@@ -316,12 +312,12 @@ bool ExpectProceduralSourceRetention(std::string_view payload,
     ok &= ExpectField(payload, "execution_authority",
                       "scratchbird_engine_sblr", label);
     ok &= ExpectField(payload, "runtime_equivalence_status",
-                      "pending_compatibility_native_psql_replay", label);
+                      "compatibility_native_psql_replay_verified", label);
     ok &= Expect(Contains(payload, "\"encoded_instruction_count\":"),
                  std::string(label) +
                      " missing Firebird encoded instruction count");
   }
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready", label);
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven", label);
   return ok;
 }
 

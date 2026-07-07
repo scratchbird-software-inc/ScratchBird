@@ -125,10 +125,10 @@ FIREBIRD_VECTORS = (
     },
     {
         "sql": "NBACKUP -B scratchbird_ref.fdb scratchbird_ref.nbk",
+        "expect_exit": 1,
+        "diagnostic_code": "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED",
         "operation_family": "firebird.emulated.incremental_backup",
         "mapping_key": "firebird.emulated.backup_restore",
-        "mapping_disposition": "emulated_non_file_diagnostic",
-        "exact_emulated_diagnostic": True,
     },
     {
         "sql": "CREATE EXTERNAL TABLE ext EXTERNAL FILE 'scratchbird_ref.dat' (id integer)",

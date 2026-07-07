@@ -210,12 +210,8 @@ int main(int argc, char** argv) {
       return EXIT_SUCCESS;
     }
     if (std::string(argv[i]) == "--surface-report") {
-      std::cout << "{\"dialect\":\"firebird\","
-                << "\"datatype_surfaces\":" << scratchbird::parser::firebird::DatatypeSurfaces().size() << ','
-                << "\"builtin_function_surfaces\":" << scratchbird::parser::firebird::BuiltinFunctionSurfaces().size() << ','
-                << "\"catalog_overlay_surfaces\":" << scratchbird::parser::firebird::CatalogOverlaySurfaces().size() << ','
-                << "\"diagnostic_surfaces\":" << scratchbird::parser::firebird::DiagnosticSurfaces().size()
-                << "}\n";
+      std::cout << scratchbird::parser::firebird::FirebirdSurfaceReportJson()
+                << '\n';
       return EXIT_SUCCESS;
     }
   }

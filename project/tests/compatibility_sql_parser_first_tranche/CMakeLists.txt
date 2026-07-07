@@ -534,6 +534,52 @@ set_tests_properties(compatibility_reference_parser_full_lane_command_vectors PR
   LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_enterprise_blocker_truth_gate;compatibility_parser_full_lane_command_vectors;compatibility_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
 )
 
+add_test(
+  NAME compatibility_parser_exactness_full_lane_conformance
+  COMMAND
+    "${COMPATIBILITY_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compatibility_reference_parser_release_closure_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --parser-bin-root "$<TARGET_FILE_DIR:sbp_postgresql>"
+    --build-root "${CMAKE_BINARY_DIR}"
+    --mode exactness
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/compatibility_parser_exactness_full_lane_conformance_evidence.json"
+)
+set_tests_properties(compatibility_parser_exactness_full_lane_conformance PROPERTIES
+  LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_enterprise_blocker_truth_gate;compatibility_parser_exactness_full_lane_conformance;compatibility_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME compatibility_reference_parser_wire_api_security_resource_conformance
+  COMMAND
+    "${COMPATIBILITY_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compatibility_reference_parser_release_closure_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --parser-bin-root "$<TARGET_FILE_DIR:sbp_postgresql>"
+    --build-root "${CMAKE_BINARY_DIR}"
+    --mode wire-security-resource
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/compatibility_reference_parser_wire_api_security_resource_conformance_evidence.json"
+)
+set_tests_properties(compatibility_reference_parser_wire_api_security_resource_conformance PROPERTIES
+  LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_enterprise_blocker_truth_gate;compatibility_reference_parser_wire_api_security_resource_conformance;compatibility_parser_release_evidence;security_auth_gate;public_single_node_full_route_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME reference_parser_packaging_handoff_conformance
+  COMMAND
+    "${COMPATIBILITY_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compatibility_reference_parser_release_closure_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --parser-bin-root "$<TARGET_FILE_DIR:sbp_postgresql>"
+    --build-root "${CMAKE_BINARY_DIR}"
+    --release-root "${PROJECT_SOURCE_DIR}/../packaging/2026.07.03"
+    --mode packaging
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/reference_parser_packaging_handoff_conformance_evidence.json"
+)
+set_tests_properties(reference_parser_packaging_handoff_conformance PROPERTIES
+  LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_enterprise_blocker_truth_gate;reference_parser_packaging_handoff_conformance;compatibility_parser_release_evidence;reference_release_regression_gate"
+)
+
 add_executable(sbu_compatibility_sql_parser_support_probe
   sbu_compatibility_sql_parser_support_probe.cpp
 )

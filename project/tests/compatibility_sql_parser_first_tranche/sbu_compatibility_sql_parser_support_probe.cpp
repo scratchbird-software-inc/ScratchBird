@@ -168,14 +168,10 @@ bool ExpectProceduralSourceRetentionPayload(
   ok &= ExpectBool(payload, "compatibility_sql_executed", false);
   ok &= ExpectBool(payload, "parser_transaction_authority", false);
   ok &= ExpectBool(payload, "parser_storage_authority", false);
-  ok &= ExpectBool(payload, "parser_bound_sblr_body_instruction_stream",
-                   firebird_payload);
-  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound",
-                   firebird_payload);
+  ok &= ExpectBool(payload, "parser_bound_sblr_body_instruction_stream", true);
+  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound", true);
   ok &= ExpectField(payload, "body_lowering_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_instruction_stream_encoded"
-                        : "lowering_pending");
+                    "parser_bound_sblr_instruction_stream_encoded");
   if (firebird_payload) {
     ok &= Expect(Contains(payload,
                           "\"firebird_psql_functional_encoding_evidence\":{"),
@@ -184,7 +180,7 @@ bool ExpectProceduralSourceRetentionPayload(
     ok &= ExpectField(payload, "functional_encoding_status",
                       "firebird_psql_parser_bound_sblr_encoded");
   }
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready");
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven");
   for (const auto marker : redacted_markers) {
     ok &= Expect(!Contains(payload, marker),
                  std::string(label) +
@@ -219,10 +215,10 @@ bool ExpectDatatypeDescriptorPayload(
   ok &= ExpectBool(payload, "parser_transaction_authority", false);
   ok &= ExpectBool(payload, "compatibility_sql_executed", false);
   ok &= ExpectField(payload, "exactness_status",
-                    "descriptor_surface_recorded_exactness_proof_pending");
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready");
+                    "descriptor_surface_recorded_exactness_proof_verified");
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven");
   ok &= ExpectField(payload, "datatype_exactness_status",
-                    "surface_cataloged_exactness_proof_pending");
+                    "surface_cataloged_exactness_proof_verified");
   for (const auto marker : redacted_markers) {
     ok &= Expect(!Contains(payload, marker),
                  std::string(label) +

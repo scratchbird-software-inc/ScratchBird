@@ -102,6 +102,7 @@ const std::vector<SurfaceDescriptor>& BuiltinFunctionSurfaces();
 const std::vector<SurfaceDescriptor>& CatalogOverlaySurfaces();
 const std::vector<SurfaceDescriptor>& DiagnosticSurfaces();
 std::string FirebirdPackageIdentityJson();
+std::string FirebirdSurfaceReportJson();
 std::string FirebirdLifecycleMappingReportJson();
 
 } // namespace scratchbird::parser::firebird

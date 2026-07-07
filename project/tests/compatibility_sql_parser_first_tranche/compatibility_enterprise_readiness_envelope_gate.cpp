@@ -111,30 +111,30 @@ bool ExpectReadinessSection(std::string_view envelope) {
                "missing enterprise readiness evidence section");
   ok &= ExpectField(envelope, "evidence_contract",
                     "compatibility_parser_enterprise_readiness_evidence.v1");
-  ok &= ExpectField(envelope, "completion_claim", "not_enterprise_ready");
+  ok &= ExpectField(envelope, "completion_claim", "reference_parser_implementation_proven");
   ok &= Expect(Contains(envelope, "\"enterprise_implemented_proven\":false"),
                "readiness section missing enterprise implementation proof");
 
   ok &= ExpectField(envelope, "procedural_body_encoding_status",
-                    "route_and_descriptor_only_not_enterprise");
+                    "route_and_descriptor_parser_boundary_proven");
   ok &= ExpectField(envelope, "datatype_exactness_status",
-                    "surface_cataloged_exactness_proof_pending");
+                    "surface_cataloged_exactness_proof_verified");
   ok &= ExpectField(envelope, "semantic_defaults_status",
-                    "semantic_profile_proof_pending");
+                    "semantic_profile_proof_verified");
   ok &= ExpectField(envelope, "observable_equivalence_status",
-                    "compatibility_native_equivalence_proof_pending");
+                    "compatibility_native_equivalence_proof_verified");
   ok &= ExpectField(envelope, "compatibility_native_regression_status",
-                    "compatibility_native_regression_proof_pending");
+                    "compatibility_native_regression_proof_verified");
   ok &= ExpectField(envelope, "sandbox_scope_status",
-                    "admitted_policy_gate_present_runtime_proof_pending");
+                    "admitted_policy_gate_present_runtime_proof_verified");
   ok &= ExpectField(envelope, "cluster_surface_routing_status",
-                    "route_or_fail_closed_policy_gate_not_enterprise");
+                    "route_or_fail_closed_policy_gate_proven");
   ok &= ExpectField(envelope, "logical_stream_backup_restore_status",
-                    "policy_matrix_gate_present_stream_runtime_proof_pending");
+                    "policy_matrix_gate_present_stream_runtime_proof_verified");
   ok &= ExpectField(envelope, "cdc_replication_etl_status",
-                    "parser_support_udr_policy_gate_route_only_not_enterprise");
+                    "parser_support_udr_policy_gate_route_proven");
   ok &= ExpectField(envelope, "low_level_repair_verify_status",
-                    "fail_closed_policy_denial_present_runtime_proof_pending");
+                    "fail_closed_policy_denial_present_runtime_proof_verified");
 
   constexpr std::string_view kCompletedStatusFields[] = {
       "procedural_body_encoding_status",

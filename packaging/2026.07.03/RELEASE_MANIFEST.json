@@ -1,10 +1,10 @@
 {
   "artifacts": [
     {
-      "bytes": 1308351,
+      "bytes": 1292960,
       "category": "metadata",
       "path": "FILE_LOCATION_MANIFEST.json",
-      "sha256": "d68806e0135e09eebb25baaa0b0b3efe15bf2a470a70fe1538635e0ea81ff040"
+      "sha256": "ff1c7d2c738215ae474f2ffe5cc6c0c913c56fde40d0ed193ca084a78622c4dd"
     },
     {
       "bytes": 181,
@@ -17,6 +17,12 @@
       "category": "metadata",
       "path": "README.md",
       "sha256": "3f212763ce1eba24ad4d89151fee9dc601455b3ceb7b9ffd01008d22ec94c48f"
+    },
+    {
+      "bytes": 636903,
+      "category": "metadata",
+      "path": "SHA256SUMS",
+      "sha256": "724c4ee77a619008d32b30ad6b9b2e28e355c0f866626ce07e9c5863fc23bab1"
     },
     {
       "bytes": 40020,
@@ -20845,6 +20851,216 @@
       "sha256": "064aa7b81d28024f5591513a77299bf7435361e871f32d26dd468b5aaba0fd2b"
     },
     {
+      "bytes": 244,
+      "category": "reference-parsers",
+      "path": "reference-parsers/README.md",
+      "sha256": "20d3d66cfdd2eb97724eea2c99bb7deb5866014c4bf3da42ffbe2d27ccba26d8"
+    },
+    {
+      "bytes": 5337,
+      "category": "reference-parsers",
+      "path": "reference-parsers/SBOM.json",
+      "sha256": "f611d757d6cf1fc243bd281f6f3c7aac4b56bf6dad04ab3e564d38aa55e8fd04"
+    },
+    {
+      "bytes": 2886,
+      "category": "reference-parsers",
+      "path": "reference-parsers/SHA256SUMS",
+      "sha256": "b3eb9557c9634fc669f5cddfef0adcd740bc84d9c6bb5c2e9d631c51450277d6"
+    },
+    {
+      "bytes": 1224696,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_apache_ignite",
+      "sha256": "cfd8fc3276ca4ff07713c32ce9f72a7181bdd2f46e2e9c348745376088ed46af"
+    },
+    {
+      "bytes": 1224840,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_cassandra",
+      "sha256": "1a6044b6317defd821cdabc25ae0719103e70d00ac023b33d698493d856ff8a1"
+    },
+    {
+      "bytes": 1237424,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_clickhouse",
+      "sha256": "3fcbba99741d53729cbc861f273c375d17acecb64aac50d75570cac645485000"
+    },
+    {
+      "bytes": 1233096,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_cockroachdb",
+      "sha256": "6d70e5eb905cf0c651d91275f7efd9bd50311bdbd8f8ff5dc8585ab9fde07cc3"
+    },
+    {
+      "bytes": 1228816,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_dolt",
+      "sha256": "6f7d341fb42674f8fec9345c8fecad71cfda365082a0ebd61f51c41817a0fa48"
+    },
+    {
+      "bytes": 1233216,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_duckdb",
+      "sha256": "c34fdaa2ae2726129f3816981bd51296bf72aee40420d496f300ead3d0825c6c"
+    },
+    {
+      "bytes": 1704512,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_firebird",
+      "sha256": "3f4abaec01a18216e81795bf7f6226ae8f7421f3a4ab76354237ba7dae720faa"
+    },
+    {
+      "bytes": 1225176,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_foundationdb",
+      "sha256": "54e3a75e94c5a73e8747d54706d5cb0cdf7ca0a79e47c098daf716318943dd62"
+    },
+    {
+      "bytes": 1229120,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_immudb",
+      "sha256": "e26b90e1883e86a66c550467ce6def90c6d5f27f6cbf7508fe9d5fcf2aa4669b"
+    },
+    {
+      "bytes": 1220968,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_influxdb",
+      "sha256": "aed5ba432d3df608bd97546a3a97531567d03f93266d2e53935391a665403f7d"
+    },
+    {
+      "bytes": 1249624,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_mariadb",
+      "sha256": "6bfeb65a745bb98e7d76ca085e000292fec64503e7348633eb0e3de116b09d0b"
+    },
+    {
+      "bytes": 1220928,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_milvus",
+      "sha256": "d186bf572e3662bc5940708c9401c82f8d061616f60b99ee4cb14206685e0f05"
+    },
+    {
+      "bytes": 1224792,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_mongodb",
+      "sha256": "3155906dfd020ba95744a19f0eb67e0784623c4c10f2b0655ce2558b3261b95a"
+    },
+    {
+      "bytes": 1249576,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_mysql",
+      "sha256": "5ef5975b36719c162eeb69ff04bb26772a1e7fcf4c6f955ad09d5144f2a3eadb"
+    },
+    {
+      "bytes": 1221160,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_neo4j",
+      "sha256": "f051aae1d2236a306344cbdd35847ca04dd7daba32e348364119193187d1cf14"
+    },
+    {
+      "bytes": 1220784,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_opensearch",
+      "sha256": "2180308b50a9998ba1b7da7e3754bf46bcc9f3a5439b0509e70c6a2eb41a4027"
+    },
+    {
+      "bytes": 1225312,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_opensearch_sql_ppl",
+      "sha256": "8c4ac548b0b4231d549eeba27fdb71e7ccdd938b6cb4dfbc9f1100a2798c1550"
+    },
+    {
+      "bytes": 1270192,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_postgresql",
+      "sha256": "903fa492106765695aaa78bfda5e67a11f129d9136b9e789cf55a97ad057cbc5"
+    },
+    {
+      "bytes": 1224744,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_redis",
+      "sha256": "38cbb777c16cd58d0873e7e28b361c25598d5c567275dbdbe29857dfe6337d67"
+    },
+    {
+      "bytes": 1229368,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_sqlite",
+      "sha256": "cc0d3883df0a445045b85959f116e3cfa222c8e7a7e69f37e2d5ce611c0b2219"
+    },
+    {
+      "bytes": 1233168,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_tidb",
+      "sha256": "8c23c05c2ed50056e05b9c7f6b830ab1cbe80e1fc7be82ec4cf1573d31c11ecc"
+    },
+    {
+      "bytes": 1220624,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_tikv",
+      "sha256": "ae995de75267e53b94c10ab87e87ce872423741966f24a770ad1a882a1560592"
+    },
+    {
+      "bytes": 1233216,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_vitess",
+      "sha256": "c18c8b5ec3abad0ce6948f5dc09e749ffe98abbd313c8ba3e664fa8a2a30e0a4"
+    },
+    {
+      "bytes": 1224720,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_xtdb",
+      "sha256": "a7e10d62f578748522ddc2aefae6963439a11c52abe4ec2a4fa7d43382ad2e53"
+    },
+    {
+      "bytes": 1237168,
+      "category": "reference-parsers",
+      "path": "reference-parsers/bin/sbp_yugabytedb",
+      "sha256": "44f15e3489178253909086a3c0ab673f13bb3b4cc872147e95b2abc4a046b38d"
+    },
+    {
+      "bytes": 16726,
+      "category": "reference-parsers",
+      "path": "reference-parsers/legal/LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 1127,
+      "category": "reference-parsers",
+      "path": "reference-parsers/legal/NOTICE",
+      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+    },
+    {
+      "bytes": 1864,
+      "category": "reference-parsers",
+      "path": "reference-parsers/legal/THIRD_PARTY_NOTICES.md",
+      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+    },
+    {
+      "bytes": 1191,
+      "category": "reference-parsers",
+      "path": "reference-parsers/package_manifest.json",
+      "sha256": "520ea84bb61177a53e053b04ebfb9088043e32416e638b05b95c7b7053464b97"
+    },
+    {
+      "bytes": 1309,
+      "category": "reference-parsers",
+      "path": "reference-parsers/proofs/reference_parser_packaging_handoff.json",
+      "sha256": "2439be95458c1bf1aedb4a90e55d3d80a56c2501afd53fa159b6f3c45b3bfdd9"
+    },
+    {
+      "bytes": 1931,
+      "category": "reference-parsers",
+      "path": "reference-parsers/support/root-SBOM.json",
+      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+    },
+    {
+      "bytes": 78835946,
+      "category": "reference-parsers",
+      "path": "reference-parsers/support/scratchbird-reference-parser-source.tar.gz",
+      "sha256": "52a93706020712fdcddb3e12e19a34a1ad9d5cee080586d27d24f4de07791d4b"
+    },
+    {
       "bytes": 136,
       "category": "server",
       "path": "server/engine/README.md",
@@ -25147,74 +25363,39 @@
       "sha256": "6670494ec312d3086dc265d8fd01031edf0b446a617ac8b4c51505d986ae9df6"
     }
   ],
-  "categories": [
-    "adapters",
-    "docs",
-    "drivers",
-    "installers",
-    "proofs",
-    "reference-parsers",
-    "server",
-    "source",
-    "tools",
-    "udr"
-  ],
-  "channel": "prerelease",
-  "generated_at_utc": "2026-07-07T02:13:11+00:00",
+  "categories": {
+    "adapters": 1164,
+    "docs": 4,
+    "drivers": 2303,
+    "metadata": 4,
+    "reference-parsers": 35,
+    "server": 399,
+    "tools": 284,
+    "udr": 34
+  },
+  "channel": "temporary_prerelease_packaging",
+  "generated_at_utc": "2026-07-07T04:36:17+00:00",
   "policy": {
-    "build_directory_is_disposable": true,
-    "distribution": "private_pre_release",
-    "history_cleanup_required_before_public_release": true,
-    "official_release": false,
-    "promotion_requires_explicit_command": true
+    "installer_builders_consume_file_location_manifest": true,
+    "packaging_tree_is_temporary": true
   },
   "pre_release_not_final": true,
   "promoted_paths": [
-    "packaging/2026.07.03/adapters/scratchbird-ai-mcp",
-    "packaging/2026.07.03/adapters/scratchbird-airbyte",
-    "packaging/2026.07.03/adapters/scratchbird-dbeaver-driver",
-    "packaging/2026.07.03/adapters/scratchbird-dbt-adapter",
-    "packaging/2026.07.03/adapters/scratchbird-hibernate-dialect",
-    "packaging/2026.07.03/adapters/scratchbird-looker",
-    "packaging/2026.07.03/adapters/scratchbird-metabase-driver",
-    "packaging/2026.07.03/adapters/scratchbird-powerbi",
-    "packaging/2026.07.03/adapters/scratchbird-prisma-adapter",
-    "packaging/2026.07.03/adapters/scratchbird-sqlalchemy-dialect",
-    "packaging/2026.07.03/adapters/scratchbird-superset-driver",
-    "packaging/2026.07.03/adapters/scratchbird-tableau",
-    "packaging/2026.07.03/adapters/scratchbird-typeorm-adapter",
-    "packaging/2026.07.03/drivers/adbc",
-    "packaging/2026.07.03/drivers/cpp",
-    "packaging/2026.07.03/drivers/dart",
-    "packaging/2026.07.03/drivers/dotnet",
-    "packaging/2026.07.03/drivers/elixir",
-    "packaging/2026.07.03/drivers/flightsql",
-    "packaging/2026.07.03/drivers/go",
-    "packaging/2026.07.03/drivers/jdbc",
-    "packaging/2026.07.03/drivers/julia",
-    "packaging/2026.07.03/drivers/mojo",
-    "packaging/2026.07.03/drivers/node",
-    "packaging/2026.07.03/drivers/odbc",
-    "packaging/2026.07.03/drivers/pascal",
-    "packaging/2026.07.03/drivers/perl",
-    "packaging/2026.07.03/drivers/php",
-    "packaging/2026.07.03/drivers/python",
-    "packaging/2026.07.03/drivers/r",
-    "packaging/2026.07.03/drivers/r2dbc",
-    "packaging/2026.07.03/drivers/ruby",
-    "packaging/2026.07.03/drivers/rust",
-    "packaging/2026.07.03/drivers/swift",
-    "packaging/2026.07.03/server/engine",
-    "packaging/2026.07.03/server/ipc-server",
-    "packaging/2026.07.03/server/resources",
-    "packaging/2026.07.03/server/sbparser",
-    "packaging/2026.07.03/tools/cli",
-    "packaging/2026.07.03/udr/optional-parser-support"
+    "packaging/2026.07.03/adapters",
+    "packaging/2026.07.03/docs",
+    "packaging/2026.07.03/drivers",
+    "packaging/2026.07.03/installers",
+    "packaging/2026.07.03/proofs",
+    "packaging/2026.07.03/reference-parsers",
+    "packaging/2026.07.03/server",
+    "packaging/2026.07.03/source",
+    "packaging/2026.07.03/tools",
+    "packaging/2026.07.03/udr"
   ],
   "release_date": "2026.07.03",
-  "schema_id": "scratchbird.prerelease_bundle_manifest.v1",
+  "schema_id": "scratchbird.prerelease_packaging_manifest.v1",
   "source": {
-    "commit": "d8da29e88ee3223aa1e65f398a6c100f954b23c1",
-    "dirty_before_promotion": true
+    "source_branch": "main",
+    "source_commit": "3fe1eb549787d2bd7687c50bdeaea9ec04ea4905"
   }
 }

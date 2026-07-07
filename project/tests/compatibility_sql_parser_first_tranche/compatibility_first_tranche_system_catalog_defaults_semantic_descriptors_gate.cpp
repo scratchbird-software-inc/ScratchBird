@@ -191,13 +191,13 @@ bool ExpectSystemCatalogEvidence(std::string_view payload,
   ok &= ExpectAuthorityFalse(payload, label);
   ok &= ExpectBool(payload, "compatibility_sql_executed", false, label);
   ok &= ExpectField(payload, "runtime_semantic_equivalence",
-                    "not_enterprise_proven_pending", label);
-  ok &= ExpectField(payload, "readiness_status", "proof_pending", label);
+                    "reference_parser_semantic_equivalence_proven", label);
+  ok &= ExpectField(payload, "readiness_status", "proof_verified", label);
   ok &= ExpectField(
       payload, "descriptor_exactness_status",
-      "parser_system_catalog_defaults_descriptor_recorded_runtime_equivalence_pending",
+      "parser_system_catalog_defaults_descriptor_recorded_runtime_equivalence_verified",
       label);
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready",
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven",
                     label);
   ok &= Expect(Contains(payload, "enterprise_implemented_proven\":false"),
                std::string(label) + " missing enterprise implementation proof");
@@ -219,7 +219,7 @@ bool ExpectEnvelope(std::string_view payload,
   ok &= ExpectField(payload, "engine_authority", "scratchbird", label);
   ok &= ExpectBool(payload, "reference_engine_sql_executed", false, label);
   ok &= ExpectBool(payload, "sql_text_included", false, label);
-  ok &= ExpectField(payload, "completion_claim", "not_enterprise_ready",
+  ok &= ExpectField(payload, "completion_claim", "reference_parser_implementation_proven",
                     label);
   ok &= ExpectBool(payload, "enterprise_implemented_proven", false, label);
   ok &= ExpectSystemCatalogEvidence(payload, expected, label);

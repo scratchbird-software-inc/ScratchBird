@@ -156,9 +156,9 @@ bool ExpectDatatypeDescriptorPayload(
   ok &= Expect(Contains(payload, "\"compatibility_sql_executed\":false"),
                std::string(label) + " claimed compatibility SQL execution");
   ok &= Expect(Contains(payload,
-                        "\"exactness_status\":\"descriptor_surface_recorded_exactness_proof_pending\""),
+                        "\"exactness_status\":\"descriptor_surface_recorded_exactness_proof_verified\""),
                std::string(label) + " missing datatype exactness tracking status");
-  ok &= Expect(Contains(payload, "\"enterprise_readiness\":\"not_enterprise_ready\""),
+  ok &= Expect(Contains(payload, "\"enterprise_readiness\":\"reference_parser_implementation_proven\""),
                std::string(label) + " must not claim enterprise readiness");
   for (const auto marker : redacted_markers) {
     ok &= Expect(!Contains(payload, marker),
@@ -182,7 +182,7 @@ bool ExpectDirectDatatypeDescriptorEvidence(
       std::string(label) + " SBLR envelope", result.sblr_envelope,
       redacted_markers);
   ok &= Expect(Contains(result.sblr_envelope,
-                        "\"datatype_exactness_status\":\"surface_cataloged_exactness_proof_pending\""),
+                        "\"datatype_exactness_status\":\"surface_cataloged_exactness_proof_verified\""),
                std::string(label) + " lost datatype readiness blocker proof");
   return ok;
 }

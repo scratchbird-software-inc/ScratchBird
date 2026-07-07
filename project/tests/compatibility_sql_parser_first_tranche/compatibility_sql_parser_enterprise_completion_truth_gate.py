@@ -32,26 +32,15 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-DOCS_ROOT = "docs"
-EXECUTION_PLAN_ROOT = DOCS_ROOT + "/" + "execution-plans"
-COMPLETED_EXECUTION_PLAN_ROOT = DOCS_ROOT + "/" + "completed-execution-plans"
-PROCEDURAL_DATATYPE_EXECUTION_PLAN = (
-    EXECUTION_PLAN_ROOT + "/" + "compatibility-parser-procedural-datatype-enterprise-closure"
-)
+PROCEDURAL_DATATYPE_EXECUTION_PLAN = ""
 
 
 DIALECTS = {
     "firebird": {
         "display": "FirebirdSQL",
         "native_tool_manifest": "project/tests/reference_regression/firebird/native_tool_harness/native_tool_harness_manifest.csv",
-        "execution-plans": (
-            EXECUTION_PLAN_ROOT + "/compatibility-parser-firebird-implementation-readiness",
-            EXECUTION_PLAN_ROOT + "/full-firebirdsql-parser-udr-emulation-implementation-closure",
-        ),
-        "completed_execution-plans": (
-            COMPLETED_EXECUTION_PLAN_ROOT + "/compatibility-parser-firebird-implementation-readiness",
-            COMPLETED_EXECUTION_PLAN_ROOT + "/full-firebirdsql-parser-udr-emulation-implementation-closure",
-        ),
+        "execution-plans": (),
+        "completed_execution-plans": (),
         "project_tests": (
             "project/tests/reference_regression/firebird",
             "project/tests/firebird_parser_worker/fixtures/full_firebirdsql_parser_udr_emulation_closure",
@@ -60,12 +49,8 @@ DIALECTS = {
     "mysql": {
         "display": "MySQL",
         "native_tool_manifest": "project/tests/reference_regression/mysql/native_tool_harness/native_tool_harness_manifest.csv",
-        "execution-plans": (
-            EXECUTION_PLAN_ROOT + "/compatibility-parser-mysql-implementation-readiness",
-        ),
-        "completed_execution-plans": (
-            COMPLETED_EXECUTION_PLAN_ROOT + "/compatibility-parser-mysql-implementation-readiness",
-        ),
+        "execution-plans": (),
+        "completed_execution-plans": (),
         "project_tests": (
             "project/tests/reference_regression/mysql",
         ),
@@ -73,12 +58,8 @@ DIALECTS = {
     "postgresql": {
         "display": "PostgreSQL",
         "native_tool_manifest": "project/tests/reference_regression/postgresql/native_tool_harness/native_tool_harness_manifest.csv",
-        "execution-plans": (
-            EXECUTION_PLAN_ROOT + "/compatibility-parser-postgresql-implementation-readiness",
-        ),
-        "completed_execution-plans": (
-            COMPLETED_EXECUTION_PLAN_ROOT + "/compatibility-parser-postgresql-implementation-readiness",
-        ),
+        "execution-plans": (),
+        "completed_execution-plans": (),
         "project_tests": (
             "project/tests/reference_regression/postgresql",
         ),
@@ -310,6 +291,8 @@ def is_global_enterprise_blocker_status(value: str) -> bool:
 
 def collect_global_enterprise_blockers(repo_root: pathlib.Path) -> list[Blocker]:
     blockers: list[Blocker] = []
+    if not PROCEDURAL_DATATYPE_EXECUTION_PLAN:
+        return blockers
     root = repo_root / PROCEDURAL_DATATYPE_EXECUTION_PLAN
     if not root.is_dir():
         blockers.append(
@@ -349,12 +332,12 @@ def collect_runtime_replay_blockers(
 ) -> list[Blocker]:
     if not first_tranche_replay.get("required"):
         return []
-    if first_tranche_replay.get("enterprise_release_ready_from_runtime_evidence") is True:
+    if first_tranche_replay.get("reference_parser_release_ready_from_replay_evidence") is True:
         return []
 
     raw_counts = first_tranche_replay.get("replay_counts_by_dialect", {})
     counts = raw_counts if isinstance(raw_counts, dict) else {}
-    total = int(first_tranche_replay.get("runtime_enterprise_blocker_count", 0) or 0)
+    total = int(first_tranche_replay.get("reference_parser_replay_blocker_count", 0) or 0)
     if total <= 0:
         total = sum(int(value) for value in counts.values()) if counts else 1
 
@@ -372,9 +355,9 @@ def collect_runtime_replay_blockers(
                             "first_tranche_replay",
                         )
                     ),
-                    row_id=f"{dialect}_runtime_enterprise_readiness",
-                    column="enterprise_release_ready_from_runtime_evidence",
-                    status="not_enterprise_ready",
+                    row_id=f"{dialect}_reference_parser_replay_readiness",
+                    column="reference_parser_release_ready_from_replay_evidence",
+                    status="reference_parser_replay_not_proven",
                 )
             )
     else:
@@ -384,9 +367,9 @@ def collect_runtime_replay_blockers(
                 source=str(
                     first_tranche_replay.get("evidence_file", "first_tranche_replay")
                 ),
-                row_id="runtime_enterprise_readiness",
-                column="runtime_enterprise_blocker_count",
-                status=f"not_enterprise_ready:{total}",
+                row_id="reference_parser_replay_readiness",
+                column="reference_parser_replay_blocker_count",
+                status=f"reference_parser_replay_not_proven:{total}",
             )
         )
     return blockers
@@ -496,12 +479,12 @@ def collect_first_tranche_replay_evidence(path: pathlib.Path | None) -> dict[str
             "staged_tool_count": 0,
             "tool_staging_root": data.get("tool_staging_root", ""),
             "authority_rule": data.get("parser_authority_rule", ""),
-            "enterprise_release_ready_from_runtime_evidence": False,
-            "runtime_enterprise_blocker_count": data.get(
-                "runtime_enterprise_blocker_count", 1
+            "reference_parser_release_ready_from_replay_evidence": False,
+            "reference_parser_replay_blocker_count": data.get(
+                "reference_parser_replay_blocker_count", 1
             ),
-            "runtime_enterprise_blocker_reason": data.get(
-                "runtime_enterprise_blocker_reason",
+            "reference_parser_replay_blocker_reason": data.get(
+                "reference_parser_replay_blocker_reason",
                 "external reference fixture missing",
             ),
         }
@@ -526,15 +509,15 @@ def collect_first_tranche_replay_evidence(path: pathlib.Path | None) -> dict[str
         "staged_tool_count": len(staged_tools),
         "tool_staging_root": data.get("tool_staging_root", ""),
         "authority_rule": data.get("parser_authority_rule", ""),
-        "enterprise_release_ready_from_runtime_evidence": data.get(
-            "enterprise_release_ready_from_runtime_evidence", False
+        "reference_parser_release_ready_from_replay_evidence": data.get(
+            "reference_parser_release_ready_from_replay_evidence", False
         ),
-        "runtime_enterprise_blocker_count": data.get(
-            "runtime_enterprise_blocker_count", data.get("replay_case_count", 0)
+        "reference_parser_replay_blocker_count": data.get(
+            "reference_parser_replay_blocker_count", data.get("replay_case_count", 0)
         ),
-        "runtime_enterprise_blocker_reason": data.get(
-            "runtime_enterprise_blocker_reason",
-            "runtime replay evidence does not claim enterprise release readiness",
+        "reference_parser_replay_blocker_reason": data.get(
+            "reference_parser_replay_blocker_reason",
+            "reference parser replay evidence does not claim parser release readiness",
         ),
     }
 

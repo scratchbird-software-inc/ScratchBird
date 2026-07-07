@@ -355,8 +355,8 @@ def validate_manifest_and_packages(repo_root: pathlib.Path) -> dict[str, int]:
             )
         elif fid == "apache_ignite":
             require(
-                row["parser_module"] == "project/src/parsers/compatibility/apache-ignite",
-                "Apache Ignite manifest dash-name metadata changed unexpectedly",
+                row["parser_module"] == "project/src/parsers/compatibility/apache_ignite",
+                "Apache Ignite manifest underscore-path metadata changed unexpectedly",
             )
         else:
             require(fid in parser_dirs, f"manifest compatibility profile lacks parser dir: {fid}")

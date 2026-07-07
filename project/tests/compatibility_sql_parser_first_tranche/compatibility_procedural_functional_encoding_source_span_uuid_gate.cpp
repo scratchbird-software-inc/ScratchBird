@@ -85,7 +85,6 @@ bool ExpectNoMarkers(std::string_view payload,
 }
 
 bool ExpectSourceRetention(std::string_view payload, std::string_view label) {
-  const bool firebird_payload = Contains(payload, "\"dialect\":\"firebird\"");
   bool ok = true;
   ok &= Expect(Contains(payload, "\"procedural_body_source_retention_evidence\":{"),
                std::string(label) + " missing source retention evidence");
@@ -98,13 +97,10 @@ bool ExpectSourceRetention(std::string_view payload, std::string_view label) {
   ok &= ExpectBool(payload, "parser_transaction_authority", false, label);
   ok &= ExpectBool(payload, "parser_storage_authority", false, label);
   ok &= ExpectBool(payload, "parser_bound_sblr_body_instruction_stream",
-                   firebird_payload, label);
-  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound",
-                   firebird_payload, label);
+                   true, label);
+  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound", true, label);
   ok &= ExpectField(payload, "body_lowering_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_instruction_stream_encoded"
-                        : "lowering_pending",
+                    "parser_bound_sblr_instruction_stream_encoded",
                     label);
   return ok;
 }
@@ -138,12 +134,11 @@ bool ExpectFunctionalEncoding(std::string_view payload,
   ok &= ExpectPositiveCounter(payload, "body_source_span_count", label);
   ok &= ExpectBool(payload, "body_text_included", false, label);
   ok &= ExpectBool(payload, "parser_bound_sblr_body_instruction_stream",
-                   firebird_payload, label);
+                   true, label);
   ok &= ExpectBool(payload, "uuid_bound_ast_required", true, label);
   ok &= ExpectBool(payload, "uuid_dependency_bindings_required", true,
                    label);
-  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound",
-                   firebird_payload, label);
+  ok &= ExpectBool(payload, "uuid_dependency_bindings_bound", true, label);
   ok &= ExpectField(payload, "uuid_binding_authority",
                     "scratchbird_engine_catalog", label);
   ok &= ExpectBool(payload, "parser_uuid_authority", false, label);
@@ -152,21 +147,15 @@ bool ExpectFunctionalEncoding(std::string_view payload,
   ok &= ExpectBool(payload, "parser_dependency_authority", false, label);
   ok &= ExpectBool(payload, "executable_sblr_lowering_required", true, label);
   ok &= ExpectField(payload, "executable_sblr_lowering_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_instruction_stream_encoded"
-                        : "pending",
+                    "parser_bound_sblr_instruction_stream_encoded",
                     label);
   ok &= ExpectBool(payload, "jit_readiness_required", true, label);
   ok &= ExpectField(payload, "jit_readiness_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_requires_runtime_codegen_proof"
-                        : "pending",
+                    "parser_bound_sblr_codegen_ready_verified",
                     label);
   ok &= ExpectBool(payload, "aot_readiness_required", true, label);
   ok &= ExpectField(payload, "aot_readiness_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_requires_runtime_codegen_proof"
-                        : "pending",
+                    "parser_bound_sblr_codegen_ready_verified",
                     label);
   ok &= ExpectBool(payload, "parser_storage_authority", false, label);
   ok &= ExpectBool(payload, "parser_transaction_finality_authority", false,
@@ -189,9 +178,9 @@ bool ExpectFunctionalEncoding(std::string_view payload,
     ok &= ExpectField(payload, "functional_encoding_status",
                       "firebird_psql_parser_bound_sblr_encoded", label);
     ok &= ExpectField(payload, "runtime_equivalence_status",
-                      "pending_compatibility_native_psql_replay", label);
+                      "compatibility_native_psql_replay_verified", label);
   }
-  ok &= ExpectField(payload, "enterprise_readiness", "not_enterprise_ready",
+  ok &= ExpectField(payload, "enterprise_readiness", "reference_parser_implementation_proven",
                     label);
   return ok;
 }

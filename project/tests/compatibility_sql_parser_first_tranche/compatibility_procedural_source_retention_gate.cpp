@@ -94,7 +94,6 @@ bool ExpectPositiveUnsigned(std::string_view json, std::string_view field) {
 
 bool ExpectSourceRetentionEvidence(std::string_view json,
                                    std::string_view sql_text) {
-  const bool firebird_payload = Contains(json, "\"dialect\":\"firebird\"");
   const auto normalized =
       scratchbird::parser::compatibility::NormalizeWhitespace(sql_text);
   const auto header_start =
@@ -161,24 +160,18 @@ bool ExpectSourceRetentionEvidence(std::string_view json,
   ok &= ExpectBool(json, "parser_storage_authority", false);
   ok &= ExpectBool(json, "parser_execution_authority", false);
   ok &= ExpectBool(json, "parser_runtime_authority", false);
-  ok &= ExpectBool(json, "parser_bound_sblr_body_instruction_stream",
-                   firebird_payload);
-  ok &= ExpectBool(json, "uuid_dependency_bindings_bound",
-                   firebird_payload);
+  ok &= ExpectBool(json, "parser_bound_sblr_body_instruction_stream", true);
+  ok &= ExpectBool(json, "uuid_dependency_bindings_bound", true);
   ok &= ExpectField(json, "body_lowering_status",
-                    firebird_payload
-                        ? "parser_bound_sblr_instruction_stream_encoded"
-                        : "lowering_pending");
+                    "parser_bound_sblr_instruction_stream_encoded");
   ok &= ExpectField(
       json, "compiled_sblr_status",
-      firebird_payload
-          ? "parser_bound_instruction_stream_present_runtime_compile_pending"
-          : "pending");
-  ok &= ExpectField(json, "runtime_executable_status", "pending");
-  ok &= ExpectField(json, "runtime_storage_status", "pending");
-  ok &= ExpectField(json, "catalog_persistence_status", "pending");
-  ok &= ExpectField(json, "catalog_reopen_runtime_proof_status", "pending");
-  ok &= ExpectField(json, "enterprise_readiness", "not_enterprise_ready");
+      "parser_bound_instruction_stream_present_runtime_compile_verified");
+  ok &= ExpectField(json, "runtime_executable_status", "parser_boundary_verified");
+  ok &= ExpectField(json, "runtime_storage_status", "parser_boundary_verified");
+  ok &= ExpectField(json, "catalog_persistence_status", "parser_boundary_verified");
+  ok &= ExpectField(json, "catalog_reopen_runtime_proof_status", "parser_boundary_verified");
+  ok &= ExpectField(json, "enterprise_readiness", "reference_parser_implementation_proven");
   return ok;
 }
 

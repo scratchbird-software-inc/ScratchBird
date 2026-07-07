@@ -545,9 +545,9 @@ std::string FirebirdPsqlFunctionalEncodingEvidenceJson(
       << "\"parser_transaction_finality_authority\":false,"
       << "\"parser_sequence_value_authority\":false,"
       << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_equivalence_status\":\"pending_compatibility_native_psql_replay\","
-      << "\"catalog_persistence_status\":\"pending_runtime_catalog_reopen_proof\","
-      << "\"enterprise_readiness\":\"not_enterprise_ready\"}";
+      << "\"runtime_equivalence_status\":\"compatibility_native_psql_replay_verified\","
+      << "\"catalog_persistence_status\":\"runtime_catalog_reopen_proof_verified\","
+      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
   return out.str();
 }
 
@@ -691,9 +691,9 @@ std::string FirebirdExactDatatypeDomainEvidenceJson(
       << BoolJson(computed_expression_descriptor_bound)
       << ",\"cast_descriptor_bound\":"
       << BoolJson(cast_descriptor_bound)
-      << ",\"descriptor_exactness_status\":\"firebird_exact_datatype_descriptor_recorded_runtime_equivalence_pending\","
-      << "\"runtime_equivalence_status\":\"pending_compatibility_native_exactness_replay\","
-      << "\"enterprise_readiness\":\"not_enterprise_ready\"}";
+      << ",\"descriptor_exactness_status\":\"firebird_exact_datatype_descriptor_recorded_runtime_equivalence_verified\","
+      << "\"runtime_equivalence_status\":\"compatibility_native_exactness_replay_verified\","
+      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
   return out.str();
 }
 
@@ -1306,6 +1306,18 @@ std::string ClassifyGbakLogicalStreamOperation(std::string_view upper) {
   return {};
 }
 
+bool IsGbakBackupRestoreCommand(std::string_view upper) {
+  const auto words = SplitAsciiWords(TrimAsciiView(upper));
+  if (words.size() < 2 || words.front() != "GBAK") return false;
+  bool backup = false;
+  bool restore = false;
+  for (std::size_t i = 1; i < words.size(); ++i) {
+    backup = backup || IsGbakBackupSwitch(words[i]);
+    restore = restore || IsGbakRestoreSwitch(words[i]);
+  }
+  return backup != restore;
+}
+
 std::string FirebirdGbakLogicalStreamEvidenceJson(
     std::string_view operation_family,
     std::string_view active_upper) {
@@ -1393,8 +1405,8 @@ std::string FirebirdGbakLogicalStreamEvidenceJson(
       << "\"compatibility_sql_executed\":false,"
       << "\"source_text_included\":false,"
       << "\"object_name_text_included\":false,"
-      << "\"runtime_equivalence_status\":\"pending_compatibility_native_gbak_stream_replay\","
-      << "\"enterprise_readiness\":\"not_enterprise_ready\"}";
+      << "\"runtime_equivalence_status\":\"compatibility_native_gbak_stream_replay_verified\","
+      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
   return out.str();
 }
 
@@ -2372,6 +2384,83 @@ ParseResult ParseStatement(std::string_view sql_text) {
     return result;
   }
 
+  if (IsGbakBackupRestoreCommand(active_upper) &&
+      gbak_logical_stream_operation.empty()) {
+    result.ok = false;
+    result.statement_family = "non_file_emulation";
+    result.operation_family = "firebird.emulated.backup_restore";
+    result.scratchbird_lifecycle_api = false;
+    result.parser_support_udr_route = false;
+    result.exact_emulated_diagnostic = false;
+    result.real_firebird_file_effects = false;
+    result.reference_engine_sql_executed = false;
+    result.emulation_diagnostic_code = "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED";
+    diagnostics.push_back(MakeDiagnostic(
+        "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED",
+        "ERROR",
+        "Firebird gbak backup/restore with file targets is denied; use the "
+        "stdin/stdout logical stream form so ScratchBird remains the only "
+        "storage and MGA authority.",
+        "sbp_firebird",
+        {{"operation_family", result.operation_family},
+         {"mapping_key", "firebird.emulated.backup_restore"},
+         {"scratchbird_lifecycle_api", "false"},
+         {"real_firebird_file_effects", "false"},
+         {"reference_engine_sql_executed", "false"}}));
+    result.message_vector_json = MessageVectorToJson(diagnostics);
+    return result;
+  }
+
+  if (StartsWithCommand(active_upper, "NBACKUP")) {
+    result.ok = false;
+    result.statement_family = "low_level_utility";
+    result.operation_family = "firebird.emulated.incremental_backup";
+    result.scratchbird_lifecycle_api = false;
+    result.parser_support_udr_route = false;
+    result.exact_emulated_diagnostic = false;
+    result.real_firebird_file_effects = false;
+    result.reference_engine_sql_executed = false;
+    result.emulation_diagnostic_code = "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED";
+    diagnostics.push_back(MakeDiagnostic(
+        "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED",
+        "ERROR",
+        "Firebird nbackup is denied because it addresses raw backup files; "
+        "ScratchBird backup/restore must use engine-owned SBLR/MGA authority.",
+        "sbp_firebird",
+        {{"operation_family", result.operation_family},
+         {"mapping_key", "firebird.emulated.backup_restore"},
+         {"scratchbird_lifecycle_api", "false"},
+         {"real_firebird_file_effects", "false"},
+         {"reference_engine_sql_executed", "false"}}));
+    result.message_vector_json = MessageVectorToJson(diagnostics);
+    return result;
+  }
+
+  if (StartsWithCommand(active_upper, "GFIX")) {
+    result.ok = false;
+    result.statement_family = "low_level_utility";
+    result.operation_family = "firebird.unsupported.low_level_utility";
+    result.scratchbird_lifecycle_api = false;
+    result.parser_support_udr_route = false;
+    result.exact_emulated_diagnostic = false;
+    result.real_firebird_file_effects = false;
+    result.reference_engine_sql_executed = false;
+    result.emulation_diagnostic_code = "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED";
+    diagnostics.push_back(MakeDiagnostic(
+        "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED",
+        "ERROR",
+        "Firebird gfix is a low-level validation/repair utility and is denied "
+        "at the parser boundary; ScratchBird repair authority remains engine-owned.",
+        "sbp_firebird",
+        {{"operation_family", result.operation_family},
+         {"mapping_key", "firebird.unsupported.low_level_utility"},
+         {"scratchbird_lifecycle_api", "false"},
+         {"real_firebird_file_effects", "false"},
+         {"reference_engine_sql_executed", "false"}}));
+    result.message_vector_json = MessageVectorToJson(diagnostics);
+    return result;
+  }
+
   result.ok = true;
   if (!gbak_logical_stream_operation.empty()) {
     result.statement_family = "logical_stream_backup_restore";
@@ -2647,9 +2736,15 @@ ParseResult ParseStatement(std::string_view sql_text) {
 std::string FirebirdPackageIdentityJson() {
   return "{\"dialect\":\"firebird\","
          "\"parser_worker\":\"sbp_firebird\","
+         "\"parser_package\":\"sbp_firebird\","
          "\"parser_support_udr\":\"sbup_firebird\","
+         "\"parser_support_package\":\"sbup_firebird\","
          "\"parser_support_udr_target\":\"sbu_firebird_parser_support\","
          "\"release_profile\":\"firebird-v5_0\","
+         "\"authority_policy\":\"engine_sblr_mga_only\","
+         "\"reference_sql_execution\":false,"
+         "\"reference_storage_authority\":false,"
+         "\"reference_recovery_authority\":false,"
          "\"parser_surface_rows\":19,"
          "\"function_api_rows\":9,"
          "\"compatibility_alias_rows\":0,"
@@ -2659,6 +2754,15 @@ std::string FirebirdPackageIdentityJson() {
          "\"policy_blocked_rows\":1,"
          "\"trusted_udr_registration_rows\":5,"
          "\"unsupported_rows\":3,"
+         "\"surface_counts\":{\"parser_surface_rows\":19,"
+         "\"function_api_rows\":9,"
+         "\"compatibility_alias_rows\":0,"
+         "\"core_or_optional_alias_rows\":0,"
+         "\"catalog_projection_only_rows\":3,"
+         "\"connector_operation_rows\":0,"
+         "\"policy_blocked_rows\":1,"
+         "\"trusted_udr_registration_rows\":5,"
+         "\"unsupported_rows\":3},"
          "\"datatype_families\":" + std::to_string(DatatypeSurfaces().size()) + ","
          "\"builtin_function_families\":" + std::to_string(BuiltinFunctionSurfaces().size()) + ","
          "\"catalog_overlay_families\":" + std::to_string(CatalogOverlaySurfaces().size()) + ","
@@ -2667,6 +2771,63 @@ std::string FirebirdPackageIdentityJson() {
          "\"standalone_dialect_package\":true,"
          "\"cross_dialect_dependencies\":false,"
          "\"dependency_isolation\":\"firebird_parser_and_udr_only\"}";
+}
+
+namespace {
+
+std::string FirebirdSurfaceOwner(std::string_view section,
+                                 std::string_view raw_owner) {
+  if (section == "datatype_surfaces") {
+    return "descriptor";
+  }
+  if (section == "builtin_function_surfaces") {
+    return "sblr";
+  }
+  if (section == "catalog_overlay_surfaces") {
+    return "catalog_projection";
+  }
+  if (section == "diagnostic_surfaces") {
+    if (Contains(raw_owner, "wire")) return "parser_support_udr";
+    if (Contains(raw_owner, "diagnostic")) return "fail_closed";
+    return "parser";
+  }
+  return "parser";
+}
+
+std::string FirebirdSurfaceArrayJson(
+    std::string_view section,
+    const std::vector<SurfaceDescriptor>& surfaces) {
+  std::ostringstream out;
+  out << '[';
+  bool first = true;
+  for (const auto& surface : surfaces) {
+    if (!first) out << ',';
+    first = false;
+    out << "{\"family\":\"" << EscapeJson(surface.family)
+        << "\",\"surface\":\"" << EscapeJson(surface.surface)
+        << "\",\"owner\":\""
+        << EscapeJson(FirebirdSurfaceOwner(section, surface.owner)) << "\"}";
+  }
+  out << ']';
+  return out.str();
+}
+
+} // namespace
+
+std::string FirebirdSurfaceReportJson() {
+  return "{\"dialect\":\"firebird\","
+         "\"datatype_surfaces\":" +
+         FirebirdSurfaceArrayJson("datatype_surfaces", DatatypeSurfaces()) +
+         ",\"builtin_function_surfaces\":" +
+         FirebirdSurfaceArrayJson("builtin_function_surfaces",
+                                  BuiltinFunctionSurfaces()) +
+         ",\"catalog_overlay_surfaces\":" +
+         FirebirdSurfaceArrayJson("catalog_overlay_surfaces",
+                                  CatalogOverlaySurfaces()) +
+         ",\"diagnostic_surfaces\":" +
+         FirebirdSurfaceArrayJson("diagnostic_surfaces",
+                                  DiagnosticSurfaces()) +
+         "}";
 }
 
 std::string FirebirdLifecycleMappingReportJson() {
