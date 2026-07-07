@@ -59,6 +59,24 @@ Current limits:
 - SBLR-to-SBsql rendering in a preferred language is limited to renderable surfaces. Rendering lossiness must be classified, and source reconstruction from SBLR is not a support claim.
 - The localized database-message catalog covers stable public diagnostics and SBLR envelope diagnostics. Internal transient debug messages, proof-only test diagnostics, and private operational details are outside the public language-support promise unless later promoted into the stable message catalog.
 
+## Compatibility Parser Scope
+
+The public source tree includes 25 compatibility parser lanes. Their current
+beta status is documented in `docs/compatibility-parsers/README.md`.
+
+The bounded public claim is that the surfaced beta parser operations are
+classified as mapped, emulated, parser-only, or deterministic refusal, and the
+current replay/isolation gate group passes. This is not a production-readiness
+claim and is not a promise of drop-in compatibility with any reference system.
+
+Raw upstream regression payloads and built original/reference tools are local
+test inputs. The public repository tracks acquisition scripts, manifests, and
+CTest gates, not the acquired payloads themselves.
+
+Compatibility parsers must not own ScratchBird storage, recovery, security,
+filesystem, cluster, or MGA transaction finality. Unsafe surfaces fail closed or
+route through native ScratchBird management and policy-admitted bridge paths.
+
 ## Review Guidance
 
 The presence of a source file, generated artifact, manifest row, test fixture, benchmark entry, or compatibility profile means the area is tracked. It is not by itself a support claim.
