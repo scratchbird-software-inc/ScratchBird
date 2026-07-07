@@ -32,6 +32,7 @@ import org.jkiss.dbeaver.ext.generic.model.GenericCatalog;
 import org.jkiss.dbeaver.ext.generic.model.GenericDataSource;
 import org.jkiss.dbeaver.ext.generic.model.GenericObjectContainer;
 import org.jkiss.dbeaver.ext.generic.model.GenericStructContainer;
+import org.jkiss.dbeaver.ext.generic.model.GenericSequence;
 import org.jkiss.dbeaver.ext.generic.model.GenericTable;
 import org.jkiss.dbeaver.ext.generic.model.GenericTableBase;
 import org.jkiss.dbeaver.ext.generic.model.GenericTableIndex;
@@ -413,6 +414,19 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
             return super.getIndexes(monitor);
         } catch (DBException e) {
             log.debug("ScratchBird schema indexes are not available for navigator at " + fullPath, e);
+            return Collections.emptyList();
+        }
+    }
+
+    @Override
+    public Collection<? extends GenericSequence> getSequences(@NotNull DBRProgressMonitor monitor) throws DBException {
+        if (!isSequenceFoldersVisible()) {
+            return Collections.emptyList();
+        }
+        try {
+            return super.getSequences(monitor);
+        } catch (DBException e) {
+            log.debug("ScratchBird schema sequences are not available for navigator at " + fullPath, e);
             return Collections.emptyList();
         }
     }

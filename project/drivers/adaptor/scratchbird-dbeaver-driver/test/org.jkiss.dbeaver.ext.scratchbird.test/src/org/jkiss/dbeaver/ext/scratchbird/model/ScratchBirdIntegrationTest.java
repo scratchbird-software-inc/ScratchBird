@@ -259,6 +259,7 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
         Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema constraints are not available for navigator"));
         Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema indexes are not available for navigator"));
+        Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema sequences are not available for navigator"));
         Assert.assertTrue(schemaNodeSource.contains("public boolean isSchemaBranchesFolderVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isTableFoldersVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isDataTypesFolderVisible()"));

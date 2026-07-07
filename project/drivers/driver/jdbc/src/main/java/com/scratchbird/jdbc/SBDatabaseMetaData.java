@@ -1990,14 +1990,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             boolean approximate) throws SQLException {
         String currentCatalog = currentCatalogName();
         if (catalog != null && currentCatalog != null && !catalog.equalsIgnoreCase(currentCatalog)) {
-            return createEmptyResultSet(
-                new String[]{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "NON_UNIQUE", "INDEX_QUALIFIER",
-                             "INDEX_NAME", "TYPE", "ORDINAL_POSITION", "COLUMN_NAME", "ASC_OR_DESC",
-                             "CARDINALITY", "PAGES", "FILTER_CONDITION"},
-                new int[]{Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.BOOLEAN, Types.VARCHAR,
-                          Types.VARCHAR, Types.SMALLINT, Types.SMALLINT, Types.VARCHAR, Types.VARCHAR,
-                          Types.BIGINT, Types.BIGINT, Types.VARCHAR}
-            );
+            return emptyIndexInfoResultSet();
         }
 
         List<Object[]> rows = new ArrayList<>();
@@ -2016,14 +2009,18 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
                 "ORDER BY i.index_name, ic.ordinal_position"
             );
         } catch (SQLException ex) {
-            resultRows = queryRows(
-                "SELECT i.index_name, i.index_type, i.is_unique, " +
-                "t.table_name, s.schema_name " +
-                "FROM sys.indexes i " +
-                "JOIN sys.tables t ON t.table_id = i.table_id " +
-                "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
-                "WHERE i.is_valid = 1 AND t.is_valid = 1 AND s.is_valid = 1"
-            );
+            try {
+                resultRows = queryRows(
+                    "SELECT i.index_name, i.index_type, i.is_unique, " +
+                    "t.table_name, s.schema_name " +
+                    "FROM sys.indexes i " +
+                    "JOIN sys.tables t ON t.table_id = i.table_id " +
+                    "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                    "WHERE i.is_valid = 1 AND t.is_valid = 1 AND s.is_valid = 1"
+                );
+            } catch (SQLException fallbackEx) {
+                return emptyIndexInfoResultSet();
+            }
         }
 
         for (Object[] row : resultRows) {
@@ -2088,6 +2085,17 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         cols.add(column("PAGES", 20));
         cols.add(column("FILTER_CONDITION", 25));
         return new SBResultSet(null, cols, rows);
+    }
+
+    private ResultSet emptyIndexInfoResultSet() {
+        return createEmptyResultSet(
+            new String[]{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "NON_UNIQUE", "INDEX_QUALIFIER",
+                         "INDEX_NAME", "TYPE", "ORDINAL_POSITION", "COLUMN_NAME", "ASC_OR_DESC",
+                         "CARDINALITY", "PAGES", "FILTER_CONDITION"},
+            new int[]{Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.BOOLEAN, Types.VARCHAR,
+                      Types.VARCHAR, Types.SMALLINT, Types.SMALLINT, Types.VARCHAR, Types.VARCHAR,
+                      Types.BIGINT, Types.BIGINT, Types.VARCHAR}
+        );
     }
 
     protected List<Object[]> queryRows(String sql) throws SQLException {

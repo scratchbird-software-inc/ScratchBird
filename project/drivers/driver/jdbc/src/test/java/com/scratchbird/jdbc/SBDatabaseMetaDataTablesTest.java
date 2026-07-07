@@ -222,4 +222,21 @@ class SBDatabaseMetaDataTablesTest {
             }
         }
     }
+
+    @Test
+    void getIndexInfoReturnsEmptyResultWhenIndexCatalogIsUnavailable() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(Collections.emptyList()) {
+            @Override
+            protected List<Object[]> queryRows(String sql) throws SQLException {
+                if (sql != null && sql.contains("FROM sys.indexes")) {
+                    throw new SQLException("sys.indexes unavailable");
+                }
+                return Collections.emptyList();
+            }
+        };
+
+        try (ResultSet rs = meta.getIndexInfo(null, "sys", null, false, true)) {
+            assertEquals(false, rs.next());
+        }
+    }
 }
