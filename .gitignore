@@ -116,6 +116,7 @@ project/tests/reference_regression/reference_release_acquisition/**
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_CANDIDATE.md
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_MANIFEST.csv
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv
+project/tests/reference_regression/reference_release_acquisition/**/regression/*_ACQUISITION_MANIFEST.csv
 
 !project/tests/reference_regression/reference_catalog_seeds/
 !project/tests/reference_regression/reference_catalog_seeds/**
@@ -135,3 +136,4 @@ project/tests/[d]onor_regression/firebird/original_firebird_qa/**
 packaging/**/.staging/
 packaging/**/__pycache__/
 packaging/**/*.tmp
+packaging/**/scratchbird-reference-parser-source.tar.gz
