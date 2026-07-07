@@ -2156,21 +2156,6 @@ const FirebirdLifecycleMappingDescriptor* MapFirebirdLifecycleCommand(
   if (StartsWithCommand(upper, "REPAIR")) {
     return MappingByKey("firebird.lifecycle.repair_database");
   }
-  if (StartsWithCommand(upper, "SWEEP") ||
-      StartsWithCommand(upper, "SERVICE") ||
-      StartsWithCommand(upper, "GBAK") ||
-      StartsWithCommand(upper, "GFIX") ||
-      StartsWithCommand(upper, "GSTAT") ||
-      StartsWithCommand(upper, "NBACKUP") ||
-      StartsWithCommand(upper, "GSEC") ||
-      StartsWithCommand(upper, "GPRE") ||
-      StartsWithCommand(upper, "GSPLIT") ||
-      StartsWithCommand(upper, "FBGUARD") ||
-      StartsWithCommand(upper, "FB_LOCK_PRINT") ||
-      StartsWithCommand(upper, "FBSVCMGR") ||
-      StartsWithCommand(upper, "FBTRACEMGR")) {
-    return MappingByKey("firebird.unsupported.low_level_utility");
-  }
   if (StartsWithCommand(upper, "ALTER DATABASE")) {
     return MappingByKey("firebird.emulated.database_file_management");
   }
@@ -2181,7 +2166,8 @@ const FirebirdLifecycleMappingDescriptor* MapFirebirdLifecycleCommand(
     return MappingByKey("firebird.emulated.shadow_storage");
   }
   if (StartsWithCommand(upper, "BACKUP") ||
-      StartsWithCommand(upper, "RESTORE")) {
+      StartsWithCommand(upper, "RESTORE") ||
+      StartsWithCommand(upper, "NBACKUP")) {
     return MappingByKey("firebird.emulated.backup_restore");
   }
   if (StartsWithCommand(upper, "CREATE EXTERNAL TABLE") ||
@@ -2217,6 +2203,22 @@ const FirebirdLifecycleMappingDescriptor* MapFirebirdLifecycleCommand(
       StartsWithCommand(upper, "ALTER REPLICA") ||
       StartsWithCommand(upper, "DROP REPLICA")) {
     return MappingByKey("firebird.emulated.replication_journal");
+  }
+  if (StartsWithCommand(upper, "SERVICE") ||
+      StartsWithCommand(upper, "GBAK") ||
+      StartsWithCommand(upper, "GFIX") ||
+      StartsWithCommand(upper, "GSTAT") ||
+      StartsWithCommand(upper, "GSEC") ||
+      StartsWithCommand(upper, "GPRE") ||
+      StartsWithCommand(upper, "GSPLIT") ||
+      StartsWithCommand(upper, "FBGUARD") ||
+      StartsWithCommand(upper, "FB_LOCK_PRINT") ||
+      StartsWithCommand(upper, "FBSVCMGR") ||
+      StartsWithCommand(upper, "FBTRACEMGR")) {
+    return MappingByKey("firebird.emulated.service_api");
+  }
+  if (StartsWithCommand(upper, "SWEEP")) {
+    return MappingByKey("firebird.unsupported.low_level_utility");
   }
   return nullptr;
 }
