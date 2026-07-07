@@ -1,0 +1,25 @@
+{
+  "packaged_source_archive": false,
+  "public_source_paths": [
+    {
+      "kind": "public_scratchbird_source_or_test_contract",
+      "path": "project/src/parsers/compatibility"
+    },
+    {
+      "kind": "public_scratchbird_source_or_test_contract",
+      "path": "project/tests/compatibility_sql_parser_first_tranche"
+    },
+    {
+      "kind": "public_scratchbird_source_or_test_contract",
+      "path": "project/tests/reference_regression"
+    }
+  ],
+  "purpose": "source locations and acquisition contracts for reference parser packaging",
+  "raw_reference_payloads_packaged": false,
+  "reference_test_acquisition": {
+    "acquisition_tool": "project/tests/reference_regression/acquire_reference_regression_assets.py",
+    "policy": "downloaded upstream payloads and locally built original tools are local test inputs, not packaged public source artifacts",
+    "source_map": "project/tests/reference_regression/reference_regression_acquisition_sources.csv"
+  },
+  "schema_id": "scratchbird.reference_parser_source_reference_manifest.v1"
+}

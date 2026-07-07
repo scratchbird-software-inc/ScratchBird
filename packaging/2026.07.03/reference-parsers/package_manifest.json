@@ -35,8 +35,8 @@
   ],
   "sbom": "SBOM.json",
   "schema_id": "scratchbird.reference_parser_release_package_manifest.v1",
-  "source_archive": "support/scratchbird-reference-parser-source.tar.gz",
-  "source_commit": "3fe1eb549787d2bd7687c50bdeaea9ec04ea4905",
+  "source_commit": "92c75541f1740bfd319aa4859a865cfada37738b",
+  "source_reference_manifest": "support/reference_parser_source_reference_manifest.json",
   "support_udr_package": "../udr/optional-parser-support",
   "third_party_notices": "legal/THIRD_PARTY_NOTICES.md"
 }

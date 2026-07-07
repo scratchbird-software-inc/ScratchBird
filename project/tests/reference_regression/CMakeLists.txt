@@ -22,6 +22,9 @@ set(SB_REFERENCE_TEST_TREE_SELF_CONTAINED_GATE
 set(SB_REFERENCE_PUBLIC_PAYLOAD_POLICY_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/reference_public_payload_policy_gate.py"
 )
+set(SB_REFERENCE_NATIVE_TOOL_HARNESS_CONTRACT_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/reference_native_tool_harness_contract_gate.py"
+)
 
 function(sb_add_reference_gate test_name mode labels)
   add_test(
@@ -107,6 +110,19 @@ add_test(
 )
 set_tests_properties(reference_public_payload_policy_conformance PROPERTIES
   LABELS "reference_original_regression_gate;reference_release_regression_gate;reference_test_asset_gate;public_release_payload_gate"
+)
+
+add_test(
+  NAME reference_native_tool_harness_contract_conformance
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${SB_REFERENCE_NATIVE_TOOL_HARNESS_CONTRACT_GATE}"
+    "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+    "--evidence-file"
+    "${CMAKE_BINARY_DIR}/tests/reference_regression/reference_native_tool_harness_contract_evidence.json"
+)
+set_tests_properties(reference_native_tool_harness_contract_conformance PROPERTIES
+  LABELS "reference_original_regression_gate;reference_release_regression_gate;reference_native_tool_harness_contract_gate;reference_test_asset_gate;mga_transaction_regression"
 )
 
 sb_add_reference_gate(

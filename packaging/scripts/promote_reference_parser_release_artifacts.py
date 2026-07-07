@@ -18,7 +18,6 @@ import hashlib
 import json
 import shutil
 import subprocess
-import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -119,25 +118,44 @@ def write_text(path: Path, content: str, verify_only: bool) -> bool:
     return True
 
 
-def make_source_archive(repo_root: Path,
-                        package_root: Path,
-                        verify_only: bool,
-                        issues: list[str]) -> str:
-    rel_archive = "support/scratchbird-reference-parser-source.tar.gz"
-    target = package_root / rel_archive
+def write_source_reference_manifest(repo_root: Path,
+                                    package_root: Path,
+                                    verify_only: bool,
+                                    issues: list[str]) -> str:
+    rel_manifest = "support/reference_parser_source_reference_manifest.json"
+    target = package_root / rel_manifest
     if verify_only:
         if not target.is_file():
-            issues.append(f"missing_source_archive:{rel_archive}")
-        return rel_archive
+            issues.append(f"missing_source_reference_manifest:{rel_manifest}")
+        return rel_manifest
+
+    source_rows: list[dict[str, Any]] = []
+    for rel in REFERENCE_SOURCE_RELS:
+        source = repo_root / rel
+        if not source.exists():
+            issues.append(f"missing_source_path:{rel}")
+            continue
+        source_rows.append({
+            "path": rel,
+            "kind": "public_scratchbird_source_or_test_contract",
+        })
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(target, "w:gz") as archive:
-        for rel in REFERENCE_SOURCE_RELS:
-            source = repo_root / rel
-            if not source.exists():
-                issues.append(f"missing_source_path:{rel}")
-                continue
-            archive.add(source, arcname=rel)
-    return rel_archive
+    target.write_text(
+        json.dumps({
+            "schema_id": "scratchbird.reference_parser_source_reference_manifest.v1",
+            "purpose": "source locations and acquisition contracts for reference parser packaging",
+            "packaged_source_archive": False,
+            "raw_reference_payloads_packaged": False,
+            "public_source_paths": source_rows,
+            "reference_test_acquisition": {
+                "source_map": "project/tests/reference_regression/reference_regression_acquisition_sources.csv",
+                "acquisition_tool": "project/tests/reference_regression/acquire_reference_regression_assets.py",
+                "policy": "downloaded upstream payloads and locally built original tools are local test inputs, not packaged public source artifacts",
+            },
+        }, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return rel_manifest
 
 
 def add_common_release_materials(repo_root: Path,
@@ -284,7 +302,9 @@ def promote_reference_parsers(repo_root: Path,
         else:
             issues.append(f"missing_reference_parser_binary:{binary}")
 
-    source_archive = make_source_archive(repo_root, package_root, verify_only, issues)
+    source_reference_manifest = write_source_reference_manifest(
+        repo_root, package_root, verify_only, issues
+    )
     write_text(
         package_root / "README.md",
         "# ScratchBird Reference Parser Package\n\n"
@@ -316,7 +336,7 @@ def promote_reference_parsers(repo_root: Path,
             "component_type": "reference_parser_workers",
             "source_commit": git_text(repo_root, "rev-parse", "HEAD"),
             "payloads": sorted(payloads),
-            "source_archive": source_archive,
+            "source_reference_manifest": source_reference_manifest,
             "proofs": ["proofs/reference_parser_packaging_handoff.json"],
             "support_udr_package": "../udr/optional-parser-support",
             "license": "legal/LICENSE.txt",

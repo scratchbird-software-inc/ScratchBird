@@ -94,6 +94,7 @@ The public CTest suite contains the reference-parser gate family:
 
 - `reference_core_framework_conformance`
 - `reference_original_regression_import_conformance`
+- `reference_native_tool_harness_contract_conformance`
 - `reference_parser_start_evidence_manifest_conformance`
 - `reference_parser_implementation_start_handoff_conformance`
 - `compatibility_reference_parser_lane_registry_gate`
@@ -106,12 +107,14 @@ The public CTest suite contains the reference-parser gate family:
 The current local verification run for the replay closure group passed:
 
 ```text
+reference_native_tool_harness_contract_conformance ......... Passed
 compatibility_sql_first_tranche_original_tool_replay_gate ... Passed
 parser_compatibility_replay_proof_gate ...................... Passed
 parser_dialect_isolation_audit_gate ......................... Passed
 ```
 
-That run validated 121 parser replay cases across the 25 lanes, 8 staged
+That run validated the native-tool/client-replay harness contract for the 25
+lanes, 121 parser replay cases across the 25 lanes, 8 staged
 original/reference tool smoke checks, zero replay blockers, and the parser
 dialect-isolation audit.
 
