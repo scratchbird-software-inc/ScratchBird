@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cctype>
@@ -5970,16 +5971,55 @@ bool DirectParseBooleanPayload(std::string_view text,
   return false;
 }
 
+bool DirectParseFloat32Value(std::string_view text, float* out) {
+  if (text.empty() || out == nullptr ||
+      std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+    return false;
+  }
+#if defined(__APPLE__)
+  std::string value(text);
+  char* parsed_end = nullptr;
+  errno = 0;
+  const float parsed = std::strtof(value.c_str(), &parsed_end);
+  if (errno == ERANGE || parsed_end != value.c_str() + value.size()) { return false; }
+  *out = parsed;
+  return true;
+#else
+  const char* begin = text.data();
+  const char* end = begin + text.size();
+  const auto parse = std::from_chars(begin, end, *out);
+  return parse.ec == std::errc{} && parse.ptr == end;
+#endif
+}
+
+bool DirectParseFloat64Value(std::string_view text, double* out) {
+  if (text.empty() || out == nullptr ||
+      std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+    return false;
+  }
+#if defined(__APPLE__)
+  std::string value(text);
+  char* parsed_end = nullptr;
+  errno = 0;
+  const double parsed = std::strtod(value.c_str(), &parsed_end);
+  if (errno == ERANGE || parsed_end != value.c_str() + value.size()) { return false; }
+  *out = parsed;
+  return true;
+#else
+  const char* begin = text.data();
+  const char* end = begin + text.size();
+  const auto parse = std::from_chars(begin, end, *out);
+  return parse.ec == std::errc{} && parse.ptr == end;
+#endif
+}
+
 bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
                             std::string_view text,
                             std::vector<scratchbird::core::platform::byte>* out) {
   if (type_id == dt::CanonicalTypeId::bfloat16 ||
       type_id == dt::CanonicalTypeId::real16) {
     float parsed = 0.0f;
-    const char* begin = text.data();
-    const char* end = begin + text.size();
-    const auto parse = std::from_chars(begin, end, parsed);
-    if (parse.ec != std::errc{} || parse.ptr != end) { return false; }
+    if (!DirectParseFloat32Value(text, &parsed)) { return false; }
     std::uint32_t bits = 0;
     std::memcpy(&bits, &parsed, sizeof(parsed));
     std::uint16_t packed = 0;
@@ -6010,10 +6050,7 @@ bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
   }
   if (type_id == dt::CanonicalTypeId::real32) {
     float parsed = 0.0f;
-    const char* begin = text.data();
-    const char* end = begin + text.size();
-    const auto parse = std::from_chars(begin, end, parsed);
-    if (parse.ec != std::errc{} || parse.ptr != end) { return false; }
+    if (!DirectParseFloat32Value(text, &parsed)) { return false; }
     std::uint32_t bits = 0;
     std::memcpy(&bits, &parsed, sizeof(parsed));
     DirectAppendLittleUnsigned(out, bits, sizeof(bits));
@@ -6021,10 +6058,7 @@ bool DirectParseRealPayload(dt::CanonicalTypeId type_id,
   }
   if (type_id == dt::CanonicalTypeId::real64) {
     double parsed = 0.0;
-    const char* begin = text.data();
-    const char* end = begin + text.size();
-    const auto parse = std::from_chars(begin, end, parsed);
-    if (parse.ec != std::errc{} || parse.ptr != end) { return false; }
+    if (!DirectParseFloat64Value(text, &parsed)) { return false; }
     std::uint64_t bits = 0;
     std::memcpy(&bits, &parsed, sizeof(parsed));
     DirectAppendLittleUnsigned(out, bits, sizeof(bits));
