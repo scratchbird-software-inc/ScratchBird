@@ -63,6 +63,29 @@ GIT_REFERENCE_ALLOWLIST = {
     Path("resources/seed-packs/initial-resource-pack/resources/timezones/tz-link.html"),
 }
 
+LABEL_REFERENCE_ALLOWLIST = {
+    (
+        "git_metadata_reference",
+        Path("tests/reference_regression/acquire_reference_regression_assets.py"),
+    ),
+    (
+        "git_metadata_reference",
+        Path("tests/reference_regression/reference_regression_acquisition_sources.csv"),
+    ),
+    (
+        "git_metadata_reference",
+        Path("tools/release/github_actions_static_gate.py"),
+    ),
+    (
+        "git_metadata_reference",
+        Path("tools/release/public_packaging_history_gate.py"),
+    ),
+    (
+        "private_execution_plan_reference",
+        Path("tests/reference_regression/reference_parser_gate_evidence_closure_gate.py"),
+    ),
+}
+
 
 def io_path(path: Path) -> str:
     text = str(path.resolve())
@@ -89,6 +112,12 @@ def allow_git_reference(rel: Path) -> bool:
     if rel.name == "." + "gitignore":
         return True
     return rel in GIT_REFERENCE_ALLOWLIST
+
+
+def allow_labeled_reference(label: str, rel: Path) -> bool:
+    if label == "git_metadata_reference" and allow_git_reference(rel):
+        return True
+    return (label, rel) in LABEL_REFERENCE_ALLOWLIST
 
 
 def banned_needles() -> list[tuple[str, str]]:
@@ -130,7 +159,7 @@ def scan(root: Path) -> list[str]:
             continue
         rel = path.relative_to(root)
         for label, needle in banned_needles():
-            if label == "git_metadata_reference" and allow_git_reference(rel):
+            if allow_labeled_reference(label, rel):
                 continue
             if needle in text:
                 findings.append(f"{rel}: {label}: {needle}")
