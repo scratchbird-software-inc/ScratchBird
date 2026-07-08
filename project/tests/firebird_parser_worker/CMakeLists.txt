@@ -197,6 +197,7 @@ add_test(
 )
 set_tests_properties(firebird_qa_candidate_gate PROPERTIES
   LABELS "firebird_original_regression_replay_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
 )
 
 add_test(
@@ -209,6 +210,7 @@ add_test(
 )
 set_tests_properties(firebird_qa_replay_manifest_gate PROPERTIES
   LABELS "firebird_original_regression_replay_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
 )
 
 add_test(
@@ -250,6 +252,7 @@ add_test(
 )
 set_tests_properties(firebird_reference_tool_build_gate PROPERTIES
   LABELS "firebird_reference_tool_build_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
   TIMEOUT 1800
 )
 
@@ -264,6 +267,7 @@ add_test(
 set_tests_properties(firebird_reference_tool_sandbox_gate PROPERTIES
   DEPENDS firebird_reference_tool_build_gate
   LABELS "firebird_reference_tool_sandbox_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
   TIMEOUT 120
 )
 
@@ -302,6 +306,7 @@ add_test(
 set_tests_properties(firebird_isql_original_regression_gate PROPERTIES
   DEPENDS firebird_reference_tool_build_gate
   LABELS "firebird_isql_original_regression_gate;firebird_original_regression_replay_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
   TIMEOUT 120
 )
 
@@ -321,6 +326,7 @@ set_tests_properties(fbqa_full_original_regression_inventory_gate PROPERTIES
   LABELS "fbqa_full_original_regression_inventory_gate;firebird_original_regression_replay_gate;firebird_reference_native;firebird_parser_worker"
   RESOURCE_LOCK firebird_reference_native
   RUN_SERIAL TRUE
+  SKIP_RETURN_CODE 77
   TIMEOUT 1800
 )
 
@@ -340,6 +346,7 @@ set_tests_properties(fbqa_full_original_regression_final_gate PROPERTIES
   LABELS "fbqa_full_original_regression_final_gate;firebird_original_regression_replay_gate;firebird_reference_native;firebird_parser_worker"
   RESOURCE_LOCK firebird_reference_native
   RUN_SERIAL TRUE
+  SKIP_RETURN_CODE 77
   TIMEOUT 1800
 )
 
@@ -355,6 +362,7 @@ add_test(
 set_tests_properties(firebird_service_tool_regression_gate PROPERTIES
   DEPENDS firebird_reference_tool_build_gate
   LABELS "firebird_service_tool_regression_gate;firebird_reference_native;firebird_parser_worker"
+  SKIP_RETURN_CODE 77
   TIMEOUT 120
 )
 

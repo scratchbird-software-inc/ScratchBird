@@ -26,6 +26,7 @@ SCRIPT_RE = re.compile(
     r"test_script\s*=\s*(?P<prefix>[rubfRUBF]*)?(?P<quote>'''|\"\"\")(?P<body>.*?)(?P=quote)",
     re.DOTALL,
 )
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -120,12 +121,23 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if not candidate_root.is_dir():
+        print(f"skipped: Firebird QA candidate source tree is not installed: {candidate_root}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
+    if not replay_manifest.is_file():
+        print(f"skipped: Firebird QA replay manifest is not installed: {replay_manifest}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
+    if not (firebird_home / "bin" / "isql").exists():
+        print(f"skipped: Firebird reference isql binary is not installed: {firebird_home / 'bin' / 'isql'}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
+
     replay_rows = read_rows(replay_manifest)
     selected = select_cases(replay_rows, candidate_root, args.sample_count)
     if len(selected) != args.sample_count:
-        raise SystemExit(
+        print(
             f"expected {args.sample_count} replayable original isql cases, found {len(selected)}"
         )
+        return EXTERNAL_REFERENCE_SKIP_CODE
 
     script_paths: list[Path] = []
     report_lines = [

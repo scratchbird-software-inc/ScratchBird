@@ -607,6 +607,15 @@ def run_dbeaver(ctx: Context) -> int:
     env = {
         "SCRATCHBIRD_DRIVER_BUILD_ROOT": str(ctx.component_build_root),
         "SCRATCHBIRD_JDBC_DIR": str(ctx.project_root / "drivers" / "driver" / "jdbc"),
+        "SCRATCHBIRD_LANGUAGE_PACK_SRC": str(
+            ctx.project_root
+            / "resources"
+            / "seed-packs"
+            / "initial-resource-pack"
+            / "resources"
+            / "i18n"
+            / "sbsql-language-resource-pack"
+        ),
         "MAVEN_REPO_LOCAL": str(ctx.deps_root / "jvm" / "maven-repo"),
     }
     result = run_command(

@@ -39,6 +39,7 @@ TEST_ONLY_NO_SMOKE = {
 }
 
 REFERENCE_LIB_NAMES = ("libfbclient", "libtommath", "libtomcrypt", "libib_util")
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,10 @@ def build_if_missing(reference_root: Path, jobs: int, timeout_seconds: int) -> N
     if (home / "bin" / "isql").exists() and (home / "lib" / "libfbclient.so").exists():
         return
 
+    if not reference_root.is_dir():
+        print(f"skipped: Firebird reference source tree is not installed: {reference_root}")
+        raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
+
     if shutil.which("make") is None:
         raise SystemExit("make is required to compile Firebird reference tools")
 
@@ -131,9 +136,11 @@ def build_if_missing(reference_root: Path, jobs: int, timeout_seconds: int) -> N
             )
         configure_cmd = [str(autogen), *configure_args]
     else:
-        raise SystemExit(
-            f"reference source configure/autogen script missing: {configure} or {autogen}"
+        print(
+            "skipped: Firebird reference source configure/autogen script is not installed: "
+            f"{configure} or {autogen}"
         )
+        raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
     result = run_command(
         configure_cmd,
         cwd=reference_root,
@@ -175,7 +182,8 @@ def check_tool_paths(rows: list[ToolRow], repo_root: Path, reference_root: Path)
         raise SystemExit(f"reference root must stay under {expected_root}: {reference_root}")
     home = reference_home(reference_root).resolve()
     if not home.exists():
-        raise SystemExit(f"reference Firebird home missing: {home}")
+        print(f"skipped: Firebird reference home is not installed: {home}")
+        raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
 
     for row in rows:
         actual = target_path(home, row.firebird_target).resolve()

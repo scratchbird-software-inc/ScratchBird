@@ -19,15 +19,15 @@
     "CEIC-061",
     "CEIC-062"
   ],
-  "manifest_uuid": "e171d315-0a62-5b89-904d-2404c47ef9c8",
-  "source_commit": "0a2733677295c904786c76b1b3c4e564c987f24a",
-  "source_branch": "main",
-  "generated_at_utc": "2026-07-07T17:20:56-04:00",
+  "manifest_uuid": "200cb665-1e47-5e4d-a05c-fe9d3c453abe",
+  "source_commit": "649d137a6e5e5aa68b2e5328b7663f90abdde5d8",
+  "source_branch": "codex/windows-gnu-core-port",
+  "generated_at_utc": "2026-07-08T07:13:52-04:00",
   "generated_by": "project/tools/ceic_optimizer_readiness_manifest.py#CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
-  "source_evidence_digest": "10bf6d75dfd0ef91293073364314fdf63528904d934c5de59c4e1f3938499624",
+  "source_evidence_digest": "8588649c0b45097c44eac6006418ff1b8807f8c0741f11a38dbbdbb62a101bb6",
   "auditor": {
     "slice_id": "CEIC-062",
-    "timestamp_utc": "2026-07-07T17:20:56-04:00",
+    "timestamp_utc": "2026-07-08T07:13:52-04:00",
     "proof_state": "generated_and_validated"
   },
   "authority_boundary": {
@@ -161,119 +161,119 @@
       "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
       "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
       "surface": "live route benchmark artifact harness",
-      "sha256": "7eb11eb3b78c6e647452198ee88670172f20ec6e419aefdbbacc0dd55efaab21"
+      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
     },
     {
       "slice_id": "CEIC-050",
       "path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
       "search_key": "ValidateOptimizerBenchmarkRouteEvidence",
       "surface": "runtime route benchmark evidence",
-      "sha256": "bb8d85e6d8a4e6e4dfd250df5fd367ef191183a52344cd1c742307d50f7ca0b4"
+      "sha256": "8665e9d4246f0cf1cd9ce9d984acd7ce24febf5560d97700ea1bb7d44e951ec1"
     },
     {
       "slice_id": "CEIC-051",
       "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
       "search_key": "CEIC_051_PERSISTED_OPTIMIZER_BENCHMARK_EVIDENCE_SCHEMA",
       "surface": "persisted benchmark evidence schema",
-      "sha256": "acb14ab22ea4c243f1033dd9c966b4341eedf7e54aca30fada846acc056b3027"
+      "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
     },
     {
       "slice_id": "CEIC-052",
       "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
       "search_key": "CEIC_052_OPTIMIZER_CORRECTNESS_ORACLE",
       "surface": "correctness oracle suite",
-      "sha256": "0db990e35e1ebb7dde5886c42946ff38b3394c93e378be5d1c415089133466cb"
+      "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
     },
     {
       "slice_id": "CEIC-053",
       "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
       "search_key": "CEIC_053_OPTIMIZER_CRASH_REOPEN_PERSISTENCE",
       "surface": "crash reopen persistence",
-      "sha256": "75f55a62324041f54709991cb2d682c1d900a22044765cfbc621ea453f6dc463"
+      "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
     },
     {
       "slice_id": "CEIC-054",
       "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
       "search_key": "CEIC_054_SELECTIVITY_DRIFT_PLAN_STABILITY_OBSERVABILITY",
       "surface": "selectivity drift and plan-stability observability",
-      "sha256": "17f7f42456590afb260a0ab5df3d8cb27f30676f6c91541cdc8da138402fd6c2"
+      "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
     },
     {
       "slice_id": "CEIC-055",
       "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
       "search_key": "CEIC_055_OPTIMIZER_TRANSFORMATION_MEMO_COVERAGE",
       "surface": "transformation memo coverage",
-      "sha256": "995789b2ddc7bdb8fea162b0c1709303d1869331f5a28f94d4a53f6e126bb825"
+      "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
     },
     {
       "slice_id": "CEIC-056",
       "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
       "search_key": "CEIC_056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET",
       "surface": "workload regression budget",
-      "sha256": "1f551f35fe0f1d870044e2ad7c23e328b0bb6645dfc5037945855eebb77db840"
+      "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
     },
     {
       "slice_id": "CEIC-057",
       "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
       "search_key": "CEIC_057_DRIVER_VISIBLE_EXPLAIN_COMPATIBILITY",
       "surface": "driver visible explain compatibility",
-      "sha256": "407077b5770b5ec23fc97a291fef3f96743681ff9378bdfb38504fface94246d"
+      "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
     },
     {
       "slice_id": "CEIC-058",
       "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
       "search_key": "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
       "surface": "live reference comparison artifacts",
-      "sha256": "fe5890cb7af696241ccc7399d4fe0eff7a610ee48db29323d95178d5c543d1f9"
+      "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
     },
     {
       "slice_id": "CEIC-059",
       "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
       "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
       "surface": "governed optimizer memory feedback",
-      "sha256": "db5d0f0d45873e94c1b3225c10075f98bd6eac495dc526d8bec685eaa62d5e05"
+      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
     },
     {
       "slice_id": "CEIC-059",
       "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
       "search_key": "OEIC_MEMORY_SPILL_FEEDBACK_ENTERPRISE",
       "surface": "optimizer spill feedback persistence",
-      "sha256": "06f931f27009ad12ed62127c187067c1678b53ddec60e4891487a349d5bcb4a1"
+      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5"
     },
     {
       "slice_id": "CEIC-060",
       "path": "project/src/core/index/index_optimizer_integration.hpp",
       "search_key": "SB-INDEX-OPTIMIZER-INTEGRATION-CLOSURE-ANCHOR",
       "surface": "index readiness plan admission",
-      "sha256": "951bbd7b2d2a88f4b381bca8087131596c037c69624346e79c3ab63cf9e0a9a8"
+      "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
     },
     {
       "slice_id": "CEIC-060",
       "path": "project/src/engine/optimizer/optimizer_index_costing.hpp",
       "search_key": "OEIC_INDEX_COSTING_ENTERPRISE_CLOSURE",
       "surface": "optimizer index costing admission",
-      "sha256": "dc39c78970907ba7bc8923025009c0e1f86630229aa26b470e0c794c2920e595"
+      "sha256": "d2ec72307238df10953c54c31355fb06d39ecf79231e7e4536ad08e3b16a7ea9"
     },
     {
       "slice_id": "CEIC-061",
       "path": "project/src/core/memory/llvm_memory_accounting.hpp",
       "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
       "surface": "LLVM dynamic/static memory accounting",
-      "sha256": "e33ac69bf7bfbe5bfe4b09e2a28e2226ecd0ec956bbca34ef433f10ff1a9fff6"
+      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
     },
     {
       "slice_id": "CEIC-061",
       "path": "project/src/engine/native_compile/native_compile.hpp",
       "search_key": "SB_ENGINE_NATIVE_COMPILE_RUNTIME",
       "surface": "native compile memory accounting",
-      "sha256": "af82a9cb2f803ec3221320831a9369214d4d2e7ae319b26a66a2288b6750df51"
+      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6"
     },
     {
       "slice_id": "CEIC-062",
       "path": "project/tools/ceic_optimizer_readiness_manifest.py",
       "search_key": "CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
       "surface": "optimizer readiness manifest producer",
-      "sha256": "9da1a6c5846bbe3a0c3fbe7352998cb7ba5551fac0ba070e71585a29d3cdd343"
+      "sha256": "9f85456de9178d282a2fb3e60ba7d64186bff05f05933c12337f6a0392992ef2"
     }
   ],
   "components": [
@@ -284,7 +284,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-058",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "artifact_sha256": "9f7077374bf993c2e09b7d9f6985b56be8b02f4087b4c141597f8b8169a80cd6",
+      "artifact_sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
       "artifact_state": "present",
       "ctest": "ceic_050_live_route_benchmark_artifact_gate",
       "ctest_registered": true,
@@ -292,11 +292,11 @@
       "source_anchor": {
         "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
         "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
-        "sha256": "7eb11eb3b78c6e647452198ee88670172f20ec6e419aefdbbacc0dd55efaab21"
+        "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
       },
       "proof_kind": "live_route_runtime_evidence",
-      "result_contract_hash": "sha256:32cf42ff02bf0a910f1cb9ecdcedfd11d04aed982f6eca3ed4b947f8e46f198f",
-      "evidence_digest": "sha256:a76d7807f89fd67cf9bfc7ce2bbbe0b45d449d2e87789886614cc08489049c7e",
+      "result_contract_hash": "sha256:f20343e4b09c36e3ac0c754e3d7984ddfb631a8230b46056a6eb24ae33b7cdf2",
+      "evidence_digest": "sha256:a09c56ea4413a160d1b08cd7408dab9c2b09bd5e813760a050a77526e5f37e2f",
       "catalog_epoch": 62050,
       "security_epoch": 72050,
       "redaction_epoch": 82050,
@@ -335,7 +335,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-059",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
-      "artifact_sha256": "4528aa14216c9cdd078cd88fba4c1cd9e5ca3015c4a6acfe6c7e08c4d8c54aa5",
+      "artifact_sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
       "artifact_state": "present",
       "ctest": "ceic_051_persisted_optimizer_benchmark_evidence_schema_gate",
       "ctest_registered": true,
@@ -343,11 +343,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
         "search_key": "CEIC_051_PERSISTED_OPTIMIZER_BENCHMARK_EVIDENCE_SCHEMA",
-        "sha256": "acb14ab22ea4c243f1033dd9c966b4341eedf7e54aca30fada846acc056b3027"
+        "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
       },
       "proof_kind": "benchmark_schema_validation",
-      "result_contract_hash": "sha256:f4f82920dd2009501bc828605a008a6b8c5f87b3d6541aaf742e9abd608e6967",
-      "evidence_digest": "sha256:199cc0da3c2cb617596f2d4a659d728194dd54f5169c25a0efba3919acb4aaa1",
+      "result_contract_hash": "sha256:ed5d6103ecbee8f44503a6899f9a39390ea231ac2887acf7003defc1758eb03a",
+      "evidence_digest": "sha256:23e265e206b8f83be75cc2f7b113f5625f4e569920d756187af1f2cb5d5df1e8",
       "catalog_epoch": 62051,
       "security_epoch": 72051,
       "redaction_epoch": 82051,
@@ -378,7 +378,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-060",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
-      "artifact_sha256": "3fc5ddc79b0cd9274d3f19e8eea5339138b16dbd6744a1304cae4a696d3331eb",
+      "artifact_sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
       "artifact_state": "present",
       "ctest": "ceic_052_optimizer_correctness_oracle_suite_gate",
       "ctest_registered": true,
@@ -386,11 +386,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
         "search_key": "CEIC_052_OPTIMIZER_CORRECTNESS_ORACLE",
-        "sha256": "0db990e35e1ebb7dde5886c42946ff38b3394c93e378be5d1c415089133466cb"
+        "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
       },
       "proof_kind": "correctness_oracle_validation",
-      "result_contract_hash": "sha256:ea9294bd31d88a7123cb770afb65ac06e6dbbaba14ed257d5e16c55f6d9a8357",
-      "evidence_digest": "sha256:0b201318650c7aca2dfdd462f7dae35ac631202611c4c492baac5de5aa1c52d3",
+      "result_contract_hash": "sha256:f0558c8ba14363bb89ad4e0b5de23a0ff1c7f8dc21a298d18a4d5e545551f429",
+      "evidence_digest": "sha256:c749b2cae6754348f7bab3405e86c17d9c49e1ca5acb203949560c37626762dd",
       "catalog_epoch": 62052,
       "security_epoch": 72052,
       "redaction_epoch": 82052,
@@ -440,7 +440,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-061",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
-      "artifact_sha256": "48defffc2b34351e170ae8b526afa4b4c9296751f4b5d8db574eccf0df9c026b",
+      "artifact_sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
       "artifact_state": "present",
       "ctest": "ceic_053_optimizer_crash_reopen_persistence_gate",
       "ctest_registered": true,
@@ -448,11 +448,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
         "search_key": "CEIC_053_OPTIMIZER_CRASH_REOPEN_PERSISTENCE",
-        "sha256": "75f55a62324041f54709991cb2d682c1d900a22044765cfbc621ea453f6dc463"
+        "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
       },
       "proof_kind": "crash_reopen_matrix_validation",
-      "result_contract_hash": "sha256:b62216aef14397fcc72618fe4d4958b6ce890368cf951fe122bfc66d36ddd2ba",
-      "evidence_digest": "sha256:019d27ef1ea8ffe023e5d132e51b6cf8022f583c4ba28f5ca93c7e97b33e54dd",
+      "result_contract_hash": "sha256:4869be1eb85df3a8a4c6755176094595c210c3a4c8de6c8710d2f4f9c70a7022",
+      "evidence_digest": "sha256:5d06f5fbc295e06270c761fdb6c56acea704c426d5b942262ef659b60842d974",
       "catalog_epoch": 62053,
       "security_epoch": 72053,
       "redaction_epoch": 82053,
@@ -499,7 +499,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-062",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
-      "artifact_sha256": "98c51e385ab191483ba19de740696332bc8f47edfb77771b7e62736988c17081",
+      "artifact_sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
       "artifact_state": "present",
       "ctest": "ceic_054_selectivity_drift_plan_stability_observability_gate",
       "ctest_registered": true,
@@ -507,11 +507,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
         "search_key": "CEIC_054_SELECTIVITY_DRIFT_PLAN_STABILITY_OBSERVABILITY",
-        "sha256": "17f7f42456590afb260a0ab5df3d8cb27f30676f6c91541cdc8da138402fd6c2"
+        "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
       },
       "proof_kind": "metrics_feedback_and_observability",
-      "result_contract_hash": "sha256:a62b75b669d96300ce15615d918c02e6956dc3c9093b115d2b46ebe4fb94e5a1",
-      "evidence_digest": "sha256:169b001f903016d6e30d6c292c6e4147a20485ce5d46ee21a476eff57f0f5dc3",
+      "result_contract_hash": "sha256:d6d3a616cc79d2e3f92269e2adeaf791746c63ebd43e51146da78d15d4130ee8",
+      "evidence_digest": "sha256:9d8977969dc0c42e91c7045bcbcbf40b47415aa33b5918940ea3a1e25a5c13f4",
       "catalog_epoch": 62054,
       "security_epoch": 72054,
       "redaction_epoch": 82054,
@@ -549,7 +549,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-063",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
-      "artifact_sha256": "61ef46cb69a5c62f7a92d987ec17c987fb7edbb2ccfa573a7b893c04d0064223",
+      "artifact_sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
       "artifact_state": "present",
       "ctest": "ceic_055_optimizer_transformation_memo_coverage_gate",
       "ctest_registered": true,
@@ -557,11 +557,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
         "search_key": "CEIC_055_OPTIMIZER_TRANSFORMATION_MEMO_COVERAGE",
-        "sha256": "995789b2ddc7bdb8fea162b0c1709303d1869331f5a28f94d4a53f6e126bb825"
+        "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
       },
       "proof_kind": "transformation_memo_validation",
-      "result_contract_hash": "sha256:ec40371c5cee817483bb3b77de925ee0e0d70041c1f6900c0b45edae4874f258",
-      "evidence_digest": "sha256:4dfe144ef1236409499b08372b48c70fb937631414302522d1c13335727833cf",
+      "result_contract_hash": "sha256:151f9ecf3dd037b85a7bc261904d1f2f4f1a41d35ba2cb0fd9a32e76f1a708a8",
+      "evidence_digest": "sha256:7428c14dbedcf3d08d731d79f7125e5cdb11cfba11481eb8092c3c0a025fd99c",
       "catalog_epoch": 62055,
       "security_epoch": 72055,
       "redaction_epoch": 82055,
@@ -592,7 +592,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-064",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
-      "artifact_sha256": "185a38ff08f815473033d7240490fb1f859838e12ef48b446115b521e687ae14",
+      "artifact_sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
       "artifact_state": "present",
       "ctest": "ceic_056_optimizer_workload_regression_budget_gate",
       "ctest_registered": true,
@@ -600,11 +600,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
         "search_key": "CEIC_056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET",
-        "sha256": "1f551f35fe0f1d870044e2ad7c23e328b0bb6645dfc5037945855eebb77db840"
+        "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
       },
       "proof_kind": "workload_budget_validation",
-      "result_contract_hash": "sha256:fcf8eccd6fb3890451302848f12eef7a9eaa92a58962418c17e3ae11bc89c235",
-      "evidence_digest": "sha256:66013c49960661b8d26f1d2f89bf3393752fd403850477dd3ab60fdea7810db7",
+      "result_contract_hash": "sha256:b6647c2302af83f9abf8d694126f9fbc7386186dd260bbacd0d1c4bcb1bc0bb8",
+      "evidence_digest": "sha256:4af536a55229f4659d1b924eda51d37011b70d67e80919b35dea4652d839ba79",
       "catalog_epoch": 62056,
       "security_epoch": 72056,
       "redaction_epoch": 82056,
@@ -635,7 +635,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-065",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
-      "artifact_sha256": "efa6903e7b3d0c924bd05b66a077ed77cb30b62963f5034b67674135331e55a1",
+      "artifact_sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
       "artifact_state": "present",
       "ctest": "ceic_057_driver_visible_explain_compatibility_gate",
       "ctest_registered": true,
@@ -643,11 +643,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
         "search_key": "CEIC_057_DRIVER_VISIBLE_EXPLAIN_COMPATIBILITY",
-        "sha256": "407077b5770b5ec23fc97a291fef3f96743681ff9378bdfb38504fface94246d"
+        "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
       },
       "proof_kind": "driver_visible_explain_validation",
-      "result_contract_hash": "sha256:43057d5652d0f5f12648d1d9ccf1da81a271bd710396be0327108e66e865c2b7",
-      "evidence_digest": "sha256:9fde443a18dd7a62b90edc2592708d6dc6c38f7d4b3839ebdbf07c06b1dc6bdf",
+      "result_contract_hash": "sha256:beaad94d66895e927a26d069ebfb7e78d72212e336442fc4a8aadc2fbce793af",
+      "evidence_digest": "sha256:7a5791e89fcf62128b2e3dbac11491e1a941d173bade42e1c9b1aed6dd989b93",
       "catalog_epoch": 62057,
       "security_epoch": 72057,
       "redaction_epoch": 82057,
@@ -689,7 +689,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-066",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
-      "artifact_sha256": "a7be3cd46f0e8ae47cdc46e1c4ecddc84c72ec7712d5deeb040d3e9e204f254d",
+      "artifact_sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
       "artifact_state": "present",
       "ctest": "ceic_058_live_reference_comparison_artifacts_gate",
       "ctest_registered": true,
@@ -697,11 +697,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
         "search_key": "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
-        "sha256": "fe5890cb7af696241ccc7399d4fe0eff7a610ee48db29323d95178d5c543d1f9"
+        "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
       },
       "proof_kind": "reference_comparison_artifact_validation",
-      "result_contract_hash": "sha256:5eda20d4dbbf422a8405141bac7d4b902474b7a94fa05919c8fe3f28aae94742",
-      "evidence_digest": "sha256:e2cf960902e87b3fb58f8dc8dbb4ffca8c92fce034d8640e50f6732219f3fbb8",
+      "result_contract_hash": "sha256:ba0bd92328aa683a72049488af72af9da0d2732a9bc3a87871bceb9e379e9888",
+      "evidence_digest": "sha256:e8737fde4c50e95394714fbf08f64f6517c6992593c7f044606a0c32940fe48f",
       "catalog_epoch": 62058,
       "security_epoch": 72058,
       "redaction_epoch": 82058,
@@ -736,7 +736,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-067",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
-      "artifact_sha256": "a607a9a7503d0ce73eb8bb469ecd8dc5233f8023db815616cda7069336acb2d3",
+      "artifact_sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
       "artifact_state": "present",
       "ctest": "ceic_059_optimizer_memory_feedback_governed_ledger_gate",
       "ctest_registered": true,
@@ -744,11 +744,11 @@
       "source_anchor": {
         "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
         "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
-        "sha256": "db5d0f0d45873e94c1b3225c10075f98bd6eac495dc526d8bec685eaa62d5e05"
+        "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
       },
       "proof_kind": "governed_memory_feedback_validation",
-      "result_contract_hash": "sha256:7a8b2c77fee508279965046b1fd65128c1a8d048df8c7404caa5b97de9ba8166",
-      "evidence_digest": "sha256:4c9cf25924edc05ed8fd45e0ff71c619ca9f3f0fa5abf8798e67d61c1276a891",
+      "result_contract_hash": "sha256:8e963939a756e88ede95b3686d5e5d78db777b699c9ead285c1835b16dd694ca",
+      "evidence_digest": "sha256:cb489f744f89386106448312d37805280112920132a48a5a2ce2b2ac28b6c897",
       "catalog_epoch": 62059,
       "security_epoch": 72059,
       "redaction_epoch": 82059,
@@ -786,7 +786,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-068",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
-      "artifact_sha256": "5d0c8e717a4558d52c185fbd92483022cc7364c379a07c1454392014e5aa217c",
+      "artifact_sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
       "artifact_state": "present",
       "ctest": "ceic_060_index_readiness_plan_admission_gate",
       "ctest_registered": true,
@@ -794,11 +794,11 @@
       "source_anchor": {
         "path": "project/src/core/index/index_optimizer_integration.hpp",
         "search_key": "SB-INDEX-OPTIMIZER-INTEGRATION-CLOSURE-ANCHOR",
-        "sha256": "951bbd7b2d2a88f4b381bca8087131596c037c69624346e79c3ab63cf9e0a9a8"
+        "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
       },
       "proof_kind": "index_readiness_coupling_validation",
-      "result_contract_hash": "sha256:37ec106a412f5805e05827dc9a9cf0bc67bddc83597982d65628d0143fb2c604",
-      "evidence_digest": "sha256:9c3ca0ca318b0819ee3c3037f1b52fe312bd287c34dd9fbfabcc95ee72cc8a98",
+      "result_contract_hash": "sha256:a941790c9a444d27e20aa6508e7571d4a9bc85a2ae8a13b02b5db66f9bd090fd",
+      "evidence_digest": "sha256:981126e7d0dfb5398c1befbf5ac4931c6fc50b1b35f1c425bd799310a39c69af",
       "catalog_epoch": 62060,
       "security_epoch": 72060,
       "redaction_epoch": 82060,
@@ -838,7 +838,7 @@
       "status": "complete",
       "artifact_id": "CEIC-ART-069",
       "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
-      "artifact_sha256": "2d520f6e9427db86e7ebd2ea9295d15a110e9264053411a9081626d10cde0051",
+      "artifact_sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
       "artifact_state": "present",
       "ctest": "ceic_061_llvm_memory_accounting_gate",
       "ctest_registered": true,
@@ -846,11 +846,11 @@
       "source_anchor": {
         "path": "project/src/core/memory/llvm_memory_accounting.hpp",
         "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
-        "sha256": "e33ac69bf7bfbe5bfe4b09e2a28e2226ecd0ec956bbca34ef433f10ff1a9fff6"
+        "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
       },
       "proof_kind": "llvm_foreign_memory_accounting_validation",
-      "result_contract_hash": "sha256:254cae665fd73b3ad2bc11c8f2856ac69bdd3bc8852d93425f12be76fe40776d",
-      "evidence_digest": "sha256:fb6608ac6ee37dc4ba3d0f88502f4e98ba277bd9437a2ae4b7c34282cbf04ab6",
+      "result_contract_hash": "sha256:f81bb7e0092d56e827bba5db47f9a1e8c0c2cae66f30e42318b2fdb183590489",
+      "evidence_digest": "sha256:8701df4e61da3d0864c4a9a6a80f5113353fa12897cab123e8dc508bef8eeca2",
       "catalog_epoch": 62061,
       "security_epoch": 72061,
       "redaction_epoch": 82061,
@@ -887,7 +887,7 @@
       "slice_id": "CEIC-050",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "9f7077374bf993c2e09b7d9f6985b56be8b02f4087b4c141597f8b8169a80cd6",
+      "sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
       "status": "present"
     },
     {
@@ -895,7 +895,7 @@
       "slice_id": "CEIC-051",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
-      "sha256": "4528aa14216c9cdd078cd88fba4c1cd9e5ca3015c4a6acfe6c7e08c4d8c54aa5",
+      "sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
       "status": "present"
     },
     {
@@ -903,7 +903,7 @@
       "slice_id": "CEIC-052",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
-      "sha256": "3fc5ddc79b0cd9274d3f19e8eea5339138b16dbd6744a1304cae4a696d3331eb",
+      "sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
       "status": "present"
     },
     {
@@ -911,7 +911,7 @@
       "slice_id": "CEIC-053",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
-      "sha256": "48defffc2b34351e170ae8b526afa4b4c9296751f4b5d8db574eccf0df9c026b",
+      "sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
       "status": "present"
     },
     {
@@ -919,7 +919,7 @@
       "slice_id": "CEIC-054",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
-      "sha256": "98c51e385ab191483ba19de740696332bc8f47edfb77771b7e62736988c17081",
+      "sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
       "status": "present"
     },
     {
@@ -927,7 +927,7 @@
       "slice_id": "CEIC-055",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
-      "sha256": "61ef46cb69a5c62f7a92d987ec17c987fb7edbb2ccfa573a7b893c04d0064223",
+      "sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
       "status": "present"
     },
     {
@@ -935,7 +935,7 @@
       "slice_id": "CEIC-056",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
-      "sha256": "185a38ff08f815473033d7240490fb1f859838e12ef48b446115b521e687ae14",
+      "sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
       "status": "present"
     },
     {
@@ -943,7 +943,7 @@
       "slice_id": "CEIC-057",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
-      "sha256": "efa6903e7b3d0c924bd05b66a077ed77cb30b62963f5034b67674135331e55a1",
+      "sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
       "status": "present"
     },
     {
@@ -951,7 +951,7 @@
       "slice_id": "CEIC-058",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
-      "sha256": "a7be3cd46f0e8ae47cdc46e1c4ecddc84c72ec7712d5deeb040d3e9e204f254d",
+      "sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
       "status": "present"
     },
     {
@@ -959,7 +959,7 @@
       "slice_id": "CEIC-059",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
-      "sha256": "a607a9a7503d0ce73eb8bb469ecd8dc5233f8023db815616cda7069336acb2d3",
+      "sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
       "status": "present"
     },
     {
@@ -967,7 +967,7 @@
       "slice_id": "CEIC-060",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
-      "sha256": "5d0c8e717a4558d52c185fbd92483022cc7364c379a07c1454392014e5aa217c",
+      "sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
       "status": "present"
     },
     {
@@ -975,7 +975,7 @@
       "slice_id": "CEIC-061",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
-      "sha256": "2d520f6e9427db86e7ebd2ea9295d15a110e9264053411a9081626d10cde0051",
+      "sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
       "status": "present"
     },
     {
@@ -983,7 +983,7 @@
       "slice_id": "CEIC-062",
       "kind": "evidence",
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST_EVIDENCE.md",
-      "sha256": "f865e0051d4639bb866f96e7203f02ddffd61478949755762ddd43901064d184",
+      "sha256": "1ed8dca6554b22627ebc3276fb6aabfe735739b060ad6a1e360e3c2e51f2ba8f",
       "status": "present"
     }
   ],
@@ -1062,243 +1062,243 @@
   "input_records": [
     {
       "path": "project/src/core/index/index_optimizer_integration.hpp",
-      "sha256": "951bbd7b2d2a88f4b381bca8087131596c037c69624346e79c3ab63cf9e0a9a8",
-      "bytes": 7582
+      "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400",
+      "bytes": 7369
     },
     {
       "path": "project/src/core/memory/llvm_memory_accounting.hpp",
-      "sha256": "e33ac69bf7bfbe5bfe4b09e2a28e2226ecd0ec956bbca34ef433f10ff1a9fff6",
-      "bytes": 4786
+      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824",
+      "bytes": 4632
     },
     {
       "path": "project/src/engine/native_compile/native_compile.hpp",
-      "sha256": "af82a9cb2f803ec3221320831a9369214d4d2e7ae319b26a66a2288b6750df51",
-      "bytes": 4369
+      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6",
+      "bytes": 4241
     },
     {
       "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
-      "sha256": "acb14ab22ea4c243f1033dd9c966b4341eedf7e54aca30fada846acc056b3027",
-      "bytes": 6474
+      "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22",
+      "bytes": 6293
     },
     {
       "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
-      "sha256": "0db990e35e1ebb7dde5886c42946ff38b3394c93e378be5d1c415089133466cb",
-      "bytes": 5418
+      "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567",
+      "bytes": 5258
     },
     {
       "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
-      "sha256": "75f55a62324041f54709991cb2d682c1d900a22044765cfbc621ea453f6dc463",
-      "bytes": 7345
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
-      "sha256": "407077b5770b5ec23fc97a291fef3f96743681ff9378bdfb38504fface94246d",
-      "bytes": 6116
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_index_costing.hpp",
-      "sha256": "dc39c78970907ba7bc8923025009c0e1f86630229aa26b470e0c794c2920e595",
-      "bytes": 3488
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
-      "sha256": "fe5890cb7af696241ccc7399d4fe0eff7a610ee48db29323d95178d5c543d1f9",
-      "bytes": 7714
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
-      "sha256": "db5d0f0d45873e94c1b3225c10075f98bd6eac495dc526d8bec685eaa62d5e05",
-      "bytes": 4032
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
-      "sha256": "06f931f27009ad12ed62127c187067c1678b53ddec60e4891487a349d5bcb4a1",
-      "bytes": 4117
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
-      "sha256": "17f7f42456590afb260a0ab5df3d8cb27f30676f6c91541cdc8da138402fd6c2",
-      "bytes": 10512
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
-      "sha256": "995789b2ddc7bdb8fea162b0c1709303d1869331f5a28f94d4a53f6e126bb825",
-      "bytes": 8375
-    },
-    {
-      "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
-      "sha256": "1f551f35fe0f1d870044e2ad7c23e328b0bb6645dfc5037945855eebb77db840",
-      "bytes": 7611
-    },
-    {
-      "path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
-      "sha256": "bb8d85e6d8a4e6e4dfd250df5fd367ef191183a52344cd1c742307d50f7ca0b4",
-      "bytes": 46965
-    },
-    {
-      "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
-      "sha256": "d7910ddf72c441c7d5dd7ce2066c0af7a22e6c9b58bd86d581e86cdfd66e4412",
-      "bytes": 52446
-    },
-    {
-      "path": "project/tests/consolidated_enterprise/ceic_062_optimizer_readiness_manifest_gate_test.py",
-      "sha256": "2fb69aab132c0048bc397450156cd470f548aa9b73473b61d8ec72ec8113227b",
-      "bytes": 10181
-    },
-    {
-      "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
-      "sha256": "7eb11eb3b78c6e647452198ee88670172f20ec6e419aefdbbacc0dd55efaab21",
-      "bytes": 17616
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
-      "sha256": "fad37187bc91377e10172a8c2ec9970ba08a1fa99c4eac1d9aa754479658dd41",
-      "bytes": 13004
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
-      "sha256": "838f0181d6ff9397e59a0589c2481697666a2beec9da02db4853b7ec96a6ee49",
-      "bytes": 256
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
-      "sha256": "70100f48602741cc313066090f039afbea6764c226385fd6489eec7a91858bc1",
-      "bytes": 234
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
-      "sha256": "e6c798ff181adc11ba1be7dc9d4ac91d9be87ba3764df415e9881071f5ccc5ea",
-      "bytes": 453
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
-      "sha256": "55c5ebad9ce5d210ccbc16a800add7fd4f847d85828459a9138bf2cd3f857599",
-      "bytes": 550
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
-      "sha256": "b68f989db205f0ce05d140b061ffd00202a1bec8065abe542096e5aebb288c2e",
+      "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece",
       "bytes": 7135
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
-      "sha256": "7e02afae6a62a36cd4e29ccbf2cbeec2a1e0b8fa2779c35e8101119e443dcd79",
-      "bytes": 892
+      "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
+      "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70",
+      "bytes": 5949
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
-      "sha256": "a4ce7242ac607d3116296fc1a7926569152ca1752b9be156c898a5b29c059e60",
-      "bytes": 187
+      "path": "project/src/engine/optimizer/optimizer_index_costing.hpp",
+      "sha256": "d2ec72307238df10953c54c31355fb06d39ecf79231e7e4536ad08e3b16a7ea9",
+      "bytes": 3385
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
-      "sha256": "8d7553714f9fdc4d8d5b2023c1bece265b41aeee86f5f866f205883d40c07619",
-      "bytes": 1235
+      "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+      "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1",
+      "bytes": 7501
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-      "sha256": "b33c23152701c86235760767c02aabda861c67fb09b7b00f57415b934024cb27",
-      "bytes": 5899
+      "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
+      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271",
+      "bytes": 3916
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
-      "sha256": "986d593b824732e3ca6e8ca5c8252bff03e0f18a83b5a14d703ade004b1c1fa6",
-      "bytes": 727
+      "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
+      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5",
+      "bytes": 3997
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
-      "sha256": "9f7077374bf993c2e09b7d9f6985b56be8b02f4087b4c141597f8b8169a80cd6",
-      "bytes": 1160
+      "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
+      "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d",
+      "bytes": 10198
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
-      "sha256": "4528aa14216c9cdd078cd88fba4c1cd9e5ca3015c4a6acfe6c7e08c4d8c54aa5",
-      "bytes": 220
+      "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
+      "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f",
+      "bytes": 8151
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
-      "sha256": "3fc5ddc79b0cd9274d3f19e8eea5339138b16dbd6744a1304cae4a696d3331eb",
-      "bytes": 232
+      "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
+      "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4",
+      "bytes": 7384
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
-      "sha256": "48defffc2b34351e170ae8b526afa4b4c9296751f4b5d8db574eccf0df9c026b",
-      "bytes": 210
+      "path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+      "sha256": "8665e9d4246f0cf1cd9ce9d984acd7ce24febf5560d97700ea1bb7d44e951ec1",
+      "bytes": 45763
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
-      "sha256": "98c51e385ab191483ba19de740696332bc8f47edfb77771b7e62736988c17081",
-      "bytes": 269
+      "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
+      "bytes": 51048
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
-      "sha256": "61ef46cb69a5c62f7a92d987ec17c987fb7edbb2ccfa573a7b893c04d0064223",
-      "bytes": 197
+      "path": "project/tests/consolidated_enterprise/ceic_062_optimizer_readiness_manifest_gate_test.py",
+      "sha256": "f94376542f37ad821780e56f20212e277c3f9d6eb1edcc0b521118668650f722",
+      "bytes": 9943
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
-      "sha256": "185a38ff08f815473033d7240490fb1f859838e12ef48b446115b521e687ae14",
-      "bytes": 224
+      "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
+      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b",
+      "bytes": 17206
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
-      "sha256": "efa6903e7b3d0c924bd05b66a077ed77cb30b62963f5034b67674135331e55a1",
-      "bytes": 235
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
+      "sha256": "3ed5cee541bd71ce506f891c2882a93cc3875f5c33ced9f0c2bdbda84900855f",
+      "bytes": 12926
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
-      "sha256": "a7be3cd46f0e8ae47cdc46e1c4ecddc84c72ec7712d5deeb040d3e9e204f254d",
-      "bytes": 274
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
-      "sha256": "a607a9a7503d0ce73eb8bb469ecd8dc5233f8023db815616cda7069336acb2d3",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
+      "sha256": "3f347f008a047fb27c69226525d52239beac56c40214346d6b66dc45a85c95d1",
       "bytes": 245
     },
     {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
-      "sha256": "5d0c8e717a4558d52c185fbd92483022cc7364c379a07c1454392014e5aa217c",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
+      "sha256": "bde25fdefe33f878b126d702c9d1aae8eb94da9c03facb198ebb41a53a024e69",
+      "bytes": 228
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+      "sha256": "cc5a044c63cab44d85740427743575dc2dc6cb1abe02d9df3a679707a4203cb6",
+      "bytes": 447
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+      "sha256": "04a6d4ed7a073e233347fe25363cb4c8839e41721be728d49f1a93798f93471b",
+      "bytes": 546
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
+      "sha256": "a1b2d44da0222b6afdc9a05e340977fdec0e08ad23c5240635705244672874d1",
+      "bytes": 7066
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
+      "sha256": "18adbc50170fd43a6d17debcc189237fc3544403f5d675b0d6b000c9c62080e6",
+      "bytes": 883
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
+      "sha256": "3c260f7572b00d847d4865f2e893a3af55494d13e896b7819ebd202b0cc64536",
+      "bytes": 183
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
+      "sha256": "7b16310ea861e445d2d570fef351b21b7f0ba56961e028e0f60ea97ddbbe62e8",
+      "bytes": 1216
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+      "sha256": "3f47eee8891525cbef49ada01071e0c6243b184e65003cce29f9de472fb059e8",
+      "bytes": 5875
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
+      "sha256": "6341a681e39cc239f0a267d8ca5bf7a63c71994f8457d44f7fd4d801d68b6226",
+      "bytes": 714
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
+      "sha256": "a525f645e526ef619e9dec250aa558581cf1999bd6e0340a95f11f6772febc42",
+      "bytes": 1152
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
+      "sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
+      "bytes": 216
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
+      "sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
+      "bytes": 228
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
+      "sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
+      "bytes": 206
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
+      "sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
+      "bytes": 265
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
+      "sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
+      "bytes": 193
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
+      "sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
+      "bytes": 220
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
+      "sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
       "bytes": 231
     },
     {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
+      "sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
+      "bytes": 270
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
+      "sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
+      "bytes": 241
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
+      "sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
+      "bytes": 227
+    },
+    {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
-      "sha256": "2d520f6e9427db86e7ebd2ea9295d15a110e9264053411a9081626d10cde0051",
-      "bytes": 210
+      "sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
+      "bytes": 206
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST_EVIDENCE.md",
-      "sha256": "f865e0051d4639bb866f96e7203f02ddffd61478949755762ddd43901064d184",
-      "bytes": 242
+      "sha256": "1ed8dca6554b22627ebc3276fb6aabfe735739b060ad6a1e360e3c2e51f2ba8f",
+      "bytes": 238
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
-      "sha256": "a710ff139073add1a6a7a995791a1e28992730214a0f9683b59e51215385efa0",
-      "bytes": 331
+      "sha256": "0c22c94c9a75ee26785c4b8abfae4519f4b3685e9f1046e2829a0403d04eff21",
+      "bytes": 325
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
-      "sha256": "7caeea2a65621ad9d1e9983600f2e2466af9f95fc5c0a2ea7f73265efbd7e526",
-      "bytes": 211
+      "sha256": "de19ad3eb08993608f9c3e5cacac84d96d916c729a3b1e4a2af31aaed9e7b45d",
+      "bytes": 207
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
-      "sha256": "d49721677dcbd1d41cda94245e0b2e8a9c99932cd48865e62d1b7c5809b4c7e5",
-      "bytes": 277
+      "sha256": "34ac8f481b185de90bfdde41ffdab568218f3138e35d7de00ce4709331aaa285",
+      "bytes": 271
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
-      "sha256": "05dd09600545fbf92a5324a8e33c230fb9ad815cdc3e29248d5ee869330f502a",
-      "bytes": 209
+      "sha256": "d74af43448ef5b42801ae3998ade51b1272104e7f0e6df3d3b943590b3a3b234",
+      "bytes": 205
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
-      "sha256": "a1cf642e599f511d5c32017dba6a3eb8aeb2c1790dc7156dc05645cc7003ac3a",
-      "bytes": 166
+      "sha256": "c328f01c8a1126b4e600f0920c468f859718bbb2d5160c7d2cffb127e2de939f",
+      "bytes": 162
     },
     {
       "path": "project/tools/ceic_optimizer_readiness_manifest.py",
-      "sha256": "9da1a6c5846bbe3a0c3fbe7352998cb7ba5551fac0ba070e71585a29d3cdd343",
-      "bytes": 53276
+      "sha256": "9f85456de9178d282a2fb3e60ba7d64186bff05f05933c12337f6a0392992ef2",
+      "bytes": 52083
     }
   ]
 }
