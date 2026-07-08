@@ -1,2 +1,0 @@
-proof_id,current_status,required_status,test_destination
-DPDE-NAT-001,enterprise_implemented_proven,enterprise_implemented_proven,project/tests/compatibility_sql_parser_first_tranche/compatibility_native_procedural_regression_matrix_proof
