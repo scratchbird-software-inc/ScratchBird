@@ -669,6 +669,9 @@ MetricValidationResult WriteMetricHistoryStore(const std::string& path, const Me
   if (!output.good()) {
     return MetricError("SB-METRICS-HISTORY-WRITE-FAILED", path);
   }
+#if defined(_WIN32)
+  (void)std::remove(path.c_str());
+#endif
   if (std::rename(tmp.c_str(), path.c_str()) != 0) {
     return MetricError("SB-METRICS-HISTORY-WRITE-FAILED", path + ":rename");
   }

@@ -536,7 +536,11 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     )
 
 
-def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dict[str, Any]) -> Path:
+def generate_deterministic_artifact_fixture(
+    artifact_root: Path,
+    gate_input: dict[str, Any],
+    language: dict[str, Any],
+) -> Path:
     run_root = artifact_root / "cpp" / "listener-parser" / "8k" / "server-parser" / "fixture-run"
     required = [str(name) for name in as_list(gate_input.get("required_artifacts"))]
     summary = {
@@ -546,9 +550,9 @@ def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dic
         "failure_count": 0,
         "language_profile": "en-US",
         "language_resource_authority": "shared_server_parser_resource_pack",
-        "language_resource_hash": "sha256:752c7a9823bdad00b48ab318c8b2d5d6d53b2739ecfe43f565952fd510f4e3dc",
-        "language_resource_identity": "sbsql.common_resource_pack.v1",
-        "language_resource_pack": "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
+        "language_resource_hash": language["resource_hash"],
+        "language_resource_identity": language["resource_identity"],
+        "language_resource_pack": language["resource_pack_path"],
         "mga_authority": "engine",
         "namespace": "users.public.examples.cpp.fixture.listener-parser.8k.w0",
         "page_size": "8k",
@@ -573,8 +577,8 @@ def generate_deterministic_artifact_fixture(artifact_root: Path, gate_input: dic
         "sslmode": "require",
         "standard_english_fallback": True,
         "status": "pass",
-        "syntax_profile": "sbsql.v3",
-        "topology_profile": "topology.sbsql.canonical.v1",
+        "syntax_profile": language["syntax_profile"],
+        "topology_profile": language["topology_profile"],
         "transport_mode": "tls_required",
         "transport_endpoint_kind": "tcp",
         "driver_transport_implementation": "native_cpp_tcp",
@@ -705,7 +709,13 @@ def main() -> int:
     if args.mode in ("artifact-schema", "all"):
         artifact_root = (args.artifact_root or repo_root / "build" / "driver-conformance").resolve()
         if args.generate_deterministic_fixture:
-            generate_deterministic_artifact_fixture(artifact_root, gate_input)
+            try:
+                language = language_contract(repo_root)
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                language = {}
+                errors.append(f"artifact_schema:language_contract_load_failed:{exc}")
+            if language:
+                generate_deterministic_artifact_fixture(artifact_root, gate_input, language)
         errors.extend(
             validate_artifacts(
                 repo_root,

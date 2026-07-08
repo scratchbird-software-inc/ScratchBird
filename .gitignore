@@ -18,14 +18,19 @@
 !/SBOM.json
 !/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
 !/public_contract_snapshot
+!/public_input_snapshot
 !/public_execution_plan/
 !/public_execution_plan/**
+!/artifacts/
 
 /build/
 /build-*/
 /cmake-build-*/
 /output/
-/artifacts/
+/artifacts/*
+!/artifacts/ceic/
+!/artifacts/ceic/integrated/
+!/artifacts/ceic/integrated/final_enterprise_manifest.yaml
 /dist/
 /release/
 /public_release_evidence/

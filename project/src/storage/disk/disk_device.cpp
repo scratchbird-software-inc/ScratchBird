@@ -289,6 +289,10 @@ bool DurableSyncHandle(HANDLE handle, std::string* detail) {
   return false;
 }
 
+DWORD ForcedOrderedWriteFileFlags(bool writable) {
+  return writable ? FILE_FLAG_WRITE_THROUGH : 0;
+}
+
 bool DurableSyncPath(const std::string& path, bool writable, std::string* detail) {
   const DWORD access = GENERIC_READ | (writable ? GENERIC_WRITE : 0);
   HANDLE handle = ::CreateFileA(path.c_str(),
@@ -296,7 +300,8 @@ bool DurableSyncPath(const std::string& path, bool writable, std::string* detail
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr,
                                 OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL,
+                                FILE_ATTRIBUTE_NORMAL |
+                                    ForcedOrderedWriteFileFlags(writable),
                                 nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     if (detail != nullptr) {
@@ -343,12 +348,14 @@ void* OpenOwnerLockFile(const std::string& path,
       shared_read_only ? FILE_SHARE_READ : 0;
   const DWORD access =
       shared_read_only ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
+  const DWORD flags = FILE_ATTRIBUTE_NORMAL |
+                      ForcedOrderedWriteFileFlags(!shared_read_only);
   HANDLE handle = ::CreateFileA(path.c_str(),
                                 access,
                                 share_mode,
                                 nullptr,
                                 OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL,
+                                flags,
                                 nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     const DWORD error = ::GetLastError();
@@ -416,12 +423,14 @@ void* OpenDataFileHandle(const std::string& path,
       break;
   }
   const DWORD access = GENERIC_READ | (read_only_open ? 0 : GENERIC_WRITE);
+  const DWORD flags = FILE_ATTRIBUTE_NORMAL |
+                      ForcedOrderedWriteFileFlags(!read_only_open);
   HANDLE handle = ::CreateFileA(path.c_str(),
                                 access,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr,
                                 disposition,
-                                FILE_ATTRIBUTE_NORMAL,
+                                flags,
                                 nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     const DWORD error = ::GetLastError();
@@ -634,6 +643,16 @@ int FileOpenCloexecFlag() {
 #endif
 }
 
+int ForcedOrderedWriteOpenFlag() {
+#ifdef O_DSYNC
+  return O_DSYNC;
+#elif defined(O_SYNC)
+  return O_SYNC;
+#else
+  return 0;
+#endif
+}
+
 bool DurableSyncFd(int fd, std::string* detail) {
   if (::fsync(fd) == 0) {
     return true;
@@ -645,7 +664,9 @@ bool DurableSyncFd(int fd, std::string* detail) {
 }
 
 bool DurableSyncPath(const std::string& path, bool writable, std::string* detail) {
-  const int flags = (writable ? O_RDWR : O_RDONLY) | FileOpenCloexecFlag();
+  const int flags = (writable ? O_RDWR : O_RDONLY) |
+                    (writable ? ForcedOrderedWriteOpenFlag() : 0) |
+                    FileOpenCloexecFlag();
   const int fd = ::open(path.c_str(), flags);
   if (fd < 0) {
     if (detail != nullptr) {
@@ -696,6 +717,9 @@ int OpenDataFileHandle(const std::string& path,
       *created = true;
     }
     flags |= O_CREAT | O_TRUNC;
+  }
+  if (!read_only_open) {
+    flags |= ForcedOrderedWriteOpenFlag();
   }
   flags |= FileOpenCloexecFlag();
   const int fd = ::open(path.c_str(), flags, 0600);
@@ -1012,7 +1036,9 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   if (!route_owned_by_current_process) {
     prospective_owner_lock_fd =
         ::open(prospective_owner_lock_path.c_str(),
-               O_RDWR | O_CREAT | FileOpenCloexecFlag(),
+               O_RDWR | O_CREAT |
+                   (read_only_open ? 0 : ForcedOrderedWriteOpenFlag()) |
+                   FileOpenCloexecFlag(),
                0600);
     if (prospective_owner_lock_fd < 0) {
       return MakeIoError("SB-STORAGE-DISK-OWNER-LOCK-OPEN-FAILED",

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -25,9 +26,29 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def io_path(path: pathlib.Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def stable_absolute(path: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
+def read_text_file(path: pathlib.Path) -> str:
+    with open(io_path(path), "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
 def sha256_file(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with open(io_path(path), "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -56,7 +77,7 @@ def run_generator(repo_root: pathlib.Path, build_root: pathlib.Path, generator: 
     if result.returncode != 0:
         print(result.stdout)
         fail(f"generator_failed:exit={result.returncode}")
-    if not output.exists():
+    if not os.path.isfile(io_path(output)):
         fail("generator_missing_output")
     return output
 
@@ -94,7 +115,7 @@ def validate_checksums(repo_root: pathlib.Path, build_root: pathlib.Path, checks
         checksum = str(entry.get("sha256", ""))
         require(len(checksum) == 64 and all(ch in "0123456789abcdef" for ch in checksum), "bad_checksum_shape")
         recorded_path = resolve_recorded_path(repo_root, build_root, str(entry.get("path", "")))
-        require(recorded_path.exists(), f"checksum_path_missing:{entry.get('path')}")
+        require(os.path.exists(io_path(recorded_path)), f"checksum_path_missing:{entry.get('path')}")
         require(sha256_file(recorded_path) == checksum, f"checksum_mismatch:{entry.get('artifact_id')}")
 
 
@@ -122,9 +143,9 @@ def validate_sbom(components: list[dict[str, Any]]) -> None:
 
 def package_license(repo_root: pathlib.Path, relative_path: str) -> str:
     package_path = repo_root / relative_path
-    require(package_path.exists(), f"license_package_missing:{relative_path}")
+    require(os.path.exists(io_path(package_path)), f"license_package_missing:{relative_path}")
     try:
-        data = json.loads(package_path.read_text(encoding="utf-8"))
+        data = json.loads(read_text_file(package_path))
     except json.JSONDecodeError as exc:
         fail(f"license_package_json_invalid:{relative_path}:{exc.msg}")
     license_text = str(data.get("license", "")).strip()
@@ -174,8 +195,31 @@ def validate_generated_inventory(inventory: list[dict[str, Any]]) -> None:
 
 def validate_no_execution_plan_dependency(repo_root: pathlib.Path, paths: list[pathlib.Path]) -> None:
     for path in paths:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_file(path)
         require("docs" "/execution-plans" not in text, f"execution_plan_dependency:{path.relative_to(repo_root)}")
+
+
+def is_public_export_without_git(repo_root: pathlib.Path) -> bool:
+    if os.path.exists(io_path(repo_root / ("." + "git"))):
+        return False
+    required_public_export_files = (
+        "public_input_snapshot",
+        "public_contract_snapshot",
+        "release/freebsd/ENGINE_BINARY_LAYOUT.json",
+        "release/linux/ENGINE_BINARY_LAYOUT.json",
+        "release/windows/ENGINE_BINARY_LAYOUT.json",
+        "project/CMakeLists.txt",
+    )
+    return all(os.path.exists(io_path(repo_root / relative)) for relative in required_public_export_files)
+
+
+def validate_source_provenance(repo_root: pathlib.Path, source: dict[str, Any]) -> None:
+    if source.get("git_available") is True:
+        require(isinstance(source.get("dirty"), bool), "dirty_state_not_boolean")
+        require(isinstance(source.get("dirty_entry_count"), int), "dirty_count_not_integer")
+        return
+    require(is_public_export_without_git(repo_root), "git_metadata_unavailable")
+    require(source.get("dirty") == "unknown", "public_export_dirty_state_not_unknown")
 
 
 def main() -> int:
@@ -185,13 +229,13 @@ def main() -> int:
     parser.add_argument("--generator", required=True)
     args = parser.parse_args()
 
-    repo_root = pathlib.Path(args.repo_root).resolve()
-    build_root = pathlib.Path(args.build_root).resolve()
-    generator = pathlib.Path(args.generator).resolve()
+    repo_root = stable_absolute(pathlib.Path(args.repo_root))
+    build_root = stable_absolute(pathlib.Path(args.build_root))
+    generator = stable_absolute(pathlib.Path(args.generator))
     validate_no_execution_plan_dependency(repo_root, [generator])
 
     output = run_generator(repo_root, build_root, generator)
-    evidence = json.loads(output.read_text(encoding="utf-8"))
+    evidence = json.loads(read_text_file(output))
     require(evidence.get("schema_version") == 1, "bad_schema_version")
     require(evidence.get("policy", {}).get("execution_plan_independent") is True, "policy_not_execution_plan_independent")
     require("no positive closed-source cluster" in evidence.get("policy", {}).get("cluster_claim", ""), "cluster_claim_overbroad")
@@ -203,9 +247,7 @@ def main() -> int:
     require("configured_options" in build_metadata, "missing_configured_options")
 
     source = evidence.get("source_provenance", {})
-    require(source.get("git_available") is True, "git_metadata_unavailable")
-    require(isinstance(source.get("dirty"), bool), "dirty_state_not_boolean")
-    require(isinstance(source.get("dirty_entry_count"), int), "dirty_count_not_integer")
+    validate_source_provenance(repo_root, source)
 
     validate_checksums(repo_root, build_root, evidence.get("checksums", []))
     validate_sbom(evidence.get("sbom_components", []))

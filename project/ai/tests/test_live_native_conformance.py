@@ -27,6 +27,18 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
+def _make_stale_parser_endpoint(path: Path) -> str:
+    if hasattr(socket, "AF_UNIX"):
+        stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            stale_socket.bind(str(path))
+        finally:
+            stale_socket.close()
+        return "stale_or_not_listening"
+    path.write_text("unix-socket-placeholder\n", encoding="utf-8")
+    return "af_unix_unsupported"
+
+
 class LiveNativeConformanceToolTests(unittest.TestCase):
     def test_inspect_engine_endpoint_diagnostics_reports_missing_and_stale_sockets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -41,9 +53,7 @@ class LiveNativeConformanceToolTests(unittest.TestCase):
 
             engine_endpoint = control_dir / "sb_engine.main.sock"
             parser_endpoint = Path(f"{engine_endpoint}.parser_v1")
-            stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            stale_socket.bind(str(parser_endpoint))
-            stale_socket.close()
+            expected_parser_state = _make_stale_parser_endpoint(parser_endpoint)
 
             runtime_ownership = {
                 "publication": {
@@ -103,7 +113,7 @@ class LiveNativeConformanceToolTests(unittest.TestCase):
             self.assertEqual(diagnostics["base_socket"]["connect_state"], "missing")
             self.assertEqual(
                 diagnostics["parser_socket"]["connect_state"],
-                "stale_or_not_listening",
+                expected_parser_state,
             )
 
     def test_run_native_preflight_appends_engine_endpoint_diagnostics_on_connect_failure(self) -> None:
@@ -131,9 +141,7 @@ class LiveNativeConformanceToolTests(unittest.TestCase):
 
             engine_endpoint = control_dir / "sb_engine.main.sock"
             parser_endpoint = Path(f"{engine_endpoint}.parser_v1")
-            stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            stale_socket.bind(str(parser_endpoint))
-            stale_socket.close()
+            expected_parser_state = _make_stale_parser_endpoint(parser_endpoint)
 
             runtime_ownership = {
                 "publication": {
@@ -197,7 +205,7 @@ class LiveNativeConformanceToolTests(unittest.TestCase):
             assert result.error is not None
             self.assertIn("engine endpoint diagnostics:", result.error)
             self.assertIn("base_socket=missing", result.error)
-            self.assertIn("parser_socket=stale_or_not_listening", result.error)
+            self.assertIn(f"parser_socket={expected_parser_state}", result.error)
 
     def test_validate_config_fails_closed_when_live_metadata_missing(self) -> None:
         config = MODULE.LiveNativeConfig(

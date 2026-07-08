@@ -19,12 +19,34 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+def io_path(path: Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
+def write_text_file(path: Path, text: str) -> None:
+    os.makedirs(io_path(path.parent), exist_ok=True)
+    with open(io_path(path), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+REPO_ROOT = stable_absolute(Path(__file__)).parents[3]
 STATUS_MATRIX = REPO_ROOT / "public_input_snapshot"
 SURFACE_REGISTRY = REPO_ROOT / "public_input_snapshot"
 ENGINE_PACKET_GAP_PLACEHOLDER = (
@@ -88,7 +110,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open(io_path(path), newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 
 
@@ -345,7 +367,8 @@ def cxx_string(value: str) -> str:
 
 def write_header(output_dir: Path, row_count: int) -> None:
     header = output_dir / "sbsql_generated_registry.hpp"
-    header.write_text(
+    write_text_file(
+        header,
         CPP_LICENSE_HEADER
         + """#pragma once
 
@@ -392,7 +415,6 @@ const GeneratedSurfaceRegistryRow* FindGeneratedSurfaceRegistryRowByCanonicalNam
 
 } // namespace scratchbird::parser::sbsql
 """.replace("{row_count}", str(row_count)),
-        encoding="utf-8",
     )
 
 
@@ -429,7 +451,8 @@ def row_initializer(row: GeneratedRow) -> str:
 def write_source(output_dir: Path, rows: Iterable[GeneratedRow]) -> None:
     source = output_dir / "sbsql_generated_registry.cpp"
     row_text = "\n".join(row_initializer(row) for row in rows)
-    source.write_text(
+    write_text_file(
+        source,
         CPP_LICENSE_HEADER
         + f"""#include "registry/generated/sbsql_generated_registry.hpp"
 
@@ -466,7 +489,6 @@ const GeneratedSurfaceRegistryRow* FindGeneratedSurfaceRegistryRowByCanonicalNam
 
 }} // namespace scratchbird::parser::sbsql
 """,
-        encoding="utf-8",
     )
 
 
@@ -475,7 +497,8 @@ def write_manifest(output_dir: Path, rows: list[GeneratedRow]) -> None:
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.source_status] = counts.get(row.source_status, 0) + 1
-    manifest.write_text(
+    write_text_file(
+        manifest,
         "\n".join(
             [
                 "generator=project/tools/sb_parser_gen/generate_sbsql_registry.py",
@@ -486,14 +509,13 @@ def write_manifest(output_dir: Path, rows: list[GeneratedRow]) -> None:
                 "",
             ]
         ),
-        encoding="utf-8",
     )
 
 
 def main() -> int:
     args = parse_args()
     rows = make_rows(args.artifact_root)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(io_path(args.output_dir), exist_ok=True)
     write_header(args.output_dir, len(rows))
     write_source(args.output_dir, rows)
     write_manifest(args.output_dir, rows)

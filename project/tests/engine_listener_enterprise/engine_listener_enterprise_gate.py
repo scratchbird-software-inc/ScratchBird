@@ -5189,8 +5189,24 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def canonical_text_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def sha256_canonical_file(path: Path) -> str:
+    return hashlib.sha256(canonical_text_bytes(path)).hexdigest()
+
+
 def rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
+
+
+def stable_relative(path: Path, root: Path) -> str:
+    return stable_absolute(path).relative_to(stable_absolute(root)).as_posix()
 
 
 def read_text(path: Path, project_root: Path) -> str:
@@ -5273,7 +5289,14 @@ def generated_ctest_commands(build_root: Path) -> dict[str, str]:
     pattern = re.compile(r"add_test\(\[=\[([^\]]+)\]=\]\s+(.*?)\)$")
     for ctest_file in build_root.rglob("CTestTestfile.cmake"):
         try:
-            text = ctest_file.read_text(encoding="utf-8")
+            relative_parts = ctest_file.relative_to(build_root).parts
+        except ValueError:
+            relative_parts = ctest_file.parts
+        if "_short" in relative_parts:
+            continue
+        try:
+            with open(native_package_io_path(ctest_file), "r", encoding="utf-8") as handle:
+                text = handle.read()
         except OSError as exc:
             fail(f"generated_ctestfile_unreadable:{ctest_file.name}:{exc}")
         for line in text.splitlines():
@@ -5426,9 +5449,7 @@ def find_python_test_source(project_root: Path,
         for base in TEST_SOURCE_BASES:
             candidate = project_root / base / script_name
             if candidate.exists():
-                relative = candidate.resolve().relative_to(
-                    project_root.resolve()
-                ).as_posix()
+                relative = stable_relative(candidate, project_root)
                 return relative, read_text(candidate, project_root)
         if str(candidate_name).startswith("tools/release/"):
             candidate = project_root / str(candidate_name)
@@ -5462,9 +5483,7 @@ def source_for_test(test: dict[str, Any],
             for base in TEST_SOURCE_BASES:
                 candidate = project_root / base / source
                 if candidate.exists():
-                    source_path = candidate.resolve().relative_to(
-                        project_root.resolve()
-                    ).as_posix()
+                    source_path = stable_relative(candidate, project_root)
                     return source_path, read_text(candidate, project_root)
     test_name = str(test.get("name", ""))
     source_path, source_text = find_python_test_source(
@@ -8840,7 +8859,7 @@ def sbsql_sync_resource_rows(project_root: Path,
         candidate = repo_root / path
         if not candidate.is_file():
             fail(f"sbsql_sync_resource_missing:{path}")
-        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        digest = sha256_canonical_file(candidate)
         matrix_rows.append(
             {
                 "trace_id": f"ELER089-RESOURCE-{sha256_text(path)[:16]}",
@@ -8981,7 +9000,7 @@ def validate_parser_contract_source_resources(
         candidate = repo_root / path
         if not candidate.is_file():
             fail(f"parser_contract_source_resource_missing:{path}")
-        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        digest = sha256_canonical_file(candidate)
         if digest != expected:
             fail(f"parser_contract_source_resource_hash_drift:{path}")
         source_by_kind[resource_kind] = {
@@ -8991,7 +9010,7 @@ def validate_parser_contract_source_resources(
         }
 
     manifest_ref = f"project/{PARSER_FACING_CONTRACT_FREEZE_MANIFEST.as_posix()}"
-    manifest_digest = hashlib.sha256(parser_contract_manifest_path(project_root).read_bytes()).hexdigest()
+    manifest_digest = sha256_canonical_file(parser_contract_manifest_path(project_root))
     source_by_kind["parser_facing_contract_manifest"] = {
         "path": manifest_ref,
         "resource_kind": "parser_facing_contract_manifest",
@@ -9535,7 +9554,7 @@ def validate_sblr_fixture_hash_manifest(project_root: Path) -> list[dict[str, st
             f"expected={sorted(expected_jsons)} actual={sorted(json_hashes)}"
         )
     for filename, expected in sorted(csv_hashes.items()):
-        digest = hashlib.sha256((fixture_root / filename).read_bytes()).hexdigest()
+        digest = sha256_canonical_file(fixture_root / filename)
         if digest != expected:
             fail(f"determinism_fixture_csv_hash_drift:{filename}")
         rows.append(
@@ -9553,7 +9572,7 @@ def validate_sblr_fixture_hash_manifest(project_root: Path) -> list[dict[str, st
             }
         )
     for filename, expected in sorted(json_hashes.items()):
-        digest = hashlib.sha256((fixture_root / filename).read_bytes()).hexdigest()
+        digest = sha256_canonical_file(fixture_root / filename)
         if digest != expected:
             fail(f"determinism_fixture_json_hash_drift:{filename}")
         rows.append(
@@ -9601,7 +9620,7 @@ def validate_checked_in_resource_determinism_manifest(project_root: Path) -> lis
         candidate = repo_root / path
         if not candidate.exists() or not candidate.is_file():
             fail(f"determinism_resource_missing:{path}")
-        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        digest = sha256_canonical_file(candidate)
         if digest != expected:
             fail(f"determinism_resource_hash_drift:{path}")
         rows.append(
@@ -11145,7 +11164,7 @@ def validate_release_profile_completeness(project_root: Path,
 
 def write_outputs(output: Path, build_root: Path, evidence: dict[str, Any]) -> None:
     try:
-        output_record = output.resolve().relative_to(build_root.resolve()).as_posix()
+        output_record = stable_relative(output, build_root)
     except ValueError:
         fail("output_must_be_under_build_root")
     reject_private_reference(output_record, "output")
@@ -11330,7 +11349,7 @@ def main() -> int:
                               args.mode)
     write_outputs(args.output.resolve(), args.build_root.resolve(), evidence)
     print(f"engine_listener_enterprise_gate_mode={args.mode}")
-    print(f"engine_listener_enterprise_gate_output={args.output.resolve().relative_to(args.build_root.resolve()).as_posix()}")
+    print(f"engine_listener_enterprise_gate_output={stable_relative(args.output, args.build_root)}")
     print(f"engine_listener_enterprise_gate_sha256={evidence['evidence_sha256']}")
     print("engine_listener_enterprise_gate=passed")
     return 0

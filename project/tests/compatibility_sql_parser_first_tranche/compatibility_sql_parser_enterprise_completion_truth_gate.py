@@ -176,6 +176,17 @@ COMPLETION_CLAIM_PATTERNS = (
 EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 @dataclass(frozen=True)
 class Blocker:
     dialect: str
@@ -736,7 +747,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--strict-release", action="store_true")
     args = parser.parse_args(argv)
 
-    repo_root = args.repo_root.resolve()
+    repo_root = io_path(args.repo_root.resolve())
     if not (repo_root / "public_execution_plan").is_dir():
         write_private_packet_skip_evidence(args.evidence_file)
         print("compatibility_sql_parser_enterprise_completion_truth_gate=skipped external_public_execution_plan_packet_not_installed")

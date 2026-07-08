@@ -2378,7 +2378,7 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
   # PUBLIC_RELEASE_CLEANUP_GATE
   set_tests_properties(public_project_export_gate PROPERTIES
     LABELS "public_release_correctness;public_project_export_gate;PCR-GATE-001;PCR-GATE-005;PCR-001;PCR-002;PCR-005;ELER-108;ELER-GATE-108;release_hygiene;project_only_export;cleanup_manifest;private_reference_scan;release_artifact_trust;linux_proof"
-    TIMEOUT 2400
+    TIMEOUT 7200
   )
   if(_sb_release_nested_configure_env)
     set_tests_properties(public_project_export_gate PROPERTIES

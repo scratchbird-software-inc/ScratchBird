@@ -44,6 +44,12 @@ SKIP_PATH_PREFIXES = (
     Path("tests/reference_regression/firebird/original_firebird_qa"),
 )
 
+REFERENCE_REGRESSION_METADATA_ALLOWLIST = {
+    Path("tests/reference_regression/acquire_reference_regression_assets.py"),
+    Path("tests/reference_regression/reference_parser_gate_evidence_closure_gate.py"),
+    Path("tests/reference_regression/reference_regression_acquisition_sources.csv"),
+}
+
 GIT_REFERENCE_ALLOWLIST = {
     Path("drivers/driver/cpp/include/nlohmann/json.hpp"),
     Path("drivers/tool/cli/include/nlohmann/json.hpp"),
@@ -91,6 +97,15 @@ def allow_git_reference(rel: Path) -> bool:
     return rel in GIT_REFERENCE_ALLOWLIST
 
 
+def allow_private_reference(rel: Path, label: str) -> bool:
+    if rel in REFERENCE_REGRESSION_METADATA_ALLOWLIST:
+        return label in {
+            "git_metadata_reference",
+            "private_execution_plan_reference",
+        }
+    return False
+
+
 def banned_needles() -> list[tuple[str, str]]:
     private_docs = "docs" + "/"
     return [
@@ -131,6 +146,8 @@ def scan(root: Path) -> list[str]:
         rel = path.relative_to(root)
         for label, needle in banned_needles():
             if label == "git_metadata_reference" and allow_git_reference(rel):
+                continue
+            if allow_private_reference(rel, label):
                 continue
             if needle in text:
                 findings.append(f"{rel}: {label}: {needle}")

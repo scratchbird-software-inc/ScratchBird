@@ -3,7 +3,7 @@
   "schema_version": 1,
   "manifest_kind": "index_readiness_manifest",
   "search_key": "CEIC_030_INDEX_READINESS_MANIFEST",
-  "manifest_uuid": "5d6488d3-3acb-5c66-9877-c05028955e73",
+  "manifest_uuid": "63f55e16-2db4-53ba-827a-d77179225b34",
   "subsystem": "indexes",
   "slice_ids": [
     "CEIC-030",
@@ -122,10 +122,10 @@
       "acceptance": "final enterprise manifest is generated from public release evidence"
     }
   ],
-  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
-  "source_branch": "codex/migration-project-issue-closures",
-  "source_evidence_digest": "342754600dcff986fa23ebfd850465ba663566d02ef9c4f2d152eb7fdbe0882b",
-  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "source_commit": "0a2733677295c904786c76b1b3c4e564c987f24a",
+  "source_branch": "main",
+  "source_evidence_digest": "9e20a85dd47e27349b3b860012ae322f2cbe2a930c4f6d3db39df05af8605eec",
+  "generated_at_utc": "2026-07-07T17:20:56-04:00",
   "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
   "build_profile": "focused_ceic_index_manifest",
   "authority_boundary": {
@@ -204,441 +204,441 @@
   "source_anchors": [
     {
       "path": "project/src/core/index/index_family_registry.hpp",
-      "sha256": "a1800f6b89f32838779ef82533ecde55fe53cb768c8cd9bf437f4fb3dfce2893"
+      "sha256": "6239ce138b55f9cdba20630ac8593b4804dc373af11c1690c901a0b023a97dec"
     },
     {
       "path": "project/src/core/index/index_family_registry.cpp",
-      "sha256": "fbf05776f7a6f2b421988468c6d40480253c1bc8b12af88463dd55cd09419563"
+      "sha256": "09147ec129f7c1c44cc435e36ff0ac787ec303a85de3a2d451220a11d9f4b98c"
     },
     {
       "path": "project/src/core/index/index_route_capability.hpp",
-      "sha256": "0680b6faeaa8839cede3a38dbb48573085aaefadeb8db2ceb964cca174b25166"
+      "sha256": "7f46f2bf93bc6a72af1acebdb07a2fcfe3efd1f8e18a6abb37b4cd37040874e4"
     },
     {
       "path": "project/src/core/index/index_route_capability.cpp",
-      "sha256": "12e348876cc6cd07175474531368de3cc244404413748b7bfacdfae18bf11fd8"
+      "sha256": "6526feec0727a366a80547fc64a4492c35e01209e108a9607a140158cc894432"
     },
     {
       "path": "project/src/core/index/index_family_route_classification.hpp",
-      "sha256": "1f6eeb25b4295b2bc010fa9b67f69d1cd3aa82620b042aacd04e5f63f430646d"
+      "sha256": "d1ba635f277ba7f9938191af43ddaa299c41d757b1124125a89ed1a76d6e2ba3"
     },
     {
       "path": "project/src/core/index/index_family_route_classification.cpp",
-      "sha256": "e7fbed81a87a84ff9eb9acb8c193518a331c448ed868652883e8eb0efcfba968"
+      "sha256": "03d986edd49a0c6d5759036a66c40a73d8fdc1127eb2974fdfde06dd76d10be6"
     },
     {
       "path": "project/src/core/index/index_family_benchmark_gate.cpp",
-      "sha256": "d5c7ab1d85da7fa0390e64ca72c1e1aa6aa4d8d3742510e828cfe55f0e410c85"
+      "sha256": "dd7fc8e402ec1f5d9ee1383c9990eded3e2a57409a8d52d5e5203ab7b5aae9cf"
     },
     {
       "path": "project/src/core/index/index_recheck.hpp",
-      "sha256": "89de3980715f1864485bbf0809417f5f9798b25306cc2da80ad6ea068421f504"
+      "sha256": "3be7688ef054bfcf89814ab7d9ad18cb2f17eb46624361cd99acc8a2e9b70480"
     },
     {
       "path": "project/src/core/index/index_recheck.cpp",
-      "sha256": "3a5f5eb7cb48a83d9bb2caa7a8228f746f32a6e7cce93bd4344bfe553cf8b419"
+      "sha256": "e31f08b88626af4cfa5b66615ea16b08c156ef412f43259ac4e213f725d097bd"
     },
     {
       "path": "project/src/core/index/index_transaction.hpp",
-      "sha256": "0c858cae3dd7bb6fcab8149f235123ad3e260a1dc8969045121040b603e47fb8"
+      "sha256": "df365671aaf87289d96019971da4d139c73909894b074a9c60f332a0cf36a6bd"
     },
     {
       "path": "project/src/core/index/index_access_method.hpp",
-      "sha256": "72f64990238eec1be8f1821a9dc54fc60cd754d945cc2f9312eb850e6ed76cae"
+      "sha256": "5216a9225c1002cc67df142874b67097817df585b16bbd2708cca77f019fd6eb"
     },
     {
       "path": "project/src/core/index/index_access_method.cpp",
-      "sha256": "210cb5ed51cdd3e68bc469f999caade540dbb00c03d74c6b42c867b1bb52d756"
+      "sha256": "b8d005d0314be2b9b65014548849520f5d3be5c359526002626988e5814027a6"
     },
     {
       "path": "project/src/core/index/index_mga_recovery_contract.hpp",
-      "sha256": "7f3e91ea9357b28beb7dfeccc2430a7656118ea76f0f5ca15db9ebca886cd293"
+      "sha256": "21af28541e108f21cb4e59f3002022295b957ed71e386e0db61f5be40e350263"
     },
     {
       "path": "project/src/core/index/index_mga_recovery_contract.cpp",
-      "sha256": "48d87524b188d345bacdc0435ad6f20a0056f140882fc3204022846690af0898"
+      "sha256": "2cb8f030d0c78835f63ca1464f2b4b14a1396963c6d0ab44966d74ee9a2eec20"
     },
     {
       "path": "project/src/core/index/index_fault_injection_matrix.hpp",
-      "sha256": "4a4ab5c001b74871d6c70e0829920184a2c1c762c86412e0b40618830518d307"
+      "sha256": "bf33fd0e2a922decb22684d9145884a6ff8af623c67b6cde52caafc06c679d01"
     },
     {
       "path": "project/src/core/index/index_fault_injection_matrix.cpp",
-      "sha256": "27a5fb8037691a38a1753f8115a229ca088e02de853003dc4dc6ec7ad9f8e808"
+      "sha256": "d1244cca17f0c263066b2d35074ce1437231a05b9f5fa7afab6eaf00d5367ca7"
     },
     {
       "path": "project/src/core/index/index_metrics.hpp",
-      "sha256": "99d1c5d368507ffccd2f06179b091b36aba6368288dec82b45164eca6793b378"
+      "sha256": "d4ddec23b2f5edac8a31dd1e5affe195373bb2d08428694eaf556794376b8c2a"
     },
     {
       "path": "project/src/core/index/index_metrics.cpp",
-      "sha256": "dd8ecf5be7b3b3d13a461dd63b38a2742c0834f27954789a7819e11a1e27778b"
+      "sha256": "c5a0d969aea414ba6e098956cf99ca2b539db1d1d4ee2b9b2389b7e9cbd26006"
     },
     {
       "path": "project/src/core/index/btree_unique_durable_provider_closure.hpp",
-      "sha256": "ec62dde90fc71358bf649f9630b252483e60da3279c2e60f9feac62d585bae38"
+      "sha256": "091fe53fa9e9fb716d89d6f00500a480ad7e79078315699fb413343c55a7d94d"
     },
     {
       "path": "project/src/core/index/btree_unique_durable_provider_closure.cpp",
-      "sha256": "39060659a7c00d6a559342861aaf3eb1cdaf11cf8237156ce6d741d04766b36e"
+      "sha256": "9455888d90ad7b7acd03209125187d83558afde140b93b7c6eec88f3aa515fd8"
     },
     {
       "path": "project/src/core/index/ceic_034_unique_reservation_finality_protocol.hpp",
-      "sha256": "09e653225a052083c3067d651cebae9ede61ff72cb2c9ead2b6c7a664641120c"
+      "sha256": "8010f238df38304722cc1fd5d14edba914054838f0b0ac25369d97da2802fdb7"
     },
     {
       "path": "project/src/core/index/ceic_034_unique_reservation_finality_protocol.cpp",
-      "sha256": "787fe4dddd2480055f1ff9ea58f1e78b6757fac1ca29a7cd24270aa4b1ad0c36"
+      "sha256": "1d282b4026dae04e836fe938ea94d179ba1063d8271c6142b4d7cce8c0ae1b56"
     },
     {
       "path": "project/src/core/index/ceic_036_canonical_key_ordering_fuzz.hpp",
-      "sha256": "652b3717bb44ac6997dbf41f3201e92eb4d6c5cdcf0493ac2236727c79da788d"
+      "sha256": "c46354361dc4b7401af40dd706d308fccb3c5a733a2691dc69ccc023e1fc9066"
     },
     {
       "path": "project/src/core/index/ceic_036_canonical_key_ordering_fuzz.cpp",
-      "sha256": "95dec513083cbf33374c782a93f23b472c7596ebca9c2f56880398c0c8c56130"
+      "sha256": "fa95a0fcabd2cd609880bc1b68b56e22c27fa26f1b72928f3bb18335139aaf03"
     }
   ],
   "input_records": [
     {
       "path": "project/src/core/index/btree_unique_durable_provider_closure.cpp",
-      "sha256": "39060659a7c00d6a559342861aaf3eb1cdaf11cf8237156ce6d741d04766b36e",
-      "bytes": 25508
+      "sha256": "9455888d90ad7b7acd03209125187d83558afde140b93b7c6eec88f3aa515fd8",
+      "bytes": 26071
     },
     {
       "path": "project/src/core/index/btree_unique_durable_provider_closure.hpp",
-      "sha256": "ec62dde90fc71358bf649f9630b252483e60da3279c2e60f9feac62d585bae38",
-      "bytes": 6756
+      "sha256": "091fe53fa9e9fb716d89d6f00500a480ad7e79078315699fb413343c55a7d94d",
+      "bytes": 6945
     },
     {
       "path": "project/src/core/index/ceic_034_unique_reservation_finality_protocol.cpp",
-      "sha256": "787fe4dddd2480055f1ff9ea58f1e78b6757fac1ca29a7cd24270aa4b1ad0c36",
-      "bytes": 30990
+      "sha256": "1d282b4026dae04e836fe938ea94d179ba1063d8271c6142b4d7cce8c0ae1b56",
+      "bytes": 31690
     },
     {
       "path": "project/src/core/index/ceic_034_unique_reservation_finality_protocol.hpp",
-      "sha256": "09e653225a052083c3067d651cebae9ede61ff72cb2c9ead2b6c7a664641120c",
-      "bytes": 8027
+      "sha256": "8010f238df38304722cc1fd5d14edba914054838f0b0ac25369d97da2802fdb7",
+      "bytes": 8246
     },
     {
       "path": "project/src/core/index/ceic_036_canonical_key_ordering_fuzz.cpp",
-      "sha256": "95dec513083cbf33374c782a93f23b472c7596ebca9c2f56880398c0c8c56130",
-      "bytes": 23600
+      "sha256": "fa95a0fcabd2cd609880bc1b68b56e22c27fa26f1b72928f3bb18335139aaf03",
+      "bytes": 24185
     },
     {
       "path": "project/src/core/index/ceic_036_canonical_key_ordering_fuzz.hpp",
-      "sha256": "652b3717bb44ac6997dbf41f3201e92eb4d6c5cdcf0493ac2236727c79da788d",
-      "bytes": 2970
+      "sha256": "c46354361dc4b7401af40dd706d308fccb3c5a733a2691dc69ccc023e1fc9066",
+      "bytes": 3050
     },
     {
       "path": "project/src/core/index/hash_durable_provider_closure.cpp",
-      "sha256": "070bf76a8d7c201fb3684e34aef5e3337704e7420f204cd62451ba8bce738c67",
-      "bytes": 37697
+      "sha256": "5b63da9381a116e7a9ed8266b882f258dc36033c09f825a2c294083fdf365fff",
+      "bytes": 38488
     },
     {
       "path": "project/src/core/index/hash_durable_provider_closure.hpp",
-      "sha256": "95cd1c9b5c1fae3e93deab79ac1a3b1532120fc2dfb1d22e0b184817262e8958",
-      "bytes": 9380
+      "sha256": "69a9f3be227541a18a3d63ec11e58eb81527d1caa29fa90a7b892c67ea9b544c",
+      "bytes": 9626
     },
     {
       "path": "project/src/core/index/index_access_method.cpp",
-      "sha256": "210cb5ed51cdd3e68bc469f999caade540dbb00c03d74c6b42c867b1bb52d756",
-      "bytes": 20918
+      "sha256": "b8d005d0314be2b9b65014548849520f5d3be5c359526002626988e5814027a6",
+      "bytes": 21385
     },
     {
       "path": "project/src/core/index/index_access_method.hpp",
-      "sha256": "72f64990238eec1be8f1821a9dc54fc60cd754d945cc2f9312eb850e6ed76cae",
-      "bytes": 6609
+      "sha256": "5216a9225c1002cc67df142874b67097817df585b16bbd2708cca77f019fd6eb",
+      "bytes": 6822
     },
     {
       "path": "project/src/core/index/index_family_benchmark_gate.cpp",
-      "sha256": "d5c7ab1d85da7fa0390e64ca72c1e1aa6aa4d8d3742510e828cfe55f0e410c85",
-      "bytes": 126522
+      "sha256": "dd7fc8e402ec1f5d9ee1383c9990eded3e2a57409a8d52d5e5203ab7b5aae9cf",
+      "bytes": 129539
     },
     {
       "path": "project/src/core/index/index_family_registry.cpp",
-      "sha256": "fbf05776f7a6f2b421988468c6d40480253c1bc8b12af88463dd55cd09419563",
-      "bytes": 18585
+      "sha256": "09147ec129f7c1c44cc435e36ff0ac787ec303a85de3a2d451220a11d9f4b98c",
+      "bytes": 18931
     },
     {
       "path": "project/src/core/index/index_family_registry.hpp",
-      "sha256": "a1800f6b89f32838779ef82533ecde55fe53cb768c8cd9bf437f4fb3dfce2893",
-      "bytes": 5415
+      "sha256": "6239ce138b55f9cdba20630ac8593b4804dc373af11c1690c901a0b023a97dec",
+      "bytes": 5603
     },
     {
       "path": "project/src/core/index/index_family_route_classification.cpp",
-      "sha256": "e7fbed81a87a84ff9eb9acb8c193518a331c448ed868652883e8eb0efcfba968",
-      "bytes": 27090
+      "sha256": "03d986edd49a0c6d5759036a66c40a73d8fdc1127eb2974fdfde06dd76d10be6",
+      "bytes": 27715
     },
     {
       "path": "project/src/core/index/index_family_route_classification.hpp",
-      "sha256": "1f6eeb25b4295b2bc010fa9b67f69d1cd3aa82620b042aacd04e5f63f430646d",
-      "bytes": 6578
+      "sha256": "d1ba635f277ba7f9938191af43ddaa299c41d757b1124125a89ed1a76d6e2ba3",
+      "bytes": 6763
     },
     {
       "path": "project/src/core/index/index_fault_injection_matrix.cpp",
-      "sha256": "27a5fb8037691a38a1753f8115a229ca088e02de853003dc4dc6ec7ad9f8e808",
-      "bytes": 70274
+      "sha256": "d1244cca17f0c263066b2d35074ce1437231a05b9f5fa7afab6eaf00d5367ca7",
+      "bytes": 71997
     },
     {
       "path": "project/src/core/index/index_fault_injection_matrix.hpp",
-      "sha256": "4a4ab5c001b74871d6c70e0829920184a2c1c762c86412e0b40618830518d307",
-      "bytes": 2275
+      "sha256": "bf33fd0e2a922decb22684d9145884a6ff8af623c67b6cde52caafc06c679d01",
+      "bytes": 2349
     },
     {
       "path": "project/src/core/index/index_metrics.cpp",
-      "sha256": "dd8ecf5be7b3b3d13a461dd63b38a2742c0834f27954789a7819e11a1e27778b",
-      "bytes": 43345
+      "sha256": "c5a0d969aea414ba6e098956cf99ca2b539db1d1d4ee2b9b2389b7e9cbd26006",
+      "bytes": 44298
     },
     {
       "path": "project/src/core/index/index_metrics.hpp",
-      "sha256": "99d1c5d368507ffccd2f06179b091b36aba6368288dec82b45164eca6793b378",
-      "bytes": 10266
+      "sha256": "d4ddec23b2f5edac8a31dd1e5affe195373bb2d08428694eaf556794376b8c2a",
+      "bytes": 10570
     },
     {
       "path": "project/src/core/index/index_mga_recovery_contract.cpp",
-      "sha256": "48d87524b188d345bacdc0435ad6f20a0056f140882fc3204022846690af0898",
-      "bytes": 22348
+      "sha256": "2cb8f030d0c78835f63ca1464f2b4b14a1396963c6d0ab44966d74ee9a2eec20",
+      "bytes": 22857
     },
     {
       "path": "project/src/core/index/index_mga_recovery_contract.hpp",
-      "sha256": "7f3e91ea9357b28beb7dfeccc2430a7656118ea76f0f5ca15db9ebca886cd293",
-      "bytes": 6047
+      "sha256": "21af28541e108f21cb4e59f3002022295b957ed71e386e0db61f5be40e350263",
+      "bytes": 6236
     },
     {
       "path": "project/src/core/index/index_recheck.cpp",
-      "sha256": "3a5f5eb7cb48a83d9bb2caa7a8228f746f32a6e7cce93bd4344bfe553cf8b419",
-      "bytes": 22541
+      "sha256": "e31f08b88626af4cfa5b66615ea16b08c156ef412f43259ac4e213f725d097bd",
+      "bytes": 23048
     },
     {
       "path": "project/src/core/index/index_recheck.hpp",
-      "sha256": "89de3980715f1864485bbf0809417f5f9798b25306cc2da80ad6ea068421f504",
-      "bytes": 6098
+      "sha256": "3be7688ef054bfcf89814ab7d9ad18cb2f17eb46624361cd99acc8a2e9b70480",
+      "bytes": 6269
     },
     {
       "path": "project/src/core/index/index_route_capability.cpp",
-      "sha256": "12e348876cc6cd07175474531368de3cc244404413748b7bfacdfae18bf11fd8",
-      "bytes": 15299
+      "sha256": "6526feec0727a366a80547fc64a4492c35e01209e108a9607a140158cc894432",
+      "bytes": 15670
     },
     {
       "path": "project/src/core/index/index_route_capability.hpp",
-      "sha256": "0680b6faeaa8839cede3a38dbb48573085aaefadeb8db2ceb964cca174b25166",
-      "bytes": 2457
+      "sha256": "7f46f2bf93bc6a72af1acebdb07a2fcfe3efd1f8e18a6abb37b4cd37040874e4",
+      "bytes": 2541
     },
     {
       "path": "project/src/core/index/index_transaction.hpp",
-      "sha256": "0c858cae3dd7bb6fcab8149f235123ad3e260a1dc8969045121040b603e47fb8",
-      "bytes": 2684
+      "sha256": "df365671aaf87289d96019971da4d139c73909894b074a9c60f332a0cf36a6bd",
+      "bytes": 2776
     },
     {
       "path": "project/src/core/index/specialized_persistent_provider_closure.cpp",
-      "sha256": "655d874bc2bb135f6d5326c0ff70d28fcd5f49becc9c44f8f7e8cf4479c82a33",
-      "bytes": 48345
+      "sha256": "99344f78408da90923568894bd553364656815b8310b0d9ad57046be4d8a0dbc",
+      "bytes": 49407
     },
     {
       "path": "project/src/core/index/specialized_persistent_provider_closure.hpp",
-      "sha256": "a9f378e4536f14bc572d70106a7fa2b65841768bc3b2b10f99d18de5d29d548a",
-      "bytes": 9702
+      "sha256": "15f1385029acb8527cfccafac27e5e1ced6a13fc07d494caaddc6820c0c383f2",
+      "bytes": 9964
     },
     {
       "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
-      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
-      "bytes": 51048
+      "sha256": "d7910ddf72c441c7d5dd7ce2066c0af7a22e6c9b58bd86d581e86cdfd66e4412",
+      "bytes": 52446
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_030_index_readiness_manifest_gate_test.py",
-      "sha256": "51c3e7df7e1a3a2a208c9b22c4b6d8d36e217253380eb8c14941d46b5f400a68",
-      "bytes": 17497
+      "sha256": "fa13476e4f0da79d56b43800868fa294af9751b14dd57b8307611ecc30f87c48",
+      "bytes": 17869
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_031_index_access_method_provider_gate.cpp",
-      "sha256": "b88d214ef40e3e0cbe9d41be06a95857634abbd835cce9a725f89f5dff43b0e5",
-      "bytes": 12632
+      "sha256": "02b860138cd188053f6301c5ceb0e937e1e5d5ed86f331928796a603321a5036",
+      "bytes": 12908
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_032_index_mga_recovery_contract_gate.cpp",
-      "sha256": "69e581efdba5a3bd161b3289b6b2353c9a063741422f0d4fc220cac94e02d503",
-      "bytes": 13393
+      "sha256": "61e95026542644ac78ccbacfba72f64875866ab4a5d025ba513ea9a3230b0ebe",
+      "bytes": 13691
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_033_btree_unique_durable_provider_closure_gate.cpp",
-      "sha256": "b75210c7abe67c9479c5ac9e5b2065ae4472f32389d3a98e2f396705f4b0cb5d",
-      "bytes": 22227
+      "sha256": "6685907ecf5d3b42acb2856d5cdbf83ab5bb1afb2c4be01aa00c4ad799cb6f56",
+      "bytes": 22713
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_034_unique_reservation_finality_protocol_gate.cpp",
-      "sha256": "965f0028bed9e4b3143665270e578db5bd1bb2d0c8fe3798e9f6f9fc92ae196b",
-      "bytes": 34995
+      "sha256": "0a941d0ce60fa5fee38cba2fa0d820b18d5e1e35411cab2d95832f0235d41eec",
+      "bytes": 35746
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_035_hash_durable_provider_closure_gate.cpp",
-      "sha256": "a68e01ec3197850f1012a14a0ff48c54deedd3c631540b1f27a0b601b7c943b6",
-      "bytes": 31594
+      "sha256": "4b06c03b975eaf73f5ad43871d2a9bd8468c68ffffee0f682fbef255127d6036",
+      "bytes": 32232
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_036_canonical_key_ordering_encoding_fuzz_gate.cpp",
-      "sha256": "21d96470883db323caab3bd3a53d0ad19b79a5b4286fa9e6f6e410753af3cd37",
-      "bytes": 12447
+      "sha256": "49b73953de07c11251c3acf437ca1eb3c3914dff11b11ff6c38cff23008d9c37",
+      "bytes": 12736
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_037_engine_owned_exact_recheck_gate.cpp",
-      "sha256": "52f113e024f211dc28686e682bbbbf72a2ef5d3732ce38766f7648d84f1bca64",
-      "bytes": 20634
+      "sha256": "3ff5e5fcf4378d74abaef700fe2a45563d252e1cc131ddcc698817315f0b4546",
+      "bytes": 21090
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_038_lossy_pruning_family_classification_gate.cpp",
-      "sha256": "afcc5121b74ab80aa28afac69303c8fcf347797c47a4343db75204cc81a8c9f8",
-      "bytes": 25631
+      "sha256": "8ba25592431708a7fb3895bfd646edd7d22b53bb9324268a756974e02e12f012",
+      "bytes": 26185
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_039_specialized_persistent_provider_closure_gate.cpp",
-      "sha256": "c4aa491279075e858a4fccf6b7f0815f62a7c6ddd728b4db0bbbb2f281524f0e",
-      "bytes": 32174
+      "sha256": "f092fc3865e0a74b16d5b6669397bbc69551bd33c26dc0512f7498e66807174d",
+      "bytes": 32871
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_040_index_operation_metrics_support_bundle_gate.cpp",
-      "sha256": "a916a2529c72aeda966b71195c67a3bba226ba1c7fc2071cea89427c26bf8424",
-      "bytes": 15975
+      "sha256": "f1487289f5fe79121c2af45cd487ee6eb98948aa13e61e396e4b5d734d46c8b4",
+      "bytes": 16363
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_041_index_crash_concurrency_cleanup_corruption_matrix_gate.cpp",
-      "sha256": "078e337aee914551dd32cdef976c63e780e8c4abef81f78d5671fb6a4a541063",
-      "bytes": 8953
+      "sha256": "985465b988d16a4b02ad033fc8daedbc2f6a9a1fe7153074439ae3c42b41078d",
+      "bytes": 9174
     },
     {
       "path": "project/tests/consolidated_enterprise/ceic_042_index_readiness_manifest_drift_gate_test.py",
-      "sha256": "3f39f30ee7ef52e1e41c5e11228f4da1e80133285fd6a422f5605bd421ec8e5c",
-      "bytes": 9900
+      "sha256": "4d99da386e4ffdf7b98e7e04b1c50eecd450f0b76d74777528df84a7105f23d0",
+      "bytes": 10132
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
-      "sha256": "3ed5cee541bd71ce506f891c2882a93cc3875f5c33ced9f0c2bdbda84900855f",
-      "bytes": 12926
+      "sha256": "fad37187bc91377e10172a8c2ec9970ba08a1fa99c4eac1d9aa754479658dd41",
+      "bytes": 13004
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
-      "sha256": "3f347f008a047fb27c69226525d52239beac56c40214346d6b66dc45a85c95d1",
-      "bytes": 245
+      "sha256": "838f0181d6ff9397e59a0589c2481697666a2beec9da02db4853b7ec96a6ee49",
+      "bytes": 256
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
-      "sha256": "bde25fdefe33f878b126d702c9d1aae8eb94da9c03facb198ebb41a53a024e69",
-      "bytes": 228
+      "sha256": "70100f48602741cc313066090f039afbea6764c226385fd6489eec7a91858bc1",
+      "bytes": 234
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
-      "sha256": "cc5a044c63cab44d85740427743575dc2dc6cb1abe02d9df3a679707a4203cb6",
-      "bytes": 447
+      "sha256": "e6c798ff181adc11ba1be7dc9d4ac91d9be87ba3764df415e9881071f5ccc5ea",
+      "bytes": 453
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
-      "sha256": "04a6d4ed7a073e233347fe25363cb4c8839e41721be728d49f1a93798f93471b",
-      "bytes": 546
+      "sha256": "55c5ebad9ce5d210ccbc16a800add7fd4f847d85828459a9138bf2cd3f857599",
+      "bytes": 550
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
-      "sha256": "a1b2d44da0222b6afdc9a05e340977fdec0e08ad23c5240635705244672874d1",
-      "bytes": 7066
+      "sha256": "b68f989db205f0ce05d140b061ffd00202a1bec8065abe542096e5aebb288c2e",
+      "bytes": 7135
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
-      "sha256": "18adbc50170fd43a6d17debcc189237fc3544403f5d675b0d6b000c9c62080e6",
-      "bytes": 883
+      "sha256": "7e02afae6a62a36cd4e29ccbf2cbeec2a1e0b8fa2779c35e8101119e443dcd79",
+      "bytes": 892
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-      "sha256": "3f47eee8891525cbef49ada01071e0c6243b184e65003cce29f9de472fb059e8",
-      "bytes": 5875
+      "sha256": "b33c23152701c86235760767c02aabda861c67fb09b7b00f57415b934024cb27",
+      "bytes": 5899
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST_EVIDENCE.md",
-      "sha256": "cabea0558ac0a6a18d259245d4221bba65532c739a24eaebe0d5414caade4445",
-      "bytes": 89
+      "sha256": "ac68ed6e713015c8b56b5b1a2347df9383c98ed6b3c251bde2dbcefc947edd4a",
+      "bytes": 92
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-031_INDEX_ACCESS_METHOD_PROVIDER_EVIDENCE.md",
-      "sha256": "d4b0f8dd3e6c3f21a35ed78f7d81f2d49849c09d84edc7f32c15ec6f1219a1c4",
-      "bytes": 97
+      "sha256": "775557ea50065fe95d83e7ad76a35f1311b6b3f1078759cfd6e9cd83d7bf47eb",
+      "bytes": 100
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-032_INDEX_MGA_RECOVERY_CONTRACT_EVIDENCE.md",
-      "sha256": "7e117264501e1353947fc77bc5a0643884a1b917e8ac86237fc9fd70c490929c",
-      "bytes": 95
+      "sha256": "1855ab3ce34145462961d2c86a7810bcdaffd523ee500bbdde6cb4f32c524780",
+      "bytes": 98
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-033_BTREE_UNIQUE_DURABLE_PROVIDER_CLOSURE_EVIDENCE.md",
-      "sha256": "ae249cd8a80557385452bbe0a74fd0a741bc2c723482ecc472803ba921b0f61b",
-      "bytes": 116
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-034_UNIQUE_RESERVATION_FINALITY_PROTOCOL_EVIDENCE.md",
-      "sha256": "489de3f607de4bbbc14b515b12d44365d6f1ecaf3083e62574140acbb99b9ed4",
-      "bytes": 113
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-035_HASH_DURABLE_PROVIDER_CLOSURE_EVIDENCE.md",
-      "sha256": "711e1e1833fc1e54dad029b713fbffd5168066c8c456ab30ba65b9608af10fb1",
-      "bytes": 99
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-036_CANONICAL_KEY_ORDERING_ENCODING_FUZZ_EVIDENCE.md",
-      "sha256": "07e708fedd91509f78d2e32475b404f3e8206daab5f2bc4db9a362483a7d86b5",
-      "bytes": 165
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-037_ENGINE_OWNED_EXACT_RECHECK_EVIDENCE.md",
-      "sha256": "041c58b0c38e2277ab39c5d0265980e850b0984072ee1292b308e18cec42567e",
-      "bytes": 138
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-038_LOSSY_PRUNING_FAMILY_CLASSIFICATION_EVIDENCE.md",
-      "sha256": "900fc8c24684b18215be260e740f89a9f88cf47cdacf26712105b7c5a634dfed",
-      "bytes": 179
-    },
-    {
-      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-039_SPECIALIZED_PERSISTENT_PROVIDER_CLOSURE_EVIDENCE.md",
-      "sha256": "6483ff30a0f7b84698b5b75e8a1caddec94c6902a3f600a21a9b3ef6e0f29814",
+      "sha256": "bb823e9dc6fdd2864e80992cf8399577a00f103a21cf8d25f23f7aaf969e5263",
       "bytes": 119
     },
     {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-034_UNIQUE_RESERVATION_FINALITY_PROTOCOL_EVIDENCE.md",
+      "sha256": "52e2973e5011c37041bde726448bbe468fc92a6d977a595783e624bb779ff181",
+      "bytes": 116
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-035_HASH_DURABLE_PROVIDER_CLOSURE_EVIDENCE.md",
+      "sha256": "36324f0748a7eb94cecb190fadbd77b2bfa2d96af88f042d4bd13651e98cc57b",
+      "bytes": 102
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-036_CANONICAL_KEY_ORDERING_ENCODING_FUZZ_EVIDENCE.md",
+      "sha256": "408d1f9b90981680c4e867e63287e332333967de271602099a0f7c8159be8cb3",
+      "bytes": 169
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-037_ENGINE_OWNED_EXACT_RECHECK_EVIDENCE.md",
+      "sha256": "84959b80b2779321c5a188628314711471bc83ff907bae3500d2b45aacc5bffe",
+      "bytes": 142
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-038_LOSSY_PRUNING_FAMILY_CLASSIFICATION_EVIDENCE.md",
+      "sha256": "216cff6a21b86cb463b25ab79a1374e586f3fd1c8eeff3159d58c68ce746a22e",
+      "bytes": 183
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-039_SPECIALIZED_PERSISTENT_PROVIDER_CLOSURE_EVIDENCE.md",
+      "sha256": "57ad10a4e7d7f39f315e41c4613567a3b7580afdf590a45f54ca6c43b04bbbb2",
+      "bytes": 122
+    },
+    {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-040_INDEX_OPERATION_METRICS_SUPPORT_BUNDLE_EVIDENCE.md",
-      "sha256": "5e3f51836bad47f5f89e6ea08afe19a5cdf3b651165f6107f53cc50f1eb8eccc",
-      "bytes": 117
+      "sha256": "ab0659519edfcf4d955b141f389f8ef82e8743b9fd91a43bc8b075c9b4ca8d00",
+      "bytes": 120
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-041_INDEX_CRASH_CONCURRENCY_CLEANUP_CORRUPTION_MATRIX_EVIDENCE.md",
-      "sha256": "559f6f8e30ce9f069a96feb0bebd945d143f0473e97b2f6bd53adbde399a66ee",
-      "bytes": 139
+      "sha256": "f327a526f8f236a1f603189fa852b7daace7b37fc6637a10c9388a7976426535",
+      "bytes": 142
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-042_INDEX_READINESS_DRIFT_GATE_EVIDENCE.md",
-      "sha256": "000ba7730291314dde3c20797790a5698f0e504ad704165ba5854a10ef0e56de",
-      "bytes": 93
+      "sha256": "8fe4d0089a09f941968a3dbbe78e6cfb185d05202c39559f3bae851326471a02",
+      "bytes": 96
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
-      "sha256": "0c22c94c9a75ee26785c4b8abfae4519f4b3685e9f1046e2829a0403d04eff21",
-      "bytes": 325
+      "sha256": "a710ff139073add1a6a7a995791a1e28992730214a0f9683b59e51215385efa0",
+      "bytes": 331
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
-      "sha256": "de19ad3eb08993608f9c3e5cacac84d96d916c729a3b1e4a2af31aaed9e7b45d",
-      "bytes": 207
+      "sha256": "7caeea2a65621ad9d1e9983600f2e2466af9f95fc5c0a2ea7f73265efbd7e526",
+      "bytes": 211
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
-      "sha256": "34ac8f481b185de90bfdde41ffdab568218f3138e35d7de00ce4709331aaa285",
-      "bytes": 271
+      "sha256": "d49721677dcbd1d41cda94245e0b2e8a9c99932cd48865e62d1b7c5809b4c7e5",
+      "bytes": 277
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
-      "sha256": "d74af43448ef5b42801ae3998ade51b1272104e7f0e6df3d3b943590b3a3b234",
-      "bytes": 205
+      "sha256": "05dd09600545fbf92a5324a8e33c230fb9ad815cdc3e29248d5ee869330f502a",
+      "bytes": 209
     },
     {
       "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
-      "sha256": "c328f01c8a1126b4e600f0920c468f859718bbb2d5160c7d2cffb127e2de939f",
-      "bytes": 162
+      "sha256": "a1cf642e599f511d5c32017dba6a3eb8aeb2c1790dc7156dc05645cc7003ac3a",
+      "bytes": 166
     }
   ],
   "route_kinds": [
@@ -1176,7 +1176,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -1705,7 +1705,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -2234,7 +2234,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -2763,7 +2763,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -3292,7 +3292,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -3821,7 +3821,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -4350,7 +4350,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -4879,7 +4879,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -5408,7 +5408,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -5937,7 +5937,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -6466,7 +6466,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -6995,7 +6995,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -7524,7 +7524,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -8053,7 +8053,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -8582,7 +8582,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -9111,7 +9111,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -9640,7 +9640,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -10169,7 +10169,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -10698,7 +10698,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -11227,7 +11227,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -11756,7 +11756,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -12285,7 +12285,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -12814,7 +12814,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -13343,7 +13343,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -13872,7 +13872,7 @@
       "enterprise_ready_blockers": [
         "temporary_memory_only_not_enterprise_persistent_ready"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -14401,7 +14401,7 @@
       "enterprise_ready_blockers": [
         "enterprise_readiness_requires_CEIC_042_manifest_gate"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -14927,7 +14927,7 @@
       "enterprise_ready_blockers": [
         "family_is_non_runtime_non_authority"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -15453,7 +15453,7 @@
       "enterprise_ready_blockers": [
         "family_is_non_runtime_non_authority"
       ],
-      "auditor_timestamp_utc": "2026-06-13T12:38:17-04:00",
+      "auditor_timestamp_utc": "2026-07-07T17:20:56-04:00",
       "generation_metadata": {
         "generated_by": "project/tools/ceic_index_readiness_manifest.py#CEIC_030_INDEX_READINESS_MANIFEST_TOOL",
         "source_registry": "project/src/core/index/index_family_registry.*",
@@ -15500,7 +15500,7 @@
     ]
   },
   "auditor": {
-    "timestamp_utc": "2026-06-13T12:38:17-04:00",
+    "timestamp_utc": "2026-07-07T17:20:56-04:00",
     "generator": "project/tools/ceic_index_readiness_manifest.py",
     "gate": "project/tests/consolidated_enterprise/ceic_030_index_readiness_manifest_gate_test.py",
     "evidence": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST_EVIDENCE.md"

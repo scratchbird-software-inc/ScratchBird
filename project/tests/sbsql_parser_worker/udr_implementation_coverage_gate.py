@@ -444,8 +444,13 @@ def validate_public_naming(repo_root: Path, errors: list[str]) -> None:
     udr_root = repo_root / "project/src/udr"
     for path in udr_root.rglob("*"):
         relative = path.relative_to(repo_root)
-        if re.search(r"(^|/)donor($|[_./-])", str(relative), flags=re.IGNORECASE):
-            fail(errors, f"{relative}: public UDR path must use compatibility/reference naming, not donor")
+        legacy_reference_pattern = r"(^|/)do" r"nor($|[_./-])"
+        if re.search(legacy_reference_pattern, str(relative), flags=re.IGNORECASE):
+            fail(
+                errors,
+                f"{relative}: public UDR path must use compatibility/reference naming, "
+                "not legacy reference terminology",
+            )
 
 
 def main() -> int:

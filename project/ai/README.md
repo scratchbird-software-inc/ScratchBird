@@ -4,6 +4,7 @@ ScratchBird AI is the first-class AI MCP adaptor lane for ScratchBird.
 This repository contains the MCP-oriented service layer, dialect-aware query orchestration, HTTP adapter and bridge runtime, deterministic governance helpers, shared SBsql language-resource access, and release gates used to connect AI workflows to ScratchBird parser/compiler and execution paths.
 
 Current release track: **AI MCP release-candidate lane for the public source-review beta** (`0.1.0`)
+Review baseline: **current early beta / technical Beta 1 review baseline**
 Status timestamp: **July 7, 2026**
 
 ## Support Policy

@@ -81,6 +81,17 @@ NEGATION_MARKERS = [
 ]
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 def fail(message: str) -> None:
     print(f"consolidated_enterprise_proof_gate=fail:{message}", file=sys.stderr)
 
@@ -450,7 +461,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    repo_root = args.repo_root.resolve()
+    repo_root = io_path(args.repo_root.resolve())
     errors = run(repo_root)
     if errors:
         for message in errors:

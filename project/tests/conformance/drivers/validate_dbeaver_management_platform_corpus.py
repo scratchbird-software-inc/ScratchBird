@@ -345,7 +345,7 @@ def validate_manifest(
         return repo_root / CORPUS_REL
     if corpus_ref.get("corpus_id") != CORPUS_ID:
         errors.append("manifest corpus_id drifted")
-    if corpus_ref.get("path") != str(CORPUS_REL):
+    if corpus_ref.get("path") != CORPUS_REL.as_posix():
         errors.append("manifest corpus path drifted")
     return repo_root / str(corpus_ref.get("path", CORPUS_REL))
 

@@ -1003,7 +1003,13 @@ ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig
             expected->second.content_size_bytes != artifact.content_size_bytes) {
           return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
                                    "resource.seed_pack.artifact_hash_mismatch",
-                                   artifact.canonical_path);
+                                   artifact.canonical_path +
+                                       ":expected_hash=" + expected->second.content_hash +
+                                       ":actual_hash=" + artifact.content_hash +
+                                       ":expected_size=" +
+                                       std::to_string(expected->second.content_size_bytes) +
+                                       ":actual_size=" +
+                                       std::to_string(artifact.content_size_bytes));
         }
 
         aggregate += artifact.content_hash;

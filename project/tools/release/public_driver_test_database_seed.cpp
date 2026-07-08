@@ -419,7 +419,11 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
-              << created.diagnostic.message_key << '\n';
+              << created.diagnostic.message_key;
+    for (const auto& argument : created.diagnostic.arguments) {
+      std::cerr << ':' << argument.key << '=' << argument.value;
+    }
+    std::cerr << '\n';
     Fail("driver test database create failed");
   }
 

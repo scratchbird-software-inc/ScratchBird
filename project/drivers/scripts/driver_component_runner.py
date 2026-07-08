@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -366,10 +368,37 @@ def stage_shared_conformance_fixtures(ctx: Context) -> None:
     if not source.is_dir():
         return
     target = ctx.build_root / "tests" / "conformance" / "drivers" / "chunker_conformance"
-    if target.exists():
-        shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target)
+    lock = target.parent / ".chunker_conformance.lock"
+    for _ in range(200):
+        try:
+            lock.mkdir()
+            break
+        except FileExistsError:
+            time.sleep(0.05)
+    else:
+        raise RuntimeError(f"timed out waiting for shared fixture staging lock: {lock}")
+    try:
+        stamp = shared_tree_stamp(source)
+        stamp_path = target / ".scratchbird_source_stamp"
+        if target.is_dir() and stamp_path.is_file() and stamp_path.read_text(encoding="utf-8") == stamp:
+            return
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+        stamp_path.write_text(stamp, encoding="utf-8")
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
+
+
+def shared_tree_stamp(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def check_toolchains(ctx: Context) -> int:

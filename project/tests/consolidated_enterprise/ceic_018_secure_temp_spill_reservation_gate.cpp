@@ -11,6 +11,7 @@
 #include "temp_workspace_lifecycle.hpp"
 
 #include <cstdlib>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,7 +21,12 @@
 #include <string_view>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -66,8 +72,21 @@ void RequireAuthorityDiagnostic(const platform::DiagnosticRecord& diagnostic,
 
 std::filesystem::path MakeTempDir(std::string_view prefix) {
 #if defined(_WIN32)
-  (void)prefix;
-  Fail("CEIC-018 POSIX secure temp path gate is not enabled on this platform");
+  const auto base = std::filesystem::temp_directory_path();
+  const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  for (int attempt = 0; attempt < 128; ++attempt) {
+    auto candidate =
+        base / (std::string(prefix) + "." +
+                std::to_string(::GetCurrentProcessId()) + "." +
+                std::to_string(now) + "." + std::to_string(attempt));
+    std::error_code ec;
+    if (std::filesystem::create_directory(candidate, ec)) {
+      return candidate;
+    }
+  }
+  Fail("CEIC-018 Windows secure temp directory creation failed");
 #else
   std::string tmpl = "/tmp/";
   tmpl += prefix;
@@ -187,8 +206,25 @@ std::uint64_t FileSize(const std::filesystem::path& path) {
 
 void RequireOwnerOnlyRegularFile(const std::filesystem::path& path) {
 #if defined(_WIN32)
-  (void)path;
-  Fail("CEIC-018 owner-only POSIX permission check is not enabled on this platform");
+  HANDLE file = ::CreateFileW(path.wstring().c_str(),
+                              0,
+                              0,
+                              nullptr,
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                              nullptr);
+  Require(file != INVALID_HANDLE_VALUE,
+          "CEIC-018 Windows secure file inspection failed");
+  BY_HANDLE_FILE_INFORMATION info {};
+  const BOOL ok = ::GetFileInformationByHandle(file, &info);
+  ::CloseHandle(file);
+  Require(ok != 0, "CEIC-018 Windows file information failed");
+  Require((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0,
+          "CEIC-018 Windows temp path was not a regular file");
+  Require((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0,
+          "CEIC-018 Windows temp file was a reparse point");
+  Require(info.nNumberOfLinks == 1,
+          "CEIC-018 Windows temp file hardlink count was not one");
 #else
   struct stat st {};
   Require(::lstat(path.c_str(), &st) == 0, "CEIC-018 lstat failed");

@@ -126,6 +126,17 @@ PLACEHOLDER_RE = re.compile(
 HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 @dataclass(frozen=True)
 class Diagnostic:
     code: str
@@ -560,7 +571,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    repo_root = args.repo_root.resolve()
+    repo_root = io_path(args.repo_root.resolve())
     if args.dump_default_model:
         print(json.dumps(default_model(repo_root), indent=2, sort_keys=True))
         return 0

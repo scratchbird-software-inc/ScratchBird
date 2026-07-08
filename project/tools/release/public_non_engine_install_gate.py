@@ -93,6 +93,10 @@ def run(command: list[str], *, cwd: Path) -> str:
     return result.stdout
 
 
+def build_target_available(help_text: str, target: str) -> bool:
+    return f"... {target}" in help_text or f"{target}:" in help_text
+
+
 def safe_rmtree(path: Path, work_root: Path) -> None:
     resolved = path.resolve()
     root = work_root.resolve()
@@ -116,10 +120,13 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
         "-B",
         str(nested_build),
         "-DSB_INSTALL_NON_ENGINE_COMPONENTS=ON",
+        "-DSB_BUILD_PUBLIC_STANDALONE_OUTPUT=OFF",
         "-DSB_BUILD_DATABASE_LIFECYCLE_TESTS=OFF",
         "-DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=OFF",
         "-DSB_BUILD_TESTS=OFF",
         "-DSB_BUILD_SBMN_MANAGER=ON",
+        "-DSB_BUILD_SBSQL_PARSER_WORKER=OFF",
+        "-DSB_BUILD_SBU_SBSQL_PARSER_SUPPORT=OFF",
         "-DSB_BUILD_DRIVERS=OFF",
         "-DSB_BUILD_PARSERS=OFF",
         "-DSB_BUILD_UDR=OFF",
@@ -140,6 +147,8 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
     if os.name != "nt":
         configure_command.append("-DCMAKE_BUILD_TYPE=Release")
     run(configure_command, cwd=args.project_root)
+    build_help = run([str(args.cmake), "--build", str(nested_build), "--target", "help"],
+                     cwd=args.project_root)
     for target in (
         "sbmn_manager",
         "sb_isql",
@@ -149,8 +158,9 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
         "sb_verify",
         "sbdriver_conformance",
     ):
-        run([str(args.cmake), "--build", str(nested_build), "--target", target],
-            cwd=args.project_root)
+        if build_target_available(build_help, target):
+            run([str(args.cmake), "--build", str(nested_build), "--target", target],
+                cwd=args.project_root)
     run([
         str(args.cmake),
         "--install",

@@ -123,8 +123,11 @@ def main() -> None:
         "::fsync(fd)",
         "::fstat(fd, &st)",
         "::open(path.c_str(), flags, 0600)",
+        "ForcedOrderedWriteOpenFlag()",
+        "flags |= ForcedOrderedWriteOpenFlag();",
         "::flock(prospective_owner_lock_fd, lock_mode)",
         "O_CLOEXEC",
+        "O_DSYNC",
         "O_DIRECTORY",
     ):
         require(token in source_text, f"posix_native_io_token_missing:{token}")
@@ -135,6 +138,8 @@ def main() -> None:
         "::WriteFile(handle",
         "OVERLAPPED overlapped = OffsetToOverlapped",
         "::FlushFileBuffers(handle)",
+        "FILE_FLAG_WRITE_THROUGH",
+        "ForcedOrderedWriteFileFlags(!read_only_open)",
         "::GetFileSizeEx",
         "::CloseHandle(static_cast<HANDLE>(file_handle_))",
     ):
@@ -169,10 +174,12 @@ def main() -> None:
         "::CreateFileA(file_path.c_str()",
         "::WriteFile(file",
         "::FlushFileBuffers(file)",
+        "FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH",
         "::ReadFile(file",
         "::CloseHandle(file)",
         "#else\n#include <fcntl.h>\n#include <unistd.h>",
-        "::open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600)",
+        "ForcedOrderedWriteOpenFlag()",
+        "::open(path.c_str(),\n                        O_CREAT | O_TRUNC | O_WRONLY |\n                            ForcedOrderedWriteOpenFlag(),\n                        0600)",
         "::fsync(fd)",
         "::read(read_fd",
         "kWritePathBatchingProofPageSize = 8192",
@@ -183,6 +190,7 @@ def main() -> None:
         "mem::MemoryManager page_cache_memory(memory_policy)",
         "page::BindPageCacheMemoryManager(&cache, &page_cache_memory)",
         "BuildTransactionInventoryPageBody(body,\n                                              kWritePathBatchingProofPageSize)",
+        "orh284.fsync_open_forced_ordered_writes=true",
     ):
         require(token in write_path_text, f"write_path_batching_platform_token_missing:{token}")
     for forbidden in (

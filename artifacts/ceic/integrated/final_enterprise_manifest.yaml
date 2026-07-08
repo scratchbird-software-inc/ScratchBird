@@ -1,0 +1,789 @@
+{
+  "acceptance_gate_summary": {
+    "status_counts": {
+      "complete": 10
+    },
+    "total": 10
+  },
+  "artifact_summary": {
+    "integrated_artifacts": [
+      {
+        "artifact_id": "CEIC-ART-087",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
+        "sha256": "sha256:a710ff139073add1a6a7a995791a1e28992730214a0f9683b59e51215385efa0",
+        "slice_id": "CEIC-090",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-088",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
+        "sha256": "sha256:7caeea2a65621ad9d1e9983600f2e2466af9f95fc5c0a2ea7f73265efbd7e526",
+        "slice_id": "CEIC-091",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-089",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
+        "sha256": "sha256:d49721677dcbd1d41cda94245e0b2e8a9c99932cd48865e62d1b7c5809b4c7e5",
+        "slice_id": "CEIC-092",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-090",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
+        "sha256": "sha256:05dd09600545fbf92a5324a8e33c230fb9ad815cdc3e29248d5ee869330f502a",
+        "slice_id": "CEIC-093",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-091",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
+        "sha256": "sha256:a1cf642e599f511d5c32017dba6a3eb8aeb2c1790dc7156dc05645cc7003ac3a",
+        "slice_id": "CEIC-094",
+        "status": "present"
+      }
+    ],
+    "required_manifests": [
+      {
+        "artifact_id": "CEIC-ART-011",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
+        "sha256": "sha256:cee51edfaea23ab01a5ea618ea6e0cb2f3c8d763d4925479c7b38a7e8f44b698",
+        "slice_id": "CEIC-024",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-012",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+        "sha256": "sha256:2d8281d4620b232edcea8169491115448dc5071a14d1ac97117eeea522e18877",
+        "slice_id": "CEIC-030",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-013",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
+        "sha256": "sha256:bd32011bfdc5261c45bef6632d8391222e0287aa3fd80ae4837271ead8776950",
+        "slice_id": "CEIC-062",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-014",
+        "exists": true,
+        "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
+        "sha256": "sha256:d342f80d035d004c50d6e9eb19c301de429238bb0d41a2f1687ab43ec1cfd5a7",
+        "slice_id": "CEIC-085",
+        "status": "present"
+      },
+      {
+        "artifact_id": "CEIC-ART-015",
+        "exists": true,
+        "path": "artifacts/ceic/integrated/final_enterprise_manifest.yaml",
+        "sha256": "sha256:self-referential-final-manifest-omitted",
+        "slice_id": "CEIC-095",
+        "status": "present"
+      }
+    ],
+    "status_counts": {
+      "present": 77
+    },
+    "total": 77
+  },
+  "authority_boundary": {
+    "agent_action_authority": false,
+    "authorization_security_authority": false,
+    "benchmark_authority": false,
+    "boundary_token": "final_manifest_is_audit_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_memory_provider_cluster_support_bundle_or_agent_action_authority",
+    "cluster_authority": false,
+    "cluster_production_claim": "blocked_without_signed_external_provider_proof",
+    "index_finality_authority": false,
+    "local_cluster_authority": false,
+    "local_cluster_stub_free": true,
+    "memory_authority": false,
+    "optimizer_plan_authority": false,
+    "parser_authority": false,
+    "provider_authority": false,
+    "recovery_authority": false,
+    "reference_authority": false,
+    "reference_comparison_authority": false,
+    "runtime_authority": false,
+    "security_authority": false,
+    "static_or_descriptor_only_authority": false,
+    "support_bundle_authority": false,
+    "transaction_finality_authority": false,
+    "visibility_authority": false,
+    "wal_authority": false
+  },
+  "claim_boundaries": [
+    {
+      "boundary": "Memory evidence is not transaction finality visibility or recovery authority.",
+      "claim_surface": "memory",
+      "status": "complete"
+    },
+    {
+      "boundary": "Metrics do not authorize rows commits recovery or security.",
+      "claim_surface": "metrics",
+      "status": "complete"
+    },
+    {
+      "boundary": "Indexes cannot become result transaction finality or visibility authority and require exact MGA security recheck before result use.",
+      "claim_surface": "indexes",
+      "status": "complete"
+    },
+    {
+      "boundary": "Optimizer evidence cannot become row visibility transaction finality reference or parser authority.",
+      "claim_surface": "optimizer",
+      "status": "complete"
+    },
+    {
+      "boundary": "Agents cannot become transaction recovery security optimizer plan or index finality authority.",
+      "claim_surface": "agents",
+      "status": "complete"
+    },
+    {
+      "boundary": "Support bundles are observability artifacts only.",
+      "claim_surface": "support_bundles",
+      "status": "complete"
+    },
+    {
+      "boundary": "Reference comparisons are comparison only and never ScratchBird runtime authority.",
+      "claim_surface": "reference_comparisons",
+      "status": "complete"
+    },
+    {
+      "boundary": "Cluster public stubs are fail-closed; production cluster behavior requires an external provider.",
+      "claim_surface": "cluster",
+      "status": "complete"
+    }
+  ],
+  "cluster_boundary": {
+    "cluster_production_claim": "blocked",
+    "external_provider_required": true,
+    "local_public_stub_cluster_claims": "forbidden",
+    "local_stub_free": true
+  },
+  "cmake_inclusion": {
+    "CEIC-090": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_090_metrics_producer_coverage_gate_check",
+      "target_present": true,
+      "test": "ceic_090_metrics_producer_coverage_gate",
+      "test_present": true
+    },
+    "CEIC-091": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_091_integrated_support_bundle_gate_check",
+      "target_present": true,
+      "test": "ceic_091_integrated_support_bundle_gate",
+      "test_present": true
+    },
+    "CEIC-092": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_092_route_chain_gate_check",
+      "target_present": true,
+      "test": "ceic_092_route_chain_gate",
+      "test_present": true
+    },
+    "CEIC-093": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_093_reliability_security_suite_gate_check",
+      "target_present": true,
+      "test": "ceic_093_reliability_security_suite_gate",
+      "test_present": true
+    },
+    "CEIC-094": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_094_cross_platform_release_gate_check",
+      "target_present": true,
+      "test": "ceic_094_cross_platform_release_gate",
+      "test_present": true
+    },
+    "CEIC-095": {
+      "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "target": "ceic_095_final_enterprise_manifest_gate_check",
+      "target_present": true,
+      "test": "ceic_095_final_enterprise_manifest_gate",
+      "test_present": true
+    }
+  },
+  "completed_execution_plan_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence",
+  "dependency_summary": {
+    "status_counts": {
+      "available": 5
+    }
+  },
+  "execution_plan_name": "consolidated_enterprise_public_evidence",
+  "execution_plan_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence",
+  "gate_id": "CEIC-GATE-900",
+  "generated_by": "project/tools/ceic_final_enterprise_manifest.py#CEIC_095_FINAL_ENTERPRISE_MANIFEST_GATE",
+  "implementation_audit_summary": {
+    "ceic_aud_053": {
+      "audit_id": "CEIC-AUD-053",
+      "implementation_refs": "project/tools/ceic_final_enterprise_manifest.py;project/tests/consolidated_enterprise/ceic_095_final_enterprise_manifest_gate_test.py;ceic_095_final_enterprise_manifest_gate",
+      "status": "complete"
+    },
+    "status_counts": {
+      "complete": 3
+    }
+  },
+  "manifest_kind": "final_enterprise_manifest",
+  "risk_summary": {
+    "residual_risks": [
+      {
+        "area": "release-evidence",
+        "disposition": "accepted_or_closed_explicitly",
+        "risk_id": "CEIC-RISK-001",
+        "status": "closed"
+      },
+      {
+        "area": "authority-boundary",
+        "disposition": "accepted_or_closed_explicitly",
+        "risk_id": "CEIC-RISK-002",
+        "status": "accepted"
+      }
+    ],
+    "status_counts": {
+      "accepted": 1,
+      "closed": 1
+    }
+  },
+  "schema_id": "scratchbird.ceic.final_enterprise_manifest",
+  "schema_version": 1,
+  "search_key": "CEIC_095_FINAL_ENTERPRISE_MANIFEST",
+  "slice_id": "CEIC-095",
+  "source_branch": "main",
+  "source_commit": "0a2733677295c904786c76b1b3c4e564c987f24a",
+  "source_evidence": [
+    {
+      "label": "artifact:CEIC-ART-011",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
+      "sha256": "sha256:cee51edfaea23ab01a5ea618ea6e0cb2f3c8d763d4925479c7b38a7e8f44b698"
+    },
+    {
+      "label": "artifact:CEIC-ART-012",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+      "sha256": "sha256:2d8281d4620b232edcea8169491115448dc5071a14d1ac97117eeea522e18877"
+    },
+    {
+      "label": "artifact:CEIC-ART-013",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
+      "sha256": "sha256:bd32011bfdc5261c45bef6632d8391222e0287aa3fd80ae4837271ead8776950"
+    },
+    {
+      "label": "artifact:CEIC-ART-014",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml",
+      "sha256": "sha256:d342f80d035d004c50d6e9eb19c301de429238bb0d41a2f1687ab43ec1cfd5a7"
+    },
+    {
+      "label": "artifact:CEIC-ART-020",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-010_SHARDED_MEMORY_ACCOUNTING_EVIDENCE.md",
+      "sha256": "sha256:de270c009b2afa5b4a29267956a5a2e1d4679657f7d6485606760f3e126d2b99"
+    },
+    {
+      "label": "artifact:CEIC-ART-021",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-011_HIERARCHICAL_MEMORY_BUDGET_EVIDENCE.md",
+      "sha256": "sha256:012ef4836c9a493fd234be7ffcd82e3f3d3a6a6a332f68fb2920074f61f86e5c"
+    },
+    {
+      "label": "artifact:CEIC-ART-022",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-012_QUERY_MEMORY_ARENAS_EVIDENCE.md",
+      "sha256": "sha256:928c425d520c0eb68f1950e3d98f80f7fa16f1a55c74d9d1aae37472af012265"
+    },
+    {
+      "label": "artifact:CEIC-ART-023",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-013_TYPED_SLAB_POOLS_EVIDENCE.md",
+      "sha256": "sha256:f463f6002a563bcac7fce3cebe812b5cebb4b1054a872ad3c6422aaf88a849c2"
+    },
+    {
+      "label": "artifact:CEIC-ART-024",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-014_THREAD_LOCAL_CACHE_EVIDENCE.md",
+      "sha256": "sha256:1f858ade02a37c081da2297d47d9ad799f7e6c7b12dc03a560ec014a1b898db3"
+    },
+    {
+      "label": "artifact:CEIC-ART-026",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-015_REMOTE_FREE_QUEUE_EVIDENCE.md",
+      "sha256": "sha256:a74d7122d012dcdcdaec4838643b9d284e84657df4b44b104c53941d2d660f81"
+    },
+    {
+      "label": "artifact:CEIC-ART-027",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-016_FOREIGN_MEMORY_RESERVATION_EVIDENCE.md",
+      "sha256": "sha256:d56b393659f8176d08db5e535b34b630115e45d0278ec746ec9cc2dd4d33c07a"
+    },
+    {
+      "label": "artifact:CEIC-ART-028",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-017_MEMORY_PRESSURE_STATE_MACHINE_EVIDENCE.md",
+      "sha256": "sha256:fbad83d5c45e6bc503bfa7ce91ff72c6b42a45be5c28043fa0a389870d5ed6f3"
+    },
+    {
+      "label": "artifact:CEIC-ART-029",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-018_SECURE_TEMP_SPILL_EVIDENCE.md",
+      "sha256": "sha256:c635a5c07927d9472a7a1cd4fd1c606cb7ee3a331203538ad265a0805d3f784e"
+    },
+    {
+      "label": "artifact:CEIC-ART-030",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-019_PAGE_CACHE_FRAME_OWNERSHIP_EVIDENCE.md",
+      "sha256": "sha256:a22ba94f9d7c23734f0e0fdde52b46e77be0c53f38baad4f96d70bd0b9a6727e"
+    },
+    {
+      "label": "artifact:CEIC-ART-031",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-020_RESULT_CURSOR_PLAN_MEMORY_EVIDENCE.md",
+      "sha256": "sha256:11270da7fbae2a1a4e9c957ea81eb3650aa149185d03dfffcadce0b2f202c208"
+    },
+    {
+      "label": "artifact:CEIC-ART-032",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-021_MEMORY_SOURCE_GATE_EVIDENCE.md",
+      "sha256": "sha256:2c6ffe9cbf4eb4f35f3e60c2530b0611a0c02edaa11c3db73063a947eb45f04a"
+    },
+    {
+      "label": "artifact:CEIC-ART-033",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-022_MEMORY_INVARIANT_GATE_EVIDENCE.md",
+      "sha256": "sha256:b9f6a62fb8880e29828145fa0aee7231eecfa082f014a7cbdb90530b98202335"
+    },
+    {
+      "label": "artifact:CEIC-ART-034",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-023_MEMORY_SUPPORT_BUNDLE_EVIDENCE.md",
+      "sha256": "sha256:82ab1a520d5fccfdef706458467080b9d21f5892525d63d46c22d3160703c8ef"
+    },
+    {
+      "label": "artifact:CEIC-ART-035",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "sha256:20ba33d531a1242f528608dd7e80e4fa8590dc10cab7a2f8f4014f6c6b7f3231"
+    },
+    {
+      "label": "artifact:CEIC-ART-036",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-025_MEMORY_FAIRNESS_EVIDENCE.md",
+      "sha256": "sha256:59847ba8a24249d24c0235a1340ec533749cf768e2218746f999b179ee4e8ff4"
+    },
+    {
+      "label": "artifact:CEIC-ART-037",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-026_MEMORY_CLASS_POLICY_LEASE_EVIDENCE.md",
+      "sha256": "sha256:b5ff99936237ce9dcf412135eb8f56ec8744838a2e915dfad10cf552db3f4a89"
+    },
+    {
+      "label": "artifact:CEIC-ART-038",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-027_PLUGIN_NATIVE_MEMORY_SANDBOX_EVIDENCE.md",
+      "sha256": "sha256:6e45a21000ed5b801440e91c2bc3bddf8d1b51559a543661d9decfe9c21fcdad"
+    },
+    {
+      "label": "artifact:CEIC-ART-039",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-028_FRAGMENTATION_PROFILER_EVIDENCE.md",
+      "sha256": "sha256:7c93ccc8076e6192990130b4e64a7d24db1af77b7394b7d49b63109a814d17c6"
+    },
+    {
+      "label": "artifact:CEIC-ART-040",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-029_ADAPTIVE_BATCH_WORKING_SET_EVIDENCE.md",
+      "sha256": "sha256:5d725a7e6ed5c997592031a197ea169f79013e4e6b4b4afd5713d461bc48f97a"
+    },
+    {
+      "label": "artifact:CEIC-ART-041",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
+      "sha256": "sha256:7caeea2a65621ad9d1e9983600f2e2466af9f95fc5c0a2ea7f73265efbd7e526"
+    },
+    {
+      "label": "artifact:CEIC-ART-042",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
+      "sha256": "sha256:05dd09600545fbf92a5324a8e33c230fb9ad815cdc3e29248d5ee869330f502a"
+    },
+    {
+      "label": "artifact:CEIC-ART-043",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
+      "sha256": "sha256:a1cf642e599f511d5c32017dba6a3eb8aeb2c1790dc7156dc05645cc7003ac3a"
+    },
+    {
+      "label": "artifact:CEIC-ART-044",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_CONTROL_EVIDENCE.md",
+      "sha256": "sha256:9aa9624d05624904ea1ee8f1e02c0003726fab1b848f3a3506ec8494816f8402"
+    },
+    {
+      "label": "artifact:CEIC-ART-045",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "sha256:ac68ed6e713015c8b56b5b1a2347df9383c98ed6b3c251bde2dbcefc947edd4a"
+    },
+    {
+      "label": "artifact:CEIC-ART-046",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-031_INDEX_ACCESS_METHOD_PROVIDER_EVIDENCE.md",
+      "sha256": "sha256:775557ea50065fe95d83e7ad76a35f1311b6b3f1078759cfd6e9cd83d7bf47eb"
+    },
+    {
+      "label": "artifact:CEIC-ART-047",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-032_INDEX_MGA_RECOVERY_CONTRACT_EVIDENCE.md",
+      "sha256": "sha256:1855ab3ce34145462961d2c86a7810bcdaffd523ee500bbdde6cb4f32c524780"
+    },
+    {
+      "label": "artifact:CEIC-ART-048",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-033_BTREE_UNIQUE_DURABLE_PROVIDER_CLOSURE_EVIDENCE.md",
+      "sha256": "sha256:bb823e9dc6fdd2864e80992cf8399577a00f103a21cf8d25f23f7aaf969e5263"
+    },
+    {
+      "label": "artifact:CEIC-ART-049",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-034_UNIQUE_RESERVATION_FINALITY_PROTOCOL_EVIDENCE.md",
+      "sha256": "sha256:52e2973e5011c37041bde726448bbe468fc92a6d977a595783e624bb779ff181"
+    },
+    {
+      "label": "artifact:CEIC-ART-050",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-035_HASH_DURABLE_PROVIDER_CLOSURE_EVIDENCE.md",
+      "sha256": "sha256:36324f0748a7eb94cecb190fadbd77b2bfa2d96af88f042d4bd13651e98cc57b"
+    },
+    {
+      "label": "artifact:CEIC-ART-051",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-036_CANONICAL_KEY_ORDERING_ENCODING_FUZZ_EVIDENCE.md",
+      "sha256": "sha256:408d1f9b90981680c4e867e63287e332333967de271602099a0f7c8159be8cb3"
+    },
+    {
+      "label": "artifact:CEIC-ART-052",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-037_ENGINE_OWNED_EXACT_RECHECK_EVIDENCE.md",
+      "sha256": "sha256:84959b80b2779321c5a188628314711471bc83ff907bae3500d2b45aacc5bffe"
+    },
+    {
+      "label": "artifact:CEIC-ART-053",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-038_LOSSY_PRUNING_FAMILY_CLASSIFICATION_EVIDENCE.md",
+      "sha256": "sha256:216cff6a21b86cb463b25ab79a1374e586f3fd1c8eeff3159d58c68ce746a22e"
+    },
+    {
+      "label": "artifact:CEIC-ART-054",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-039_SPECIALIZED_PERSISTENT_PROVIDER_CLOSURE_EVIDENCE.md",
+      "sha256": "sha256:57ad10a4e7d7f39f315e41c4613567a3b7580afdf590a45f54ca6c43b04bbbb2"
+    },
+    {
+      "label": "artifact:CEIC-ART-055",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-040_INDEX_OPERATION_METRICS_SUPPORT_BUNDLE_EVIDENCE.md",
+      "sha256": "sha256:ab0659519edfcf4d955b141f389f8ef82e8743b9fd91a43bc8b075c9b4ca8d00"
+    },
+    {
+      "label": "artifact:CEIC-ART-056",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-041_INDEX_CRASH_CONCURRENCY_CLEANUP_CORRUPTION_MATRIX_EVIDENCE.md",
+      "sha256": "sha256:f327a526f8f236a1f603189fa852b7daace7b37fc6637a10c9388a7976426535"
+    },
+    {
+      "label": "artifact:CEIC-ART-057",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-042_INDEX_READINESS_DRIFT_GATE_EVIDENCE.md",
+      "sha256": "sha256:8fe4d0089a09f941968a3dbbe78e6cfb185d05202c39559f3bae851326471a02"
+    },
+    {
+      "label": "artifact:CEIC-ART-058",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
+      "sha256": "sha256:9f7077374bf993c2e09b7d9f6985b56be8b02f4087b4c141597f8b8169a80cd6"
+    },
+    {
+      "label": "artifact:CEIC-ART-059",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
+      "sha256": "sha256:4528aa14216c9cdd078cd88fba4c1cd9e5ca3015c4a6acfe6c7e08c4d8c54aa5"
+    },
+    {
+      "label": "artifact:CEIC-ART-060",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
+      "sha256": "sha256:3fc5ddc79b0cd9274d3f19e8eea5339138b16dbd6744a1304cae4a696d3331eb"
+    },
+    {
+      "label": "artifact:CEIC-ART-061",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
+      "sha256": "sha256:48defffc2b34351e170ae8b526afa4b4c9296751f4b5d8db574eccf0df9c026b"
+    },
+    {
+      "label": "artifact:CEIC-ART-062",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
+      "sha256": "sha256:98c51e385ab191483ba19de740696332bc8f47edfb77771b7e62736988c17081"
+    },
+    {
+      "label": "artifact:CEIC-ART-063",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
+      "sha256": "sha256:61ef46cb69a5c62f7a92d987ec17c987fb7edbb2ccfa573a7b893c04d0064223"
+    },
+    {
+      "label": "artifact:CEIC-ART-064",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
+      "sha256": "sha256:185a38ff08f815473033d7240490fb1f859838e12ef48b446115b521e687ae14"
+    },
+    {
+      "label": "artifact:CEIC-ART-065",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
+      "sha256": "sha256:efa6903e7b3d0c924bd05b66a077ed77cb30b62963f5034b67674135331e55a1"
+    },
+    {
+      "label": "artifact:CEIC-ART-066",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
+      "sha256": "sha256:a7be3cd46f0e8ae47cdc46e1c4ecddc84c72ec7712d5deeb040d3e9e204f254d"
+    },
+    {
+      "label": "artifact:CEIC-ART-067",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
+      "sha256": "sha256:a607a9a7503d0ce73eb8bb469ecd8dc5233f8023db815616cda7069336acb2d3"
+    },
+    {
+      "label": "artifact:CEIC-ART-068",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
+      "sha256": "sha256:5d0c8e717a4558d52c185fbd92483022cc7364c379a07c1454392014e5aa217c"
+    },
+    {
+      "label": "artifact:CEIC-ART-069",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
+      "sha256": "sha256:2d520f6e9427db86e7ebd2ea9295d15a110e9264053411a9081626d10cde0051"
+    },
+    {
+      "label": "artifact:CEIC-ART-070",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "sha256:f865e0051d4639bb866f96e7203f02ddffd61478949755762ddd43901064d184"
+    },
+    {
+      "label": "artifact:CEIC-ART-071",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
+      "sha256": "sha256:249c6d92256d8930dd90d7db9b59d7e1b9fdd31fc6268464e41f7b8c3600ca79"
+    },
+    {
+      "label": "artifact:CEIC-ART-072",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "sha256:8d21e208add66a49f75059b913a342d5d57b15a0a6539c67fdabbce1f2c3a1cc"
+    },
+    {
+      "label": "artifact:CEIC-ART-073",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
+      "sha256": "sha256:b197527b9aaaffde242fe7d8defd9003eeb708f25f20cd3456b54ec0f7810c82"
+    },
+    {
+      "label": "artifact:CEIC-ART-074",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
+      "sha256": "sha256:56bb25099e3da070d01a1ec402c98135f12ac85b9586c26d1181417b0d7e245c"
+    },
+    {
+      "label": "artifact:CEIC-ART-075",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
+      "sha256": "sha256:44d8ad6f4763bee9502a1ef8930aff1a06fa2eab9ca5938958c922e70bc138ba"
+    },
+    {
+      "label": "artifact:CEIC-ART-076",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
+      "sha256": "sha256:3cf15298ed45dbc2ff7fd67fa02cb6cd2f7416260fd0547eaa2b6057d45eeca7"
+    },
+    {
+      "label": "artifact:CEIC-ART-077",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
+      "sha256": "sha256:3908a376e51541f6066f9c1a1560ed9104521ffef5e0ecfaffb887366d973f1b"
+    },
+    {
+      "label": "artifact:CEIC-ART-078",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
+      "sha256": "sha256:6cbdcf95cc1d615fe641e8ac85a102be46b3c4722ed8b76cc2bba7402c251cbf"
+    },
+    {
+      "label": "artifact:CEIC-ART-079",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "sha256:67bf51be4707525a57bfcdc3955a04ed80af3fda37c9ceaf72ef8cce55dd8820"
+    },
+    {
+      "label": "artifact:CEIC-ART-080",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
+      "sha256": "sha256:066b1d5bf349b02ea504c1f7e440c206ea7822b62354c667a4f10f471d8a83af"
+    },
+    {
+      "label": "artifact:CEIC-ART-081",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
+      "sha256": "sha256:7082b710e98789af963a1e4fc9fea4c269df4581e754fe051a266f7cdeefc48a"
+    },
+    {
+      "label": "artifact:CEIC-ART-082",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
+      "sha256": "sha256:11f379d9ec7ee64601d8b8ce5f93f2ddd842ac366e40237a09e42b8d5b349f42"
+    },
+    {
+      "label": "artifact:CEIC-ART-083",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
+      "sha256": "sha256:8e7a2f5d81bdb69501252532ae8c64ef3d911683bfed236c6acd4e7ed4d2c69a"
+    },
+    {
+      "label": "artifact:CEIC-ART-084",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
+      "sha256": "sha256:aee76d164271b3dcf318e8df03ec5386bc4c1d62a71d3aef8cb9d693a4e82d72"
+    },
+    {
+      "label": "artifact:CEIC-ART-085",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
+      "sha256": "sha256:af423ba22a6b8e7fc2e8b35107b0bc36bd4d3025f5fd34447fadfa4464df4c3a"
+    },
+    {
+      "label": "artifact:CEIC-ART-086",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "sha256:f4c4b252e83e9a2bd8ad02e70b832f77a717ff79a8f67423a1aca0bbfba564bb"
+    },
+    {
+      "label": "artifact:CEIC-ART-087",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
+      "sha256": "sha256:a710ff139073add1a6a7a995791a1e28992730214a0f9683b59e51215385efa0"
+    },
+    {
+      "label": "artifact:CEIC-ART-089",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
+      "sha256": "sha256:d49721677dcbd1d41cda94245e0b2e8a9c99932cd48865e62d1b7c5809b4c7e5"
+    },
+    {
+      "label": "cmake:consolidated_enterprise",
+      "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "sha256": "sha256:d7910ddf72c441c7d5dd7ce2066c0af7a22e6c9b58bd86d581e86cdfd66e4412"
+    },
+    {
+      "label": "package:ARTIFACT_INDEX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
+      "sha256": "sha256:fad37187bc91377e10172a8c2ec9970ba08a1fa99c4eac1d9aa754479658dd41"
+    },
+    {
+      "label": "package:CEIC_ACCEPTANCE_CRITERIA.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_CRITERIA.md",
+      "sha256": "sha256:f2e694e3e3c759a33f93b5584d32aa4135c6bc5eebcb944648b4737e301eb5df"
+    },
+    {
+      "label": "package:CEIC_ACCEPTANCE_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
+      "sha256": "sha256:838f0181d6ff9397e59a0589c2481697666a2beec9da02db4853b7ec96a6ee49"
+    },
+    {
+      "label": "package:CEIC_DECISION_MATRIX.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DECISION_MATRIX.md",
+      "sha256": "sha256:4eff30b84e79ac4117999533750e952777f7d625454573ba8641a001ea863dc2"
+    },
+    {
+      "label": "package:CEIC_DEPENDENCY_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
+      "sha256": "sha256:70100f48602741cc313066090f039afbea6764c226385fd6489eec7a91858bc1"
+    },
+    {
+      "label": "package:CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+      "sha256": "sha256:e6c798ff181adc11ba1be7dc9d4ac91d9be87ba3764df415e9881071f5ccc5ea"
+    },
+    {
+      "label": "package:CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+      "sha256": "sha256:55c5ebad9ce5d210ccbc16a800add7fd4f847d85828459a9138bf2cd3f857599"
+    },
+    {
+      "label": "package:CEIC_PROOF_SEQUENCE.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_PROOF_SEQUENCE.md",
+      "sha256": "sha256:c102f06acbef7ced56b23ce4f8552434d36f73d95f940911aafea9247d89720f"
+    },
+    {
+      "label": "package:CEIC_PUBLIC_READINESS_SUMMARY.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_PUBLIC_READINESS_SUMMARY.md",
+      "sha256": "sha256:fc1def1c3ef0162648fa9711c40727aef1a4fef6c502453c64fdb4367a8b4dd3"
+    },
+    {
+      "label": "package:CEIC_PUBLIC_READINESS_SUMMARY_TEMPLATE.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_PUBLIC_READINESS_SUMMARY_TEMPLATE.md",
+      "sha256": "sha256:d99cd667ac3146f7b3d5843d439e7c49ebf26f2f9c0cc803663980ad9a53c3e7"
+    },
+    {
+      "label": "package:CEIC_RISK_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_RISK_MATRIX.csv",
+      "sha256": "sha256:a3f703a7d5e3523d86f2ecf44c23ea3cb8911fbf1c2cf7301921813a8564f6f1"
+    },
+    {
+      "label": "package:CEIC_ROLLBACK_AND_MIGRATION_PROCEDURE.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ROLLBACK_AND_MIGRATION_PROCEDURE.md",
+      "sha256": "sha256:40b5688705e63fd5926d61a43d5cda1bc308615ad83e2c37ed3682bb32d9d946"
+    },
+    {
+      "label": "package:CEIC_STATUS_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
+      "sha256": "sha256:b68f989db205f0ce05d140b061ffd00202a1bec8065abe542096e5aebb288c2e"
+    },
+    {
+      "label": "package:CEIC_VALIDATION_PROTOCOL.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_VALIDATION_PROTOCOL.md",
+      "sha256": "sha256:473355b08b262dcee7aabcbd60beafff9d2c1d548cff3f65ea61fb60e259d270"
+    },
+    {
+      "label": "package:CLAIM_BOUNDARY_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
+      "sha256": "sha256:7e02afae6a62a36cd4e29ccbf2cbeec2a1e0b8fa2779c35e8101119e443dcd79"
+    },
+    {
+      "label": "package:EVIDENCE_MANIFEST_SCHEMA.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
+      "sha256": "sha256:a4ce7242ac607d3116296fc1a7926569152ca1752b9be156c898a5b29c059e60"
+    },
+    {
+      "label": "package:EXECUTION_PROTOCOL.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EXECUTION_PROTOCOL.md",
+      "sha256": "sha256:ec58f22179977f3392024e4ad0a173112e52528d09369d597542aaa3c03d85a4"
+    },
+    {
+      "label": "package:INTERFACE_CONTRACTS.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
+      "sha256": "sha256:8d7553714f9fdc4d8d5b2023c1bece265b41aeee86f5f866f205883d40c07619"
+    },
+    {
+      "label": "package:METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+      "sha256": "sha256:b33c23152701c86235760767c02aabda861c67fb09b7b00f57415b934024cb27"
+    },
+    {
+      "label": "package:README.md",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
+      "sha256": "sha256:986d593b824732e3ca6e8ca5c8252bff03e0f18a83b5a14d703ade004b1c1fa6"
+    },
+    {
+      "label": "test:ceic095",
+      "path": "project/tests/consolidated_enterprise/ceic_095_final_enterprise_manifest_gate_test.py",
+      "sha256": "sha256:a9e9139983b228b95363f5a6a9310d7e1de02c79bacd731f6b425b783748dbe9"
+    },
+    {
+      "label": "tool:ceic095",
+      "path": "project/tools/ceic_final_enterprise_manifest.py",
+      "sha256": "sha256:5d644019c7913b7dca8842fcd4bdc5c096a3cc9e448f036bd65b427b888e8fae"
+    }
+  ],
+  "source_evidence_digest": "sha256:7e90892f7ea6f29a9c8dd618ab56d23ed6743897a5a17d6410f0cacb82577309",
+  "static_claim_boundary": {
+    "anchor_only_claims_allowed": false,
+    "descriptor_only_claims_allowed": false,
+    "smoke_only_claims_allowed": false,
+    "static_only_claims_allowed": false
+  },
+  "successor_boundary": {
+    "ceic_successor_overclaim": false,
+    "successor_slice_ids_claimed": []
+  },
+  "traceability_summary": {
+    "status_counts": {
+      "complete": 5
+    },
+    "x_008": {
+      "evidence_artifacts": "CEIC-ART-015",
+      "finding_id": "X-008",
+      "scope": "final-enterprise-manifest",
+      "status": "complete",
+      "tracker_slices": "CEIC-095"
+    }
+  },
+  "tracker_summary": {
+    "phase_summary": {
+      "unknown": {
+        "complete": 68,
+        "total": 68
+      }
+    },
+    "status_counts": {
+      "complete": 68
+    },
+    "total": 68
+  },
+  "validation_commands": [
+    {
+      "command": "python3 project/tools/ceic_final_enterprise_manifest.py --repo-root .",
+      "expected_result": "ceic_final_enterprise_manifest_gate=pass"
+    },
+    {
+      "command": "python3 project/tests/consolidated_enterprise/ceic_095_final_enterprise_manifest_gate_test.py --repo-root .",
+      "expected_result": "ceic_095_final_enterprise_manifest_gate_test=pass"
+    },
+    {
+      "command": "python3 project/tools/consolidated_enterprise_proof_gate.py --repo-root .",
+      "expected_result": "consolidated_enterprise_proof_gate=pass"
+    }
+  ],
+  "verdict": "complete_move_ready"
+}

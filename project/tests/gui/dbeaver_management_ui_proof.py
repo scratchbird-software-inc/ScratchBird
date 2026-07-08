@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import sys
+import os
 from pathlib import Path
 
 
@@ -21,10 +22,26 @@ MODEL_ROOT = DBEAVER_ROOT / "plugins/org.jkiss.dbeaver.ext.scratchbird"
 TEST_ROOT = DBEAVER_ROOT / "test/org.jkiss.dbeaver.ext.scratchbird.test"
 
 
+def io_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    absolute = str(path.absolute())
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    return "\\\\?\\" + absolute
+
+
+def path_exists(path: Path) -> bool:
+    if os.name != "nt":
+        return path.exists()
+    return os.path.exists(io_path(path))
+
+
 def read(path: Path) -> str:
-    if not path.exists():
+    if not path_exists(path):
         raise AssertionError(f"missing required proof input: {path.relative_to(REPO_ROOT)}")
-    return path.read_text(encoding="utf-8")
+    with open(io_path(path), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def require(source: str, needle: str, label: str) -> None:

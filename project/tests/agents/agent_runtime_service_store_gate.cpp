@@ -764,7 +764,9 @@ void TestRuntimeServiceStoreCrashReplayMarksDurableWorkPending() {
   open.evidence_uuid = "018f0000-0000-7000-8000-00000000c031";
   open.fsync_or_checkpoint_evidence = true;
   auto result = service.Open(std::move(open));
-  Require(result.status.ok, "crash replay open failed");
+  Require(result.status.ok,
+          "crash replay open failed:" + result.status.diagnostic_code + ":" +
+              result.status.detail);
   CommitContext(open_context);
 
   auto start_context =

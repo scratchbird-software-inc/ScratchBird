@@ -3782,6 +3782,7 @@ std::map<std::string, DescriptorFieldsCacheRecord>& DescriptorFieldsCache() {
 }
 
 struct MgaMetadataCacheKey {
+  std::string database_uuid;
   std::string metadata_path;
   std::uintmax_t metadata_file_size = 0;
   std::int64_t metadata_file_mtime_ticks = 0;
@@ -3791,14 +3792,16 @@ struct MgaMetadataCacheKey {
   std::uint64_t local_transaction_id = 0;
 
   bool operator<(const MgaMetadataCacheKey& other) const {
-    return std::tie(metadata_path,
+    return std::tie(database_uuid,
+                    metadata_path,
                     metadata_file_size,
                     metadata_file_mtime_ticks,
                     savepoint_path,
                     savepoint_file_size,
                     savepoint_file_mtime_ticks,
                     local_transaction_id) <
-           std::tie(other.metadata_path,
+           std::tie(other.database_uuid,
+                    other.metadata_path,
                     other.metadata_file_size,
                     other.metadata_file_mtime_ticks,
                     other.savepoint_path,
@@ -4104,6 +4107,7 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
   const auto metadata_identity = ExistingFileIdentity(metadata_path);
   const auto savepoint_identity = ExistingFileIdentity(savepoint_path);
   const MgaMetadataCacheKey cache_key{
+      context.database_uuid.canonical,
       metadata_path,
       metadata_identity.ok ? metadata_identity.file_size : 0,
       metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0,
