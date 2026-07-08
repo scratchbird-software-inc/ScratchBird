@@ -884,7 +884,44 @@ ReserveBytesResult ReserveBytes(int fd,
   }
 
   result.evidence.physical_preallocation_attempted = true;
-#if !defined(_WIN32) && defined(_POSIX_VERSION)
+#if defined(__APPLE__)
+  const auto max_off = static_cast<u64>(std::numeric_limits<off_t>::max());
+  if (bytes > max_off) {
+    result.error = "requested reservation exceeds platform file offset range";
+    result.evidence.failure_reason = result.error;
+    result.evidence.disk_full_or_reservation_failure = true;
+    return result;
+  }
+  fstore_t store {};
+  store.fst_flags = F_ALLOCATECONTIG;
+  store.fst_posmode = F_PEOFPOSMODE;
+  store.fst_offset = 0;
+  store.fst_length = static_cast<off_t>(bytes);
+  int preallocate = ::fcntl(fd, F_PREALLOCATE, &store);
+  if (preallocate != 0) {
+    store.fst_flags = F_ALLOCATEALL;
+    preallocate = ::fcntl(fd, F_PREALLOCATE, &store);
+  }
+  if (preallocate != 0) {
+    result.error = ErrnoMessage(errno);
+    result.evidence.failure_reason = result.error;
+    result.evidence.disk_full_or_reservation_failure = true;
+    result.evidence.platform_semantics = "fcntl_f_preallocate_failed";
+    return result;
+  }
+  if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+    result.error = ErrnoMessage(errno);
+    result.evidence.failure_reason = result.error;
+    result.evidence.disk_full_or_reservation_failure = true;
+    result.evidence.platform_semantics = "fcntl_f_preallocate_ftruncate_failed";
+    return result;
+  }
+  result.ok = true;
+  result.evidence.physical_preallocation_complete = true;
+  result.evidence.file_size_bytes = bytes;
+  result.evidence.platform_semantics = "fcntl_f_preallocate_physical_preallocation";
+  return result;
+#elif !defined(_WIN32) && defined(_POSIX_VERSION)
   const auto max_off = static_cast<u64>(std::numeric_limits<off_t>::max());
   if (bytes > max_off) {
     result.error = "requested reservation exceeds platform file offset range";
