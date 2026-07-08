@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:rust",
-  "driver": "rust",
-  "hash": "2564a078a545e39de3d23d1ade16cd4d91b6a3282d42e85bd45b941ebdbff134",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

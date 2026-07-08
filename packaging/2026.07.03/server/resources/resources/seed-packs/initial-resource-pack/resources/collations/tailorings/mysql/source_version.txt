@@ -1,1 +1,0 @@
-MySQL source: https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.37.tar.gz

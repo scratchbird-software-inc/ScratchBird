@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:dotnet",
-  "driver": "dotnet",
-  "hash": "ac1f1a74d4ed91885ba3f0d10b5ffced3b475c80f96ec3c0727ee175fc40cb81",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

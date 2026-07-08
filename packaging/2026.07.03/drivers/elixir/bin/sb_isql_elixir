@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export MIX_BUILD_PATH="$ROOT/runtime/elixir/_build"
-export MIX_DEPS_PATH="$ROOT/runtime/elixir/deps"
-export MIX_HOME="$ROOT/runtime/elixir/mix-home"
-export HEX_HOME="$ROOT/runtime/elixir/hex-home"
-cd "$ROOT/runtime/elixir/stage"
-exec "${MIX_BIN:-mix}" run tools/sb_isql_elixir.exs -- "$@"

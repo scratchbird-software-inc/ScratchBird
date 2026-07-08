@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:php",
-  "driver": "php",
-  "hash": "4fb26e6776a6d7bdcc578b9daac422af2e92d0c9ffb3bb942e9cef658e730a54",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

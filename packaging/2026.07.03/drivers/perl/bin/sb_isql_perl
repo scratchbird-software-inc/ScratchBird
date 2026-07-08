@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PERL5LIB="$ROOT/support/source/lib${PERL5LIB:+:$PERL5LIB}"
-exec "${PERL_BIN:-perl}" "$ROOT/support/source/tools/sb_isql_perl.pl" "$@"

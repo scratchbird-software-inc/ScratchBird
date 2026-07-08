@@ -1,0 +1,76 @@
+name: ScratchBird Linux CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-release-linux:
+    name: Public release Linux build and CTest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            python3 \
+            python3-pip \
+            libssl-dev \
+            libicu-dev \
+            libxml2-dev \
+            zlib1g-dev \
+            liblz4-dev \
+            libzstd-dev \
+            libgeos-dev \
+            libproj-dev \
+            libgtest-dev \
+            unixodbc-dev
+
+      - name: Static release gates
+        run: |
+          python3 project/tools/release/public_packaging_history_gate.py
+          python3 project/tools/release/github_actions_static_gate.py
+          python3 project/tools/release/public_private_reference_scan.py
+
+      - name: Configure
+        working-directory: project
+        run: cmake --preset public-release-linux
+
+      - name: Build
+        working-directory: project
+        run: cmake --build --preset public-release-linux
+
+      - name: CTest
+        working-directory: project
+        run: ctest --preset public-release-linux
+
+      - name: Verify staged public bundle
+        run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-linux/output/linux
+
+      - name: Upload Linux staged output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-linux-public-output
+          path: |
+            build/public-release-linux/output/linux
+            build/public-release-linux/Testing
+          if-no-files-found: warn
+          retention-days: 14

@@ -21,6 +21,21 @@
       }
     },
     {
+      "name": "public-release-windows",
+      "displayName": "Public Release Windows",
+      "description": "Configures the public source-review release profile for Windows installer/nightly automation.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/build/public-release-windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SB_BUILD_PUBLIC_RELEASE_CORRECTNESS": "ON",
+        "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
+        "SB_BUILD_TESTS": "ON",
+        "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF",
+        "SB_PUBLIC_TARGET_PLATFORM": "windows"
+      }
+    },
+    {
       "name": "ai-mcp-release-proof-linux",
       "displayName": "AI MCP Release Proof Linux",
       "description": "Configures the public release profile with AI MCP runtime and live-native hard-fail release proof gates.",
@@ -39,6 +54,11 @@
       "jobs": 4
     },
     {
+      "name": "public-release-windows",
+      "configurePreset": "public-release-windows",
+      "jobs": 4
+    },
+    {
       "name": "ai-mcp-release-proof-linux",
       "configurePreset": "ai-mcp-release-proof-linux",
       "jobs": 4
@@ -48,6 +68,16 @@
     {
       "name": "public-release-linux",
       "configurePreset": "public-release-linux",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "public-release-windows",
+      "configurePreset": "public-release-windows",
       "output": {
         "outputOnFailure": true
       },

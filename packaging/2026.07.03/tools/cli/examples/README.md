@@ -1,1 +1,0 @@
-# ScratchBird cli tool examples

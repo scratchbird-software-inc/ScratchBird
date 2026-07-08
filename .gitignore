@@ -6,6 +6,8 @@
 /*
 !/docs/
 !/project/
+!/.github/
+!/.github/**
 !/.gitignore
 !/.gitattributes
 !/LICENSE
@@ -128,12 +130,6 @@ project/tests/[d]onor_regression/[d]onor_release_acquisition/**
 project/tests/[d]onor_regression/**/native_tool_harness/tools/**
 project/tests/[d]onor_regression/firebird/original_firebird_qa/**
 
-# Temporary private pre-release distribution bundles. These are intentionally
-# trackable while the repository remains private and must be removed or moved to
-# external release hosting before the first official public source release.
-!/packaging/
-!/packaging/**
-packaging/**/.staging/
-packaging/**/__pycache__/
-packaging/**/*.tmp
-packaging/**/scratchbird-reference-parser-source.tar.gz
+# Temporary pre-release distribution bundles are no longer tracked in source.
+# GitHub Actions artifacts and release assets are the binary distribution path.
+/packaging/

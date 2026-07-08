@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec "${NODE_BIN:-node}" "$ROOT/runtime/node/dist/tools/sb-isql-node.js" "$@"

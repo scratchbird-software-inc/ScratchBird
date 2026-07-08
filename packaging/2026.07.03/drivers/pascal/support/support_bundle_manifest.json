@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:pascal",
-  "driver": "pascal",
-  "hash": "ce78e52a33a592ce56c0441209ee073bcedc175e725694f86a888d1367db4264",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

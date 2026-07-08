@@ -1,1 +1,0 @@
-Firebird source: resources/collations/tailorings/firebird/tables (in-tree imported snapshot)

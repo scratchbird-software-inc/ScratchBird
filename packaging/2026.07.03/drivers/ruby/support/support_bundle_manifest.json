@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:ruby",
-  "driver": "ruby",
-  "hash": "383c50078337bac5a8cb31a5c49ee6d6ff1d07ffc5cf878895cf7f3f307c103b",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

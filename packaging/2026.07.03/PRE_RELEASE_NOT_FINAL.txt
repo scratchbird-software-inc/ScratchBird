@@ -1,3 +1,0 @@
-ScratchBird private pre-release bundle.
-This bundle is for internal/test distribution only and is not an official release.
-Artifacts may be replaced before public release approval.

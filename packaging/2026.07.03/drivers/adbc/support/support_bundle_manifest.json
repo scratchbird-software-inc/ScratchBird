@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:adbc",
-  "driver": "adbc",
-  "hash": "6cb0d3bc29c9ae64ac7a085bc8ec2ebecc0d707ff81324691cdef6f95dffb2c0",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

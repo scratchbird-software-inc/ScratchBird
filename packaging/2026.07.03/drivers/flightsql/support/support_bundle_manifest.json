@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:flightsql",
-  "driver": "flightsql",
-  "hash": "ea580b7e610184860b2d1f9b9e66f5c8ba81c08093951e73972f8042ef2d298b",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

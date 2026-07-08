@@ -1,0 +1,79 @@
+name: ScratchBird Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to create or update
+        required: true
+        default: beta-candidate
+      version:
+        description: Version for generated installers
+        required: true
+        default: 0.0.0-candidate
+      draft:
+        description: Create as draft release
+        required: true
+        default: true
+        type: boolean
+      require-msi:
+        description: Require WiX MSI generation on Windows
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-installers:
+    name: Build release-candidate installers
+    uses: ./.github/workflows/verify-installers.yml
+    with:
+      platform: all
+      version: ${{ inputs.version }}
+      require-msi: ${{ inputs['require-msi'] }}
+
+  publish:
+    name: Publish draft release candidate
+    needs: build-installers
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Verify downloaded installers
+        run: |
+          linux_root="$(find release-artifacts/scratchbird-linux-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
+          windows_root="$(find release-artifacts/scratchbird-windows-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
+          python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
+          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
+          find release-artifacts -name INSTALLER_ARTIFACT_MANIFEST.json -print
+
+      - name: Create or update release candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          gh release delete "$tag" --yes || true
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag" --force
+          draft_flag=""
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            draft_flag="--draft"
+          fi
+          mapfile -t assets < <(find release-artifacts -type f | sort)
+          gh release create "$tag" "${assets[@]}" \
+            --title "ScratchBird ${{ inputs.version }}" \
+            --notes "Release candidate generated from $GITHUB_SHA." \
+            --prerelease \
+            $draft_flag

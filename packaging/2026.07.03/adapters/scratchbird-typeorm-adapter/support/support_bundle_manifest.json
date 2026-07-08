@@ -1,8 +1,0 @@
-{
-  "category": "adaptor",
-  "component_id": "adaptor:scratchbird-typeorm-adapter",
-  "hash": "691e91890ec873afe09508efe7b04106e6993c474e05f2ffef794389c488c1ca",
-  "name": "scratchbird-typeorm-adapter",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.component_support_bundle_manifest.v1"
-}

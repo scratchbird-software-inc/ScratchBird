@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:r",
-  "driver": "r",
-  "hash": "8188154e9ccea4f94c1b906013756116a2b61c6436eb627d445cca9fb5c8a7d4",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

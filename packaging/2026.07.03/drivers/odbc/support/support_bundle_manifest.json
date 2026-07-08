@@ -1,8 +1,0 @@
-{
-  "component_id": "driver:odbc",
-  "driver": "odbc",
-  "hash": "7e21e06fd671160c06d55f0882d33d07686de1f0a78a20c98622bc52b221b447",
-  "proof_summary": "../proofs/proof_summary.json",
-  "resource_pack_digest": "3897a56459a41c2f13521056b62735e511f1ee3ec10f312cee6f9d9931cd8c70",
-  "schema_id": "scratchbird.driver_support_bundle_manifest.v1"
-}

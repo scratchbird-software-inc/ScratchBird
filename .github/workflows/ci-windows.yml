@@ -1,0 +1,84 @@
+name: ScratchBird Windows CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-release-windows:
+    name: Public release Windows build and CTest
+    runs-on: windows-2022
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-icu
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4
+            mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-geos
+            mingw-w64-ucrt-x86_64-proj
+            mingw-w64-ucrt-x86_64-gtest
+
+      - name: Static release gates
+        shell: bash
+        run: |
+          python project/tools/release/public_packaging_history_gate.py
+          python project/tools/release/github_actions_static_gate.py
+          python project/tools/release/public_private_reference_scan.py
+
+      - name: Configure
+        working-directory: project
+        run: cmake --preset public-release-windows
+
+      - name: Build
+        working-directory: project
+        run: cmake --build --preset public-release-windows
+
+      - name: CTest
+        working-directory: project
+        run: ctest --preset public-release-windows
+
+      - name: Verify staged public bundle
+        shell: bash
+        run: python project/tools/release/verify_public_release_bundle.py build/public-release-windows/output/windows
+
+      - name: Upload Windows staged output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-windows-public-output
+          path: |
+            build/public-release-windows/output/windows
+            build/public-release-windows/Testing
+          if-no-files-found: warn
+          retention-days: 14
