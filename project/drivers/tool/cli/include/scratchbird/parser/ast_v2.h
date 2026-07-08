@@ -34,6 +34,10 @@
 #include <functional>
 #include <type_traits>
 
+#ifdef DOMAIN
+#undef DOMAIN
+#endif
+
 namespace scratchbird::parser::v2 {
 
 // Import shared types from parser namespace

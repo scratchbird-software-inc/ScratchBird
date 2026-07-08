@@ -41,6 +41,8 @@ class Database;
 
 namespace scratchbird::parser::mysql {
 
+struct SelectStmt;
+
 /**
  * Parse error with location information
  */
@@ -270,9 +272,10 @@ struct TableRef {
     std::vector<std::string> using_columns;
 
     // For subqueries
-    std::unique_ptr<struct SelectStmt> subquery;
+    std::unique_ptr<SelectStmt> subquery;
 
-    TableRef() : type(Type::TABLE) {}
+    TableRef();
+    ~TableRef();
 };
 
 /**
@@ -294,6 +297,9 @@ struct SelectStmt {
     std::unique_ptr<SelectStmt> union_stmt;
     bool union_all = false;
 };
+
+inline TableRef::TableRef() : type(Type::TABLE) {}
+inline TableRef::~TableRef() = default;
 
 /**
  * MySQL Parser

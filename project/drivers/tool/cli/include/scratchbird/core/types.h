@@ -14,6 +14,10 @@
 #include <memory>
 #include "scratchbird/core/uuidv7.h"
 
+#ifdef DOMAIN
+#undef DOMAIN
+#endif
+
 namespace scratchbird::core
 {
     // 128-bit integer type (GCC extension)
