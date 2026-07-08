@@ -224,8 +224,14 @@ bool FillProtectedRandomBytes(byte* output,
     *entropy_source = "windows_bcryptgenrandom";
   }
   return ok;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
-    defined(__NetBSD__) || defined(__DragonFly__)
+#elif defined(__APPLE__)
+  arc4random_buf(output, size);
+  if (entropy_source != nullptr) {
+    *entropy_source = "arc4random_buf";
+  }
+  return true;
+#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || \
+    defined(__DragonFly__)
   if (size <= 256 && getentropy(output, size) == 0) {
     if (entropy_source != nullptr) {
       *entropy_source = "posix_getentropy";
