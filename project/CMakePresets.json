@@ -48,7 +48,8 @@
         "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
         "SB_BUILD_TESTS": "ON",
         "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF",
-        "SB_PUBLIC_TARGET_PLATFORM": "macos"
+        "SB_PUBLIC_TARGET_PLATFORM": "macos",
+        "SB_LLVM_MIN_MAJOR": "22"
       }
     },
     {

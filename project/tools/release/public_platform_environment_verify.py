@@ -126,7 +126,7 @@ PLATFORM_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "proj",
             "googletest",
             "unixodbc",
-            "LLVM 23+",
+            "LLVM 22+",
             "MACOS_SIGNING_STATE.json",
             "engine_listener_enterprise",
         ),
@@ -236,6 +236,7 @@ NATIVE_PROOF_CONTRACTS: dict[str, dict[str, Any]] = {
             "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF "
             "-DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF "
             "-DSB_LLVM_LINK_MODE=dynamic "
+            "-DSB_LLVM_MIN_MAJOR=22 "
             "-DSB_PUBLIC_TARGET_PLATFORM=macos"
         ),
         "build_command": "cmake --build build-macos-public-release-proof -j2",

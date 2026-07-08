@@ -34,6 +34,9 @@ All support-eligible platforms must provide before support is claimed:
 - UBSan
 - TSan
 
+macOS GitHub-hosted proof runners currently use Homebrew LLVM 22; the macOS
+public-release preset records that exception with `SB_LLVM_MIN_MAJOR=22`.
+
 Every support-eligible platform must prove before support is claimed:
 
 - `SB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON`
