@@ -36,6 +36,7 @@ jobs:
             gnupg \
             lsb-release \
             libssl-dev \
+            libboost-dev \
             libicu-dev \
             libxml2-dev \
             zlib1g-dev \
