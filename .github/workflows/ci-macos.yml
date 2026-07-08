@@ -62,24 +62,41 @@ jobs:
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install base build dependencies
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         run: |
-          brew install \
+          time brew install \
             cmake \
             ninja \
-            llvm \
+            pkg-config
+
+      - name: Install release library dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          time brew install \
             openssl@3 \
             boost \
             icu4c \
             libxml2 \
             lz4 \
-            zstd \
+            zstd
+
+      - name: Install LLVM dependency
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: time brew install llvm
+
+      - name: Install spatial driver and test dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          time brew install \
             geos \
             proj \
             googletest \
-            unixodbc \
-            pkg-config
+            unixodbc
+
+      - name: Expose Homebrew dependency roots
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
           {
             echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
             echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
