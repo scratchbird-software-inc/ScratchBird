@@ -39,6 +39,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-icu
             mingw-w64-ucrt-x86_64-libxml2

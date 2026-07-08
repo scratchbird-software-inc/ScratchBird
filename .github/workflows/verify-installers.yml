@@ -61,6 +61,9 @@ jobs:
             build-essential \
             cmake \
             python3 \
+            wget \
+            gnupg \
+            lsb-release \
             rpm \
             libssl-dev \
             libicu-dev \
@@ -72,6 +75,10 @@ jobs:
             libproj-dev \
             libgtest-dev \
             unixodbc-dev
+          wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 23
+          sudo apt-get install -y libllvm23 llvm-23-dev
 
       - name: Static release gates
         run: |
@@ -154,6 +161,7 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-icu
             mingw-w64-ucrt-x86_64-libxml2
