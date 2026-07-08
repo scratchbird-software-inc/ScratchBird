@@ -104,6 +104,8 @@ else()
             /usr/include
             /usr/local/include
             /opt/homebrew/include
+            /opt/homebrew/opt/unixodbc/include
+            /usr/local/opt/unixodbc/include
             /usr/include/odbc
             /usr/local/include/odbc
             /opt/odbc/include
@@ -118,6 +120,8 @@ else()
             /usr/lib
             /usr/local/lib
             /opt/homebrew/lib
+            /opt/homebrew/opt/unixodbc/lib
+            /usr/local/opt/unixodbc/lib
             /usr/lib/x86_64-linux-gnu
             /usr/lib64
             /opt/odbc/lib
