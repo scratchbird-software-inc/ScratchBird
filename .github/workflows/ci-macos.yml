@@ -67,6 +67,7 @@ jobs:
             ninja \
             llvm \
             openssl@3 \
+            boost \
             icu4c \
             libxml2 \
             lz4 \
