@@ -93,7 +93,11 @@ std::string JsonEscape(const std::string& value) {
 void SetCurrentThreadName(const std::string& name) {
 #ifndef _WIN32
   std::string bounded = name.substr(0, 15);
+#if defined(__APPLE__)
+  (void)::pthread_setname_np(bounded.c_str());
+#else
   (void)::pthread_setname_np(::pthread_self(), bounded.c_str());
+#endif
 #else
   (void)name;
 #endif
