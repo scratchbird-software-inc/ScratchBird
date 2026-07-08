@@ -32,12 +32,28 @@ REQUIRED_WORKFLOWS = {
         "verify_public_release_bundle.py",
         "public_packaging_history_gate.py",
     ),
+    "ci-macos.yml": (
+        "workflow_dispatch:",
+        "SB_MACOS_CI_ENABLED",
+        "macos-15-intel",
+        "macos-15",
+        "cmake --preset public-release-macos",
+        "ctest --preset public-release-macos",
+        "verify_public_release_bundle.py",
+        "build_installers.py",
+        "make_macos_universal.py",
+        "verify_installer_artifacts.py",
+        "smoke_install_macos.sh",
+    ),
     "verify-installers.yml": (
         "workflow_dispatch:",
         "build_installers.py",
         "verify_installer_artifacts.py",
         "smoke_install_linux.sh",
         "smoke_install_windows.ps1",
+        "smoke_install_macos.sh",
+        "make_macos_universal.py",
+        "public-release-macos",
     ),
     "nightly-installers.yml": (
         "schedule:",
@@ -45,12 +61,14 @@ REQUIRED_WORKFLOWS = {
         "SB_NIGHTLY_INSTALLERS_ENABLED",
         "build_installers.py",
         "verify_installer_artifacts.py",
+        "macos",
     ),
     "release-candidate.yml": (
         "workflow_dispatch:",
         "gh release",
         "verify_installer_artifacts.py",
         "INSTALLER_ARTIFACT_MANIFEST.json",
+        "macos",
     ),
 }
 

@@ -27,7 +27,7 @@ FORBIDDEN_FRAGMENTS = (
     "." + "git",
 )
 
-REQUIRED_RELEASE_PLATFORMS = ("linux", "windows", "freebsd")
+REQUIRED_RELEASE_PLATFORMS = ("linux", "windows", "freebsd", "macos")
 VULNERABILITY_SCANNER_PROFILE = "offline_public_release_advisory_baseline_v1"
 VULNERABILITY_ADVISORY_DATABASE = "project_local_public_release_baseline"
 
@@ -228,9 +228,8 @@ def release_layouts(repo_root: Path) -> list[dict[str, Any]]:
                     "status": "pending_generated_release_bundle",
                 }
             )
-    for out_of_scope in ("macos", "darwin"):
-        if (release_root / out_of_scope).exists():
-            fail(f"macos_release_layout_present:{out_of_scope}")
+    if (release_root / "darwin").exists():
+        fail("darwin_release_layout_present")
     return layouts
 
 

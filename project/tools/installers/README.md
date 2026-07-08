@@ -25,11 +25,54 @@ python3 project/tools/installers/build_installers.py \
   --version 0.0.0-nightly
 ```
 
+macOS uses the same public output contract, with native x86_64 and arm64
+builds produced on GitHub-hosted macOS runners:
+
+```bash
+cmake --preset public-release-macos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+cmake --build --preset public-release-macos
+ctest --preset public-release-macos
+python3 project/tools/release/verify_public_release_bundle.py \
+  build/public-release-macos/output/macos
+python3 project/tools/installers/build_installers.py \
+  --platform macos \
+  --artifact-root build/public-release-macos/output/macos \
+  --output-root build/installers/macos-arm64 \
+  --version 0.0.0-nightly
+python3 project/tools/installers/verify_installer_artifacts.py \
+  --platform macos \
+  --artifact-root build/installers/macos-arm64
+project/tools/installers/smoke_install_macos.sh \
+  build/installers/macos-arm64/scratchbird-macos-0.0.0-nightly.tar.gz \
+  build/install-smoke/macos-arm64-tar
+```
+
+When both per-architecture macOS tarballs have passed verification, a universal
+QA tarball can be assembled on a macOS runner:
+
+```bash
+python3 project/tools/installers/make_macos_universal.py \
+  --x86-tar build/installers/macos-x86_64/scratchbird-macos-0.0.0-nightly.tar.gz \
+  --arm-tar build/installers/macos-arm64/scratchbird-macos-0.0.0-nightly.tar.gz \
+  --output-root build/installers/macos-universal \
+  --version 0.0.0-nightly-universal
+```
+
 Rules:
 
 - `packaging/` is not an installer input authority.
 - Installer inputs come from the clean public output tree and source-tracked
   installer recipes only.
 - Generated installers must carry manifests, checksums, and proof sidecars.
+- macOS generated installers must carry launchd plists, a dynamic-library audit,
+  support-matrix metadata, and signing-state metadata.
+- macOS smoke tests record fresh install, upgrade overlay, uninstall/removal,
+  and config-preservation proof for extracted QA payloads.
+- macOS universal artifacts are optional QA artifacts assembled only after both
+  per-architecture artifacts verify.
+- macOS QA packages are unsigned unless release signing variables are provided;
+  unsigned QA artifacts must not be promoted as final signed installers.
 - Private paths, private workplans, acquired reference payloads, and secrets are
   forbidden in installer artifacts.

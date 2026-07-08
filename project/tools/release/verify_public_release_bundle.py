@@ -80,7 +80,7 @@ def main() -> int:
     artifact_root = args.artifact_root.resolve()
     if not artifact_root.is_dir():
         raise SystemExit(f"artifact_root_not_found:{artifact_root}")
-    if artifact_root.name not in {"linux", "windows", "bsd"}:
+    if artifact_root.name not in {"linux", "windows", "macos", "bsd"}:
         raise SystemExit(f"unsupported_artifact_platform:{artifact_root.name}")
 
     stage_gate = repo_root / "project" / "tools" / "release" / "public_output_stage_gate.py"

@@ -28,6 +28,7 @@ REQUIRED_PLATFORMS: dict[str, dict[str, Any]] = {
         "target_id": "linux-x86_64-glibc-core",
         "os": "Linux",
         "runtime": "glibc",
+        "architecture": "x86_64",
         "host_systems": {"Linux"},
         "compiler_families": {"GNU": "13", "Clang": "18"},
         "matrix_compilers": (("GCC", "13"), ("Clang", "18")),
@@ -46,6 +47,7 @@ REQUIRED_PLATFORMS: dict[str, dict[str, Any]] = {
         "target_id": "windows-x86_64-gnu-core",
         "os": "Windows",
         "runtime": "ucrt64",
+        "architecture": "x86_64",
         "host_systems": {"Windows"},
         "compiler_families": {"GNU": "15"},
         "matrix_compilers": (("GCC", "15"),),
@@ -68,6 +70,7 @@ REQUIRED_PLATFORMS: dict[str, dict[str, Any]] = {
         "target_id": "freebsd-x86_64-elf-core",
         "os": "FreeBSD",
         "runtime": "libc++",
+        "architecture": "x86_64",
         "host_systems": {"FreeBSD"},
         "compiler_families": {"Clang": "18"},
         "matrix_compilers": (("Clang", "18"),),
@@ -82,9 +85,33 @@ REQUIRED_PLATFORMS: dict[str, dict[str, Any]] = {
             "cluster execution succeeds without the external cluster provider",
         ),
     },
+    "macos": {
+        "target_id": "macos-x86_64-darwin-core",
+        "os": "Darwin",
+        "runtime": "libc++",
+        "architecture": "x86_64",
+        "host_systems": {"Darwin"},
+        "compiler_families": {"AppleClang": "16", "Clang": "18"},
+        "matrix_compilers": (("AppleClang", "16"), ("Clang", "18")),
+        "doc_tokens": (
+            "macOS 14 or newer",
+            "macos-15-intel",
+            "macos-15",
+            "AppleClang 16",
+            "Clang 18+",
+            "CMAKE_OSX_DEPLOYMENT_TARGET=14.0",
+            "SB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON",
+            "SB_ENABLE_CLUSTER_PROVIDER=OFF",
+            "SB_LLVM_LINK_MODE=dynamic",
+            "ctest --test-dir",
+            "MACOS_SIGNING_STATE.json",
+            "cluster execution succeeds without the external cluster provider",
+        ),
+    },
 }
 
 ARCH_ALIASES = {"x86_64", "amd64", "AMD64"}
+MACOS_ARCH_ALIASES = {"x86_64", "amd64", "AMD64", "arm64", "aarch64", "ARM64"}
 WINDOWS_32BIT_PROCESSORS = {"x86", "X86", "Win32", "win32", "I386", "i386", "i686"}
 
 REQUIRED_LAYOUT_EXCLUSIONS = {
@@ -228,7 +255,7 @@ def check_matrix(repo_root: Path, project_root: Path) -> dict[str, Any]:
         "beta_supported_targets:",
         "unsupported_platform_diagnostics:",
         "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE",
-        "macos-first-release-out-of-scope",
+        "architecture_not_listed_in_beta_supported_targets",
         "unsupported_platform_fail_closed_before_configure_or_release_claim",
         "cluster_compile_modes:",
         'mode: "noncluster"',
@@ -249,7 +276,7 @@ def check_matrix(repo_root: Path, project_root: Path) -> dict[str, Any]:
         block = matrix_target_block(matrix_block, spec["target_id"])
         for token in (
             f'os: "{spec["os"]}"',
-            'architecture: "x86_64"',
+            f'architecture: "{spec["architecture"]}"',
             f'runtime: "{spec["runtime"]}"',
             f'release_layout: "release/{platform_id}/ENGINE_BINARY_LAYOUT.json"',
             f'build_requirements: "docs/build_requirements/{platform_id}/README.md"',
@@ -280,8 +307,19 @@ def check_matrix(repo_root: Path, project_root: Path) -> dict[str, Any]:
                 require_contains(block, token, "matrix_windows_x64_only")
     if re.search(r'target_id:\s*"windows-(?!x86_64)[^"]*"', matrix_block):
         fail("windows_non_x64_target_declared")
-    if "target_id: \"macos" in matrix_block.lower() or "target_id: \"darwin" in matrix_block.lower():
-        fail("macos_must_not_be_declared_first_release_target")
+    macos_arm_block = matrix_target_block(matrix_block, "macos-arm64-darwin-core")
+    for token in (
+        'os: "Darwin"',
+        'architecture: "arm64"',
+        'runtime: "libc++"',
+        'native_runner_required: "macos-15"',
+        'release_layout: "release/macos/ENGINE_BINARY_LAYOUT.json"',
+        'build_requirements: "docs/build_requirements/macos/README.md"',
+        'deployment_target: "14.0"',
+        'family: "AppleClang"',
+        'minimum: "16"',
+    ):
+        require_contains(macos_arm_block, token, "matrix_macos_arm64")
     for token in (
         "win32-first-release-out-of-scope",
         "Windows 32-bit / Win32 / x86",
@@ -303,7 +341,8 @@ def check_build_requirements(repo_root: Path) -> list[dict[str, Any]]:
         "Target platform pending native CI/runtime proof",
         "FreeBSD x86_64, FreeBSD 14.x",
         "Target platform pending native runner proof",
-        "macOS | Out of scope for first public release",
+        "macOS 14+ x86_64 and arm64",
+        "Target platform pending native GitHub CI/runtime proof",
         "All support-eligible platforms must provide before support is claimed",
         "Every support-eligible platform must prove before support is claimed",
         "CMake 3.25 minimum",
@@ -408,9 +447,6 @@ def check_release_layouts(repo_root: Path) -> list[dict[str, Any]]:
                 "debug_symbol_package_policy": payload["debug_symbol_package_policy"],
             }
         )
-    for unsupported in ("macos", "darwin"):
-        if (release_root / unsupported).exists():
-            fail(f"unsupported_platform_layout_present:{unsupported}")
     return layouts
 
 
@@ -459,13 +495,22 @@ def check_configured_host(args: argparse.Namespace) -> dict[str, Any]:
         fail(f"configured_cxx_standard_mismatch:{cxx_standard}")
     if configured_windows_x86_hard_fail(system_name, processor):
         fail(f"configured_windows_x86_not_supported:{processor}:windows_x64_only_no_win32_release_target")
-    if processor not in ARCH_ALIASES:
+    if system_name == "Darwin":
+        if processor not in MACOS_ARCH_ALIASES:
+            return {
+                "system": system_name,
+                "processor": processor,
+                "status": "unsupported_fail_closed",
+                "diagnostic": "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE",
+                "reason": "architecture_not_listed_in_beta_supported_targets",
+            }
+    elif processor not in ARCH_ALIASES:
         return {
             "system": system_name,
             "processor": processor,
             "status": "unsupported_fail_closed",
             "diagnostic": "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE",
-            "reason": "first_release_x86_64_only",
+            "reason": "architecture_not_listed_in_beta_supported_targets",
         }
 
     platform_id = host_platform_id(system_name)
@@ -540,7 +585,7 @@ def build_evidence(repo_root: Path, project_root: Path, args: argparse.Namespace
             "private_docs_required": False,
             "git_history_required": False,
             "first_release_platforms": sorted(REQUIRED_PLATFORMS),
-            "unsupported_platforms": ["darwin", "macos"],
+            "unsupported_platforms": ["platform_not_listed_in_beta_supported_targets"],
             "unsupported_platform_diagnostic": "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE",
             "windows_release_scope": "x64_only_no_win32",
             "first_release_binary_scope": "engine_only",

@@ -170,6 +170,7 @@ def check_build_requirement_docs(repo_root: Path) -> list[dict[str, str]]:
         "linux": repo_root / "docs" / "build_requirements" / "linux" / "README.md",
         "windows": repo_root / "docs" / "build_requirements" / "windows" / "README.md",
         "freebsd": repo_root / "docs" / "build_requirements" / "freebsd" / "README.md",
+        "macos": repo_root / "docs" / "build_requirements" / "macos" / "README.md",
     }
     required_tokens = {
         "root": (
@@ -193,6 +194,14 @@ def check_build_requirement_docs(repo_root: Path) -> list[dict[str, str]]:
             "SB_PUBLIC_RELEASE_WARNINGS_AS_ERRORS=ON",
         ),
         "freebsd": (
+            "cppcheck",
+            "ASan and UBSan",
+            "TSan where",
+            "SB_PUBLIC_RELEASE_WARNINGS_AS_ERRORS=ON",
+            "SB_PUBLIC_RELEASE_SANITIZER_PROFILE=asan-ubsan",
+        ),
+        "macos": (
+            "clang-tidy",
             "cppcheck",
             "ASan and UBSan",
             "TSan where",

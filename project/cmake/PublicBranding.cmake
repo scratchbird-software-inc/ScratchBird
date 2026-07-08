@@ -17,6 +17,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(sb_public_default_target_platform linux)
 elseif(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
   set(sb_public_default_target_platform windows)
+elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(sb_public_default_target_platform macos)
 elseif(CMAKE_SYSTEM_NAME MATCHES "BSD|DragonFly")
   set(sb_public_default_target_platform bsd)
 else()
@@ -24,7 +26,7 @@ else()
 endif()
 set(SB_PUBLIC_TARGET_PLATFORM "${sb_public_default_target_platform}" CACHE STRING
   "Public artifact platform directory name")
-set_property(CACHE SB_PUBLIC_TARGET_PLATFORM PROPERTY STRINGS linux windows bsd)
+set_property(CACHE SB_PUBLIC_TARGET_PLATFORM PROPERTY STRINGS linux windows macos bsd)
 set(SB_PUBLIC_OUTPUT_ROOT "${CMAKE_BINARY_DIR}/output" CACHE PATH
   "Build-tree root for public test and release artifacts")
 set(SB_PUBLIC_ARTIFACT_ROOT "${SB_PUBLIC_OUTPUT_ROOT}/${SB_PUBLIC_TARGET_PLATFORM}" CACHE PATH

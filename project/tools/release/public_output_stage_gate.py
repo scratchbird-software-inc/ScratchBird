@@ -85,6 +85,7 @@ def static_library_candidates(library_name: str) -> dict[str, tuple[str, ...]]:
     return {
         "linux": (f"lib/lib{library_name}.a",),
         "bsd": (f"lib/lib{library_name}.a",),
+        "macos": (f"lib/lib{library_name}.a",),
         "windows": (f"lib/{library_name}.lib", f"lib/lib{library_name}.a"),
     }
 
@@ -95,6 +96,7 @@ REQUIRED_LIBRARY_CANDIDATES = (
         {
             "linux": ("lib/libSBcore.so",),
             "bsd": ("lib/libSBcore.so",),
+            "macos": ("lib/libSBcore.dylib", "lib/libSBcore.so"),
             "windows": ("bin/SBcore.dll", "lib/SBcore.dll"),
         },
     ),
@@ -103,6 +105,7 @@ REQUIRED_LIBRARY_CANDIDATES = (
         {
             "linux": ("lib/libSBcore_static.a",),
             "bsd": ("lib/libSBcore_static.a",),
+            "macos": ("lib/libSBcore_static.a",),
             "windows": ("lib/SBcore_static.lib", "lib/libSBcore_static.a"),
         },
     ),
@@ -126,7 +129,7 @@ def main() -> int:
 
     root = args.artifact_root.resolve()
     failures: list[str] = []
-    if args.platform not in {"linux", "windows", "bsd"}:
+    if args.platform not in {"linux", "windows", "macos", "bsd"}:
         failures.append(f"unsupported_platform:{args.platform}")
     if root.name != args.platform:
         failures.append(f"artifact_root_platform_mismatch:{root}")

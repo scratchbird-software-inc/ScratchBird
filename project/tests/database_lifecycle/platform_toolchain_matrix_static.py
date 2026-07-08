@@ -135,7 +135,14 @@ def main() -> int:
         'target_id: "freebsd-x86_64-elf-core"',
         'os: "FreeBSD"',
         'runtime: "libc++"',
-        'macos-first-release-out-of-scope',
+        'target_id: "macos-x86_64-darwin-core"',
+        'target_id: "macos-arm64-darwin-core"',
+        'os: "Darwin"',
+        'architecture: "arm64"',
+        'runtime: "libc++"',
+        'family: "AppleClang"',
+        'deployment_target: "14.0"',
+        'architecture_not_listed_in_beta_supported_targets',
         'unsupported_platform_fail_closed_before_configure_or_release_claim',
         'SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE',
         'driver_adaptor_toolchain_waiver_policy:',
@@ -182,10 +189,14 @@ def main() -> int:
     system_name = metadata["CMAKE_SYSTEM_NAME"]
     processor = metadata["CMAKE_SYSTEM_PROCESSOR"]
     compiler_id = metadata["CMAKE_CXX_COMPILER_ID"]
-    if processor not in {"x86_64", "amd64", "AMD64"}:
+    if system_name == "Darwin":
+        supported_processor = processor in {"x86_64", "amd64", "AMD64", "arm64", "aarch64", "ARM64"}
+    else:
+        supported_processor = processor in {"x86_64", "amd64", "AMD64"}
+    if not supported_processor:
         return fail(
             "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE: "
-            f"first release supports x86_64 only, got {processor}"
+            f"first release does not list architecture {processor}"
         )
     if system_name == "Linux":
         if compiler_id not in {"GNU", "Clang"}:
@@ -196,6 +207,9 @@ def main() -> int:
     elif system_name == "FreeBSD":
         if compiler_id != "Clang":
             return fail(f"FreeBSD beta matrix supports Clang, got {compiler_id}")
+    elif system_name == "Darwin":
+        if compiler_id not in {"AppleClang", "Clang"}:
+            return fail(f"macOS beta matrix supports AppleClang/Clang, got {compiler_id}")
     else:
         return fail(
             "SB_DIAG_PLATFORM_UNSUPPORTED_FIRST_RELEASE: "

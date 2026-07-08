@@ -17,6 +17,7 @@ import gzip
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shutil
@@ -34,6 +35,31 @@ MANIFEST_NAME = "INSTALLER_ARTIFACT_MANIFEST.json"
 PRODUCT_NAME = "ScratchBird"
 MANUFACTURER = "ScratchBird Software Inc."
 WINDOWS_UPGRADE_CODE = "8F28B062-0620-4D2A-8D4C-8D3E19ED4012"
+MACOS_SUPPORT_MATRIX = {
+    "schema_id": "scratchbird.macos_support_matrix.v1",
+    "minimum_macos_version": "14.0",
+    "deployment_target": "14.0",
+    "runner_labels": {
+        "x86_64": "macos-15-intel",
+        "arm64": "macos-15",
+    },
+    "architectures": ["x86_64", "arm64"],
+    "universal_artifact_policy": "optional_after_individual_architecture_artifacts_verify",
+    "rosetta_policy": "arm64_release_proof_must_be_native_not_translated",
+    "filesystem_layout": {
+        "runtime": "/opt/ScratchBird",
+        "configuration": "/etc/scratchbird",
+        "launchd": "/Library/LaunchDaemons",
+        "logs": "/opt/ScratchBird/var/log",
+        "runtime_state": "/opt/ScratchBird/var/run",
+    },
+}
+MACOS_LAUNCHD_SERVICES = (
+    ("com.scratchbird.sbsrv", "SBsrv", "SBsrv.conf"),
+    ("com.scratchbird.sbgate", "SBgate", "SBgate.conf"),
+    ("com.scratchbird.sbmgr", "SBmgr", "SBmgr.conf"),
+    ("com.scratchbird.sbparser", "SBParser", "SBParser.conf"),
+)
 FORBIDDEN_TEXT = (
     "ScratchBird" + "-Private",
     "/home/",
@@ -102,7 +128,7 @@ def windows_msi_version(version: str) -> str:
 def is_text_candidate(path: Path) -> bool:
     if path.stat().st_size > 2 * 1024 * 1024:
         return False
-    if path.suffix.lower() in {".json", ".md", ".txt", ".csv", ".xml", ".ini", ".conf", ".service", ".sh", ".ps1"}:
+    if path.suffix.lower() in {".json", ".md", ".txt", ".csv", ".xml", ".ini", ".conf", ".service", ".plist", ".sh", ".ps1"}:
         return True
     return path.name in {"SHA256SUMS", "PKGBUILD", "control", "postinst", "prerm"}
 
@@ -208,6 +234,57 @@ def write_install_metadata(root: Path, platform: str, version: str, build_id: st
     (release_dir / "SHA256SUMS").write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
 
 
+def write_macos_support_matrix(root: Path) -> None:
+    release_dir = root / "opt" / "ScratchBird" / "share" / "scratchbird" / "release"
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (release_dir / "MACOS_SUPPORT_MATRIX.json").write_text(
+        json.dumps(MACOS_SUPPORT_MATRIX, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_macos_launchd_payload(root: Path) -> None:
+    launchd_root = root / "Library" / "LaunchDaemons"
+    launchd_root.mkdir(parents=True, exist_ok=True)
+    (root / "opt" / "ScratchBird" / "var" / "log").mkdir(parents=True, exist_ok=True)
+    (root / "opt" / "ScratchBird" / "var" / "run").mkdir(parents=True, exist_ok=True)
+    manifest_rows = []
+    for label, binary, config in MACOS_LAUNCHD_SERVICES:
+        plist_path = launchd_root / f"{label}.plist"
+        payload = {
+            "Label": label,
+            "ProgramArguments": [
+                f"/opt/ScratchBird/bin/{binary}",
+                "--config",
+                f"/etc/scratchbird/{config}",
+            ],
+            "RunAtLoad": False,
+            "KeepAlive": False,
+            "StandardOutPath": f"/opt/ScratchBird/var/log/{label}.out.log",
+            "StandardErrorPath": f"/opt/ScratchBird/var/log/{label}.err.log",
+            "WorkingDirectory": "/opt/ScratchBird",
+        }
+        with plist_path.open("wb") as handle:
+            plistlib.dump(payload, handle, sort_keys=True)
+        plist_path.chmod(0o644)
+        manifest_rows.append({"label": label, "binary": binary, "plist": f"/Library/LaunchDaemons/{plist_path.name}"})
+    release_dir = root / "opt" / "ScratchBird" / "share" / "scratchbird" / "release"
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (release_dir / "MACOS_LAUNCHD_MANIFEST.json").write_text(
+        json.dumps(
+            {
+                "schema_id": "scratchbird.macos_launchd_manifest.v1",
+                "services": manifest_rows,
+                "default_service_state": "installed_disabled_until_admitted_by_policy",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def stage_install_tree(artifact_root: Path, payload_root: Path, platform: str, version: str, build_id: str | None) -> None:
     if payload_root.exists():
         shutil.rmtree(payload_root)
@@ -222,6 +299,9 @@ def stage_install_tree(artifact_root: Path, payload_root: Path, platform: str, v
             target = payload_root / "opt" / "ScratchBird" / "share" / "scratchbird" / "release" / file_name
             target.parent.mkdir(parents=True, exist_ok=True)
             sanitize_release_manifest(source, target, platform)
+    if platform == "macos":
+        write_macos_support_matrix(payload_root)
+        write_macos_launchd_payload(payload_root)
     write_install_metadata(payload_root, platform, version, build_id)
     scan_private_text(payload_root)
 
@@ -412,6 +492,144 @@ def make_zip(payload_root: Path, output_root: Path, version: str) -> Path:
     return output
 
 
+def macos_binary_candidates(payload_root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for root in (payload_root / "opt" / "ScratchBird" / "bin", payload_root / "opt" / "ScratchBird" / "lib"):
+        if not root.exists():
+            continue
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            if path.suffix in {".a", ".h", ".hpp", ".json", ".txt", ".md"}:
+                continue
+            if path.suffix in {".dylib", ".so"} or os.access(path, os.X_OK):
+                candidates.append(path)
+    return candidates
+
+
+def write_macos_dynamic_library_audit(payload_root: Path, output_root: Path) -> Path:
+    otool = shutil.which("otool")
+    if not otool:
+        fail("macos_otool_not_found")
+    rows = []
+    forbidden_fragments = (
+        payload_root.as_posix(),
+        "/build/",
+        "build/public-release",
+        "CMakeFiles",
+    )
+    for path in macos_binary_candidates(payload_root):
+        output = run([otool, "-L", str(path)], cwd=payload_root)
+        for fragment in forbidden_fragments:
+            if fragment in output:
+                fail(f"macos_dylib_build_path_leak:{path.relative_to(payload_root).as_posix()}:{fragment}")
+        rows.append(
+            {
+                "path": path.relative_to(payload_root).as_posix(),
+                "otool_L": output.splitlines(),
+                "status": "checked",
+            }
+        )
+    if not rows:
+        fail("macos_dynamic_library_candidates_missing")
+    audit = {
+        "schema_id": "scratchbird.macos_dynamic_library_audit.v1",
+        "checks": [
+            "otool -L",
+            "no build-tree paths",
+            "no staged payload root absolute paths",
+            "@rpath_or_system_paths_only",
+        ],
+        "rows": rows,
+    }
+    path = output_root / "MACOS_DYNAMIC_LIBRARY_AUDIT.json"
+    path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def maybe_sign_macos_payload(payload_root: Path) -> dict[str, Any]:
+    signing_enabled = os.environ.get("SB_MACOS_RELEASE_SIGNING_ENABLED") == "true"
+    signing_mode = os.environ.get("SB_MACOS_SIGNING_MODE", "qa-unsigned")
+    state: dict[str, Any] = {
+        "schema_id": "scratchbird.macos_signing_state.v1",
+        "release_signing_enabled": signing_enabled,
+        "signing_mode": signing_mode,
+        "codesign": shutil.which("codesign") is not None,
+        "spctl": shutil.which("spctl") is not None,
+        "pkgutil": shutil.which("pkgutil") is not None,
+        "notarization": "not_requested",
+        "artifacts": [],
+    }
+    if not signing_enabled:
+        state["status"] = "qa_unsigned_not_for_public_signed_release"
+        return state
+    identity = os.environ.get("SB_MACOS_DEVELOPER_ID_APPLICATION")
+    if not identity:
+        fail("macos_release_signing_enabled_without_application_identity")
+    if not shutil.which("codesign"):
+        fail("macos_release_signing_enabled_without_codesign")
+    for path in macos_binary_candidates(payload_root):
+        run(["codesign", "--force", "--options", "runtime", "--timestamp", "--sign", identity, str(path)], cwd=payload_root)
+        verify_output = run(["codesign", "--verify", "--strict", "--verbose=2", str(path)], cwd=payload_root)
+        state["artifacts"].append(
+            {
+                "path": path.relative_to(payload_root).as_posix(),
+                "identity": identity,
+                "verification": verify_output.splitlines(),
+                "status": "signed",
+            }
+        )
+    state["status"] = "payload_signed"
+    return state
+
+
+def write_macos_signing_state(output_root: Path, state: dict[str, Any]) -> Path:
+    path = output_root / "MACOS_SIGNING_STATE.json"
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def make_macos_pkg(payload_root: Path, output_root: Path, version: str, signing_state: dict[str, Any]) -> Path:
+    pkgbuild = shutil.which("pkgbuild")
+    if not pkgbuild:
+        fail("pkgbuild_not_found")
+    package = output_root / f"scratchbird-macos-{sanitize_version(version)}.pkg"
+    command = [
+        pkgbuild,
+        "--root",
+        str(payload_root),
+        "--identifier",
+        "com.scratchbird.cde",
+        "--version",
+        sanitize_version(version),
+    ]
+    installer_identity = os.environ.get("SB_MACOS_DEVELOPER_ID_INSTALLER")
+    if signing_state.get("release_signing_enabled"):
+        if not installer_identity:
+            fail("macos_release_signing_enabled_without_installer_identity")
+        command.extend(["--sign", installer_identity])
+    command.append(str(package))
+    run(command, cwd=output_root)
+    pkgutil = shutil.which("pkgutil")
+    spctl = shutil.which("spctl")
+    checks: dict[str, Any] = {
+        "pkgutil_check_signature": "not_available",
+        "spctl_assess": "not_requested",
+    }
+    if pkgutil:
+        result = subprocess.run([pkgutil, "--check-signature", str(package)], cwd=output_root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        checks["pkgutil_check_signature"] = result.stdout.splitlines()
+        if signing_state.get("release_signing_enabled") and result.returncode != 0:
+            print(result.stdout, end="")
+            fail("macos_pkg_signature_check_failed")
+    if spctl and signing_state.get("release_signing_enabled"):
+        result = subprocess.run([spctl, "--assess", "--type", "install", "--verbose=2", str(package)], cwd=output_root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        checks["spctl_assess"] = result.stdout.splitlines()
+        if result.returncode != 0:
+            print(result.stdout, end="")
+            fail("macos_pkg_gatekeeper_assess_failed")
+    signing_state["package"] = {"path": package.name, **checks}
+    return package
+
+
 def xml_id(prefix: str, value: str) -> str:
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
     safe = re.sub(r"[^A-Za-z0-9_]", "_", value)
@@ -492,6 +710,13 @@ def write_artifact_manifest(output_root: Path, platform: str, version: str, buil
         "build_id": build_id,
         "artifacts": rows,
     }
+    if platform == "macos":
+        manifest["macos"] = {
+            "support_matrix": MACOS_SUPPORT_MATRIX,
+            "signing_state_file": "MACOS_SIGNING_STATE.json",
+            "dynamic_library_audit_file": "MACOS_DYNAMIC_LIBRARY_AUDIT.json",
+            "launchd_manifest_file": "opt/ScratchBird/share/scratchbird/release/MACOS_LAUNCHD_MANIFEST.json",
+        }
     path = output_root / MANIFEST_NAME
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_root / "SHA256SUMS").write_text(
@@ -505,7 +730,7 @@ def write_artifact_manifest(output_root: Path, platform: str, version: str, buil
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--platform", choices=("linux", "windows"), required=True)
+    parser.add_argument("--platform", choices=("linux", "windows", "macos"), required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--version", default="0.0.0-nightly")
     parser.add_argument("--build-id")
@@ -532,9 +757,15 @@ def main() -> int:
             built.append(make_deb(payload_root, output_root, version))
             built.extend(make_rpm(payload_root, output_root, version, args.require_rpm))
             built.append(make_aur(payload_root, output_root, version))
-        else:
+        elif args.platform == "windows":
             built.append(make_zip(payload_root, output_root, version))
             built.extend(make_wix_msi(payload_root, output_root, version, args.require_msi))
+        else:
+            signing_state = maybe_sign_macos_payload(payload_root)
+            write_macos_dynamic_library_audit(payload_root, output_root)
+            built.append(make_tarball(payload_root, output_root, version, "macos"))
+            built.append(make_macos_pkg(payload_root, output_root, version, signing_state))
+            write_macos_signing_state(output_root, signing_state)
         manifest = write_artifact_manifest(output_root, args.platform, version, args.build_id)
     print(f"build_installers=passed:{manifest}")
     return 0

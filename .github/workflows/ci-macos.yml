@@ -1,0 +1,218 @@
+name: ScratchBird macOS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: macOS architecture to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - x86_64
+          - arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.ref }}-${{ inputs.architecture || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  public-release-macos:
+    name: Public release macOS build and CTest (${{ matrix.arch }})
+    if: ${{ vars.SB_MACOS_CI_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+            cmake_arch: x86_64
+          - arch: arm64
+            runner: macos-15
+            cmake_arch: arm64
+
+    steps:
+      - name: Architecture filter
+        id: arch_filter
+        run: |
+          requested="${{ inputs.architecture || 'all' }}"
+          if [ "$requested" = "all" ] || [ "$requested" = "${{ matrix.arch }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping ${{ matrix.arch }} because requested architecture is $requested."
+          fi
+
+      - name: Checkout
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          brew update
+          brew install \
+            cmake \
+            ninja \
+            llvm \
+            openssl@3 \
+            icu4c \
+            libxml2 \
+            lz4 \
+            zstd \
+            geos \
+            proj \
+            googletest \
+            unixodbc \
+            pkg-config
+          {
+            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
+            echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
+            echo "PATH=$(brew --prefix llvm)/bin:$PATH"
+            echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Static release gates
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          python3 project/tools/release/public_packaging_history_gate.py
+          python3 project/tools/release/github_actions_static_gate.py
+          python3 project/tools/release/public_private_reference_scan.py
+
+      - name: Configure
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        working-directory: project
+        run: cmake --preset public-release-macos -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+
+      - name: Build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        working-directory: project
+        run: cmake --build --preset public-release-macos
+
+      - name: CTest
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        working-directory: project
+        run: ctest --preset public-release-macos
+
+      - name: Verify staged public bundle
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-macos/output/macos
+
+      - name: Build macOS installers
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        env:
+          SB_MACOS_SIGNING_MODE: qa-unsigned
+        run: |
+          python3 project/tools/installers/build_installers.py \
+            --platform macos \
+            --artifact-root build/public-release-macos/output/macos \
+            --output-root build/installers/macos-${{ matrix.arch }} \
+            --version "0.0.0-ci-${{ github.run_id }}-${{ matrix.arch }}" \
+            --build-id "${{ github.run_id }}-${{ matrix.arch }}"
+
+      - name: Verify macOS installer artifacts
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root build/installers/macos-${{ matrix.arch }}
+
+      - name: Smoke macOS tarball
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          archive="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.tar.gz | head -n 1)"
+          project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-${{ matrix.arch }}-tar
+
+      - name: Smoke macOS package
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          package="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.pkg | head -n 1)"
+          project/tools/installers/smoke_install_macos.sh "$package" build/install-smoke/macos-${{ matrix.arch }}-pkg
+
+      - name: Collect macOS proof logs
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          mkdir -p build/macos-proof/${{ matrix.arch }}/logs
+          cp -R build/public-release-macos/Testing build/macos-proof/${{ matrix.arch }}/Testing || true
+          log show --last 5m --style compact > build/macos-proof/${{ matrix.arch }}/logs/system-log-last-5m.txt || true
+
+      - name: Upload macOS staged output
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-public-output
+          path: |
+            build/public-release-macos/output/macos
+            build/macos-proof/${{ matrix.arch }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-installers
+          path: build/installers/macos-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS install smoke proof
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-install-smoke
+          path: build/install-smoke
+          if-no-files-found: warn
+          retention-days: 14
+
+  macos-universal-artifact:
+    name: macOS universal QA artifact
+    needs: public-release-macos
+    if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.architecture == 'all') }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download per-architecture macOS installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: scratchbird-macos-*-installers
+          path: build/universal-input
+
+      - name: Assemble universal QA tarball
+        run: |
+          x86_tar="$(find build/universal-input -path '*x86_64*' -name 'scratchbird-macos-*.tar.gz' | head -n 1)"
+          arm_tar="$(find build/universal-input -path '*arm64*' -name 'scratchbird-macos-*.tar.gz' | head -n 1)"
+          test -n "$x86_tar"
+          test -n "$arm_tar"
+          python3 project/tools/installers/make_macos_universal.py \
+            --x86-tar "$x86_tar" \
+            --arm-tar "$arm_tar" \
+            --output-root build/installers/macos-universal \
+            --version "0.0.0-ci-${{ github.run_id }}-universal" \
+            --build-id "${{ github.run_id }}-universal"
+
+      - name: Smoke universal tarball
+        run: |
+          archive="$(ls build/installers/macos-universal/scratchbird-macos-universal-*.tar.gz | head -n 1)"
+          project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-universal-tar
+
+      - name: Upload universal macOS QA artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-macos-universal-installers
+          path: build/installers/macos-universal
+          if-no-files-found: error
+          retention-days: 14

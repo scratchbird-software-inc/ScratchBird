@@ -94,6 +94,7 @@ ALLOWED_ENGINE_BINARY_NAMES = {
     "scratchbird_engine",
     "scratchbird_engine.exe",
     "libscratchbird_engine.so",
+    "libscratchbird_engine.dylib",
     "scratchbird_engine.dll",
     "libscratchbird_engine.a",
 }
@@ -108,6 +109,8 @@ GIT_REFERENCE_ALLOWLIST = {
     Path("project/drivers/driver/swift/Package.swift"),
     Path("project/drivers/driver/swift/Package.resolved"),
     Path("project/drivers/adaptor/scratchbird-metabase-driver/deps.edn"),
+    Path("project/tools/release/github_actions_static_gate.py"),
+    Path("project/tools/release/public_packaging_history_gate.py"),
     Path(
         "project/tests/firebird_parser_worker/fixtures/"
         "full_firebirdsql_parser_udr_emulation_closure/artifacts/"
@@ -216,7 +219,7 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
             readme = src / "README.md"
             if readme.exists():
                 copy2_public(readme, dst / "README.md")
-            for platform in ("linux", "windows", "freebsd"):
+            for platform in ("linux", "windows", "freebsd", "macos"):
                 layout_src = src / platform / "ENGINE_BINARY_LAYOUT.json"
                 if layout_src.exists():
                     copy2_public(layout_src, dst / platform / "ENGINE_BINARY_LAYOUT.json")
@@ -347,12 +350,12 @@ def check_package_shape(stage_root: Path) -> None:
             fail("public export contains forbidden private documentation directory: " + "/".join(parts))
 
     release_root = stage_root / "release"
-    for platform in ("linux", "windows", "freebsd"):
+    for platform in ("linux", "windows", "freebsd", "macos"):
         layout = release_root / platform / "ENGINE_BINARY_LAYOUT.json"
         if not layout.exists():
             fail(f"public export missing {platform} engine binary layout")
-    if (release_root / "macos").exists() or (release_root / "darwin").exists():
-        fail("public export must not contain a first-release macOS binary layout")
+    if (release_root / "darwin").exists():
+        fail("public export must not contain a darwin alias binary layout")
 
 
 def scan_private_references(stage_root: Path) -> None:
@@ -386,7 +389,7 @@ def scan_private_references(stage_root: Path) -> None:
 
 def check_release_binaries(stage_root: Path) -> None:
     release_root = stage_root / "release"
-    executable_suffixes = {".exe", ".dll", ".so", ".a"}
+    executable_suffixes = {".exe", ".dll", ".so", ".dylib", ".a"}
     findings: list[str] = []
     for path in iter_files(release_root):
         executable_candidate = path.suffix in executable_suffixes
@@ -557,8 +560,8 @@ def build_cleanup_manifest(stage_root: Path, payload_files: list[str]) -> dict[s
         "nested_public_ctest_label": "ELER-108",
         "nested_public_ctest_scope": "release_artifact_trust",
         "release_binary_policy": "engine_only",
-        "supported_platform_layouts": ["linux", "windows", "freebsd"],
-        "unsupported_platform_layouts_absent": ["macos", "darwin"],
+        "supported_platform_layouts": ["linux", "windows", "freebsd", "macos"],
+        "unsupported_platform_layouts_absent": ["darwin"],
         "example_database": {
             "path": "data/example/scratchbird-example.sbdb",
             "bytes": example_database.stat().st_size,

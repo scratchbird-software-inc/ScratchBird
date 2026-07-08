@@ -32,7 +32,7 @@ from public_project_export_gate import (
 
 # PUBLIC_RELEASE_ARTIFACT_SIGNING
 
-REQUIRED_RELEASE_PLATFORMS = ("linux", "windows", "freebsd")
+REQUIRED_RELEASE_PLATFORMS = ("linux", "windows", "freebsd", "macos")
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
     "docs" + "/" + "completed-execution-plans",

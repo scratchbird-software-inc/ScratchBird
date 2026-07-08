@@ -10,7 +10,7 @@ from production support claims.
 | Linux x86_64, Ubuntu 24.04 LTS | Fully proven first target | Native configure, build, CTest, install, public export, and release evidence are required before release. |
 | Windows x64, Windows 11 or Windows Server 2022/2025 | Target platform pending native CI/runtime proof | Native runner evidence must pass before support is claimed. |
 | FreeBSD x86_64, FreeBSD 14.x | Target platform pending native runner proof | Native runner evidence must pass before support is claimed. |
-| macOS | Out of scope for first public release | No support claim. |
+| macOS 14+ x86_64 and arm64 | Target platform pending native GitHub CI/runtime proof | Native macos-15-intel and macos-15 runner evidence must pass before support is claimed. |
 
 All support-eligible platforms must provide before support is claimed:
 
@@ -42,6 +42,7 @@ Every support-eligible platform must prove before support is claimed:
 - `SB_LLVM_LINK_MODE=dynamic`
 - `ctest --test-dir` release gates for `public_release_correctness`
 - `ctest --test-dir` release gates for `engine_listener_enterprise`
+- macOS artifacts must include launchd payload proof, dynamic-library path audit, and signing state proof.
 
 External cluster-provider proof only when the closed cluster library is supplied
 outside the public core tree.

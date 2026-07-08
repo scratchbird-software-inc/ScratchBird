@@ -57,6 +57,10 @@ jobs:
           windows_root="$(find release-artifacts/scratchbird-windows-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
           python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
           python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
+          while IFS= read -r macos_manifest; do
+            macos_root="$(dirname "$macos_manifest")"
+            python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_root"
+          done < <(find release-artifacts -path '*scratchbird-macos-*-installers*' -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
           find release-artifacts -name INSTALLER_ARTIFACT_MANIFEST.json -print
 
       - name: Create or update release candidate

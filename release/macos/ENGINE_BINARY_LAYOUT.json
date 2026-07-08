@@ -1,0 +1,28 @@
+{
+  "allowed_binary_roles": [
+    "engine_core_runtime",
+    "engine_storage_runtime",
+    "engine_public_api"
+  ],
+  "allowed_debug_symbol_roles": [
+    "engine_debug_symbols"
+  ],
+  "cluster_execution": "external_provider_only",
+  "debug_symbol_package_policy": "separate_debug_symbols_required_for_release_artifacts",
+  "debug_symbol_payload_root": "release/macos/debug-symbols",
+  "engine_payload_roots": [
+    "release/macos/bin",
+    "release/macos/lib"
+  ],
+  "excluded_binary_families": [
+    "listener",
+    "parser",
+    "manager",
+    "driver",
+    "udr",
+    "cluster_provider"
+  ],
+  "platform": "macos",
+  "setup_payload_root": "release/macos/setup",
+  "status": "layout_definition"
+}

@@ -103,6 +103,34 @@ PLATFORM_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "engine_listener_enterprise",
         ),
     },
+    "macos": {
+        "wrapper": "project/tools/release/platform_env/verify-macos.sh",
+        "marker": "PUBLIC_PLATFORM_ENV_VERIFY_MACOS",
+        "doc": "docs/build_requirements/macos/README.md",
+        "tokens": (
+            "macOS 14 or newer",
+            "macos-15-intel",
+            "macos-15",
+            "AppleClang 16",
+            "Clang 18+",
+            "cmake",
+            "ninja",
+            "python3",
+            "openssl@3",
+            "icu4c",
+            "libxml2",
+            "zlib",
+            "lz4",
+            "zstd",
+            "geos",
+            "proj",
+            "googletest",
+            "unixodbc",
+            "LLVM 23+",
+            "MACOS_SIGNING_STATE.json",
+            "engine_listener_enterprise",
+        ),
+    },
 }
 
 COMMON_REQUIREMENT_TOKENS = (
@@ -191,6 +219,29 @@ NATIVE_PROOF_CONTRACTS: dict[str, dict[str, Any]] = {
         "ctest_commands": (
             "ctest --test-dir build-freebsd-public-release-proof -L public_release_correctness --output-on-failure",
             "ctest --test-dir build-freebsd-public-release-proof -L engine_listener_enterprise --output-on-failure",
+        ),
+    },
+    "macos": {
+        "build_root": "build-macos-public-release-proof",
+        "shell": "sh",
+        "configure_command": (
+            "cmake -S project -B build-macos-public-release-proof -G Ninja "
+            "-DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 "
+            "-DSB_BUILD_TESTS=ON "
+            "-DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON "
+            "-DSB_NONCLUSTER_ENGINE_PROFILE=release-complete "
+            "-DSB_ENABLE_CLUSTER_PROVIDER=OFF "
+            "-DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF "
+            "-DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF "
+            "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF "
+            "-DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF "
+            "-DSB_LLVM_LINK_MODE=dynamic "
+            "-DSB_PUBLIC_TARGET_PLATFORM=macos"
+        ),
+        "build_command": "cmake --build build-macos-public-release-proof -j2",
+        "ctest_commands": (
+            "ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure",
+            "ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure",
         ),
     },
 }
@@ -542,6 +593,7 @@ def main(argv: list[str]) -> int:
             "unavailable_platforms_are_not_proven_by_host_gate": True,
             "native_platform_completion_requires_engine_listener_enterprise_label": True,
             "windows_release_scope": "x64_only_no_win32",
+            "macos_release_scope": "macos_14_x86_64_and_arm64_native_runner_proof",
         },
     }
     write_csv(args.csv_output, records)
