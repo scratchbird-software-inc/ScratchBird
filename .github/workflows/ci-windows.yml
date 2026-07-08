@@ -73,7 +73,7 @@ jobs:
         run: python project/tools/release/verify_public_release_bundle.py build/public-release-windows/output/windows
 
       - name: Upload Windows staged output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-windows-public-output

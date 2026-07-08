@@ -65,7 +65,7 @@ jobs:
         run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-linux/output/linux
 
       - name: Upload Linux staged output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-linux-public-output

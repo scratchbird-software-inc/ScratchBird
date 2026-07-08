@@ -112,7 +112,7 @@ jobs:
           project/tools/installers/smoke_install_linux.sh "$archive" build/install-smoke/linux
 
       - name: Upload Linux installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-linux-installers
@@ -121,7 +121,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Linux install smoke proof
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-linux-install-smoke
@@ -221,7 +221,7 @@ jobs:
           project/tools/installers/smoke_install_windows.ps1 -PackagePath $package.FullName -WorkRoot build/install-smoke/windows
 
       - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-windows-installers
@@ -230,7 +230,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Windows install smoke proof
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scratchbird-windows-install-smoke
