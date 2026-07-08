@@ -26,6 +26,19 @@ check_cxx_source_compiles("
 " SB_HAS_REAL128_QUADMATH)
 set(CMAKE_REQUIRED_LIBRARIES "${SB_SAVED_CMAKE_REQUIRED_LIBRARIES}")
 
+find_path(SB_REAL128_BOOST_INCLUDE_DIR
+  NAMES boost/multiprecision/cpp_bin_float.hpp
+  HINTS
+    "$ENV{BOOST_ROOT}/include"
+    "$ENV{BOOST_INCLUDEDIR}"
+    /opt/homebrew/include
+    /usr/local/include
+)
+
+set(SB_SAVED_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+if(SB_REAL128_BOOST_INCLUDE_DIR)
+  set(CMAKE_REQUIRED_INCLUDES "${SB_REAL128_BOOST_INCLUDE_DIR}")
+endif()
 check_cxx_source_compiles("
   #include <boost/multiprecision/cpp_bin_float.hpp>
   int main() {
@@ -34,6 +47,7 @@ check_cxx_source_compiles("
     return value == boost::multiprecision::cpp_bin_float_quad(\"3.75\") ? 0 : 1;
   }
 " SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
+set(CMAKE_REQUIRED_INCLUDES "${SB_SAVED_CMAKE_REQUIRED_INCLUDES}")
 
 # SEARCH_KEY: OEIC_LLVM_DYNAMIC_LOADER
 set(SB_LLVM_PROJECT_ROOT "$ENV{HOME}/local workspace/llvm" CACHE PATH
@@ -55,6 +69,35 @@ option(SB_LLVM_BUILD_FROM_SOURCE_IF_MISSING
   OFF)
 set(SB_LLVM_STAGING_BUILD_DIR "${CMAKE_BINARY_DIR}/llvm-scratchbird-stage" CACHE PATH
   "ScratchBird-controlled LLVM staging build directory")
+
+set(SB_LLVM_ENV_CMAKE_DIR "$ENV{LLVM_DIR}")
+set(SB_LLVM_ENV_LIB_DIR "")
+set(SB_LLVM_ENV_PREFIX "")
+if(SB_LLVM_ENV_CMAKE_DIR)
+  get_filename_component(SB_LLVM_ENV_LIB_DIR "${SB_LLVM_ENV_CMAKE_DIR}/../.." ABSOLUTE)
+  get_filename_component(SB_LLVM_ENV_PREFIX "${SB_LLVM_ENV_LIB_DIR}/.." ABSOLUTE)
+endif()
+
+set(SB_LLVM_CONFIG_FOUND OFF)
+set(SB_LLVM_CONFIG_VERSION_KNOWN OFF)
+set(SB_LLVM_CONFIG_MAJOR 0)
+if(SB_LLVM_ENV_CMAKE_DIR)
+  set(LLVM_DIR "${SB_LLVM_ENV_CMAKE_DIR}" CACHE PATH "LLVM CMake package directory" FORCE)
+endif()
+find_package(LLVM CONFIG QUIET)
+if(LLVM_FOUND)
+  set(SB_LLVM_CONFIG_FOUND ON)
+  if(LLVM_VERSION_MAJOR)
+    set(SB_LLVM_CONFIG_VERSION_KNOWN ON)
+    set(SB_LLVM_CONFIG_MAJOR "${LLVM_VERSION_MAJOR}")
+  elseif(LLVM_PACKAGE_VERSION)
+    string(REGEX MATCH "^([0-9]+)" SB_LLVM_CONFIG_VERSION_MATCH "${LLVM_PACKAGE_VERSION}")
+    if(CMAKE_MATCH_1)
+      set(SB_LLVM_CONFIG_VERSION_KNOWN ON)
+      set(SB_LLVM_CONFIG_MAJOR "${CMAKE_MATCH_1}")
+    endif()
+  endif()
+endif()
 
 set(SB_LLVM_LINK_MODE_VALID_VALUES dynamic static disabled)
 if(NOT SB_LLVM_LINK_MODE IN_LIST SB_LLVM_LINK_MODE_VALID_VALUES)
@@ -91,6 +134,9 @@ elseif(NOT SB_LLVM_LIBRARY)
     find_library(SB_LLVM_LIBRARY
       NAMES LLVM LLVM-${SB_LLVM_MIN_MAJOR}git LLVM-${SB_LLVM_MIN_MAJOR} LLVM-23git LLVM-23 LLVM-21 LLVM-20 LLVM-19 LLVM-18 LLVM-15
       HINTS
+        "${SB_LLVM_ENV_LIB_DIR}"
+        "${SB_LLVM_ENV_PREFIX}/lib"
+        ${LLVM_LIBRARY_DIRS}
         "${SB_LLVM_TOOLS_ROOT}/lib"
         "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib"
         "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/build-scratchbird-tools/lib64"
@@ -143,6 +189,12 @@ elseif(NOT SB_LLVM_LIBRARY)
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM-${SB_LLVM_MIN_MAJOR}.a"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}/llvm/build/lib64/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
+          "${SB_LLVM_ENV_LIB_DIR}/libLLVM-${SB_LLVM_MIN_MAJOR}.dylib"
+          "${SB_LLVM_ENV_LIB_DIR}/libLLVM.dylib"
+          "${SB_LLVM_ENV_PREFIX}/lib/libLLVM-${SB_LLVM_MIN_MAJOR}.dylib"
+          "${SB_LLVM_ENV_PREFIX}/lib/libLLVM.dylib"
+          "${LLVM_LIBRARY_DIRS}/libLLVM-${SB_LLVM_MIN_MAJOR}.dylib"
+          "${LLVM_LIBRARY_DIRS}/libLLVM.dylib"
           "/usr/lib/x86_64-linux-gnu/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
           "/usr/lib/x86_64-linux-gnu/libLLVM.so.${SB_LLVM_MIN_MAJOR}"
           "/usr/lib/llvm-${SB_LLVM_MIN_MAJOR}/lib/libLLVM.so.${SB_LLVM_MIN_MAJOR}.0"
@@ -186,6 +238,10 @@ if(SB_LLVM_LIBRARY)
       endif()
     endif()
   endforeach()
+  if(NOT SB_LLVM_VERSION_KNOWN AND SB_LLVM_CONFIG_VERSION_KNOWN)
+    set(SB_LLVM_VERSION_KNOWN ON)
+    set(SB_LLVM_DETECTED_MAJOR "${SB_LLVM_CONFIG_MAJOR}")
+  endif()
   if(SB_LLVM_VERSION_KNOWN AND NOT SB_LLVM_DETECTED_MAJOR LESS SB_LLVM_MIN_MAJOR)
     set(SB_LLVM_VERSION_OK ON)
   endif()
@@ -208,6 +264,9 @@ elseif(SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
     SCRATCHBIRD_HAS_REAL128_LIBRARY=1
     SCRATCHBIRD_REAL128_PROVIDER="boost::multiprecision::cpp_bin_float_quad"
   )
+  if(SB_REAL128_BOOST_INCLUDE_DIR)
+    target_include_directories(sb_core_platform PUBLIC "${SB_REAL128_BOOST_INCLUDE_DIR}")
+  endif()
 endif()
 
 if(SB_LLVM_LIBRARY)
