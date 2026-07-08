@@ -2,14 +2,14 @@
   "component_id": "reference-parsers:all",
   "components": [
     {
-      "bytes": 244,
-      "path": "README.md",
-      "sha256": "20d3d66cfdd2eb97724eea2c99bb7deb5866014c4bf3da42ffbe2d27ccba26d8"
-    },
-    {
       "bytes": 1224696,
       "path": "bin/sbp_apache_ignite",
       "sha256": "cfd8fc3276ca4ff07713c32ce9f72a7181bdd2f46e2e9c348745376088ed46af"
+    },
+    {
+      "bytes": 654735,
+      "path": "bin/sbp_apache_ignite.exe",
+      "sha256": "f70560a602a7c8c5750cee234b514d7f5f056c1b4212ef2dc2133640f74409e5"
     },
     {
       "bytes": 1224840,
@@ -17,9 +17,19 @@
       "sha256": "1a6044b6317defd821cdabc25ae0719103e70d00ac023b33d698493d856ff8a1"
     },
     {
+      "bytes": 654630,
+      "path": "bin/sbp_cassandra.exe",
+      "sha256": "6861c204221934e2e72b57f10cce5a32c15f940b09787874225eec0a6faa2451"
+    },
+    {
       "bytes": 1237424,
       "path": "bin/sbp_clickhouse",
       "sha256": "3fcbba99741d53729cbc861f273c375d17acecb64aac50d75570cac645485000"
+    },
+    {
+      "bytes": 660815,
+      "path": "bin/sbp_clickhouse.exe",
+      "sha256": "6a6929dd15971cfe4fa72590cf03efc64a4466e5fd08877ff646578b7e01973e"
     },
     {
       "bytes": 1233096,
@@ -27,9 +37,19 @@
       "sha256": "6d70e5eb905cf0c651d91275f7efd9bd50311bdbd8f8ff5dc8585ab9fde07cc3"
     },
     {
+      "bytes": 660325,
+      "path": "bin/sbp_cockroachdb.exe",
+      "sha256": "baafe0a02d575639308303e5e6571d3e129a4f07e2651fa8ef773705badd9318"
+    },
+    {
       "bytes": 1228816,
       "path": "bin/sbp_dolt",
       "sha256": "6f7d341fb42674f8fec9345c8fecad71cfda365082a0ebd61f51c41817a0fa48"
+    },
+    {
+      "bytes": 655015,
+      "path": "bin/sbp_dolt.exe",
+      "sha256": "e86e99f92fac9d9a5bf16894e99c1ac8c911b4a254667a3a701cb5d9bd7238df"
     },
     {
       "bytes": 1233216,
@@ -37,9 +57,19 @@
       "sha256": "c34fdaa2ae2726129f3816981bd51296bf72aee40420d496f300ead3d0825c6c"
     },
     {
+      "bytes": 658129,
+      "path": "bin/sbp_duckdb.exe",
+      "sha256": "82927e0c13cd91655cdac3c6ed59700c25921db8a4fa7ead776df34e1866d2c7"
+    },
+    {
       "bytes": 1704512,
       "path": "bin/sbp_firebird",
       "sha256": "3f4abaec01a18216e81795bf7f6226ae8f7421f3a4ab76354237ba7dae720faa"
+    },
+    {
+      "bytes": 986641,
+      "path": "bin/sbp_firebird.exe",
+      "sha256": "139593ea0c7a2eb4c4ac53890d231022188ebe47b483588f39822230d87c9995"
     },
     {
       "bytes": 1225176,
@@ -47,9 +77,19 @@
       "sha256": "54e3a75e94c5a73e8747d54706d5cb0cdf7ca0a79e47c098daf716318943dd62"
     },
     {
+      "bytes": 653179,
+      "path": "bin/sbp_foundationdb.exe",
+      "sha256": "5da09d196d7b6172beab0b2c7744de07568bae61fdb470ce09087aadc3a18fc1"
+    },
+    {
       "bytes": 1229120,
       "path": "bin/sbp_immudb",
       "sha256": "e26b90e1883e86a66c550467ce6def90c6d5f27f6cbf7508fe9d5fcf2aa4669b"
+    },
+    {
+      "bytes": 656081,
+      "path": "bin/sbp_immudb.exe",
+      "sha256": "d6010e8558417d6a7faddc3f5e072f6575f11c6339ebb9cc0d8f2781ab330e00"
     },
     {
       "bytes": 1220968,
@@ -57,9 +97,19 @@
       "sha256": "aed5ba432d3df608bd97546a3a97531567d03f93266d2e53935391a665403f7d"
     },
     {
+      "bytes": 650000,
+      "path": "bin/sbp_influxdb.exe",
+      "sha256": "44a40494cb7916fc3958777ac823e4adae762df29c43baf32b97561717fb2db2"
+    },
+    {
       "bytes": 1249624,
       "path": "bin/sbp_mariadb",
       "sha256": "6bfeb65a745bb98e7d76ca085e000292fec64503e7348633eb0e3de116b09d0b"
+    },
+    {
+      "bytes": 668922,
+      "path": "bin/sbp_mariadb.exe",
+      "sha256": "845fcc1420711a5ed5c3d0766606b749c6c4a34b3e745e469617e27703afb9f3"
     },
     {
       "bytes": 1220928,
@@ -67,9 +117,19 @@
       "sha256": "d186bf572e3662bc5940708c9401c82f8d061616f60b99ee4cb14206685e0f05"
     },
     {
+      "bytes": 650961,
+      "path": "bin/sbp_milvus.exe",
+      "sha256": "56b027ae303a3c16c837533b11d2186a689c2e8d49943033a4cf9b06ee37af32"
+    },
+    {
       "bytes": 1224792,
       "path": "bin/sbp_mongodb",
       "sha256": "3155906dfd020ba95744a19f0eb67e0784623c4c10f2b0655ce2558b3261b95a"
+    },
+    {
+      "bytes": 653562,
+      "path": "bin/sbp_mongodb.exe",
+      "sha256": "de10d72a6f552550c032f5922187d66c17019636065312df400b146de1c8fc4c"
     },
     {
       "bytes": 1249576,
@@ -77,9 +137,19 @@
       "sha256": "5ef5975b36719c162eeb69ff04bb26772a1e7fcf4c6f955ad09d5144f2a3eadb"
     },
     {
+      "bytes": 666812,
+      "path": "bin/sbp_mysql.exe",
+      "sha256": "bc296a75c3ab09dbe17eaf7aaa52998b71bd5ec90ec1476aad955af09049c81e"
+    },
+    {
       "bytes": 1221160,
       "path": "bin/sbp_neo4j",
       "sha256": "f051aae1d2236a306344cbdd35847ca04dd7daba32e348364119193187d1cf14"
+    },
+    {
+      "bytes": 651452,
+      "path": "bin/sbp_neo4j.exe",
+      "sha256": "20c2df6bb497d7103dcb11fbd282bdc0877655c993259d52efb871452ccad057"
     },
     {
       "bytes": 1220784,
@@ -87,9 +157,19 @@
       "sha256": "2180308b50a9998ba1b7da7e3754bf46bcc9f3a5439b0509e70c6a2eb41a4027"
     },
     {
+      "bytes": 649551,
+      "path": "bin/sbp_opensearch.exe",
+      "sha256": "c2c2ea7b42fdeeaa5115d8ec2644f674f7d1d57681dbdad4d30fe2644160cb11"
+    },
+    {
       "bytes": 1225312,
       "path": "bin/sbp_opensearch_sql_ppl",
       "sha256": "8c4ac548b0b4231d549eeba27fdb71e7ccdd938b6cb4dfbc9f1100a2798c1550"
+    },
+    {
+      "bytes": 654331,
+      "path": "bin/sbp_opensearch_sql_ppl.exe",
+      "sha256": "de4b33bb70f39406d55accdf15bf86e1966d96ddf28b92342568a5c3f085c3be"
     },
     {
       "bytes": 1270192,
@@ -97,9 +177,19 @@
       "sha256": "903fa492106765695aaa78bfda5e67a11f129d9136b9e789cf55a97ad057cbc5"
     },
     {
+      "bytes": 680271,
+      "path": "bin/sbp_postgresql.exe",
+      "sha256": "041b17032ea86f721af67e6a9857093ae09e8bbd95f48034f0fa1dc6ac1f090d"
+    },
+    {
       "bytes": 1224744,
       "path": "bin/sbp_redis",
       "sha256": "38cbb777c16cd58d0873e7e28b361c25598d5c567275dbdbe29857dfe6337d67"
+    },
+    {
+      "bytes": 654012,
+      "path": "bin/sbp_redis.exe",
+      "sha256": "9816ee2e8e8d1da4e1ab52f7efd66e1fd4452361c4506e0d8cb50d7030394c18"
     },
     {
       "bytes": 1229368,
@@ -107,9 +197,19 @@
       "sha256": "cc0d3883df0a445045b85959f116e3cfa222c8e7a7e69f37e2d5ce611c0b2219"
     },
     {
+      "bytes": 655569,
+      "path": "bin/sbp_sqlite.exe",
+      "sha256": "c01363e1308217e33d66d1d47824012ca3b34dcead3a3b97b76232162396a1f6"
+    },
+    {
       "bytes": 1233168,
       "path": "bin/sbp_tidb",
       "sha256": "8c23c05c2ed50056e05b9c7f6b830ab1cbe80e1fc7be82ec4cf1573d31c11ecc"
+    },
+    {
+      "bytes": 658599,
+      "path": "bin/sbp_tidb.exe",
+      "sha256": "bd3d29d60371a879281f5b41c71f692aba0b811895ef1ece8b239b05f9b93176"
     },
     {
       "bytes": 1220624,
@@ -117,9 +217,19 @@
       "sha256": "ae995de75267e53b94c10ab87e87ce872423741966f24a770ad1a882a1560592"
     },
     {
+      "bytes": 649895,
+      "path": "bin/sbp_tikv.exe",
+      "sha256": "487ae6bd787d0d1931a5517a2e29cdeee8fb83d645361b852dab55eaf7a30d7a"
+    },
+    {
       "bytes": 1233216,
       "path": "bin/sbp_vitess",
       "sha256": "c18c8b5ec3abad0ce6948f5dc09e749ffe98abbd313c8ba3e664fa8a2a30e0a4"
+    },
+    {
+      "bytes": 656593,
+      "path": "bin/sbp_vitess.exe",
+      "sha256": "68bd5f740a75e455516725cf539ab59163dc0c59ebbd670b3f3fd3a2204222da"
     },
     {
       "bytes": 1224720,
@@ -127,47 +237,62 @@
       "sha256": "a7e10d62f578748522ddc2aefae6963439a11c52abe4ec2a4fa7d43382ad2e53"
     },
     {
+      "bytes": 654503,
+      "path": "bin/sbp_xtdb.exe",
+      "sha256": "feb4c49037a9707462bb1e95b35f3ddbaf93209dd9f5bb04c07969e7e301d600"
+    },
+    {
       "bytes": 1237168,
       "path": "bin/sbp_yugabytedb",
       "sha256": "44f15e3489178253909086a3c0ab673f13bb3b4cc872147e95b2abc4a046b38d"
     },
     {
-      "bytes": 16726,
+      "bytes": 660815,
+      "path": "bin/sbp_yugabytedb.exe",
+      "sha256": "719ea59b02ceb9ea84101224baab423b2fe420a7b96c9b84824a0449417a5e57"
+    },
+    {
+      "bytes": 17099,
       "path": "legal/LICENSE.txt",
-      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+      "sha256": "9221c2f936159b8446d329249fb4c0f25be510f447383a0f13336ac7985668a3"
     },
     {
-      "bytes": 1127,
+      "bytes": 1149,
       "path": "legal/NOTICE",
-      "sha256": "bfe1d1a8f4664526aab343b5f0e126eeb8763b3c707c633b0625c4a9dd9ff407"
+      "sha256": "dc425ad5ef5df263891642cf1d1bef822c567c4f1944c492b7daf142ccde68bf"
     },
     {
-      "bytes": 1864,
+      "bytes": 1883,
       "path": "legal/THIRD_PARTY_NOTICES.md",
-      "sha256": "ee4db73045c1a4824d70c8a11802590339f889a87e071001dbb2be16c7a00507"
+      "sha256": "9b96283738e888f6781033d2252d3c9aa827d86d8b51785f7120d9813377de62"
     },
     {
-      "bytes": 1979,
+      "bytes": 2158,
       "path": "package_manifest.json",
-      "sha256": "ab3c230de26456ada2212156b35dca5f4fa326bd29bf55591f35953fb8cf57fe"
+      "sha256": "5cbba2cc6bb527d572256f9953c4777ad374320fcb715bdaddd64f9f1893eeb5"
     },
     {
-      "bytes": 1309,
+      "bytes": 1471,
       "path": "proofs/reference_parser_packaging_handoff.json",
-      "sha256": "2439be95458c1bf1aedb4a90e55d3d80a56c2501afd53fa159b6f3c45b3bfdd9"
+      "sha256": "4543fd1247290896c66fd169e4ca40adc95f72703b9a56b410aa70a93c605627"
     },
     {
-      "bytes": 1533,
+      "bytes": 247,
+      "path": "README.md",
+      "sha256": "5164df8600dbd4b3b66e40a0e7d4fc1fdd55c0ebad19251296035fe124246678"
+    },
+    {
+      "bytes": 1574,
       "path": "support/reference_parser_source_reference_manifest.json",
-      "sha256": "9e8c6e9b7f3a86f210ac2fc18661f77e30e9380d6e2290ebb6f8162efc05bb9a"
+      "sha256": "92bf9b79debbf8af7a3bab4380100ba1a146f6cb326999ca754f0dc252210a81"
     },
     {
-      "bytes": 1931,
+      "bytes": 1971,
       "path": "support/root-SBOM.json",
-      "sha256": "fff53f22f317d7f851123ad57fa357092ea4e1b730e7034a8258e89fbd2c3928"
+      "sha256": "12ba5862a95a9b7b288b80fb2261e8d6a463b93123247afaa9b9cbcbe6cd110d"
     }
   ],
-  "generated_at_utc": "2026-07-07T15:39:08+00:00",
+  "generated_at_utc": "2026-07-08T16:33:12+00:00",
   "name": "reference-parsers",
   "schema_id": "scratchbird.release_package_sbom.v1"
 }

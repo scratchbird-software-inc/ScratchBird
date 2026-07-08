@@ -48,6 +48,7 @@ REQUIRED_IGNORE_PATTERNS = (
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_CANDIDATE.md",
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_MANIFEST.csv",
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv",
+    "!project/tests/reference_regression/reference_release_acquisition/**/regression/SOURCE_POINTERS.md",
     "project/tests/reference_regression/**/native_tool_harness/tools/**",
     "project/tests/reference_regression/firebird/original_firebird_qa/**",
 )
@@ -67,6 +68,7 @@ ALLOWED_REFERENCE_ACQUISITION_FILES = (
     "_CANDIDATE.md",
     "_MANIFEST.csv",
     "_INDEX.csv",
+    "SOURCE_POINTERS.md",
 )
 
 PUBLIC_STANDALONE_FORBIDDEN_TOKENS = (
@@ -151,6 +153,8 @@ def is_allowed_reference_acquisition_metadata(path: str) -> bool:
         return False
     name = Path(path).name
     if name == "PUBLIC_REGRESSION_SCOPE.md":
+        return True
+    if name == "SOURCE_POINTERS.md":
         return True
     return any(name.endswith(suffix) for suffix in ALLOWED_REFERENCE_ACQUISITION_FILES[1:])
 

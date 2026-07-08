@@ -1388,6 +1388,11 @@ def validate_traceability(repo_root: Path, fixture_root: Path, errors: list[str]
     validate_completion_policy(manifest, errors)
 
 
+def canonical_fixture_hash(path: Path) -> str:
+    payload = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def validate_determinism(repo_root: Path, fixture_root: Path, errors: list[str]) -> None:
     assert_project_test_fixture_root(repo_root, fixture_root, errors)
     manifest = load_json(fixture_root / HASH_MANIFEST, errors)
@@ -1437,7 +1442,7 @@ def validate_determinism(repo_root: Path, fixture_root: Path, errors: list[str])
         if not path.exists():
             errors.append(f"hash manifest references missing file {filename}")
             continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = canonical_fixture_hash(path)
         if digest != expected_hash:
             errors.append(
                 f"{filename} sha256 drifted: expected {expected_hash}, found {digest}"
@@ -1475,7 +1480,7 @@ def validate_determinism(repo_root: Path, fixture_root: Path, errors: list[str])
         if not path.exists():
             errors.append(f"hash manifest references missing JSON file {filename}")
             continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = canonical_fixture_hash(path)
         if digest != expected_hash:
             errors.append(
                 f"{filename} sha256 drifted: expected {expected_hash}, found {digest}"

@@ -16,6 +16,7 @@ import csv
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -151,6 +152,31 @@ def copy_file(src: Path, dst: Path, verify_only: bool) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     return True
+
+
+def binary_candidates(root: Path, binary: str) -> list[Path]:
+    candidates = [root / binary]
+    if os.name == "nt":
+        candidates.insert(0, root / f"{binary}.exe")
+    return candidates
+
+
+def copy_binary_payload(
+    build_bin_root: Path,
+    package_root: Path,
+    binary: str,
+    verify_only: bool,
+) -> str | None:
+    for src in binary_candidates(build_bin_root, binary):
+        if not src.is_file():
+            continue
+        dst = package_root / "bin" / src.name
+        if verify_only:
+            return f"bin/{src.name}" if dst.is_file() and dst.stat().st_size == src.stat().st_size else None
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return f"bin/{src.name}"
+    return None
 
 
 def write_text(path: Path, content: str, verify_only: bool) -> bool:
@@ -371,8 +397,6 @@ def promote_reference_parsers(repo_root: Path,
     lanes = read_lanes(repo_root)
     package_root = release_root / "reference-parsers"
     issues: list[str] = []
-    if not verify_only and package_root.exists():
-        shutil.rmtree(package_root)
     package_root.mkdir(parents=True, exist_ok=True)
     source_basis = collect_source_basis(repo_root)
     if verify_only:
@@ -381,8 +405,9 @@ def promote_reference_parsers(repo_root: Path,
     payloads: list[str] = []
     for lane in lanes:
         binary = f"sbp_{lane}"
-        if copy_file(build_bin_root / binary, package_root / "bin" / binary, verify_only):
-            payloads.append(f"bin/{binary}")
+        payload = copy_binary_payload(build_bin_root, package_root, binary, verify_only)
+        if payload is not None:
+            payloads.append(payload)
         else:
             issues.append(f"missing_reference_parser_binary:{binary}")
 
@@ -403,7 +428,7 @@ def promote_reference_parsers(repo_root: Path,
             "schema_id": "scratchbird.reference_parser_packaging_handoff.v1",
             "lane_count": len(lanes),
             "lanes": lanes,
-            "parser_workers": [f"bin/sbp_{lane}" for lane in lanes],
+            "parser_workers": sorted(payloads),
             "support_udr_package": "../udr/optional-parser-support",
             "engine_authority": "scratchbird_sblr_uuid_only",
             "reference_engine_authority": False,

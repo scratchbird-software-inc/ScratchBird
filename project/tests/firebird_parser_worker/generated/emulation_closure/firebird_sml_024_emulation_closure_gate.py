@@ -139,6 +139,22 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def display_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        parts = path.parts
+        lowered = [part.lower() for part in parts]
+        if "project" in lowered:
+            index = lowered.index("project")
+            return Path(*parts[index:]).as_posix()
+        return path.as_posix()
+
+
+def canonical_text_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def rel_path(path_text: str, repo_root: Path) -> Path:
     path = Path(path_text)
     return path if path.is_absolute() else repo_root / path
@@ -257,7 +273,7 @@ def scan_implementation_sources(repo_root: Path, errors: list[str]) -> None:
             if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            rel = path.relative_to(repo_root).as_posix()
+            rel = display_path(path, repo_root)
             require("Copyright (c) 2026 ScratchBird Software Inc." in text,
                     f"{rel} missing ScratchBird copyright header", errors)
             require("SPDX-License-Identifier: MPL-2.0" in text,
@@ -277,7 +293,7 @@ def scan_new_files_for_blocked_terms(paths: list[Path], repo_root: Path, errors:
                 files.append(path)
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace").lower()
-        rel = path.relative_to(repo_root).as_posix()
+        rel = display_path(path, repo_root)
         for term in BLOCKED_PUBLIC_TERMS:
             require(term not in text, f"{rel} contains blocked external-origin terminology", errors)
 
@@ -327,7 +343,7 @@ def validate_deterministic_generation(repo_root: Path, fixture_root: Path, error
             regenerated = output_dir / name
             require(regenerated.is_file(), f"regenerated artifact missing: {name}", errors)
             if regenerated.is_file() and expected.is_file():
-                require(expected.read_bytes() == regenerated.read_bytes(),
+                require(canonical_text_bytes(expected) == canonical_text_bytes(regenerated),
                         f"deterministic regeneration mismatch: {name}", errors)
 
 

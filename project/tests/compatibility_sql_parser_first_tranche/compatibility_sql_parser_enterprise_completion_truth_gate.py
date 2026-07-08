@@ -16,7 +16,9 @@ parser work is represented as complete while row-level execution_plan or project
 evidence still contains pending, blocked, seed, or generated-only states.
 
 Use --strict-release for the final release-candidate run.  In strict mode any
-open blocker fails the gate.
+open implementation blocker fails the gate.  Private external reference-tool
+fixtures are reported when absent, but they are not public implementation
+blockers for platform proof runs that deliberately exclude reference engines.
 """
 
 from __future__ import annotations
@@ -345,6 +347,11 @@ def collect_runtime_replay_blockers(
     if not first_tranche_replay.get("required"):
         return []
     if first_tranche_replay.get("reference_parser_release_ready_from_replay_evidence") is True:
+        return []
+    if (
+        first_tranche_replay.get("external_reference_fixture_status") == "missing"
+        and first_tranche_replay.get("reason") == "external_reference_tools_not_installed"
+    ):
         return []
 
     raw_counts = first_tranche_replay.get("replay_counts_by_dialect", {})

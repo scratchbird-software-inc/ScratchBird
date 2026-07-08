@@ -1149,6 +1149,22 @@ std::string Sha256Hex(const std::string& payload) {
   return HexDigest(digest, SHA256_DIGEST_LENGTH);
 }
 
+std::string CanonicalPolicyPackHashPayload(const std::string& payload) {
+  std::string canonical;
+  canonical.reserve(payload.size());
+  for (std::size_t i = 0; i < payload.size(); ++i) {
+    if (payload[i] == '\r') {
+      if (i + 1 < payload.size() && payload[i + 1] == '\n') {
+        ++i;
+      }
+      canonical.push_back('\n');
+      continue;
+    }
+    canonical.push_back(payload[i]);
+  }
+  return canonical;
+}
+
 bool IsSafePackRelativePath(const std::string& rel_path) {
   if (rel_path.empty()) {
     return false;
@@ -1699,7 +1715,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING",
                                  rel_path);
     }
-    const std::string actual_sha256 = Sha256Hex(content);
+    const std::string actual_sha256 =
+        Sha256Hex(CanonicalPolicyPackHashPayload(content));
     if (actual_sha256 != expected_sha256) {
       return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-HASH-MISMATCH",
                                  rel_path);

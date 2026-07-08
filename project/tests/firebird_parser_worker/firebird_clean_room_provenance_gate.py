@@ -8,6 +8,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -74,11 +76,31 @@ def check_implementation_sources(root: Path) -> list[str]:
     return errors
 
 
+def dependency_scan_command() -> list[str]:
+    if os.name == "nt":
+        for tool in ("objdump", "llvm-objdump"):
+            path = shutil.which(tool)
+            if path:
+                return [path, "-p"]
+        return []
+    ldd = shutil.which("ldd")
+    if ldd:
+        return [ldd]
+    for tool in ("objdump", "llvm-objdump"):
+        path = shutil.which(tool)
+        if path:
+            return [path, "-p"]
+    return []
+
+
 def check_binary(binary: Path) -> list[str]:
     if not binary.exists():
         return [f"binary missing: {binary}"]
+    command_prefix = dependency_scan_command()
+    if not command_prefix:
+        return [f"dependency scanner missing for {binary}: ldd or objdump required"]
     result = subprocess.run(
-        ["ldd", str(binary)],
+        [*command_prefix, str(binary)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -86,7 +108,7 @@ def check_binary(binary: Path) -> list[str]:
     )
     output = result.stdout.lower()
     if result.returncode != 0 and "not a dynamic executable" not in output:
-        return [f"ldd failed for {binary}: {result.stdout}"]
+        return [f"dependency scan failed for {binary}: {result.stdout}"]
     return [
         f"forbidden reference runtime dependency {token} in {binary}"
         for token in FORBIDDEN_LINK_TOKENS
