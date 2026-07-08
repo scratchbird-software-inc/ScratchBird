@@ -15,6 +15,7 @@
 #include "scratchbird/core/sqlstate.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cctype>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -922,6 +924,20 @@ std::optional<double> parseLosslessCopyReal64(std::string_view value) {
         value.find_first_of(".eE") == std::string_view::npos) {
         return std::nullopt;
     }
+#if defined(__APPLE__)
+    if (std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+        return std::nullopt;
+    }
+    std::string text(value);
+    char* parsed_end = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(text.c_str(), &parsed_end);
+    if (errno == ERANGE || parsed_end != text.c_str() + text.size() ||
+        !std::isfinite(parsed)) {
+        return std::nullopt;
+    }
+    return parsed;
+#else
     double parsed = 0.0;
     const char* begin = value.data();
     const char* end = begin + value.size();
@@ -930,6 +946,7 @@ std::optional<double> parseLosslessCopyReal64(std::string_view value) {
         return std::nullopt;
     }
     return parsed;
+#endif
 }
 
 bool analyzeFastCsvCell(std::string value,

@@ -13,6 +13,7 @@
  */
 #include <scratchbird/client/circuit_breaker.h>
 #include <iostream>
+#include <utility>
 
 namespace scratchbird {
 namespace client {
@@ -31,6 +32,30 @@ CircuitBreaker::CircuitBreaker(const sb_circuit_breaker_config& config, const st
     , half_open_requests_(0)
     , last_failure_time_(std::chrono::steady_clock::time_point())
 {
+}
+
+CircuitBreaker::CircuitBreaker(CircuitBreaker&& other) noexcept
+    : config_(other.config_)
+    , name_(std::move(other.name_))
+    , state_(other.state_.load())
+    , failure_count_(other.failure_count_.load())
+    , success_count_(other.success_count_.load())
+    , half_open_requests_(other.half_open_requests_.load())
+    , last_failure_time_(other.last_failure_time_.load())
+{
+}
+
+CircuitBreaker& CircuitBreaker::operator=(CircuitBreaker&& other) noexcept {
+    if (this != &other) {
+        config_ = other.config_;
+        name_ = std::move(other.name_);
+        state_.store(other.state_.load());
+        failure_count_.store(other.failure_count_.load());
+        success_count_.store(other.success_count_.load());
+        half_open_requests_.store(other.half_open_requests_.load());
+        last_failure_time_.store(other.last_failure_time_.load());
+    }
+    return *this;
 }
 
 sb_circuit_state CircuitBreaker::GetState() const {

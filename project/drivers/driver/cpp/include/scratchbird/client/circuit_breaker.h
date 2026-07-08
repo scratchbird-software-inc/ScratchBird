@@ -75,8 +75,8 @@ public:
     // Non-copyable but movable
     CircuitBreaker(const CircuitBreaker&) = delete;
     CircuitBreaker& operator=(const CircuitBreaker&) = delete;
-    CircuitBreaker(CircuitBreaker&&) = default;
-    CircuitBreaker& operator=(CircuitBreaker&&) = default;
+    CircuitBreaker(CircuitBreaker&& other) noexcept;
+    CircuitBreaker& operator=(CircuitBreaker&& other) noexcept;
     
     sb_circuit_state GetState() const;
     bool AllowRequest();
