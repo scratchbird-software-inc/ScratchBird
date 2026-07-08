@@ -94,7 +94,12 @@ jobs:
       - name: Configure
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
-        run: cmake --preset public-release-macos -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+        run: |
+          cmake --preset public-release-macos \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DICU_ROOT="$(brew --prefix icu4c)" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm)"
 
       - name: Build
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
