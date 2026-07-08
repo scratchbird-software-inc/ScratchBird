@@ -638,9 +638,10 @@ std::string CatalogLifecycleFileFingerprint(const std::string& path) {
   const auto size = std::filesystem::file_size(fs_path, ec);
   if (ec) return path + ":size_error";
   const auto mtime = std::filesystem::last_write_time(fs_path, ec);
-  if (ec) return path + ":" + std::to_string(size) + ":mtime_error";
-  return path + ":" + std::to_string(size) + ":" +
-         std::to_string(mtime.time_since_epoch().count());
+  const auto size_value = static_cast<unsigned long long>(size);
+  if (ec) return path + ":" + std::to_string(size_value) + ":mtime_error";
+  const auto mtime_ticks = static_cast<long long>(mtime.time_since_epoch().count());
+  return path + ":" + std::to_string(size_value) + ":" + std::to_string(mtime_ticks);
 }
 
 std::string CatalogLifecycleLoadCacheKey(const EngineRequestContext& context,
