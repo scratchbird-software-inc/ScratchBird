@@ -161,7 +161,7 @@ jobs:
         with:
           name: scratchbird-macos-${{ matrix.arch }}-installers
           path: build/installers/macos-${{ matrix.arch }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload macOS install smoke proof

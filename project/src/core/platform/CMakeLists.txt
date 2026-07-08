@@ -26,6 +26,15 @@ check_cxx_source_compiles("
 " SB_HAS_REAL128_QUADMATH)
 set(CMAKE_REQUIRED_LIBRARIES "${SB_SAVED_CMAKE_REQUIRED_LIBRARIES}")
 
+check_cxx_source_compiles("
+  #include <boost/multiprecision/cpp_bin_float.hpp>
+  int main() {
+    boost::multiprecision::cpp_bin_float_quad value = 1;
+    value += boost::multiprecision::cpp_bin_float_quad(\"2.75\");
+    return value == boost::multiprecision::cpp_bin_float_quad(\"3.75\") ? 0 : 1;
+  }
+" SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
+
 # SEARCH_KEY: OEIC_LLVM_DYNAMIC_LOADER
 set(SB_LLVM_PROJECT_ROOT "$ENV{HOME}/local workspace/llvm" CACHE PATH
   "Preferred local LLVM source root for ScratchBird LLVM integration")
@@ -194,6 +203,11 @@ if(SB_HAS_REAL128_QUADMATH)
     SCRATCHBIRD_REAL128_PROVIDER="libquadmath::__float128"
   )
   target_link_libraries(sb_core_platform PUBLIC quadmath)
+elseif(SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
+  target_compile_definitions(sb_core_platform PUBLIC
+    SCRATCHBIRD_HAS_REAL128_LIBRARY=1
+    SCRATCHBIRD_REAL128_PROVIDER="boost::multiprecision::cpp_bin_float_quad"
+  )
 endif()
 
 if(SB_LLVM_LIBRARY)
@@ -258,7 +272,7 @@ if(SB_LLVM_BUILD_FROM_SOURCE_IF_MISSING AND NOT SB_LLVM_LIBRARY)
 endif()
 
 if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE)
-  if(NOT SB_HAS_REAL128_QUADMATH)
+  if(NOT SB_HAS_REAL128_QUADMATH AND NOT SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
     message(FATAL_ERROR
       "release-complete non-cluster engine requires mandatory real128 support; "
       "configure with SB_NONCLUSTER_ENGINE_PROFILE=bootstrap or emergency only for degraded non-release builds")

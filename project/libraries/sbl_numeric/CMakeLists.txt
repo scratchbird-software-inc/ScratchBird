@@ -24,13 +24,24 @@ check_cxx_source_compiles("
 " SBL_NUMERIC_HAS_QUADMATH)
 set(CMAKE_REQUIRED_LIBRARIES "${SBL_NUMERIC_SAVED_REQUIRED_LIBRARIES}")
 
+check_cxx_source_compiles("
+  #include <boost/multiprecision/cpp_bin_float.hpp>
+  int main() {
+    boost::multiprecision::cpp_bin_float_quad value = 1;
+    value += boost::multiprecision::cpp_bin_float_quad(\"2.75\");
+    return value == boost::multiprecision::cpp_bin_float_quad(\"3.75\") ? 0 : 1;
+  }
+" SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD)
+
 target_compile_features(sbl_numeric PUBLIC cxx_std_17)
 target_include_directories(sbl_numeric PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(SBL_NUMERIC_HAS_QUADMATH)
   target_compile_definitions(sbl_numeric PUBLIC SBL_NUMERIC_HAS_QUADMATH=1)
   target_link_libraries(sbl_numeric PUBLIC quadmath)
+elseif(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD)
+  target_compile_definitions(sbl_numeric PUBLIC SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD=1)
 elseif(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE)
   message(FATAL_ERROR
-    "release-complete non-cluster engine requires sbl_numeric real128 backend support through quadmath")
+    "release-complete non-cluster engine requires sbl_numeric real128 backend support through quadmath or Boost.Multiprecision cpp_bin_float_quad")
 endif()
