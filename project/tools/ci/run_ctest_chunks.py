@@ -277,7 +277,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cwd = pathlib.Path.cwd()
-    output_root = args.output_root
+    output_root = args.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     if bool(args.preset) == bool(args.test_dir):
         raise SystemExit("Pass exactly one of --preset or --test-dir")
