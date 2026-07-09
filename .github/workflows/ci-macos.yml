@@ -104,6 +104,7 @@ jobs:
             echo "LIBXML2_ROOT=$(brew --prefix libxml2)"
             echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
             echo "ODBC_ROOT=$(brew --prefix unixodbc)"
+            echo "SB_LLVM_MIN_MAJOR=22"
             echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm);$(brew --prefix unixodbc)"
             echo "PATH=$(brew --prefix llvm)/bin:$PATH"
             echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix unixodbc)/lib/pkgconfig:$PKG_CONFIG_PATH"
@@ -126,6 +127,7 @@ jobs:
             -DICU_ROOT="$ICU_ROOT" \
             -DODBC_INCLUDE_DIR="$ODBC_ROOT/include" \
             -DODBC_LIBRARY="$ODBC_ROOT/lib/libodbc.dylib" \
+            -DSB_LLVM_MIN_MAJOR="$SB_LLVM_MIN_MAJOR" \
             -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
 
       - name: Build

@@ -98,7 +98,8 @@ foreach(_sb_forwarded_var
         SB_LLVM_PROJECT_ROOT
         SB_LLVM_TOOLS_ROOT
         SB_LLVM_LIBRARY
-        SB_LLVM_LINK_MODE)
+        SB_LLVM_LINK_MODE
+        SB_LLVM_MIN_MAJOR)
   if(DEFINED ${_sb_forwarded_var} AND NOT "${${_sb_forwarded_var}}" STREQUAL "")
     list(APPEND _sb_release_nested_configure_env
          "${_sb_forwarded_var}=${${_sb_forwarded_var}}")

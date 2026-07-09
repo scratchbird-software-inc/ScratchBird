@@ -295,6 +295,7 @@ def llvm_configure_args_from_env() -> list[str]:
         "SB_LLVM_TOOLS_ROOT",
         "SB_LLVM_LIBRARY",
         "SB_LLVM_LINK_MODE",
+        "SB_LLVM_MIN_MAJOR",
     ):
         value = os.environ.get(name, "")
         if value:

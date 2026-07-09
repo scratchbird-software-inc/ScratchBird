@@ -414,6 +414,7 @@ add_test(
           "-DSB_LLVM_TOOLS_ROOT=${SB_LLVM_TOOLS_ROOT}"
           "-DSB_LLVM_LIBRARY=${SB_LLVM_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
+          "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AgentProductionConfigureGateMatrix.cmake"
 )
 set_tests_properties(agent_production_build_configure_gate PROPERTIES
@@ -462,6 +463,7 @@ add_test(
           "-DSB_LLVM_TOOLS_ROOT=${SB_LLVM_TOOLS_ROOT}"
           "-DSB_LLVM_LIBRARY=${SB_LLVM_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
+          "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OptimizerProductionConfigureGateMatrix.cmake"
 )
 set_tests_properties(optimizer_production_build_configure_gate PROPERTIES

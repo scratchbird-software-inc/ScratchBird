@@ -438,6 +438,7 @@ def configure_staged_project(args, stage_root: Path, build_root: Path) -> None:
         "SB_LLVM_TOOLS_ROOT",
         "SB_LLVM_LIBRARY",
         "SB_LLVM_LINK_MODE",
+        "SB_LLVM_MIN_MAJOR",
     ):
         value = os.environ.get(name, "")
         if value:

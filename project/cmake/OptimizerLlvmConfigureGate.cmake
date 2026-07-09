@@ -47,7 +47,8 @@ foreach(_sb_forwarded_var
         OPENSSL_ROOT_DIR
         LLVM_DIR
         ODBC_INCLUDE_DIR
-        ODBC_LIBRARY)
+        ODBC_LIBRARY
+        SB_LLVM_MIN_MAJOR)
   if(DEFINED ${_sb_forwarded_var} AND NOT "${${_sb_forwarded_var}}" STREQUAL "")
     list(APPEND _sb_configure_common_args
          "-D${_sb_forwarded_var}=${${_sb_forwarded_var}}")
