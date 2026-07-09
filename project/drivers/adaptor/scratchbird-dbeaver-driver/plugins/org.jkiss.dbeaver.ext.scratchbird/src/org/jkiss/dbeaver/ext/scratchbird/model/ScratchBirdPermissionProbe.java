@@ -56,16 +56,16 @@ public final class ScratchBirdPermissionProbe {
         ScratchBirdReportDefinition report = ScratchBirdReportCatalog.findByNavigatorPath(targetPath);
         if (report != null) {
             if (mode != ScratchBirdFormMode.REPORT && mode != ScratchBirdFormMode.INSPECT && mode != ScratchBirdFormMode.READ_ONLY) {
-                return ScratchBirdRefusalModel.clientGated("Metric and report nodes are report-only surfaces in DBeaver.");
+                return ScratchBirdRefusalModel.clientGated("Management diagnostics and report nodes are report-only surfaces in DBeaver.");
             }
             return ScratchBirdMetricSourceResolver.sourceStatus(report);
         }
         if (ScratchBirdNamespaceSemantics.isMetricsPath(targetPath)) {
             return switch (mode) {
                 case INSPECT, READ_ONLY, REPORT -> ScratchBirdRefusalModel.admitted(
-                    "Client-only metrics/report branch is visible in DBeaver; backing sources remain separately gated.");
+                    "Management diagnostics/report branch is visible in DBeaver; backing sources remain separately gated.");
                 default -> ScratchBirdRefusalModel.unsupported(
-                    "Metrics branches are client-only report surfaces and do not accept lifecycle or admin task mutations.");
+                    "Management diagnostics/report branches do not accept lifecycle or admin task mutations.");
             };
         }
         if (mode == ScratchBirdFormMode.DELETE && !"SBDV-FRM-014".equals(form.id())) {

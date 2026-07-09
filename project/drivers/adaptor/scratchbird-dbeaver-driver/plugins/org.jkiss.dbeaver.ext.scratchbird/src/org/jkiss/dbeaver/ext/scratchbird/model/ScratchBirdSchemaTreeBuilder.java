@@ -73,9 +73,6 @@ final class ScratchBirdSchemaTreeBuilder {
         Map<String, ScratchBirdCatalogObjectReference> resolvedCatalogObjects = inferMissingParentUuids(catalogObjects);
 
         for (ScratchBirdCatalogObjectReference reference : resolvedCatalogObjects.values()) {
-            if (ScratchBirdNamespaceSemantics.isMetricsPath(reference.fullPath())) {
-                continue;
-            }
             addPath(nodesByPath, roots, reference);
         }
 
@@ -164,6 +161,9 @@ final class ScratchBirdSchemaTreeBuilder {
 
     @NotNull
     private static ScratchBirdCatalogObjectReference intermediateReference(@NotNull String currentPath) {
+        if (ScratchBirdNamespaceSemantics.isManagementPath(currentPath)) {
+            return ScratchBirdCatalogObjectReference.clientOnly(currentPath, "MANAGEMENT_GROUP");
+        }
         if (ScratchBirdNamespaceSemantics.isMetricsPath(currentPath)) {
             return ScratchBirdCatalogObjectReference.clientOnly(currentPath, "REPORT_GROUP");
         }

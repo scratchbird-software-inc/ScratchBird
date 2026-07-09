@@ -2297,6 +2297,17 @@ set_tests_properties(spdx_license_surface_gate PROPERTIES
   LABELS "public_release_correctness;spdx_license_surface_gate;PCR-GATE-159;PCR-159;license;spdx;third_party_notices;sbom;release_hygiene;fail_closed"
 )
 
+# PUBLIC_WEBSERVER_PACKAGE_EXPORT_GATE
+add_test(
+  NAME web_distribution_bundle_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/web_distribution_bundle_test.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+)
+set_tests_properties(web_distribution_bundle_test PROPERTIES
+  LABELS "public_release_correctness;web_distribution_bundle_test;PCR-GATE-160;PCR-160;installers;webserver_export;artifact_manifest;checksums;no_github_release;fail_closed"
+)
+
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
 add_test(
   NAME public_config_policy_migration_gate

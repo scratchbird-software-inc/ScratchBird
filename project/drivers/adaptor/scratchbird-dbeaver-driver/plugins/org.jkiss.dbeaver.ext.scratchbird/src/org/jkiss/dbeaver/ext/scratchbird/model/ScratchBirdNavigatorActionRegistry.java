@@ -52,6 +52,9 @@ public final class ScratchBirdNavigatorActionRegistry {
 
     @NotNull
     public static List<Action> actionsForPath(@NotNull String fullPath, boolean clientOnly, boolean catalogBacked) {
+        if (ScratchBirdNamespaceSemantics.isManagementPath(fullPath)) {
+            return ScratchBirdBranchProfile.forPath(fullPath).actions();
+        }
         if (clientOnly || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
             return List.of(
                 Action.OPEN,

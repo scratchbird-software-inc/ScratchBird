@@ -29,10 +29,12 @@ import org.eclipse.core.commands.ExecutionEvent;
 import org.eclipse.core.commands.ExecutionException;
 import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.swt.widgets.Shell;
+import org.eclipse.ui.IWorkbenchWindow;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.handlers.HandlerUtil;
 import org.jkiss.code.NotNull;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdNavigatorActionRegistry;
-import org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdManagementDialog;
+import org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdManagementEditor;
 import org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdSelectionUtils;
 import org.jkiss.dbeaver.model.struct.DBSObject;
 
@@ -60,7 +62,12 @@ abstract class ScratchBirdNavigatorCommandHandler extends AbstractHandler {
                 "The selected ScratchBird object does not support the " + action.name() + " action.");
             return null;
         }
-        new ScratchBirdManagementDialog(shell, object, action).open();
+        IWorkbenchWindow window = HandlerUtil.getActiveWorkbenchWindow(event);
+        try {
+            ScratchBirdManagementEditor.openOrDialog(window, shell, object, action);
+        } catch (PartInitException e) {
+            throw new ExecutionException("ScratchBird management editor could not be opened.", e);
+        }
         return null;
     }
 }

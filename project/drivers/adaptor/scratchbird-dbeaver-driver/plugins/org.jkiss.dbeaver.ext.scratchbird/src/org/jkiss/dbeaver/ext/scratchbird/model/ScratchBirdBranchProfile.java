@@ -25,6 +25,7 @@
 package org.jkiss.dbeaver.ext.scratchbird.model;
 
 import org.jkiss.code.NotNull;
+import org.jkiss.code.Nullable;
 
 import java.util.List;
 import java.util.Locale;
@@ -49,6 +50,10 @@ public record ScratchBirdBranchProfile(
         String normalized = normalize(fullPath);
         if (normalized.isEmpty()) {
             return genericNamespace();
+        }
+        ScratchBirdManagementSurfaceDefinition managementSurface = findManagementSurface(normalized);
+        if (managementSurface != null) {
+            return managementProfile(managementSurface);
         }
         if (normalized.equals("sys")) {
             return profile(
@@ -672,6 +677,46 @@ public record ScratchBirdBranchProfile(
             false,
             List.of("child namespace", "managed object"),
             List.of("namespace path", "ownership", "capability posture"));
+    }
+
+    @Nullable
+    private static ScratchBirdManagementSurfaceDefinition findManagementSurface(@NotNull String normalizedPath) {
+        ScratchBirdManagementSurfaceDefinition exact = ScratchBirdManagementSurfaceCatalog.find(normalizedPath);
+        if (exact != null) {
+            return exact;
+        }
+        ScratchBirdManagementSurfaceDefinition best = null;
+        int bestLength = -1;
+        for (ScratchBirdManagementSurfaceDefinition candidate : ScratchBirdManagementSurfaceCatalog.allSurfaces()) {
+            String prefix = candidate.path() + ".";
+            if (normalizedPath.startsWith(prefix) && candidate.path().length() > bestLength) {
+                best = candidate;
+                bestLength = candidate.path().length();
+            }
+        }
+        return best;
+    }
+
+    @NotNull
+    private static ScratchBirdBranchProfile managementProfile(
+        @NotNull ScratchBirdManagementSurfaceDefinition surface
+    ) {
+        List<ScratchBirdNavigatorActionRegistry.Action> actions = surface.actions();
+        return profile(
+            "SBBP-MGMT-" + surface.path().replace('.', '-').replace('_', '-').toUpperCase(Locale.ENGLISH),
+            "Management " + surface.label(),
+            surface.formId(),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.NEW),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.ALTER),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.DELETE),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.TASKS),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.REPORTS),
+            actions.contains(ScratchBirdNavigatorActionRegistry.Action.SOURCE_STATUS),
+            !actions.contains(ScratchBirdNavigatorActionRegistry.Action.NEW) &&
+                !actions.contains(ScratchBirdNavigatorActionRegistry.Action.ALTER) &&
+                !actions.contains(ScratchBirdNavigatorActionRegistry.Action.DELETE),
+            surface.backingSources(),
+            List.of(surface.displayType(), surface.requiredPermission(), surface.refreshPolicy(), surface.refusalBehavior()));
     }
 
     @NotNull

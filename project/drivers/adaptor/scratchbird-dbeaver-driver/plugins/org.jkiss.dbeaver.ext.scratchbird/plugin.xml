@@ -124,11 +124,13 @@
             <treeInjection path="generic/catalog">
                 <items label="#schema" path="schema" property="schemaTree" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" optional="true">
                         <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
+                        <icon if="object.managementBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
                         <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
                         <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
 
                         <items label="#schema" path="schema" property="childSchemas" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" recursive="..">
                             <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
+                            <icon if="object.managementBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
                             <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
                             <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
                         </items>
@@ -141,27 +143,27 @@
                                 <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableColumn" label="%tree.columns.node.name" icon="#columns" description="%tree.columns.node.tip">
                                     <items label="%tree.column.node.name" path="attribute" property="attributes" icon="#column"/>
                                 </folder>
-                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericUniqueKey" label="%tree.uni_keys.node.name" icon="#constraints" description="%tree.uni_keys.node.tip" visibleIf="!object.view &amp;&amp; (object.dataSource.info.supportsReferentialIntegrity() || object.container.dataSource.metaModel.supportsUniqueKeys())">
+                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericUniqueKey" label="%tree.uni_keys.node.name" icon="#constraints" description="%tree.uni_keys.node.tip" visibleIf="!object.scratchBirdNavigatorRelation &amp;&amp; !object.view &amp;&amp; (object.dataSource.info.supportsReferentialIntegrity() || object.container.dataSource.metaModel.supportsUniqueKeys())">
                                     <items label="%tree.uni_key.node.name" path="uniqueKey" property="constraints" icon="#unique-key">
                                         <items label="%tree.uni_key.columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
                                     </items>
                                 </folder>
-                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableForeignKey" label="%tree.foreign_keys.node.name" icon="#foreign-keys" description="%tree.foreign_keys.node.tip" visibleIf="!object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()">
+                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableForeignKey" label="%tree.foreign_keys.node.name" icon="#foreign-keys" description="%tree.foreign_keys.node.tip" visibleIf="!object.scratchBirdNavigatorRelation &amp;&amp; !object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()">
                                     <items label="%tree.foreign_key.node.name" path="association" property="associations" icon="#foreign-key">
                                         <items label="%tree.foreign_key_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
                                     </items>
                                 </folder>
-                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableIndex" label="%tree.indexes.node.name" icon="#indexes" description="%tree.indexes.node.tip" visibleIf="object.dataSource.info.supportsIndexes()">
+                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableIndex" label="%tree.indexes.node.name" icon="#indexes" description="%tree.indexes.node.tip" visibleIf="!object.scratchBirdNavigatorRelation &amp;&amp; object.dataSource.info.supportsIndexes()">
                                     <items label="%tree.index.node.name" path="index" property="indexes" icon="#index">
                                         <items label="%tree.index_columns.node.name" path="column" property="attributeReferences" icon="#column" navigable="false" inline="true"/>
                                     </items>
                                 </folder>
-                                <folder label="%tree.references.node.name" icon="#references" description="%tree.references.node.tip" visibleIf="!object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()" virtual="true">
+                                <folder label="%tree.references.node.name" icon="#references" description="%tree.references.node.tip" visibleIf="!object.scratchBirdNavigatorRelation &amp;&amp; !object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()" virtual="true">
                                     <items label="%tree.reference.node.name" path="reference" property="references" icon="#reference" virtual="true">
                                         <items label="%tree.reference_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true" virtual="true"/>
                                     </items>
                                 </folder>
-                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger" label="%tree.triggers.node.name" icon="#triggers" description="%tree.triggers.node.tip" visibleIf="object.dataSource.metaModel.supportsTriggers(object.dataSource)">
+                                <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger" label="%tree.triggers.node.name" icon="#triggers" description="%tree.triggers.node.tip" visibleIf="!object.scratchBirdNavigatorRelation &amp;&amp; object.dataSource.metaModel.supportsTriggers(object.dataSource)">
                                     <items label="%tree.trigger.node.name" path="trigger" property="triggers" icon="#trigger"/>
                                 </folder>
                         </items>
@@ -184,7 +186,7 @@
 
                         <items label="%tree.sequence.node.name" path="sequence" property="sequences" icon="#sequence" visibleIf="object.sequenceFoldersVisible &amp;&amp; object.dataSource.metaModel.supportsSequences(object.dataSource)"/>
 
-                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericProcedure" label="%tree.procedures.node.name" icon="#procedures" description="Procedures" visibleIf="object.dataSource.info.supportsStoredCode()">
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericProcedure" label="%tree.procedures.node.name" icon="#procedures" description="Procedures" visibleIf="object.storedCodeFoldersVisible &amp;&amp; object.dataSource.info.supportsStoredCode()">
                             <items label="%tree.procedures.node.name" itemLabel="%tree.procedure.node.name" path="procedure" property="proceduresOnly" icon="#procedure">
                                 <folder label="%tree.procedure_columns.node.name" icon="#columns" description="Procedure parameters">
                                     <items label="%tree.procedure_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="parameters" navigable="false"/>
@@ -197,7 +199,7 @@
                             </items>
                         </folder>
 
-                        <folder label="%tree.functions.node.name" icon="#functions" description="Functions" visibleIf="object.dataSource.info.supportsStoredCode() &amp;&amp; object.dataSource.splitProceduresAndFunctions()">
+                        <folder label="%tree.functions.node.name" icon="#functions" description="Functions" visibleIf="object.storedCodeFoldersVisible &amp;&amp; object.dataSource.info.supportsStoredCode() &amp;&amp; object.dataSource.splitProceduresAndFunctions()">
                             <items label="%tree.functions.node.name" itemLabel="%tree.function.node.name" path="function" property="functionsOnly" icon="#function">
                                 <items label="%tree.function_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="parameters" navigable="false"/>
                             </items>

@@ -66,9 +66,9 @@ public record ScratchBirdFeatureBoundary(
         if (normalized.startsWith("sys.internals")) {
             return policyDenied("sys-internals", "sys.internals is server-protected and DBeaver may only display exact server refusals.");
         }
-        if (normalized.startsWith("metrics") && mode != ScratchBirdFormMode.REPORT &&
+        if (ScratchBirdNamespaceSemantics.isMetricsPath(normalized) && mode != ScratchBirdFormMode.REPORT &&
             mode != ScratchBirdFormMode.INSPECT && mode != ScratchBirdFormMode.READ_ONLY) {
-            return unsupported("metrics-mutation", "Metrics branches are report surfaces and do not accept DBeaver lifecycle mutations.");
+            return unsupported("management-report-mutation", "Management diagnostics/report branches do not accept DBeaver lifecycle mutations.");
         }
         boolean mutation = mode == ScratchBirdFormMode.CREATE ||
             mode == ScratchBirdFormMode.ALTER ||

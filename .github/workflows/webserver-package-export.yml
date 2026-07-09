@@ -1,0 +1,111 @@
+name: ScratchBird Webserver Package Export
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform packages to generate
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - macos
+      version:
+        description: Version for generated packages
+        required: true
+        default: 0.0.0-beta
+      channel:
+        description: Web distribution channel
+        required: true
+        default: beta
+        type: choice
+        options:
+          - beta
+          - pre-release
+          - release-candidate
+          - nightly
+          - qa
+      base-url:
+        description: Public webserver base URL recorded in the manifest
+        required: true
+        default: https://downloads.scratchbird.com
+      require-msi:
+        description: Require WiX MSI generation on Windows
+        required: true
+        default: false
+        type: boolean
+      retention-days:
+        description: GitHub artifact retention days
+        required: true
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webserver-package-export-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-packages:
+    name: Build and verify packages
+    uses: ./.github/workflows/verify-installers.yml
+    with:
+      platform: ${{ inputs.platform }}
+      version: ${{ inputs.version }}
+      require-msi: ${{ inputs.require-msi }}
+
+  package-webserver-export:
+    name: Create webserver upload bundle
+    needs: build-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: package-artifacts
+
+      - name: Verify downloaded installer manifests
+        run: |
+          while IFS= read -r manifest; do
+            root="$(dirname "$manifest")"
+            platform="$(
+              python3 - "$manifest" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["platform"])
+PY
+            )"
+            python3 project/tools/installers/verify_installer_artifacts.py \
+              --platform "$platform" \
+              --artifact-root "$root"
+          done < <(find package-artifacts -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
+          find package-artifacts -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json -print
+
+      - name: Create webserver upload bundle
+        run: |
+          python3 project/tools/installers/create_web_distribution_bundle.py \
+            --input-root package-artifacts \
+            --output-root build/webserver-export \
+            --version "${{ inputs.version }}" \
+            --channel "${{ inputs.channel }}" \
+            --base-url "${{ inputs['base-url'] }}" \
+            --source-revision "$GITHUB_SHA" \
+            --github-run-id "$GITHUB_RUN_ID"
+
+      - name: Upload webserver package export
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratchbird-webserver-package-export
+          path: build/webserver-export
+          if-no-files-found: error
+          retention-days: ${{ inputs['retention-days'] }}

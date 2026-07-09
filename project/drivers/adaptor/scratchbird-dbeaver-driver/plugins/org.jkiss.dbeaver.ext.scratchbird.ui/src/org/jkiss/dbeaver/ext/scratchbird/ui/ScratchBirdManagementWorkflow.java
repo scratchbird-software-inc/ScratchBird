@@ -295,6 +295,10 @@ final class ScratchBirdManagementWorkflow {
     @NotNull
     static List<String> monitoringDashboardLines() {
         return List.of(
+            "management -> sys.catalog_readable.navigator_tree with server-published display/source/refusal contracts",
+            "management.diagnostics -> sys.catalog_readable.metrics_catalog, sys.catalog_readable.diagnostics_catalog, SHOW METRICS",
+            "management.sessions -> SHOW SESSIONS and SHOW TRANSACTIONS",
+            "management.listener-and-manager -> sys.catalog_readable.listeners, SHOW LISTENERS, SHOW PARSERS",
             "scratchbird.sessions -> SELECT COUNT(*) AS Sessions FROM sys.sessions",
             "scratchbird.transactions -> SELECT COUNT(*) AS Transactions FROM sys.transactions",
             "scratchbird.locks -> SELECT COUNT(*) AS Locks FROM sys.locks",

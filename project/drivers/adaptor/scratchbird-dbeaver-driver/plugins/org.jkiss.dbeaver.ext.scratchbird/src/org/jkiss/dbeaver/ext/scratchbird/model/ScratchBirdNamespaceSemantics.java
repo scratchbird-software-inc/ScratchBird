@@ -31,31 +31,23 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public final class ScratchBirdNamespaceSemantics {
 
-    public static final String METRICS_ROOT = "metrics";
+    public static final String MANAGEMENT_ROOT = ScratchBirdManagementSurfaceCatalog.ROOT_PATH;
+    public static final String METRICS_ROOT = ScratchBirdManagementSurfaceCatalog.REPORT_BASE_PATH;
 
     private static final List<String> ROOT_DISPLAY_ORDER = List.of(
-        "security",
-        "programmability",
-        "domains",
-        "agents",
-        "jobs",
-        "diagnostics / metrics",
-        "triggers",
-        "file-spaces",
+        MANAGEMENT_ROOT,
         "sys",
         "users",
-        "emulated",
-        "remote",
         "app",
         "cluster",
-        "data",
-        METRICS_ROOT
+        "emulated",
+        "remote",
+        "data"
     );
 
     private static final Map<String, Integer> ROOT_DISPLAY_RANK = IntStream.range(0, ROOT_DISPLAY_ORDER.size())
@@ -81,16 +73,6 @@ public final class ScratchBirdNamespaceSemantics {
         .boxed()
         .collect(Collectors.toUnmodifiableMap(METRICS_DISPLAY_ORDER::get, index -> index));
 
-    private static final Set<String> MANAGEMENT_ROOTS = Set.of(
-        "cluster",
-        "connections",
-        "emulated",
-        "group",
-        "local",
-        "nosql",
-        "remote"
-    );
-
     private static final Comparator<String> PATH_COMPARATOR = Comparator
         .comparingInt(ScratchBirdNamespaceSemantics::getRootDisplayRank)
         .thenComparingInt(ScratchBirdNamespaceSemantics::getMetricsDisplayRank)
@@ -113,14 +95,22 @@ public final class ScratchBirdNamespaceSemantics {
     }
 
     public static boolean isMetricsPath(String path) {
-        return normalize(getRootSegment(path)).equals(METRICS_ROOT);
+        return isManagementReportPath(path);
     }
 
     public static boolean isManagementPath(String path) {
         if (CommonUtils.isEmpty(path)) {
             return false;
         }
-        return MANAGEMENT_ROOTS.contains(normalize(getRootSegment(path)));
+        return ScratchBirdManagementSurfaceCatalog.isManagementPath(path);
+    }
+
+    public static boolean isManagementReportPath(String path) {
+        if (CommonUtils.isEmpty(path)) {
+            return false;
+        }
+        String normalized = normalize(path);
+        return normalized.equals(METRICS_ROOT) || normalized.startsWith(METRICS_ROOT + ".");
     }
 
     @NotNull
@@ -151,25 +141,21 @@ public final class ScratchBirdNamespaceSemantics {
         if (canonicalRank != null) {
             return canonicalRank;
         }
-        if (isManagementPath(path)) {
-            return ROOT_DISPLAY_ORDER.size() + 1;
-        }
         return ROOT_DISPLAY_ORDER.size();
     }
 
     private static int getMetricsDisplayRank(@NotNull String path) {
-        if (!isMetricsPath(path)) {
+        if (!isManagementReportPath(path)) {
             return 0;
         }
         String normalized = normalize(path);
-        int firstSeparator = normalized.indexOf('.');
-        if (firstSeparator < 0) {
+        String prefix = METRICS_ROOT + ".";
+        if (!normalized.startsWith(prefix)) {
             return -1;
         }
-        int nextSeparator = normalized.indexOf('.', firstSeparator + 1);
-        String branch = nextSeparator < 0
-            ? normalized.substring(firstSeparator + 1)
-            : normalized.substring(firstSeparator + 1, nextSeparator);
+        String rest = normalized.substring(prefix.length());
+        int nextSeparator = rest.indexOf('.');
+        String branch = nextSeparator < 0 ? rest : rest.substring(0, nextSeparator);
         return METRICS_DISPLAY_RANK.getOrDefault(branch, METRICS_DISPLAY_ORDER.size());
     }
 

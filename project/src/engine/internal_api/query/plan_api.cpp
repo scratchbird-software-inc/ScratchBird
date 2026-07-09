@@ -4869,6 +4869,28 @@ void AddQueryProjectionSystemObject(
                                  1);
 }
 
+void AddQueryProjectionSystemColumns(
+    std::vector<SysInformationColumnSource>* columns,
+    std::set<std::string>* column_keys_in_projection,
+    const std::string& object_uuid,
+    const SysInformationProjectionDefinition& definition) {
+  std::uint32_t ordinal = 0;
+  for (const auto& column : definition.columns) {
+    ++ordinal;
+    if (column.column_name.empty()) { continue; }
+    const std::string key = object_uuid + ":" + std::to_string(ordinal);
+    if (!column_keys_in_projection->insert(key).second) { continue; }
+    SysInformationColumnSource source;
+    source.relation_object_uuid = object_uuid;
+    source.column_name = column.column_name;
+    source.ordinal_position = ordinal;
+    source.datatype_name = column.logical_type;
+    source.is_nullable = column.nullable ? "YES" : "NO";
+    source.catalog_generation_id = 1;
+    columns->push_back(std::move(source));
+  }
+}
+
 std::string QueryProjectionPayloadField(const std::string& payload,
                                         const std::string& field_name) {
   const std::string prefix = field_name + "=";
@@ -5302,6 +5324,27 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
                                    "table",
                                    "SYSTEM TABLE",
                                    "systable:");
+  }
+  for (const auto& definition : BuiltinSysInformationProjectionDefinitions()) {
+    if (definition.view_path.empty() ||
+        scratchbird::core::catalog::CatalogPathIsClusterScoped(definition.view_path)) {
+      continue;
+    }
+    const bool is_system_table = system_tables.find(definition.view_path) != system_tables.end();
+    AddQueryProjectionSystemColumns(&sources.columns,
+                                    &column_keys_in_projection,
+                                    std::string(is_system_table ? "systable:" : "sysview:") +
+                                        definition.view_path,
+                                    definition);
+    if (!is_system_table && definition.view_path.rfind("sys.information.", 0) == 0) {
+      const std::string information_schema_path =
+          "sys.information_schema." +
+          definition.view_path.substr(std::string("sys.information.").size());
+      AddQueryProjectionSystemColumns(&sources.columns,
+                                      &column_keys_in_projection,
+                                      "sysview:" + information_schema_path,
+                                      definition);
+    }
   }
 
   return sources;

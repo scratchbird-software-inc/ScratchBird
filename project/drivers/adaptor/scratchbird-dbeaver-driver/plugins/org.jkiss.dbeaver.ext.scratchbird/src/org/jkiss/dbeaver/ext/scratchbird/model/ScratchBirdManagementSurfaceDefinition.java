@@ -28,20 +28,15 @@ import org.jkiss.code.NotNull;
 
 import java.util.List;
 
-public record ScratchBirdReportDefinition(
-    @NotNull String id,
-    @NotNull String title,
-    @NotNull String branch,
-    @NotNull String parentForm,
-    @NotNull String bestOutput,
-    @NotNull List<String> sourceSurfaces,
-    @NotNull String aggregationGrain,
-    @NotNull String defaultRetention,
-    @NotNull String alertStarter,
-    @NotNull String accessNotes
+public record ScratchBirdManagementSurfaceDefinition(
+    @NotNull String path,
+    @NotNull String label,
+    @NotNull String displayType,
+    @NotNull List<String> backingSources,
+    @NotNull String requiredPermission,
+    @NotNull String refreshPolicy,
+    @NotNull List<ScratchBirdNavigatorActionRegistry.Action> actions,
+    @NotNull String refusalBehavior,
+    @NotNull String formId
 ) {
-    @NotNull
-    public String navigatorPath() {
-        return ScratchBirdManagementSurfaceCatalog.reportNavigatorPath(branch, id);
-    }
 }

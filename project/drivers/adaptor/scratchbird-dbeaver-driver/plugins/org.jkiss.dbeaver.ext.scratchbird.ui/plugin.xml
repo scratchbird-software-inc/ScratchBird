@@ -7,8 +7,16 @@
             class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdUiPropertyTester"
             id="org.jkiss.dbeaver.ext.scratchbird.ui.propertyTester"
             namespace="org.jkiss.dbeaver.ext.scratchbird.ui"
-            properties="canManage,canOpen,canNew,canAlter,canDelete,canTasks,canReports,canSourceStatus,canValidateSql"
+            properties="canManage,canOpen,canNew,canAlter,canDelete,canTasks,canReports,canSourceStatus,canValidateSql,canDefaultOpen"
             type="java.lang.Object"/>
+    </extension>
+
+    <extension point="org.eclipse.core.runtime.adapters">
+        <factory
+            adaptableType="org.jkiss.dbeaver.model.DBPObject"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdNavigatorObjectManagerAdapterFactory">
+            <adapter type="org.jkiss.dbeaver.ui.navigator.INavigatorObjectManager"/>
+        </factory>
     </extension>
 
     <extension point="org.eclipse.ui.editors.annotationTypes">
@@ -30,6 +38,14 @@
             presentationLayer="5"
             textStylePreferenceKey="ScratchBird.v3.problem.style"
             textStylePreferenceValue="SQUIGGLES"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.editors">
+        <editor
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.managementEditor"
+            name="ScratchBird Management"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdManagementEditor"
+            icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png"/>
     </extension>
 
     <extension point="org.jkiss.dbeaver.sql.editorAddIns">
@@ -108,6 +124,18 @@
                     <adapt type="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
                         <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canValidateSql"/>
                     </adapt>
+                </with>
+            </activeWhen>
+        </handler>
+        <handler
+            commandId="org.jkiss.dbeaver.core.object.open"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdOpenHandler">
+            <activeWhen>
+                <with variable="selection">
+                    <count value="1"/>
+                    <iterate operator="and">
+                        <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canDefaultOpen"/>
+                    </iterate>
                 </with>
             </activeWhen>
         </handler>

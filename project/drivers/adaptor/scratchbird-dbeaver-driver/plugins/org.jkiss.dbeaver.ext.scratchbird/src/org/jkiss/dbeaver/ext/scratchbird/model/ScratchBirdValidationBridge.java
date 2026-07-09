@@ -65,7 +65,7 @@ public final class ScratchBirdValidationBridge {
         "emulated",
         "remote",
         "data",
-        ScratchBirdNamespaceSemantics.METRICS_ROOT
+        ScratchBirdNamespaceSemantics.MANAGEMENT_ROOT
     );
 
     private ScratchBirdValidationBridge() {
@@ -1489,7 +1489,7 @@ public final class ScratchBirdValidationBridge {
                 "WARNING",
                 "PRS_JV3_L020",
                 statement.span(),
-                "Statement " + statementNumber + " references " + path + ", but the metrics branch is client-only in DBeaver; route through report forms instead of direct lifecycle SQL.");
+                "Statement " + statementNumber + " references " + path + ", but management diagnostics/report branches are report surfaces in DBeaver; route through report forms instead of direct lifecycle SQL.");
         }
         ScratchBirdBranchProfile profile = ScratchBirdBranchProfile.forPath(path);
         if (profile.allows(requestedMode)) {
@@ -2022,7 +2022,7 @@ public final class ScratchBirdValidationBridge {
                 "PRS_JV3_L023",
                 statement.span(),
                 "Statement " + statementNumber + " is being reviewed from " + normalizePath(targetPath)
-                    + ", which is a client-only metrics surface; use report and source-status flows instead of direct lifecycle SQL.");
+                    + ", which is a management diagnostics/report surface; use report and source-status flows instead of direct lifecycle SQL.");
         }
         ScratchBirdBranchProfile profile = ScratchBirdBranchProfile.forPath(targetPath);
         if (profile.allows(requestedMode)) {
@@ -2381,7 +2381,7 @@ public final class ScratchBirdValidationBridge {
     private static String protectedDmlSurfaceLabel(@NotNull String path) {
         String normalizedPath = normalizePath(path);
         if (ScratchBirdNamespaceSemantics.isMetricsPath(normalizedPath)) {
-            return "client-only metrics surface";
+            return "management diagnostics/report surface";
         }
         if (normalizedPath.equals("sys") || normalizedPath.startsWith("sys.")) {
             ScratchBirdBranchProfile profile = ScratchBirdBranchProfile.forPath(normalizedPath);
@@ -2439,7 +2439,7 @@ public final class ScratchBirdValidationBridge {
     private static String dclBroadSecurableSurfaceLabel(@NotNull String path) {
         String normalizedPath = normalizePath(path);
         if (ScratchBirdNamespaceSemantics.isMetricsPath(normalizedPath)) {
-            return "client-only metrics report surface";
+            return "management diagnostics/report surface";
         }
         if ("sys".equals(normalizedPath)) {
             return "system root management surface";

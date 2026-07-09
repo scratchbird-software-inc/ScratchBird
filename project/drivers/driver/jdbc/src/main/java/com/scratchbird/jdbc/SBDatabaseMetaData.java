@@ -225,6 +225,16 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
     }
 
+    private static final class RelationName {
+        private final String schemaName;
+        private final String tableName;
+
+        private RelationName(String schemaName, String tableName) {
+            this.schemaName = schemaName;
+            this.tableName = tableName;
+        }
+    }
+
     private static FixtureTableMetadata fixtureTable(
             String schema,
             String name,
@@ -250,6 +260,17 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             columns[index] = column(names[index], "text", index + 1, true);
         }
         return columns;
+    }
+
+    private static RelationName splitRelationPath(String relationPath) {
+        if (relationPath == null || relationPath.isBlank()) {
+            return null;
+        }
+        int separator = relationPath.lastIndexOf('.');
+        if (separator <= 0 || separator == relationPath.length() - 1) {
+            return null;
+        }
+        return new RelationName(relationPath.substring(0, separator), relationPath.substring(separator + 1));
     }
 
     private final SBConnection connection;
@@ -1374,47 +1395,54 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
 
         List<Object[]> rows = new ArrayList<>();
+        Set<String> emittedColumnKeys = new LinkedHashSet<>();
         boolean loadedColumns = false;
         try {
             for (Object[] row : queryRows(
-                "SELECT c.column_name, c.data_type_id, c.ordinal_position, c.is_nullable, c.default_value, " +
-                "t.table_name, s.schema_name " +
-                "FROM sys.columns c " +
-                "JOIN sys.tables t ON t.table_id = c.table_id " +
-                "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
-                "WHERE c.is_valid = 1 AND t.is_valid = 1 AND s.is_valid = 1"
+                "SELECT relation_path, column_name, ordinal_position, datatype_name, domain_name, " +
+                "is_nullable, comment_text " +
+                "FROM sys.catalog_readable.columns"
             )) {
-                String columnName = toStringValue(row, 0);
-                String tableName = toStringValue(row, 5);
-                String schemaName = toStringValue(row, 6);
-                if (!matchesPattern(schemaName, schemaPattern) ||
-                    !matchesPattern(tableName, tableNamePattern) ||
+                String relationPath = toStringValue(row, 0);
+                RelationName relationName = splitRelationPath(relationPath);
+                if (relationName == null) {
+                    continue;
+                }
+                String columnName = toStringValue(row, 1);
+                if (!matchesPattern(relationName.schemaName, schemaPattern) ||
+                    !matchesPattern(relationName.tableName, tableNamePattern) ||
                     !matchesPattern(columnName, columnNamePattern)) {
                     continue;
                 }
 
-                Object typeValue = row[1];
-                Integer oid = parseOid(typeValue);
-                String typeName = oid != null ? typeNameFromOid(oid) : toStringValue(typeValue);
-                int jdbcType = oid != null ? jdbcTypeFromOid(oid) : jdbcTypeFromTypeName(typeName);
+                String typeName = toStringValue(row, 3);
+                int jdbcType = jdbcTypeFromTypeName(typeName);
                 int columnSize = columnSizeForType(typeName, jdbcType);
                 Integer decimalDigits = decimalDigitsForType(typeName, jdbcType);
                 Integer numPrecRadix = numPrecRadixForType(jdbcType);
                 Integer charOctetLength = charOctetLengthForType(typeName, jdbcType, columnSize);
 
                 int ordinal = toIntValue(row[2], 0);
-                boolean nullable = toBooleanValue(row[3]);
+                String nullableToken = toStringValue(row, 5);
+                boolean nullable = nullableToken == null
+                    || "YES".equalsIgnoreCase(nullableToken)
+                    || "TRUE".equalsIgnoreCase(nullableToken)
+                    || "1".equals(nullableToken);
                 String nullableText = nullable ? "YES" : "NO";
                 int nullableFlag = nullable ? DatabaseMetaData.columnNullable : DatabaseMetaData.columnNoNulls;
-                String defaultValue = toStringValue(row, 4);
-                String autoIncrementFlag = isAutoIncrementDefaultExpression(defaultValue) ? "YES" : "NO";
-                String generatedFlag = isGeneratedColumnExpression(defaultValue) ? "YES" : "NO";
+
+                String columnKey = relationName.schemaName.toLowerCase(Locale.ROOT) + "\n" +
+                    relationName.tableName.toLowerCase(Locale.ROOT) + "\n" +
+                    columnName.toLowerCase(Locale.ROOT);
+                if (!emittedColumnKeys.add(columnKey)) {
+                    continue;
+                }
 
                 loadedColumns = true;
                 rows.add(new Object[]{
                     currentCatalog,
-                    schemaName,
-                    tableName,
+                    relationName.schemaName,
+                    relationName.tableName,
                     columnName,
                     jdbcType,
                     typeName,
@@ -1423,8 +1451,8 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
                     decimalDigits,
                     numPrecRadix,
                     nullableFlag,
+                    toStringValue(row, 6),
                     null,
-                    defaultValue,
                     null,
                     null,
                     charOctetLength,
@@ -1434,12 +1462,88 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
                     null,
                     null,
                     null,
-                    autoIncrementFlag,
-                    generatedFlag
+                    "NO",
+                    "NO"
                 });
             }
         } catch (SQLException ignored) {
-            // Fall back to information_schema for older/minimal runtime builds.
+            // Fall back to older catalog surfaces below when the readable catalog is unavailable.
+        }
+
+        if (!loadedColumns) {
+            try {
+                for (Object[] row : queryRows(
+                    "SELECT c.column_name, c.data_type_id, c.ordinal_position, c.is_nullable, c.default_value, " +
+                    "t.table_name, s.schema_name " +
+                    "FROM sys.columns c " +
+                    "JOIN sys.tables t ON t.table_id = c.table_id " +
+                    "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                    "WHERE c.is_valid = 1 AND t.is_valid = 1 AND s.is_valid = 1"
+                )) {
+                    String columnName = toStringValue(row, 0);
+                    String tableName = toStringValue(row, 5);
+                    String schemaName = toStringValue(row, 6);
+                    if (!matchesPattern(schemaName, schemaPattern) ||
+                        !matchesPattern(tableName, tableNamePattern) ||
+                        !matchesPattern(columnName, columnNamePattern)) {
+                        continue;
+                    }
+
+                    Object typeValue = row[1];
+                    Integer oid = parseOid(typeValue);
+                    String typeName = oid != null ? typeNameFromOid(oid) : toStringValue(typeValue);
+                    int jdbcType = oid != null ? jdbcTypeFromOid(oid) : jdbcTypeFromTypeName(typeName);
+                    int columnSize = columnSizeForType(typeName, jdbcType);
+                    Integer decimalDigits = decimalDigitsForType(typeName, jdbcType);
+                    Integer numPrecRadix = numPrecRadixForType(jdbcType);
+                    Integer charOctetLength = charOctetLengthForType(typeName, jdbcType, columnSize);
+
+                    int ordinal = toIntValue(row[2], 0);
+                    boolean nullable = toBooleanValue(row[3]);
+                    String nullableText = nullable ? "YES" : "NO";
+                    int nullableFlag = nullable ? DatabaseMetaData.columnNullable : DatabaseMetaData.columnNoNulls;
+                    String defaultValue = toStringValue(row, 4);
+                    String autoIncrementFlag = isAutoIncrementDefaultExpression(defaultValue) ? "YES" : "NO";
+                    String generatedFlag = isGeneratedColumnExpression(defaultValue) ? "YES" : "NO";
+
+                    String columnKey = schemaName.toLowerCase(Locale.ROOT) + "\n" +
+                        tableName.toLowerCase(Locale.ROOT) + "\n" +
+                        columnName.toLowerCase(Locale.ROOT);
+                    if (!emittedColumnKeys.add(columnKey)) {
+                        continue;
+                    }
+
+                    loadedColumns = true;
+                    rows.add(new Object[]{
+                        currentCatalog,
+                        schemaName,
+                        tableName,
+                        columnName,
+                        jdbcType,
+                        typeName,
+                        columnSize,
+                        0,
+                        decimalDigits,
+                        numPrecRadix,
+                        nullableFlag,
+                        null,
+                        defaultValue,
+                        null,
+                        null,
+                        charOctetLength,
+                        ordinal,
+                        nullableText,
+                        null,
+                        null,
+                        null,
+                        null,
+                        autoIncrementFlag,
+                        generatedFlag
+                    });
+                }
+            } catch (SQLException ignored) {
+                // Fall back to information_schema for older/minimal runtime builds.
+            }
         }
 
         if (!loadedColumns) {
@@ -1475,6 +1579,13 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
                     String defaultValue = toStringValue(row, 4);
                     String autoIncrementFlag = isAutoIncrementDefaultExpression(defaultValue) ? "YES" : "NO";
                     String generatedFlag = isGeneratedColumnExpression(defaultValue) ? "YES" : "NO";
+
+                    String columnKey = schemaName.toLowerCase(Locale.ROOT) + "\n" +
+                        tableName.toLowerCase(Locale.ROOT) + "\n" +
+                        columnName.toLowerCase(Locale.ROOT);
+                    if (!emittedColumnKeys.add(columnKey)) {
+                        continue;
+                    }
 
                     rows.add(new Object[]{
                         currentCatalog,
@@ -2913,13 +3024,18 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             return Types.OTHER;
         }
         String normalized = typeName.toLowerCase(Locale.ROOT);
-        if (normalized.contains("int2") || normalized.contains("smallint")) {
+        if ("yes_no".equals(normalized) || normalized.contains("bool")) {
+            return Types.BOOLEAN;
+        }
+        if (normalized.contains("int2") || normalized.contains("uint16") || normalized.contains("smallint")) {
             return Types.SMALLINT;
         }
-        if (normalized.contains("int4") || normalized.equals("int") || normalized.contains("integer")) {
+        if (normalized.contains("int4") || normalized.contains("uint32") ||
+            normalized.equals("int") || normalized.contains("integer")) {
             return Types.INTEGER;
         }
-        if (normalized.contains("int8") || normalized.contains("bigint")) {
+        if (normalized.contains("int8") || normalized.contains("int64") ||
+            normalized.contains("uint64") || normalized.contains("bigint")) {
             return Types.BIGINT;
         }
         if (normalized.contains("float4") || normalized.contains("real")) {

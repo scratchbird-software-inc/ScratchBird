@@ -29,19 +29,27 @@ import org.eclipse.jface.dialogs.IDialogConstants;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.accessibility.AccessibleAdapter;
 import org.eclipse.swt.accessibility.AccessibleEvent;
+import org.eclipse.swt.custom.SashForm;
+import org.eclipse.swt.custom.ScrolledComposite;
 import org.eclipse.swt.dnd.Clipboard;
 import org.eclipse.swt.dnd.TextTransfer;
 import org.eclipse.swt.dnd.Transfer;
+import org.eclipse.swt.graphics.Point;
+import org.eclipse.swt.graphics.Rectangle;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.TabFolder;
 import org.eclipse.swt.widgets.TabItem;
+import org.eclipse.swt.widgets.Table;
+import org.eclipse.swt.widgets.TableColumn;
+import org.eclipse.swt.widgets.TableItem;
 import org.eclipse.swt.widgets.Text;
 import org.jkiss.code.NotNull;
 import org.jkiss.code.Nullable;
@@ -56,6 +64,9 @@ import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormMode;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormRegistry;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdLiveProbe;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdManagementActionEnvelope;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdManagementConsoleCatalog;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdManagementSurfaceCatalog;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdManagementSurfaceDefinition;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdMutationApplyExecutor;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdNavigatorActionRegistry;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdObjectFormContext;
@@ -67,6 +78,7 @@ import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdReportCatalog;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdReportDefinition;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdReportPlan;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSqlObjectEditorCatalog;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdTaskCatalog;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdTaskDefinition;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdValidationBridge;
@@ -77,11 +89,15 @@ import org.jkiss.dbeaver.model.struct.DBSTypedObject;
 import org.jkiss.dbeaver.ui.UIUtils;
 
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 
 public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
+    private static final int MIN_DIALOG_WIDTH = 1360;
+    private static final int MIN_DIALOG_HEIGHT = 760;
     private static final int COPY_SCRIPT_ID = IDialogConstants.CLIENT_ID + 1;
     private static final int COPY_REVIEW_PACKET_ID = IDialogConstants.CLIENT_ID + 2;
     private static final int RUN_LIVE_PROBE_ID = IDialogConstants.CLIENT_ID + 3;
@@ -104,6 +120,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private final String probeScopeKey;
     @Nullable
     private final ScratchBirdReportDefinition report;
+    @Nullable
+    private final ScratchBirdManagementSurfaceDefinition managementSurface;
     @NotNull
     private final ScratchBirdRefusalModel permission;
     @NotNull
@@ -130,6 +148,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private ScratchBirdMutationApplyExecutor.ApplyResult applyResult;
     @Nullable
     private ScratchBirdLiveProbe.TaskProbePhase taskProbePhase;
+    @Nullable
+    private Shell hostShell;
     private int selectedTaskIndex;
     @Nullable
     private Button applyButton;
@@ -187,6 +207,92 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @Nullable
     private Text liveResultText;
     @Nullable
+    private ScratchBirdManagementConsoleCatalog.ConsoleDefinition managementConsole;
+    @Nullable
+    private ScratchBirdSqlObjectEditorCatalog.EditorDefinition objectEditor;
+    @Nullable
+    private Text objectEditorDraftText;
+    @Nullable
+    private Text objectEditorCreateText;
+    @Nullable
+    private Text objectEditorAlterText;
+    @Nullable
+    private Text objectEditorDropText;
+    @Nullable
+    private Text objectEditorValidationText;
+    @Nullable
+    private Table managementConsoleTable;
+    @Nullable
+    private Text managementConsoleAgentNameText;
+    @Nullable
+    private Text managementConsoleAgentLayerText;
+    @Nullable
+    private Text managementConsoleAgentScopeText;
+    @Nullable
+    private Text managementConsoleAgentStateText;
+    @Nullable
+    private Text managementConsoleAgentHealthText;
+    @Nullable
+    private Text managementConsoleAgentEnabledText;
+    @Nullable
+    private Text managementConsoleAgentActivePolicyText;
+    @Nullable
+    private Text managementConsoleAgentLastActivityText;
+    @Nullable
+    private Text managementConsoleDetailText;
+    @Nullable
+    private Text managementConsoleRuntimeText;
+    @Nullable
+    private Text managementConsolePolicyText;
+    @Nullable
+    private Combo managementConsolePolicySelector;
+    @Nullable
+    private Text managementConsoleActionHistoryText;
+    @Nullable
+    private Text managementConsoleEvidenceText;
+    @Nullable
+    private Text managementConsoleActionsText;
+    @Nullable
+    private Text managementConsoleLiveText;
+    @Nullable
+    private Table managementConsoleRuntimeResultTable;
+    @Nullable
+    private Table managementConsoleMetricResultTable;
+    @Nullable
+    private Table managementConsolePolicyResultTable;
+    @Nullable
+    private Table managementConsoleOverrideResultTable;
+    @Nullable
+    private Table managementConsoleActionResultTable;
+    @Nullable
+    private Table managementConsoleActionAuditResultTable;
+    @Nullable
+    private Table managementConsoleEvidenceResultTable;
+    @Nullable
+    private Table managementConsoleEvidenceAuditResultTable;
+    @Nullable
+    private Text managementConsolePolicyNameText;
+    @Nullable
+    private Text managementConsolePolicyFamilyText;
+    @Nullable
+    private Text managementConsolePolicyVersionText;
+    @Nullable
+    private Text managementConsolePolicyStateText;
+    @Nullable
+    private Text managementConsolePolicyValidationText;
+    @Nullable
+    private Text managementConsolePolicyScheduleText;
+    @Nullable
+    private Text managementConsolePolicyBodyText;
+    @Nullable
+    private Text managementConsolePolicySourceStatusText;
+    @Nullable
+    private Text managementConsoleOverrideSourceStatusText;
+    @NotNull
+    private List<ManagementResultRow> managementConsolePolicyRows = List.of();
+    @NotNull
+    private String managementConsoleMutationCommand = "";
+    @Nullable
     private Text workflowStatusText;
     @Nullable
     private Text workflowPreviewIdentityText;
@@ -226,6 +332,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         this.report = targetObject instanceof ScratchBirdSchemaNode schemaNode
             ? ScratchBirdReportCatalog.findByNavigatorPath(schemaNode.getFullPath())
             : null;
+        this.managementSurface = targetObject instanceof ScratchBirdSchemaNode schemaNode
+            ? ScratchBirdManagementSurfaceCatalog.find(schemaNode.getFullPath())
+            : null;
         this.permission = ScratchBirdPermissionProbe.probe(form, mode, targetPath);
         this.plan = ScratchBirdAdminExecutor.plan(
             form,
@@ -248,24 +357,134 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             plan,
             taskDefinitions,
             destructivePlan);
-        this.probePlan = ScratchBirdLiveProbe.plan(form, mode, targetPath, plan, taskDefinitions, destructivePlan);
+        this.probePlan = managementSurface != null ?
+            ScratchBirdLiveProbe.planForManagementSurface(managementSurface, plan.authority()) :
+            ScratchBirdLiveProbe.plan(form, mode, targetPath, plan, taskDefinitions, destructivePlan);
+        this.managementConsole = managementSurface == null ? null : ScratchBirdManagementConsoleCatalog.forSurface(managementSurface);
+        this.objectEditor = managementSurface == null ? ScratchBirdSqlObjectEditorCatalog.forForm(form, targetPath) : null;
     }
 
     @Override
     public void create() {
         super.create();
+        hostShell = getShell();
+        configureMinimumShellSize();
+        if (managementConsole != null) {
+            setTitle(managementConsole.title());
+            setMessage("ScratchBird management console for " + targetPath);
+            autoRefreshManagementConsole();
+            return;
+        }
         setTitle(form.id() + " - " + form.name());
         setMessage("ScratchBird " + mode + " form for " + ScratchBirdSelectionUtils.displayPath(targetObject));
     }
 
     @Override
+    protected boolean isResizable() {
+        return true;
+    }
+
+    @Override
+    protected Point getInitialSize() {
+        Shell shell = getShell();
+        if (shell == null || shell.getDisplay() == null) {
+            return new Point(1280, 820);
+        }
+        Rectangle clientArea = shell.getDisplay().getPrimaryMonitor().getClientArea();
+        int width = Math.min(1500, Math.max(MIN_DIALOG_WIDTH, clientArea.width - 160));
+        int height = Math.min(980, Math.max(MIN_DIALOG_HEIGHT, clientArea.height - 140));
+        return new Point(width, height);
+    }
+
+    private void configureMinimumShellSize() {
+        Shell shell = getShell();
+        if (shell != null && !shell.isDisposed()) {
+            shell.setMinimumSize(MIN_DIALOG_WIDTH, MIN_DIALOG_HEIGHT);
+        }
+    }
+
+    @Override
     protected Control createDialogArea(Composite parent) {
         Composite area = (Composite) super.createDialogArea(parent);
+        area.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
 
+        createFormTabs(area, true);
+        return area;
+    }
+
+    public Control createEmbeddedEditorArea(@NotNull Composite parent) {
+        hostShell = parent.getShell();
+        Composite area = new Composite(parent, SWT.NONE);
+        GridLayout layout = new GridLayout(1, false);
+        layout.marginWidth = 0;
+        layout.marginHeight = 0;
+        area.setLayout(layout);
+        area.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+
+        Label title = new Label(area, SWT.NONE);
+        title.setText(managementConsole == null ? form.id() + " - " + form.name() : managementConsole.title());
+        title.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        setAccessibleName(title, "ScratchBird editor title");
+
+        Label message = new Label(area, SWT.WRAP);
+        message.setText(managementConsole == null ?
+            "ScratchBird " + mode + " form for " + ScratchBirdSelectionUtils.displayPath(targetObject) :
+            "ScratchBird management console for " + targetPath);
+        message.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        setAccessibleName(message, "ScratchBird editor message");
+
+        createFormTabs(area, false);
+        createEmbeddedButtonBar(area);
+        if (managementConsole != null) {
+            autoRefreshManagementConsole();
+        }
+        return area;
+    }
+
+    private void createFormTabs(@NotNull Composite area, boolean scrollStandardForms) {
+        if (managementSurface != null && managementConsole != null) {
+            TabFolder tabs = createPlainTabFolder(area);
+            createManagementConsoleTab(tabs, managementSurface, managementConsole);
+            tabs.setSelection(0);
+            return;
+        }
+
+        if (!scrollStandardForms) {
+            TabFolder tabs = createPlainTabFolder(area);
+            populateStandardTabs(tabs);
+            return;
+        }
+
+        ScrolledComposite scroll = new ScrolledComposite(area, SWT.V_SCROLL | SWT.H_SCROLL);
+        scroll.setExpandHorizontal(true);
+        scroll.setExpandVertical(true);
+        scroll.setAlwaysShowScrollBars(false);
+        scroll.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        setAccessibleName(scroll, "ScratchBird management form scroll area");
+
+        TabFolder tabs = new TabFolder(scroll, SWT.TOP);
+        tabs.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        scroll.setContent(tabs);
+
+        populateStandardTabs(tabs);
+        configureDialogScroll(scroll, tabs);
+    }
+
+    @NotNull
+    private static TabFolder createPlainTabFolder(@NotNull Composite area) {
         TabFolder tabs = new TabFolder(area, SWT.TOP);
         tabs.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        return tabs;
+    }
 
+    private void populateStandardTabs(@NotNull TabFolder tabs) {
+        if (objectEditor != null) {
+            createSqlObjectEditorTab(tabs, objectEditor);
+        }
         createOverviewTab(tabs, permission);
+        if (managementSurface != null) {
+            createManagementSurfaceTab(tabs, managementSurface);
+        }
         createWorkflowTab(tabs);
         createDataEditorContractTab(tabs);
         createDataTransferContractTab(tabs);
@@ -289,12 +508,72 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         createObjectGraphTab(tabs);
         createHistoryTab(tabs);
         createValidationTab(tabs, plan);
-        if (report != null || action == ScratchBirdNavigatorActionRegistry.Action.REPORTS ||
+        if (managementSurface != null || report != null || action == ScratchBirdNavigatorActionRegistry.Action.REPORTS ||
             action == ScratchBirdNavigatorActionRegistry.Action.SOURCE_STATUS) {
             createReportTab(tabs);
         }
+        if ((managementConsole != null || objectEditor != null) && tabs.getItemCount() > 0) {
+            tabs.setSelection(0);
+        }
+    }
 
-        return area;
+    private static void configureDialogScroll(
+        @NotNull ScrolledComposite scroll,
+        @NotNull TabFolder tabs
+    ) {
+        Point preferred = tabs.computeSize(SWT.DEFAULT, SWT.DEFAULT);
+        scroll.setMinSize(
+            Math.max(1100, preferred.x),
+            Math.max(760, preferred.y));
+    }
+
+    private void createEmbeddedButtonBar(@NotNull Composite parent) {
+        Composite buttonRow = new Composite(parent, SWT.NONE);
+        GridLayout layout = new GridLayout(7, true);
+        layout.marginWidth = 8;
+        layout.marginHeight = 8;
+        layout.horizontalSpacing = 6;
+        buttonRow.setLayout(layout);
+        buttonRow.setLayoutData(new GridData(SWT.FILL, SWT.BOTTOM, true, false));
+
+        createEmbeddedButton(buttonRow, "Copy Script", COPY_SCRIPT_ID,
+            "Copy the generated ScratchBird SQL/admin preview.", "copy-preview-script");
+        createEmbeddedButton(buttonRow, "Copy Form Packet", COPY_REVIEW_PACKET_ID,
+            "Copy a review packet for this form, target, capability, and generated preview.", "copy-form-packet");
+        createEmbeddedButton(buttonRow, "Validate Preview", VALIDATE_PREVIEW_ID,
+            "Run the local ScratchBird parser and workflow proof for the generated preview.", "validate-preview");
+        createEmbeddedButton(buttonRow, "Refresh Server Status", REFRESH_SERVER_STATUS_ID,
+            "Run available server-backed authz and live refresh probes.", "refresh-server-status");
+        createEmbeddedButton(buttonRow, "Run Authz Probe", RUN_AUTHZ_PROBE_ID,
+            "Execute the safe server-backed authorization probe for this form.", "run-authz-probe");
+        createEmbeddedButton(buttonRow, "Run Live Probe", RUN_LIVE_PROBE_ID,
+            "Execute the safe live ScratchBird server probe for this form.", "run-live-probe");
+        Button applyRequiresAdmission = createEmbeddedButton(
+            buttonRow,
+            ScratchBirdManagementWorkflow.applyButtonLabel(applyButtonReady()),
+            APPLY_REQUIRES_ADMISSION_ID,
+            "Run the mutation only after the server permission probe admits the exact preview and command hash.",
+            "apply-requires-admission");
+        applyButton = applyRequiresAdmission;
+        applyRequiresAdmission.setEnabled(applyButtonReady());
+    }
+
+    @NotNull
+    private Button createEmbeddedButton(
+        @NotNull Composite parent,
+        @NotNull String label,
+        int buttonId,
+        @NotNull String toolTip,
+        @NotNull String proofId
+    ) {
+        Button button = new Button(parent, SWT.PUSH);
+        button.setText(label);
+        GridData data = new GridData(SWT.FILL, SWT.CENTER, true, false);
+        data.minimumWidth = 118;
+        button.setLayoutData(data);
+        configureButton(button, toolTip, proofId);
+        button.addListener(SWT.Selection, event -> buttonPressed(buttonId));
+        return button;
     }
 
     @Override
@@ -307,10 +586,10 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         configureButton(validatePreview, "Run the local ScratchBird parser and workflow proof for the generated preview.", "validate-preview");
         Button refreshServerStatus = createButton(parent, REFRESH_SERVER_STATUS_ID, "Refresh Server Status", false);
         configureButton(refreshServerStatus, "Run available server-backed authz and live refresh probes.", "refresh-server-status");
-        refreshServerStatus.setEnabled(authzProbePlan.executable() || probePlan.executable());
+        refreshServerStatus.setEnabled(activeAuthzProbePlan().executable() || probePlan.executable());
         Button runAuthzProbe = createButton(parent, RUN_AUTHZ_PROBE_ID, "Run Authz Probe", false);
         configureButton(runAuthzProbe, "Execute the safe server-backed authorization probe for this form.", "run-authz-probe");
-        runAuthzProbe.setEnabled(authzProbePlan.executable());
+        runAuthzProbe.setEnabled(activeAuthzProbePlan().executable());
         Button runLiveProbe = createButton(parent, RUN_LIVE_PROBE_ID, "Run Live Probe", false);
         configureButton(runLiveProbe, "Execute the safe live ScratchBird server probe for this form.", "run-live-probe");
         runLiveProbe.setEnabled(probePlan.executable());
@@ -331,7 +610,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @Override
     protected void buttonPressed(int buttonId) {
         if (buttonId == COPY_SCRIPT_ID) {
-            copyToClipboard(plan.commandText());
+            copyToClipboard(currentCommandText());
             setMessage("Generated ScratchBird preview copied to clipboard.");
             return;
         }
@@ -378,9 +657,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         addField(container, "Capability", permission.kind() + ": " + permission.message());
         addField(container, "Feature boundary", actionEnvelope.featureBoundary().availability() + ": " + actionEnvelope.featureBoundary().uiState());
         addField(container, "Action envelope", actionEnvelope.envelopeId());
-        addField(container, "Preview hash", actionEnvelope.previewHash());
-        addField(container, "Server authz probe", authzProbePlan.label());
-        addField(container, "Server authz ready", Boolean.toString(authzProbePlan.executable()));
+        addField(container, "Preview hash", currentPreviewHash());
+        addField(container, "Server authz probe", activeAuthzProbePlan().label());
+        addField(container, "Server authz ready", Boolean.toString(activeAuthzProbePlan().executable()));
         addField(container, "Task suggestions", Integer.toString(taskDefinitions.size()));
         addField(container, "Live probe", probePlan.label());
         addField(container, "Live probe ready", Boolean.toString(probePlan.executable()));
@@ -393,7 +672,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private void createWorkflowTab(@NotNull TabFolder tabs) {
         Composite container = createTab(tabs, "Workflow");
         workflowStatusText = addFieldControl(container, "Workflow state", workflowStatusSummary());
-        workflowPreviewIdentityText = addFieldControl(container, "Preview identity", ScratchBirdManagementWorkflow.previewIdentity(plan));
+        workflowPreviewIdentityText = addFieldControl(container, "Preview identity", ScratchBirdManagementWorkflow.previewIdentity(activeExecutionPlan()));
         workflowValidationText = addFieldControl(container, "Validate result", localValidationSummary);
         workflowApplyText = addFieldControl(container, "Apply gate", applyGateSummary());
         workflowRefreshText = addFieldControl(container, "Server refresh", refreshStatusSummary());
@@ -471,8 +750,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             mode,
             targetPath,
             permission,
-            plan,
-            authzProbePlan,
+            activeExecutionPlan(),
+            activeAuthzProbePlan(),
             probePlan,
             taskDefinitions,
             destructivePlan,
@@ -494,12 +773,12 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         addField(container, "Executable", Boolean.toString(plan.executable()));
         addField(container, "Destructive", Boolean.toString(plan.destructive()));
         addField(container, "Envelope id", actionEnvelope.envelopeId());
-        addField(container, "Preview hash", actionEnvelope.previewHash());
+        addField(container, "Preview hash", currentPreviewHash());
         addField(container, "SBLR/UUID policy", actionEnvelope.sblrUuidPolicy());
         addField(container, "Transaction authority", actionEnvelope.transactionAuthority());
         addField(container, "Feature refusal", actionEnvelope.featureBoundary().refusalCode());
-        addField(container, "Admission probe", actionEnvelope.admissionProbeCommand());
-        addField(container, "Preview", plan.commandText());
+        addField(container, "Admission probe", activeAuthzProbePlan().commandText());
+        addField(container, "Preview", currentCommandText());
     }
 
     private void createValueTab(@NotNull TabFolder tabs, @NotNull DBSTypedObject typedObject) {
@@ -521,8 +800,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         Composite container = createTab(tabs, "Authz");
         addField(container, "Static posture", permission.kind() + ": " + permission.message());
         authzStatusText = addFieldControl(container, "Server authz status", authzStatusSummary());
-        authzSummaryText = addFieldControl(container, "Server authz summary", String.join("\n", authzProbePlan.summaryLines()));
-        authzCommandText = addFieldControl(container, "Server authz commands", authzProbePlan.commandText());
+        authzSummaryText = addFieldControl(container, "Server authz summary", String.join("\n", activeAuthzProbePlan().summaryLines()));
+        authzCommandText = addFieldControl(container, "Server authz commands", activeAuthzProbePlan().commandText());
         authzResultText = addFieldControl(container, "Server authz result", authzResultSummary());
     }
 
@@ -543,7 +822,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         Composite container = createTab(tabs, "Tasks");
         addField(container, "Target scope", targetPath);
         addField(container, "Capability posture", permission.kind() + ": " + permission.message());
-        addField(container, "Default execute preview", plan.commandText());
+        addField(container, "Default execute preview", currentCommandText());
         if (taskDefinitions.isEmpty()) {
             addField(container, "Task catalog", "No predefined task catalog is available for this target.");
             addList(container, "Suggested tasks", taskSummaries(taskDefinitions));
@@ -602,6 +881,234 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         taskExecuteCommandText = addFieldControl(container, "Execute command", taskCommandSummary(ScratchBirdLiveProbe.TaskProbePhase.EXECUTE));
         taskResultText = addFieldControl(container, "Task result", taskResultSummary());
         refreshTaskFields();
+    }
+
+    private void createSqlObjectEditorTab(
+        @NotNull TabFolder tabs,
+        @NotNull ScratchBirdSqlObjectEditorCatalog.EditorDefinition editor
+    ) {
+        Composite container = createTab(tabs, "Object Editor");
+        addField(container, "Editor", editor.title());
+        addField(container, "Object family", editor.objectFamily());
+        addField(container, "Target", targetPath);
+        addField(container, "Mode", mode.name());
+        addList(container, "Primary fields", editor.primaryFields());
+        addList(container, "Recursive schema rules", editor.recursiveSchemaRules());
+        addList(container, "Security surfaces", editor.securitySurfaces());
+        addList(container, "DDL capabilities", editor.ddlCapabilities());
+        addList(container, "Server source queries", editor.sourceQueries());
+
+        Label draftLabel = new Label(container, SWT.NONE);
+        draftLabel.setText("Draft SBsql");
+        draftLabel.setToolTipText("Editable ScratchBird SQL draft for this object lifecycle action");
+        draftLabel.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(draftLabel, "Draft ScratchBird SQL label");
+
+        objectEditorDraftText = new Text(container, SWT.BORDER | SWT.MULTI | SWT.WRAP | SWT.V_SCROLL | SWT.H_SCROLL);
+        objectEditorDraftText.setText(plan.commandText());
+        objectEditorDraftText.setToolTipText("Edit the ScratchBird SQL draft, then validate and run the server authz probe before applying.");
+        objectEditorDraftText.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "sql-object-editor-draft-sbsql");
+        setAccessibleName(objectEditorDraftText, "Editable ScratchBird SQL draft");
+        GridData draftData = new GridData(SWT.FILL, SWT.FILL, true, true);
+        draftData.heightHint = 160;
+        objectEditorDraftText.setLayoutData(draftData);
+        objectEditorDraftText.addListener(SWT.Modify, event -> {
+            authzProbeResult = null;
+            applyResult = null;
+            localValidationSummary = "LOCAL_VALIDATION_PENDING: Draft SBsql changed and must be revalidated before server admission.";
+            refreshObjectEditorFields();
+            refreshAuthzProbeFields();
+            refreshWorkflowFields();
+            setMessage("Draft ScratchBird SQL changed; run Validate Preview and Run Authz Probe before applying.");
+        });
+
+        objectEditorCreateText = addFieldControl(container, "Create preview", lifecyclePreview(ScratchBirdFormMode.CREATE));
+        objectEditorAlterText = addFieldControl(container, "Alter preview", lifecyclePreview(ScratchBirdFormMode.ALTER));
+        objectEditorDropText = addFieldControl(container, "Drop preview", lifecyclePreview(ScratchBirdFormMode.DELETE));
+        objectEditorValidationText = addFieldControl(container, "Editor validation", objectEditorValidationSummary(editor));
+    }
+
+    private void createManagementConsoleTab(
+        @NotNull TabFolder tabs,
+        @NotNull ScratchBirdManagementSurfaceDefinition surface,
+        @NotNull ScratchBirdManagementConsoleCatalog.ConsoleDefinition console
+    ) {
+        TabItem item = new TabItem(tabs, SWT.NONE);
+        item.setText(console.tabLabel());
+
+        Composite container = new Composite(tabs, SWT.NONE);
+        container.setLayout(new GridLayout(1, false));
+        item.setControl(container);
+
+        SashForm sash = new SashForm(container, SWT.VERTICAL);
+        sash.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+
+        Composite inventoryPanel = new Composite(sash, SWT.NONE);
+        inventoryPanel.setLayout(new GridLayout(1, false));
+
+        Label tableLabel = new Label(inventoryPanel, SWT.NONE);
+        tableLabel.setText(console.itemLabel());
+        tableLabel.setToolTipText(console.itemLabel());
+        tableLabel.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(tableLabel, console.itemLabel() + " label");
+
+        managementConsoleTable = new Table(inventoryPanel, SWT.BORDER | SWT.FULL_SELECTION | SWT.SINGLE | SWT.V_SCROLL | SWT.H_SCROLL);
+        managementConsoleTable.setHeaderVisible(true);
+        managementConsoleTable.setLinesVisible(true);
+        managementConsoleTable.setToolTipText(console.title());
+        managementConsoleTable.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "management-console-table");
+        setAccessibleName(managementConsoleTable, console.title() + " table");
+        GridData tableData = new GridData(SWT.FILL, SWT.FILL, true, true);
+        tableData.heightHint = 220;
+        tableData.minimumHeight = 120;
+        managementConsoleTable.setLayoutData(tableData);
+
+        addManagementConsoleColumn(managementConsoleTable, console.itemLabel(), 260);
+        addManagementConsoleColumn(managementConsoleTable, "Kind", 150);
+        addManagementConsoleColumn(managementConsoleTable, "State", 160);
+        addManagementConsoleColumn(managementConsoleTable, "management.agents".equals(console.path()) ? "Scope" : "Server data", 420);
+
+        for (ScratchBirdManagementConsoleCatalog.ConsoleRow row : console.rows()) {
+            TableItem tableItem = new TableItem(managementConsoleTable, SWT.NONE);
+            tableItem.setText(new String[]{row.label(), row.kind(), row.state(), row.source()});
+            tableItem.setData(row);
+            if (!row.enabled()) {
+                tableItem.setForeground(container.getDisplay().getSystemColor(SWT.COLOR_DARK_GRAY));
+            }
+        }
+        for (TableColumn column : managementConsoleTable.getColumns()) {
+            column.pack();
+        }
+        managementConsoleTable.addListener(SWT.Selection, event -> {
+            refreshManagementConsoleFields();
+            ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+            if (row != null) {
+                setMessage(console.title() + ": " + row.label());
+            }
+        });
+        if (managementConsoleTable.getItemCount() > 0) {
+            managementConsoleTable.select(0);
+        }
+
+        TabFolder detailTabs = new TabFolder(sash, SWT.BORDER);
+        detailTabs.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        createManagementConsoleDetailTabs(detailTabs, console);
+        sash.setWeights(new int[]{34, 66});
+    }
+
+    private void createManagementConsoleDetailTabs(
+        @NotNull TabFolder tabs,
+        @NotNull ScratchBirdManagementConsoleCatalog.ConsoleDefinition console
+    ) {
+        Composite selected = createTab(tabs, console.itemLabel());
+        managementConsoleAgentNameText = addFieldControl(selected, console.itemLabel(), "");
+        managementConsoleAgentLayerText = addFieldControl(selected, "Kind", "");
+        managementConsoleAgentScopeText = addFieldControl(selected, "Scope", "");
+        managementConsoleAgentStateText = addFieldControl(selected, "State", "");
+        managementConsoleAgentHealthText = addFieldControl(selected, "Health", "");
+        managementConsoleAgentEnabledText = addFieldControl(selected, "Enabled", "");
+        managementConsoleAgentActivePolicyText = addFieldControl(selected, "Active policy", "");
+        managementConsoleAgentLastActivityText = addFieldControl(selected, "Last activity", "");
+        managementConsoleDetailText = addTallFieldControl(selected, "Details", managementConsoleSelectedDetail());
+
+        Composite runtime = createTab(tabs, "Runtime");
+        managementConsoleRuntimeText = addTallFieldControl(runtime, "Runtime status", managementConsoleRuntimeSummary());
+        managementConsoleRuntimeResultTable = addResultTable(runtime, "Runtime rows");
+        managementConsoleMetricResultTable = addResultTable(runtime, "Metric dependencies");
+        managementConsoleLiveText = addTallFieldControl(runtime, "Refresh result", managementConsoleLiveSummary());
+
+        Composite policy = createTab(tabs, "Policy");
+        Label selectorLabel = new Label(policy, SWT.NONE);
+        selectorLabel.setText("Policy");
+        selectorLabel.setToolTipText("Policy");
+        selectorLabel.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(selectorLabel, "Policy selector label");
+
+        managementConsolePolicySelector = new Combo(policy, SWT.DROP_DOWN | SWT.READ_ONLY);
+        managementConsolePolicySelector.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        managementConsolePolicySelector.setToolTipText("Visible policy document for the selected management item");
+        managementConsolePolicySelector.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "management-policy-document-selector");
+        setAccessibleName(managementConsolePolicySelector, "Visible policy document selector");
+        managementConsolePolicySelector.addListener(SWT.Selection, event -> refreshManagementConsolePolicyEditor());
+
+        managementConsolePolicyText = addFieldControl(policy, "Policy summary", managementConsolePolicySummary());
+        managementConsolePolicyNameText = addEditableFieldControl(policy, "Policy name", "");
+        managementConsolePolicyFamilyText = addEditableFieldControl(policy, "Policy family", "");
+        managementConsolePolicyVersionText = addEditableFieldControl(policy, "Version", "");
+        managementConsolePolicyStateText = addFieldControl(policy, "Active state", "");
+        managementConsolePolicyValidationText = addFieldControl(policy, "Validation state", "");
+        managementConsolePolicyScheduleText = addEditableFieldControl(policy, "Schedule / override", "");
+        managementConsolePolicyBodyText = addEditableTallFieldControl(policy, "Policy body / config", "");
+        Composite policyButtons = new Composite(policy, SWT.NONE);
+        policyButtons.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false, 2, 1));
+        policyButtons.setLayout(new GridLayout(5, false));
+        Button newPolicy = new Button(policyButtons, SWT.PUSH);
+        newPolicy.setText("New Draft");
+        configureButton(newPolicy, "Start a new policy draft for the selected agent.", "agent-policy-new-draft");
+        newPolicy.addListener(SWT.Selection, event -> newAgentPolicyDraft());
+        Button validatePolicy = new Button(policyButtons, SWT.PUSH);
+        validatePolicy.setText("Validate Policy");
+        configureButton(validatePolicy, "Prepare a policy validation command for server admission.", "agent-policy-validate");
+        validatePolicy.addListener(SWT.Selection, event -> prepareAgentPolicyCommand("VALIDATE"));
+        Button simulatePolicy = new Button(policyButtons, SWT.PUSH);
+        simulatePolicy.setText("Simulate Policy");
+        configureButton(simulatePolicy, "Prepare a policy simulation command for server admission.", "agent-policy-simulate");
+        simulatePolicy.addListener(SWT.Selection, event -> prepareAgentPolicyCommand("SIMULATE"));
+        Button setActivePolicy = new Button(policyButtons, SWT.PUSH);
+        setActivePolicy.setText("Set Active");
+        configureButton(setActivePolicy, "Prepare a policy activation command for server admission.", "agent-policy-set-active");
+        setActivePolicy.addListener(SWT.Selection, event -> prepareAgentPolicyCommand("ATTACH"));
+        Button applyPolicy = new Button(policyButtons, SWT.PUSH);
+        applyPolicy.setText("Apply Policy");
+        configureButton(applyPolicy, "Prepare a policy apply command for server admission.", "agent-policy-apply");
+        applyPolicy.addListener(SWT.Selection, event -> prepareAgentPolicyCommand("APPLY"));
+        managementConsolePolicySourceStatusText = addTallFieldControl(policy, "Policy source", "Not refreshed. Use Refresh Server Status to load visible policy documents.");
+        managementConsoleOverrideSourceStatusText = addTallFieldControl(policy, "Override source", "Not refreshed. Use Refresh Server Status to load visible schedule/override state.");
+
+        Composite actions = createTab(tabs, "Actions");
+        managementConsoleActionHistoryText = addTallFieldControl(actions, "Action history", managementConsoleActionHistorySummary());
+        managementConsoleActionResultTable = addResultTable(actions, "Recent actions");
+        managementConsoleActionAuditResultTable = addResultTable(actions, "Audit trail");
+        managementConsoleActionsText = addTallFieldControl(actions, "Admissible actions", managementConsoleActionsSummary());
+
+        Composite evidence = createTab(tabs, "Evidence");
+        managementConsoleEvidenceText = addTallFieldControl(evidence, "Evidence and audit", managementConsoleEvidenceSummary());
+        managementConsoleEvidenceResultTable = addResultTable(evidence, "Evidence rows");
+        managementConsoleEvidenceAuditResultTable = addResultTable(evidence, "Audit rows");
+
+        Composite notes = createTab(tabs, "Notes");
+        addList(notes, "Operator notes", console.operatorNotes());
+        refreshManagementConsoleResultTables();
+    }
+
+    private static void addManagementConsoleColumn(
+        @NotNull Table table,
+        @NotNull String label,
+        int width
+    ) {
+        TableColumn column = new TableColumn(table, SWT.NONE);
+        column.setText(label);
+        column.setWidth(width);
+    }
+
+    private void createManagementSurfaceTab(
+        @NotNull TabFolder tabs,
+        @NotNull ScratchBirdManagementSurfaceDefinition surface
+    ) {
+        Composite container = createTab(tabs, "Surface");
+        addField(container, "Surface path", surface.path());
+        addField(container, "Display type", surface.displayType());
+        addField(container, "Presentation", managementPresentation(surface));
+        addField(container, "Required permission", surface.requiredPermission());
+        addField(container, "Refresh policy", surface.refreshPolicy());
+        addField(container, "Allowed actions", surface.actions().stream()
+            .map(Enum::name)
+            .reduce((a, b) -> a + ", " + b)
+            .orElse("-"));
+        addField(container, "Refusal behavior", surface.refusalBehavior());
+        addField(container, "Data availability", managementDataAvailability(surface));
+        addField(container, "Server truth boundary",
+            "This is a ScratchBird management surface, not a physical schema. Values come from authorized sys.catalog_readable or SHOW sources; unavailable sources must display deterministic refusal text.");
     }
 
     private void createLiveTab(@NotNull TabFolder tabs) {
@@ -682,13 +1189,13 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         @NotNull ScratchBirdAdminExecutor.ExecutionPlan plan
     ) {
         Composite container = createTab(tabs, "Validation");
-        addList(container, "Statement inventory", ScratchBirdValidationBridge.statementSummaryFor(plan.commandText()));
-        addList(container, "Parser diagnostics", ScratchBirdValidationBridge.diagnosticsFor(plan.commandText()));
-        addList(container, "Lint hints", ScratchBirdValidationBridge.lintHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        addList(container, "Context hints", ScratchBirdValidationBridge.contextHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        addList(container, "Server probe hints", ScratchBirdValidationBridge.serverProbeHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        addList(container, "Form hints", ScratchBirdValidationBridge.formHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        addList(container, "Parser hints", ScratchBirdValidationBridge.completionHintsFor(plan.commandText(), plan.commandText().length()));
+        addList(container, "Statement inventory", ScratchBirdValidationBridge.statementSummaryFor(currentCommandText()));
+        addList(container, "Parser diagnostics", ScratchBirdValidationBridge.diagnosticsFor(currentCommandText()));
+        addList(container, "Lint hints", ScratchBirdValidationBridge.lintHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        addList(container, "Context hints", ScratchBirdValidationBridge.contextHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        addList(container, "Server probe hints", ScratchBirdValidationBridge.serverProbeHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        addList(container, "Form hints", ScratchBirdValidationBridge.formHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        addList(container, "Parser hints", ScratchBirdValidationBridge.completionHintsFor(currentCommandText(), currentCommandText().length()));
         addField(container, "Validation boundary", "Java v3 parser diagnostics are advisory; execution and permissions remain server-authoritative.");
     }
 
@@ -699,6 +1206,29 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             return;
         }
         addList(container, "Available reports", reportSummaries(ScratchBirdReportCatalog.reportsForNavigatorPath(targetPath)));
+        if (managementSurface != null) {
+            addField(container, "Management data availability", managementDataAvailability(managementSurface));
+        }
+    }
+
+    @NotNull
+    private static String managementPresentation(@NotNull ScratchBirdManagementSurfaceDefinition surface) {
+        return switch (surface.displayType()) {
+            case "dashboard" -> "Dashboard with status cards, result/refusal state, and refresh controls.";
+            case "grid" -> "Authorization-filtered result grid sourced from server-published management data.";
+            case "detail_form" -> "ScratchBird detail form with raw sys shortcut, admission proof, and redaction state.";
+            case "action_form" -> "ScratchBird action form with preview, server admission, and guarded apply.";
+            case "report" -> "Report surface with query/source preview, drilldown metadata, and alert starter.";
+            default -> "ScratchBird management form.";
+        };
+    }
+
+    @NotNull
+    private static String managementDataAvailability(@NotNull ScratchBirdManagementSurfaceDefinition surface) {
+        if (surface.backingSources().isEmpty()) {
+            return "No live server data source is published for this surface yet.";
+        }
+        return surface.backingSources().size() + " server-published data surface(s), shown as result tables/status panes when the connected session is authorized.";
     }
 
     private static void addReportPlanFields(
@@ -755,6 +1285,243 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         return text;
     }
 
+    @NotNull
+    private static Text addTallFieldControl(@NotNull Composite parent, @NotNull String label, @NotNull String value) {
+        Label labelControl = new Label(parent, SWT.NONE);
+        labelControl.setText(label);
+        labelControl.setToolTipText(label);
+        labelControl.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(labelControl, label + " label");
+
+        Text text = new Text(parent, SWT.BORDER | SWT.READ_ONLY | SWT.MULTI | SWT.V_SCROLL | SWT.H_SCROLL);
+        text.setText(value);
+        text.setToolTipText(label);
+        text.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, label);
+        setAccessibleName(text, label + " value");
+        GridData data = new GridData(SWT.FILL, SWT.FILL, true, true);
+        data.heightHint = Math.min(210, Math.max(96, (int) Math.min(512, value.lines().count()) * 18 + 32));
+        text.setLayoutData(data);
+        return text;
+    }
+
+    @NotNull
+    private static Table addResultTable(@NotNull Composite parent, @NotNull String label) {
+        Label labelControl = new Label(parent, SWT.NONE);
+        labelControl.setText(label);
+        labelControl.setToolTipText(label);
+        labelControl.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(labelControl, label + " label");
+
+        Table table = new Table(parent, SWT.BORDER | SWT.FULL_SELECTION | SWT.V_SCROLL | SWT.H_SCROLL);
+        table.setHeaderVisible(true);
+        table.setLinesVisible(true);
+        table.setToolTipText(label);
+        table.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "management-console-result-table");
+        setAccessibleName(table, label + " result table");
+        GridData data = new GridData(SWT.FILL, SWT.FILL, true, true);
+        data.heightHint = 150;
+        table.setLayoutData(data);
+        setStatusTable(table, "Not refreshed. Use Refresh Server Status to load server data.");
+        return table;
+    }
+
+    @NotNull
+    private static Text addEditableFieldControl(@NotNull Composite parent, @NotNull String label, @NotNull String value) {
+        Label labelControl = new Label(parent, SWT.NONE);
+        labelControl.setText(label);
+        labelControl.setToolTipText(label);
+        labelControl.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(labelControl, label + " label");
+
+        Text text = new Text(parent, SWT.BORDER);
+        text.setText(value);
+        text.setToolTipText(label);
+        text.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, label);
+        setAccessibleName(text, label + " value");
+        text.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        return text;
+    }
+
+    @NotNull
+    private static Text addEditableTallFieldControl(@NotNull Composite parent, @NotNull String label, @NotNull String value) {
+        Label labelControl = new Label(parent, SWT.NONE);
+        labelControl.setText(label);
+        labelControl.setToolTipText(label);
+        labelControl.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(labelControl, label + " label");
+
+        Text text = new Text(parent, SWT.BORDER | SWT.MULTI | SWT.WRAP | SWT.V_SCROLL | SWT.H_SCROLL);
+        text.setText(value);
+        text.setToolTipText(label);
+        text.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, label);
+        setAccessibleName(text, label + " value");
+        GridData data = new GridData(SWT.FILL, SWT.FILL, true, true);
+        data.heightHint = 120;
+        text.setLayoutData(data);
+        return text;
+    }
+
+    private static void setStatusTable(@Nullable Table table, @NotNull String message) {
+        if (table == null || table.isDisposed()) {
+            return;
+        }
+        resetTable(table, List.of("Status"));
+        TableItem item = new TableItem(table, SWT.NONE);
+        item.setText(new String[]{message});
+        packTableColumns(table);
+    }
+
+    private void populateManagementResultTable(
+        @Nullable Table table,
+        @NotNull String label,
+        @NotNull String source,
+        @NotNull String filterColumn,
+        @NotNull String filterValue
+    ) {
+        if (table == null || table.isDisposed()) {
+            return;
+        }
+        if (source.isBlank()) {
+            setStatusTable(table, label + " are not published for this management surface.");
+            return;
+        }
+        if (liveProbeResult == null) {
+            setStatusTable(table, label + " not refreshed. Use Refresh Server Status to load server data.");
+            return;
+        }
+        if (liveProbeResult.status().isDeterministicRefusal()) {
+            setStatusTable(table, liveProbeResult.status().kind() + ": " + liveProbeResult.status().redactedMessage());
+            return;
+        }
+
+        ScratchBirdLiveProbe.StatementResult result = findManagementResult(source);
+        if (result == null) {
+            setStatusTable(table, "No server result was returned for " + readableSourceName(source) + ".");
+            return;
+        }
+        if (!result.resultSet() || result.columns().isEmpty()) {
+            setStatusTable(table, readableSourceName(source) + " returned no tabular result.");
+            return;
+        }
+
+        List<List<String>> rows = filteredRows(result, filterColumn, filterValue);
+        resetTable(table, result.columns());
+        if (rows.isEmpty()) {
+            TableItem item = new TableItem(table, SWT.NONE);
+            item.setText(statusRow(result.columns().size(), "No rows are visible for the selected item."));
+            packTableColumns(table);
+            return;
+        }
+        for (List<String> row : rows) {
+            TableItem item = new TableItem(table, SWT.NONE);
+            item.setText(paddedRow(row, result.columns().size()));
+            item.setData(new ManagementResultRow(result.columns(), row));
+        }
+        if (table.getItemCount() > 0) {
+            table.select(0);
+        }
+        packTableColumns(table);
+    }
+
+    private record ManagementResultRow(
+        @NotNull List<String> columns,
+        @NotNull List<String> values
+    ) {
+        @NotNull
+        String value(@NotNull String columnName) {
+            int index = columnIndex(columns, columnName);
+            return index >= 0 && index < values.size() ? values.get(index) : "";
+        }
+    }
+
+    @Nullable
+    private ScratchBirdLiveProbe.StatementResult findManagementResult(@NotNull String source) {
+        if (liveProbeResult == null) {
+            return null;
+        }
+        String normalizedSource = source.toLowerCase(Locale.ENGLISH);
+        for (ScratchBirdLiveProbe.StatementResult result : liveProbeResult.statementResults()) {
+            if (result.command().toLowerCase(Locale.ENGLISH).contains(normalizedSource)) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    @NotNull
+    private static List<List<String>> filteredRows(
+        @NotNull ScratchBirdLiveProbe.StatementResult result,
+        @NotNull String filterColumn,
+        @NotNull String filterValue
+    ) {
+        if (filterColumn.isBlank() || filterValue.isBlank()) {
+            return result.sampleRows();
+        }
+        int filterIndex = columnIndex(result.columns(), filterColumn);
+        if (filterIndex < 0) {
+            return result.sampleRows();
+        }
+        List<List<String>> rows = new ArrayList<>();
+        for (List<String> row : result.sampleRows()) {
+            if (filterIndex < row.size() && filterValue.equalsIgnoreCase(row.get(filterIndex))) {
+                rows.add(row);
+            }
+        }
+        return List.copyOf(rows);
+    }
+
+    private static int columnIndex(@NotNull List<String> columns, @NotNull String expectedName) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (expectedName.equalsIgnoreCase(columns.get(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static void resetTable(@NotNull Table table, @NotNull List<String> columns) {
+        table.removeAll();
+        for (TableColumn column : table.getColumns()) {
+            column.dispose();
+        }
+        for (String columnName : columns) {
+            TableColumn column = new TableColumn(table, SWT.NONE);
+            column.setText(columnName);
+            column.setWidth(160);
+        }
+    }
+
+    private static void packTableColumns(@NotNull Table table) {
+        for (TableColumn column : table.getColumns()) {
+            column.pack();
+        }
+    }
+
+    @NotNull
+    private static String[] paddedRow(@NotNull List<String> row, int columnCount) {
+        String[] values = new String[columnCount];
+        for (int i = 0; i < columnCount; i++) {
+            values[i] = i < row.size() ? row.get(i) : "";
+        }
+        return values;
+    }
+
+    @NotNull
+    private static String[] statusRow(int columnCount, @NotNull String message) {
+        String[] values = new String[Math.max(1, columnCount)];
+        values[0] = message;
+        for (int i = 1; i < values.length; i++) {
+            values[i] = "";
+        }
+        return values;
+    }
+
+    @NotNull
+    private static String readableSourceName(@NotNull String source) {
+        int lastDot = source.lastIndexOf('.');
+        return lastDot < 0 ? source : source.substring(lastDot + 1).replace('_', ' ');
+    }
+
     private static void addList(@NotNull Composite parent, @NotNull String label, @NotNull List<String> values) {
         addField(parent, label, values.isEmpty() ? "-" : String.join("\n", values));
     }
@@ -780,12 +1547,27 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     }
 
     private void copyToClipboard(@NotNull String text) {
-        Clipboard clipboard = new Clipboard(getShell().getDisplay());
+        Clipboard clipboard = new Clipboard(activeDisplay());
         try {
             clipboard.setContents(new Object[]{text}, new Transfer[]{TextTransfer.getInstance()});
         } finally {
             clipboard.dispose();
         }
+    }
+
+    @NotNull
+    private Display activeDisplay() {
+        Shell shell = activeShell();
+        return shell == null ? Display.getDefault() : shell.getDisplay();
+    }
+
+    @Nullable
+    private Shell activeShell() {
+        Shell shell = getShell();
+        if (shell != null && !shell.isDisposed()) {
+            return shell;
+        }
+        return hostShell == null || hostShell.isDisposed() ? null : hostShell;
     }
 
     @NotNull
@@ -800,7 +1582,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         appendLine(packet, "Executable", Boolean.toString(plan.executable()));
         appendLine(packet, "Destructive", Boolean.toString(plan.destructive()));
         appendLine(packet, "Authority", plan.authority());
-        appendLine(packet, "Preview hash", ScratchBirdManagementWorkflow.previewHash(plan.commandText()));
+        appendLine(packet, "Preview hash", currentPreviewHash());
         appendSection(packet, "Workflow status", List.of(
             workflowStatusSummary(),
             applyGateSummary(),
@@ -835,15 +1617,15 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         appendSection(packet, "Should", form.shouldFields());
         appendSection(packet, "Optional", form.optionalFields());
         appendSection(packet, "Child forms", childFormSummaries(form.childForms()));
-        appendSection(packet, "Statement inventory", ScratchBirdValidationBridge.statementSummaryFor(plan.commandText()));
-        appendSection(packet, "Parser diagnostics", ScratchBirdValidationBridge.diagnosticsFor(plan.commandText()));
-        appendSection(packet, "Lint hints", ScratchBirdValidationBridge.lintHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        appendSection(packet, "Context hints", ScratchBirdValidationBridge.contextHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        appendSection(packet, "Server probe hints", ScratchBirdValidationBridge.serverProbeHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        appendSection(packet, "Form hints", ScratchBirdValidationBridge.formHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
-        appendSection(packet, "Parser hints", ScratchBirdValidationBridge.completionHintsFor(plan.commandText(), plan.commandText().length()));
-        appendLine(packet, "Generated preview", plan.commandText());
-        appendSection(packet, "Server authz plan", authzProbePlan.summaryLines());
+        appendSection(packet, "Statement inventory", ScratchBirdValidationBridge.statementSummaryFor(currentCommandText()));
+        appendSection(packet, "Parser diagnostics", ScratchBirdValidationBridge.diagnosticsFor(currentCommandText()));
+        appendSection(packet, "Lint hints", ScratchBirdValidationBridge.lintHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        appendSection(packet, "Context hints", ScratchBirdValidationBridge.contextHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        appendSection(packet, "Server probe hints", ScratchBirdValidationBridge.serverProbeHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        appendSection(packet, "Form hints", ScratchBirdValidationBridge.formHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
+        appendSection(packet, "Parser hints", ScratchBirdValidationBridge.completionHintsFor(currentCommandText(), currentCommandText().length()));
+        appendLine(packet, "Generated preview", currentCommandText());
+        appendSection(packet, "Server authz plan", activeAuthzProbePlan().summaryLines());
         if (authzProbeResult != null) {
             appendSection(packet, "Server authz result", authzProbeResult.summaryLines());
             appendLine(packet, "Server authz output", authzProbeResult.previewText());
@@ -1015,8 +1797,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             mode,
             targetPath,
             permission,
-            plan,
-            authzProbePlan,
+            activeExecutionPlan(),
+            activeAuthzProbePlan(),
             probePlan,
             taskDefinitions,
             destructivePlan,
@@ -1113,13 +1895,14 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     }
 
     private void runAuthzProbe() {
-        if (!authzProbePlan.executable()) {
+        ScratchBirdLiveProbe.ProbePlan activeAuthzPlan = activeAuthzProbePlan();
+        if (!activeAuthzPlan.executable()) {
             setErrorMessage("No safe server-backed authz probe is available for this form.");
             return;
         }
         final ScratchBirdLiveProbe.ProbeResult[] resultHolder = new ScratchBirdLiveProbe.ProbeResult[1];
         try {
-            UIUtils.runInProgressService(monitor -> resultHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, authzProbePlan));
+            UIUtils.runInProgressService(monitor -> resultHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, activeAuthzPlan));
         } catch (InvocationTargetException e) {
             setErrorMessage("ScratchBird server authz probe failed: " + e.getTargetException().getMessage());
             return;
@@ -1162,18 +1945,43 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         setMessage(liveStatusSummary());
     }
 
+    private void autoRefreshManagementConsole() {
+        if (managementConsole == null || !probePlan.executable()) {
+            return;
+        }
+        final ScratchBirdLiveProbe.ProbeResult[] resultHolder = new ScratchBirdLiveProbe.ProbeResult[1];
+        try {
+            UIUtils.runInProgressService(monitor -> resultHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, probePlan));
+        } catch (InvocationTargetException e) {
+            setErrorMessage("ScratchBird management data refresh failed: " + e.getTargetException().getMessage());
+            return;
+        } catch (InterruptedException e) {
+            setMessage("ScratchBird management data refresh canceled.");
+            return;
+        }
+        liveProbeResult = resultHolder[0];
+        ScratchBirdProbeHistory.recordLiveProbe(probeScopeKey, targetPath, form, liveProbeResult);
+        selectedHistoryIndex = 0;
+        refreshLiveProbeFields();
+        refreshWorkflowFields();
+        refreshHistoryFields();
+        setMessage("ScratchBird management data refreshed from the connected server.");
+    }
+
     private void validatePreview() {
         localValidationSummary = ScratchBirdManagementWorkflow.validationSummary(
-            ScratchBirdValidationBridge.diagnosticsFor(plan.commandText()),
-            ScratchBirdValidationBridge.statementSummaryFor(plan.commandText()),
-            ScratchBirdValidationBridge.formHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
+            ScratchBirdValidationBridge.diagnosticsFor(currentCommandText()),
+            ScratchBirdValidationBridge.statementSummaryFor(currentCommandText()),
+            ScratchBirdValidationBridge.formHintsFor(currentCommandText(), currentCommandText().length(), targetPath));
         setErrorMessage(null);
+        refreshObjectEditorFields();
         refreshWorkflowFields();
         setMessage("ScratchBird preview validated locally; server authorization remains authoritative.");
     }
 
     private void refreshServerStatus() {
-        if (!authzProbePlan.executable() && !probePlan.executable()) {
+        ScratchBirdLiveProbe.ProbePlan activeAuthzPlan = activeAuthzProbePlan();
+        if (!activeAuthzPlan.executable() && !probePlan.executable()) {
             setErrorMessage("No safe server-backed ScratchBird refresh probe is available for this form.");
             return;
         }
@@ -1182,9 +1990,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         try {
             UIUtils.runInProgressService(monitor -> {
                 monitor.beginTask("ScratchBird management status refresh", 2);
-                if (authzProbePlan.executable()) {
+                if (activeAuthzPlan.executable()) {
                     monitor.subTask("ScratchBird server authorization refresh");
-                    authzHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, authzProbePlan);
+                    authzHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, activeAuthzPlan);
                     monitor.worked(1);
                 }
                 if (probePlan.executable()) {
@@ -1220,8 +2028,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
     private void applyAfterAdmission() {
         ScratchBirdRefusalModel readiness = applyReadiness();
+        ScratchBirdAdminExecutor.ExecutionPlan activePlan = activeExecutionPlan();
         if (!readiness.isAdmitted()) {
-            applyResult = ScratchBirdMutationApplyExecutor.refuse(plan, readiness, actionEnvelope.previewHash(), commandHash());
+            applyResult = ScratchBirdMutationApplyExecutor.refuse(activePlan, readiness, currentPreviewHash(), commandHash());
             ScratchBirdProbeHistory.recordApply(probeScopeKey, targetPath, form, applyResult);
             selectedHistoryIndex = 0;
             setErrorMessage("ScratchBird apply was not run. " + applyGateSummary());
@@ -1239,9 +2048,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
                 applyHolder[0] = ScratchBirdMutationApplyExecutor.apply(
                     monitor,
                     targetObject,
-                    plan,
+                    activePlan,
                     authzProbeResult,
-                    actionEnvelope.previewHash(),
+                    currentPreviewHash(),
                     commandHash());
                 monitor.worked(1);
                 if (applyHolder[0].applied() && probePlan.executable()) {
@@ -1284,8 +2093,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     }
 
     private boolean applyButtonReady() {
-        return ScratchBirdManagementWorkflow.applyButtonEnabled(plan, permission, authzProbeResult, applyResult,
-            actionEnvelope.previewHash(), commandHash());
+        return ScratchBirdManagementWorkflow.applyButtonEnabled(activeExecutionPlan(), permission, authzProbeResult, applyResult,
+            currentPreviewHash(), commandHash());
     }
 
     @NotNull
@@ -1294,15 +2103,15 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             return permission;
         }
         return ScratchBirdMutationApplyExecutor.applyReadiness(
-            plan,
+            activeExecutionPlan(),
             authzProbeResult,
-            actionEnvelope.previewHash(),
+            currentPreviewHash(),
             commandHash());
     }
 
     @NotNull
     private String commandHash() {
-        return ScratchBirdManagementActionEnvelope.commandHashFor(plan);
+        return ScratchBirdManagementActionEnvelope.commandHashFor(activeExecutionPlan());
     }
 
     private void refuseApply() {
@@ -1315,7 +2124,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             workflowStatusText.setText(workflowStatusSummary());
         }
         if (workflowPreviewIdentityText != null && !workflowPreviewIdentityText.isDisposed()) {
-            workflowPreviewIdentityText.setText(ScratchBirdManagementWorkflow.previewIdentity(plan));
+            workflowPreviewIdentityText.setText(ScratchBirdManagementWorkflow.previewIdentity(activeExecutionPlan()));
         }
         if (workflowValidationText != null && !workflowValidationText.isDisposed()) {
             workflowValidationText.setText(localValidationSummary);
@@ -1352,10 +2161,10 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             authzStatusText.setText(authzStatusSummary());
         }
         if (authzSummaryText != null && !authzSummaryText.isDisposed()) {
-            authzSummaryText.setText(String.join("\n", authzProbePlan.summaryLines()));
+            authzSummaryText.setText(String.join("\n", activeAuthzProbePlan().summaryLines()));
         }
         if (authzCommandText != null && !authzCommandText.isDisposed()) {
-            authzCommandText.setText(authzProbePlan.commandText());
+            authzCommandText.setText(activeAuthzProbePlan().commandText());
         }
         if (authzResultText != null && !authzResultText.isDisposed()) {
             authzResultText.setText(authzResultSummary());
@@ -1411,6 +2220,461 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         if (liveResultText != null && !liveResultText.isDisposed()) {
             liveResultText.setText(liveResultSummary());
         }
+        refreshManagementConsoleFields();
+    }
+
+    private void refreshManagementConsoleFields() {
+        refreshManagementConsoleAgentFields();
+        if (managementConsoleDetailText != null && !managementConsoleDetailText.isDisposed()) {
+            managementConsoleDetailText.setText(managementConsoleSelectedDetail());
+        }
+        if (managementConsoleRuntimeText != null && !managementConsoleRuntimeText.isDisposed()) {
+            managementConsoleRuntimeText.setText(managementConsoleRuntimeSummary());
+        }
+        if (managementConsolePolicyText != null && !managementConsolePolicyText.isDisposed()) {
+            managementConsolePolicyText.setText(managementConsolePolicySummary());
+        }
+        if (managementConsoleActionHistoryText != null && !managementConsoleActionHistoryText.isDisposed()) {
+            managementConsoleActionHistoryText.setText(managementConsoleActionHistorySummary());
+        }
+        if (managementConsoleEvidenceText != null && !managementConsoleEvidenceText.isDisposed()) {
+            managementConsoleEvidenceText.setText(managementConsoleEvidenceSummary());
+        }
+        if (managementConsoleActionsText != null && !managementConsoleActionsText.isDisposed()) {
+            managementConsoleActionsText.setText(managementConsoleActionsSummary());
+        }
+        if (managementConsoleLiveText != null && !managementConsoleLiveText.isDisposed()) {
+            managementConsoleLiveText.setText(managementConsoleLiveSummary());
+        }
+        refreshManagementConsoleResultTables();
+    }
+
+    private void refreshManagementConsoleResultTables() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        String selectedKey = row == null ? "" : row.key();
+        if ("management.agents".equals(consolePath())) {
+            populateManagementResultTable(
+                managementConsoleRuntimeResultTable,
+                "Agent runtime rows",
+                "sys.frontend.agents",
+                "agent_type_id",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsoleMetricResultTable,
+                "Agent metric dependencies",
+                "sys.frontend.agent_metric_dependencies",
+                "agent_name",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsolePolicyResultTable,
+                "Agent policies",
+                "sys.frontend.agent_policies",
+                "agent_name",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsoleOverrideResultTable,
+                "Agent overrides",
+                "sys.frontend.agent_overrides",
+                "target_name",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsoleActionResultTable,
+                "Agent actions",
+                "sys.frontend.agent_actions",
+                "agent_name",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsoleActionAuditResultTable,
+                "Agent audit",
+                "sys.frontend.agent_audit",
+                "",
+                "");
+            populateManagementResultTable(
+                managementConsoleEvidenceResultTable,
+                "Agent evidence",
+                "sys.frontend.agent_evidence",
+                "agent_name",
+                selectedKey);
+            populateManagementResultTable(
+                managementConsoleEvidenceAuditResultTable,
+                "Agent audit",
+                "sys.frontend.agent_audit",
+                "",
+                "");
+            refreshManagementConsoleAgentFields();
+            refreshManagementConsolePolicySelector(selectedKey);
+            refreshManagementConsolePolicyEditor();
+            return;
+        }
+
+        String source = managementConsole != null && !managementConsole.monitoringSources().isEmpty()
+            ? managementConsole.monitoringSources().get(0)
+            : "";
+        populateManagementResultTable(managementConsoleRuntimeResultTable, "Management rows", source, "", "");
+        refreshManagementConsoleAgentFields();
+        refreshManagementConsolePolicySelector(selectedKey);
+        refreshManagementConsolePolicyEditor();
+    }
+
+    private void refreshManagementConsolePolicyEditor() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow agent = selectedManagementConsoleRow();
+        String agentName = agent == null ? "" : agent.label();
+        ManagementResultRow policy = selectedManagementPolicyRow();
+        String policyName = policy == null ? defaultPolicyName(agentName) : firstNonBlank(
+            policy.value("policy_name"),
+            defaultPolicyName(agentName));
+        if (!"management.agents".equals(consolePath())) {
+            policyName = policyNameForSelectedManagementItem(agentName);
+        }
+        setTextIfAvailable(managementConsolePolicyNameText, policyName);
+        setTextIfAvailable(managementConsolePolicyFamilyText, policy == null ? defaultPolicyFamily(agentName) : firstNonBlank(policy.value("policy_family"), defaultPolicyFamily(agentName)));
+        setTextIfAvailable(managementConsolePolicyVersionText, policy == null ? "draft" : policy.value("version_label"));
+        setTextIfAvailable(managementConsolePolicyStateText, policy == null ? "draft" : policy.value("active_state"));
+        setTextIfAvailable(managementConsolePolicyValidationText, policy == null ? "not validated" : policy.value("validation_state"));
+        ManagementResultRow override = firstManagementResultRow("sys.frontend.agent_overrides", "target_name", agentName);
+        setTextIfAvailable(managementConsolePolicyScheduleText, policy == null ?
+            defaultPolicySchedule() :
+            firstNonBlank(value(override, "state"), "active-policy driven"));
+        setTextIfAvailable(managementConsolePolicyBodyText, policy == null ?
+            defaultPolicyDocument(agentName, policyName) :
+            policyRowsAsText(policy));
+        if (managementConsolePolicyText != null && !managementConsolePolicyText.isDisposed()) {
+            managementConsolePolicyText.setText(managementConsolePolicySummary());
+        }
+        if (managementConsolePolicySourceStatusText != null && !managementConsolePolicySourceStatusText.isDisposed()) {
+            managementConsolePolicySourceStatusText.setText(policySourceStatus());
+        }
+        if (managementConsoleOverrideSourceStatusText != null && !managementConsoleOverrideSourceStatusText.isDisposed()) {
+            managementConsoleOverrideSourceStatusText.setText(overrideSourceStatus());
+        }
+    }
+
+    private void refreshManagementConsolePolicySelector(@NotNull String selectedKey) {
+        if (managementConsolePolicySelector == null || managementConsolePolicySelector.isDisposed()) {
+            return;
+        }
+        String selectedBefore = managementConsolePolicySelector.getText();
+        String policySource = "management.agents".equals(consolePath()) ?
+            "sys.frontend.agent_policies" :
+            "";
+        managementConsolePolicyRows = policySource.isBlank() ?
+            List.of() :
+            managementRows(policySource, "agent_name", selectedKey);
+
+        managementConsolePolicySelector.removeAll();
+        int selectedIndex = 0;
+        if (managementConsolePolicyRows.isEmpty()) {
+            managementConsolePolicySelector.add(policyNameForSelectedManagementItem(selectedKey) + " (draft)");
+            managementConsolePolicySelector.select(0);
+            return;
+        }
+        for (int i = 0; i < managementConsolePolicyRows.size(); i++) {
+            ManagementResultRow row = managementConsolePolicyRows.get(i);
+            String label = firstNonBlank(
+                row.value("policy_name"),
+                row.value("name"),
+                policyNameForSelectedManagementItem(selectedKey));
+            managementConsolePolicySelector.add(label);
+            if (label.equals(selectedBefore)) {
+                selectedIndex = i;
+            }
+        }
+        managementConsolePolicySelector.select(Math.min(selectedIndex, managementConsolePolicySelector.getItemCount() - 1));
+    }
+
+    @Nullable
+    private ManagementResultRow selectedManagementPolicyRow() {
+        if (managementConsolePolicySelector == null || managementConsolePolicySelector.isDisposed()) {
+            return selectedManagementResultRow(managementConsolePolicyResultTable);
+        }
+        int index = managementConsolePolicySelector.getSelectionIndex();
+        return index >= 0 && index < managementConsolePolicyRows.size() ? managementConsolePolicyRows.get(index) : null;
+    }
+
+    @NotNull
+    private List<ManagementResultRow> managementRows(
+        @NotNull String source,
+        @NotNull String filterColumn,
+        @NotNull String filterValue
+    ) {
+        ScratchBirdLiveProbe.StatementResult result = findManagementResult(source);
+        if (result == null || !result.resultSet()) {
+            return List.of();
+        }
+        return filteredRows(result, filterColumn, filterValue).stream()
+            .map(row -> new ManagementResultRow(result.columns(), row))
+            .toList();
+    }
+
+    @Nullable
+    private static ManagementResultRow selectedManagementResultRow(@Nullable Table table) {
+        if (table == null || table.isDisposed()) {
+            return null;
+        }
+        int index = table.getSelectionIndex();
+        if (index < 0 || index >= table.getItemCount()) {
+            return null;
+        }
+        Object data = table.getItem(index).getData();
+        return data instanceof ManagementResultRow row ? row : null;
+    }
+
+    private void newAgentPolicyDraft() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow agent = selectedManagementConsoleRow();
+        String agentName = agent == null ? selectedPolicyTargetFallback() : agent.label();
+        String policyName = policyNameForSelectedManagementItem(agentName);
+        setTextIfAvailable(managementConsolePolicyNameText, policyName);
+        setTextIfAvailable(managementConsolePolicyFamilyText, defaultPolicyFamily(agentName));
+        setTextIfAvailable(managementConsolePolicyVersionText, "draft");
+        setTextIfAvailable(managementConsolePolicyStateText, "draft");
+        setTextIfAvailable(managementConsolePolicyValidationText, "not validated");
+        setTextIfAvailable(managementConsolePolicyScheduleText, defaultPolicySchedule());
+        setTextIfAvailable(managementConsolePolicyBodyText, defaultPolicyDocument(agentName, policyName));
+        managementConsoleMutationCommand = "";
+        authzProbeResult = null;
+        applyResult = null;
+        refreshWorkflowFields();
+        setMessage("New policy draft started for " + agentName + ". Use Validate Policy before Set Active.");
+    }
+
+    private void prepareAgentPolicyCommand(@NotNull String operation) {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow agent = selectedManagementConsoleRow();
+        if (agent == null) {
+            setErrorMessage("Select an agent before preparing a policy command.");
+            return;
+        }
+        String policyName = textValue(managementConsolePolicyNameText);
+        if (policyName.isBlank()) {
+            setErrorMessage("Enter or select a policy name before preparing a policy command.");
+            return;
+        }
+        managementConsoleMutationCommand = policyMutationCommand(agent, operation, policyName);
+        authzProbeResult = null;
+        applyResult = null;
+        setErrorMessage(null);
+        refreshWorkflowFields();
+        refreshApplyButton();
+        setMessage(operationTitle(operation) + " prepared for " + agent.label() + "/" + policyName +
+            ". Run Authz Probe, then Apply when admitted.");
+    }
+
+    @NotNull
+    private String policyMutationCommand(
+        @NotNull ScratchBirdManagementConsoleCatalog.ConsoleRow target,
+        @NotNull String operation,
+        @NotNull String policyName
+    ) {
+        if ("management.agents".equals(consolePath())) {
+            return "ALTER AGENT " + quoteIdentifier(target.label()) + " " +
+                operation + " POLICY " + quoteIdentifier(policyName);
+        }
+        String surface = consolePath().isBlank() ? "management" : consolePath();
+        return "ALTER MANAGEMENT " + quoteIdentifier(surface) + " " +
+            operation + " POLICY " + quoteIdentifier(policyName) +
+            " FOR " + quoteIdentifier(target.label());
+    }
+
+    @NotNull
+    private String selectedPolicyTargetFallback() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        return row == null ? "management" : row.label();
+    }
+
+    private void refreshManagementConsoleAgentFields() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow agent = selectedManagementConsoleRow();
+        String agentName = agent == null ? "" : agent.label();
+        if (!"management.agents".equals(consolePath())) {
+            setTextIfAvailable(managementConsoleAgentNameText, agentName);
+            setTextIfAvailable(managementConsoleAgentLayerText, agent == null ? "" : agent.kind());
+            setTextIfAvailable(managementConsoleAgentScopeText, agent == null ? "" : agent.source());
+            setTextIfAvailable(managementConsoleAgentStateText, agent == null ? "" : agent.state());
+            setTextIfAvailable(managementConsoleAgentHealthText, managementSurface == null ? "server-backed" : managementSurface.displayType());
+            setTextIfAvailable(managementConsoleAgentEnabledText, agent != null && agent.enabled() ? "true" : "false");
+            setTextIfAvailable(managementConsoleAgentActivePolicyText, policyNameForSelectedManagementItem(agentName));
+            setTextIfAvailable(managementConsoleAgentLastActivityText, liveProbeResult == null ? "not refreshed" : liveProbeResult.status().kind().name());
+            return;
+        }
+        ManagementResultRow runtime = firstManagementResultRow("sys.frontend.agents", "agent_type_id", agentName);
+        ManagementResultRow action = firstManagementResultRow("sys.frontend.agent_actions", "agent_name", agentName);
+        ManagementResultRow evidence = firstManagementResultRow("sys.frontend.agent_evidence", "agent_name", agentName);
+        ManagementResultRow audit = firstManagementResultRow("sys.frontend.agent_audit", "", "");
+
+        setTextIfAvailable(managementConsoleAgentNameText, firstNonBlank(value(runtime, "agent_name"), agentName));
+        setTextIfAvailable(managementConsoleAgentLayerText, agent == null ? "" : agent.kind());
+        setTextIfAvailable(managementConsoleAgentScopeText, firstNonBlank(value(runtime, "scope_kind"), agent == null ? "" : agent.source()));
+        setTextIfAvailable(managementConsoleAgentStateText, firstNonBlank(value(runtime, "state"), agent == null ? "" : agent.state()));
+        setTextIfAvailable(managementConsoleAgentHealthText, firstNonBlank(value(runtime, "health_state"), "not published"));
+        setTextIfAvailable(managementConsoleAgentEnabledText, firstNonBlank(value(runtime, "enabled"), agent != null && agent.enabled() ? "true" : "false"));
+        setTextIfAvailable(managementConsoleAgentActivePolicyText, firstNonBlank(value(runtime, "policy_name"), "no active policy row visible"));
+        setTextIfAvailable(managementConsoleAgentLastActivityText, firstNonBlank(
+            value(action, "action_id"),
+            value(evidence, "created_at"),
+            value(audit, "created_at"),
+            "no recent activity row visible"));
+    }
+
+    @Nullable
+    private ManagementResultRow firstManagementResultRow(
+        @NotNull String source,
+        @NotNull String filterColumn,
+        @NotNull String filterValue
+    ) {
+        ScratchBirdLiveProbe.StatementResult result = findManagementResult(source);
+        if (result == null || !result.resultSet()) {
+            return null;
+        }
+        List<List<String>> rows = filteredRows(result, filterColumn, filterValue);
+        if (rows.isEmpty()) {
+            return null;
+        }
+        return new ManagementResultRow(result.columns(), rows.get(0));
+    }
+
+    @NotNull
+    private static String value(@Nullable ManagementResultRow row, @NotNull String columnName) {
+        return row == null ? "" : row.value(columnName);
+    }
+
+    private static void setTextIfAvailable(@Nullable Text text, @NotNull String value) {
+        if (text != null && !text.isDisposed()) {
+            text.setText(value);
+        }
+    }
+
+    @NotNull
+    private static String textValue(@Nullable Text text) {
+        return text == null || text.isDisposed() ? "" : text.getText().trim();
+    }
+
+    @NotNull
+    private static String firstNonBlank(@NotNull String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank() && !"NULL".equalsIgnoreCase(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    @NotNull
+    private static String defaultPolicyName(@NotNull String agentName) {
+        return (agentName.isBlank() ? "agent" : agentName) + "_policy";
+    }
+
+    @NotNull
+    private String policyNameForSelectedManagementItem(@NotNull String itemName) {
+        String base = itemName.isBlank() ? consolePath().replace('.', '_') : itemName;
+        if (base.isBlank()) {
+            base = "management";
+        }
+        return normalizedIdentifier(base) + "_policy";
+    }
+
+    @NotNull
+    private String defaultPolicyFamily(@NotNull String itemName) {
+        String path = consolePath().isBlank() ? "management" : consolePath();
+        String base = itemName.isBlank() ? path : path + "_" + itemName;
+        return normalizedIdentifier(base) + "_policy";
+    }
+
+    @NotNull
+    private String defaultPolicySchedule() {
+        return managementSurface == null ? "manual until saved/attached" : managementSurface.refreshPolicy();
+    }
+
+    @NotNull
+    private String defaultPolicyDocument(
+        @NotNull String itemName,
+        @NotNull String policyName
+    ) {
+        String surfacePath = consolePath().isBlank() ? "management" : consolePath();
+        return "surface=" + surfacePath +
+            "\nitem=" + itemName +
+            "\npolicy=" + policyName +
+            "\nstate=draft" +
+            "\nrequired_permission=" + (managementSurface == null ? "unknown" : managementSurface.requiredPermission()) +
+            "\nrefresh_policy=" + defaultPolicySchedule();
+    }
+
+    @NotNull
+    private String policySourceStatus() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        String selected = row == null ? "no selected item" : row.label();
+        if ("management.agents".equals(consolePath())) {
+            if (liveProbeResult == null) {
+                return "Visible policy documents for " + selected + " have not been refreshed yet.";
+            }
+            if (managementConsolePolicyRows.isEmpty()) {
+                return "No visible server policy document is published for " + selected + ". The editor is showing a draft document.";
+            }
+            return managementConsolePolicyRows.size() + " visible policy document(s) loaded for " + selected + ".";
+        }
+        return "This management branch uses the same policy editor contract. The selected item's effective policy/configuration is edited as a document and must be admitted by the server before apply.";
+    }
+
+    @NotNull
+    private String overrideSourceStatus() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        String selected = row == null ? "no selected item" : row.label();
+        if (!"management.agents".equals(consolePath())) {
+            return "Schedule and override state for " + selected + " is represented in the policy document until a branch-specific override source is published.";
+        }
+        ManagementResultRow override = firstManagementResultRow("sys.frontend.agent_overrides", "target_name", selected);
+        return override == null ?
+            "No visible override row is published for " + selected + "." :
+            policyRowsAsText(override);
+    }
+
+    @NotNull
+    private static String normalizedIdentifier(@NotNull String value) {
+        String normalized = value.toLowerCase(Locale.ENGLISH).replaceAll("[^a-z0-9_]+", "_");
+        normalized = normalized.replaceAll("_+", "_").replaceAll("^_|_$", "");
+        return normalized.isBlank() ? "management" : normalized;
+    }
+
+    @NotNull
+    private static String policyRowsAsText(@NotNull ManagementResultRow policy) {
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < policy.columns().size(); i++) {
+            String value = i < policy.values().size() ? policy.values().get(i) : "";
+            lines.add(policy.columns().get(i) + "=" + value);
+        }
+        return String.join("\n", lines);
+    }
+
+    @NotNull
+    private static String operationTitle(@NotNull String operation) {
+        return switch (operation) {
+            case "ATTACH" -> "Set active policy";
+            case "VALIDATE" -> "Validate policy";
+            case "SIMULATE" -> "Simulate policy";
+            case "APPLY" -> "Apply policy";
+            default -> operation.substring(0, 1).toUpperCase(Locale.ENGLISH) +
+                operation.substring(1).toLowerCase(Locale.ENGLISH);
+        };
+    }
+
+    @NotNull
+    private static String quoteIdentifier(@NotNull String value) {
+        if (value.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return value;
+        }
+        return "\"" + value.replace("\"", "\"\"") + "\"";
+    }
+
+    private void refreshObjectEditorFields() {
+        if (objectEditorCreateText != null && !objectEditorCreateText.isDisposed()) {
+            objectEditorCreateText.setText(lifecyclePreview(ScratchBirdFormMode.CREATE));
+        }
+        if (objectEditorAlterText != null && !objectEditorAlterText.isDisposed()) {
+            objectEditorAlterText.setText(lifecyclePreview(ScratchBirdFormMode.ALTER));
+        }
+        if (objectEditorDropText != null && !objectEditorDropText.isDisposed()) {
+            objectEditorDropText.setText(lifecyclePreview(ScratchBirdFormMode.DELETE));
+        }
+        if (objectEditorValidationText != null && !objectEditorValidationText.isDisposed() && objectEditor != null) {
+            objectEditorValidationText.setText(objectEditorValidationSummary(objectEditor));
+        }
     }
 
     private void refreshHistoryFields() {
@@ -1446,7 +2710,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @NotNull
     private String workflowStatusSummary() {
         return ScratchBirdManagementWorkflow.workflowStatus(
-            plan,
+            activeExecutionPlan(),
             permission,
             authzProbeResult,
             liveProbeResult,
@@ -1456,18 +2720,18 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @NotNull
     private String applyGateSummary() {
         return ScratchBirdManagementWorkflow.applyGateSummary(
-            plan,
+            activeExecutionPlan(),
             permission,
             authzProbeResult,
             applyResult,
-            actionEnvelope.previewHash(),
+            currentPreviewHash(),
             commandHash());
     }
 
     @NotNull
     private String refreshStatusSummary() {
         return ScratchBirdManagementWorkflow.refreshStatusSummary(
-            authzProbePlan,
+            activeAuthzProbePlan(),
             probePlan,
             authzProbeResult,
             liveProbeResult);
@@ -1475,7 +2739,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
     @NotNull
     private String verifyStatusSummary() {
-        return ScratchBirdManagementWorkflow.verifyStatusSummary(plan, authzProbeResult, liveProbeResult, applyResult);
+        return ScratchBirdManagementWorkflow.verifyStatusSummary(activeExecutionPlan(), authzProbeResult, liveProbeResult, applyResult);
     }
 
     @NotNull
@@ -1500,13 +2764,14 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
     @NotNull
     private String authzStatusSummary() {
+        ScratchBirdLiveProbe.ProbePlan activeAuthzPlan = activeAuthzProbePlan();
         if (authzProbeResult == null) {
-            return authzProbePlan.executable() ?
+            return activeAuthzPlan.executable() ?
                 "Not yet executed. Use Run Authz Probe to verify server-backed capability inventory and branch authorization." :
                 "No safe server-backed authz probe is available for this form.";
         }
         if (authzProbeResult.status().isAdmitted()) {
-            return authzProbePlan.surrogate() ?
+            return activeAuthzPlan.surrogate() ?
                 "ADMITTED: Server-backed read-only authz probe completed; mutation apply still requires permission-probe admission." :
                 "ADMITTED: Server-backed authz probe completed successfully.";
         }
@@ -1535,6 +2800,125 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         return liveProbeResult == null ?
             "No live probe result captured yet." :
             liveProbeResult.previewText();
+    }
+
+    @Nullable
+    private ScratchBirdManagementConsoleCatalog.ConsoleRow selectedManagementConsoleRow() {
+        if (managementConsoleTable == null || managementConsoleTable.isDisposed()) {
+            return null;
+        }
+        int index = managementConsoleTable.getSelectionIndex();
+        if (index < 0 || index >= managementConsoleTable.getItemCount()) {
+            return null;
+        }
+        Object data = managementConsoleTable.getItem(index).getData();
+        return data instanceof ScratchBirdManagementConsoleCatalog.ConsoleRow row ? row : null;
+    }
+
+    @NotNull
+    private String managementConsoleSelectedDetail() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        if (row == null) {
+            return "Select an agent to inspect its runtime state, policy posture, actions, and evidence.";
+        }
+        return row.detail() + "\nStatus: " + (row.enabled() ? "enabled/selectable" : "disabled/selectable for inspection");
+    }
+
+    @NotNull
+    private String managementConsoleRuntimeSummary() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        if (row == null) {
+            return "Select a management row to inspect runtime status.";
+        }
+        if (!"management.agents".equals(consolePath())) {
+            return "Runtime data is shown in the table below when the server publishes rows for this management surface.";
+        }
+        return "Default state: " + row.state() +
+            "\nScope: " + row.source() +
+            "\nThe runtime table shows current state, health, enabled flag, and active policy for the selected agent." +
+            "\nRefresh state: " + (liveProbeResult == null ? "not refreshed" : liveProbeResult.status().kind() + ": " + liveProbeResult.status().message());
+    }
+
+    @NotNull
+    private String managementConsolePolicySummary() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        if (row == null) {
+            return "Select a management row to inspect policy and schedule posture.";
+        }
+        if (!"management.agents".equals(consolePath())) {
+            return "Edit the selected management item's policy/configuration as a document. Apply remains disabled until the server admits the exact generated command.";
+        }
+        return "Select a visible policy document or edit the draft policy for the selected agent." +
+            "\nSchedule posture is shown from active policy and visible overrides when present." +
+            "\nUse Validate, Simulate, Set Active, or Apply to prepare an admitted server action for the selected policy.";
+    }
+
+    @NotNull
+    private String managementConsoleActionHistorySummary() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        if (row == null) {
+            return "Select a management row to inspect action history.";
+        }
+        if (!"management.agents".equals(consolePath())) {
+            return "Action rows are shown below when published by the server. Actions are preview-only until server admission.";
+        }
+        return "Pending and recent actions are shown below for the selected agent." +
+            "\nActions remain guarded until the server admits the exact command for the connected session.";
+    }
+
+    @NotNull
+    private String managementConsoleEvidenceSummary() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        if (row == null) {
+            return "Select a management row to inspect evidence and audit visibility.";
+        }
+        if (!"management.agents".equals(consolePath())) {
+            return "Evidence rows are shown below when published by the server. Hidden evidence remains refused by the server.";
+        }
+        return "Evidence and audit rows are shown below for the selected agent." +
+            "\nSensitive fields remain redacted unless the connected session is authorized to view them.";
+    }
+
+    @NotNull
+    private String managementConsoleActionsSummary() {
+        if (managementConsole == null) {
+            return "-";
+        }
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        String selected = row == null ? "No selected row." : "Selected: " + row.label() + " (" + row.state() + ")";
+        return selected + "\n" + String.join("\n", managementConsole.mutationActions()) +
+            "\nAll mutating operations require ScratchBird server admission for the exact command, session, role, policy epoch, and target UUID.";
+    }
+
+    @NotNull
+    private String managementConsoleLiveSummary() {
+        ScratchBirdManagementConsoleCatalog.ConsoleRow row = selectedManagementConsoleRow();
+        String selected = row == null ? "No selected row." : "Selected item: " + row.label();
+        if (liveProbeResult == null) {
+            return selected + "\nNo live management data captured yet. Use Run Live Probe or Refresh Server Status.";
+        }
+        return selected +
+            "\nStatus: " + liveProbeResult.status().kind() + ": " + liveProbeResult.status().redactedMessage() +
+            "\nResult sets loaded: " + liveProbeResult.statementResults().size() +
+            "\nRows are displayed in Runtime, Actions, and Evidence tables; policies are opened in the policy document editor.";
+    }
+
+    @NotNull
+    private String consolePath() {
+        return managementConsole == null ? "" : managementConsole.path();
+    }
+
+    @NotNull
+    private static String agentSourceQuery(@NotNull String source, @NotNull String agentTypeId) {
+        if ("sys.frontend.agent_audit".equals(source)) {
+            return "SELECT * FROM sys.frontend.agent_audit";
+        }
+        String column = switch (source) {
+            case "sys.frontend.agents" -> "agent_type_id";
+            case "sys.frontend.agent_overrides" -> "target_name";
+            default -> "agent_name";
+        };
+        return "SELECT * FROM " + source + " WHERE " + column + " = '" + agentTypeId.replace("'", "''") + "'";
     }
 
     @NotNull
@@ -1612,6 +2996,64 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         return taskProbeResult == null ?
             "No live task result captured yet." :
             taskProbeResult.previewText();
+    }
+
+    @NotNull
+    private String currentCommandText() {
+        if (!managementConsoleMutationCommand.isBlank()) {
+            return managementConsoleMutationCommand;
+        }
+        if (objectEditorDraftText != null && !objectEditorDraftText.isDisposed()) {
+            String draft = objectEditorDraftText.getText();
+            if (draft != null && !draft.isBlank()) {
+                return draft;
+            }
+        }
+        return plan.commandText();
+    }
+
+    @NotNull
+    private ScratchBirdAdminExecutor.ExecutionPlan activeExecutionPlan() {
+        return new ScratchBirdAdminExecutor.ExecutionPlan(
+            plan.form(),
+            plan.mode(),
+            plan.targetPath(),
+            currentCommandText(),
+            plan.executable(),
+            plan.destructive(),
+            plan.authority());
+    }
+
+    @NotNull
+    private ScratchBirdLiveProbe.ProbePlan activeAuthzProbePlan() {
+        return ScratchBirdPermissionProbe.planServerAuthorization(
+            form,
+            mode,
+            targetPath,
+            activeExecutionPlan(),
+            taskDefinitions,
+            destructivePlan);
+    }
+
+    @NotNull
+    private String currentPreviewHash() {
+        return ScratchBirdManagementActionEnvelope.previewHashFor(form, mode, targetPath, activeExecutionPlan());
+    }
+
+    @NotNull
+    private String lifecyclePreview(@NotNull ScratchBirdFormMode requestedMode) {
+        if (!form.supportsMode(requestedMode)) {
+            return "Unsupported by " + form.id();
+        }
+        return ScratchBirdAdminExecutor.plan(form, requestedMode, targetPath).commandText();
+    }
+
+    @NotNull
+    private String objectEditorValidationSummary(@NotNull ScratchBirdSqlObjectEditorCatalog.EditorDefinition editor) {
+        return String.join("\n", editor.validationRules()) +
+            "\nActive preview hash: " + currentPreviewHash() +
+            "\nActive command hash: " + commandHash() +
+            "\nActive authz probe: " + activeAuthzProbePlan().label();
     }
 
     @NotNull

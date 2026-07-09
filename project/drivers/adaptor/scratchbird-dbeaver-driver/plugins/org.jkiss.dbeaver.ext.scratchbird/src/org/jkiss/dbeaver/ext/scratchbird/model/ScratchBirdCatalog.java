@@ -138,7 +138,7 @@ public class ScratchBirdCatalog extends GenericCatalog {
              ResultSet resultSet = session.getMetaData().getSchemas(null, "%")) {
             while (resultSet.next()) {
                 String schemaPath = resultSet.getString("TABLE_SCHEM");
-                if (CommonUtils.isEmpty(schemaPath) || ScratchBirdNamespaceSemantics.isMetricsPath(schemaPath)) {
+                if (CommonUtils.isEmpty(schemaPath)) {
                     continue;
                 }
                 if (schemasByPath.containsKey(schemaPath)) {
@@ -185,7 +185,9 @@ public class ScratchBirdCatalog extends GenericCatalog {
         @NotNull List<ScratchBirdCatalogObjectReference> references
     ) throws SQLException, DBException {
         String query = "SELECT node_id, parent_node_id, object_id, parent_object_id, node_path, node_name, " +
-            "node_role, object_kind, object_path, schema_path " +
+            "node_role, object_kind, object_path, schema_path, management_display_type, " +
+            "management_backing_source, management_required_permission, management_refresh_policy, " +
+            "management_allowed_actions, management_refusal_behavior " +
             "FROM sys.catalog_readable.navigator_tree";
         try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird navigator tree");
              JDBCPreparedStatement statement = session.prepareStatement(query);
@@ -205,9 +207,10 @@ public class ScratchBirdCatalog extends GenericCatalog {
                 }
 
                 String fullPath = navigatorDisplayPath(nodeRole, objectKind, nodeName, resultSet);
-                if (CommonUtils.isEmpty(fullPath) || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
+                if (CommonUtils.isEmpty(fullPath)) {
                     continue;
                 }
+                validateManagementContract(resultSet, fullPath);
 
                 ScratchBirdCatalogObjectReference reference;
                 String objectType = navigatorObjectType(nodeRole, objectKind);
@@ -232,6 +235,27 @@ public class ScratchBirdCatalog extends GenericCatalog {
                 }
                 references.add(reference);
             }
+        }
+    }
+
+    private static void validateManagementContract(
+        @NotNull JDBCResultSet resultSet,
+        @NotNull String fullPath
+    ) {
+        if (ScratchBirdManagementSurfaceCatalog.find(fullPath) == null) {
+            return;
+        }
+        String displayType = JDBCUtils.safeGetString(resultSet, "management_display_type");
+        String backingSource = JDBCUtils.safeGetString(resultSet, "management_backing_source");
+        String refusalBehavior = JDBCUtils.safeGetString(resultSet, "management_refusal_behavior");
+        if (CommonUtils.isEmpty(displayType) ||
+            CommonUtils.isEmpty(backingSource) ||
+            CommonUtils.isEmpty(refusalBehavior)) {
+            log.warn("ScratchBird management navigator node lacks contract metadata: " + fullPath);
+            return;
+        }
+        if (!ScratchBirdManagementSurfaceCatalog.displayTypes().contains(displayType)) {
+            log.warn("ScratchBird management navigator node has unknown display type " + displayType + ": " + fullPath);
         }
     }
 
@@ -349,7 +373,7 @@ public class ScratchBirdCatalog extends GenericCatalog {
                 if (CommonUtils.isEmpty(fullPath)) {
                     fullPath = JDBCUtils.safeGetString(resultSet, "schema_path");
                 }
-                if (CommonUtils.isEmpty(fullPath) || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
+                if (CommonUtils.isEmpty(fullPath)) {
                     continue;
                 }
                 String objectType = JDBCUtils.safeGetString(resultSet, "object_type");

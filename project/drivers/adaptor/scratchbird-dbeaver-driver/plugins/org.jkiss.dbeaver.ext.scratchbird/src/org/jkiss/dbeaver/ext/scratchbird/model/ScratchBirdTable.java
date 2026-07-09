@@ -26,18 +26,25 @@ package org.jkiss.dbeaver.ext.scratchbird.model;
 
 import org.jkiss.code.NotNull;
 import org.jkiss.code.Nullable;
+import org.jkiss.dbeaver.DBException;
 import org.jkiss.dbeaver.ext.generic.model.GenericSchema;
 import org.jkiss.dbeaver.ext.generic.model.GenericStructContainer;
 import org.jkiss.dbeaver.ext.generic.model.GenericTable;
+import org.jkiss.dbeaver.ext.generic.model.GenericTableColumn;
 import org.jkiss.dbeaver.model.DBPEvaluationContext;
 import org.jkiss.dbeaver.model.exec.jdbc.JDBCResultSet;
 import org.jkiss.dbeaver.model.meta.Property;
+import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.utils.CommonUtils;
+
+import java.util.List;
 
 public class ScratchBirdTable extends GenericTable {
 
     @Nullable
     private final ScratchBirdObjectPath objectPath;
+    @Nullable
+    private List<GenericTableColumn> navigatorAttributes;
 
     public ScratchBirdTable(
         @NotNull GenericStructContainer container,
@@ -110,8 +117,35 @@ public class ScratchBirdTable extends GenericTable {
             : objectPath.identityStatus();
     }
 
+    @Property(viewable = true, order = 27)
+    public boolean isScratchBirdNavigatorRelation() {
+        return objectPath != null;
+    }
+
     @Override
     public boolean isSystem() {
         return false;
+    }
+
+    @Override
+    public List<? extends GenericTableColumn> getAttributes(@NotNull DBRProgressMonitor monitor) throws DBException {
+        if (objectPath != null && CommonUtils.isNotEmpty(objectPath.authorityPath())) {
+            if (navigatorAttributes == null || monitor.isForceCacheUsage()) {
+                navigatorAttributes = ScratchBirdNavigatorColumns.load(monitor, this, objectPath.authorityPath());
+            }
+            return navigatorAttributes;
+        }
+        return super.getAttributes(monitor);
+    }
+
+    @Override
+    public GenericTableColumn getAttribute(@NotNull DBRProgressMonitor monitor, @NotNull String columnName)
+        throws DBException {
+        for (GenericTableColumn column : getAttributes(monitor)) {
+            if (columnName.equalsIgnoreCase(column.getName())) {
+                return column;
+            }
+        }
+        return null;
     }
 }

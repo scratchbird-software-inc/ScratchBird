@@ -12,6 +12,6 @@ import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdNavigatorActionRegistr
 
 public class ScratchBirdOpenHandler extends ScratchBirdNavigatorCommandHandler {
     public ScratchBirdOpenHandler() {
-        super(ScratchBirdNavigatorActionRegistry.Action.PROPERTIES);
+        super(ScratchBirdNavigatorActionRegistry.Action.OPEN);
     }
 }

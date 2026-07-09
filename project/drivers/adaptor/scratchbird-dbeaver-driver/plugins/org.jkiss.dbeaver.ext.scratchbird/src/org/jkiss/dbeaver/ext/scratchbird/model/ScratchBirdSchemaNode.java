@@ -184,86 +184,96 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     }
 
     @Property(viewable = true, order = 5)
+    public boolean isManagementBranch() {
+        return ScratchBirdNamespaceSemantics.isManagementPath(fullPath);
+    }
+
+    @Property(viewable = true, order = 6)
     public boolean isMetricsBranch() {
         return ScratchBirdNamespaceSemantics.isMetricsPath(fullPath);
     }
 
-    @Property(viewable = true, order = 6)
+    @Property(viewable = true, order = 7)
     public boolean isDomainBranch() {
         return ScratchBirdNamespaceSemantics.isDomainPath(fullPath);
     }
 
-    @Property(viewable = true, order = 7)
+    @Property(viewable = true, order = 8)
     public boolean isScratchBirdSystemPath() {
         return ScratchBirdNamespaceSemantics.isSystemPath(getAuthorityPath());
     }
 
-    @Property(viewable = true, order = 8)
+    @Property(viewable = true, order = 9)
     public boolean isSchemaBranchesFolderVisible() {
         return catalogBacked && !clientOnly && !isDomainBranch();
     }
 
-    @Property(viewable = true, order = 9)
+    @Property(viewable = true, order = 10)
     public boolean isObjectFoldersVisible() {
         return isObjectContainerBranch();
     }
 
-    @Property(viewable = true, order = 10)
+    @Property(viewable = true, order = 11)
     public boolean isTableFoldersVisible() {
         return isObjectContainerBranch() && !isDomainBranch();
     }
 
-    @Property(viewable = true, order = 11)
+    @Property(viewable = true, order = 12)
     public boolean isViewFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 12)
-    public boolean isConstraintFoldersVisible() {
-        return isTableFoldersVisible();
-    }
-
     @Property(viewable = true, order = 13)
-    public boolean isIndexFoldersVisible() {
-        return isTableFoldersVisible();
+    public boolean isConstraintFoldersVisible() {
+        return isTableFoldersVisible() && !isScratchBirdSystemPath();
     }
 
     @Property(viewable = true, order = 14)
-    public boolean isSequenceFoldersVisible() {
-        return isTableFoldersVisible();
+    public boolean isIndexFoldersVisible() {
+        return isTableFoldersVisible() && !isScratchBirdSystemPath();
     }
 
     @Property(viewable = true, order = 15)
+    public boolean isSequenceFoldersVisible() {
+        return isTableFoldersVisible() && !isScratchBirdSystemPath();
+    }
+
+    @Property(viewable = true, order = 16)
+    public boolean isStoredCodeFoldersVisible() {
+        return false;
+    }
+
+    @Property(viewable = true, order = 17)
     public boolean isDataTypesFolderVisible() {
         return isDomainBranch();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 16)
+    @Property(viewable = true, optional = true, order = 18)
     public String getDatabaseUuid() {
         return objectPath.databaseUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 17)
+    @Property(viewable = true, optional = true, order = 19)
     public String getObjectUuid() {
         return objectPath.objectUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 18)
+    @Property(viewable = true, optional = true, order = 20)
     public String getParentUuid() {
         return objectPath.parentUuid();
     }
 
     @NotNull
-    @Property(viewable = true, order = 19)
+    @Property(viewable = true, order = 21)
     public String getObjectType() {
         return objectType;
     }
 
     @NotNull
-    @Property(viewable = true, order = 20)
+    @Property(viewable = true, order = 22)
     public String getIdentityStatus() {
         return objectPath.identityStatus();
     }
@@ -295,7 +305,10 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     @Override
     public String getDescription() {
         if (isMetricsBranch()) {
-            return "DBeaver client-only ScratchBird metrics and report branch";
+            return "ScratchBird management diagnostics and report branch";
+        }
+        if (isManagementBranch()) {
+            return "ScratchBird management branch published by sys.catalog_readable.navigator_tree";
         }
         if (!catalogBacked) {
             return "DBeaver client-only ScratchBird branch";

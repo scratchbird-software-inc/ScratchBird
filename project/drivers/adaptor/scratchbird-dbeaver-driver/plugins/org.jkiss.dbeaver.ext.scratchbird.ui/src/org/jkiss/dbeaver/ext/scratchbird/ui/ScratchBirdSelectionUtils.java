@@ -79,6 +79,9 @@ public final class ScratchBirdSelectionUtils {
     }
 
     public static boolean supportsAction(@Nullable Object element, @NotNull ScratchBirdNavigatorActionRegistry.Action action) {
+        if (action == ScratchBirdNavigatorActionRegistry.Action.OPEN) {
+            return supportsDefaultOpen(element);
+        }
         DBSObject object = getDatabaseObject(element);
         if (object instanceof ScratchBirdSchemaNode schemaNode) {
             List<ScratchBirdNavigatorActionRegistry.Action> actions = ScratchBirdNavigatorActionRegistry.actionsForPath(
@@ -88,6 +91,24 @@ public final class ScratchBirdSelectionUtils {
             return actions.contains(action);
         }
         return isScratchBirdObject(object);
+    }
+
+    public static boolean supportsDefaultOpen(@Nullable Object element) {
+        DBSObject object = getDatabaseObject(element);
+        if (object == null || object instanceof ScratchBirdDataSource) {
+            return false;
+        }
+        if (object instanceof ScratchBirdSchemaNode schemaNode) {
+            List<ScratchBirdNavigatorActionRegistry.Action> actions = ScratchBirdNavigatorActionRegistry.actionsForPath(
+                schemaNode.getFullPath(),
+                schemaNode.isClientOnly(),
+                schemaNode.isCatalogBacked());
+            return actions.contains(ScratchBirdNavigatorActionRegistry.Action.OPEN) ||
+                actions.contains(ScratchBirdNavigatorActionRegistry.Action.PROPERTIES) ||
+                actions.contains(ScratchBirdNavigatorActionRegistry.Action.REPORTS);
+        }
+        DBPDataSource dataSource = object.getDataSource();
+        return dataSource instanceof ScratchBirdDataSource;
     }
 
     @NotNull

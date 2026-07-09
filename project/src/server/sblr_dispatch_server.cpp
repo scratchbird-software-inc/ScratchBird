@@ -26,6 +26,7 @@
 #include "transaction/transaction_api.hpp"
 
 #include "scratchbird/engine/engine.h"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
 
@@ -2341,6 +2342,21 @@ bool LooksLikeBinarySblrEnvelope(std::string_view encoded) {
          encoded[2] == 'L' && encoded[3] == 'R';
 }
 
+std::string DecodedBinaryOperationEnvelopeText(std::string_view encoded) {
+  if (!LooksLikeBinarySblrEnvelope(encoded)) { return {}; }
+  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
+      reinterpret_cast<const std::uint8_t*>(encoded.data()),
+      static_cast<std::uint64_t>(encoded.size()));
+  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok ||
+      decoded.envelope.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope ||
+      decoded.envelope.canonical_bytes.empty()) {
+    return {};
+  }
+  const auto* data =
+      reinterpret_cast<const char*>(decoded.envelope.canonical_bytes.data());
+  return std::string(data, decoded.envelope.canonical_bytes.size());
+}
+
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key) {
   std::size_t start = 0;
   while (start <= encoded.size()) {
@@ -3823,6 +3839,11 @@ bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle
 
 std::string ServerVirtualProjectionFromUuid(std::string_view target_uuid) {
   if (target_uuid.empty()) { return {}; }
+  if (const std::string projection =
+          ServerVirtualProjectionFromName(std::string(target_uuid));
+      !projection.empty()) {
+    return projection;
+  }
   if (EqualsAsciiInsensitive(
           target_uuid,
           "b4a0fd27-e19b-7719-9105-5882443ee2bc")) {
@@ -3920,6 +3941,18 @@ std::string ServerVirtualProjectionForTarget(std::string_view encoded) {
   }
 
   return {};
+}
+
+std::string ServerVirtualProjectionForDispatch(std::string_view encoded,
+                                               std::string_view inspection_text = {}) {
+  const std::string projection = ServerVirtualProjectionForTarget(encoded);
+  if (!projection.empty()) { return projection; }
+  if (!inspection_text.empty()) {
+    return ServerVirtualProjectionForTarget(inspection_text);
+  }
+  const std::string decoded_text = DecodedBinaryOperationEnvelopeText(encoded);
+  if (decoded_text.empty()) { return {}; }
+  return ServerVirtualProjectionForTarget(decoded_text);
 }
 
 scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::string_view family) {
@@ -4534,8 +4567,16 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   std::string_view dispatch_operation_id = operation_id;
   std::string_view dispatch_operation_family = operation_family;
   std::string virtual_projection;
+  const std::string decoded_operation_text =
+      operation_id == "dml.select_rows" ? DecodedBinaryOperationEnvelopeText(encoded)
+                                        : std::string{};
+  const std::string_view inspection_text =
+      decoded_operation_text.empty()
+          ? encoded
+          : std::string_view(decoded_operation_text.data(),
+                             decoded_operation_text.size());
   if (operation_id == "dml.select_rows") {
-    virtual_projection = ServerVirtualProjectionForTarget(encoded);
+    virtual_projection = ServerVirtualProjectionForDispatch(encoded, inspection_text);
   }
   if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty()) {
     return std::string(encoded);
@@ -4629,7 +4670,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "subquery_nested_predicate_value",
         "subquery_nested_predicate_value_type"};
     for (const auto field : kVirtualQueryFields) {
-      const std::string value = EncodedTextField(encoded, std::string(field));
+      const std::string value = EncodedTextField(inspection_text, std::string(field));
       if (!value.empty()) {
         AppendOperationOperand(&operation_envelope, field, value);
       }
@@ -6700,13 +6741,20 @@ std::string EncodedOrOperandTextField(std::string_view encoded, std::string_view
 }
 
 std::string CatalogProjectionPathForDispatch(std::string_view encoded) {
-  std::string projection_path = ServerVirtualProjectionForTarget(encoded);
+  const std::string decoded_operation_text = DecodedBinaryOperationEnvelopeText(encoded);
+  const std::string_view inspection_text =
+      decoded_operation_text.empty()
+          ? encoded
+          : std::string_view(decoded_operation_text.data(),
+                             decoded_operation_text.size());
+  std::string projection_path =
+      ServerVirtualProjectionForDispatch(encoded, inspection_text);
   if (!projection_path.empty()) {
     return projection_path;
   }
-  projection_path = EncodedOrOperandTextField(encoded, "projection");
+  projection_path = EncodedOrOperandTextField(inspection_text, "projection");
   if (projection_path.empty()) {
-    projection_path = EncodedOrOperandTextField(encoded, "catalog_projection");
+    projection_path = EncodedOrOperandTextField(inspection_text, "catalog_projection");
   }
   return projection_path;
 }
@@ -6721,6 +6769,12 @@ void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
   if (request == nullptr) {
     return;
   }
+  const std::string decoded_operation_text = DecodedBinaryOperationEnvelopeText(encoded);
+  const std::string_view inspection_text =
+      decoded_operation_text.empty()
+          ? encoded
+          : std::string_view(decoded_operation_text.data(),
+                             decoded_operation_text.size());
   const std::string projection_path = CatalogProjectionPathForDispatch(encoded);
   if (!projection_path.empty()) {
     request->option_envelopes.push_back("projection:" + projection_path);
@@ -6761,7 +6815,7 @@ void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
       "subquery_nested_predicate_value",
       "subquery_nested_predicate_value_type"};
   for (const auto field : kCatalogProjectionFields) {
-    const std::string value = EncodedOrOperandTextField(encoded, field);
+    const std::string value = EncodedOrOperandTextField(inspection_text, field);
     if (!value.empty()) {
       request->option_envelopes.push_back(std::string(field) + ":" + value);
     }
@@ -8797,18 +8851,37 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       row_count = 0;
     } else {
       const auto retain_engine_result = cursor_requested && !synthetic_stream_cursor && !bulk_stream_cursor;
-      const bool use_server_live_ipar_projection =
+      std::string live_catalog_projection_path =
+          ServerVirtualProjectionForTarget(encoded);
+      if (live_catalog_projection_path.empty()) {
+        const std::string decoded_operation_text =
+            DecodedBinaryOperationEnvelopeText(encoded);
+        if (!decoded_operation_text.empty()) {
+          live_catalog_projection_path =
+              ServerVirtualProjectionForTarget(decoded_operation_text);
+        }
+      }
+      if (live_catalog_projection_path.empty()) {
+        live_catalog_projection_path = CatalogProjectionPathForDispatch(encoded);
+      }
+      const bool use_server_live_catalog_projection =
           (admission.operation_id == "observability.show_catalog" ||
            admission.operation_id == "dml.select_rows") &&
+          !live_catalog_projection_path.empty();
+      const bool needs_live_ipar_sources =
+          use_server_live_catalog_projection &&
           ipar_source_factory != nullptr &&
           ipar_source_factory->build != nullptr &&
           IsServerLiveIparCatalogProjection(encoded);
       ServerIparProjectionSources live_ipar_sources;
-      if (use_server_live_ipar_projection) {
+      if (needs_live_ipar_sources) {
         live_ipar_sources = ipar_source_factory->build(ipar_source_factory->context);
       }
+      if (use_server_live_catalog_projection) {
+        mark_execute_phase("server_live_catalog_projection:" + live_catalog_projection_path);
+      }
       mark_execute_phase("pre_public_abi_dispatch");
-      auto public_abi = use_server_live_ipar_projection
+      auto public_abi = use_server_live_catalog_projection
                             ? DispatchServerLiveIparCatalogProjection(*session,
                                                                       encoded,
                                                                       live_ipar_sources)

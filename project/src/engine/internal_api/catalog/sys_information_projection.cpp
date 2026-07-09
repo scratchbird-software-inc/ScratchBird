@@ -314,7 +314,7 @@ const std::vector<ProjectionPacketRow>& LocalFrontendProjectionPacketRows() {
   static const std::vector<ProjectionPacketRow> rows = [] {
     static constexpr std::string_view kRows = R"CSV(sys.catalog_readable.objects,catalog_readable,object_browser,object_path;object_name;object_kind;parent_path;status;comment_text;visibility_state,Primary ScratchBird-native object tree view.
 sys.catalog_readable.object_tree,catalog_readable,object_browser,object_id;parent_object_id;object_path;object_name;object_kind;parent_path;depth;schema_path;status;visibility_state,Authorization-filtered parent-child tree for drivers and tools.
-sys.catalog_readable.navigator_tree,catalog_readable,object_browser,node_id;parent_node_id;object_id;parent_object_id;node_path;node_name;node_kind;node_role;object_kind;object_path;schema_path;parent_path;depth;sort_group;sort_ordinal;is_virtual;is_expandable;status;visibility_state,Authorization-filtered typed navigator tree with standard UI folders for drivers and tools.
+sys.catalog_readable.navigator_tree,catalog_readable,object_browser,node_id;parent_node_id;object_id;parent_object_id;node_path;node_name;node_kind;node_role;object_kind;object_path;schema_path;parent_path;depth;sort_group;sort_ordinal;is_virtual;is_expandable;status;visibility_state;management_display_type;management_backing_source;management_required_permission;management_refresh_policy;management_allowed_actions;management_refusal_behavior,Authorization-filtered typed navigator tree with standard UI folders for drivers and tools.
 sys.catalog_readable.object_names,catalog_readable,names_aliases,object_path;object_name;name_language;visibility_state,No UUID columns; names come from centralized resolver.
 sys.catalog_readable.object_comments,catalog_readable,comments,object_path;object_name;comment_text;comment_language;visibility_state,No UUID columns; comments come from centralized comment resolver.
 sys.catalog_readable.schemas,catalog_readable,schema_browser,schema_path;schema_name;parent_path;comment_text;visibility_state,Local schemas and subschemas.
@@ -860,6 +860,15 @@ std::string NavigatorProjectedObjectNodeId(std::string_view parent_node_id,
          ":" + object.object_uuid;
 }
 
+struct NavigatorSurfaceContract {
+  std::string display_type;
+  std::string backing_source;
+  std::string required_permission;
+  std::string refresh_policy;
+  std::string allowed_actions;
+  std::string refusal_behavior;
+};
+
 void AddNavigatorRow(SysInformationProjectionResult* result,
                      std::string node_id,
                      std::string parent_node_id,
@@ -877,7 +886,8 @@ void AddNavigatorRow(SysInformationProjectionResult* result,
                      std::uint32_t sort_group,
                      std::uint64_t sort_ordinal,
                      bool is_virtual,
-                     bool is_expandable) {
+                     bool is_expandable,
+                     NavigatorSurfaceContract contract = {}) {
   SysInformationProjectionRow row;
   AddField(&row, "node_id", std::move(node_id));
   AddField(&row, "parent_node_id", std::move(parent_node_id));
@@ -898,6 +908,12 @@ void AddNavigatorRow(SysInformationProjectionResult* result,
   AddField(&row, "is_expandable", is_expandable ? "YES" : "NO");
   AddField(&row, "status", "active");
   AddField(&row, "visibility_state", "visible");
+  AddField(&row, "management_display_type", std::move(contract.display_type));
+  AddField(&row, "management_backing_source", std::move(contract.backing_source));
+  AddField(&row, "management_required_permission", std::move(contract.required_permission));
+  AddField(&row, "management_refresh_policy", std::move(contract.refresh_policy));
+  AddField(&row, "management_allowed_actions", std::move(contract.allowed_actions));
+  AddField(&row, "management_refusal_behavior", std::move(contract.refusal_behavior));
   result->rows.push_back(std::move(row));
 }
 
@@ -1051,7 +1067,8 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                          std::string_view label,
                          std::uint32_t depth,
                          std::uint32_t sort_group,
-                         bool expandable = true) {
+                         bool expandable = true,
+                         NavigatorSurfaceContract contract = {}) {
     const std::string folder_id = NavigatorFolderNodeId(parent_node_id, role);
     AddNavigatorRow(&result,
                     folder_id,
@@ -1070,8 +1087,25 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                     sort_group,
                     ++ordinal,
                     true,
-                    expandable);
+                    expandable,
+                    std::move(contract));
     return folder_id;
+  };
+
+  auto management_contract = [](std::string display_type,
+                                std::string backing_source,
+                                std::string required_permission,
+                                std::string refresh_policy,
+                                std::string allowed_actions,
+                                std::string refusal_behavior) {
+    NavigatorSurfaceContract contract;
+    contract.display_type = std::move(display_type);
+    contract.backing_source = std::move(backing_source);
+    contract.required_permission = std::move(required_permission);
+    contract.refresh_policy = std::move(refresh_policy);
+    contract.allowed_actions = std::move(allowed_actions);
+    contract.refusal_behavior = std::move(refusal_behavior);
+    return contract;
   };
 
   const auto nav_objects = VisibleNavigatorObjects(catalog_objects, resolver_names, context);
@@ -1085,14 +1119,127 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
   for (auto& entry : children_by_parent_uuid) {
     SortNavigatorRows(&entry.second);
   }
+  auto has_visible_descendant_under_root = [&](std::string_view root_path) {
+    const std::string prefix = std::string(root_path) + ".";
+    for (const auto& nav : nav_objects) {
+      if (nav.object == nullptr) { continue; }
+      if (nav.parent_path == root_path) { return true; }
+      if (nav.object_path.rfind(prefix, 0) == 0) { return true; }
+    }
+    return false;
+  };
 
   const std::string management_id =
-      emit_folder(database_node_id, "", database_name, "", "database.management", "Management", 1, 100);
-  const std::string management_path = NavigatorChildPath(database_name, "Management");
+      emit_folder(database_node_id,
+                  "",
+                  database_name,
+                  "",
+                  "database.management",
+                  "management",
+                  1,
+                  10,
+                  true,
+                  management_contract("dashboard",
+                                      "sys.catalog_readable.navigator_tree;SHOW MANAGEMENT",
+                                      "right.management_runtime_read",
+                                      "manual_or_30s",
+                                      "open,properties,reports,refresh,source_status",
+                                      "hide unauthorized nodes; show source-status refusal for unavailable backing sources"));
+  const std::string management_path = NavigatorChildPath(database_name, "management");
+
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.overview",
+              "overview",
+              2,
+              10,
+              true,
+              management_contract("dashboard",
+                                  "sys.server_capabilities;sys.catalog_readable.navigator_tree;SHOW METRICS",
+                                  "right.management_runtime_read",
+                                  "manual_or_30s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show source-status refusal when any overview source is hidden or denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.sessions",
+              "sessions",
+              2,
+              20,
+              true,
+              management_contract("grid",
+                                  "SHOW SESSIONS;SHOW TRANSACTIONS",
+                                  "right.management_runtime_read",
+                                  "manual_or_5s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "filter to authorized sessions or refuse with security diagnostic"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.workload",
+              "workload",
+              2,
+              30,
+              true,
+              management_contract("report",
+                                  "SHOW STATEMENTS;SHOW METRICS",
+                                  "right.management_runtime_read",
+                                  "manual_or_5s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show deterministic source-status refusal when statement details are denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.storage",
+              "storage",
+              2,
+              40,
+              true,
+              management_contract("dashboard",
+                                  "sys.catalog_readable.filespaces;sys.catalog_readable.page_families;SHOW METRICS",
+                                  "right.management_runtime_read",
+                                  "manual_or_30s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "redact device paths and hide unauthorized filespaces"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.memory",
+              "memory",
+              2,
+              50,
+              true,
+              management_contract("dashboard",
+                                  "SHOW METRICS FAMILY memory;sys.catalog_readable.settings",
+                                  "right.management_runtime_read",
+                                  "manual_or_5s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show policy/status refusal when memory metrics are not visible"));
 
   const std::string security_id =
-      emit_folder(management_id, "", management_path, "", "database.security", "Security", 2, 10);
-  const std::string security_path = NavigatorChildPath(management_path, "Security");
+      emit_folder(management_id,
+                  "",
+                  management_path,
+                  "",
+                  "management.security",
+                  "security",
+                  2,
+                  60,
+                  true,
+                  management_contract("detail_form",
+                                      "sys.catalog_readable.security_subjects;sys.catalog_readable.privileges;sys.security.permission_probe",
+                                      "right.security_admin_read",
+                                      "manual",
+                                      "open,properties,reports,refresh,source_status",
+                                      "hide unauthorized principals; refuse mutation previews without server admission"));
+  const std::string security_path = NavigatorChildPath(management_path, "security");
   const std::string security_users_id =
       emit_folder(security_id, "", security_path, "", "security.users", "users", 3, 10);
   const std::string security_groups_id =
@@ -1302,35 +1449,223 @@ SysInformationProjectionResult BuildNavigatorTreeProjection(
                   "",
                   management_path,
                   "",
-                  "database.programmability",
-                  "Programmability",
+                  "management.programmability",
+                  "programmability",
                   2,
-                  20);
-  const std::string programmability_path = NavigatorChildPath(management_path, "Programmability");
+                  70,
+                  true,
+                  management_contract("detail_form",
+                                      "sys.catalog_readable.operations;sys.catalog_readable.procedures;sys.catalog_readable.packages",
+                                      "right.discover",
+                                      "manual",
+                                      "open,properties,reports,refresh,source_status",
+                                      "hide invisible routines/packages; refuse mutation previews without server admission"));
+  const std::string programmability_path = NavigatorChildPath(management_path, "programmability");
   const std::string domains_id =
-      emit_folder(management_id, "", management_path, "", "database.domains", "Domains", 2, 30);
-  const std::string domains_path = NavigatorChildPath(management_path, "Domains");
-  emit_folder(management_id, "", management_path, "", "database.agents", "Agents", 2, 40);
-  emit_folder(management_id, "", management_path, "", "database.jobs", "Jobs", 2, 50);
+      emit_folder(management_id,
+                  "",
+                  management_path,
+                  "",
+                  "management.domains",
+                  "domains",
+                  2,
+                  80,
+                  true,
+                  management_contract("grid",
+                                      "sys.catalog_readable.domains;sys.catalog_readable.datatypes;sys.catalog_readable.casts",
+                                      "right.discover",
+                                      "manual",
+                                      "open,properties,reports,refresh,source_status",
+                                      "hide invisible domains; refuse datatype-management actions without server admission"));
+  const std::string domains_path = NavigatorChildPath(management_path, "domains");
   emit_folder(management_id,
               "",
               management_path,
               "",
-              "database.diagnostics_metrics",
-              "Diagnostics / Metrics",
+              "management.jobs",
+              "jobs",
               2,
-              60);
+              90,
+              true,
+              management_contract("grid",
+                                  "SHOW JOBS;SHOW JOB RUNS;SHOW JOB DEPENDENCIES;sys.catalog_readable.jobs",
+                                  "right.management_runtime_read",
+                                  "manual_or_30s",
+                                  "open,properties,tasks,reports,refresh,source_status",
+                                  "show job source-status refusal when scheduler surfaces are denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.agents",
+              "agents",
+              2,
+              100,
+              true,
+              management_contract("grid",
+                                  "sys.frontend.agents;sys.frontend.agent_policies;sys.frontend.agent_actions",
+                                  "right.agent_read",
+                                  "manual_or_30s",
+                                  "open,properties,tasks,reports,refresh,source_status",
+                                  "show agent source-status refusal when agent details are denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.configuration",
+              "configuration",
+              2,
+              110,
+              true,
+              management_contract("detail_form",
+                                  "sys.configuration.settings;sys.configuration.profiles;sys.configuration.policy_bindings",
+                                  "right.configuration_read",
+                                  "manual",
+                                  "open,properties,reports,refresh,source_status",
+                                  "redact secret values and refuse writes without server admission"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.parser_and_language",
+              "parser-and-language",
+              2,
+              120,
+              true,
+              management_contract("grid",
+                                  "sys.parser.dialects;sys.catalog_readable.parser_profiles;sys.catalog_readable.resources",
+                                  "right.parser_profile_read",
+                                  "manual",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show language-resource refusal when parser/language sources are denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.listener_and_manager",
+              "listener-and-manager",
+              2,
+              130,
+              true,
+              management_contract("grid",
+                                  "sys.catalog_readable.listeners;SHOW LISTENERS;SHOW PARSERS",
+                                  "right.management_runtime_read",
+                                  "manual_or_5s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show listener/manager refusal when runtime inspection is denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.diagnostics",
+              "diagnostics",
+              2,
+              140,
+              true,
+              management_contract("report",
+                                  "sys.catalog_readable.metrics_catalog;sys.catalog_readable.diagnostics_catalog;SHOW METRICS",
+                                  "right.management_runtime_read",
+                                  "manual_or_30s",
+                                  "open,properties,reports,refresh,source_status",
+                                  "show deterministic source-status refusal when diagnostic sources are denied"));
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "management.support",
+              "support",
+              2,
+              150,
+              true,
+              management_contract("action_form",
+                                  "sys.catalog_readable.diagnostics_catalog;SHOW MANAGEMENT",
+                                  "right.support_bundle_read",
+                                  "manual",
+                                  "open,properties,tasks,reports,refresh,source_status",
+                                  "support bundle actions require server admission and redaction proof"));
   const std::string triggers_id =
-      emit_folder(management_id, "", management_path, "", "database.triggers", "Triggers", 2, 70);
-  const std::string triggers_path = NavigatorChildPath(management_path, "Triggers");
+      emit_folder(management_id,
+                  "",
+                  management_path,
+                  "",
+                  "management.triggers",
+                  "triggers",
+                  2,
+                  160,
+                  true,
+                  management_contract("grid",
+                                      "sys.catalog_readable.triggers",
+                                      "right.discover",
+                                      "manual",
+                                      "open,properties,reports,refresh,source_status",
+                                      "hide invisible triggers; refuse mutation previews without server admission"));
+  const std::string triggers_path = NavigatorChildPath(management_path, "triggers");
   emit_folder(management_id,
               "",
               management_path,
               "",
-              "database.filespaces",
-              "File-spaces",
+              "management.filespaces",
+              "file-spaces",
               2,
-              80);
+              170,
+              true,
+              management_contract("grid",
+                                  "sys.catalog_readable.filespaces",
+                                  "right.storage_read",
+                                  "manual",
+                                  "open,properties,reports,refresh,source_status",
+                                  "redact paths by policy and hide unauthorized filespaces"));
+  if (context.cluster_authority_available && has_visible_descendant_under_root("cluster")) {
+    emit_folder(management_id,
+                "",
+                management_path,
+                "",
+                "management.cluster",
+                "cluster",
+                2,
+                180,
+                true,
+                management_contract("dashboard",
+                                    "cluster.sys.catalog_readable.nodes;SHOW CLUSTER STATE",
+                                    "right.cluster_inspect",
+                                    "manual_or_30s",
+                                    "open,properties,reports,refresh,source_status",
+                                    "cluster surfaces route to the cluster provider boundary or deterministic stub refusal"));
+  }
+  if (has_visible_descendant_under_root("emulated")) {
+    emit_folder(management_id,
+                "",
+                management_path,
+                "",
+                "management.emulation",
+                "emulation",
+                2,
+                190,
+                true,
+                management_contract("grid",
+                                    "sys.catalog_readable.emulation_profiles",
+                                    "right.parser_profile_read",
+                                    "manual",
+                                    "open,properties,reports,refresh,source_status",
+                                    "hide emulation branch when no visible emulation profile exists"));
+  }
+  if (has_visible_descendant_under_root("remote")) {
+    emit_folder(management_id,
+                "",
+                management_path,
+                "",
+                "management.remote",
+                "remote",
+                2,
+                200,
+                true,
+                management_contract("grid",
+                                    "sys.catalog_readable.remote_connections",
+                                    "right.remote_connection_read",
+                                    "manual",
+                                    "open,properties,reports,refresh,source_status",
+                                    "redact credentials and hide branch when no visible remote connection exists"));
+  }
 
   auto emit_object =
       [&](const NavigatorObjectRow& nav,
@@ -3096,6 +3431,28 @@ SysInformationProjectionResult BuildSysInformationProjection(
   }
 
   if (canonical_view_path == "sys.catalog_readable.columns") {
+    std::set<std::string> emitted_columns;
+    const auto append_column_row = [&](std::string relation_path,
+                                       std::string column_name,
+                                       std::string ordinal_position,
+                                       std::string datatype_name,
+                                       std::string domain_name,
+                                       std::string is_nullable,
+                                       std::string comment_text) {
+      const std::string key = relation_path + "\n" + column_name;
+      if (!emitted_columns.insert(key).second) { return; }
+      SysInformationProjectionRow row;
+      AddField(&row, "relation_path", std::move(relation_path));
+      AddField(&row, "column_name", std::move(column_name));
+      AddField(&row, "ordinal_position", std::move(ordinal_position));
+      AddField(&row, "datatype_name", std::move(datatype_name));
+      AddField(&row, "domain_name", std::move(domain_name));
+      AddField(&row, "is_nullable", std::move(is_nullable));
+      AddField(&row, "comment_text", std::move(comment_text));
+      AddField(&row, "visibility_state", "visible");
+      result.rows.push_back(std::move(row));
+    };
+
     for (const auto& column : columns) {
       if (!ProjectionSourceVisible(column.hidden, column.catalog_generation_id, context)) { continue; }
       const auto* relation = FindObject(catalog_objects, column.relation_object_uuid, context);
@@ -3103,16 +3460,28 @@ SysInformationProjectionResult BuildSysInformationProjection(
       bool found_path = false;
       const std::string relation_path = ObjectDisplayPath(resolver_names, context, *relation, &found_path);
       if (!found_path) { continue; }
-      SysInformationProjectionRow row;
-      AddField(&row, "relation_path", relation_path);
-      AddField(&row, "column_name", column.column_name);
-      AddField(&row, "ordinal_position", std::to_string(column.ordinal_position));
-      AddField(&row, "datatype_name", column.datatype_name);
-      AddField(&row, "domain_name", column.domain_name);
-      AddField(&row, "is_nullable", column.is_nullable);
-      AddField(&row, "comment_text", column.comment_text);
-      AddField(&row, "visibility_state", "visible");
-      result.rows.push_back(std::move(row));
+      append_column_row(relation_path,
+                        column.column_name,
+                        std::to_string(column.ordinal_position),
+                        column.datatype_name,
+                        column.domain_name,
+                        column.is_nullable,
+                        column.comment_text);
+    }
+    for (const auto& definition : BuiltinSysInformationProjectionDefinitions()) {
+      if (definition.view_path.empty() || SysInformationPathIsClusterScoped(definition.view_path)) {
+        continue;
+      }
+      std::uint64_t ordinal = 1;
+      for (const auto& column : definition.columns) {
+        append_column_row(definition.view_path,
+                          column.column_name,
+                          std::to_string(ordinal++),
+                          column.logical_type,
+                          "",
+                          column.nullable ? "YES" : "NO",
+                          "");
+      }
     }
     return result;
   }

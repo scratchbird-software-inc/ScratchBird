@@ -28,6 +28,7 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace memory = scratchbird::core::memory;
+namespace resources = scratchbird::core::resources;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -245,6 +246,35 @@ std::string StableGrantUuid(std::size_t index) {
   } while (value != 0);
   suffix.replace(suffix.size() - hex.size(), hex.size(), hex);
   return "019f0a11-ce00-7000-8000-" + suffix;
+}
+
+std::string JsonString(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 2);
+  out.push_back('"');
+  for (const unsigned char ch : value) {
+    switch (ch) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (ch < 0x20) {
+          constexpr char kHex[] = "0123456789abcdef";
+          out += "\\u00";
+          out.push_back(kHex[(ch >> 4) & 0x0f]);
+          out.push_back(kHex[ch & 0x0f]);
+        } else {
+          out.push_back(static_cast<char>(ch));
+        }
+        break;
+    }
+  }
+  out.push_back('"');
+  return out;
 }
 
 memory::AllocationPolicy ProductionMemoryPolicy() {
@@ -582,6 +612,73 @@ void WriteAuthStore(const Args& args) {
   }
 }
 
+void WriteResourceSeedCatalogJson(std::ofstream& out,
+                                  const resources::ResourceSeedCatalogImage& catalog,
+                                  std::string_view trailing = ",") {
+  out << "  \"resource_seed_catalog\": {\n";
+  out << "    \"seed_pack_name\": " << JsonString(catalog.seed_pack_name) << ",\n";
+  out << "    \"seed_pack_version\": " << JsonString(catalog.seed_pack_version) << ",\n";
+  out << "    \"seed_pack_hash\": " << JsonString(catalog.content_hash) << ",\n";
+  out << "    \"active\": " << (catalog.active ? "true" : "false") << ",\n";
+  out << "    \"minimal_bootstrap\": " << (catalog.minimal_bootstrap ? "true" : "false") << ",\n";
+  out << "    \"database_create_ready\": " << (catalog.database_create_ready ? "true" : "false") << ",\n";
+  out << "    \"database_open_ready\": " << (catalog.database_open_ready ? "true" : "false") << ",\n";
+  out << "    \"versions\": {\n";
+  out << "      \"i18n\": " << JsonString(catalog.i18n_version) << ",\n";
+  out << "      \"timezone\": " << JsonString(catalog.timezone_version) << ",\n";
+  out << "      \"charset\": " << JsonString(catalog.charset_version) << ",\n";
+  out << "      \"collation\": " << JsonString(catalog.collation_version) << ",\n";
+  out << "      \"locale\": " << JsonString(catalog.locale_version) << "\n";
+  out << "    },\n";
+  out << "    \"content_hashes\": {\n";
+  out << "      \"charset\": " << JsonString(catalog.charset_content_hash) << ",\n";
+  out << "      \"collation\": " << JsonString(catalog.collation_content_hash) << ",\n";
+  out << "      \"locale\": " << JsonString(catalog.locale_content_hash) << ",\n";
+  out << "      \"timezone\": " << JsonString(catalog.timezone_content_hash) << "\n";
+  out << "    },\n";
+  out << "    \"epochs\": {\n";
+  out << "      \"resource\": " << catalog.resource_epoch << ",\n";
+  out << "      \"charset\": " << catalog.charset_epoch << ",\n";
+  out << "      \"collation\": " << catalog.collation_epoch << ",\n";
+  out << "      \"timezone\": " << catalog.timezone_epoch << ",\n";
+  out << "      \"locale\": " << catalog.locale_epoch << ",\n";
+  out << "      \"runtime_cache\": " << catalog.runtime_cache_epoch << "\n";
+  out << "    },\n";
+  out << "    \"counts\": {\n";
+  out << "      \"resource_bundle_records\": " << catalog.resource_bundle_records << ",\n";
+  out << "      \"resource_artifact_records\": " << catalog.resource_artifact_records << ",\n";
+  out << "      \"resource_activation_records\": " << catalog.resource_activation_records << ",\n";
+  out << "      \"charset_records\": " << catalog.charset_records << ",\n";
+  out << "      \"charset_alias_records\": " << catalog.charset_alias_records << ",\n";
+  out << "      \"charset_mapping_artifacts\": " << catalog.charset_mapping_artifacts << ",\n";
+  out << "      \"collation_records\": " << catalog.collation_records << ",\n";
+  out << "      \"collation_tailoring_records\": " << catalog.collation_tailoring_records << ",\n";
+  out << "      \"locale_records\": " << catalog.locale_records << ",\n";
+  out << "      \"timezone_records\": " << catalog.timezone_records << ",\n";
+  out << "      \"timezone_transition_records\": " << catalog.timezone_transition_records << ",\n";
+  out << "      \"timezone_leap_second_records\": " << catalog.timezone_leap_second_records << ",\n";
+  out << "      \"runtime_cache_invalidation_records\": " << catalog.runtime_cache_invalidation_records << ",\n";
+  out << "      \"index_dependency_records\": " << catalog.index_dependency_records << ",\n";
+  out << "      \"family_version_records\": " << catalog.family_versions.size() << ",\n";
+  out << "      \"resource_alias_records\": " << catalog.aliases.size() << "\n";
+  out << "    },\n";
+  out << "    \"language_profiles_required\": [\"en-US\", \"en-CA\", \"fr-CA\", \"fr-FR\", \"de-DE\", \"it-IT\", \"es-ES\"],\n";
+  out << "    \"language_resource_artifacts_loaded\": "
+      << (catalog.i18n_version.empty() ? "false" : "true") << ",\n";
+  out << "    \"families\": [\n";
+  for (std::size_t index = 0; index < catalog.family_versions.size(); ++index) {
+    const auto& family = catalog.family_versions[index];
+    out << "      {\"family\": " << JsonString(resources::ResourceSeedFamilyName(family.family))
+        << ", \"version\": " << JsonString(family.version)
+        << ", \"content_hash\": " << JsonString(family.content_hash)
+        << ", \"activation_epoch\": " << family.activation_epoch
+        << ", \"active\": " << (family.active ? "true" : "false") << "}";
+    out << (index + 1 == catalog.family_versions.size() ? "\n" : ",\n");
+  }
+  out << "    ]\n";
+  out << "  }" << trailing << "\n";
+}
+
 void WriteManifest(const Args& args,
                    const std::string& database_uuid,
                    const db::DatabaseLifecycleState& state) {
@@ -604,6 +701,7 @@ void WriteManifest(const Args& args,
   out << "  \"default_policy_records\": "
       << state.policy_seed_catalog.default_policy_records << ",\n";
   out << "  \"minimal_resource_bootstrap\": false,\n";
+  WriteResourceSeedCatalogJson(out, state.resource_seed_catalog);
   out << "  \"fixture_objects_seeded\": [\n";
   const auto tables = FixtureTables();
   for (std::size_t index = 0; index < tables.size(); ++index) {

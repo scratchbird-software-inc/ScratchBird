@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_XML = ROOT / "plugins" / "org.jkiss.dbeaver.ext.scratchbird" / "plugin.xml"
+BUNDLE_PROPERTIES = ROOT / "plugins" / "org.jkiss.dbeaver.ext.scratchbird" / "OSGI-INF" / "l10n" / "bundle.properties"
 README = ROOT / "README.md"
 BUILD_P2 = ROOT / "scripts" / "build-p2-update-site.sh"
 BUILD_BUNDLE = ROOT / "scripts" / "build-stock-test-bundle.sh"
@@ -100,6 +101,32 @@ VIEW_SOURCE = (
     / "scratchbird"
     / "model"
     / "ScratchBirdView.java"
+)
+MANAGEMENT_SURFACE_CATALOG_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdManagementSurfaceCatalog.java"
+)
+MANAGEMENT_SURFACE_DEFINITION_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdManagementSurfaceDefinition.java"
 )
 QUALIFIED_NAMES_SOURCE = (
     ROOT
@@ -307,8 +334,10 @@ def require_plugin_surface() -> int:
         '<treeInjection path="generic/catalog">\n                <items label="#schema" path="schema" property="schemaTree"',
         '<items label="#schema" path="schema" property="childSchemas"',
         'recursive=".."',
+        'if="object.managementBranch"',
         '<items label="%tree.table.node.name" path="table" property="physicalTables"',
         '<items label="%tree.tview.node.name" path="view" property="views"',
+        'visibleIf="object.storedCodeFoldersVisible &amp;&amp; object.dataSource.info.supportsStoredCode()"',
     )
     for token in required_tree_tokens:
         if token not in plugin_text:
@@ -323,6 +352,20 @@ def require_plugin_surface() -> int:
     for token in blocked_tree_tokens:
         if token in plugin_text:
             return fail(f"plugin.xml still groups physical navigator children with {token!r}")
+
+    bundle_keys = set()
+    for line in BUNDLE_PROPERTIES.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        bundle_keys.add(stripped.split("=", 1)[0])
+    unresolved_tree_keys = sorted({
+        token[1:]
+        for token in plugin_text.replace('"', " ").replace("'", " ").split()
+        if token.startswith("%tree.")
+    } - bundle_keys)
+    if unresolved_tree_keys:
+        return fail(f"plugin.xml references unresolved tree localization keys: {', '.join(unresolved_tree_keys)}")
     return 0
 
 
@@ -338,6 +381,7 @@ def require_schema_node_metadata_fallback() -> int:
         "addNavigatorView",
         "hasNavigatorRelations()",
         "getTableCache().setCache(navigatorTables);",
+        "public boolean isManagementBranch()",
         "if (hasNavigatorRelations()) {\n            getTables(monitor);",
         "session.getMetaData().getTables(null, getAuthorityPath(), \"%\", PHYSICAL_TABLE_TYPES)",
         "session.getMetaData().getTables(null, getAuthorityPath(), \"%\", VIEW_TYPES)",
@@ -348,6 +392,7 @@ def require_schema_node_metadata_fallback() -> int:
         "loadMetadataPhysicalTables(monitor)",
         "loadMetadataViews(monitor)",
         "public boolean isSchemaBranchesFolderVisible()",
+        "public boolean isStoredCodeFoldersVisible()",
         "ScratchBird schema constraints are not available for navigator",
         "ScratchBird schema indexes are not available for navigator",
     )
@@ -374,6 +419,13 @@ def require_readable_catalog_tree_query() -> int:
     source = CATALOG_SOURCE.read_text(encoding="utf-8")
     required_tokens = (
         "FROM sys.catalog_readable.navigator_tree",
+        "management_display_type",
+        "management_backing_source",
+        "management_required_permission",
+        "management_refresh_policy",
+        "management_allowed_actions",
+        "management_refusal_behavior",
+        "validateManagementContract",
         "executeNavigatorTreeQuery",
         "databaseDisplayName",
         "navigatorAuthorityPath",
@@ -400,6 +452,70 @@ def require_readable_catalog_tree_query() -> int:
     for token in blocked_tokens:
         if token in source:
             return fail(f"catalog readable schema tree query still has physical-tree fallback token {token!r}")
+    return 0
+
+
+def require_management_surface_contract() -> int:
+    if not MANAGEMENT_SURFACE_CATALOG_SOURCE.exists():
+        return fail("management surface catalog source is missing")
+    if not MANAGEMENT_SURFACE_DEFINITION_SOURCE.exists():
+        return fail("management surface definition source is missing")
+    catalog = MANAGEMENT_SURFACE_CATALOG_SOURCE.read_text(encoding="utf-8")
+    definition = MANAGEMENT_SURFACE_DEFINITION_SOURCE.read_text(encoding="utf-8")
+    required_surface_tokens = (
+        'ROOT_PATH = "management"',
+        'REPORT_BASE_PATH = ROOT_PATH + ".diagnostics"',
+        'ROOT_PATH + ".overview"',
+        'ROOT_PATH + ".sessions"',
+        'ROOT_PATH + ".workload"',
+        'ROOT_PATH + ".storage"',
+        'ROOT_PATH + ".memory"',
+        'ROOT_PATH + ".security"',
+        'ROOT_PATH + ".programmability"',
+        'ROOT_PATH + ".domains"',
+        'ROOT_PATH + ".jobs"',
+        'ROOT_PATH + ".agents"',
+        'ROOT_PATH + ".configuration"',
+        'ROOT_PATH + ".parser-and-language"',
+        'ROOT_PATH + ".listener-and-manager"',
+        'ROOT_PATH + ".diagnostics"',
+        'ROOT_PATH + ".support"',
+        'ROOT_PATH + ".triggers"',
+        'ROOT_PATH + ".file-spaces"',
+        'ROOT_PATH + ".cluster"',
+        'ROOT_PATH + ".emulation"',
+        'ROOT_PATH + ".remote"',
+        "sys.catalog_readable.navigator_tree",
+        "sys.parser.dialects",
+        "sys.frontend.agents",
+        "sys.configuration.policy_bindings",
+        "displayTypes()",
+    )
+    for token in required_surface_tokens:
+        if token not in catalog:
+            return fail(f"management surface catalog missing {token!r}")
+    for token in (
+        "displayType",
+        "backingSources",
+        "requiredPermission",
+        "refreshPolicy",
+        "actions",
+        "refusalBehavior",
+        "formId",
+    ):
+        if token not in definition:
+            return fail(f"management surface definition missing {token!r}")
+    namespace_source = (
+        ROOT
+        / "plugins/org.jkiss.dbeaver.ext.scratchbird/src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdNamespaceSemantics.java"
+    ).read_text(encoding="utf-8")
+    for token in (
+        "MANAGEMENT_ROOT = ScratchBirdManagementSurfaceCatalog.ROOT_PATH",
+        "METRICS_ROOT = ScratchBirdManagementSurfaceCatalog.REPORT_BASE_PATH",
+        "return ScratchBirdManagementSurfaceCatalog.isManagementPath(path);",
+    ):
+        if token not in namespace_source:
+            return fail(f"namespace semantics missing management surface token {token!r}")
     return 0
 
 
@@ -474,6 +590,7 @@ def main() -> int:
         require_schema_node_metadata_fallback,
         require_collapsed_catalog_schema_tree,
         require_readable_catalog_tree_query,
+        require_management_surface_contract,
         require_schema_node_manager_nested_create_policy,
         require_system_metadata_visible_in_navigator,
         require_authority_path_action_context,

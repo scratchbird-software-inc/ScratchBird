@@ -126,8 +126,8 @@ def short_lane_runtime_root(runtime_root: Path, lane: str) -> Path:
 
 def validate_binaries(repo_root: Path) -> dict[str, Path]:
     output_roots = [
-        repo_root / "build/output/linux/bin",
         repo_root / "build/public-release-linux/output/linux/bin",
+        repo_root / "build/output/linux/bin",
     ]
     binary_names = {
         "server": "SBsrv",

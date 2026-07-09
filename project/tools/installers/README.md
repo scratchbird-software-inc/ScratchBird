@@ -76,3 +76,30 @@ Rules:
   unsigned QA artifacts must not be promoted as final signed installers.
 - Private paths, private workplans, acquired reference payloads, and secrets are
   forbidden in installer artifacts.
+
+## Webserver package export
+
+The manual GitHub workflow `.github/workflows/webserver-package-export.yml`
+builds and verifies packages, then assembles a webserver upload bundle as a
+GitHub Actions artifact. It does not create a GitHub release, tag, or
+pre-release.
+
+Run it from GitHub Actions with:
+
+- `platform`: `all`, `linux`, `windows`, or `macos`
+- `version`: the package version string
+- `channel`: `beta`, `pre-release`, `release-candidate`, `nightly`, or `qa`
+- `base-url`: the public download host URL to record in the manifest
+- `require-msi`: whether Windows MSI generation is mandatory
+- `retention-days`: temporary GitHub artifact retention window
+
+The workflow output artifact is named `scratchbird-webserver-package-export`.
+It contains:
+
+- `WEB_DISTRIBUTION_MANIFEST.json`
+- `SHA256SUMS`
+- `UPLOAD_LAYOUT.txt`
+- platform package files under `<channel>/<version>/<platform>/<arch>/`
+
+The upload bundle is intended to be copied to the ScratchBird webserver after
+independent approval. GitHub Actions artifact storage is only a staging point.

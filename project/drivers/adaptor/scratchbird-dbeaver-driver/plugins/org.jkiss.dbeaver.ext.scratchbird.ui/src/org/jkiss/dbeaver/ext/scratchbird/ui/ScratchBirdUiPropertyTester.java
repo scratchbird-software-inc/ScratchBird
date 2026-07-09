@@ -45,6 +45,7 @@ public class ScratchBirdUiPropertyTester extends PropertyTester {
             case "canReports" -> ScratchBirdSelectionUtils.supportsAction(receiver, ScratchBirdNavigatorActionRegistry.Action.REPORTS);
             case "canSourceStatus" -> ScratchBirdSelectionUtils.supportsAction(receiver, ScratchBirdNavigatorActionRegistry.Action.SOURCE_STATUS);
             case "canValidateSql" -> isScratchBirdSqlEditor(receiver);
+            case "canDefaultOpen" -> ScratchBirdSelectionUtils.supportsDefaultOpen(receiver);
             default -> false;
         };
     }

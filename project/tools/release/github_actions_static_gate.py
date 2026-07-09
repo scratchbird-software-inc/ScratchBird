@@ -71,6 +71,14 @@ REQUIRED_WORKFLOWS = {
         "INSTALLER_ARTIFACT_MANIFEST.json",
         "macos",
     ),
+    "webserver-package-export.yml": (
+        "workflow_dispatch:",
+        "contents: read",
+        "verify-installers.yml",
+        "create_web_distribution_bundle.py",
+        "scratchbird-webserver-package-export",
+        "Create webserver upload bundle",
+    ),
 }
 
 
@@ -99,6 +107,10 @@ def check_permissions(text: str, rel: str) -> None:
         fail(f"missing_permissions:{rel}")
     if re.search(r"contents:\s+write", text) and "release-candidate" not in rel and "nightly-installers" not in rel:
         fail(f"unexpected_contents_write:{rel}")
+    if rel == "webserver-package-export.yml":
+        for token in ("contents: write", "gh release", "git tag", "git push origin"):
+            if token in text:
+                fail(f"webserver_export_publication_token_forbidden:{token}")
 
 
 def main() -> int:

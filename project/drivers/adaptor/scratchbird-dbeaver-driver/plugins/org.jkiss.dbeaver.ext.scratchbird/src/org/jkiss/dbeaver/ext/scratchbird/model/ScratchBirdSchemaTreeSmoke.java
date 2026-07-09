@@ -55,7 +55,7 @@ public final class ScratchBirdSchemaTreeSmoke {
             "analytics.prod"
         ), true);
 
-        require(roots.size() == 8, "Expected canonical roots plus analytics");
+        require(roots.size() == 4, "Expected canonical roots plus analytics");
 
         ScratchBirdSchemaTreeBuilder.Node users = findByName(roots, "users");
         require(users != null, "Expected users root");
@@ -76,10 +76,14 @@ public final class ScratchBirdSchemaTreeSmoke {
         require(sys != null && sys.isTerminal(), "Expected sys terminal node");
         require(findByName(sys.getChildren(), "domains") != null, "Expected sys.domains branch");
 
-        ScratchBirdSchemaTreeBuilder.Node metrics = findByName(roots, "metrics");
-        require(metrics != null && metrics.isClientOnly(), "Expected client-only metrics branch");
-        require(findByName(metrics.getChildren(), "health-scorecards") != null, "Expected metrics health-scorecards branch");
-        require(findByName(metrics.getChildren(), "alerts") != null, "Expected metrics alerts branch");
+        ScratchBirdSchemaTreeBuilder.Node management = findByName(roots, "management");
+        require(management != null && management.isClientOnly(), "Expected client-only management branch");
+        ScratchBirdSchemaTreeBuilder.Node diagnostics = findByName(management.getChildren(), "diagnostics");
+        require(diagnostics != null, "Expected management diagnostics branch");
+        require(findByName(diagnostics.getChildren(), "health-scorecards") != null,
+            "Expected management diagnostics health-scorecards branch");
+        require(findByName(diagnostics.getChildren(), "alerts") != null,
+            "Expected management diagnostics alerts branch");
     }
 
     private static void require(boolean condition, @NotNull String message) {

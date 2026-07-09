@@ -48,7 +48,7 @@ import java.util.Locale;
 
 public final class ScratchBirdLiveProbe {
 
-    private static final int MAX_SAMPLE_ROWS = 12;
+    private static final int MAX_SAMPLE_ROWS = 64;
     private static final int MAX_SAMPLE_COLUMNS = 8;
     private static final int MAX_CELL_LENGTH = 120;
     private static final int STATEMENT_TIMEOUT_SECONDS = 15;
@@ -212,6 +212,24 @@ public final class ScratchBirdLiveProbe {
     }
 
     @NotNull
+    public static ProbePlan planForManagementSurface(
+        @NotNull ScratchBirdManagementSurfaceDefinition surface,
+        @NotNull String authority
+    ) {
+        List<String> commands = new ArrayList<>();
+        for (String source : surface.backingSources()) {
+            commands.addAll(extractSafeCommands(commandForSource(source)));
+        }
+        return new ProbePlan(
+            surface.label() + " management source probe",
+            "Execute the ScratchBird management surface's authorized backing sources and show sampled result rows.",
+            authority + "; management surface " + surface.path(),
+            !commands.isEmpty(),
+            false,
+            List.copyOf(commands));
+    }
+
+    @NotNull
     public static ProbeResult execute(
         @NotNull DBRProgressMonitor monitor,
         @NotNull DBSObject targetObject,
@@ -366,6 +384,15 @@ public final class ScratchBirdLiveProbe {
             return;
         }
         commands.add(command);
+    }
+
+    @NotNull
+    private static String commandForSource(@NotNull String source) {
+        String trimmed = source.trim();
+        if (trimmed.toUpperCase(Locale.ENGLISH).startsWith("SHOW ")) {
+            return trimmed;
+        }
+        return "SELECT * FROM " + trimmed;
     }
 
     @NotNull

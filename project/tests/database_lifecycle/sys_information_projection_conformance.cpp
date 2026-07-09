@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/sys_information_projection.hpp"
+#include "observability/show_api.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -62,6 +63,41 @@ bool RowContainsFieldValue(const info::SysInformationProjectionResult& result,
   return false;
 }
 
+bool RowContainsFieldPair(const info::SysInformationProjectionResult& result,
+                          std::string_view first_field_name,
+                          std::string_view first_value,
+                          std::string_view second_field_name,
+                          std::string_view second_value) {
+  for (const auto& row : result.rows) {
+    if (Field(row, first_field_name) == first_value &&
+        Field(row, second_field_name) == second_value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ApiResultContainsFieldPair(const info::EngineApiResult& result,
+                                std::string_view first_field_name,
+                                std::string_view first_value,
+                                std::string_view second_field_name,
+                                std::string_view second_value) {
+  for (const auto& row : result.result_shape.rows) {
+    bool first_match = false;
+    bool second_match = false;
+    for (const auto& [name, value] : row.fields) {
+      if (name == first_field_name && value.encoded_value == first_value) {
+        first_match = true;
+      }
+      if (name == second_field_name && value.encoded_value == second_value) {
+        second_match = true;
+      }
+    }
+    if (first_match && second_match) { return true; }
+  }
+  return false;
+}
+
 std::size_t RequireRowIndex(const info::SysInformationProjectionResult& result,
                             std::string_view field_name,
                             std::string_view value,
@@ -93,6 +129,27 @@ info::SysInformationProjectionContext Context() {
   context.visible_catalog_generation_id = 4;
   context.strict_mode = false;
   context.cluster_authority_available = false;
+  return context;
+}
+
+info::EngineRequestContext EngineContext() {
+  info::EngineRequestContext context;
+  context.database_path = "/tmp/scratchbird_sys_information_projection_conformance.sbdb";
+  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000000001";
+  context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000000002";
+  context.session_uuid.canonical = "019f0000-0000-7000-8000-000000000003";
+  context.current_role_uuid.canonical = "019f0000-0000-7000-8000-000000000004";
+  context.local_transaction_id = 4;
+  context.catalog_generation_id = 4;
+  context.security_epoch = 1;
+  context.security_context_present = true;
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
+  context.trace_tags.push_back("right:VISIBLE");
+  context.trace_tags.push_back("right:DISCOVER");
+  context.trace_tags.push_back("right:LIST_CHILD");
+  context.trace_tags.push_back("right:SELECT");
+  context.trace_tags.push_back("right:OBS_MANAGEMENT_INSPECT");
   return context;
 }
 
@@ -882,7 +939,7 @@ void TestReadableCatalogProjectionRows() {
           "navigator tree omitted database root node");
   Require(RowContainsFieldValue(navigator_tree, "node_role", "database.management"),
           "navigator tree omitted management pseudo group");
-  Require(RowContainsFieldValue(navigator_tree, "node_role", "database.filespaces"),
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "management.filespaces"),
           "navigator tree omitted filespaces pseudo group");
   Require(RowContainsFieldValue(navigator_tree, "node_role", "schema"),
           "navigator tree omitted physical schema nodes");
@@ -918,9 +975,9 @@ void TestReadableCatalogProjectionRows() {
           "navigator tree omitted security policy object");
   Require(RowContainsFieldValue(navigator_tree, "node_role", "security.configuration"),
           "navigator tree omitted security configuration object");
-  Require(RowContainsFieldValue(navigator_tree, "node_name", "Programmability"),
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "programmability"),
           "navigator tree omitted programmability pseudo group");
-  Require(RowContainsFieldValue(navigator_tree, "node_name", "Triggers"),
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "triggers"),
           "navigator tree omitted triggers pseudo group");
   Require(RowContainsFieldValue(navigator_tree, "node_name", "refresh_customers"),
           "navigator tree omitted procedure under physical or projected branch");
@@ -938,19 +995,19 @@ void TestReadableCatalogProjectionRows() {
           "navigator tree exposed empty emulated root schema");
   Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/remote"),
           "navigator tree exposed empty remote root schema");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Security"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/security"),
           "navigator tree exposed security pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Programmability"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/programmability"),
           "navigator tree exposed programmability pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Domains"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/domains"),
           "navigator tree exposed domains pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Jobs"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/jobs"),
           "navigator tree exposed jobs pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Diagnostics / Metrics"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/diagnostics"),
           "navigator tree exposed diagnostics pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Triggers"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/triggers"),
           "navigator tree exposed triggers pseudo group at root");
-  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/File-spaces"),
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/file-spaces"),
           "navigator tree exposed filespaces pseudo group at root");
 
   const auto database_index = RequireRowIndex(navigator_tree,
@@ -959,79 +1016,87 @@ void TestReadableCatalogProjectionRows() {
                                               "navigator tree omitted database path");
   const auto management_index = RequireRowIndex(navigator_tree,
                                                "node_path",
-                                               "CustomerDB/Management",
+                                               "CustomerDB/management",
                                                "navigator tree omitted management path");
+  Require(Field(navigator_tree.rows[management_index], "management_display_type") == "dashboard",
+          "navigator tree management path omitted display type contract");
+  Require(Field(navigator_tree.rows[management_index], "management_backing_source")
+              .find("sys.catalog_readable.navigator_tree") != std::string::npos,
+          "navigator tree management path omitted backing source contract");
+  Require(Field(navigator_tree.rows[management_index], "management_refusal_behavior")
+              .find("unauthorized") != std::string::npos,
+          "navigator tree management path omitted refusal behavior contract");
   const auto security_user_index = RequireRowIndex(navigator_tree,
                                                   "node_path",
-                                                  "CustomerDB/Management/Security/users/alice",
+                                                  "CustomerDB/management/security/users/alice",
                                                   "navigator tree omitted security user path");
   const auto security_user_groups_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/users/alice/groups",
+      "CustomerDB/management/security/users/alice/groups",
       "navigator tree omitted security user groups path");
   const auto security_user_group_membership_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/users/alice/groups/engineering",
+      "CustomerDB/management/security/users/alice/groups/engineering",
       "navigator tree omitted security user group membership path");
   const auto security_user_role_membership_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/users/alice/roles/sysarch",
+      "CustomerDB/management/security/users/alice/roles/sysarch",
       "navigator tree omitted security user role membership path");
   const auto security_user_grant_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/users/alice/grants/SELECT",
+      "CustomerDB/management/security/users/alice/grants/SELECT",
       "navigator tree omitted security user direct grant path");
   const auto security_group_index = RequireRowIndex(navigator_tree,
                                                    "node_path",
-                                                   "CustomerDB/Management/Security/groups/engineering",
+                                                   "CustomerDB/management/security/groups/engineering",
                                                    "navigator tree omitted security group path");
   const auto security_group_user_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/groups/engineering/users/alice",
+      "CustomerDB/management/security/groups/engineering/users/alice",
       "navigator tree omitted security group user membership path");
   const auto security_group_role_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/groups/engineering/roles/sysarch",
+      "CustomerDB/management/security/groups/engineering/roles/sysarch",
       "navigator tree omitted security group role membership path");
   const auto security_group_grants_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/groups/engineering/grants",
+      "CustomerDB/management/security/groups/engineering/grants",
       "navigator tree omitted security group grants path");
   const auto security_role_index = RequireRowIndex(navigator_tree,
                                                   "node_path",
-                                                  "CustomerDB/Management/Security/roles/sysarch",
+                                                  "CustomerDB/management/security/roles/sysarch",
                                                   "navigator tree omitted security role path");
   const auto security_role_users_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/roles/sysarch/users",
+      "CustomerDB/management/security/roles/sysarch/users",
       "navigator tree omitted security role users path");
   const auto security_role_user_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/roles/sysarch/users/alice",
+      "CustomerDB/management/security/roles/sysarch/users/alice",
       "navigator tree omitted security role user membership path");
   const auto security_role_group_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/roles/sysarch/groups/engineering",
+      "CustomerDB/management/security/roles/sysarch/groups/engineering",
       "navigator tree omitted security role group membership path");
   const auto security_policy_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/policies/default_security_policy",
+      "CustomerDB/management/security/policies/default_security_policy",
       "navigator tree omitted security policy path");
   const auto security_configuration_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Security/configurations/general_security_configuration",
+      "CustomerDB/management/security/configurations/general_security_configuration",
       "navigator tree omitted security configuration path");
   Require(security_user_index < security_user_groups_index &&
               security_user_groups_index < security_user_group_membership_index &&
@@ -1047,11 +1112,11 @@ void TestReadableCatalogProjectionRows() {
           "navigator tree did not parent security management paths correctly");
   const auto db_triggers_index = RequireRowIndex(navigator_tree,
                                                 "node_path",
-                                                "CustomerDB/Management/Triggers",
+                                                "CustomerDB/management/triggers",
                                                 "navigator tree omitted database triggers path");
   const auto filespaces_index = RequireRowIndex(navigator_tree,
                                                "node_path",
-                                               "CustomerDB/Management/File-spaces",
+                                               "CustomerDB/management/file-spaces",
                                                "navigator tree omitted filespaces path");
   const auto app_index = RequireRowIndex(navigator_tree,
                                         "node_path",
@@ -1116,45 +1181,45 @@ void TestReadableCatalogProjectionRows() {
 
   const auto programmability_index = RequireRowIndex(navigator_tree,
                                                     "node_path",
-                                                    "CustomerDB/Management/Programmability",
+                                                    "CustomerDB/management/programmability",
                                                     "navigator tree omitted root programmability path");
   const auto programmability_procedures_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Programmability/procedures",
+      "CustomerDB/management/programmability/procedures",
       "navigator tree omitted root programmability procedures group");
   const auto& programmability = navigator_tree.rows[programmability_procedures_index];
   const std::string programmability_node_id = Field(programmability, "node_id");
   const auto procedure_index = RequireRowIndex(navigator_tree,
                                               "node_path",
-                                              "CustomerDB/Management/Programmability/procedures/refresh_customers",
+                                              "CustomerDB/management/programmability/procedures/refresh_customers",
                                               "navigator tree omitted projected procedure path");
   const auto programmability_functions_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Programmability/functions",
+      "CustomerDB/management/programmability/functions",
       "navigator tree omitted root programmability functions group");
   const auto function_index = RequireRowIndex(navigator_tree,
                                              "node_path",
-                                             "CustomerDB/Management/Programmability/functions/customer_score",
+                                             "CustomerDB/management/programmability/functions/customer_score",
                                              "navigator tree omitted projected function path");
   const auto programmability_packages_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Programmability/packages",
+      "CustomerDB/management/programmability/packages",
       "navigator tree omitted root programmability packages group");
   const auto package_index = RequireRowIndex(navigator_tree,
                                             "node_path",
-                                            "CustomerDB/Management/Programmability/packages/customer_admin",
+                                            "CustomerDB/management/programmability/packages/customer_admin",
                                             "navigator tree omitted projected package path");
   const auto programmability_sequences_index = RequireRowIndex(
       navigator_tree,
       "node_path",
-      "CustomerDB/Management/Programmability/sequences",
+      "CustomerDB/management/programmability/sequences",
       "navigator tree omitted root programmability sequences group");
   const auto sequence_index = RequireRowIndex(navigator_tree,
                                              "node_path",
-                                             "CustomerDB/Management/Programmability/sequences/customer_id_seq",
+                                             "CustomerDB/management/programmability/sequences/customer_id_seq",
                                              "navigator tree omitted projected sequence path");
   Require(Field(navigator_tree.rows[procedure_index], "parent_node_id") == programmability_node_id,
           "navigator tree did not parent procedure under projected programmability procedures");
@@ -1193,9 +1258,40 @@ void TestReadableCatalogProjectionRows() {
   RequireOk(columns, "catalog_readable columns projection failed");
   Require(RowContainsFieldValue(columns, "column_name", "customer_id"),
           "catalog_readable columns did not project visible column");
+  Require(RowContainsFieldPair(columns,
+                               "relation_path",
+                               "sys.catalog_readable.navigator_tree",
+                               "column_name",
+                               "node_path"),
+          "catalog_readable columns omitted builtin navigator_tree metadata");
+  Require(RowContainsFieldPair(columns,
+                               "relation_path",
+                               "sys.catalog.column_descriptor",
+                               "column_name",
+                               "column_uuid"),
+          "catalog_readable columns omitted physical catalog column_descriptor metadata");
   Require(!RowContainsFieldValue(columns, "column_name", "hidden_value"),
           "catalog_readable columns exposed hidden relation column");
   RequireNoUuidColumnsOrValues(columns);
+
+  info::EngineShowCatalogRequest show_columns;
+  show_columns.context = EngineContext();
+  show_columns.option_envelopes.push_back("catalog_projection:sys.catalog_readable.columns");
+  const auto show_columns_result = info::EngineShowCatalog(show_columns);
+  Require(show_columns_result.ok,
+          "EngineShowCatalog failed for sys.catalog_readable.columns");
+  Require(ApiResultContainsFieldPair(show_columns_result,
+                                     "relation_path",
+                                     "sys.catalog.column_descriptor",
+                                     "column_name",
+                                     "column_uuid"),
+          "EngineShowCatalog omitted physical catalog column_descriptor metadata");
+  Require(ApiResultContainsFieldPair(show_columns_result,
+                                     "relation_path",
+                                     "sys.catalog_readable.navigator_tree",
+                                     "column_name",
+                                     "node_path"),
+          "EngineShowCatalog omitted builtin navigator_tree metadata");
 
   const auto datatypes = info::BuildSysInformationProjection(
       "sys.catalog_readable.datatypes", Context(), {}, {});

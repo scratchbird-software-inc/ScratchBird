@@ -223,6 +223,20 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
         issues.append("fixture_manifest:resource_seed_pack_not_required")
     if startup.get("policy_seed_pack_required") is not True:
         issues.append("fixture_manifest:policy_seed_pack_not_required")
+    resource_contract = startup.get("resource_seed_catalog_required")
+    if not isinstance(resource_contract, dict):
+        issues.append("fixture_manifest:resource_seed_catalog_contract_missing")
+    else:
+        for field in (
+            "seed_pack_name",
+            "active",
+            "minimal_bootstrap",
+            "database_create_ready",
+            "database_open_ready",
+            "language_profiles",
+        ):
+            if field not in resource_contract:
+                issues.append(f"fixture_manifest:resource_seed_catalog_missing_{field}")
     required_sections = (
         "startup",
         "shutdown",
@@ -355,6 +369,7 @@ def validate_latest_runtime(latest: dict[str, Any], manifest: dict[str, Any], is
         issues.append("fixture_runtime:default_policy_records_not_loaded")
     if database_fixture.get("minimal_resource_bootstrap") is not False:
         issues.append("fixture_runtime:minimal_resource_bootstrap_present")
+    validate_runtime_resource_seed_catalog(database_fixture, manifest, issues)
     expected_paths = {
         "app.customers",
         "app.customer_profiles",
@@ -365,6 +380,67 @@ def validate_latest_runtime(latest: dict[str, Any], manifest: dict[str, Any], is
     missing = sorted(expected_paths - seeded_paths)
     for path in missing:
         issues.append(f"fixture_runtime:seed_object_missing:{path}")
+
+
+def validate_runtime_resource_seed_catalog(
+    database_fixture: dict[str, Any],
+    manifest: dict[str, Any],
+    issues: list[str],
+) -> None:
+    required = manifest.get("startup", {}).get("resource_seed_catalog_required", {})
+    if not isinstance(required, dict):
+        return
+    catalog = database_fixture.get("resource_seed_catalog")
+    if not isinstance(catalog, dict):
+        issues.append("fixture_runtime:resource_seed_catalog_missing")
+        return
+    for field in ("seed_pack_name", "active", "minimal_bootstrap", "database_create_ready", "database_open_ready"):
+        if field in required and catalog.get(field) != required.get(field):
+            issues.append(f"fixture_runtime:resource_seed_catalog_{field}_mismatch")
+    if catalog.get("language_resource_artifacts_loaded") is not True:
+        issues.append("fixture_runtime:language_resource_artifacts_not_loaded")
+
+    counts = catalog.get("counts", {})
+    if not isinstance(counts, dict):
+        issues.append("fixture_runtime:resource_seed_counts_missing")
+        counts = {}
+    for field, minimum in required.items():
+        if not field.startswith("min_"):
+            continue
+        count_field = field[4:]
+        try:
+            actual = int(counts.get(count_field, 0))
+            expected = int(minimum)
+        except (TypeError, ValueError):
+            issues.append(f"fixture_runtime:resource_seed_count_invalid:{count_field}")
+            continue
+        if actual < expected:
+            issues.append(f"fixture_runtime:resource_seed_count_low:{count_field}:{actual}<{expected}")
+
+    versions = catalog.get("versions", {})
+    if not isinstance(versions, dict):
+        issues.append("fixture_runtime:resource_seed_versions_missing")
+        versions = {}
+    for family in ("i18n", "timezone", "charset", "collation", "locale"):
+        if not versions.get(family):
+            issues.append(f"fixture_runtime:resource_seed_version_missing:{family}")
+
+    epochs = catalog.get("epochs", {})
+    if not isinstance(epochs, dict):
+        issues.append("fixture_runtime:resource_seed_epochs_missing")
+        epochs = {}
+    for family in ("resource", "charset", "collation", "timezone", "locale", "runtime_cache"):
+        try:
+            epoch = int(epochs.get(family, 0))
+        except (TypeError, ValueError):
+            epoch = 0
+        if epoch <= 0:
+            issues.append(f"fixture_runtime:resource_seed_epoch_missing:{family}")
+
+    required_profiles = set(required.get("language_profiles", []))
+    loaded_profiles = set(catalog.get("language_profiles_required", []))
+    for profile in sorted(required_profiles - loaded_profiles):
+        issues.append(f"fixture_runtime:language_profile_missing:{profile}")
 
 
 def validate_commands_file(path: Path, issues: list[str]) -> None:

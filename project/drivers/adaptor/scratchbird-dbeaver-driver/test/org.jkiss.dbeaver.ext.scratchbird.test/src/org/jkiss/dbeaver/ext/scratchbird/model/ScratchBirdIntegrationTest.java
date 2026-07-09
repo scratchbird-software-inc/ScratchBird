@@ -118,6 +118,9 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("scratchbird.performance"));
         Assert.assertTrue(pluginXml.contains("<query>SHOW METRICS</query>"));
         Assert.assertFalse(pluginXml.contains("sys.performance"));
+        Assert.assertTrue(pluginXml.contains("<extension point=\"org.eclipse.ui.editors\">"));
+        Assert.assertTrue(pluginXml.contains("id=\"org.jkiss.dbeaver.ext.scratchbird.ui.managementEditor\""));
+        Assert.assertTrue(pluginXml.contains("class=\"org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdManagementEditor\""));
         Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
         Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
 
@@ -747,10 +750,10 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(dclBroadSurfacePathHints.toString(), dclBroadSurfacePathHints.stream().anyMatch(hint -> hint.contains("SBDV-FRM-110")));
 
         List<String> dclMetricsSurfaceHints = ScratchBirdValidationBridge.lintHintsFor(
-            "GRANT SELECT ON metrics.latency TO analyst;",
-            "GRANT SELECT ON metrics.latency TO analyst;".length());
+            "GRANT SELECT ON management.diagnostics.latency TO analyst;",
+            "GRANT SELECT ON management.diagnostics.latency TO analyst;".length());
         Assert.assertTrue(dclMetricsSurfaceHints.toString(), dclMetricsSurfaceHints.stream().anyMatch(hint -> hint.contains("PRS_JV3_L047")));
-        Assert.assertTrue(dclMetricsSurfaceHints.toString(), dclMetricsSurfaceHints.stream().anyMatch(hint -> hint.contains("client-only metrics report surface")));
+        Assert.assertTrue(dclMetricsSurfaceHints.toString(), dclMetricsSurfaceHints.stream().anyMatch(hint -> hint.contains("management diagnostics/report surface")));
 
         List<String> dclBroadSurfaceTargetHints = ScratchBirdValidationBridge.lintHintsFor(
             "GRANT SELECT ON object_resolver TO auditor;",
@@ -1163,10 +1166,10 @@ public class ScratchBirdIntegrationTest {
     @Test
     public void schemaTreeBuilderKeepsNavigatorPseudoGroupsClientOnly() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.buildFromCatalog(List.of(
-            ScratchBirdCatalogObjectReference.clientOnly("Management", "DATABASE.MANAGEMENT"),
-            ScratchBirdCatalogObjectReference.clientOnly("Management.Security", "DATABASE.SECURITY"),
-            ScratchBirdCatalogObjectReference.clientOnly("Management.Security.users", "SECURITY.USERS"),
-            ScratchBirdCatalogObjectReference.clientOnly("Management.Programmability", "DATABASE.PROGRAMMABILITY"),
+            ScratchBirdCatalogObjectReference.clientOnly("management", "DATABASE.MANAGEMENT"),
+            ScratchBirdCatalogObjectReference.clientOnly("management.security", "MANAGEMENT.SECURITY"),
+            ScratchBirdCatalogObjectReference.clientOnly("management.security.users", "SECURITY.USERS"),
+            ScratchBirdCatalogObjectReference.clientOnly("management.programmability", "MANAGEMENT.PROGRAMMABILITY"),
             ScratchBirdCatalogObjectReference.schema(
                 "db-uuid",
                 "sys-uuid",
@@ -1174,24 +1177,24 @@ public class ScratchBirdIntegrationTest {
                 "sys",
                 "sys")));
 
-        ScratchBirdSchemaTreeBuilder.Node management = findNodeByName(roots, "Management");
+        ScratchBirdSchemaTreeBuilder.Node management = findNodeByName(roots, "management");
         Assert.assertNotNull(management);
         Assert.assertTrue(management.isClientOnly());
         Assert.assertFalse(management.isCatalogBacked());
         Assert.assertEquals("DATABASE.MANAGEMENT", management.getObjectType());
 
-        ScratchBirdSchemaTreeBuilder.Node security = findNodeByName(management.getChildren(), "Security");
+        ScratchBirdSchemaTreeBuilder.Node security = findNodeByName(management.getChildren(), "security");
         Assert.assertNotNull(security);
         Assert.assertTrue(security.isClientOnly());
         Assert.assertFalse(security.isCatalogBacked());
-        Assert.assertEquals("DATABASE.SECURITY", security.getObjectType());
+        Assert.assertEquals("MANAGEMENT.SECURITY", security.getObjectType());
 
         ScratchBirdSchemaTreeBuilder.Node users = findNodeByName(security.getChildren(), "users");
         Assert.assertNotNull(users);
         Assert.assertTrue(users.isClientOnly());
         Assert.assertFalse(users.isCatalogBacked());
 
-        ScratchBirdSchemaTreeBuilder.Node programmability = findNodeByName(management.getChildren(), "Programmability");
+        ScratchBirdSchemaTreeBuilder.Node programmability = findNodeByName(management.getChildren(), "programmability");
         Assert.assertNotNull(programmability);
         Assert.assertTrue(programmability.isClientOnly());
 
@@ -1245,7 +1248,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev"));
 
         Assert.assertEquals(
-            Arrays.asList("sys", "users", "remote", "cluster", "analytics", "connections"),
+            Arrays.asList("sys", "users", "cluster", "remote", "analytics", "connections"),
             roots.stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
         ScratchBirdSchemaTreeBuilder.Node analytics = findNodeByName(roots, "analytics");
@@ -1267,24 +1270,29 @@ public class ScratchBirdIntegrationTest {
     public void namespaceSemanticsIdentifySystemRootsAndDepth() {
         Assert.assertTrue(ScratchBirdNamespaceSemantics.isSystemPath("sys"));
         Assert.assertTrue(ScratchBirdNamespaceSemantics.isSystemPath("sys.security.users"));
-        Assert.assertTrue(ScratchBirdNamespaceSemantics.isManagementPath("remote.links"));
-        Assert.assertTrue(ScratchBirdNamespaceSemantics.isManagementPath("cluster.cluster"));
+        Assert.assertTrue(ScratchBirdNamespaceSemantics.isManagementPath("management.security"));
+        Assert.assertTrue(ScratchBirdNamespaceSemantics.isManagementPath("management.diagnostics.alerts"));
+        Assert.assertFalse(ScratchBirdNamespaceSemantics.isManagementPath("remote.links"));
+        Assert.assertFalse(ScratchBirdNamespaceSemantics.isManagementPath("cluster.cluster"));
         Assert.assertFalse(ScratchBirdNamespaceSemantics.isSystemPath("users.public"));
         Assert.assertFalse(ScratchBirdNamespaceSemantics.isManagementPath("users.public"));
 
         Assert.assertEquals("users", ScratchBirdNamespaceSemantics.getRootSegment("users.public"));
         Assert.assertEquals(3, ScratchBirdNamespaceSemantics.getPathDepth("sys.security.users"));
         Assert.assertTrue(ScratchBirdNamespaceSemantics.comparePaths("sys.security", "users.public") < 0);
+        Assert.assertTrue(ScratchBirdNamespaceSemantics.comparePaths("management", "sys") < 0);
         Assert.assertTrue(ScratchBirdNamespaceSemantics.comparePaths("users.public", "cluster.cluster") < 0);
-        Assert.assertTrue(ScratchBirdNamespaceSemantics.comparePaths("metrics.alerts", "analytics.dev") < 0);
+        Assert.assertTrue(ScratchBirdNamespaceSemantics.comparePaths("management.diagnostics.alerts", "analytics.dev") < 0);
     }
 
     @Test
     public void navigatorActionRegistryRoutesMetricsDomainsAndCatalogBranches() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("sys.domains", "data.app"), true);
 
-        ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
+        ScratchBirdSchemaTreeBuilder.Node management = findNodeByName(roots, "management");
+        Assert.assertNotNull(management);
+        ScratchBirdSchemaTreeBuilder.Node diagnostics = findNodeByName(management.getChildren(), "diagnostics");
+        Assert.assertNotNull(diagnostics);
         Assert.assertEquals(
             Arrays.asList(
                 ScratchBirdNavigatorActionRegistry.Action.OPEN,
@@ -1292,7 +1300,7 @@ public class ScratchBirdIntegrationTest {
                 ScratchBirdNavigatorActionRegistry.Action.REPORTS,
                 ScratchBirdNavigatorActionRegistry.Action.REFRESH,
                 ScratchBirdNavigatorActionRegistry.Action.SOURCE_STATUS),
-            ScratchBirdNavigatorActionRegistry.actionsFor(metrics));
+            ScratchBirdNavigatorActionRegistry.actionsFor(diagnostics));
 
         ScratchBirdSchemaTreeBuilder.Node sys = findNodeByName(roots, "sys");
         Assert.assertNotNull(sys);
@@ -1425,7 +1433,7 @@ public class ScratchBirdIntegrationTest {
         ScratchBirdRefusalModel metricsTask = ScratchBirdPermissionProbe.probe(
             taskForm,
             ScratchBirdFormMode.TASK,
-            "metrics.alerts");
+            "management.diagnostics.alerts");
         Assert.assertEquals(ScratchBirdRefusalModel.Kind.UNSUPPORTED, metricsTask.kind());
 
         ScratchBirdAdminExecutor.ExecutionPlan createPlan = ScratchBirdAdminExecutor.plan(
@@ -1623,7 +1631,7 @@ public class ScratchBirdIntegrationTest {
         ScratchBirdEditorPageCatalog.EditorPlan metricsPlan = ScratchBirdEditorPageCatalog.planFor(
             ScratchBirdFormRegistry.require("SBDV-FRM-903"),
             ScratchBirdFormMode.REPORT,
-            "metrics.workload-and-sql.SBDV-RPT-CORE-003");
+            "management.diagnostics.workload-and-sql.SBDV-RPT-CORE-003");
         Assert.assertTrue(metricsPlan.pages().stream().anyMatch(page -> page.title().contains("Metrics, Report, And Alert Page")));
         Assert.assertTrue(metricsPlan.pages().stream().flatMap(page -> page.controls().stream()).anyMatch(control -> control.contains("chart intent")));
 
@@ -1654,11 +1662,11 @@ public class ScratchBirdIntegrationTest {
             1 + ScratchBirdReportCatalog.METRICS_BRANCHES.size() + ScratchBirdReportCatalog.allReports().size(),
             ScratchBirdReportCatalog.metricTreePaths().size());
         Assert.assertTrue(ScratchBirdReportCatalog.metricTreePaths()
-            .contains("metrics.health-scorecards.SBDV-RPT-CORE-001"));
+            .contains("management.diagnostics.health-scorecards.SBDV-RPT-CORE-001"));
         Assert.assertTrue(ScratchBirdReportCatalog.metricTreePaths()
-            .contains("metrics.alerts.SBDV-ALERT-016"));
+            .contains("management.diagnostics.alerts.SBDV-ALERT-016"));
         ScratchBirdReportDefinition health = ScratchBirdReportCatalog.findByNavigatorPath(
-            "metrics.health-scorecards.SBDV-RPT-CORE-001");
+            "management.diagnostics.health-scorecards.SBDV-RPT-CORE-001");
         Assert.assertNotNull(health);
         ScratchBirdReportPlan healthPlan = ScratchBirdReportPlan.forReport(health);
         Assert.assertTrue(healthPlan.scriptPreview().contains("SHOW METRICS"));
@@ -1667,7 +1675,7 @@ public class ScratchBirdIntegrationTest {
         Assert.assertFalse(healthPlan.scriptPreview().contains("sys.performance"));
 
         ScratchBirdReportDefinition latency = ScratchBirdReportCatalog.findByNavigatorPath(
-            "metrics.workload-and-sql.SBDV-RPT-CORE-003");
+            "management.diagnostics.workload-and-sql.SBDV-RPT-CORE-003");
         Assert.assertNotNull(latency);
         Assert.assertEquals("SBDV-FRM-903", latency.parentForm());
         Assert.assertEquals(
@@ -1683,12 +1691,12 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(latencyPlan.alertExpressionStarter().contains("query latency breach"));
         Assert.assertEquals(
             5,
-            ScratchBirdReportCatalog.reportsForNavigatorPath("metrics.workload-and-sql").stream()
+            ScratchBirdReportCatalog.reportsForNavigatorPath("management.diagnostics.workload-and-sql").stream()
                 .filter(report -> report.branch().equals("workload-and-sql"))
                 .count());
-        Assert.assertEquals(16, ScratchBirdReportCatalog.reportsForNavigatorPath("metrics.alerts").size());
+        Assert.assertEquals(16, ScratchBirdReportCatalog.reportsForNavigatorPath("management.diagnostics.alerts").size());
         ScratchBirdReportDefinition latencyAlert = ScratchBirdReportCatalog.findByNavigatorPath(
-            "metrics.alerts.SBDV-ALERT-001");
+            "management.diagnostics.alerts.SBDV-ALERT-001");
         Assert.assertNotNull(latencyAlert);
         Assert.assertEquals("Query Latency Breach", latencyAlert.title());
         ScratchBirdReportPlan alertPlan = ScratchBirdReportPlan.forReport(latencyAlert);
@@ -1698,17 +1706,19 @@ public class ScratchBirdIntegrationTest {
     }
 
     @Test
-    public void schemaTreeBuilderPublishesReportLeavesUnderClientOnlyMetricsRoot() {
+    public void schemaTreeBuilderPublishesReportLeavesUnderManagementDiagnostics() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of(
             "sys",
             "data.application"), true);
 
-        ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
-        Assert.assertTrue(metrics.isClientOnly());
-        Assert.assertFalse(metrics.isCatalogBacked());
+        ScratchBirdSchemaTreeBuilder.Node management = findNodeByName(roots, "management");
+        Assert.assertNotNull(management);
+        Assert.assertTrue(management.isClientOnly());
+        Assert.assertFalse(management.isCatalogBacked());
+        ScratchBirdSchemaTreeBuilder.Node diagnostics = findNodeByName(management.getChildren(), "diagnostics");
+        Assert.assertNotNull(diagnostics);
 
-        ScratchBirdSchemaTreeBuilder.Node health = findNodeByName(metrics.getChildren(), "health-scorecards");
+        ScratchBirdSchemaTreeBuilder.Node health = findNodeByName(diagnostics.getChildren(), "health-scorecards");
         Assert.assertNotNull(health);
         Assert.assertTrue(health.isClientOnly());
         Assert.assertFalse(health.isCatalogBacked());
@@ -1744,6 +1754,12 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(uiPluginXml.contains("org.jkiss.dbeaver.ext.scratchbird.ui.v3Problem"));
         Assert.assertTrue(uiPluginXml.contains("textStylePreferenceValue=\"SQUIGGLES\""));
         Assert.assertTrue(uiPluginXml.contains("canManage,canOpen,canNew,canAlter,canDelete,canTasks,canReports,canSourceStatus,canValidateSql"));
+        Assert.assertTrue(uiPluginXml.contains("canDefaultOpen"));
+        Assert.assertTrue(uiPluginXml.contains("commandId=\"org.jkiss.dbeaver.core.object.open\""));
+        Assert.assertTrue(uiPluginXml.contains("property=\"org.jkiss.dbeaver.ext.scratchbird.ui.canDefaultOpen\""));
+        Assert.assertTrue(uiPluginXml.contains("org.eclipse.core.runtime.adapters"));
+        Assert.assertTrue(uiPluginXml.contains("ScratchBirdNavigatorObjectManagerAdapterFactory"));
+        Assert.assertTrue(uiPluginXml.contains("org.jkiss.dbeaver.ui.navigator.INavigatorObjectManager"));
         Assert.assertTrue(uiPluginXml.contains("property=\"org.jkiss.dbeaver.ext.scratchbird.ui.canOpen\""));
         Assert.assertTrue(uiPluginXml.contains("property=\"org.jkiss.dbeaver.ext.scratchbird.ui.canNew\""));
         Assert.assertTrue(uiPluginXml.contains("property=\"org.jkiss.dbeaver.ext.scratchbird.ui.canAlter\""));
@@ -1755,15 +1771,43 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(uiPluginXml.contains("ScratchBirdValidateSqlHandler"));
         Assert.assertTrue(uiPluginXml.contains("org.jkiss.dbeaver.ui.editors.sql.SQLEditor"));
         Assert.assertEquals(9, countOccurrences(uiPluginXml, "<visibleWhen"));
-        Assert.assertEquals(8, countOccurrences(uiPluginXml, "<count value=\"1\"/>"));
+        Assert.assertEquals(9, countOccurrences(uiPluginXml, "<count value=\"1\"/>"));
 
         String commandHandlerSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdNavigatorCommandHandler.java");
         Assert.assertTrue(commandHandlerSource.contains("ScratchBirdSelectionUtils.supportsAction(object, action)"));
         Assert.assertTrue(commandHandlerSource.contains("does not support the"));
 
+        String selectionUtilsSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdSelectionUtils.java");
+        Assert.assertTrue(selectionUtilsSource.contains("action == ScratchBirdNavigatorActionRegistry.Action.OPEN"));
+        Assert.assertTrue(selectionUtilsSource.contains("return supportsDefaultOpen(element);"));
+
         String propertyTesterSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdUiPropertyTester.java");
         Assert.assertTrue(propertyTesterSource.contains("case \"canValidateSql\""));
+        Assert.assertTrue(propertyTesterSource.contains("case \"canDefaultOpen\""));
+        Assert.assertTrue(propertyTesterSource.contains("ScratchBirdSelectionUtils.supportsDefaultOpen"));
         Assert.assertTrue(propertyTesterSource.contains("\"scratchbird_jdbc\".equalsIgnoreCase"));
+
+        String navigatorObjectManagerSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdNavigatorObjectManagerAdapterFactory.java");
+        Assert.assertTrue(navigatorObjectManagerSource.contains("implements IAdapterFactory"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("INavigatorObjectManager"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("openObjectEditor"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("ScratchBirdSelectionUtils.supportsDefaultOpen"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("ScratchBirdManagementEditor.openOrDialog"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("ScratchBirdNavigatorActionRegistry.Action.OPEN"));
+        Assert.assertTrue(navigatorObjectManagerSource.contains("return FEATURE_OPEN"));
+
+        String navigatorCommandHandlerSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdNavigatorCommandHandler.java");
+        Assert.assertTrue(navigatorCommandHandlerSource.contains("ScratchBirdManagementEditor.openOrDialog"));
+
+        String managementEditorSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementEditor.java");
+        Assert.assertTrue(managementEditorSource.contains("extends EditorPart"));
+        Assert.assertTrue(managementEditorSource.contains("public static final String EDITOR_ID"));
+        Assert.assertTrue(managementEditorSource.contains("page.openEditor"));
+        Assert.assertTrue(managementEditorSource.contains("form.createEmbeddedEditorArea(parent)"));
+
+        String managementEditorInputSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementEditorInput.java");
+        Assert.assertTrue(managementEditorInputSource.contains("implements IEditorInput"));
+        Assert.assertTrue(managementEditorInputSource.contains("getPersistable()"));
 
         String validationHandlerSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/handlers/ScratchBirdValidateSqlHandler.java");
         Assert.assertTrue(validationHandlerSource.contains("editor.extractActiveQuery()"));
@@ -1853,14 +1897,14 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(validationBridgeSource.contains("canonical ScratchBird domains live under sys.domains"));
         Assert.assertTrue(validationBridgeSource.contains("domain hub collection surface"));
         Assert.assertTrue(validationBridgeSource.contains("DML mutation against"));
-        Assert.assertTrue(validationBridgeSource.contains("client-only metrics surface"));
+        Assert.assertTrue(validationBridgeSource.contains("management diagnostics/report surface"));
         Assert.assertTrue(validationBridgeSource.contains("data root collection surface"));
         Assert.assertTrue(validationBridgeSource.contains("fully qualify the DML target"));
         Assert.assertTrue(validationBridgeSource.contains("fully qualify the ON target"));
         Assert.assertTrue(validationBridgeSource.contains("rooted ScratchBird DML target"));
         Assert.assertTrue(validationBridgeSource.contains("rooted ScratchBird securable object"));
         Assert.assertTrue(validationBridgeSource.contains("concrete securable child object"));
-        Assert.assertTrue(validationBridgeSource.contains("client-only metrics report surface"));
+        Assert.assertTrue(validationBridgeSource.contains("management diagnostics/report surface"));
         Assert.assertTrue(validationBridgeSource.contains("route broad grant posture through sys.security"));
         Assert.assertTrue(validationBridgeSource.contains("dclObjectPaths"));
         Assert.assertTrue(validationBridgeSource.contains("dclPrincipalPaths"));
@@ -1895,9 +1939,59 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(quickAssistSource.contains("findReplacementTarget"));
 
         String managementDialogSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementDialog.java");
-        Assert.assertTrue(managementDialogSource.contains("new TabFolder(area, SWT.TOP)"));
+        Assert.assertTrue(managementDialogSource.contains("ScrolledComposite"));
+        Assert.assertTrue(managementDialogSource.contains("new ScrolledComposite(area, SWT.V_SCROLL | SWT.H_SCROLL)"));
+        Assert.assertTrue(managementDialogSource.contains("setAccessibleName(scroll, \"ScratchBird management form scroll area\")"));
+        Assert.assertTrue(managementDialogSource.contains("new TabFolder(scroll, SWT.TOP)"));
+        Assert.assertTrue(managementDialogSource.contains("configureDialogScroll(scroll, tabs)"));
+        Assert.assertTrue(managementDialogSource.contains("scroll.setMinSize"));
+        Assert.assertTrue(managementDialogSource.contains("protected boolean isResizable()"));
+        Assert.assertTrue(managementDialogSource.contains("protected Point getInitialSize()"));
+        Assert.assertTrue(managementDialogSource.contains("configureMinimumShellSize"));
+        Assert.assertTrue(managementDialogSource.contains("shell.setMinimumSize(MIN_DIALOG_WIDTH, MIN_DIALOG_HEIGHT)"));
+        Assert.assertTrue(managementDialogSource.contains("createEmbeddedEditorArea"));
+        Assert.assertTrue(managementDialogSource.contains("createEmbeddedButtonBar"));
+        Assert.assertTrue(managementDialogSource.contains("new GridLayout(7, true)"));
+        Assert.assertTrue(managementDialogSource.contains("data.minimumWidth = 118"));
+        Assert.assertTrue(managementDialogSource.contains("createPlainTabFolder(area)"));
+        Assert.assertTrue(managementDialogSource.contains("setTitle(managementConsole.title())"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBird management console for"));
+        Assert.assertTrue(managementDialogSource.contains("tabs.setSelection(0)"));
+        Assert.assertTrue(managementDialogSource.contains("return area;"));
         Assert.assertTrue(managementDialogSource.contains("createOverviewTab"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementSurfaceCatalog.find"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementConsoleCatalog.forSurface"));
+        Assert.assertTrue(managementDialogSource.contains("createManagementConsoleTab"));
+        Assert.assertTrue(managementDialogSource.contains("SashForm(container, SWT.VERTICAL)"));
+        Assert.assertTrue(managementDialogSource.contains("createManagementConsoleDetailTabs"));
+        Assert.assertTrue(managementDialogSource.contains("addTallFieldControl"));
+        Assert.assertTrue(managementDialogSource.contains("addResultTable"));
+        Assert.assertTrue(managementDialogSource.contains("management-console-result-table"));
+        Assert.assertTrue(managementDialogSource.contains("populateManagementResultTable"));
+        Assert.assertTrue(managementDialogSource.contains("findManagementResult"));
+        Assert.assertTrue(managementDialogSource.contains("filteredRows"));
+        Assert.assertTrue(managementDialogSource.contains("autoRefreshManagementConsole"));
+        Assert.assertTrue(managementDialogSource.contains("management-console-table"));
+        Assert.assertTrue(managementDialogSource.contains("SWT.COLOR_DARK_GRAY"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleSelectedDetail"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleLiveSummary"));
+        Assert.assertTrue(managementDialogSource.contains("All mutating operations require ScratchBird server admission"));
+        Assert.assertTrue(managementDialogSource.contains("createManagementSurfaceTab"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdLiveProbe.planForManagementSurface"));
+        Assert.assertTrue(managementDialogSource.contains("managementPresentation"));
+        Assert.assertTrue(managementDialogSource.contains("managementDataAvailability"));
+        Assert.assertTrue(managementDialogSource.contains("server-published data surface"));
+        Assert.assertTrue(managementDialogSource.contains("This is a ScratchBird management surface, not a physical schema"));
         Assert.assertTrue(managementDialogSource.contains("createWorkflowTab"));
+        Assert.assertTrue(managementDialogSource.contains("createSqlObjectEditorTab"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdSqlObjectEditorCatalog.forForm"));
+        Assert.assertTrue(managementDialogSource.contains("sql-object-editor-draft-sbsql"));
+        Assert.assertTrue(managementDialogSource.contains("currentCommandText"));
+        Assert.assertTrue(managementDialogSource.contains("activeExecutionPlan"));
+        Assert.assertTrue(managementDialogSource.contains("activeAuthzProbePlan"));
+        Assert.assertTrue(managementDialogSource.contains("currentPreviewHash"));
+        Assert.assertTrue(managementDialogSource.contains("objectEditorValidationSummary"));
+        Assert.assertTrue(managementDialogSource.contains("lifecyclePreview"));
         Assert.assertTrue(managementDialogSource.contains("createScratchBirdPanels"));
         Assert.assertTrue(managementDialogSource.contains("createObjectContextTab"));
         Assert.assertTrue(managementDialogSource.contains("createFieldMatrixTab"));
@@ -1917,21 +2011,139 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(managementDialogSource.contains("applyAfterAdmission"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdMutationApplyExecutor.apply"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdProbeHistory.recordApply"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.previewIdentity(plan)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.previewIdentity(activeExecutionPlan())"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.applyGateSummary"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleAgentNameText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleAgentStateText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleAgentHealthText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleAgentActivePolicyText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleAgentLastActivityText"));
+        Assert.assertTrue(managementDialogSource.contains("refreshManagementConsoleAgentFields"));
+        Assert.assertTrue(managementDialogSource.contains("firstManagementResultRow"));
+        Assert.assertTrue(managementDialogSource.contains("table.select(0)"));
+        Assert.assertTrue(managementDialogSource.contains("Runtime status"));
+        Assert.assertTrue(managementDialogSource.contains("Policy summary"));
+        Assert.assertTrue(managementDialogSource.contains("management-policy-document-selector"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsolePolicySelector"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsolePolicySourceStatusText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsoleOverrideSourceStatusText"));
+        Assert.assertTrue(managementDialogSource.contains("Schedule / override"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsolePolicyNameText"));
+        Assert.assertTrue(managementDialogSource.contains("managementConsolePolicyBodyText"));
+        Assert.assertTrue(managementDialogSource.contains("defaultPolicyDocument"));
+        Assert.assertTrue(managementDialogSource.contains("policySourceStatus"));
+        Assert.assertTrue(managementDialogSource.contains("overrideSourceStatus"));
+        Assert.assertTrue(managementDialogSource.contains("policyMutationCommand"));
+        Assert.assertTrue(managementDialogSource.contains("ALTER MANAGEMENT"));
+        Assert.assertTrue(managementDialogSource.contains("refreshManagementConsolePolicyEditor"));
+        Assert.assertTrue(managementDialogSource.contains("New Draft"));
+        Assert.assertTrue(managementDialogSource.contains("Validate Policy"));
+        Assert.assertTrue(managementDialogSource.contains("Simulate Policy"));
+        Assert.assertTrue(managementDialogSource.contains("Set Active"));
+        Assert.assertTrue(managementDialogSource.contains("Apply Policy"));
+        Assert.assertTrue(managementDialogSource.contains("ALTER AGENT"));
+        Assert.assertTrue(managementDialogSource.contains("case \"ATTACH\""));
+        Assert.assertTrue(managementDialogSource.contains("case \"VALIDATE\""));
+        Assert.assertTrue(managementDialogSource.contains("case \"SIMULATE\""));
+        Assert.assertTrue(managementDialogSource.contains("case \"APPLY\""));
+        Assert.assertTrue(managementDialogSource.contains("Action history"));
+        Assert.assertTrue(managementDialogSource.contains("Evidence and audit"));
+        Assert.assertTrue(managementDialogSource.contains("Admissible actions"));
+        Assert.assertTrue(managementDialogSource.contains("tableData.heightHint = 220"));
+        Assert.assertTrue(managementDialogSource.contains("tableData.minimumHeight = 120"));
+        Assert.assertTrue(managementDialogSource.contains("sash.setWeights(new int[]{34, 66})"));
+        Assert.assertTrue(managementDialogSource.contains("Rows are displayed in Runtime, Actions, and Evidence tables; policies are opened in the policy document editor."));
+        Assert.assertTrue(managementDialogSource.contains("agentSourceQuery"));
+        Assert.assertTrue(managementDialogSource.contains("sys.frontend.agent_audit"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.monitoringDashboardLines"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.objectGraphLines"));
         Assert.assertTrue(managementDialogSource.contains("setAccessibleName"));
         Assert.assertTrue(managementDialogSource.contains("PROOF_DATA_KEY"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.diagnosticsFor(plan.commandText())"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.diagnosticsFor(currentCommandText())"));
         Assert.assertTrue(managementDialogSource.contains("Statement inventory"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.statementSummaryFor(plan.commandText())"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.lintHintsFor(plan.commandText(), plan.commandText().length(), targetPath)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.statementSummaryFor(currentCommandText())"));
+
+        String liveProbeSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdLiveProbe.java");
+        Assert.assertTrue(liveProbeSource.contains("planForManagementSurface"));
+        Assert.assertTrue(liveProbeSource.contains("surface.backingSources()"));
+        Assert.assertTrue(liveProbeSource.contains("commandForSource"));
+        Assert.assertTrue(liveProbeSource.contains("SELECT * FROM "));
+        Assert.assertTrue(liveProbeSource.contains("startsWith(\"SHOW \")"));
+        Assert.assertTrue(liveProbeSource.contains("MAX_SAMPLE_ROWS = 64"));
+
+        String managementConsoleCatalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdManagementConsoleCatalog.java");
+        Assert.assertTrue(managementConsoleCatalogSource.contains("ConsoleDefinition"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("ConsoleRow"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("case \"management.agents\""));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("Agent Runtime Console"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("Disabled agents remain visible and selectable"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("Runtime state, schedule, policy, and action history must come from live server sources"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("sys.frontend.agent_metric_dependencies"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("sys.frontend.agent_overrides"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("sys.frontend.agent_evidence"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("sys.frontend.agent_audit"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("management.parser-and-language"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("management.listener-and-manager"));
+        Assert.assertTrue(managementConsoleCatalogSource.contains("management.file-spaces"));
+        String agentManagementCatalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdAgentManagementCatalog.java");
+        Assert.assertTrue(agentManagementCatalogSource.contains("node_resource_agent"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("cluster_upgrade_manager"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("enabledByDefault"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("disabled until cluster provider"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agents WHERE agent_type_id"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_policies WHERE agent_name"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_actions WHERE agent_name"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_metric_dependencies WHERE agent_name"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_overrides WHERE target_name"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_evidence WHERE agent_name"));
+        Assert.assertTrue(agentManagementCatalogSource.contains("SELECT * FROM sys.frontend.agent_audit"));
+
+        String sqlObjectEditorCatalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSqlObjectEditorCatalog.java");
+        for (String formId : List.of(
+            "SBDV-FRM-001",
+            "SBDV-FRM-601",
+            "SBDV-FRM-602",
+            "SBDV-FRM-603",
+            "SBDV-FRM-604",
+            "SBDV-FRM-605",
+            "SBDV-FRM-606",
+            "SBDV-FRM-607",
+            "SBDV-FRM-608",
+            "SBDV-FRM-609",
+            "SBDV-FRM-610",
+            "SBDV-FRM-611",
+            "SBDV-FRM-612",
+            "SBDV-FRM-110")) {
+            Assert.assertTrue(sqlObjectEditorCatalogSource.contains(formId));
+        }
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("EditorDefinition"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("Recursive Namespace Editor"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("Relational Table Editor"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("Routine Editor"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("Domain And Datatype Editor"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("Security Grant And Ownership Editor"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("CREATE TABLE"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("ALTER TABLE"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("DROP TABLE"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("CREATE DOMAIN"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("CREATE FUNCTION"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("CREATE PROCEDURE"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("CREATE TRIGGER"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("GRANT"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("REVOKE"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("sys.catalog.object_resolver"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("sys.catalog_readable.privileges"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("sys.security.permission_probe"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("recursive schema paths"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("exact draft SQL hash"));
+        Assert.assertTrue(sqlObjectEditorCatalogSource.contains("SBLR/UUID outside the engine"));
+
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.lintHintsFor(currentCommandText(), currentCommandText().length(), targetPath)"));
         Assert.assertTrue(managementDialogSource.contains("Context hints"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.contextHintsFor(plan.commandText(), plan.commandText().length(), targetPath)"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.serverProbeHintsFor(plan.commandText(), plan.commandText().length(), targetPath)"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.formHintsFor(plan.commandText(), plan.commandText().length(), targetPath)"));
-        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.completionHintsFor(plan.commandText(), plan.commandText().length())"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.contextHintsFor(currentCommandText(), currentCommandText().length(), targetPath)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.serverProbeHintsFor(currentCommandText(), currentCommandText().length(), targetPath)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.formHintsFor(currentCommandText(), currentCommandText().length(), targetPath)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.completionHintsFor(currentCommandText(), currentCommandText().length())"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdObjectFormContext.fieldsFor(targetObject)"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdFormPanelCatalog.panelsFor"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdValueBinding.exampleLiteralForType"));
@@ -2654,11 +2866,11 @@ public class ScratchBirdIntegrationTest {
             case "SBDV-FRM-609" -> "data.sales.reconcile_orders";
             case "SBDV-FRM-610" -> "data.sales.orders_bi";
             case "SBDV-FRM-611" -> "sys.domains.email";
-            case "SBDV-FRM-900" -> "metrics";
-            case "SBDV-FRM-901" -> "metrics.health-scorecards.SBDV-RPT-CORE-001";
-            case "SBDV-FRM-902" -> "metrics.storage-buffer-cache.SBDV-RPT-CORE-008";
-            case "SBDV-FRM-903" -> "metrics.workload-and-sql.SBDV-RPT-CORE-003";
-            case "SBDV-FRM-904" -> "metrics.listener-and-parser.SBDV-RPT-CORE-013";
+            case "SBDV-FRM-900" -> "management";
+            case "SBDV-FRM-901" -> "management.diagnostics.health-scorecards.SBDV-RPT-CORE-001";
+            case "SBDV-FRM-902" -> "management.diagnostics.storage-buffer-cache.SBDV-RPT-CORE-008";
+            case "SBDV-FRM-903" -> "management.diagnostics.workload-and-sql.SBDV-RPT-CORE-003";
+            case "SBDV-FRM-904" -> "management.diagnostics.listener-and-parser.SBDV-RPT-CORE-013";
             default -> "data.sales";
         };
     }

@@ -802,6 +802,27 @@ void AddSystemTableObject(std::vector<SysInformationCatalogObjectSource>* object
                   1);
 }
 
+void AddSystemColumns(std::vector<SysInformationColumnSource>* columns,
+                      std::set<std::string>* column_keys_in_projection,
+                      const std::string& object_uuid,
+                      const SysInformationProjectionDefinition& definition) {
+  std::uint32_t ordinal = 0;
+  for (const auto& column : definition.columns) {
+    ++ordinal;
+    if (column.column_name.empty()) { continue; }
+    const std::string key = object_uuid + ":" + std::to_string(ordinal);
+    if (!column_keys_in_projection->insert(key).second) { continue; }
+    SysInformationColumnSource source;
+    source.relation_object_uuid = object_uuid;
+    source.column_name = column.column_name;
+    source.ordinal_position = ordinal;
+    source.datatype_name = column.logical_type;
+    source.is_nullable = column.nullable ? "YES" : "NO";
+    source.catalog_generation_id = 1;
+    columns->push_back(std::move(source));
+  }
+}
+
 std::uint64_t SecurityCatalogGeneration(std::uint64_t generation, std::uint64_t creator_tx) {
   (void)generation;
   return creator_tx == 0 ? 1 : creator_tx;
@@ -1366,6 +1387,26 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
 
   for (const auto& table_path : system_tables) {
     AddSystemTableObject(&objects, &resolver_names, schema_uuid_by_path, table_path);
+  }
+  for (const auto& definition : BuiltinSysInformationProjectionDefinitions()) {
+    if (definition.view_path.empty() ||
+        scratchbird::core::catalog::CatalogPathIsClusterScoped(definition.view_path)) {
+      continue;
+    }
+    const bool is_system_table = system_tables.find(definition.view_path) != system_tables.end();
+    AddSystemColumns(&columns,
+                     &column_keys_in_projection,
+                     std::string(is_system_table ? "systable:" : "sysview:") + definition.view_path,
+                     definition);
+    if (!is_system_table && StartsWith(definition.view_path, "sys.information.")) {
+      const std::string information_schema_path =
+          "sys.information_schema." +
+          definition.view_path.substr(std::string("sys.information.").size());
+      AddSystemColumns(&columns,
+                       &column_keys_in_projection,
+                       "sysview:" + information_schema_path,
+                       definition);
+    }
   }
 
   const auto security = LoadSecurityPrincipalLifecycleState(catalog_read_context);
