@@ -149,6 +149,16 @@ def main() -> int:
         help="Stop after the first failing chunk instead of collecting all chunk failures",
     )
     parser.add_argument(
+        "--chunk-index",
+        type=int,
+        help="Run only this one-based chunk index and write its result for later finalization",
+    )
+    parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help="Summarize previously recorded chunk results and fail if any chunk failed or is missing",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Write the manifest and summary without executing any tests",
@@ -165,6 +175,51 @@ def main() -> int:
     tests = load_ctest_inventory(base_command, cwd)
     chunks = build_chunks(tests, args.chunk_count)
     write_json(output_root / "ctest_chunk_manifest.json", make_manifest(chunks))
+    if args.chunk_index is not None and (args.chunk_index < 1 or args.chunk_index > len(chunks)):
+        raise SystemExit(f"--chunk-index must be between 1 and {len(chunks)}")
+
+    if args.finalize:
+        results: list[dict[str, object]] = []
+        failures: list[dict[str, object]] = []
+        missing: list[dict[str, object]] = []
+        for chunk in chunks:
+            path = output_root / "results" / f"{chunk.name}.json"
+            if not path.is_file():
+                item = {
+                    "chunk": chunk.name,
+                    "start": chunk.start,
+                    "end": chunk.end,
+                    "test_count": len(chunk.tests),
+                    "reason": "missing_result",
+                }
+                missing.append(item)
+                failures.append(item)
+                continue
+            result = json.loads(path.read_text(encoding="utf-8"))
+            results.append(result)
+            if int(result.get("returncode", 1)) != 0:
+                failures.append(result)
+        summary = {
+            "preset": args.preset,
+            "test_dir": str(args.test_dir) if args.test_dir else None,
+            "chunk_count": len(chunks),
+            "test_count": len(tests),
+            "failed_chunk_count": len(failures),
+            "missing_chunk_count": len(missing),
+            "results": results,
+            "missing": missing,
+            "failures": failures,
+        }
+        write_json(output_root / "ctest_chunk_summary.json", summary)
+        if failures:
+            print(
+                f"CTest chunk finalization failed: {len(failures)} failed/missing chunk(s). "
+                f"See {output_root}."
+            )
+            return 1
+        print(f"All {len(tests)} CTest tests passed across {len(chunks)} chunk(s).")
+        return 0
+
     if args.dry_run:
         summary = {
             "preset": args.preset,
@@ -191,7 +246,8 @@ def main() -> int:
 
     failures: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
-    for chunk in chunks:
+    selected_chunks = [chunks[args.chunk_index - 1]] if args.chunk_index is not None else chunks
+    for chunk in selected_chunks:
         title = f"CTest {chunk.name}: tests {chunk.start}-{chunk.end} ({len(chunk.tests)} tests)"
         github_group(title)
         print(title)
@@ -215,6 +271,7 @@ def main() -> int:
             "returncode": returncode,
         }
         results.append(result)
+        write_json(output_root / "results" / f"{chunk.name}.json", result)
         if returncode != 0:
             failures.append(result)
             print(f"CTest {chunk.name} failed with exit code {returncode}")

@@ -129,12 +129,13 @@ jobs:
             -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
 
       - name: Build
+        id: build
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
         run: cmake --build --preset public-release-macos
 
-      - name: CTest
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+      - name: Prepare CTest chunks
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
         working-directory: project
         timeout-minutes: 120
         run: |
@@ -142,7 +143,123 @@ jobs:
             --preset public-release-macos \
             --chunk-count 8 \
             --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
+            --dry-run
+
+      - name: CTest chunk 1 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 1 \
+            --timeout 900 \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 2 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 2 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 3 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 3 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 4 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 4 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 5 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 5 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 6 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 6 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 7 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 7 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: CTest chunk 8 of 8
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: project
+        timeout-minutes: 30
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --chunk-index 8 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+
+      - name: Finalize CTest chunks
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+        working-directory: project
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
+            --finalize
 
       - name: Verify staged public bundle
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
