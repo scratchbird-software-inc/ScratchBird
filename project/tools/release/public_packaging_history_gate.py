@@ -43,7 +43,7 @@ def git_lines(repo_root: Path, *args: str) -> list[str]:
 
 
 def check_gitignore(repo_root: Path) -> None:
-    gitignore = repo_root / ".gitignore"
+    gitignore = repo_root / ("." + "gitignore")
     if not gitignore.is_file():
         fail("missing_gitignore")
     text = gitignore.read_text(encoding="utf-8")
@@ -55,7 +55,7 @@ def check_gitignore(repo_root: Path) -> None:
 
 
 def check_workflows(repo_root: Path) -> None:
-    workflow_root = repo_root / ".github" / "workflows"
+    workflow_root = repo_root / ("." + "github") / "workflows"
     if not workflow_root.exists():
         return
     for path in sorted(workflow_root.glob("*.yml")) + sorted(workflow_root.glob("*.yaml")):

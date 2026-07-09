@@ -2787,9 +2787,9 @@ endif()
 install(TARGETS sb_engine_shared
   EXPORT ScratchBirdEngineTargets
   ${sb_engine_runtime_dependency_set_args}
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
+  ARCHIVE DESTINATION lib COMPONENT public_engine
+  LIBRARY DESTINATION lib COMPONENT public_engine
+  RUNTIME DESTINATION bin COMPONENT public_engine
 )
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   if(POLICY CMP0207)
@@ -2798,6 +2798,7 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   get_filename_component(SB_GNU_RUNTIME_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
   install(RUNTIME_DEPENDENCY_SET ScratchBirdEngineRuntimeDeps
     DESTINATION bin
+    COMPONENT public_engine
     DIRECTORIES
       "${SB_GNU_RUNTIME_DIR}"
     PRE_EXCLUDE_REGEXES
@@ -2811,13 +2812,16 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/scratchbird/engine
   DESTINATION include/scratchbird
+  COMPONENT public_engine
 )
 install(EXPORT ScratchBirdEngineTargets
   NAMESPACE ScratchBird::
   DESTINATION lib/cmake/ScratchBirdEngine
+  COMPONENT public_engine
 )
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ScratchBirdEngineConfig.cmake
   DESTINATION lib/cmake/ScratchBirdEngine
+  COMPONENT public_engine
 )
 
 if(SB_INSTALL_NON_ENGINE_COMPONENTS)
@@ -2831,6 +2835,7 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
       install(TARGETS ${sb_installed_runtime_target}
         RUNTIME DESTINATION bin
         COMPONENT non_engine_runtime
+        EXCLUDE_FROM_ALL
       )
     endif()
   endforeach()
@@ -2839,20 +2844,21 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
     install(PROGRAMS $<TARGET_FILE:sb_ipc_tester>
       DESTINATION bin
       COMPONENT non_engine_runtime
+      EXCLUDE_FROM_ALL
     )
   endif()
 
   if(TARGET sbu_sbsql_parser_support)
     install(TARGETS sbu_sbsql_parser_support
-      ARCHIVE DESTINATION lib COMPONENT non_engine_runtime
-      LIBRARY DESTINATION lib COMPONENT non_engine_runtime
+      ARCHIVE DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
+      LIBRARY DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
     )
   endif()
 
   if(TARGET sbu_firebird_parser_support)
     install(TARGETS sbu_firebird_parser_support
-      ARCHIVE DESTINATION lib COMPONENT non_engine_runtime
-      LIBRARY DESTINATION lib COMPONENT non_engine_runtime
+      ARCHIVE DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
+      LIBRARY DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
     )
   endif()
 
@@ -2860,6 +2866,7 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
     install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/drivers/DriverPackageManifest.csv
       DESTINATION share/scratchbird/drivers
       COMPONENT non_engine_runtime
+      EXCLUDE_FROM_ALL
     )
   endif()
 
@@ -2867,6 +2874,7 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples/core_beta_qa
       DESTINATION share/scratchbird/examples
       COMPONENT non_engine_runtime
+      EXCLUDE_FROM_ALL
     )
   endif()
 endif()

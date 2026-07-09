@@ -61,11 +61,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+    return hashlib.sha256(canonical_text_bytes(path)).hexdigest()
+
+
+def canonical_text_bytes(path: Path) -> bytes:
+    chunks: list[bytes] = []
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+            chunks.append(chunk)
+    return b"".join(chunks).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def canonical_text_size(path: Path) -> int:
+    return len(canonical_text_bytes(path))
 
 
 def rel(path: Path, root: Path) -> str:
@@ -187,7 +195,7 @@ def compare_tree(left: Path, right: Path, names: tuple[str, ...]) -> None:
     for name in names:
         left_file = left / name
         right_file = right / name
-        require(left_file.read_bytes() == right_file.read_bytes(),
+        require(canonical_text_bytes(left_file) == canonical_text_bytes(right_file),
                 f"deterministic output mismatch for {name}")
 
 
@@ -255,7 +263,7 @@ def generated_artifacts(repo_root: Path) -> list[dict[str, str]]:
             {
                 "artifact_path": rel(path, repo_root),
                 "sha256": sha256(path),
-                "size_bytes": str(path.stat().st_size),
+                "size_bytes": str(canonical_text_size(path)),
                 "category": artifact_category(path),
                 "source_inputs": source_inputs(path),
             }

@@ -44,6 +44,12 @@ SKIP_PATH_PREFIXES = (
     Path("tests/reference_regression/firebird/original_firebird_qa"),
 )
 
+REFERENCE_REGRESSION_METADATA_ALLOWLIST = {
+    Path("tests/reference_regression/acquire_reference_regression_assets.py"),
+    Path("tests/reference_regression/reference_parser_gate_evidence_closure_gate.py"),
+    Path("tests/reference_regression/reference_regression_acquisition_sources.csv"),
+}
+
 GIT_REFERENCE_ALLOWLIST = {
     Path("drivers/driver/cpp/include/nlohmann/json.hpp"),
     Path("drivers/tool/cli/include/nlohmann/json.hpp"),

@@ -518,8 +518,9 @@ def write_macos_dynamic_library_audit(payload_root: Path, output_root: Path) -> 
     )
     for path in macos_binary_candidates(payload_root):
         output = run([otool, "-L", str(path)], cwd=payload_root)
+        dependency_lines = output.splitlines()[1:]
         for fragment in forbidden_fragments:
-            if fragment in output:
+            if any(fragment in line for line in dependency_lines):
                 fail(f"macos_dylib_build_path_leak:{path.relative_to(payload_root).as_posix()}:{fragment}")
         rows.append(
             {

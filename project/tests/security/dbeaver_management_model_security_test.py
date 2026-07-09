@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -27,10 +28,30 @@ PLUGIN_XML = ROOT / (
 )
 
 
+def io_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    absolute = str(path.absolute())
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    return "\\\\?\\" + absolute
+
+
+def path_exists(path: Path) -> bool:
+    if os.name != "nt":
+        return path.exists()
+    return os.path.exists(io_path(path))
+
+
+def read_text(path: Path) -> str:
+    with open(io_path(path), encoding="utf-8") as handle:
+        return handle.read()
+
+
 def read_source(name: str) -> str:
     path = MODEL / name
-    assert path.exists(), f"missing model source: {path}"
-    return path.read_text(encoding="utf-8")
+    assert path_exists(path), f"missing model source: {path}"
+    return read_text(path)
 
 
 def require_all(source: str, needles: list[str], label: str) -> None:
@@ -181,7 +202,7 @@ def test_redaction_policy_covers_driver_secrets_and_evidence_surfaces() -> None:
 
 
 def test_plugin_descriptor_marks_secret_properties_secured_and_password() -> None:
-    root = ET.parse(PLUGIN_XML).getroot()
+    root = ET.parse(io_path(PLUGIN_XML)).getroot()
     properties = {
         property_node.get("id"): property_node
         for property_node in root.findall(".//provider-properties/propertyGroup/property")

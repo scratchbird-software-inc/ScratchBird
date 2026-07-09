@@ -44,8 +44,6 @@ REGISTRY_INPUTS = (
     "tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv",
     "tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/BATCH_ROW_MEMBERSHIP.csv",
     "tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SEMANTIC_ORACLE_AUTHORITY_MAP.csv",
-    "../public_input_snapshot",
-    "../public_input_snapshot",
 )
 
 DETERMINISTIC_MANIFEST = (
@@ -67,6 +65,21 @@ CSV_FIELDS = (
     "checked_in_authority_status",
     "drift_test",
 )
+
+
+def io_path(path: Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
 
 
 def fail(message: str) -> None:
@@ -92,16 +105,24 @@ def sha256_text(value: str) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    return hashlib.sha256(canonical_text_bytes(path)).hexdigest()
+
+
+def canonical_text_bytes(path: Path) -> bytes:
+    chunks: list[bytes] = []
+    with open(io_path(path), "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+            chunks.append(chunk)
+    return b"".join(chunks).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def canonical_text_size(path: Path) -> int:
+    return len(canonical_text_bytes(path))
 
 
 def rel_repo(path: Path, repo_root: Path) -> str:
     try:
-        value = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        value = stable_absolute(path).relative_to(stable_absolute(repo_root)).as_posix()
     except ValueError:
         fail(f"path_outside_repo_root:{path}")
     reject_private_reference(value, "repo_path")
@@ -110,16 +131,16 @@ def rel_repo(path: Path, repo_root: Path) -> str:
 
 def project_file(project_root: Path, relative: str) -> Path:
     reject_private_reference(relative, "project_relative_path")
-    path = (project_root / relative).resolve()
-    if not path.is_file():
+    path = stable_absolute(project_root / relative)
+    if not os.path.isfile(io_path(path)):
         fail(f"required_file_missing:{relative}")
     return path
 
 
 def repo_file(repo_root: Path, relative: str) -> Path:
     reject_private_reference(relative, "repo_relative_path")
-    path = (repo_root / relative).resolve()
-    if not path.is_file():
+    path = stable_absolute(repo_root / relative)
+    if not os.path.isfile(io_path(path)):
         fail(f"required_file_missing:{relative}")
     return path
 
@@ -136,7 +157,7 @@ def aggregate_files(paths: list[Path], repo_root: Path) -> str:
 
 
 def read_manifest(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open(io_path(path), newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     required = {"artifact_path", "sha256", "size_bytes", "category", "source_inputs"}
     require(set(rows[0].keys() if rows else ()) == required,
@@ -152,7 +173,7 @@ def generated_artifact_rows(repo_root: Path) -> list[dict[str, str]]:
     files: list[Path] = []
     for root in roots:
         for path in root.rglob("*"):
-            if not path.is_file():
+            if not os.path.isfile(io_path(path)):
                 continue
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
@@ -181,7 +202,7 @@ def generated_artifact_rows(repo_root: Path) -> list[dict[str, str]]:
             {
                 "artifact_path": rel_repo(path, repo_root),
                 "sha256": sha256_file(path),
-                "size_bytes": str(path.stat().st_size),
+                "size_bytes": str(canonical_text_size(path)),
                 "category": category(path),
                 "source_inputs": source_inputs(path),
             }
@@ -259,14 +280,14 @@ def check_registry_drift(
     work_root: Path,
 ) -> dict[str, Any]:
     output_dir = work_root / "registry_regenerated"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(io_path(output_dir), exist_ok=True)
     run_registry_generator(repo_root, project_root, output_dir)
     compared: list[str] = []
     for relative in REGISTRY_OUTPUTS:
         checked_in = project_file(project_root, relative)
         generated = output_dir / Path(relative).name
-        require(generated.is_file(), f"regenerated_output_missing:{generated.name}")
-        require(checked_in.read_bytes() == generated.read_bytes(),
+        require(os.path.isfile(io_path(generated)), f"regenerated_output_missing:{generated.name}")
+        require(canonical_text_bytes(checked_in) == canonical_text_bytes(generated),
                 f"generated_registry_drift:{relative}")
         compared.append(rel_repo(checked_in, repo_root))
     return {
@@ -343,34 +364,36 @@ def build_rows(
 
 
 def write_csv(path: Path, rows: list[dict[str, str]]) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
+    os.makedirs(io_path(path.parent), exist_ok=True)
+    with open(io_path(path), "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
-    return path.read_text(encoding="utf-8")
+    with open(io_path(path), "r", encoding="utf-8") as handle:
+        return handle.read()
 
 
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    project_root = args.project_root.resolve()
-    build_root = args.build_root.resolve()
-    work_root = args.work_root.resolve()
-    if project_root.name != "project" or not project_root.is_dir():
+    repo_root = stable_absolute(args.repo_root)
+    project_root = stable_absolute(args.project_root)
+    build_root = stable_absolute(args.build_root)
+    work_root = stable_absolute(args.work_root)
+    if project_root.name != "project" or not os.path.isdir(io_path(project_root)):
         fail("project_root_must_be_project_directory")
-    if not repo_root.is_dir() or not build_root.is_dir():
+    if not os.path.isdir(io_path(repo_root)) or not os.path.isdir(io_path(build_root)):
         fail("input_root_missing")
     try:
         work_root.relative_to(build_root)
     except ValueError:
         fail("work_root_must_be_under_build_root")
-    work_root.mkdir(parents=True, exist_ok=True)
+    os.makedirs(io_path(work_root), exist_ok=True)
 
     manifest_path = project_file(project_root, DETERMINISTIC_MANIFEST)
     registry_drift = check_registry_drift(repo_root, project_root, work_root)
     manifest_drift = check_manifest_drift(repo_root, manifest_path)
     rows = build_rows(repo_root, project_root, registry_drift, manifest_drift)
-    matrix_text = write_csv(args.provenance_output.resolve(), rows)
+    provenance_output = stable_absolute(args.provenance_output)
+    matrix_text = write_csv(provenance_output, rows)
     evidence: dict[str, Any] = {
         "schema_version": 1,
         "gate": "PCR-GATE-125",
@@ -383,7 +406,7 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
             "regeneration_rule_required": True,
             "drift_detection_required": True,
         },
-        "provenance_path": args.provenance_output.resolve().name,
+        "provenance_path": provenance_output.name,
         "provenance_sha256": sha256_text(matrix_text),
         "row_count": len(rows),
         "registry_drift": registry_drift,
@@ -407,10 +430,10 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     evidence = build_evidence(args)
-    output = args.evidence_output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
-                      encoding="utf-8")
+    output = stable_absolute(args.evidence_output)
+    os.makedirs(io_path(output.parent), exist_ok=True)
+    with open(io_path(output), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(f"public_generated_source_provenance_rows={evidence['row_count']}")
     print(f"public_generated_source_provenance_sha256={evidence['provenance_sha256']}")
     print("public_generated_provenance_gate=passed")

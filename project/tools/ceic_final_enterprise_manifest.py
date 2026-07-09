@@ -127,6 +127,17 @@ STATIC_ONLY_POSITIVE_RE = re.compile(
 SUCCESSOR_RE = re.compile(r"\bCEIC-(?:09[6-9]|[1-9][0-9]{3,})\b")
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 @dataclass(frozen=True)
 class Diagnostic:
     code: str
@@ -722,7 +733,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    repo_root = args.repo_root.resolve()
+    repo_root = io_path(args.repo_root.resolve())
     manifest_path = args.manifest or DEFAULT_MANIFEST
     write_manifest = args.write or (args.manifest is None and not args.check_only)
     execution_plan_root = resolve_execution_plan(repo_root, args.execution_plan_root)

@@ -288,11 +288,9 @@ def check_inventory(ctx: Context) -> int:
     if missing:
         return fail(f"inventory missing components: {', '.join(missing)}")
     for component in expected_components():
-        path = component_path(ctx, component)
-        if not path.is_dir():
-            return fail(f"component path missing: {component} -> {path}")
         row = by_component[component]
-        if not (ctx.project_root / row["relative_path"]).exists():
+        path = ctx.project_root / row["relative_path"]
+        if not path.is_dir():
             return fail(f"inventory relative_path does not exist for {component}: {row['relative_path']}")
     print(f"inventory ok: {len(rows)} rows")
     return 0

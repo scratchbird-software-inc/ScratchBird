@@ -76,6 +76,12 @@ def is_macho(path: Path) -> bool:
     return "Mach-O" in output
 
 
+def is_lipo_candidate(path: Path) -> bool:
+    if path.suffix == ".a":
+        return True
+    return is_macho(path)
+
+
 def is_metadata_path(path: Path) -> bool:
     return path.name in METADATA_NAMES and "share/scratchbird/release" in path.as_posix()
 
@@ -186,7 +192,7 @@ def assemble(x86_root: Path, arm_root: Path, universal_root: Path) -> None:
             continue
         if is_metadata_path(x86_path):
             continue
-        if is_macho(x86_path) and is_macho(arm_path):
+        if is_lipo_candidate(x86_path) and is_lipo_candidate(arm_path):
             run([lipo, "-create", "-output", str(output_path), str(x86_path), str(arm_path)], cwd=universal_root)
             continue
         fail(f"non_universal_payload_difference:{rel}")

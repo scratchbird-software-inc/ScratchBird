@@ -20,14 +20,19 @@
 !/SBOM.json
 !/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
 !/public_contract_snapshot
+!/public_input_snapshot
 !/public_execution_plan/
 !/public_execution_plan/**
+!/artifacts/
 
 /build/
 /build-*/
 /cmake-build-*/
 /output/
-/artifacts/
+/artifacts/*
+!/artifacts/ceic/
+!/artifacts/ceic/integrated/
+!/artifacts/ceic/integrated/final_enterprise_manifest.yaml
 /dist/
 /release/
 /public_release_evidence/
@@ -118,6 +123,7 @@ project/tests/reference_regression/reference_release_acquisition/**
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_CANDIDATE.md
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_MANIFEST.csv
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv
+!project/tests/reference_regression/reference_release_acquisition/**/regression/SOURCE_POINTERS.md
 project/tests/reference_regression/reference_release_acquisition/**/regression/*_ACQUISITION_MANIFEST.csv
 
 !project/tests/reference_regression/reference_catalog_seeds/

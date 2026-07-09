@@ -226,8 +226,12 @@ int main() {
   if (!Expect(!hostile_tool.ok, "hostile reference-tool command was accepted")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(hostile_tool.statement_family == "low_level_utility",
-              "hostile reference-tool command did not enter low-level utility denial lane")) {
+  if (!Expect(hostile_tool.statement_family == "non_file_emulation",
+              "hostile reference-tool command did not enter non-file denial lane")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(hostile_tool.operation_family == "firebird.emulated.backup_restore",
+              "hostile reference-tool command did not enter backup/restore denial lane")) {
     return EXIT_FAILURE;
   }
   if (!Expect(Contains(hostile_tool.message_vector_json,

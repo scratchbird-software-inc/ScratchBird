@@ -141,7 +141,7 @@ TEST(MMCH090CheckoutLeakDetectorGate, DetectorDestructionWithActiveGuardIsSafe) 
 
 TEST(MMCH090CheckoutLeakDetectorGate, StructuredDiagnosticFieldsAreCheckoutScoped) {
     auto cfg = checkoutDetectorConfig();
-    cfg.threshold_ms = 0;
+    cfg.threshold_ms = 1;
     scratchbird::client::LeakDetector detector(cfg);
 
     auto guard = detector.Checkout("conn-structured", {
@@ -149,7 +149,15 @@ TEST(MMCH090CheckoutLeakDetectorGate, StructuredDiagnosticFieldsAreCheckoutScope
         {"owner", "mmch-090"}
     });
     ASSERT_NE(guard, nullptr);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    scratchbird::client::LeakDetector::LeakStats stats{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    do {
+        stats = detector.GetStats();
+        if (stats.potential_leaks == 1u) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
 
     const auto diagnostics = detector.GetActiveDiagnostics();
     ASSERT_EQ(diagnostics.size(), 1u);
@@ -165,7 +173,6 @@ TEST(MMCH090CheckoutLeakDetectorGate, StructuredDiagnosticFieldsAreCheckoutScope
         EXPECT_FALSE(diagnostics[0].stack_trace.empty());
     }
 
-    const auto stats = detector.GetStats();
     EXPECT_EQ(stats.active_checkouts, 1u);
     EXPECT_EQ(stats.potential_leaks, 1u);
 

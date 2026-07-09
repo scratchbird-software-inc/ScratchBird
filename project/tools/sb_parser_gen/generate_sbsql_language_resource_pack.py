@@ -24,6 +24,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -52,6 +53,65 @@ TOPOLOGY_PROFILE_UUID = "topology.sbsql.canonical.v1"
 GENERATOR_ID = "project/tools/sb_parser_gen/generate_sbsql_language_resource_pack.py"
 PUBLIC_SIGNING_KEY_ID = "scratchbird.public-source-review.language-resource.sha256-transcript.v1"
 I18N_VERSION = "2026-06-12"
+
+
+def stable_absolute(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def io_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    absolute = str(stable_absolute(path))
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    return "\\\\?\\" + absolute
+
+
+def path_exists(path: Path) -> bool:
+    if os.name != "nt":
+        return path.exists()
+    return os.path.exists(io_path(path))
+
+
+def path_is_file(path: Path) -> bool:
+    if os.name != "nt":
+        return path.is_file()
+    return os.path.isfile(io_path(path))
+
+
+def make_dir(path: Path) -> None:
+    if os.name != "nt":
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    os.makedirs(io_path(path), exist_ok=True)
+
+
+def read_text(path: Path) -> str:
+    with open(io_path(path), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def write_text(path: Path, text: str) -> None:
+    make_dir(path.parent)
+    with open(io_path(path), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def read_bytes(path: Path) -> bytes:
+    with open(io_path(path), "rb") as handle:
+        return handle.read()
+
+
+def write_bytes(path: Path, data: bytes) -> None:
+    make_dir(path.parent)
+    with open(io_path(path), "wb") as handle:
+        handle.write(data)
+
+
+def remove_tree(path: Path) -> None:
+    if path_exists(path):
+        shutil.rmtree(io_path(path))
 
 REGISTRY_FIELDS = [
     "surface_id",
@@ -1287,7 +1347,7 @@ def diagnostic_severity(row: dict[str, str]) -> str:
 
 
 def extract_sblr_envelope_diagnostics(repo_root: Path) -> list[dict[str, str]]:
-    text = (repo_root / SBLR_ENVELOPE_HPP).read_text(encoding="utf-8")
+    text = read_text(repo_root / SBLR_ENVELOPE_HPP)
     pattern = re.compile(
         r'decoded\.diagnostic_code\s*=\s*"(?P<code>[^"]+)";\s*'
         r'decoded\.message_key\s*=\s*"(?P<message_key>[^"]+)";',
@@ -1423,13 +1483,13 @@ def split_cpp_registry_rows(array_text: str) -> list[str]:
 
 
 def parse_registry_cpp(registry_cpp: Path, registry_hpp: Path) -> tuple[list[dict[str, str]], int]:
-    hpp_text = registry_hpp.read_text(encoding="utf-8")
+    hpp_text = read_text(registry_hpp)
     match = re.search(r"kGeneratedSurfaceRegistryRowCount\s*=\s*(\d+)", hpp_text)
     if not match:
         fail(f"registry row-count constant missing: {registry_hpp}")
     expected = int(match.group(1))
 
-    cpp_text = registry_cpp.read_text(encoding="utf-8")
+    cpp_text = read_text(registry_cpp)
     start = cpp_text.index("kRows{{") + len("kRows{{")
     end = cpp_text.index("}};", start)
     row_texts = split_cpp_registry_rows(cpp_text[start:end])
@@ -1449,7 +1509,7 @@ def parse_registry_cpp(registry_cpp: Path, registry_hpp: Path) -> tuple[list[dic
 
 def read_key_value_manifest(path: Path) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_text(path).splitlines():
         if not line.strip() or "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -1458,7 +1518,7 @@ def read_key_value_manifest(path: Path) -> dict[str, str]:
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open(io_path(path), newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 
 
@@ -2269,12 +2329,29 @@ def ensure_safe_pack_root(pack_root: Path) -> None:
 
 def write_pack(pack_root: Path, files: list[GeneratedFile]) -> None:
     ensure_safe_pack_root(pack_root)
-    if pack_root.exists():
-        shutil.rmtree(pack_root)
+    remove_tree(pack_root)
     for item in files:
         path = pack_root / item.rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(item.data)
+        write_bytes(path, item.data)
+
+
+def canonical_seed_artifact_bytes(path: Path, data: bytes) -> bytes:
+    if path.as_posix().endswith(".tar.gz"):
+        return data
+    normalized = bytearray()
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        if byte == 0x0D:
+            if index + 1 < len(data) and data[index + 1] == 0x0A:
+                normalized.append(0x0A)
+                index += 1
+            else:
+                normalized.append(0x0A)
+        else:
+            normalized.append(byte)
+        index += 1
+    return bytes(normalized)
 
 
 def update_seed_manifest(seed_pack_root: Path) -> None:
@@ -2313,7 +2390,8 @@ def update_seed_manifest(seed_pack_root: Path) -> None:
         ordered.append(by_family[family])
         seen.add(family)
     ordered.extend(by_family[family] for family in sorted(set(by_family) - seen))
-    with manifest_path.open("w", newline="", encoding="utf-8") as handle:
+    make_dir(manifest_path.parent)
+    with open(io_path(manifest_path), "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["seed_family", "source_pattern", "required_catalog_rows", "create_time_action", "status"], lineterminator="\n")
         writer.writeheader()
         writer.writerows(ordered)
@@ -2323,13 +2401,14 @@ def update_seed_artifacts(seed_pack_root: Path) -> None:
     rows: list[dict[str, str]] = []
     resource_root = seed_pack_root / "resources"
     for path in sorted(resource_root.rglob("*")):
-        if not path.is_file():
+        if not path_is_file(path):
             continue
         rel = path.relative_to(seed_pack_root).as_posix()
-        data = path.read_bytes()
+        data = canonical_seed_artifact_bytes(path, read_bytes(path))
         rows.append({"canonical_path": rel, "content_hash": fnv1a64_bytes(data), "content_size_bytes": str(len(data))})
     artifacts_path = seed_pack_root / "RESOURCE_SEED_ARTIFACTS.csv"
-    with artifacts_path.open("w", newline="", encoding="utf-8") as handle:
+    make_dir(artifacts_path.parent)
+    with open(io_path(artifacts_path), "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["canonical_path", "content_hash", "content_size_bytes"], lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
@@ -2337,8 +2416,7 @@ def update_seed_artifacts(seed_pack_root: Path) -> None:
 
 def update_i18n_version(seed_pack_root: Path) -> None:
     version_path = seed_pack_root / "resources/i18n/version"
-    version_path.parent.mkdir(parents=True, exist_ok=True)
-    version_path.write_text(I18N_VERSION + "\n", encoding="utf-8")
+    write_text(version_path, I18N_VERSION + "\n")
 
 
 def driver_metadata_hash(metadata: dict[str, Any]) -> str:
@@ -2350,7 +2428,7 @@ def driver_metadata_hash(metadata: dict[str, Any]) -> str:
 
 def update_driver_surface_manifest(repo_root: Path, manifest: dict[str, Any]) -> None:
     path = repo_root / DRIVER_SURFACE_MANIFEST
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(read_text(path))
     metadata = payload["common_resource_pack_metadata"]
     metadata.update(
         {
@@ -2362,26 +2440,26 @@ def update_driver_surface_manifest(repo_root: Path, manifest: dict[str, Any]) ->
         }
     )
     metadata["resource_hash"] = driver_metadata_hash(metadata)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[3])
+    parser.add_argument("--repo-root", type=Path, default=Path(__file__).absolute().parents[3])
     parser.add_argument("--seed-pack-root", type=Path)
     parser.add_argument("--pack-root", type=Path)
     parser.add_argument("--no-driver-manifest-update", action="store_true")
     args = parser.parse_args()
 
-    repo_root = args.repo_root.resolve()
-    seed_pack_root = (args.seed_pack_root if args.seed_pack_root else repo_root / DEFAULT_SEED_PACK).resolve()
-    pack_root = (args.pack_root if args.pack_root else seed_pack_root / DEFAULT_PACK_REL).resolve()
+    repo_root = stable_absolute(args.repo_root)
+    seed_pack_root = stable_absolute(args.seed_pack_root) if args.seed_pack_root else repo_root / DEFAULT_SEED_PACK
+    pack_root = stable_absolute(args.pack_root) if args.pack_root else seed_pack_root / DEFAULT_PACK_REL
     files, manifest, _ = build_files(repo_root)
     write_pack(pack_root, files)
     update_i18n_version(seed_pack_root)
     update_seed_manifest(seed_pack_root)
     update_seed_artifacts(seed_pack_root)
-    if not args.no_driver_manifest_update and seed_pack_root == (repo_root / DEFAULT_SEED_PACK).resolve():
+    if not args.no_driver_manifest_update and seed_pack_root == repo_root / DEFAULT_SEED_PACK:
         update_driver_surface_manifest(repo_root, manifest)
     print(
         "sbsql_language_resource_pack=generated "

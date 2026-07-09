@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -34,17 +35,35 @@ FORBIDDEN_SOURCE_TOKENS = (
 )
 
 
+def dependency_scan_command() -> list[str]:
+    if platform.system() == "Darwin":
+        path = shutil.which("otool")
+        if path:
+            return [path, "-L"]
+        raise SystemExit("runtime isolation dependency scanner missing: otool")
+    if os.name == "nt":
+        for tool in ("objdump", "llvm-objdump"):
+            path = shutil.which(tool)
+            if path:
+                return [path, "-p"]
+        raise SystemExit("runtime isolation dependency scanner missing: objdump")
+    ldd = shutil.which("ldd")
+    if ldd:
+        return [ldd]
+    for tool in ("objdump", "llvm-objdump"):
+        path = shutil.which(tool)
+        if path:
+            return [path, "-p"]
+    raise SystemExit("runtime isolation dependency scanner missing: ldd or objdump")
+
+
 def check_binary(binary: Path) -> None:
     if not binary.exists():
         raise SystemExit(f"runtime isolation binary missing: {binary}")
     if not binary.is_file():
         raise SystemExit(f"runtime isolation path is not a file: {binary}")
 
-    tool = "otool" if platform.system() == "Darwin" else "ldd"
-    resolved_tool = shutil.which(tool)
-    if resolved_tool is None:
-        raise SystemExit(f"{tool} is required for runtime isolation dependency scan")
-    command = [resolved_tool, "-L", str(binary)] if tool == "otool" else [resolved_tool, str(binary)]
+    command = [*dependency_scan_command(), str(binary)]
     result = subprocess.run(
         command,
         text=True,
@@ -54,7 +73,7 @@ def check_binary(binary: Path) -> None:
     )
     output = result.stdout
     if result.returncode != 0 and "not a dynamic executable" not in output:
-        raise SystemExit(f"{tool} failed for {binary}: {output}")
+        raise SystemExit(f"dependency scan failed for {binary}: {output}")
     lowered = output.lower()
     for token in FORBIDDEN_LINK_TOKENS:
         if token in lowered:

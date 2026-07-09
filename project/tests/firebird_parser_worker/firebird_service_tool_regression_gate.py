@@ -44,6 +44,7 @@ REQUIRED_PARSER_VARIATIONS = (
     "FBSVCMGR service_mgr action_restore",
     "FBSVCMGR service_mgr action_validate",
 )
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 def read_manifest(path: Path) -> dict[str, dict[str, str]]:
@@ -93,6 +94,10 @@ def main() -> int:
     repo_root = Path(args.repo_root).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not (firebird_home / "bin").is_dir():
+        print(f"skipped: Firebird reference tool home is not installed: {firebird_home}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
 
     missing = sorted(target for target in TOOL_PROBES if target not in manifest)
     if missing:

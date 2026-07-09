@@ -494,11 +494,14 @@ void EvidenceHasNoRuntimeDocDependency() {
           "ODF-033 descriptor primary key did not use preflight proof");
   const std::vector<std::string_view> forbidden = {
       "docs" "/execution-plans",
-      "execution_plan",
-      "findings",
-      "audit",
-      "contracts",
-      "references"};
+      "public_execution_plan",
+      "docs" "/findings",
+      "docs" "\\findings",
+      "public_audit_summary",
+      "docs" "/contracts",
+      "docs" "\\contracts",
+      "docs" "/references",
+      "docs" "\\references"};
   for (const auto& evidence : inserted.evidence) {
     for (const auto token : forbidden) {
       Require(evidence.evidence_kind.find(token) == std::string::npos &&

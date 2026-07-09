@@ -134,6 +134,39 @@ std::optional<CrudRowVersionRecord> LatestCatalogRow(const CrudState& state,
   return latest;
 }
 
+std::string MissingCatalogRowDetail(const CrudState& state,
+                                    const EngineRequestContext& context,
+                                    const std::string& table_uuid) {
+  std::size_t table_row_versions = 0;
+  std::size_t matching_catalog_rows = 0;
+  std::ostringstream detail;
+  detail << "catalog_image_not_found"
+         << ":table_uuid=" << table_uuid
+         << ":row_versions=" << state.row_versions.size()
+         << ":context_tx=" << context.local_transaction_id
+         << ":snapshot_tx="
+         << context.snapshot_visible_through_local_transaction_id;
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid) { continue; }
+    ++table_row_versions;
+    if (row.row_uuid == kAgentCatalogRowUuid) {
+      ++matching_catalog_rows;
+      const auto tx = state.transactions.find(row.creator_tx);
+      detail << ":catalog_row_tx=" << row.creator_tx
+             << ":catalog_row_seq=" << row.sequence
+             << ":catalog_row_state="
+             << (tx == state.transactions.end() ? "missing" : tx->second)
+             << ":catalog_row_kind="
+             << CrudFieldValue(row.values, "record_kind");
+    }
+  }
+  const auto visible = VisibleCrudRowsForContext(state, table_uuid, context);
+  detail << ":table_row_versions=" << table_row_versions
+         << ":matching_catalog_rows=" << matching_catalog_rows
+         << ":visible_rows=" << visible.size();
+  return detail.str();
+}
+
 }  // namespace
 
 AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
@@ -255,7 +288,9 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
   const auto table = FindCatalogTable(state, context);
   if (!table) { return ErrorResult("catalog_table_not_found"); }
   const auto latest = LatestCatalogRow(state, context, table->table_uuid);
-  if (!latest) { return ErrorResult("catalog_image_not_found"); }
+  if (!latest) {
+    return ErrorResult(MissingCatalogRowDetail(state, context, table->table_uuid));
+  }
 
   const std::string encoded = CrudFieldValue(latest->values, "encoded_catalog_image");
   auto validation =

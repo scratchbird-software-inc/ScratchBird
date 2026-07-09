@@ -20,6 +20,7 @@ import sys
 
 ALLOWED_PREFIXES = (
     "docs/documentation/draft/",
+    "public_execution_plan/",
     "project/tests/release_evidence/",
     "project/tests/reference_regression/reference_release_acquisition/",
 )

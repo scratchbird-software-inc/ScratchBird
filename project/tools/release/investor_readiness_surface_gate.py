@@ -223,6 +223,7 @@ def validate_reference_payload_boundary(repo_root: Path, paths: list[str], exclu
             name = Path(path).name
             allowed = (
                 name == "PUBLIC_REGRESSION_SCOPE.md"
+                or name == "SOURCE_POINTERS.md"
                 or name.endswith("_CANDIDATE.md")
                 or name.endswith("_MANIFEST.csv")
                 or name.endswith("_INDEX.csv")

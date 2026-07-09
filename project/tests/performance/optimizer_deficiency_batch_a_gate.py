@@ -145,10 +145,17 @@ def validate_gitignore_and_tracking(repo_root: Path) -> None:
 
 def validate_ctest_linkage(build_root: Path, fixture: dict[str, Any]) -> None:
     required = set(fixture["required_existing_ctests"])
-    ctest_files = sorted(build_root.rglob("CTestTestfile.cmake")) if build_root.exists() else []
+    ctest_files = sorted(path for path in build_root.rglob("CTestTestfile.cmake")
+                         if path.is_file()) if build_root.exists() else []
     require(ctest_files, f"no CTest metadata found under build root: {build_root}")
-    ctest_text = "\n".join(path.read_text(encoding="utf-8", errors="replace")
-                           for path in ctest_files)
+    ctest_parts: list[str] = []
+    for path in ctest_files:
+        try:
+            ctest_parts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    require(ctest_parts, f"no readable CTest metadata found under build root: {build_root}")
+    ctest_text = "\n".join(ctest_parts)
     for test_name in sorted(required):
         require(test_name in ctest_text, f"required CTest registration missing: {test_name}")
     for row in REQUIRED_ROWS:
