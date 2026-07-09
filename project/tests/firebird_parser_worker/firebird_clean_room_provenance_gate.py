@@ -8,6 +8,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import argparse
+import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -77,8 +79,13 @@ def check_implementation_sources(root: Path) -> list[str]:
 def check_binary(binary: Path) -> list[str]:
     if not binary.exists():
         return [f"binary missing: {binary}"]
+    tool = "otool" if platform.system() == "Darwin" else "ldd"
+    resolved_tool = shutil.which(tool)
+    if resolved_tool is None:
+        return [f"{tool} is required for clean-room dependency scan"]
+    command = [resolved_tool, "-L", str(binary)] if tool == "otool" else [resolved_tool, str(binary)]
     result = subprocess.run(
-        ["ldd", str(binary)],
+        command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -86,7 +93,7 @@ def check_binary(binary: Path) -> list[str]:
     )
     output = result.stdout.lower()
     if result.returncode != 0 and "not a dynamic executable" not in output:
-        return [f"ldd failed for {binary}: {result.stdout}"]
+        return [f"{tool} failed for {binary}: {result.stdout}"]
     return [
         f"forbidden reference runtime dependency {token} in {binary}"
         for token in FORBIDDEN_LINK_TOKENS

@@ -572,7 +572,7 @@ add_test(
     --repo-root "${PROJECT_SOURCE_DIR}/.."
     --parser-bin-root "$<TARGET_FILE_DIR:sbp_postgresql>"
     --build-root "${CMAKE_BINARY_DIR}"
-    --release-root "${PROJECT_SOURCE_DIR}/../packaging/2026.07.03"
+    --release-root "${CMAKE_BINARY_DIR}/reference_parser_release"
     --mode packaging
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/reference_parser_packaging_handoff_conformance_evidence.json"
 )

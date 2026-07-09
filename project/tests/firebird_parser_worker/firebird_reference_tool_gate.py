@@ -10,6 +10,7 @@
 import argparse
 import csv
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -197,22 +198,32 @@ def check_tool_paths(rows: list[ToolRow], repo_root: Path, reference_root: Path)
 def check_reference_link_resolution(rows: list[ToolRow], home: Path, reference_root: Path) -> None:
     env = reference_env(home)
     reference_root = reference_root.resolve()
+    tool = "otool" if platform.system() == "Darwin" else "ldd"
+    resolved_tool = shutil.which(tool)
+    if resolved_tool is None:
+        raise SystemExit(f"{tool} is required for reference link verification")
     for row in rows:
         path = target_path(home, row.firebird_target)
-        result = run_command(["ldd", str(path)], cwd=home, env=env, timeout_seconds=15)
+        command = [resolved_tool, "-L", str(path)] if tool == "otool" else [resolved_tool, str(path)]
+        result = run_command(command, cwd=home, env=env, timeout_seconds=15)
         output = result.stdout
         if result.returncode != 0 and "not a dynamic executable" not in output:
-            raise SystemExit(f"ldd failed for {path}:\n{output}")
+            raise SystemExit(f"{tool} failed for {path}:\n{output}")
         for line in output.splitlines():
             lowered = line.lower()
             if not any(name in lowered for name in REFERENCE_LIB_NAMES):
                 continue
             if "not found" in lowered:
                 raise SystemExit(f"unresolved reference library dependency in {path}:\n{output}")
-            if "=>" not in line:
+            if tool == "otool":
+                resolved = line.strip().split(" ", 1)[0]
+            elif "=>" in line:
+                resolved = line.split("=>", 1)[1].split("(", 1)[0].strip()
+            else:
                 continue
-            resolved = line.split("=>", 1)[1].split("(", 1)[0].strip()
             if not resolved:
+                continue
+            if resolved.startswith("@"):
                 continue
             resolved_path = Path(resolved).resolve()
             if not is_relative_to(resolved_path, reference_root):

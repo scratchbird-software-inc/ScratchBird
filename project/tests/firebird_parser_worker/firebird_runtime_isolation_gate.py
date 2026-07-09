@@ -8,6 +8,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import argparse
+import platform
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,8 +40,13 @@ def check_binary(binary: Path) -> None:
     if not binary.is_file():
         raise SystemExit(f"runtime isolation path is not a file: {binary}")
 
+    tool = "otool" if platform.system() == "Darwin" else "ldd"
+    resolved_tool = shutil.which(tool)
+    if resolved_tool is None:
+        raise SystemExit(f"{tool} is required for runtime isolation dependency scan")
+    command = [resolved_tool, "-L", str(binary)] if tool == "otool" else [resolved_tool, str(binary)]
     result = subprocess.run(
-        ["ldd", str(binary)],
+        command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -47,7 +54,7 @@ def check_binary(binary: Path) -> None:
     )
     output = result.stdout
     if result.returncode != 0 and "not a dynamic executable" not in output:
-        raise SystemExit(f"ldd failed for {binary}: {output}")
+        raise SystemExit(f"{tool} failed for {binary}: {output}")
     lowered = output.lower()
     for token in FORBIDDEN_LINK_TOKENS:
         if token in lowered:

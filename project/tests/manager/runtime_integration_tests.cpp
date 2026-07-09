@@ -51,7 +51,11 @@ void Check(bool condition, const std::string& message) {
 
 std::filesystem::path ManagerRuntimeTestRoot(const std::string& name) {
 #ifndef _WIN32
-  return std::filesystem::path("/tmp") / ("sbmn-mgr-" + std::to_string(::getpid())) / name;
+  static std::atomic<int> sequence{0};
+  (void)name;
+  return std::filesystem::path("/tmp") /
+         ("sbm-" + std::to_string(::getpid()) + "-" +
+          std::to_string(sequence.fetch_add(1)));
 #else
   return std::filesystem::temp_directory_path() / name;
 #endif

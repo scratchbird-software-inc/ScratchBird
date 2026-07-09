@@ -478,7 +478,7 @@ ListenerSocketIdentity BuildSocketIdentity(const ListenerConfig& config) {
   identity.profile = config.listener_profile;
   identity.endpoint_hash = StableHash(config.server_endpoint + "|" + config.database_selector + "|" + config.protocol_family);
   identity.generation = std::to_string(config.lifecycle_generation);
-  const std::string stem = Sanitize(config.protocol_family + "_" + identity.endpoint_hash);
+  const std::string stem = Sanitize("l" + identity.endpoint_hash.substr(0, 6));
   identity.control_socket = std::filesystem::path(config.control_dir) / (stem + ".control.sock");
   identity.management_socket = std::filesystem::path(config.control_dir) / (stem + ".management.sock");
   identity.owner_file = std::filesystem::path(config.control_dir) / (stem + ".owner");

@@ -30,12 +30,11 @@ std::filesystem::path MakeTempDir(const std::filesystem::path& root) {
   std::error_code ec;
   auto base = root;
   if (base.string().size() > 40) {
-    base = std::filesystem::temp_directory_path(ec) / "sbipar";
-    if (ec) return {};
+    base = std::filesystem::path("/tmp") / "sbipar";
   }
   std::filesystem::create_directories(base, ec);
   if (ec) return {};
-  std::string tmpl = (base / "ipar-tls-route.XXXXXX").string();
+  std::string tmpl = (base / "i.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());

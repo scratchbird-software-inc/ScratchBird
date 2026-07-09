@@ -240,9 +240,10 @@ def verify_negative_security_resource(repo_root: Path,
 
 def verify_reference_packaging(repo_root: Path,
                                parser_bin_root: Path,
+                               build_root: Path,
                                release_root: Path,
                                lanes: list[str]) -> dict[str, object]:
-    promote = repo_root / "packaging/scripts/promote_reference_parser_release_artifacts.py"
+    promote = repo_root / "project/tools/release/promote_reference_parser_release_artifacts.py"
     result = run(
         [
             sys.executable,
@@ -251,9 +252,10 @@ def verify_reference_packaging(repo_root: Path,
             str(repo_root),
             "--release-root",
             str(release_root),
+            "--build-root",
+            str(build_root),
             "--build-bin-root",
             str(parser_bin_root),
-            "--verify-only",
         ],
         repo_root,
     )
@@ -329,7 +331,7 @@ def main() -> int:
         )
     else:
         payload["packaging_evidence"] = verify_reference_packaging(
-            repo_root, parser_bin_root, release_root.resolve(), lanes
+            repo_root, parser_bin_root, build_root, release_root.resolve(), lanes
         )
     args.evidence_file.parent.mkdir(parents=True, exist_ok=True)
     args.evidence_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
