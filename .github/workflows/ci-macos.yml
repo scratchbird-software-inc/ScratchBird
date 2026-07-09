@@ -132,7 +132,8 @@ jobs:
       - name: CTest
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
-        run: ctest --preset public-release-macos
+        timeout-minutes: 120
+        run: ctest --preset public-release-macos --progress --output-on-failure --timeout 900
 
       - name: Verify staged public bundle
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
