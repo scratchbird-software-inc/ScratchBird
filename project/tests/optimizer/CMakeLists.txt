@@ -127,6 +127,14 @@ add_test(
           "-DSB_PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
           "-DSB_CONFIGURE_GATE_BINARY_ROOT=${CMAKE_BINARY_DIR}/optimizer_enterprise_llvm_configure_gate"
           "-DSB_LLVM_TEST_LIBRARY=${SB_LLVM_LIBRARY}"
+          "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}"
+          "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+          "-DICU_ROOT=${ICU_ROOT}"
+          "-DOPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}"
+          "-DLLVM_DIR=${LLVM_DIR}"
+          "-DODBC_INCLUDE_DIR=${ODBC_INCLUDE_DIR}"
+          "-DODBC_LIBRARY=${ODBC_LIBRARY}"
           -P "${PROJECT_SOURCE_DIR}/cmake/OptimizerLlvmConfigureGate.cmake"
 )
 set_tests_properties(optimizer_enterprise_llvm_configure_gate PROPERTIES

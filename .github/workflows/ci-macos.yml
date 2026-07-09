@@ -99,8 +99,12 @@ jobs:
         run: |
           {
             echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
+            echo "ICU_ROOT=$(brew --prefix icu4c)"
+            echo "BOOST_ROOT=$(brew --prefix boost)"
+            echo "LIBXML2_ROOT=$(brew --prefix libxml2)"
             echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
             echo "ODBC_ROOT=$(brew --prefix unixodbc)"
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm);$(brew --prefix unixodbc)"
             echo "PATH=$(brew --prefix llvm)/bin:$PATH"
             echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix unixodbc)/lib/pkgconfig:$PKG_CONFIG_PATH"
           } >> "$GITHUB_ENV"
@@ -119,10 +123,10 @@ jobs:
           cmake --preset public-release-macos \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-            -DICU_ROOT="$(brew --prefix icu4c)" \
+            -DICU_ROOT="$ICU_ROOT" \
             -DODBC_INCLUDE_DIR="$ODBC_ROOT/include" \
             -DODBC_LIBRARY="$ODBC_ROOT/lib/libodbc.dylib" \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm);$ODBC_ROOT"
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
 
       - name: Build
         if: ${{ steps.arch_filter.outputs.run == 'true' }}

@@ -38,6 +38,22 @@ if(NOT _llvm_library)
   message(FATAL_ERROR "OEIC LLVM configure gate requires a versioned libLLVM test library")
 endif()
 
+set(_sb_configure_common_args)
+foreach(_sb_forwarded_var
+        CMAKE_PREFIX_PATH
+        CMAKE_OSX_ARCHITECTURES
+        CMAKE_OSX_DEPLOYMENT_TARGET
+        ICU_ROOT
+        OPENSSL_ROOT_DIR
+        LLVM_DIR
+        ODBC_INCLUDE_DIR
+        ODBC_LIBRARY)
+  if(DEFINED ${_sb_forwarded_var} AND NOT "${${_sb_forwarded_var}}" STREQUAL "")
+    list(APPEND _sb_configure_common_args
+         "-D${_sb_forwarded_var}=${${_sb_forwarded_var}}")
+  endif()
+endforeach()
+
 function(_configure_llvm_mode mode)
   set(_binary_dir "${SB_CONFIGURE_GATE_BINARY_ROOT}/${mode}")
   file(REMOVE_RECURSE "${_binary_dir}")
@@ -52,7 +68,8 @@ function(_configure_llvm_mode mode)
     -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF
     -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF
     -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF
-    -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF)
+    -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF
+    ${_sb_configure_common_args})
   if(NOT mode STREQUAL "disabled")
     list(APPEND _args "-DSB_LLVM_LIBRARY=${_llvm_library}")
   endif()
