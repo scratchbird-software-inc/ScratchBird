@@ -38,9 +38,15 @@ Native proof contract:
 ```sh
 cmake -S project -B build-macos-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic -DSB_LLVM_MIN_MAJOR=22 -DSB_PUBLIC_TARGET_PLATFORM=macos
 cmake --build build-macos-public-release-proof -j2
-ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure
-ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure
+ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
+ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
 ```
+
+GitHub macOS CI runs these same label sets through
+`project/tools/ci/run_ctest_chunks.py`. The chunk artifacts include
+`ctest_chunk_manifest.json`, `ctest_chunk_filters.json`, and
+`ctest_chunk_excluded_tests.json` so the selected and excluded tests are
+auditable.
 
 Installer proof contract:
 

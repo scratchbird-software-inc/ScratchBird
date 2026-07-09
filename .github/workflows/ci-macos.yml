@@ -34,6 +34,8 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+      SB_MACOS_CTEST_INCLUDE_LABEL: "public_release_correctness|engine_listener_enterprise"
+      SB_MACOS_CTEST_EXCLUDE_LABEL: "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
 
     strategy:
       fail-fast: false
@@ -145,6 +147,8 @@ jobs:
             --preset public-release-macos \
             --chunk-count 8 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
             --dry-run
 
@@ -159,6 +163,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 1 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 2 of 8
@@ -172,6 +178,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 2 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 3 of 8
@@ -185,6 +193,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 3 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 4 of 8
@@ -198,6 +208,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 4 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 5 of 8
@@ -211,6 +223,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 5 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 6 of 8
@@ -224,6 +238,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 6 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 7 of 8
@@ -237,6 +253,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 7 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: CTest chunk 8 of 8
@@ -250,6 +268,8 @@ jobs:
             --chunk-count 8 \
             --chunk-index 8 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: Finalize CTest chunks
@@ -260,6 +280,8 @@ jobs:
             --preset public-release-macos \
             --chunk-count 8 \
             --timeout 900 \
+            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
+            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
             --finalize
 

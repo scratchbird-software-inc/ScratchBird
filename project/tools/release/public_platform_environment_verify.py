@@ -241,8 +241,8 @@ NATIVE_PROOF_CONTRACTS: dict[str, dict[str, Any]] = {
         ),
         "build_command": "cmake --build build-macos-public-release-proof -j2",
         "ctest_commands": (
-            "ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure",
-            "ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure",
+            'ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"',
+            'ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"',
         ),
     },
 }
