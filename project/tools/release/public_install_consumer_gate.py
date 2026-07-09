@@ -127,6 +127,7 @@ def require_file(path: Path, root: Path, label: str) -> str:
 def installed_engine_library(prefix: Path) -> str:
     candidates = (
         prefix / "lib" / "libSBcore.so",
+        prefix / "lib" / "libSBcore.dylib",
         prefix / "bin" / "SBcore.dll",
         prefix / "lib" / "libSBcore.dll.a",
         prefix / "lib" / "SBcore.dll",
