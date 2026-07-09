@@ -103,6 +103,26 @@ bool WriteAll(int fd, const std::string& text) {
   return true;
 }
 
+std::string ReadTextFile(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  if (!in) return {};
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::string WaitStatusText(int status) {
+  if (WIFEXITED(status)) return "exit=" + std::to_string(WEXITSTATUS(status));
+  if (WIFSIGNALED(status)) return "signal=" + std::to_string(WTERMSIG(status));
+  return "status=" + std::to_string(status);
+}
+
+void PrintServerLogs(const std::filesystem::path& stdout_path,
+                     const std::filesystem::path& stderr_path) {
+  const auto out = ReadTextFile(stdout_path);
+  const auto err = ReadTextFile(stderr_path);
+  if (!out.empty()) std::cerr << "server stdout:\n" << out << '\n';
+  if (!err.empty()) std::cerr << "server stderr:\n" << err << '\n';
+}
+
 std::filesystem::path MakeTempDir() {
   std::string tmpl = "/tmp/sb_ssd.XXXXXX";
   std::vector<char> writable(tmpl.begin(), tmpl.end());
@@ -294,6 +314,7 @@ int main(int argc, char** argv) {
   if (!ConnectAndEcho(port, "before-server-shutdown", &error)) {
     cleanup();
     std::cerr << error << '\n';
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
 
@@ -310,6 +331,7 @@ int main(int argc, char** argv) {
   if (listener_pid <= 0) {
     cleanup();
     std::cerr << "could not determine managed listener pid\n";
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
 
@@ -319,18 +341,23 @@ int main(int argc, char** argv) {
     (void)::kill(server_pid, SIGKILL);
     (void)::waitpid(server_pid, &server_status, 0);
     std::cerr << "sb_server did not exit after SIGTERM\n";
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
   if (!WIFEXITED(server_status) || WEXITSTATUS(server_status) != 0) {
-    std::cerr << "sb_server did not exit cleanly after SIGTERM status=" << server_status << '\n';
+    std::cerr << "sb_server did not exit cleanly after SIGTERM: "
+              << WaitStatusText(server_status) << '\n';
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
   if (!WaitPidGone(listener_pid, 100, 20)) {
     std::cerr << "managed listener process survived server shutdown pid=" << listener_pid << '\n';
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
   if (!PortRefusesConnections(port)) {
     std::cerr << "managed listener TCP port still accepts connections after server shutdown\n";
+    PrintServerLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
 

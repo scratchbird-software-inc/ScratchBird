@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <netinet/in.h>
 #include <poll.h>
@@ -97,6 +98,26 @@ bool WriteAll(int fd, const std::string& text) {
     return false;
   }
   return true;
+}
+
+std::string ReadTextFile(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  if (!in) return {};
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::string WaitStatusText(int status) {
+  if (WIFEXITED(status)) return "exit=" + std::to_string(WEXITSTATUS(status));
+  if (WIFSIGNALED(status)) return "signal=" + std::to_string(WTERMSIG(status));
+  return "status=" + std::to_string(status);
+}
+
+void PrintChildLogs(const std::filesystem::path& stdout_path,
+                    const std::filesystem::path& stderr_path) {
+  const auto out = ReadTextFile(stdout_path);
+  const auto err = ReadTextFile(stderr_path);
+  if (!out.empty()) std::cerr << "listener stdout:\n" << out << '\n';
+  if (!err.empty()) std::cerr << "listener stderr:\n" << err << '\n';
 }
 
 std::filesystem::path MakeTempDir() {
@@ -190,7 +211,8 @@ int main(int argc, char** argv) {
     int status = 0;
     if (::waitpid(pid, &status, WNOHANG) == pid) {
       listener_waited = true;
-      std::cerr << "listener exited before accepting a client\n";
+      std::cerr << "listener exited before accepting a client: " << WaitStatusText(status) << '\n';
+      PrintChildLogs(stdout_path, stderr_path);
       return EXIT_FAILURE;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -198,6 +220,7 @@ int main(int argc, char** argv) {
   if (client_fd < 0) {
     cleanup();
     std::cerr << "listener did not accept client connection\n";
+    PrintChildLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
 
@@ -206,6 +229,7 @@ int main(int argc, char** argv) {
     ::close(client_fd);
     cleanup();
     std::cerr << "client did not receive dummy parser greeting before listener kill: " << line << '\n';
+    PrintChildLogs(stdout_path, stderr_path);
     return EXIT_FAILURE;
   }
 
