@@ -137,7 +137,12 @@ jobs:
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
         timeout-minutes: 120
-        run: ctest --preset public-release-macos --progress --output-on-failure --timeout 900
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos \
+            --chunk-count 8 \
+            --timeout 900 \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
 
       - name: Verify staged public bundle
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
@@ -176,6 +181,7 @@ jobs:
         run: |
           mkdir -p build/macos-proof/${{ matrix.arch }}/logs
           cp -R build/public-release-macos/Testing build/macos-proof/${{ matrix.arch }}/Testing || true
+          cp -R build/ctest-chunks/macos-${{ matrix.arch }} build/macos-proof/${{ matrix.arch }}/ctest-chunks || true
           log show --last 5m --style compact > build/macos-proof/${{ matrix.arch }}/logs/system-log-last-5m.txt || true
 
       - name: Upload macOS staged output
