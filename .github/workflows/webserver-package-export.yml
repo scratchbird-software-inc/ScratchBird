@@ -77,14 +77,7 @@ jobs:
         run: |
           while IFS= read -r manifest; do
             root="$(dirname "$manifest")"
-            platform="$(
-              python3 - "$manifest" <<'PY'
-import json
-import sys
-from pathlib import Path
-print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["platform"])
-PY
-            )"
+            platform="$(python3 -c 'import json, sys; from pathlib import Path; print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["platform"])' "$manifest")"
             python3 project/tools/installers/verify_installer_artifacts.py \
               --platform "$platform" \
               --artifact-root "$root"
