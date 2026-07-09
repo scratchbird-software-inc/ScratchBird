@@ -49,6 +49,14 @@ void Check(bool condition, const std::string& message) {
   std::cerr << "FAIL: " << message << '\n';
 }
 
+std::filesystem::path ManagerRuntimeTestRoot(const std::string& name) {
+#ifndef _WIN32
+  return std::filesystem::path("/tmp") / ("sbmn-mgr-" + std::to_string(::getpid())) / name;
+#else
+  return std::filesystem::temp_directory_path() / name;
+#endif
+}
+
 bool HasDiagnostic(const std::vector<proto::Diagnostic>& diagnostics,
                    const std::string& code) {
   for (const auto& diagnostic : diagnostics) {
@@ -518,7 +526,7 @@ int ConnectControlWhenReady(const std::filesystem::path& socket_path) {
 }
 
 void TestLiveManagerMcpCommandPath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_runtime_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_runtime_integration");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto manager_config_path = root / "manager.conf";
@@ -734,7 +742,7 @@ void TestLiveManagerMcpCommandPath() {
 }
 
 void TestLiveManagerDirectNativeBypassPath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_direct_native_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_direct_native_integration");
   std::filesystem::remove_all(root);
 
   TcpBackendStub backend;
@@ -799,7 +807,7 @@ void TestLiveManagerDirectNativeBypassPath() {
 }
 
 void TestEnterpriseLiteralSecretRefused() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_literal_secret_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_literal_secret_refusal");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
@@ -820,7 +828,7 @@ void TestEnterpriseLiteralSecretRefused() {
 }
 
 void TestEnterpriseLocalTokenStoreRefused() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_local_token_store_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_local_token_store_refusal");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
 
@@ -842,7 +850,7 @@ void TestEnterpriseLocalTokenStoreRefused() {
 }
 
 void TestEnterpriseSecretFilePermissionsRefused() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_secret_file_permission_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_secret_file_permission_refusal");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -874,7 +882,7 @@ void TestEnterpriseSecretFilePermissionsRefused() {
 }
 
 void TestEnterpriseMcpSecretRightsRequired() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_mcp_secret_rights_required";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_mcp_secret_rights_required");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -905,7 +913,7 @@ void TestEnterpriseMcpSecretRightsRequired() {
 }
 
 void TestEnterpriseMcpSecretWildcardRightsRefused() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_mcp_secret_wildcard_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_mcp_secret_wildcard_refusal");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -937,7 +945,7 @@ void TestEnterpriseMcpSecretWildcardRightsRefused() {
 }
 
 void TestEnterpriseMcpSecretExplicitRightsAuthorization() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_mcp_secret_explicit_rights";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_mcp_secret_explicit_rights");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -1003,7 +1011,7 @@ void TestEnterpriseMcpSecretExplicitRightsAuthorization() {
 }
 
 void TestEnterpriseDbbtKeyringPermissionsRefused() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_dbbt_keyring_permission_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_dbbt_keyring_permission_refusal");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -1052,7 +1060,7 @@ void TestEnterpriseDbbtKeyringPermissionsRefused() {
 }
 
 void TestEnterpriseDirectNativeBypassForbidden() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_enterprise_direct_native_refusal";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_enterprise_direct_native_refusal");
   std::filesystem::remove_all(root);
 
   const auto secret_path = root / "enterprise-mcp-secret.txt";
@@ -1120,7 +1128,7 @@ void TestEnterpriseDirectNativeBypassForbidden() {
 }
 
 void TestLiveManagerLprefaceAndListenerCommandPath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_lpreface_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_lpreface_integration");
   std::filesystem::remove_all(root);
 
   TcpBackendStub backend;
@@ -1243,7 +1251,7 @@ void TestLiveManagerLprefaceAndListenerCommandPath() {
 }
 
 void TestManagementCommandSpecificAuthorization() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_command_authz_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_command_authz_integration");
   std::filesystem::remove_all(root);
 
   const auto security_token_store_path = root / "temporary_auth_tokens.tsv";
@@ -1343,7 +1351,7 @@ void TestManagementCommandSpecificAuthorization() {
 }
 
 void TestManagementMaxClientsAdmissionLimit() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_management_max_clients_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_management_max_clients_integration");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
@@ -1406,7 +1414,7 @@ void TestManagementMaxClientsAdmissionLimit() {
 }
 
 void TestAuditMetricsFailureEvidence() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_audit_metrics_failure_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_audit_metrics_failure_integration");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
@@ -1501,7 +1509,7 @@ void TestAuditMetricsFailureEvidence() {
 }
 
 void TestLiveManagerHeartbeatRestartRefusalPath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_heartbeat_refusal_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_heartbeat_refusal_integration");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
@@ -1553,7 +1561,7 @@ void TestLiveManagerHeartbeatRestartRefusalPath() {
 }
 
 void TestLiveManagerRestartQuarantinePath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_restart_quarantine_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_restart_quarantine_integration");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
@@ -1610,7 +1618,7 @@ void TestLiveManagerRestartQuarantinePath() {
 }
 
 void TestOwnerTokenAmbiguityRefusal() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_owner_ambiguity_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_owner_ambiguity_integration");
   std::filesystem::remove_all(root);
   const auto control = root / "control";
   std::filesystem::create_directories(control);
@@ -1645,7 +1653,7 @@ void TestOwnerTokenAmbiguityRefusal() {
 }
 
 void TestLiveManagerHeartbeatRecoveryPath() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_heartbeat_recovery_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_heartbeat_recovery_integration");
   std::filesystem::remove_all(root);
   const auto port = ReserveLoopbackPort();
   Check(port != 0, "heartbeat recovery test must reserve a loopback port");
@@ -1701,7 +1709,7 @@ void TestLiveManagerHeartbeatRecoveryPath() {
 void TestSafeStaleOwnerCleanup() {
   const std::vector<std::string> safe_states = {"stopped", "startup_failed", "failed_terminal"};
   for (const auto& safe_state : safe_states) {
-    const auto root = std::filesystem::temp_directory_path() / ("sbmn_manager_safe_stale_owner_" + safe_state);
+    const auto root = ManagerRuntimeTestRoot(std::string("sbmn_manager_safe_stale_owner_") + safe_state);
     std::filesystem::remove_all(root);
     const auto control = root / "control";
     std::filesystem::create_directories(control);
@@ -1730,7 +1738,7 @@ void TestSafeStaleOwnerCleanup() {
 }
 
 void TestDuplicateOwnerBusyRefusal() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_duplicate_owner_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_duplicate_owner_integration");
   std::filesystem::remove_all(root);
   const auto control = root / "control";
   std::filesystem::create_directories(control);
@@ -1765,7 +1773,7 @@ void TestDuplicateOwnerBusyRefusal() {
 }
 
 void TestInterruptedStartupControlDirFailure() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_interrupted_startup_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_interrupted_startup_integration");
   std::filesystem::remove_all(root);
   std::filesystem::create_directories(root);
   const auto control_as_file = root / "control-is-file";
@@ -1793,7 +1801,7 @@ void TestInterruptedStartupControlDirFailure() {
 }
 
 void TestControlSocketPathTooLongFailsClosed() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_control_socket_path_limit_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_control_socket_path_limit_integration");
   std::filesystem::remove_all(root);
   sockaddr_un addr{};
   const auto unix_socket_limit = sizeof(addr.sun_path);
@@ -1830,7 +1838,7 @@ void TestControlSocketPathTooLongFailsClosed() {
 }
 
 void TestServiceValidateConfigHasNoDaemonSideEffects() {
-  const auto root = std::filesystem::temp_directory_path() / "sbmn_manager_service_validate_config_integration";
+  const auto root = ManagerRuntimeTestRoot("sbmn_manager_service_validate_config_integration");
   std::filesystem::remove_all(root);
 
   node::ManagerConfig config;
