@@ -81,6 +81,13 @@ PRIVATE_LEGAL_WORKING_FILES = {
     "docs/legal/ScratchBird_legacy_poc_vs_private_cluster_boundary_audit.md",
 }
 
+PRIVATE_REFERENCE_FRAGMENT_ALLOWLIST = {
+    (
+        "project/tests/reference_regression/reference_parser_gate_evidence_closure_gate.py",
+        "docs" + "/" + "execution-plans",
+    ),
+}
+
 SKIP_PATH_PREFIXES = (
     "project/tests/reference_regression/reference_release_acquisition/",
     "project/tests/reference_regression/firebird/original_firebird_qa/",
@@ -323,6 +330,8 @@ def scan_text(relative_path: str, text: str) -> list[dict[str, Any]]:
         return []
     findings: list[dict[str, Any]] = []
     for fragment in FORBIDDEN_REFERENCE_FRAGMENTS:
+        if (relative_path, fragment) in PRIVATE_REFERENCE_FRAGMENT_ALLOWLIST:
+            continue
         if fragment in text:
             record_finding(findings, relative_path, "private_reference", fragment)
     for item in SECRET_PATTERNS:

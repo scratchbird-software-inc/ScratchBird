@@ -15,6 +15,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -24,8 +25,9 @@ from public_project_export_gate import (
     check_package_shape,
     check_release_binaries,
     copy_public_tree,
-    rmtree_public,
+    io_path,
     scan_private_references,
+    stable_absolute,
     write_cleanup_outputs,
 )
 
@@ -101,14 +103,14 @@ def private_reference_present(value: str) -> bool:
 
 
 def rel(path: Path, root: Path, context: str) -> str:
-    value = path.resolve().relative_to(root.resolve()).as_posix()
+    value = stable_absolute(path).relative_to(stable_absolute(root)).as_posix()
     reject_private_reference(value, context)
     return value
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with open(io_path(path), "rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -119,19 +121,39 @@ def sha256_text(text: str) -> str:
 
 
 def safe_rmtree(path: Path, allowed_root: Path) -> None:
-    resolved = path.resolve()
-    root = allowed_root.resolve()
+    resolved = stable_absolute(path)
+    root = stable_absolute(allowed_root)
     require(resolved == root or root in resolved.parents, f"refusing_to_remove:{resolved}")
-    rmtree_public(resolved)
+    if os.path.exists(io_path(resolved)):
+        shutil.rmtree(io_path(resolved), ignore_errors=True)
+
+
+def read_text_file(path: Path) -> str:
+    with open(io_path(path), "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def write_text_file(path: Path, text: str) -> None:
+    os.makedirs(io_path(path.parent), exist_ok=True)
+    with open(io_path(path), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def write_bytes_file(path: Path, data: bytes) -> None:
+    os.makedirs(io_path(path.parent), exist_ok=True)
+    with open(io_path(path), "wb") as handle:
+        handle.write(data)
 
 
 def write_deterministic_example(stage_root: Path) -> None:
     example_root = stage_root / "data" / "example"
-    example_root.mkdir(parents=True, exist_ok=True)
-    (example_root / "scratchbird-example.sbdb").write_bytes(
+    os.makedirs(io_path(example_root), exist_ok=True)
+    write_bytes_file(
+        example_root / "scratchbird-example.sbdb",
         b"SCRATCHBIRD_PUBLIC_ARTIFACT_SIGNATURE_FIXTURE\n"
     )
-    (example_root / "scratchbird-example.manifest.json").write_text(
+    write_text_file(
+        example_root / "scratchbird-example.manifest.json",
         json.dumps(
             {
                 "schema_version": 1,
@@ -142,7 +164,6 @@ def write_deterministic_example(stage_root: Path) -> None:
             sort_keys=True,
         )
         + "\n",
-        encoding="utf-8",
     )
 
 
@@ -151,8 +172,8 @@ def scan_required_source_tokens(project_root: Path) -> list[dict[str, Any]]:
     for relative, tokens in REQUIRED_SOURCE_TOKENS.items():
         reject_private_reference(relative, "source_token_path")
         path = project_root / relative
-        require(path.is_file(), f"source_token_file_missing:{relative}")
-        text = path.read_text(encoding="utf-8")
+        require(os.path.isfile(io_path(path)), f"source_token_file_missing:{relative}")
+        text = read_text_file(path)
         for token in tokens:
             reject_private_reference(token, f"source_token:{relative}")
             require(token in text, f"source_token_missing:{relative}:{token}")
@@ -190,7 +211,7 @@ def stage_public_export(repo_root: Path, work_root: Path) -> dict[str, Path]:
 
 def artifact_path_record(path: Path, stage_root: Path, work_root: Path) -> str:
     try:
-        value = path.resolve().relative_to(stage_root.resolve()).as_posix()
+        value = stable_absolute(path).relative_to(stable_absolute(stage_root)).as_posix()
     except ValueError:
         value = "work/" + rel(path, work_root, "artifact_work_path")
     reject_private_reference(value, "artifact_path")
@@ -212,7 +233,7 @@ def collect_artifacts(stage_root: Path, work_root: Path, staged: dict[str, Path]
     artifacts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in candidates:
-        require(path.exists() and path.is_file(), f"artifact_missing:{path.name}")
+        require(os.path.isfile(io_path(path)), f"artifact_missing:{path.name}")
         artifact_path = artifact_path_record(path, stage_root, work_root)
         if artifact_path in seen:
             continue
@@ -221,7 +242,7 @@ def collect_artifacts(stage_root: Path, work_root: Path, staged: dict[str, Path]
             {
                 "artifact_path": artifact_path,
                 "sha256": sha256_file(path),
-                "bytes": path.stat().st_size,
+                "bytes": os.path.getsize(io_path(path)),
                 "checksum_algorithm": "sha256",
             }
         )
@@ -262,13 +283,13 @@ def write_release_artifacts(
     signing_root: Path,
     artifacts: list[dict[str, Any]],
 ) -> dict[str, Path]:
-    signing_root.mkdir(parents=True, exist_ok=True)
+    os.makedirs(io_path(signing_root), exist_ok=True)
     checksums = checksum_text(artifacts)
     checksums_path = signing_root / "public-release-artifact-checksums.txt"
-    checksums_path.write_text(checksums, encoding="utf-8")
+    write_text_file(checksums_path, checksums)
     policy = signing_policy(sha256_text(checksums), len(artifacts))
     policy_path = signing_root / "public-release-artifact-signing-policy.json"
-    policy_path.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_text_file(policy_path, json.dumps(policy, indent=2, sort_keys=True) + "\n")
     manifest = {
         "schema_version": 1,
         "marker": "PUBLIC_RELEASE_ARTIFACT_SIGNING",
@@ -277,7 +298,7 @@ def write_release_artifacts(
         "signing_policy": artifact_path_record(policy_path, signing_root, signing_root),
     }
     manifest_path = signing_root / "public-release-artifact-manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_text_file(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return {
         "checksums": checksums_path,
         "signing_policy": policy_path,
@@ -357,27 +378,30 @@ def verify_failure_cases(
 
 
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    project_root = args.project_root.resolve()
-    build_root = args.build_root.resolve()
-    work_root = args.work_root.resolve()
-    require(repo_root.is_dir() and project_root == repo_root / "project", "repo_project_root_invalid")
-    require(build_root.is_dir(), "build_root_missing")
+    repo_root = stable_absolute(args.repo_root)
+    project_root = stable_absolute(args.project_root)
+    build_root = stable_absolute(args.build_root)
+    work_root = stable_absolute(args.work_root)
+    require(
+        os.path.isdir(io_path(repo_root)) and project_root == repo_root / "project",
+        "repo_project_root_invalid",
+    )
+    require(os.path.isdir(io_path(build_root)), "build_root_missing")
     try:
         work_record = work_root.relative_to(build_root).as_posix()
     except ValueError:
         fail("work_root_must_be_under_build_root")
     reject_private_reference(work_record, "work_root")
     safe_rmtree(work_root, work_root)
-    work_root.mkdir(parents=True, exist_ok=True)
+    os.makedirs(io_path(work_root), exist_ok=True)
 
     source_rows = scan_required_source_tokens(project_root)
     staged = stage_public_export(repo_root, work_root)
     stage_root = staged["stage_root"]
     artifacts = collect_artifacts(stage_root, work_root, staged)
     output_paths = write_release_artifacts(work_root / "signing", artifacts)
-    checksums = output_paths["checksums"].read_text(encoding="utf-8")
-    policy = json.loads(output_paths["signing_policy"].read_text(encoding="utf-8"))
+    checksums = read_text_file(output_paths["checksums"])
+    policy = json.loads(read_text_file(output_paths["signing_policy"]))
     ok, diagnostic = verify_bundle(artifacts, checksums, policy)
     require(ok and diagnostic == "RELEASE.ARTIFACT.OK", f"positive_verification_failed:{diagnostic}")
     failure_rows = verify_failure_cases(artifacts, checksums, policy)
@@ -423,14 +447,13 @@ def main() -> int:
     args = parser.parse_args()
 
     evidence = build_evidence(args)
-    output = args.output.resolve()
+    output = stable_absolute(args.output)
     try:
-        output_record = output.relative_to(args.build_root.resolve()).as_posix()
+        output_record = output.relative_to(stable_absolute(args.build_root)).as_posix()
     except ValueError:
         fail("output_must_be_under_build_root")
     reject_private_reference(output_record, "output")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_text_file(output, json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(f"public_artifact_signature_output={output_record}")
     print(f"public_artifact_signature_sha256={evidence['evidence_sha256']}")
     print("public_artifact_signature_gate=passed")

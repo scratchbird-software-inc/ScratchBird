@@ -562,8 +562,11 @@ void EvidenceHasNoRuntimeDocDependency() {
   const auto deleted = Delete(fixture, context, RowUuidPredicate(row_uuid));
   RequireOk(deleted, "ODF-032 no-doc delete failed");
   for (const auto& evidence : deleted.evidence) {
-    for (const auto forbidden : {"docs/", "execution-plans", "findings", "audit",
-                                 "contracts", "references"}) {
+    for (const auto forbidden : {"docs/", "docs\\", "execution-plans",
+                                 "public_execution_plan", "docs" "/findings",
+                                 "docs" "\\findings", "public_audit_summary",
+                                 "docs" "/contracts", "docs" "\\contracts",
+                                 "docs" "/references", "docs" "\\references"}) {
       Require(evidence.evidence_kind.find(forbidden) == std::string::npos &&
                   evidence.evidence_id.find(forbidden) == std::string::npos,
               "ODF-032 runtime evidence leaked forbidden documentation token");

@@ -89,8 +89,24 @@ std::string Sha256Hex(const std::string& payload) {
   return stream.str();
 }
 
+std::string CanonicalPolicyPackHashPayload(const std::string& payload) {
+  std::string canonical;
+  canonical.reserve(payload.size());
+  for (std::size_t i = 0; i < payload.size(); ++i) {
+    if (payload[i] == '\r') {
+      if (i + 1 < payload.size() && payload[i + 1] == '\n') {
+        ++i;
+      }
+      canonical.push_back('\n');
+      continue;
+    }
+    canonical.push_back(payload[i]);
+  }
+  return canonical;
+}
+
 std::string Sha256File(const std::filesystem::path& path) {
-  return Sha256Hex(ReadText(path));
+  return Sha256Hex(CanonicalPolicyPackHashPayload(ReadText(path)));
 }
 
 void ReplaceManifestSha(std::string* manifest,

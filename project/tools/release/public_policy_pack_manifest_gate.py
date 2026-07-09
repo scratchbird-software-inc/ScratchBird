@@ -177,8 +177,12 @@ def require_uuid(value: str, field: str) -> None:
     require(bool(UUID_RE.fullmatch(value)), f"{field}: invalid UUID {value!r}")
 
 
+def canonical_policy_payload(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(canonical_policy_payload(path)).hexdigest()
 
 
 def aggregate_digest(entries: list[tuple[str, str]]) -> str:

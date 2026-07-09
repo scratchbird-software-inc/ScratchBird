@@ -52,6 +52,17 @@ FINGERPRINTED_PATHS = (
 FINGERPRINT_RE = re.compile(r"^- `([^`]+)`: `sha256:([0-9a-f]{64})`$", re.MULTILINE)
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 def rel(path: pathlib.Path) -> str:
     return path.as_posix()
 
@@ -448,7 +459,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
     args = parser.parse_args(argv)
-    repo_root = pathlib.Path(args.repo_root).resolve()
+    repo_root = io_path(pathlib.Path(args.repo_root).resolve())
     errors = run(repo_root)
     if errors:
         for message in errors:

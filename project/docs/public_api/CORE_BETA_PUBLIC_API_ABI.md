@@ -104,7 +104,9 @@ The frozen exported C ABI symbol set is:
 - Contract version: `driver_package_manifest_v1`.
 - Source path: `project/drivers/DriverPackageManifest.csv`.
 - Driver surfaces request work through listener/manager/server routes or
-  engine SBLR/API boundaries. Drivers do not own transaction finality.
+  engine SBLR/API boundaries. Documented ingress modes are `direct_listener`,
+  `manager_proxy`, `local_ipc`, and driver-embedded runtime routes. Drivers do
+  not own transaction finality.
 
 ### `sbsql_parser_package_v3`
 

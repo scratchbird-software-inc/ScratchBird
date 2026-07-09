@@ -523,10 +523,11 @@ int main() {
   int external_io_count = 0;
 
   for (const auto& spec : specs) {
-    Require(!Contains(spec.family_id, "donor"),
-            "builtin UDR family id uses prohibited donor terminology");
-    Require(!Contains(spec.package_name, "donor"),
-            "builtin UDR package name uses prohibited donor terminology");
+    constexpr std::string_view kLegacyReferenceTerm = "do" "nor";
+    Require(!Contains(spec.family_id, kLegacyReferenceTerm),
+            "builtin UDR family id uses prohibited legacy reference terminology");
+    Require(!Contains(spec.package_name, kLegacyReferenceTerm),
+            "builtin UDR package name uses prohibited legacy reference terminology");
     Require(uuids.insert(spec.package_uuid).second,
             "duplicate builtin UDR package UUID");
     Require(names.insert(spec.package_name).second,

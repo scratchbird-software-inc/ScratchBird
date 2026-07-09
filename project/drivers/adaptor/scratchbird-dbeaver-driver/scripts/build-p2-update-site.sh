@@ -47,7 +47,7 @@ JDBC_BUILD_ROOT="${SCRATCHBIRD_JDBC_BUILD_ROOT:-${BUILD_ROOT}/jdbc}"
 MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-${BUILD_ROOT}/maven-repo}"
 PLUGIN_DIR="${BUILD_INTEGRATION_DIR}/plugins/org.jkiss.dbeaver.ext.scratchbird"
 PLUGIN_DRIVER_DIR="${PLUGIN_DIR}/drivers/scratchbird"
-LANGUAGE_PACK_SRC="${PROJECT_ROOT}/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack"
+LANGUAGE_PACK_SRC="${SCRATCHBIRD_LANGUAGE_PACK_SRC:-${PROJECT_ROOT}/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack}"
 PLUGIN_LANGUAGE_PACK_DIR="${PLUGIN_DIR}/resources/sbsql-language-resource-pack"
 
 cleanup_staged_driver() {

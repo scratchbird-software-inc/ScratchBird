@@ -27,7 +27,7 @@ target_link_libraries(sbu_sbsql_parser_support PUBLIC
 
 if(SB_INSTALL_NON_ENGINE_COMPONENTS)
   install(TARGETS sbu_sbsql_parser_support
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
+    LIBRARY DESTINATION lib COMPONENT non_engine_runtime EXCLUDE_FROM_ALL
   )
 endif()

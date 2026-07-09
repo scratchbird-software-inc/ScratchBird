@@ -7,7 +7,7 @@
   "policy_pack_version": "1.0.0",
   "description": "First public release default policy pack: local password provider only.",
   "content_hash_algorithm": "sha256",
-  "content_sha256": "7773d76bb23126e65711f80e23d3e6a7d25b7956f008199b159df3d1d4d2d2c8",
+  "content_sha256": "1dfb45dd2e167a65f2094be9d70775f3add122b3065c727db434e1549a420b93",
   "signature_status": "signature-ready-unsigned",
   "provenance": {
     "source": "public-project-tree",
@@ -40,39 +40,39 @@
   "content_manifest": [
     {
       "path": "policies/security_providers.json",
-      "sha256": "15df7ee593a25189a5339fadc0e1ce33a479623b5f307e349d628ecdef22c35c"
+      "sha256": "498fc37df62400df815131071da1aa4b3b42ec73e971e8541d2d4f77765f8cf5"
     },
     {
       "path": "policies/roles.json",
-      "sha256": "c526f07d47305e3cc4e991362b033354af9cdc142459cb34b52750628e41169c"
+      "sha256": "df4ff37e43f46b8fb8fb938fab76ce553d254f00630d75ae39ce68f00c3f3ca9"
     },
     {
       "path": "policies/groups.json",
-      "sha256": "bf629d16c267c2f109f940d942fd5c753f07a7addf6c402b45cd8a8e38fe148f"
+      "sha256": "beb88a67a3333099b3213ccf36741d85ca2353ad1cf7277077e00e3f00a74615"
     },
     {
       "path": "policies/grants.json",
-      "sha256": "fe0602e1b600eb733318eacc7f9c04a6430301320bea23ff2930da09c85cd05f"
+      "sha256": "ef30fad54b8339f4419c3b1b508e292416b4bdb9e721bd86aea0087f693a78a8"
     },
     {
       "path": "policies/policy_profiles.json",
-      "sha256": "76745182a47cc65d2646ba9613f8e0762110783f67e4d4dbe45177affa433640"
+      "sha256": "ddebea7c76f4d2032f41c3d6982284b261ee75fbd8ab023d7dbf651f113d3655"
     },
     {
       "path": "policies/server_memory_cache_policy.json",
-      "sha256": "5271c2c89645ab2fc1c4e5144caccb120200e2642b07955eeef07401c1d72fbf"
+      "sha256": "70137fb141622578003cc3d0c0f7c183306ac1c1c4823e477e760a3440ea41a6"
     },
     {
       "path": "policies/default_policy_catalog.json",
-      "sha256": "77bca5463f1ac0fee6b2755b19c4ebdcbe539b3484f13befc529342318c67b71"
+      "sha256": "f70c60ac3adcf872ef37353bdf04d2e60b5296cfab3e889a395e434e775b6b00"
     },
     {
       "path": "policies/policy_defaults.json",
-      "sha256": "23173db89a15190c67efb5b39448a1dff3a0cfea65e3522a6d8e757fced30e34"
+      "sha256": "4b9b8d8a9df6ccb65f8e9c7a1ab121ad80a5c78ffe597097d29a83380b2e7509"
     },
     {
       "path": "catalog_materialization.json",
-      "sha256": "fc8103c123a5fe926bf77d710d6e3fcbcf4a082722eab138f4fc2323dec5d853"
+      "sha256": "42d8f370058e884690ba470be144edaa30147cde1a9b92181a7aed1ea52c8408"
     }
   ]
 }

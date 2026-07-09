@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 def main() -> int:
@@ -26,6 +27,10 @@ def main() -> int:
     candidate_doc = regression_root / "FIREBIRD_QA_CANDIDATE.md"
     source_pointers = regression_root / "SOURCE_POINTERS.md"
     test_index = regression_root / "FIREBIRD_QA_CANDIDATE_TEST_INDEX.csv"
+
+    if not regression_root.is_dir():
+        print(f"skipped: Firebird QA regression acquisition root is not installed: {regression_root}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
 
     errors: list[str] = []
     for path in (candidate_doc, source_pointers, test_index):

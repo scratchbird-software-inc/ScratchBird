@@ -22,6 +22,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -242,12 +243,34 @@ def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def io_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    absolute = str(path.absolute())
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    return "\\\\?\\" + absolute
+
+
+def path_is_file(path: Path) -> bool:
+    if os.name != "nt":
+        return path.is_file()
+    return os.path.isfile(io_path(path))
+
+
+def path_is_dir(path: Path) -> bool:
+    if os.name != "nt":
+        return path.is_dir()
+    return os.path.isdir(io_path(path))
+
+
 def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    with open(io_path(path), encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8-sig") as handle:
+    with open(io_path(path), newline="", encoding="utf-8-sig") as handle:
         return list(csv.DictReader(handle))
 
 
@@ -516,7 +539,7 @@ def validate_tools(
 
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with open(io_path(path), "rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return "sha256:" + digest.hexdigest()
@@ -545,13 +568,13 @@ def validate_language(repo_root: Path, language_doc: dict[str, Any]) -> tuple[li
             pack_root.relative_to(repo_root)
         except ValueError:
             errors.append("language:resource_pack_path_must_be_under_repo")
-        if not pack_root.is_dir():
+        if not path_is_dir(pack_root):
             errors.append(f"language:resource_pack_path_missing:{resource_pack_path}")
 
     pack_manifest_summary: dict[str, Any] = {}
-    if pack_root is not None and pack_root.is_dir():
+    if pack_root is not None and path_is_dir(pack_root):
         manifest_path = pack_root / "manifest.sblrp.json"
-        if not manifest_path.is_file():
+        if not path_is_file(manifest_path):
             errors.append("language:pack_manifest_missing")
         else:
             try:
@@ -582,7 +605,7 @@ def validate_language(repo_root: Path, language_doc: dict[str, Any]) -> tuple[li
                     errors.append(f"language:pack_missing_profile_file:{profile_path}")
             for relative_path, item in files.items():
                 actual_path = pack_root / relative_path
-                if not actual_path.is_file():
+                if not path_is_file(actual_path):
                     errors.append(f"language:pack_file_missing:{relative_path}")
                     continue
                 expected_hash = str(item.get("sha256", ""))
@@ -590,7 +613,7 @@ def validate_language(repo_root: Path, language_doc: dict[str, Any]) -> tuple[li
                     errors.append(f"language:pack_file_sha256_drift:{relative_path}")
             pack_manifest_summary = {
                 "manifest_path": str(manifest_path.relative_to(repo_root)),
-                "manifest_sha256": manifest_hash if manifest_path.is_file() else "",
+                "manifest_sha256": manifest_hash if path_is_file(manifest_path) else "",
                 "common_resource_hash": common_hash,
                 "file_count": len(files),
                 "required_resource_files": sorted(REQUIRED_LANGUAGE_RESOURCE_FILES),

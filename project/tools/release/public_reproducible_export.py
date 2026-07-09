@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -35,6 +36,21 @@ FORBIDDEN_REFERENCE_FRAGMENTS = (
 )
 
 RUN_IDS = ("run_a", "run_b")
+
+
+def io_path(path: Path) -> str:
+    text = os.path.normpath(str(path.absolute()))
+    if os.name != "nt":
+        return text
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def stable_absolute(path: Path) -> Path:
+    return Path(os.path.normpath(str(path.absolute()))) if os.name == "nt" else path.resolve()
 
 
 def fail(message: str) -> None:
@@ -64,7 +80,7 @@ def sha256_file(path: Path) -> str:
 
 def relative_to_build(path: Path, build_root: Path) -> str:
     try:
-        value = path.resolve().relative_to(build_root.resolve()).as_posix()
+        value = stable_absolute(path).relative_to(stable_absolute(build_root)).as_posix()
     except ValueError:
         fail(f"path_outside_build_root:{path.name}")
     reject_private_reference(value, "build_output")
@@ -98,11 +114,10 @@ def run_command(command: list[str], cwd: Path, label: str) -> None:
 
 def write_deterministic_example(stage_root: Path) -> None:
     example_root = stage_root / "data" / "example"
-    example_root.mkdir(parents=True, exist_ok=True)
-    (example_root / "scratchbird-example.sbdb").write_bytes(
-        b"SCRATCHBIRD_PUBLIC_REPRODUCIBLE_EXPORT_EXAMPLE\n"
-    )
-    (example_root / "scratchbird-example.manifest.json").write_text(
+    os.makedirs(io_path(example_root), exist_ok=True)
+    with open(io_path(example_root / "scratchbird-example.sbdb"), "wb") as handle:
+        handle.write(b"SCRATCHBIRD_PUBLIC_REPRODUCIBLE_EXPORT_EXAMPLE\n")
+    manifest_text = (
         json.dumps(
             {
                 "schema_version": 1,
@@ -112,9 +127,14 @@ def write_deterministic_example(stage_root: Path) -> None:
             indent=2,
             sort_keys=True,
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
+    with open(
+        io_path(example_root / "scratchbird-example.manifest.json"),
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(manifest_text)
 
 
 def run_cleanup_export_pair(repo_root: Path, work_root: Path, export_module: Any) -> dict[str, Path]:
@@ -149,9 +169,9 @@ def run_generated_artifacts(args: argparse.Namespace, run_root: Path) -> dict[st
 
     common_roots = [
         "--repo-root",
-        str(args.repo_root.resolve()),
+        str(stable_absolute(args.repo_root)),
         "--project-root",
-        str(args.project_root.resolve()),
+        str(stable_absolute(args.project_root)),
     ]
     run_command(
         [
@@ -159,7 +179,7 @@ def run_generated_artifacts(args: argparse.Namespace, run_root: Path) -> dict[st
             str(args.project_root / "tools" / "release" / "public_platform_matrix_gate.py"),
             *common_roots,
             "--build-root",
-            str(args.build_root.resolve()),
+            str(stable_absolute(args.build_root)),
             "--output",
             str(outputs["platform_matrix"]),
             "--configured-system-name",
@@ -190,7 +210,7 @@ def run_generated_artifacts(args: argparse.Namespace, run_root: Path) -> dict[st
             str(args.project_root / "tools" / "release" / "public_proof_migration_gate.py"),
             *common_roots,
             "--build-root",
-            str(args.build_root.resolve()),
+            str(stable_absolute(args.build_root)),
             "--output",
             str(outputs["proof_list"]),
         ],
@@ -202,7 +222,7 @@ def run_generated_artifacts(args: argparse.Namespace, run_root: Path) -> dict[st
             args.python,
             str(args.project_root / "tools" / "release" / "public_diagnostic_matrix_generator.py"),
             "--project-root",
-            str(args.project_root.resolve()),
+            str(stable_absolute(args.project_root)),
             "--matrix-output",
             str(outputs["diagnostic_matrix"]),
             "--evidence-output",
@@ -227,7 +247,7 @@ def run_generated_artifacts(args: argparse.Namespace, run_root: Path) -> dict[st
             str(args.project_root / "tools" / "release" / "public_dependency_sbom.py"),
             *common_roots,
             "--build-root",
-            str(args.build_root.resolve()),
+            str(stable_absolute(args.build_root)),
             "--output",
             str(outputs["sbom"]),
         ],
@@ -286,10 +306,10 @@ def compare_artifacts(
 
 
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    repo_root = args.repo_root.resolve()
-    project_root = args.project_root.resolve()
-    build_root = args.build_root.resolve()
-    work_root = args.work_root.resolve()
+    repo_root = stable_absolute(args.repo_root)
+    project_root = stable_absolute(args.project_root)
+    build_root = stable_absolute(args.build_root)
+    work_root = stable_absolute(args.work_root)
     if not repo_root.is_dir() or not project_root.is_dir() or not build_root.is_dir():
         fail("input_root_missing")
     if project_root != repo_root / "project":
@@ -350,9 +370,10 @@ def main() -> int:
     args = parser.parse_args()
 
     evidence = build_evidence(args)
-    output = args.output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output = stable_absolute(args.output)
+    os.makedirs(io_path(output.parent), exist_ok=True)
+    with open(io_path(output), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(f"public_reproducible_export_output={relative_to_build(output, args.build_root)}")
     print(f"public_reproducible_export_sha256={evidence['evidence_sha256']}")
     print("public_reproducible_export=passed")

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -19,6 +20,19 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_LOCAL_STACK = REPO_ROOT / "tools" / "run_local_stack.sh"
+
+
+def _bash_executable() -> str:
+    discovered = shutil.which("bash")
+    if discovered:
+        return discovered
+    for candidate in (
+        Path("C:/msys64/usr/bin/bash.exe"),
+        Path("C:/msys64/ucrt64/bin/bash.exe"),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    raise unittest.SkipTest("bash is required to exercise run_local_stack.sh")
 
 
 def _write_fake_python(path: Path) -> None:
@@ -65,15 +79,21 @@ class LocalLauncherTests(unittest.TestCase):
             bridge_log = tmp_path / "bridge.log"
             fake_python = tmp_path / "python3"
             _write_fake_python(fake_python)
+            bash = Path(_bash_executable())
+            path_entries = [
+                str(tmp_path),
+                str(bash.parent),
+                "C:/msys64/usr/bin",
+            ]
 
             env = os.environ.copy()
-            env["PATH"] = str(tmp_path) + os.pathsep + env.get("PATH", "")
+            env["PATH"] = os.pathsep.join(path_entries + [env.get("PATH", "")])
             env["FAKE_PYTHON_LOG"] = str(log_path)
             env["FAKE_PYTHON_MCP_AVAILABLE"] = "1" if mcp_available else "0"
             env["SCRATCHBIRD_AI_BRIDGE_LOG"] = str(bridge_log)
 
             result = subprocess.run(
-                ["bash", str(RUN_LOCAL_STACK)],
+                [str(bash), str(RUN_LOCAL_STACK)],
                 cwd=REPO_ROOT,
                 check=False,
                 capture_output=True,

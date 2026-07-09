@@ -21,17 +21,20 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 struct Case {
   std::string_view command;
+  bool expect_ok;
+  std::string_view statement_family;
   std::string_view operation_family;
 };
 
 bool Probe(const Case& test) {
   const auto parsed = scratchbird::parser::firebird::ParseStatement(test.command);
-  if (parsed.ok) {
-    std::cerr << "service tool command was accepted: " << test.command << '\n';
+  if (parsed.ok != test.expect_ok) {
+    std::cerr << "service tool command result mismatch: " << test.command
+              << '\n';
     std::cerr << parsed.sblr_envelope << '\n';
     return false;
   }
-  if (parsed.statement_family != "low_level_utility") {
+  if (parsed.statement_family != test.statement_family) {
     std::cerr << "service tool statement family mismatch for " << test.command
               << ": " << parsed.statement_family << '\n';
     return false;
@@ -41,16 +44,26 @@ bool Probe(const Case& test) {
               << ": " << parsed.operation_family << '\n';
     return false;
   }
-  if (!parsed.sblr_envelope.empty()) {
+  if (!test.expect_ok && !parsed.sblr_envelope.empty()) {
     std::cerr << "service tool denial produced SBLR for " << test.command
               << '\n';
     return false;
   }
-  if (!Contains(parsed.message_vector_json,
-                "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED")) {
-    std::cerr << "service tool denial diagnostic missing for " << test.command
+  const std::string_view expected_diagnostic =
+      test.expect_ok ? "FIREBIRD.EMULATION.NON_FILE_SURFACE"
+                     : "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED";
+  if (!Contains(parsed.message_vector_json, expected_diagnostic)) {
+    std::cerr << "service tool diagnostic missing for " << test.command
               << '\n'
               << parsed.message_vector_json << '\n';
+    return false;
+  }
+  if (test.expect_ok &&
+      !Contains(parsed.sblr_envelope,
+                "\"statement_family\":\"non_file_emulation\"")) {
+    std::cerr << "service tool emulation did not produce non-file SBLR for "
+              << test.command << '\n'
+              << parsed.sblr_envelope << '\n';
     return false;
   }
   if (!Contains(parsed.message_vector_json,
@@ -203,52 +216,55 @@ int main() {
 
   const Case cases[] = {
       {"GBAK -backup scratchbird-firebird.fdb scratchbird-firebird.fbk",
-       "firebird.emulated.reference_native_tool"},
+       false, "non_file_emulation", "firebird.emulated.backup_restore"},
       {"GBAK -backup scratchbird-firebird.fdb scratchbird-firebird.fbk -y stdout",
-       "firebird.emulated.reference_native_tool"},
+       false, "non_file_emulation", "firebird.emulated.backup_restore"},
       {"GBAK -restore scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "non_file_emulation", "firebird.emulated.backup_restore"},
       {"GBAK -restore -y stdin scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "non_file_emulation", "firebird.emulated.backup_restore"},
       {"GBAK -replace scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "non_file_emulation", "firebird.emulated.backup_restore"},
       {"GFIX -validate scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "low_level_utility", "firebird.unsupported.low_level_utility"},
       {"GFIX -mend scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "low_level_utility", "firebird.unsupported.low_level_utility"},
       {"GFIX -sweep scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       false, "low_level_utility", "firebird.unsupported.low_level_utility"},
       {"GSTAT -header scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"GSTAT -data scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"GSTAT -index scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"NBACKUP -backup 0 scratchbird-firebird.fdb scratchbird-firebird.nbk",
-       "firebird.emulated.incremental_backup"},
+       false, "low_level_utility", "firebird.emulated.incremental_backup"},
       {"NBACKUP -lock scratchbird-firebird.fdb",
-       "firebird.emulated.incremental_backup"},
+       false, "low_level_utility", "firebird.emulated.incremental_backup"},
       {"NBACKUP -unlock scratchbird-firebird.fdb",
-       "firebird.emulated.incremental_backup"},
+       false, "low_level_utility", "firebird.emulated.incremental_backup"},
       {"NBACKUP -fixup scratchbird-firebird.fdb",
-       "firebird.emulated.incremental_backup"},
+       false, "low_level_utility", "firebird.emulated.incremental_backup"},
       {"FBSVCMGR service_mgr action_db_stats dbname scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_backup dbname scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_restore dbname scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_validate dbname scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"FBTRACEMGR -service service_mgr -list",
-       "firebird.emulated.reference_native_tool"},
-      {"GSEC display", "firebird.emulated.reference_native_tool"},
-      {"GPRE sample.e", "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
+      {"GSEC display",
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
+      {"GPRE sample.e",
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"GSPLIT -join_backup_file split01.fbk split02.fbk",
-       "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
       {"FB_LOCK_PRINT -d scratchbird-firebird.fdb",
-       "firebird.emulated.reference_native_tool"},
-      {"FBGUARD -onetime", "firebird.emulated.reference_native_tool"},
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
+      {"FBGUARD -onetime",
+       true, "non_file_emulation", "firebird.emulated.reference_native_tool"},
   };
 
   for (const auto& test : cases) {

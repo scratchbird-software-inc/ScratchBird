@@ -526,6 +526,17 @@ class ManifestError(Exception):
     pass
 
 
+def io_path(path: pathlib.Path) -> pathlib.Path:
+    if sys.platform != "win32":
+        return path
+    text = str(path)
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return pathlib.Path("\\\\?\\UNC\\" + text.lstrip("\\"))
+    return pathlib.Path("\\\\?\\" + text)
+
+
 def normalize_status(value: str) -> str:
     return value.strip().lower().replace(" ", "_").replace("-", "_")
 
@@ -980,7 +991,7 @@ def build_manifest(
     writing: bool = False,
     carried: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    repo_root = repo_root.resolve()
+    repo_root = io_path(repo_root.resolve())
     carried = carried or {}
     tracker, artifacts, agent_metrics = validate_execution_plan_inputs(repo_root, writing=writing)
     validate_static_inputs(repo_root)
@@ -1463,7 +1474,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    repo_root = args.repo_root.resolve()
+    repo_root = io_path(args.repo_root.resolve())
     manifest_path = args.manifest
     if not manifest_path.is_absolute():
         manifest_path = repo_root / manifest_path

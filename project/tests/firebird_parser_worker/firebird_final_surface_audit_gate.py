@@ -13,6 +13,12 @@ import sys
 from pathlib import Path
 
 
+def stable_absolute_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
+
+
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
         return list(csv.DictReader(handle))
@@ -59,7 +65,7 @@ def main() -> int:
     parser.add_argument("--mode", choices=("exhaustive", "final"), required=True)
     args = parser.parse_args()
 
-    artifact_root = Path(args.execution_plan_root).resolve() / "artifacts"
+    artifact_root = stable_absolute_path(Path(args.execution_plan_root)) / "artifacts"
     gate_rows = read_rows(artifact_root / "FIREBIRD_CTEST_REQUIRED_GATES.csv")
     artifact_rows = read_rows(artifact_root / "FIREBIRD_REQUIRED_P0_ARTIFACTS.csv")
     agent_rows = read_rows(artifact_root / "AGENT_EXECUTION_STATUS.csv")

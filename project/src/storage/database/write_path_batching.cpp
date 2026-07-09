@@ -70,6 +70,18 @@ std::string StableHash(const std::vector<std::string>& fields) {
   return out.str();
 }
 
+#ifndef _WIN32
+int ForcedOrderedWriteOpenFlag() {
+#ifdef O_DSYNC
+  return O_DSYNC;
+#elif defined(O_SYNC)
+  return O_SYNC;
+#else
+  return 0;
+#endif
+}
+#endif
+
 WritePathBatchingResult Refuse(const WritePathBatchingRequest& request,
                                std::string diagnostic,
                                std::string fallback_reason) {
@@ -182,7 +194,7 @@ bool WriteFsyncOpenMarker(const std::filesystem::path& path,
                               FILE_SHARE_READ,
                               nullptr,
                               CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
                               nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return false;
@@ -245,7 +257,10 @@ bool WriteFsyncOpenMarker(const std::filesystem::path& path,
   }
   return reopened != nullptr && *reopened == content;
 #else
-  const int fd = ::open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+  const int fd = ::open(path.c_str(),
+                        O_CREAT | O_TRUNC | O_WRONLY |
+                            ForcedOrderedWriteOpenFlag(),
+                        0600);
   if (fd < 0) {
     return false;
   }
@@ -558,6 +573,7 @@ WritePathBatchingResult ExecuteDurabilityWritePathBatch(
   AddEvidence(&result, "orh284.dirty_page_accounting_proven=true");
   AddEvidence(&result, "orh284.extent_allocation_proven=true");
   AddEvidence(&result, "orh284.fsync_open_proven=true");
+  AddEvidence(&result, "orh284.fsync_open_forced_ordered_writes=true");
   AddEvidence(&result, "orh284.crash_reopen_recovery_proven=true");
   AddEvidence(&result, "orh284.state_hash=" + result.state_hash);
   AddEvidence(&result,

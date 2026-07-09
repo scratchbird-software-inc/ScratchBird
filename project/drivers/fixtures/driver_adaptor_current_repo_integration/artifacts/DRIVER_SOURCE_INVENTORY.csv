@@ -21,6 +21,7 @@ driver,ruby,drivers/driver/ruby,Ruby,bundler/gem,driver_ruby_gate,required,build
 driver,rust,drivers/driver/rust,Rust,cargo,driver_rust_gate,required,build/drivers/driver/rust
 driver,swift,drivers/driver/swift,Swift,swift package,driver_swift_gate,required,build/drivers/driver/swift
 adaptor,scratchbird-airbyte,drivers/adaptor/scratchbird-airbyte,Python/Airbyte,contract package,adaptor_airbyte_gate,required,build/drivers/adaptor/scratchbird-airbyte
+adaptor,scratchbird-ai-mcp,ai,Python/MCP,pyproject/pytest,ai_mcp_final_zero_drift_audit,required,build/drivers/adaptor/scratchbird-ai-mcp
 adaptor,scratchbird-dbeaver-driver,drivers/adaptor/scratchbird-dbeaver-driver,Java/Eclipse,Maven/Tycho,adaptor_dbeaver_gate,required,build/drivers/adaptor/scratchbird-dbeaver-driver
 adaptor,scratchbird-dbt-adapter,drivers/adaptor/scratchbird-dbt-adapter,Python/dbt,contract package,adaptor_dbt_gate,required,build/drivers/adaptor/scratchbird-dbt-adapter
 adaptor,scratchbird-hibernate-dialect,drivers/adaptor/scratchbird-hibernate-dialect,Java,Maven,adaptor_hibernate_gate,required,build/drivers/adaptor/scratchbird-hibernate-dialect

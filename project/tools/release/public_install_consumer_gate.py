@@ -48,7 +48,11 @@ FORBIDDEN_ENGINE_ONLY_ARTIFACTS = (
     "bin/SB_FBSQL_Parser",
     "bin/sb_ipc_tester",
     "lib/libSBParser_udr.a",
+    "lib/libSBParser_udr.dll.a",
+    "bin/SBParser_udr.dll",
     "lib/libSB_FBSQL_Parser_udr.a",
+    "lib/libSB_FBSQL_Parser_udr.dll.a",
+    "bin/SB_FBSQL_Parser_udr.dll",
     "share/scratchbird/drivers/DriverPackageManifest.csv",
     "share/scratchbird/examples/core_beta_qa/manifest.json",
 )
@@ -269,7 +273,8 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
 
     run([str(args.cmake), "--build", str(build_root), "--target", "sb_engine_shared"],
         cwd=project_root)
-    run([str(args.cmake), "--install", str(build_root), "--prefix", str(prefix)],
+    run([str(args.cmake), "--install", str(build_root), "--prefix", str(prefix),
+         "--component", "public_engine"],
         cwd=project_root)
 
     example_files = validate_example_source(project_root)

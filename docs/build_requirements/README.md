@@ -3,6 +3,9 @@
 This public source-review release separates support-eligible platform requirements
 from production support claims.
 
+No support claim is made for a platform until that platform's native proof lane
+has passed and the release evidence names it as supported.
+
 ## Common Requirements
 
 | Platform | Status | Requirement boundary |

@@ -18,6 +18,7 @@ EXPECTED_ASSET_COUNT = 171
 EXPECTED_GATE = "firebird_original_regression_replay_gate"
 EXPECTED_REPLAY_STATUS = "original_reference_replay_passed"
 EXPECTED_ASSET_STATUS = "candidate_hashed_for_replay"
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -37,6 +38,18 @@ def main() -> int:
     replay_path = Path(args.replay_manifest)
     family_path = Path(args.family_manifest)
     asset_path = Path(args.asset_manifest)
+
+    missing = [
+        path
+        for path in (index_path, replay_path, family_path, asset_path)
+        if not path.is_file()
+    ]
+    if missing:
+        print(
+            "skipped: Firebird QA replay acquisition manifests are not installed: "
+            + ", ".join(str(path) for path in missing)
+        )
+        return EXTERNAL_REFERENCE_SKIP_CODE
 
     index_rows = read_rows(index_path)
     replay_rows = read_rows(replay_path)

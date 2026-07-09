@@ -96,6 +96,17 @@
       "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-airbyte"
     },
     {
+      "component_id": "adaptor:scratchbird-ai-mcp",
+      "documentation_refs": ["project/ai/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "ai_mcp_final_zero_drift_audit",
+        "ctest_label": "ai_mcp_final_zero_drift_audit",
+        "command": "ctest --test-dir build --output-on-failure -R ^ai_mcp_final_zero_drift_audit$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-ai-mcp"
+    },
+    {
       "component_id": "adaptor:scratchbird-dbt-adapter",
       "documentation_refs": ["project/drivers/adaptor/scratchbird-dbt-adapter/package_contract.json"],
       "sample_harness": {

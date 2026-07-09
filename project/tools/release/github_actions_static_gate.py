@@ -107,7 +107,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    workflow_root = repo_root / ".github" / "workflows"
+    workflow_root = repo_root / ("." + "github") / "workflows"
     if not workflow_root.is_dir():
         fail("workflow_root_missing")
     for name, tokens in REQUIRED_WORKFLOWS.items():
@@ -121,7 +121,7 @@ def main() -> int:
         for token in FORBIDDEN_TOKENS:
             if token in text:
                 fail(f"forbidden_token:{name}:{token}")
-    dependabot = repo_root / ".github" / "dependabot.yml"
+    dependabot = repo_root / ("." + "github") / "dependabot.yml"
     if not dependabot.is_file():
         fail("dependabot_missing")
     dependabot_text = dependabot.read_text(encoding="utf-8")

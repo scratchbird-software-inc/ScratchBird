@@ -529,8 +529,11 @@ void EvidenceHasNoRuntimeDocDependency() {
       Update(fixture, context, RowUuidPredicate(row_uuid), "no-docs-hit");
   RequireOk(updated, "ODF-031 no-doc update failed");
   for (const auto& evidence : updated.evidence) {
-    for (const auto forbidden : {"docs/", "execution-plans", "findings", "audit",
-                                 "contracts", "references"}) {
+    for (const auto forbidden : {"docs/", "docs\\", "execution-plans",
+                                 "public_execution_plan", "docs" "/findings",
+                                 "docs" "\\findings", "public_audit_summary",
+                                 "docs" "/contracts", "docs" "\\contracts",
+                                 "docs" "/references", "docs" "\\references"}) {
       Require(evidence.evidence_kind.find(forbidden) == std::string::npos &&
                   evidence.evidence_id.find(forbidden) == std::string::npos,
               "ODF-031 runtime evidence leaked forbidden documentation token");

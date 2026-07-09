@@ -50,6 +50,7 @@ RESULT_FIELDS = (
     "normalized_output_path",
     "notes",
 )
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 PERCENT_MAPPING_PATTERN = re.compile(
     r"%\((?P<name>[^)]+)\)(?P<format>[#0 +\-]*\d*(?:\.\d+)?[diouxXeEfFgGcrs])"
@@ -1881,6 +1882,16 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     repo_root = Path.cwd().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not candidate_root.is_dir():
+        print(f"skipped: Firebird QA candidate source tree is not installed: {candidate_root}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
+    if not replay_manifest.is_file():
+        print(f"skipped: Firebird QA replay manifest is not installed: {replay_manifest}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
+    if not (firebird_home / "bin" / "isql").exists():
+        print(f"skipped: Firebird reference isql binary is not installed: {firebird_home / 'bin' / 'isql'}")
+        return EXTERNAL_REFERENCE_SKIP_CODE
 
     if not parser_probe.exists():
         raise SystemExit(f"parser probe missing: {parser_probe}")

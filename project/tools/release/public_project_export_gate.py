@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -155,6 +156,12 @@ def mkdir_public(path: Path) -> None:
 def copy2_public(src: Path, dst: Path) -> None:
     mkdir_public(dst.parent)
     shutil.copy2(io_path(src), io_path(dst))
+    src_size = os.path.getsize(io_path(src))
+    for _ in range(20):
+        if os.path.isfile(io_path(dst)) and os.path.getsize(io_path(dst)) == src_size:
+            return
+        time.sleep(0.05)
+    fail(f"public export copy not visible: {dst}")
 
 
 def copytree_public(src: Path, dst: Path) -> None:
@@ -164,6 +171,14 @@ def copytree_public(src: Path, dst: Path) -> None:
 def rmtree_public(path: Path) -> None:
     if path.exists():
         shutil.rmtree(io_path(path), ignore_errors=True)
+
+
+def file_visible(path: Path) -> bool:
+    for _ in range(20):
+        if os.path.isfile(io_path(path)):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def dot_git() -> str:
@@ -352,7 +367,7 @@ def check_package_shape(stage_root: Path) -> None:
     release_root = stage_root / "release"
     for platform in ("linux", "windows", "freebsd", "macos"):
         layout = release_root / platform / "ENGINE_BINARY_LAYOUT.json"
-        if not layout.exists():
+        if not file_visible(layout):
             fail(f"public export missing {platform} engine binary layout")
     if (release_root / "darwin").exists():
         fail("public export must not contain a darwin alias binary layout")

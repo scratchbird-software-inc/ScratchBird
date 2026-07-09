@@ -185,8 +185,8 @@
       "title": "Machine-readable release declaration generated"
     }
   ],
-  "execution_plan": "project/drivers/fixtures/driver_server_reconciliation",
-  "generated_at_utc": "2026-06-12T14:40:46Z",
+  "execution_plan": "project\\drivers\\fixtures\\driver_server_reconciliation",
+  "generated_at_utc": "2026-07-08T03:25:17Z",
   "implementation_ahead": [
     {
       "audit_id": "IA-001",
@@ -624,6 +624,20 @@
     },
     {
       "category": "adaptor",
+      "component_id": "adaptor:scratchbird-ai-mcp",
+      "conformance_ctest_label": "ai_mcp_final_zero_drift_audit",
+      "driver_status": "beta_2",
+      "name": "scratchbird-ai-mcp",
+      "package_manifest_ref": "project/drivers/DriverPackageManifest.csv#component_id=adaptor:scratchbird-ai-mcp",
+      "release_state": "release_candidate",
+      "row_count": 0,
+      "status_counts": {
+        "not_required_for_release_candidate": 1
+      },
+      "trace_manifest": ""
+    },
+    {
+      "category": "adaptor",
       "component_id": "adaptor:scratchbird-dbt-adapter",
       "conformance_ctest_label": "adaptor_dbt_gate",
       "driver_status": "beta_2",
@@ -1016,11 +1030,11 @@
     }
   ],
   "required_artifacts": [
-    "project/drivers/fixtures/driver_server_reconciliation/artifacts/SERVER_VERIFICATION_PACKETS.json",
-    "project/drivers/fixtures/driver_server_reconciliation/artifacts/FULL_ROUTE_BENCHMARK_EVIDENCE.json",
-    "project/drivers/fixtures/driver_server_reconciliation/artifacts/PERFORMANCE_BUDGETS.json",
-    "project/drivers/fixtures/driver_server_reconciliation/artifacts/DSR_044_DOCUMENTATION_SAMPLE_APP_EVIDENCE.json",
-    "project/drivers/fixtures/driver_server_reconciliation/artifacts/DSR_045_REFERENCE_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json"
+    "project\\drivers\\fixtures\\driver_server_reconciliation\\artifacts\\SERVER_VERIFICATION_PACKETS.json",
+    "project\\drivers\\fixtures\\driver_server_reconciliation\\artifacts\\FULL_ROUTE_BENCHMARK_EVIDENCE.json",
+    "project\\drivers\\fixtures\\driver_server_reconciliation\\artifacts\\PERFORMANCE_BUDGETS.json",
+    "project\\drivers\\fixtures\\driver_server_reconciliation\\artifacts\\DSR_044_DOCUMENTATION_SAMPLE_APP_EVIDENCE.json",
+    "project\\drivers\\fixtures\\driver_server_reconciliation\\artifacts\\DSR_045_REFERENCE_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json"
   ],
   "rows": [
     {
@@ -5662,9 +5676,9 @@
   "summary": {
     "implementation_ahead_items": 29,
     "lane_release_state_counts": {
-      "release_candidate": 34
+      "release_candidate": 35
     },
-    "lanes": 34,
+    "lanes": 35,
     "release_state_counts": {
       "release_candidate": 331
     },

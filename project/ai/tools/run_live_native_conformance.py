@@ -362,20 +362,20 @@ def _probe_unix_socket_status(path: str) -> dict[str, Any]:
             "error": str(exc),
         }
 
+    if not hasattr(socket, "AF_UNIX"):
+        return {
+            "path": path,
+            "exists": exists,
+            "is_socket": is_socket,
+            "connect_state": "af_unix_unsupported",
+        }
+
     if not is_socket:
         return {
             "path": path,
             "exists": exists,
             "is_socket": False,
             "connect_state": "not_socket",
-        }
-
-    if not hasattr(socket, "AF_UNIX"):
-        return {
-            "path": path,
-            "exists": exists,
-            "is_socket": True,
-            "connect_state": "af_unix_unsupported",
         }
 
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

@@ -172,6 +172,7 @@
       "driver_embedded_jdbc",
       "driver_embedded_node",
       "driver_embedded_python",
+      "local_ipc",
       "manager_proxy"
     ]
   },
