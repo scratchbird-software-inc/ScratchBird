@@ -30,6 +30,23 @@ function Invoke-Msi {
   }
 }
 
+function New-ShortAdministrativeExtractRoot {
+  $driveRoot = [IO.Path]::GetPathRoot($env:SystemRoot)
+  if ([string]::IsNullOrWhiteSpace($driveRoot)) {
+    throw "Windows system drive root is unavailable"
+  }
+  $suffix = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+  $path = Join-Path $driveRoot ("sbm-{0}-{1}" -f $PID, $suffix)
+  if ($path.Length -gt 48) {
+    throw "administrative extraction root exceeds path-length budget"
+  }
+  if (Test-Path -LiteralPath $path) {
+    throw "administrative extraction root collision"
+  }
+  New-Item -ItemType Directory -Path $path | Out-Null
+  return [IO.Path]::GetFullPath($path)
+}
+
 function Get-MsiProperty {
   param([string] $Path, [string] $Name)
   $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -59,6 +76,11 @@ function Get-ExactScratchBirdGroup {
   $rows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
   if ($rows.Count -ne 1 -or [int]$rows[0].SIDType -ne 4 -or -not [string]::Equals($rows[0].Domain, $env:COMPUTERNAME, [StringComparison]::OrdinalIgnoreCase)) {
     throw "ScratchBird local SAM alias validation failed"
+  }
+  $group = [ADSI]("WinNT://{0}/{1},group" -f $rows[0].Domain, $rows[0].Name)
+  $members = @($group.PSBase.Invoke("Members") | Where-Object { $null -ne $_ })
+  if ($members.Count -ne 0) {
+    throw "ScratchBird filesystem-operations group must have no members"
   }
   return $rows[0]
 }
@@ -171,7 +193,7 @@ function Assert-InstalledWindowsSystem {
     throw "Windows system install evidence is missing"
   }
   $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
+  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.filesystem_operations_group_member_count -ne 0 -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
     throw "Windows system install evidence is invalid"
   }
 
@@ -249,6 +271,8 @@ function Assert-InstalledWindowsSystem {
     service_sid = $serviceSid
   }
 }
+
+function Invoke-PackageSmoke {
 if (Test-Path $WorkRoot) {
   Remove-Item -Recurse -Force $WorkRoot
 }
@@ -256,8 +280,8 @@ New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 
 $isMsi = $PackagePath.EndsWith(".msi", [System.StringComparison]::OrdinalIgnoreCase)
 if ($isMsi) {
-  $payloadRoot = Join-Path $WorkRoot "administrative-extract"
-  New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
+  $payloadRoot = New-ShortAdministrativeExtractRoot
+  $script:AdministrativeExtractRoot = $payloadRoot
   $administrativeLog = Join-Path $WorkRoot "msi-administrative-extract.log"
   Invoke-Msi @(
     "/a",
@@ -273,6 +297,8 @@ if ($isMsi) {
     status = "passed"
     lifecycle_executed = $false
     purpose = "payload inspection only"
+    extraction_root_policy = "system_drive_short_root_max_48_characters"
+    extraction_root_length = $payloadRoot.Length
   } | ConvertTo-Json | Set-Content (Join-Path $WorkRoot "administrative-extract-proof.json")
 } else {
   $payloadRoot = Join-Path $WorkRoot "portable-zip"
@@ -431,6 +457,7 @@ Assert-NoInstallerDatabaseArtifacts $installed.state_root
   uninstall = "passed"
   service_fresh_install = "manual_stopped"
   service_account = "NT SERVICE\scratchbird"
+  filesystem_operations_group_member_count = 0
   service_authority_scope = "filesystem_directory_and_process_execution_only_no_database_or_security_authority"
   service_local_sam_group_membership = $false
   human_service_group_membership_mutated = $false
@@ -445,3 +472,29 @@ Assert-NoInstallerDatabaseArtifacts $installed.state_root
 } | ConvertTo-Json | Set-Content (Join-Path $WorkRoot "msi-actual-install-smoke.json")
 
 Write-Output "smoke_install_windows=passed:$WorkRoot"
+}
+
+$script:AdministrativeExtractRoot = $null
+try {
+  Invoke-PackageSmoke
+} finally {
+  if (-not [string]::IsNullOrWhiteSpace($script:AdministrativeExtractRoot)) {
+    $cleanupRoot = $script:AdministrativeExtractRoot
+    if (Test-Path -LiteralPath $cleanupRoot) {
+      Remove-Item -LiteralPath $cleanupRoot -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $cleanupRoot) {
+      throw "administrative extraction root cleanup failed"
+    }
+    if (Test-Path -LiteralPath $WorkRoot -PathType Container) {
+      @{
+        schema_id = "scratchbird.windows_msi_administrative_extract_cleanup.v1"
+        status = "passed"
+        extraction_root_removed = $true
+        extraction_root_policy = "system_drive_short_root_max_48_characters"
+      } | ConvertTo-Json | Set-Content (
+        Join-Path $WorkRoot "administrative-extract-cleanup-proof.json"
+      )
+    }
+  }
+}

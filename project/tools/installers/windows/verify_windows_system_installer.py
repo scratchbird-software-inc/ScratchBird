@@ -239,6 +239,11 @@ def main() -> int:
         == "filesystem_operations_only_no_database_or_security_authority",
         "filesystem_operations_group_purpose",
     )
+    require(
+        identity.get("group_membership_policy")
+        == "must_be_empty_no_human_or_service_members",
+        "filesystem_operations_group_membership_policy",
+    )
 
     require(
         profile.get("upgrade_policy", {}).get("silent_activation") is False,
@@ -288,6 +293,9 @@ def main() -> int:
             "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine",
             "Name='scratchbird' AND LocalAccount=TRUE",
             'Win32_Group -Filter "LocalAccount=TRUE"',
+            '$group.PSBase.Invoke("Members")',
+            "if ($members.Count -ne 0)",
+            "filesystem_operations_group_member_count = 0",
             "service_local_sam_group_membership = $false",
             "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
             "$ServiceCreatedByThisRun",
@@ -391,6 +399,13 @@ def main() -> int:
             "qa-operator-preserve.conf",
             "qa-operator-preserve.dat",
             "Assert-SidNotInAnyLocalSamGroup",
+            "function New-ShortAdministrativeExtractRoot",
+            "if ($path.Length -gt 48)",
+            "$script:AdministrativeExtractRoot = $payloadRoot",
+            "administrative-extract-cleanup-proof.json",
+            '$group.PSBase.Invoke("Members")',
+            "ScratchBird filesystem-operations group must have no members",
+            "$evidence.filesystem_operations_group_member_count -ne 0",
             "service_local_sam_group_membership = $false",
             "human_service_group_membership_mutated = $false",
             'create_time_os_authorization = "administrator_only"',
@@ -407,6 +422,10 @@ def main() -> int:
     require(
         "$env:USERNAME" not in smoke and "$env:USERDOMAIN" not in smoke,
         "smoke_ambient_installer_user",
+    )
+    require(
+        'Join-Path $WorkRoot "administrative-extract"' not in smoke,
+        "msi_administrative_extract_workspace_path_forbidden",
     )
     require(
         smoke.index('"/a"') < smoke.index('"/i"'),

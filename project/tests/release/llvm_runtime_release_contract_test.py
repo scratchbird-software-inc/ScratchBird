@@ -191,6 +191,116 @@ class LlvmRuntimeReleaseContractTest(unittest.TestCase):
         self.assertIn("ctypes.CDLL", macos)
         self.assertIn("NativeLibrary]::Load", windows)
 
+    def test_privileged_linux_smoke_uses_root_prefix_for_protected_paths(self) -> None:
+        source = (INSTALLER_TOOLS / "smoke_install_linux_system.py").read_text(
+            encoding="utf-8"
+        )
+        privileged_body = source.split("def privileged_install_smoke", 1)[1].split(
+            "def main", 1
+        )[0]
+        for direct_operation in (
+            ".is_dir()",
+            ".is_file()",
+            ".rglob(",
+            ".stat()",
+            ".exists()",
+        ):
+            self.assertNotIn(direct_operation, privileged_body)
+        self.assertNotRegex(
+            privileged_body,
+            r'Path\("/(?:var/lib|var/log|run|etc)/scratchbird[^"\n]*"\)'
+            r"\.(?:is_dir|is_file|stat|exists)\(",
+        )
+        self.assertIn("privileged_path_metadata(prefix, path)", privileged_body)
+        self.assertIn("privileged_find_matches(", privileged_body)
+        self.assertIn('[*prefix, "stat"', source)
+        self.assertIn('[*prefix, "find"', source)
+        self.assertIn('[*prefix, "test"', source)
+        self.assertIn('active_result.returncode != 3 or active != "inactive"', source)
+        self.assertIn('enabled_result.returncode != 1 or enabled != "disabled"', source)
+        self.assertIn(
+            "tuple(f\"*{suffix}\" for suffix in DATABASE_SUFFIXES)",
+            privileged_body,
+        )
+        self.assertIn(
+            "tuple(f\"*{marker}*\" for marker in SECURITY_SIDECAR_MARKERS)",
+            privileged_body,
+        )
+
+    def test_linux_lifecycle_rejects_nonservice_explicit_group_members(self) -> None:
+        source = (
+            INSTALLER_TOOLS / "linux/scratchbird-system-install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("group_explicit_members=", source)
+        self.assertIn("''|scratchbird) ;;", source)
+        self.assertIn(
+            "scratchbird group has forbidden explicit members",
+            source,
+        )
+        self.assertRegex(
+            source,
+            r'(?s)case "\$group_explicit_members" in\s+'
+            r"''\|scratchbird\) ;;\s+\*\).*?"
+            r"forbidden explicit members.*?exit 1",
+        )
+        self.assertIn(
+            'group_fields[3] not in ("", "scratchbird")',
+            (INSTALLER_TOOLS / "smoke_install_linux_system.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX authority probe fixture")
+    def test_installed_authority_probe_requires_drop_and_regain_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            probe = Path(temp) / "sb_bootstrap_os_authority_tests-linux"
+            probe.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "test \"$1\" = --verify-installed-service-identity\n"
+                "test \"$2\" = /etc/scratchbird/SBbootstrap.profile\n"
+                "printf '%s\\n' \\\n"
+                "  installed_service_identity_assumption=passed \\\n"
+                "  effective_user=scratchbird \\\n"
+                "  effective_group=scratchbird \\\n"
+                "  bootstrap_authority_regain=refused\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            self.assertEqual(
+                linux_smoke.validate_authority_probe_argument(True, probe),
+                probe.resolve(),
+            )
+            proof_path = Path(temp) / "bootstrap-os-authority.txt"
+            evidence = linux_smoke.run_installed_authority_probe(
+                [], probe, proof_path
+            )
+            self.assertEqual(
+                evidence["installed_service_identity_assumption"], "passed"
+            )
+            self.assertEqual(evidence["bootstrap_authority_regain"], "refused")
+            self.assertEqual(len(evidence["output_lines"]), 4)
+            self.assertEqual(evidence["output_file"], proof_path.name)
+            self.assertIn(
+                "bootstrap_authority_regain=refused",
+                proof_path.read_text(encoding="utf-8"),
+            )
+
+            probe.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' installed_service_identity_assumption=passed\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o755)
+            with contextlib.redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    linux_smoke.run_installed_authority_probe([], probe)
+
+    def test_privileged_install_requires_explicit_authority_probe(self) -> None:
+        with contextlib.redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit):
+                linux_smoke.validate_authority_probe_argument(True, None)
+
 
 if __name__ == "__main__":
     unittest.main()

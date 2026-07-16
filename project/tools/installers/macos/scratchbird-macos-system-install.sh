@@ -157,6 +157,39 @@ local_group_nests_group_guid() {
     return 1
 }
 
+ensure_service_group_membership_is_exact() {
+    service_user_generated_uid=$1
+
+    membership=$(dscl . -read "/Groups/$SERVICE_GROUP" GroupMembership \
+        2>/dev/null || true)
+    membership_count=0
+    for member in $membership; do
+        [ "$member" = 'GroupMembership:' ] && continue
+        [ "$member" = "$SERVICE_USER" ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
+        membership_count=$((membership_count + 1))
+    done
+    [ "$membership_count" -eq 1 ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
+
+    guid_membership=$(dscl . -read "/Groups/$SERVICE_GROUP" GroupMembers \
+        2>/dev/null || true)
+    guid_membership_count=0
+    for member_guid in $guid_membership; do
+        [ "$member_guid" = 'GroupMembers:' ] && continue
+        [ "$member_guid" = "$service_user_generated_uid" ] || \
+            fail BOOTSTRAP.GROUP_INPUT_INVALID
+        guid_membership_count=$((guid_membership_count + 1))
+    done
+    [ "$guid_membership_count" -eq 1 ] || \
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+
+    nested_groups=$(dscl . -read "/Groups/$SERVICE_GROUP" NestedGroups \
+        2>/dev/null || true)
+    for nested_group in $nested_groups; do
+        [ "$nested_group" = 'NestedGroups:' ] && continue
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    done
+}
+
 ensure_service_has_no_explicit_supplementary_membership() {
     service_group_generated_uid=$1
     service_user_generated_uid=$2
@@ -320,6 +353,7 @@ ensure_service_identity() {
     fi
     local_group_has_member "$SERVICE_GROUP" "$SERVICE_USER" || \
         fail BOOTSTRAP.GROUP_INPUT_INVALID
+    ensure_service_group_membership_is_exact "$user_generated_uid"
     ensure_service_has_no_explicit_supplementary_membership \
         "$group_generated_uid" "$user_generated_uid"
     ensure_service_is_not_admin "$group_generated_uid"
@@ -412,9 +446,10 @@ write_fixture_identity_evidence() {
     fixture_root=$(root_path /var/lib/scratchbird/install/fixture-identities)
     install -d -m 0750 "$fixture_root"
     umask 027
-    printf '%s\n' '{"name":"scratchbird","kind":"local_group"}' \
+    fixture_user_generated_uid=fixture-scratchbird-user-generated-uid
+    printf '%s\n' '{"name":"scratchbird","kind":"local_group","group_membership":["scratchbird"],"group_members":["fixture-scratchbird-user-generated-uid"],"nested_groups":[]}' \
         > "$fixture_root/group.json"
-    printf '%s\n' '{"name":"scratchbird","kind":"non_login_service","hidden":true,"administrator_group_membership":false,"primary_group":"scratchbird"}' \
+    printf '%s\n' "{\"name\":\"scratchbird\",\"kind\":\"non_login_service\",\"hidden\":true,\"administrator_group_membership\":false,\"primary_group\":\"scratchbird\",\"generated_uid\":\"$fixture_user_generated_uid\"}" \
         > "$fixture_root/service.json"
     chmod 0640 "$fixture_root/group.json" "$fixture_root/service.json"
 }
@@ -459,6 +494,7 @@ write_install_evidence() {
         printf '  "service_uid_policy": "locally_unique_501_through_59999",\n'
         printf '  "service_administrator_group_membership": false,\n'
         printf '  "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",\n'
+        printf '  "service_group_membership_policy": "exact_scratchbird_name_and_generated_uid_only_no_nested_groups",\n'
         printf '  "resolved_effective_group_policy": "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",\n'
         printf '  "human_service_group_membership_mutated": false,\n'
         printf '  "create_time_os_authorization": "root_only",\n'

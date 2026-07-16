@@ -247,6 +247,8 @@ def main() -> int:
                     != SERVICE_AUTHORITY_SCOPE
                     or identity.get("create_time_os_authorization") != "root_only"
                     or identity.get("human_service_group_membership_mutation") is not False
+                    or identity.get("group_membership_policy")
+                    != "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
                     or identity.get("resolved_effective_group_policy")
                     != "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
                 ):

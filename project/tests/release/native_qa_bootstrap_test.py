@@ -836,6 +836,15 @@ fi
             "unknown_system_placeholder": (
                 valid_parser + "\nparser.state_root = @OTHER_ROOT@\n"
             ),
+            "comment_spoofed_expected_assignment": valid_parser.replace(
+                "parser.worker_binary = /opt/ScratchBird/bin/SBParser",
+                "# parser.worker_binary = /opt/ScratchBird/bin/SBParser\n"
+                "parser.worker_binary = /tmp/untrusted-parser",
+                1,
+            ),
+            "conflicting_duplicate_assignment": (
+                valid_parser + "\nparser.worker_binary = /tmp/untrusted-parser\n"
+            ),
         }
         for label, invalid_text in invalid_variants.items():
             with self.subTest(rejection=label):
@@ -854,6 +863,60 @@ fi
 
         server_path = macos_config / "SBsrv.conf"
         valid_server = server_path.read_text(encoding="utf-8")
+        server_invalid_variants = {
+            "expected_assignment_in_wrong_section": valid_server.replace(
+                "data_dir = /var/run/scratchbird/sb_server",
+                "# data_dir = /var/run/scratchbird/sb_server",
+                1,
+            )
+            + "\n[server.metrics]\n"
+            "data_dir = /var/run/scratchbird/sb_server\n",
+            "protected_assignments_swapped_between_sections": valid_server.replace(
+                "control_dir = /var/run/scratchbird/sb_server/control",
+                "control_dir = @SWAP@",
+                1,
+            )
+            .replace(
+                "control_dir = /var/run/scratchbird/listener/control",
+                "control_dir = /var/run/scratchbird/sb_server/control",
+                1,
+            )
+            .replace(
+                "control_dir = @SWAP@",
+                "control_dir = /var/run/scratchbird/listener/control",
+                1,
+            ),
+            "database_auto_create_enabled": valid_server.replace(
+                "auto_create = false",
+                "auto_create = true",
+                1,
+            ),
+            "database_auto_create_in_wrong_section": valid_server.replace(
+                "auto_create = false",
+                "# auto_create = false",
+                1,
+            )
+            + "\n[server.metrics]\n"
+            "auto_create = false\n",
+            "database_auto_create_conflicting_duplicate": (
+                valid_server
+                + "\n[server.database]\n"
+                "auto_create = true\n"
+            ),
+        }
+        for label, invalid_text in server_invalid_variants.items():
+            with self.subTest(rejection=label):
+                server_path.write_text(invalid_text, encoding="utf-8")
+                with (
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    verifier.require_system_configs(
+                        macos_config,
+                        "macos",
+                        macos_system / "opt/ScratchBird",
+                        "system-installed",
+                    )
         server_path.write_text(
             valid_server.replace("port = 3092", "port = 3050", 1),
             encoding="utf-8",

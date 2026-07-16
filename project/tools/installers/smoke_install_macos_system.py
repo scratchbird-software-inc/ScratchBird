@@ -193,6 +193,18 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
         "forbidden_except_scratchbird"
     ):
         fail("profile_service_supplementary_membership_not_forbidden")
+    if identity.get("service_group_group_membership") != (
+        "exact_scratchbird_user_only"
+    ):
+        fail("profile_service_group_named_membership_not_exact")
+    if identity.get("service_group_group_members") != (
+        "exact_service_user_generated_uid_only"
+    ):
+        fail("profile_service_group_guid_membership_not_exact")
+    if identity.get("service_group_nested_groups") != (
+        "forbidden_and_verified_empty"
+    ):
+        fail("profile_service_group_nested_membership_not_empty")
     if identity.get("service_group_nested_in_other_local_group") != "forbidden":
         fail("profile_service_group_nesting_not_forbidden")
     if identity.get("service_implicit_baseline_groups") != (
@@ -335,12 +347,18 @@ def validate_helper_static(helper: Path) -> None:
         "SERVICE_UID_MIN=501",
         "SERVICE_UID_MAX_EXCLUSIVE=60000",
         "ensure_service_is_not_admin",
+        "ensure_service_group_membership_is_exact",
         "ensure_service_has_no_explicit_supplementary_membership",
         "ensure_service_resolved_group_set_is_least_authority",
         "local_group_has_guid_member",
         "local_group_nests_group_guid",
         "GroupMembers",
         "NestedGroups",
+        'membership_count=$((membership_count + 1))',
+        'guid_membership_count=$((guid_membership_count + 1))',
+        '[ "$membership_count" -eq 1 ]',
+        '[ "$guid_membership_count" -eq 1 ]',
+        'ensure_service_group_membership_is_exact "$user_generated_uid"',
         "/Groups/admin",
         'dseditgroup -n . -o checkmember',
         'id -G "$SERVICE_USER"',
@@ -663,6 +681,10 @@ def validate_builder_integration(
         "no_database_or_security_authority"
     ):
         fail("builder_system_evidence_service_authority_scope_mismatch")
+    if evidence.get("os_identity", {}).get("group_membership_policy") != (
+        "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
+    ):
+        fail("builder_system_evidence_group_membership_policy_mismatch")
 
     staged_plists = sorted(
         (system_root / "Library" / "LaunchDaemons").glob(
@@ -727,13 +749,22 @@ def run_fixture_smoke(
     )
     group = json.loads((identity_root / "group.json").read_text(encoding="utf-8"))
     service = json.loads((identity_root / "service.json").read_text(encoding="utf-8"))
-    if group != {"name": SERVICE_GROUP, "kind": "local_group"}:
+    expected_fixture_uid = "fixture-scratchbird-user-generated-uid"
+    if group != {
+        "name": SERVICE_GROUP,
+        "kind": "local_group",
+        "group_membership": [SERVICE_USER],
+        "group_members": [expected_fixture_uid],
+        "nested_groups": [],
+    }:
         fail("fixture_group_identity_mismatch")
     if (
         service.get("name") != SERVICE_USER
         or service.get("kind") != "non_login_service"
         or service.get("hidden") is not True
         or service.get("administrator_group_membership") is not False
+        or service.get("primary_group") != SERVICE_GROUP
+        or service.get("generated_uid") != expected_fixture_uid
     ):
         fail("fixture_service_identity_mismatch")
 
@@ -754,6 +785,9 @@ def run_fixture_smoke(
         "service_authority_scope": (
             "filesystem_directory_and_process_execution_only_"
             "no_database_or_security_authority"
+        ),
+        "service_group_membership_policy": (
+            "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
         ),
         "resolved_effective_group_policy": (
             "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"

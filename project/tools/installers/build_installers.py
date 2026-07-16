@@ -1788,6 +1788,7 @@ def write_windows_system_package_evidence(
         "os_identity": {
             "filesystem_operations_group": "ScratchBird",
             "filesystem_operations_group_namespace": "local_SAM",
+            "filesystem_operations_group_member_policy": "must_be_empty",
             "service_account_namespace": "NT SERVICE",
             "service_account_leaf_name": "scratchbird",
             "service_password": "none",
@@ -1859,6 +1860,9 @@ def write_macos_system_package_evidence(
                 "no_database_or_security_authority"
             ),
             "uid_policy": "first_locally_unused_uid_501_through_59999",
+            "group_membership_policy": (
+                "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
+            ),
             "resolved_effective_group_policy": (
                 "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
             ),

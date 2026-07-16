@@ -166,6 +166,10 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                 profile["os_identity"]["group_purpose"],
                 "filesystem_operations_only_no_database_or_security_authority",
             )
+            self.assertEqual(
+                profile["os_identity"]["group_membership_policy"],
+                "must_be_empty_no_human_or_service_members",
+            )
             self.assertTrue(profile["service"]["create_if_missing"])
             self.assertEqual(
                 profile["service"]["creation_mechanism"],
@@ -465,16 +469,42 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "scratchbird-windows-system-install.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn('Win32_Group -Filter "LocalAccount=TRUE"', lifecycle)
+        self.assertIn('$group.PSBase.Invoke("Members")', lifecycle)
+        self.assertIn("if ($members.Count -ne 0)", lifecycle)
+        self.assertIn("filesystem_operations_group_member_count = 0", lifecycle)
         self.assertIn(
             "service_local_sam_group_membership = $false", lifecycle
         )
         smoke = (
             REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
         ).read_text(encoding="utf-8")
+        self.assertIn("function New-ShortAdministrativeExtractRoot", smoke)
+        self.assertIn("if ($path.Length -gt 48)", smoke)
+        self.assertIn("$script:AdministrativeExtractRoot = $payloadRoot", smoke)
+        self.assertIn("administrative-extract-cleanup-proof.json", smoke)
+        self.assertNotIn(
+            'Join-Path $WorkRoot "administrative-extract"', smoke
+        )
+        longest_observed_relative_path = (
+            "PFiles64/ScratchBird/share/scratchbird/resources/seed-packs/"
+            "initial-resource-pack/resources/i18n/sbsql-language-resource-pack/"
+            "resources/canonical/sbsql-dialect-baseline.schema.json"
+        )
+        self.assertLess(48 + 1 + len(longest_observed_relative_path), 240)
         installed_block = smoke[
             smoke.index("function Assert-InstalledWindowsSystem") :
             smoke.index("if (Test-Path $WorkRoot)")
         ]
+        group_block = smoke[
+            smoke.index("function Get-ExactScratchBirdGroup") :
+            smoke.index("function Assert-SidNotInAnyLocalSamGroup")
+        ]
+        self.assertIn('$group.PSBase.Invoke("Members")', group_block)
+        self.assertIn("if ($members.Count -ne 0)", group_block)
+        self.assertIn(
+            "$evidence.filesystem_operations_group_member_count -ne 0",
+            installed_block,
+        )
         self.assertIn("--config-mode system-installed", installed_block)
         for config_name in installers.WINDOWS_NATIVE_CONFIGS:
             self.assertIn(f'"{config_name}"', installed_block)

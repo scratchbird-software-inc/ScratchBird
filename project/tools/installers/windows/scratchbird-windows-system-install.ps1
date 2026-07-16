@@ -119,6 +119,15 @@ function Get-LocalScratchBirdGroup {
   if (-not [string]::Equals($row.Domain, $env:COMPUTERNAME, [StringComparison]::OrdinalIgnoreCase) -or -not $row.LocalAccount -or [int]$row.SIDType -ne 4 -or $row.SID -notmatch '^S-1-5-21-(\d+-){3}\d+$') {
     Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
   }
+  try {
+    $group = [ADSI]("WinNT://{0}/{1},group" -f $row.Domain, $row.Name)
+    $members = @($group.PSBase.Invoke("Members") | Where-Object { $null -ne $_ })
+  } catch {
+    Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
+  }
+  if ($members.Count -ne 0) {
+    Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
+  }
   return $row
 }
 
@@ -394,6 +403,7 @@ function Write-InstallEvidence {
     distribution_profile = "native-sbsql-only"
     native_default_port = 3092
     filesystem_operations_group_sid = [string]$Group.SID
+    filesystem_operations_group_member_count = 0
     human_service_group_membership_mutated = $false
     create_time_os_authorization = "administrator_only"
     service_name = $ServiceName

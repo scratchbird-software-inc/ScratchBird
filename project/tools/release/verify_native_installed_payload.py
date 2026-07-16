@@ -175,7 +175,8 @@ def require_system_configs(
         path = native.require_regular_file(
             config_root / file_name, f"system_config:{file_name}"
         )
-        text = path.read_text(encoding="utf-8").casefold()
+        raw_text = path.read_text(encoding="utf-8")
+        text = raw_text.casefold()
         for marker in SYSTEM_CONFIG_FORBIDDEN_MARKERS:
             if marker in text:
                 fail(f"system_config_forbidden_marker:{file_name}:{marker}")

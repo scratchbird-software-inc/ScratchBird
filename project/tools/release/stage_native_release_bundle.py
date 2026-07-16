@@ -117,6 +117,7 @@ REQUIRED_CONFIG_TOKENS = {
     "SBsrv.conf": (
         "provider_family = local_password",
         "default_policy_installed = true",
+        "auto_create = false",
         "parser_executable_path = bin/SBParser",
         "port = 3092",
         "tls_required = true",
@@ -153,6 +154,21 @@ REQUIRED_CONFIG_TOKENS = {
         "service_identity = operator_required",
         "service_group = operator_required",
     ),
+}
+SBSRV_PROTECTED_KEY_SECTIONS = {
+    "data_dir": "server.runtime",
+    "log_file": "server.logging",
+    "provider_family": "server.security",
+    "default_policy_installed": "server.security",
+    "default_path": "server.database",
+    "auto_create": "server.database",
+    "port": "server.listener.native",
+    "executable_path": "server.listener.native",
+    "parser_executable_path": "server.listener.native",
+    "runtime_dir": "server.listener.native",
+    "tls_required": "server.listener.native",
+    "failure_mode": "server.memory",
+    "sbps_endpoint": "server.parser",
 }
 
 REQUIRED_LIBRARY_CANDIDATES = {
@@ -414,6 +430,68 @@ def validate_policy_pack(policy_root: Path) -> int:
     return len(rows)
 
 
+def active_config_assignments(text: str) -> list[tuple[str | None, str]]:
+    assignments: list[tuple[str | None, str]] = []
+    section: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            if not line.endswith("]") or len(line) <= 2:
+                fail("native_config_section_invalid")
+            section = line[1:-1].strip()
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if not key.strip():
+            fail("native_config_assignment_key_empty")
+        assignments.append((section, f"{key.strip()} = {value.strip()}"))
+    return assignments
+
+
+def protected_token_section(file_name: str, token: str) -> str | None:
+    if file_name != "SBsrv.conf":
+        return None
+    key = token.split("=", 1)[0].strip()
+    if key == "control_dir":
+        return (
+            "server.listener.native"
+            if "listener/control" in token
+            else "server.runtime"
+        )
+    section = SBSRV_PROTECTED_KEY_SECTIONS.get(key)
+    if section is None:
+        fail(f"native_config_protected_section_missing:{file_name}:{key}")
+    return section
+
+
+def require_active_config_contract(
+    file_name: str,
+    text: str,
+    required_tokens: tuple[str, ...],
+    forbidden_tokens: tuple[str, ...],
+) -> None:
+    assignments = active_config_assignments(text)
+    expected = {
+        (protected_token_section(file_name, token), token)
+        for token in required_tokens
+    }
+    protected_keys = {
+        token.split("=", 1)[0].strip()
+        for token in (*required_tokens, *forbidden_tokens)
+    }
+    for token in required_tokens:
+        located_token = (protected_token_section(file_name, token), token)
+        if assignments.count(located_token) != 1:
+            fail(f"native_config_active_token_cardinality:{file_name}:{token}")
+    for section, assignment in assignments:
+        key = assignment.split("=", 1)[0].strip()
+        if key in protected_keys and (section, assignment) not in expected:
+            fail(f"native_config_conflicting_assignment:{file_name}:{assignment}")
+
+
 def require_native_configs(
     config_root: Path,
     *,
@@ -447,6 +525,12 @@ def require_native_configs(
         for token in forbidden.get(file_name, ()):
             if token in text:
                 fail(f"native_config_forbidden_token:{file_name}:{token}")
+        require_active_config_contract(
+            file_name,
+            text,
+            tokens,
+            forbidden.get(file_name, ()),
+        )
         if any(marker in text for marker in EMBEDDED_TLS_MARKERS):
             fail(f"native_config_embedded_tls_material_forbidden:{file_name}")
 

@@ -59,6 +59,7 @@
     "group_purpose": "filesystem_operations_only_no_database_or_security_authority",
     "group_namespace": "local_SAM",
     "group_principal": "exact_local_SAM_alias",
+    "group_membership_policy": "must_be_empty_no_human_or_service_members",
     "naming_constraint": "local_SAM_user_and_group_names_are_case_insensitive_so_the_service_identity_uses_the_distinct_NT_SERVICE_namespace",
     "package_manager_administrator_or_SYSTEM_is_never_added": true,
     "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",

@@ -609,6 +609,8 @@ def verify_deb(deb: Path, work_root: Path) -> tuple[dict[str, Any], bytes]:
             "service account is not locked",
             'id -G "$SERVICE_USER"',
             "supplementary group authority is forbidden",
+            "group_explicit_members",
+            "group has forbidden explicit members",
             "SYS_UID_MAX",
             "numeric identity is shared",
         ):
@@ -869,9 +871,146 @@ def verify_aur(root: Path) -> dict[str, Any]:
     return {"bundle": bundle.name, "lifecycle": "present"}
 
 
-def privileged_install_smoke(deb: Path, requested: bool) -> dict[str, Any]:
+def privileged_path_metadata(
+    prefix: list[str], path: Path
+) -> tuple[int, int, int]:
+    result = subprocess.run(
+        [*prefix, "stat", "--format=%f:%u:%g", "--", str(path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(
+            f"privileged_path_stat_failed:{path}:{result.returncode}:"
+            f"{result.stdout[-1000:].strip()}"
+        )
+    fields = result.stdout.strip().split(":")
+    if len(fields) != 3:
+        fail(f"privileged_path_stat_malformed:{path}:{result.stdout.strip()}")
+    try:
+        return int(fields[0], 16), int(fields[1]), int(fields[2])
+    except ValueError:
+        fail(f"privileged_path_stat_malformed:{path}:{result.stdout.strip()}")
+
+
+def privileged_path_exists(prefix: list[str], path: Path) -> bool:
+    result = subprocess.run(
+        [*prefix, "test", "-e", str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        fail(f"privileged_path_exists_failed:{path}:{result.returncode}")
+    return result.returncode == 0
+
+
+def privileged_find_matches(
+    prefix: list[str], root: Path, patterns: tuple[str, ...]
+) -> list[str]:
+    if not patterns:
+        return []
+    command = [*prefix, "find", str(root), "-type", "f", "("]
+    for index, pattern in enumerate(patterns):
+        if index:
+            command.append("-o")
+        command.extend(("-iname", pattern))
+    command.extend((")", "-print", "-quit"))
+    result = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(
+            f"privileged_find_failed:{root}:{result.returncode}:"
+            f"{result.stdout[-1000:].strip()}"
+        )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def validate_authority_probe_argument(
+    requested: bool, authority_probe: Path | None
+) -> Path | None:
+    if not requested:
+        if authority_probe is not None:
+            fail("authority_probe_requires_privileged_deb_install")
+        return None
+    if authority_probe is None:
+        fail("privileged_authority_probe_required")
+    if not authority_probe.is_absolute():
+        fail(f"privileged_authority_probe_not_absolute:{authority_probe}")
+    if authority_probe.is_symlink():
+        fail(f"privileged_authority_probe_symlink_forbidden:{authority_probe}")
+    try:
+        resolved = authority_probe.resolve(strict=True)
+    except OSError as exc:
+        fail(f"privileged_authority_probe_unavailable:{authority_probe}:{exc}")
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        fail(f"privileged_authority_probe_not_executable:{resolved}")
+    return resolved
+
+
+def run_installed_authority_probe(
+    prefix: list[str],
+    authority_probe: Path,
+    proof_path: Path | None = None,
+) -> dict[str, Any]:
+    profile = Path("/etc/scratchbird/SBbootstrap.profile")
+    result = subprocess.run(
+        [
+            *prefix,
+            str(authority_probe),
+            "--verify-installed-service-identity",
+            str(profile),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if proof_path is not None:
+        proof_path.write_text(result.stdout, encoding="utf-8")
+    output_lines = [
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    ]
+    required_output = [
+        "installed_service_identity_assumption=passed",
+        "effective_user=scratchbird",
+        "effective_group=scratchbird",
+        "bootstrap_authority_regain=refused",
+    ]
+    if result.returncode != 0 or output_lines != required_output:
+        fail(
+            f"privileged_authority_probe_failed:{result.returncode}:"
+            f"{result.stdout[-2000:].strip()}"
+        )
+    return {
+        "executable": authority_probe.name,
+        "profile": str(profile),
+        "output_file": proof_path.name if proof_path is not None else None,
+        "output_lines": output_lines,
+        "installed_service_identity_assumption": "passed",
+        "effective_user": "scratchbird",
+        "effective_group": "scratchbird",
+        "bootstrap_authority_regain": "refused",
+    }
+
+
+def privileged_install_smoke(
+    deb: Path,
+    requested: bool,
+    authority_probe: Path | None,
+    proof_root: Path,
+) -> dict[str, Any]:
     if not requested:
         return {"status": "not_requested"}
+    if authority_probe is None:
+        fail("privileged_authority_probe_required")
     if os.environ.get("CI") != "true" and os.environ.get("SB_ALLOW_HOST_PACKAGE_MUTATION") != "1":
         return {"status": "skipped", "reason": "host_mutation_not_explicitly_allowed"}
     if shutil.which("dpkg") is None or shutil.which("dpkg-query") is None:
@@ -938,8 +1077,10 @@ def privileged_install_smoke(deb: Path, requested: bool) -> dict[str, Any]:
             fail("privileged_identity_not_non_login")
         passwd_fields = passwd.stdout.strip().split(":")
         group_fields = group.stdout.strip().split(":")
-        if len(passwd_fields) != 7 or len(group_fields) < 3:
+        if len(passwd_fields) != 7 or len(group_fields) != 4:
             fail("privileged_identity_record_malformed")
+        if group_fields[3] not in ("", "scratchbird"):
+            fail("privileged_identity_group_has_forbidden_explicit_members")
         service_uid = int(passwd_fields[2])
         service_gid = int(passwd_fields[3])
         if service_uid == 0 or service_gid == 0 or int(group_fields[2]) != service_gid:
@@ -955,35 +1096,81 @@ def privileged_install_smoke(deb: Path, requested: bool) -> dict[str, Any]:
         )
         if memberships.returncode != 0 or set(memberships.stdout.split()) != {"scratchbird"}:
             fail("privileged_identity_has_unexpected_group_authority")
+        shadow = subprocess.run(
+            [*prefix, "getent", "shadow", "scratchbird"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        shadow_fields = shadow.stdout.strip().split(":")
+        if (
+            shadow.returncode != 0
+            or len(shadow_fields) < 2
+            or not shadow_fields[1].startswith(("!", "*"))
+        ):
+            fail("privileged_identity_not_locked")
+        authority_probe_evidence = run_installed_authority_probe(
+            prefix,
+            authority_probe,
+            proof_root / "bootstrap-os-authority.txt",
+        )
         for path in (
             Path("/var/lib/scratchbird/data"),
             Path("/var/log/scratchbird"),
             Path("/run/scratchbird/control"),
             Path("/run/scratchbird/runtime"),
         ):
-            if not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != 0o750:
+            path_mode, path_uid, path_gid = privileged_path_metadata(prefix, path)
+            if not stat.S_ISDIR(path_mode) or stat.S_IMODE(path_mode) != 0o750:
                 fail(f"privileged_directory_contract_failed:{path}")
-            if path.stat().st_uid != service_uid or path.stat().st_gid != service_gid:
+            if path_uid != service_uid or path_gid != service_gid:
                 fail(f"privileged_directory_identity_mismatch:{path}")
-        if any(Path("/var/lib/scratchbird").rglob("*.sbdb")):
-            fail("privileged_install_created_database")
-        if shutil.which("systemctl"):
-            active = subprocess.run(
-                ["systemctl", "is-active", "scratchbird-sbsrv.service"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            ).stdout.strip()
-            enabled = subprocess.run(
-                ["systemctl", "is-enabled", "scratchbird-sbsrv.service"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            ).stdout.strip()
-            if active == "active" or enabled == "enabled":
-                fail(f"privileged_service_activated:{enabled}:{active}")
+        database_matches = privileged_find_matches(
+            prefix,
+            Path("/var/lib/scratchbird"),
+            tuple(f"*{suffix}" for suffix in DATABASE_SUFFIXES),
+        )
+        if database_matches:
+            fail(f"privileged_install_created_database:{database_matches[0]}")
+        security_matches = privileged_find_matches(
+            prefix,
+            Path("/var/lib/scratchbird"),
+            tuple(f"*{marker}*" for marker in SECURITY_SIDECAR_MARKERS),
+        )
+        if security_matches:
+            fail(
+                "privileged_install_created_security_sidecar:"
+                f"{security_matches[0]}"
+            )
+        if shutil.which("systemctl") is None:
+            fail("privileged_systemctl_unavailable")
+        active_result = subprocess.run(
+            [*prefix, "systemctl", "is-active", "scratchbird-sbsrv.service"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        active = active_result.stdout.strip()
+        if active_result.returncode != 3 or active != "inactive":
+            fail(
+                "privileged_service_not_exactly_inactive:"
+                f"{active_result.returncode}:{active[-1000:]}"
+            )
+        enabled_result = subprocess.run(
+            [*prefix, "systemctl", "is-enabled", "scratchbird-sbsrv.service"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        enabled = enabled_result.stdout.strip()
+        if enabled_result.returncode != 1 or enabled != "disabled":
+            fail(
+                "privileged_service_not_exactly_disabled:"
+                f"{enabled_result.returncode}:{enabled[-1000:]}"
+            )
     finally:
         remove = subprocess.run(
             [*prefix, "dpkg", "--remove", "scratchbird"],
@@ -994,18 +1181,43 @@ def privileged_install_smoke(deb: Path, requested: bool) -> dict[str, Any]:
         )
         if remove.returncode != 0:
             fail(f"privileged_deb_remove_failed:{remove.returncode}:{remove.stdout[-2000:]}")
-    if not Path("/var/lib/scratchbird").is_dir():
+    data_root_mode, _, _ = privileged_path_metadata(
+        prefix, Path("/var/lib/scratchbird")
+    )
+    if not stat.S_ISDIR(data_root_mode):
         fail("privileged_uninstall_removed_user_data_root")
     for config in CONFIG_FILES:
-        if not Path("/", config).is_file():
+        config_mode, _, _ = privileged_path_metadata(prefix, Path("/", config))
+        if not stat.S_ISREG(config_mode):
             fail(f"privileged_uninstall_removed_configuration:{config}")
-    if Path("/usr/lib/systemd/system/scratchbird-sbsrv.service").exists():
+    if privileged_path_exists(
+        prefix, Path("/usr/lib/systemd/system/scratchbird-sbsrv.service")
+    ):
         fail("privileged_uninstall_retained_service_unit")
+    if privileged_path_exists(prefix, Path("/run/scratchbird")):
+        fail("privileged_uninstall_retained_runtime_root")
     return {
         "status": "passed",
+        "service_identity": "scratchbird",
+        "service_identity_locked": True,
+        "service_login_shell": passwd_fields[6],
+        "service_effective_groups": ["scratchbird"],
+        "service_authority_scope": (
+            "filesystem_directory_and_process_execution_only_"
+            "no_database_or_security_authority"
+        ),
+        "service_group_explicit_members": (
+            [] if not group_fields[3] else [group_fields[3]]
+        ),
+        "bootstrap_os_authority_probe": authority_probe_evidence,
+        "database_files_created": False,
+        "security_sidecars_created": False,
+        "service_active_state": active,
+        "service_enabled_state": enabled,
         "uninstall_preserved_data": True,
         "uninstall_preserved_configuration": True,
         "uninstall_removed_service_unit": True,
+        "uninstall_removed_runtime_root": True,
     }
 
 
@@ -1014,7 +1226,12 @@ def main() -> int:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--run-privileged-deb-install", action="store_true")
+    parser.add_argument("--authority-probe", type=Path)
     args = parser.parse_args()
+
+    authority_probe = validate_authority_probe_argument(
+        args.run_privileged_deb_install, args.authority_probe
+    )
 
     root = args.artifact_root.resolve()
     work_root = args.work_root.resolve()
@@ -1033,7 +1250,10 @@ def main() -> int:
     proof["rpm_recipe"] = verify_rpm_recipe(root)
     proof["aur"] = verify_aur(root)
     proof["privileged_install"] = privileged_install_smoke(
-        deb, args.run_privileged_deb_install
+        deb,
+        args.run_privileged_deb_install,
+        authority_probe,
+        work_root,
     )
     proof["result"] = "passed"
     proof_path = work_root / "LINUX_SYSTEM_PACKAGE_SMOKE.json"

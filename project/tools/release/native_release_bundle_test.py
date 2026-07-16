@@ -77,8 +77,22 @@ class NativeReleaseBundleTest(unittest.TestCase):
             (source / "lib" / name).write_bytes(b"native library\n")
         for name in stage.NATIVE_CONFIGS:
             tokens = stage.REQUIRED_CONFIG_TOKENS[name]
+            if name == "SBsrv.conf":
+                section_tokens = {
+                    "server.security": tokens[0:2],
+                    "server.database": tokens[2:3],
+                    "server.listener.native": tokens[3:6],
+                    "server.memory": tokens[6:7],
+                }
+                config_text = "\n".join(
+                    line
+                    for section, section_values in section_tokens.items()
+                    for line in (f"[{section}]", *section_values)
+                )
+            else:
+                config_text = "\n".join(tokens)
             (source / "etc" / "scratchbird" / name).write_text(
-                "\n".join(tokens) + "\n", encoding="utf-8"
+                config_text + "\n", encoding="utf-8"
             )
         share_root = source / "share" / "scratchbird"
         for rel in stage.REQUIRED_RESOURCE_DIRS:
@@ -310,6 +324,45 @@ class NativeReleaseBundleTest(unittest.TestCase):
             result = self.verify(output)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("native_config_forbidden_native_port", result.stdout)
+
+    def test_verifier_rejects_commented_false_auto_create_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            output = root / "native" / "output" / "linux"
+            stage.stage(source, output, "linux")
+            server_config = output / "etc/scratchbird/SBsrv.conf"
+            server_config.write_text(
+                server_config.read_text(encoding="utf-8").replace(
+                    "auto_create = false",
+                    "# auto_create = false\nauto_create = true",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            result = self.verify(output)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("native_config_active_token_cardinality", result.stdout)
+
+    def test_verifier_rejects_commented_parser_path_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            output = root / "native" / "output" / "linux"
+            stage.stage(source, output, "linux")
+            parser_config = output / "etc/scratchbird/SBParser.conf"
+            parser_config.write_text(
+                parser_config.read_text(encoding="utf-8").replace(
+                    "parser.worker_binary = bin/SBParser",
+                    "# parser.worker_binary = bin/SBParser\n"
+                    "parser.worker_binary = /tmp/untrusted-parser",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            result = self.verify(output)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("native_config_active_token_cardinality", result.stdout)
 
     def test_verifier_rejects_manager_backend_front_door_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

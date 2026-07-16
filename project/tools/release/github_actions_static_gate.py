@@ -166,15 +166,34 @@ def check_macos_system_installed_verifier(
     installer = "sudo installer -pkg"
     verifier = "project/tools/release/verify_native_installed_payload.py"
     mode = "--config-mode system-installed"
-    for token in (smoke, installer, verifier, mode):
+    inventory = "sudo find /var/lib/scratchbird -xdev -type f -print"
+    forbidden_inventory = "macos-system-forbidden-artifacts.txt"
+    inventory_proof = "macos-system-database-security-proof.txt"
+    for token in (
+        smoke,
+        installer,
+        verifier,
+        mode,
+        inventory,
+        forbidden_inventory,
+        inventory_proof,
+        "-iname '*.sbdb'",
+        "-iname '*.sbrd'",
+        "-iname '*security_principal_events*'",
+        "-iname '*local_password_auth*'",
+        'if [ -s "$forbidden_path" ]',
+        'echo "forbidden_matches=0"',
+    ):
         require_token(step, token, rel)
     verifier_offset = step.index(verifier)
     mode_offset = step.find(mode, verifier_offset)
+    inventory_offset = step.find(inventory, mode_offset)
     if not (
         step.index(smoke)
         < step.index(installer)
         < verifier_offset
         < mode_offset
+        < inventory_offset
     ):
         fail(f"macos_system_verifier_order_invalid:{rel}:{job_name}")
 
@@ -207,6 +226,39 @@ def check_linux_release_dependencies(text: str, rel: str, job_name: str) -> None
         if dependency not in block:
             fail(f"linux_release_dependency_missing:{rel}:{job_name}:{dependency}")
     check_ctest_label_contract(text, rel, job_name, "public-release-linux")
+
+
+def check_linux_installed_authority_probe(
+    text: str, rel: str, job_name: str
+) -> None:
+    job = workflow_job_block(text, job_name, rel)
+    stage = workflow_step_block(
+        job, "Stage and verify native-only SB bundle", rel, job_name
+    )
+    source = (
+        "build/public-release-linux/output/linux/bin/"
+        "sb_bootstrap_os_authority_tests"
+    )
+    retained = (
+        "build/bootstrap-probes/sb_bootstrap_os_authority_tests-linux"
+    )
+    cleanup = "cmake -E remove_directory build/public-release-linux"
+    for token in (source, retained, "chmod 0755", cleanup):
+        require_token(stage, token, rel)
+    if not stage.index(source) < stage.index(retained) < stage.index(cleanup):
+        fail(f"linux_authority_probe_retention_order_invalid:{rel}:{job_name}")
+
+    smoke = workflow_step_block(
+        job, "Smoke Linux system-package lifecycle", rel, job_name
+    )
+    for token in (
+        "smoke_install_linux_system.py",
+        "--run-privileged-deb-install",
+        "--authority-probe",
+        "$GITHUB_WORKSPACE/build/bootstrap-probes/"
+        "sb_bootstrap_os_authority_tests-linux",
+    ):
+        require_token(smoke, token, rel)
 
 
 def check_windows_llvm_release_dependency(text: str, rel: str, job_name: str) -> None:
@@ -486,6 +538,9 @@ def main() -> int:
                 "Smoke system package install and cleanup",
             )
             check_linux_release_dependencies(text, name, "linux-installers")
+            check_linux_installed_authority_probe(
+                text, name, "linux-installers"
+            )
             check_windows_llvm_release_dependency(text, name, "windows-installers")
             check_ctest_label_contract(
                 text, name, "macos-installers", "public-release-macos"

@@ -170,14 +170,16 @@ locally unique UID for each daemon. The lifecycle helper therefore allocates
 the first unused local UID in 501 through 59999, marks the account hidden,
 locks its password, assigns `/usr/bin/false` as its shell, and rejects an
 existing `scratchbird` user record unless its nonzero UID is unique and remains in
-that range. Explicit membership of the service user in any other local group,
-and nesting of the `scratchbird` group inside any other local group, are
-forbidden. The transitive `admin` membership check remains an additional
-fail-closed guard. The resolved numeric group inventory must contain only the
-primary `scratchbird` GID plus Apple's unavoidable computed `everyone` (12) and
-`localaccounts` (61) baselines. The package never adds a human account to the
-service group. Root alone authorizes explicit create-time bootstrap; the
-numeric service identity is used only for ownership and process execution.
+that range. The `scratchbird` group must contain exactly the service user by
+name and generated UID, with no nested groups. Explicit membership of the
+service user in any other local group, and nesting of the `scratchbird` group
+inside any other local group, are forbidden. The transitive `admin` membership
+check remains an additional fail-closed guard. The resolved numeric group
+inventory must contain only the primary `scratchbird` GID plus Apple's
+unavoidable computed `everyone` (12) and `localaccounts` (61) baselines. The
+package never adds a human account to the service group. Root alone authorizes
+explicit create-time bootstrap; the numeric service identity is used only for
+ownership and process execution.
 
 The packaged launchd jobs pass the canonical configuration paths explicitly,
 so service operation does not depend on implicit discovery. Interactive

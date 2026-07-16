@@ -474,6 +474,30 @@ jobs:
               exit 1
             fi
           done
+          inventory_path="$proof_root/macos-system-filesystem-inventory.txt"
+          forbidden_path="$proof_root/macos-system-forbidden-artifacts.txt"
+          sudo find /var/lib/scratchbird -xdev -type f -print \
+            | LC_ALL=C sort > "$inventory_path"
+          sudo find /var/lib/scratchbird -xdev -type f \
+            \( -iname '*.sbdb' -o -iname '*.sbrd' \
+               -o -iname '*security_principal_events*' \
+               -o -iname '*local_password_auth*' \) -print \
+            | LC_ALL=C sort > "$forbidden_path"
+          if [ -s "$forbidden_path" ]; then
+            echo "System package created a database or security sidecar:" >&2
+            cat "$forbidden_path" >&2
+            exit 1
+          fi
+          inventory_count="$(wc -l < "$inventory_path" | tr -d '[:space:]')"
+          {
+            echo "inventory_root=/var/lib/scratchbird"
+            echo "inventory_file=$inventory_path"
+            echo "inventory_file_count=$inventory_count"
+            echo "forbidden_patterns=*.sbdb,*.sbrd,*security_principal_events*,*local_password_auth*"
+            echo "forbidden_matches=0"
+            echo "database_files_created=false"
+            echo "security_sidecars_created=false"
+          } > "$proof_root/macos-system-database-security-proof.txt"
           pkgutil --pkg-info com.scratchbird.cde > "$proof_root/pkg-receipt.txt"
           sudo cat /var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json \
             > "$proof_root/MACOS_SYSTEM_INSTALL_STATE.json"
@@ -486,6 +510,7 @@ jobs:
               "service_user": "scratchbird",
               "service_group": "scratchbird",
               "service_administrator_group_membership": False,
+              "service_group_membership_policy": "exact_scratchbird_name_and_generated_uid_only_no_nested_groups",
               "service_enablement_default": "disabled",
               "service_activity_default": "not_started",
               "launchd_load_performed": False,

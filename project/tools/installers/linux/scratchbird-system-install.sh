@@ -162,6 +162,14 @@ ensure_service_identity() {
         echo "BOOTSTRAP.GROUP_INPUT_INVALID: scratchbird NSS identity is ambiguous" >&2
         exit 1
     fi
+    group_explicit_members=$(printf '%s\n' "$local_group_entry" | cut -d: -f4)
+    case "$group_explicit_members" in
+        ''|scratchbird) ;;
+        *)
+            echo "BOOTSTRAP.GROUP_INPUT_INVALID: scratchbird group has forbidden explicit members" >&2
+            exit 1
+            ;;
+    esac
     group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
     user_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
     user_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)
