@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -70,7 +71,8 @@ void ProveWindowsExtendedLengthWorkspaceLifecycle() {
 
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch043_windows_extended_path";
-  policy.root_path = root;
+  policy.root_path = std::filesystem::path(
+      std::wstring(LR"(\\?\)") + root.native());
   policy.filespace_quota_bytes = 4096;
   policy.session_quota_bytes = 4096;
   policy.transaction_quota_bytes = 4096;
@@ -91,6 +93,8 @@ void ProveWindowsExtendedLengthWorkspaceLifecycle() {
   std::filesystem::path logical_spill_path;
   {
     mem::TempWorkspaceLifecycleManager manager(policy);
+    Require(manager.policy().root_path == root.lexically_normal(),
+            "MMCH-043 extended prefix was not removed from logical policy root");
     const auto allocation = manager.AllocateSpillFile(request);
     if (!allocation.ok()) {
       std::cerr << "MMCH-043 Windows long-path allocation diagnostic="
@@ -111,6 +115,8 @@ void ProveWindowsExtendedLengthWorkspaceLifecycle() {
   }
 
   mem::TempWorkspaceLifecycleManager reopened(policy);
+  Require(reopened.policy().root_path == root.lexically_normal(),
+          "MMCH-043 extended prefix leaked into reopened logical policy root");
   const auto reopened_records = reopened.ActiveRecords();
   Require(reopened_records.size() == 1 &&
               reopened_records.front().path == logical_spill_path,
@@ -122,6 +128,65 @@ void ProveWindowsExtendedLengthWorkspaceLifecycle() {
           "MMCH-043 Windows extended-length spill cleanup failed");
   Require(std::filesystem::is_empty(root, ec) && !ec,
           "MMCH-043 Windows long-path manifest or spill survived cleanup");
+
+  const auto original_cwd = std::filesystem::current_path();
+  std::filesystem::current_path(base, ec);
+  Require(!ec, "MMCH-043 could not set relative-root construction directory");
+  auto relative_policy = policy;
+  relative_policy.policy_name = "mmch043_windows_relative_path";
+  relative_policy.root_path = "relative-root";
+  mem::TempWorkspaceLifecycleManager relative_manager(relative_policy);
+  const auto frozen_relative_root =
+      (base / "relative-root").lexically_normal();
+  Require(relative_manager.policy().root_path == frozen_relative_root,
+          "MMCH-043 relative logical root was not frozen as absolute");
+  std::filesystem::current_path(original_cwd, ec);
+  Require(!ec, "MMCH-043 could not restore construction directory");
+  request.owner.temp_object_uuid = "mmch043-relative";
+  const auto relative_allocation = relative_manager.AllocateSpillFile(request);
+  Require(relative_allocation.ok() && relative_allocation.record.has_value() &&
+              relative_allocation.record->path.parent_path() ==
+                  frozen_relative_root,
+          "MMCH-043 frozen relative root changed after current-directory change");
+  const auto relative_cleanup = relative_manager.CleanupOnShutdown();
+  Require(relative_cleanup.ok() && relative_cleanup.cleaned_count == 1,
+          "MMCH-043 frozen relative-root cleanup failed");
+
+  auto device_policy = policy;
+  device_policy.policy_name = "mmch043_windows_device_rejection";
+  device_policy.root_path = LR"(\\.\C:\scratchbird-mmch043-device)";
+  const auto sentinel =
+      base / ".scratchbird_temp_workspace_manifest.v2";
+  {
+    std::ofstream out(sentinel, std::ios::binary | std::ios::trunc);
+    out << "mmch043-device-rejection-sentinel\n";
+    Require(out.good(), "MMCH-043 could not write device rejection sentinel");
+  }
+  std::filesystem::current_path(base, ec);
+  Require(!ec, "MMCH-043 could not set device rejection sentinel directory");
+  mem::TempWorkspaceLifecycleManager device_manager(device_policy);
+  const auto device_allocation = device_manager.AllocateSpillFile(request);
+  Require(!device_allocation.ok() &&
+              device_allocation.diagnostic.diagnostic_code ==
+                  "TEMP_WORKSPACE.ROOT_UNSAFE" &&
+              device_manager.policy().root_path.empty(),
+          "MMCH-043 Windows device namespace did not fail closed");
+  for (const auto& argument : device_allocation.diagnostic.arguments) {
+    Require(argument.value.find(R"(\\.\)") == std::string::npos &&
+                argument.value.find(R"(\\?\)") == std::string::npos,
+            "MMCH-043 rejected API namespace leaked into diagnostics");
+  }
+  const auto device_cleanup = device_manager.CleanupOnShutdown();
+  Require(!device_cleanup.ok(),
+          "MMCH-043 invalid device namespace cleanup did not fail closed");
+  std::filesystem::current_path(original_cwd, ec);
+  Require(!ec, "MMCH-043 could not restore device rejection directory");
+  std::ifstream sentinel_in(sentinel, std::ios::binary);
+  std::string sentinel_body;
+  std::getline(sentinel_in, sentinel_body);
+  Require(sentinel_body == "mmch043-device-rejection-sentinel",
+          "MMCH-043 invalid namespace cleanup touched the CWD manifest");
+
   std::filesystem::remove_all(base, ec);
   Require(!ec, "MMCH-043 could not remove Windows long-path test root");
 }

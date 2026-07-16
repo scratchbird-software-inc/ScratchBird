@@ -161,6 +161,19 @@ bool StartsWith(std::wstring_view value, std::wstring_view prefix) {
          value.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool StartsWithAsciiCaseInsensitive(std::wstring_view value,
+                                    std::wstring_view prefix) {
+  if (value.size() < prefix.size()) return false;
+  for (std::size_t index = 0; index < prefix.size(); ++index) {
+    wchar_t left = value[index];
+    wchar_t right = prefix[index];
+    if (left >= L'a' && left <= L'z') left -= L'a' - L'A';
+    if (right >= L'a' && right <= L'z') right -= L'a' - L'A';
+    if (left != right) return false;
+  }
+  return true;
+}
+
 void NormalizeWindowsPathSeparators(std::wstring* path) {
   if (path == nullptr) return;
   std::replace(path->begin(), path->end(), L'/', L'\\');
@@ -206,6 +219,34 @@ std::wstring ResolveWindowsAbsolutePath(std::wstring path) {
   path.assign(buffer.data(), static_cast<std::size_t>(written));
   NormalizeWindowsPathSeparators(&path);
   return path;
+}
+
+std::optional<std::filesystem::path> NormalizeWindowsLogicalPath(
+    const std::filesystem::path& input) {
+  std::wstring logical = input.wstring();
+  NormalizeWindowsPathSeparators(&logical);
+  if (StartsWith(logical, kWindowsDevicePathPrefix)) {
+    return std::nullopt;
+  }
+  if (StartsWith(logical, kWindowsExtendedPathPrefix)) {
+    std::wstring tail = logical.substr(kWindowsExtendedPathPrefix.size());
+    if (StartsWithAsciiCaseInsensitive(tail, LR"(UNC\)")) {
+      logical = LR"(\\)" + tail.substr(4);
+    } else if (IsWindowsDriveAbsolutePath(tail)) {
+      logical = std::move(tail);
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  const auto normalized = std::filesystem::path(logical).lexically_normal();
+  std::wstring absolute = ResolveWindowsAbsolutePath(normalized.wstring());
+  if (StartsWith(absolute, kWindowsExtendedPathPrefix) ||
+      StartsWith(absolute, kWindowsDevicePathPrefix) ||
+      (!IsWindowsDriveAbsolutePath(absolute) && !IsWindowsUncPath(absolute))) {
+    return std::nullopt;
+  }
+  return std::filesystem::path(std::move(absolute)).lexically_normal();
 }
 
 // Win32 extended paths are an API-only representation.  Logical paths kept in
@@ -1425,8 +1466,19 @@ TempWorkspaceLifecycleManager::TempWorkspaceLifecycleManager(TempWorkspacePolicy
   if (policy_.root_path.empty()) {
     policy_.root_path = std::filesystem::temp_directory_path() / "scratchbird-temp-workspace";
   }
+#if defined(_WIN32)
+  auto logical_root = NormalizeWindowsLogicalPath(policy_.root_path);
+  if (!logical_root.has_value()) {
+    root_path_validation_error_ = "unsupported_windows_device_or_non_absolute_namespace";
+    policy_.root_path.clear();
+  } else {
+    policy_.root_path = std::move(*logical_root);
+  }
+#endif
   manifest_generation_ = policy_.manifest_generation == 0 ? 1 : policy_.manifest_generation;
-  (void)LoadManifestFromDisk();
+  if (root_path_validation_error_.empty()) {
+    (void)LoadManifestFromDisk();
+  }
 }
 
 TempWorkspaceResult TempWorkspaceLifecycleManager::ReserveTempFilespace(TempWorkspaceAllocationRequest request) {
@@ -1459,6 +1511,17 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
                                        "temp_workspace.allocation.invalid",
                                        request.owner,
                                        {{"reason", "zero_byte_reservation"}});
+    return result;
+  }
+  if (!root_path_validation_error_.empty()) {
+    result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeDiagnostic(
+        result.status,
+        "TEMP_WORKSPACE.ROOT_UNSAFE",
+        "temp_workspace.root.unsafe",
+        request.owner,
+        {{"reason", root_path_validation_error_},
+         {"logical_path_normalization", "rejected_before_filesystem_access"}});
     return result;
   }
 
@@ -2309,6 +2372,19 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
 }
 
 bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diagnostic) {
+  if (!root_path_validation_error_.empty()) {
+    if (diagnostic != nullptr) {
+      const auto status = TempManifestStatus(StatusCode::memory_invalid_request,
+                                             Severity::error);
+      *diagnostic = MakeTempManifestDiagnostic(
+          status,
+          "TEMP_WORKSPACE.MANIFEST_WRITE_FAILED",
+          "temp_workspace.manifest.write_failed",
+          policy_,
+          root_path_validation_error_);
+    }
+    return false;
+  }
   std::error_code ec;
   const auto path = ManifestPath();
   const auto tmp = TempWorkspaceManifestTempPath(path);

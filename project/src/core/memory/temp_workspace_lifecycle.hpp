@@ -384,6 +384,7 @@ class TempWorkspaceLifecycleManager {
                                   const std::vector<scratchbird::core::platform::DiagnosticArgument>& extra = {}) const;
 
   TempWorkspacePolicy policy_;
+  std::string root_path_validation_error_;
   mutable std::mutex mutex_;
   TempWorkspaceAccountingSnapshot accounting_;
   std::map<std::string, TempWorkspaceRecord> active_;

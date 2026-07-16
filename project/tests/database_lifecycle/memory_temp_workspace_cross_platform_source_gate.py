@@ -43,6 +43,8 @@ def main() -> None:
         "kWindowsDevicePathPrefix": text,
         "IsWindowsDriveAbsolutePath": text,
         "IsWindowsUncPath": text,
+        "NormalizeWindowsLogicalPath": text,
+        "unsupported_windows_device_or_non_absolute_namespace": text,
         "PlatformFilesystemPath": text,
         "const auto path_wide = WidePath(path);": text,
         "const auto parent_wide = WidePath(parent);": text,
