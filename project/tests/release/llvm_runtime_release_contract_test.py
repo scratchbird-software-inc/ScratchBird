@@ -99,6 +99,9 @@ class LlvmRuntimeReleaseContractTest(unittest.TestCase):
                 ar_member(deb, "control.tar.gz"),
                 ar_member(deb, "data.tar.gz"),
                 root,
+                required_unpack_paths=(
+                    long_path.relative_to(payload).as_posix(),
+                ),
             )
             self.assertEqual(result["static_tar_header_gate"], "passed")
             self.assertEqual(result["pax_extended_headers"], "absent")
@@ -114,6 +117,9 @@ class LlvmRuntimeReleaseContractTest(unittest.TestCase):
                     else "isolated_root_unpack_passed"
                 )
                 self.assertEqual(result["dpkg_unpack"], expected)
+                self.assertEqual(result["required_unpack_paths_verified"], 1)
+            else:
+                self.assertEqual(result["required_unpack_paths_verified"], 0)
 
     def test_debian_compatibility_gate_rejects_pax_extended_header(self) -> None:
         stream = BytesIO()

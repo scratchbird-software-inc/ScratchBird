@@ -180,8 +180,21 @@ def verify_deb_archive_compatibility(
     control_payload: bytes,
     data_payload: bytes,
     work_root: Path,
+    *,
+    required_unpack_paths: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Fail before installation when dpkg cannot consume either tar member."""
+
+    normalized_required_paths: list[Path] = []
+    for relative_text in required_unpack_paths:
+        relative = Path(relative_text)
+        if (
+            not relative.parts
+            or relative.is_absolute()
+            or ".." in relative.parts
+        ):
+            fail(f"dpkg_isolated_unpack_required_path_invalid:{relative_text}")
+        normalized_required_paths.append(relative)
 
     header_type_counts: dict[str, dict[str, int]] = {}
     for member_name, payload in (
@@ -237,6 +250,7 @@ def verify_deb_archive_compatibility(
             shutil.rmtree(extract_root, ignore_errors=True)
         dpkg_status = "info_and_extract_passed"
 
+    required_unpack_paths_verified = 0
     dpkg = shutil.which("dpkg")
     if dpkg is None:
         dpkg_unpack_status = "not_available_static_header_gate_passed"
@@ -272,6 +286,13 @@ def verify_deb_archive_compatibility(
                 )
             if not (install_root / "opt/ScratchBird").is_dir():
                 fail("dpkg_isolated_unpack_payload_missing")
+            for relative in normalized_required_paths:
+                if not (install_root / relative).is_file():
+                    fail(
+                        "dpkg_isolated_unpack_required_path_missing:"
+                        f"{relative.as_posix()}"
+                    )
+            required_unpack_paths_verified = len(normalized_required_paths)
         dpkg_unpack_status = (
             "isolated_non_root_unpack_passed"
             if os.geteuid() != 0
@@ -284,6 +305,7 @@ def verify_deb_archive_compatibility(
         "header_type_counts": header_type_counts,
         "dpkg_deb": dpkg_status,
         "dpkg_unpack": dpkg_unpack_status,
+        "required_unpack_paths_verified": required_unpack_paths_verified,
     }
 
 
