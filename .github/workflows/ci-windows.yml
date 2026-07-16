@@ -113,7 +113,6 @@ jobs:
         run: python project/tools/release/verify_public_release_bundle.py build/public-release-windows/output/windows
 
       - name: Stage and verify native-only SB bundle
-        shell: bash
         run: |
           python project/tools/release/stage_native_release_bundle.py \
             --source-root build/public-release-windows/output/windows \

@@ -127,6 +127,16 @@ def workflow_job_block(text: str, job_name: str, rel: str) -> str:
     return match.group(0)
 
 
+def workflow_step_block(block: str, step_name: str, rel: str, job_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^      - name: {re.escape(step_name)}\s*\n.*?(?=^      - name: |\Z)",
+        block,
+    )
+    if match is None:
+        fail(f"workflow_step_missing:{rel}:{job_name}:{step_name}")
+    return match.group(0)
+
+
 def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> None:
     block = workflow_job_block(text, job_name, rel)
     required_patterns = {
@@ -353,6 +363,17 @@ def check_native_release_stage(
         require_token(block, token, rel)
     if platform == "windows":
         require_token(block, "--runtime-search-root", rel)
+        require_token(block, '"${MINGW_PREFIX:-/ucrt64}/bin"', rel)
+        require_token(block, "shell: msys2 {0}", rel)
+        stage_block = workflow_step_block(
+            block, "Stage and verify native-only SB bundle", rel, job_name
+        )
+        stage_shell = re.search(r"(?m)^        shell:\s*(.+?)\s*$", stage_block)
+        if stage_shell is not None and stage_shell.group(1) != "msys2 {0}":
+            fail(
+                "windows_native_stage_shell_mismatch:"
+                f"{rel}:{job_name}:{stage_shell.group(1)}"
+            )
     if require_installer:
         require_token(block, "--require-native-only", rel)
         if not retain_native_proof_artifacts:
