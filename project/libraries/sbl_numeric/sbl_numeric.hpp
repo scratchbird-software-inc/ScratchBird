@@ -83,6 +83,9 @@ struct NumericResult {
 const char* NumericStatusCodeName(NumericStatusCode status);
 const char* NumericTypeName(NumericType type);
 const char* NumericOperationName(NumericOperation operation);
+// Returns the exact real128 implementation compiled into this library.  The
+// runtime capability manifest must report the same value.
+const char* Real128BackendName();
 NumericResult ApplyNumericOperation(const NumericRequest& request);
 
 }  // namespace scratchbird::libraries::sbl_numeric

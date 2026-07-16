@@ -179,6 +179,8 @@ void TestCompiledDefaults() {
           "PCR-123 default security policy is not installed");
   Require(!defaults.database_auto_create,
           "PCR-123 database auto-create default is not fail-closed");
+  Require(!defaults.allow_uncredentialed_fixture_database,
+          "PCR-123 uncredentialed fixture database bypass escaped into defaults");
   Require(defaults.database_open_mode == "normal",
           "PCR-123 database open mode default drifted");
   Require(defaults.database_daemon_scope == "shared",
@@ -189,6 +191,8 @@ void TestCompiledDefaults() {
           "PCR-123 native listener default must be disabled");
   Require(defaults.listener_native_bind_host == "127.0.0.1",
           "PCR-123 native listener bind default is not loopback");
+  Require(defaults.listener_native_port == 3092,
+          "PCR-123 native listener port default is not 3092");
   Require(defaults.listener_native_tls_required,
           "PCR-123 native listener TLS default must be required");
   Require(defaults.log_level == "info",
@@ -219,6 +223,163 @@ void TestCompiledDefaults() {
           "PCR-123 resolved production memory policy refuses all allocations");
   Require(resolved.policy.policy_name == "default_local_server_memory_cache_v1",
           "PCR-123 resolved memory policy name drifted");
+}
+
+void TestPackagedResourceDiscovery(const std::filesystem::path& root) {
+  const auto install_root = root / "packaged" / "opt" / "ScratchBird";
+  const auto resources = install_root / "share" / "scratchbird" / "resources";
+  const auto resource_pack = resources / "seed-packs" / "initial-resource-pack";
+  const auto policy_pack =
+      resources / "policy-packs" / "default-local-password";
+  std::filesystem::create_directories(resource_pack);
+  std::filesystem::create_directories(policy_pack);
+
+  const auto discovered = server::DiscoverServerPackagedResourceRoots(
+      install_root / "bin" / "SBsrv", root / "unrelated-working-directory");
+  Require(discovered.resource_seed_pack_root == resource_pack,
+          "PCR-123 packaged resource seed pack did not resolve beside SBsrv");
+  Require(discovered.policy_seed_pack_root == policy_pack,
+          "PCR-123 packaged default policy pack did not resolve beside SBsrv");
+}
+
+void TestBrandedServerConfigDiscovery(const std::filesystem::path& root) {
+  const auto discovery_root = root / "branded-config-discovery";
+  std::filesystem::create_directories(discovery_root);
+  WriteFile(discovery_root / "SBsrv.conf",
+            "[config]\n"
+            "format = SBCD1\n"
+            "[server.memory]\n"
+            "enable_platform_memory_probe = false\n");
+  server::ServerCliOptions cli;
+  const auto loaded = server::ResolveServerBootstrapConfig(
+      cli,
+      server::ServerConfigResolutionContext{
+          root / "tools" / "SBsrv", discovery_root, false, false});
+  Require(loaded.ok(), "PCR-123 branded SBsrv.conf discovery did not load");
+  Require(loaded.config.selected_config_path.has_value() &&
+              loaded.config.selected_config_path->filename() == "SBsrv.conf",
+          "PCR-123 server did not prefer the shipped branded SBsrv.conf name");
+}
+
+std::string RelativePathServerConfig(std::string_view mode = "foreground") {
+  return "[config]\n"
+         "format = SBCD1\n"
+         "[server]\n"
+         "mode = " + std::string(mode) + "\n"
+         "[server.runtime]\n"
+         "data_dir = runtime/data\n"
+         "control_dir = runtime/control\n"
+         "[server.database]\n"
+         "default_path = data/default.sbdb\n"
+         "[server.listener.native]\n"
+         "executable_path = bin/SBgate\n"
+         "parser_executable_path = bin/SBParser\n"
+         "[server.memory]\n"
+         "enable_platform_memory_probe = false\n";
+}
+
+void TestInstalledServerConfigResolutionAndCwdSafety(
+    const std::filesystem::path& root) {
+  const auto install_root = root / "server-portable";
+  const auto config_root = install_root / "etc" / "scratchbird";
+  const auto cwd = root / "server-untrusted-cwd";
+  std::filesystem::create_directories(install_root / "bin");
+  std::filesystem::create_directories(config_root);
+  std::filesystem::create_directories(cwd);
+  WriteFile(config_root / "SBsrv.conf", RelativePathServerConfig());
+  WriteFile(cwd / "SBsrv.conf", RelativePathServerConfig("service"));
+
+  const server::ServerConfigResolutionContext installed_context{
+      install_root / "bin" / "SBsrv", cwd, false, false};
+  server::ServerCliOptions cli;
+  const auto discovered = server::DiscoverServerConfigPath(cli,
+                                                            installed_context);
+  Require(discovered == config_root / "SBsrv.conf",
+          "PCR-123 installed server config did not precede CWD config");
+  const auto loaded = server::ResolveServerBootstrapConfig(cli,
+                                                            installed_context);
+  Require(loaded.ok(), "PCR-123 installed relative-path config did not load");
+  Require(loaded.config.selected_config_source == "installed_file",
+          "PCR-123 installed server config source was not recorded");
+  Require(loaded.config.data_dir == install_root / "runtime" / "data",
+          "PCR-123 server data path did not resolve from install root");
+  Require(loaded.config.control_dir == install_root / "runtime" / "control",
+          "PCR-123 server control path did not resolve from install root");
+  Require(loaded.config.database_default_path ==
+              install_root / "data" / "default.sbdb",
+          "PCR-123 server database path did not resolve from install root");
+  Require(loaded.config.listener_native_executable_path ==
+              install_root / "bin" / "SBgate",
+          "PCR-123 shared listener path did not resolve from install root");
+  Require(loaded.config.listener_native_parser_executable_path ==
+              install_root / "bin" / "SBParser",
+          "PCR-123 standalone parser path did not resolve from install root");
+
+  const auto external_root = root / "server-external-config";
+  const auto external_config = external_root / "SBsrv.conf";
+  WriteFile(external_config, RelativePathServerConfig());
+  server::ServerCliOptions explicit_cli;
+  explicit_cli.config_path = external_config.string();
+  const server::ServerConfigResolutionContext external_context{
+      root / "tools" / "SBsrv", cwd, false, false};
+  const auto external = server::ResolveServerBootstrapConfig(explicit_cli,
+                                                              external_context);
+  Require(external.ok(), "PCR-123 external relative-path config did not load");
+  Require(external.config.data_dir == external_root / "runtime" / "data",
+          "PCR-123 non-installed server path did not use config directory");
+
+  const server::ServerConfigResolutionContext cwd_only_context{
+      root / "tools" / "SBsrv", cwd, false, false};
+  server::ServerCliOptions service_cli;
+  service_cli.service = true;
+  const auto service_missing = server::ResolveServerBootstrapConfig(
+      service_cli, cwd_only_context);
+  Require(!service_missing.ok(),
+          "PCR-123 service mode consumed CWD config or compiled defaults");
+  Require(HasDiagnostic(service_missing.diagnostics, "CONFIG.FILE_REQUIRED"),
+          "PCR-123 service missing-config diagnostic mismatch");
+
+  server::ServerCliOptions validate_cli;
+  validate_cli.validate_config = true;
+  const auto validate_missing = server::ResolveServerBootstrapConfig(
+      validate_cli,
+      server::ServerConfigResolutionContext{
+          root / "tools" / "SBsrv", root / "empty-cwd", false, false});
+  Require(!validate_missing.ok(),
+          "PCR-123 validate-config accepted missing selected config");
+  Require(HasDiagnostic(validate_missing.diagnostics, "CONFIG.FILE_REQUIRED"),
+          "PCR-123 validate-config missing-config diagnostic mismatch");
+
+  const auto cwd_service = server::ResolveServerBootstrapConfig(
+      server::ServerCliOptions{}, cwd_only_context);
+  Require(!cwd_service.ok(),
+          "PCR-123 config-declared service mode consumed CWD config");
+  Require(HasDiagnostic(cwd_service.diagnostics,
+                        "CONFIG.CURRENT_DIRECTORY_FORBIDDEN"),
+          "PCR-123 service CWD rejection diagnostic mismatch");
+}
+
+void TestMacosSystemServerConfigPrecedesEtcAndCwd(
+    const std::filesystem::path& root) {
+  const auto macos_root =
+      root / "Library" / "Application Support" / "ScratchBird";
+  const auto etc_root = root / "etc" / "scratchbird";
+  const auto cwd = root / "macos-system-config-untrusted-cwd";
+  std::filesystem::create_directories(macos_root);
+  std::filesystem::create_directories(etc_root);
+  std::filesystem::create_directories(cwd);
+  WriteFile(macos_root / "SBsrv.conf", RelativePathServerConfig());
+  WriteFile(etc_root / "SBsrv.conf", RelativePathServerConfig());
+  WriteFile(cwd / "SBsrv.conf", RelativePathServerConfig());
+
+  server::ServerConfigResolutionContext context{
+      root / "tools" / "SBsrv", cwd, false, true};
+  context.system_config_roots = {macos_root, etc_root};
+  const auto discovered =
+      server::DiscoverServerConfigPath(server::ServerCliOptions{}, context);
+  Require(discovered == macos_root / "SBsrv.conf",
+          "macOS /Library/Application Support/ScratchBird config did not "
+          "precede /etc and CWD config");
 }
 
 void TestServiceProfileResolution(const std::filesystem::path& root) {
@@ -342,6 +503,10 @@ void WriteEffectiveConfigProof(const std::filesystem::path& output_path,
 int main(int argc, char** argv) {
   const auto root = MakeTempRoot();
   TestCompiledDefaults();
+  TestPackagedResourceDiscovery(root);
+  TestBrandedServerConfigDiscovery(root);
+  TestInstalledServerConfigResolutionAndCwdSafety(root);
+  TestMacosSystemServerConfigPrecedesEtcAndCwd(root);
   TestServiceProfileResolution(root);
   TestPermissiveProviderConfigFailsClosed(root);
   TestRuntimeArtifactsArePrivate(root);

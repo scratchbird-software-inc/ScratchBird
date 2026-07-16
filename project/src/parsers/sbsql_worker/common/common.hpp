@@ -70,6 +70,12 @@ struct ParserConfig {
   std::string database_token;
   std::string server_endpoint;
   bool embedded_engine_direct{false};
+  // Programmatic fixture-only escape hatch. Production clients never set it.
+  // It permits opening an already-created minimal test database without a
+  // page-backed bootstrap principal; it never permits database creation.
+  bool allow_uncredentialed_fixture_database{false};
+  // Fixture-only no-credential attach, additionally gated by
+  // allow_uncredentialed_fixture_database.
   bool embedded_auth_bypass_sysarch{false};
   bool embedded_database_ownership_prelocked{false};
   std::string embedded_database_path;

@@ -2119,7 +2119,7 @@ COMPATIBILITY_UPGRADE_ROWS: tuple[dict[str, Any], ...] = (
             "tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json": (
                 "freeze_version",
                 "compatibility_version",
-                "sblr.v3.parser_contract.freeze.1",
+                "sblr.v3.parser_contract.freeze.2",
                 "unsupported_surface_vectors",
             ),
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py": (

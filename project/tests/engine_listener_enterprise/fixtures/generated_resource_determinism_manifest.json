@@ -19,7 +19,7 @@
     {
             "path": "project/src/server/sblr_dispatch_server.cpp",
             "resource_kind": "server_sblr_dispatch_surface",
-            "sha256": "8dd40f71ac2bf3ec872c035a469bd5844ce26143f86023ef192c021a40e28090"
+            "sha256": "d5788fc0027f91ffd7c11b4d372252fbb070e3ff222b69ae658a7c7d9470da19"
     },
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
@@ -49,7 +49,7 @@
     {
             "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
             "resource_kind": "parser_facing_contract_freeze_manifest",
-            "sha256": "a1af1aa08adca9c2e990be7aa8a96fc651f51b3f1e1560f0889aa29902539bd2"
+            "sha256": "97b631924226be3ca22190df9115ee743f5b9ed3e3ae2c020c850581ffc0c4ac"
     },
     {
       "path": "project/tests/engine_listener_enterprise/fixtures/external_review_closure_manifest.json",

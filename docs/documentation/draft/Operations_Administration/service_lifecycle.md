@@ -37,7 +37,7 @@ SBmgr has the most complex lifecycle because it supervises other processes. Its 
 | `server_supervision_starting` | Spawning SBsrv |
 | `listener_endpoint_resolving` | Determining which SBgate endpoint to supervise |
 | `listener_supervision_starting` | Spawning SBgate |
-| `proxy_binding` | Binding the proxy TCP port (default `3090`) |
+| `proxy_binding` | Binding the proxy TCP port (native default `3092`; disabled in the secure release template) |
 | `management_binding` | Binding the management interface |
 | `server_heartbeat_starting` | Starting heartbeat to SBsrv |
 | `ready` | All supervised processes are running; accepting work |
@@ -102,6 +102,12 @@ The `ServerMode` enum in `server/config.hpp` defines:
 | `read_only` | Open the database in read-only mode |
 
 The configuration template ships `mode = foreground`.
+
+Service startup requires a selected SBsrv.conf and never searches the process
+current directory. SBmgr applies the same rule to SBmgr.conf. Both services
+reject a missing selected configuration before creating runtime artifacts or
+binding an endpoint. Help and version output remain available without loading a
+configuration.
 
 ---
 

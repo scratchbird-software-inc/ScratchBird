@@ -114,7 +114,7 @@ conn = scratchbird.connect(
 ```python
 conn = scratchbird.connect(
     host="proxy.example.com",
-    port=3090,
+    port=3092,
     database="prod",
     user="alice",
     password="secret",

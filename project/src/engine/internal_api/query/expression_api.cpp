@@ -14,6 +14,7 @@
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "domain_support/domain_store.hpp"
+#include "security/security_model.hpp"
 
 #include <cctype>
 #include <sstream>
@@ -136,22 +137,11 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
   return parts;
 }
 
-bool HasTraceTag(const EngineRequestContext& context, const std::string& tag) {
-  for (const auto& candidate : context.trace_tags) {
-    if (candidate == tag) { return true; }
-  }
-  return false;
-}
-
 bool HasDomainRight(const EngineRequestContext& context,
                     const std::string& domain_uuid,
                     const std::string& right) {
-  if (!context.security_context_present) { return false; }
-  if (HasTraceTag(context, "group:ROOT") || HasTraceTag(context, "role:ROOT")) { return true; }
-  if (HasTraceTag(context, "right:" + right)) { return true; }
-  if (!domain_uuid.empty() && HasTraceTag(context, "right:" + right + ":" + domain_uuid)) { return true; }
-  if (!domain_uuid.empty() && HasTraceTag(context, "domain_right:" + domain_uuid + ":" + right)) { return true; }
-  return false;
+  return context.security_context_present &&
+         SecurityContextHasRight(context, right, domain_uuid);
 }
 
 bool ParseBoolOption(const std::string& value, bool fallback) {

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX v4 lifecycle fragment for the native ScratchBird Windows MSI.
+
+  The MSI builder provides INSTALLFOLDER and compiles this fragment with
+  WixToolset.Util.wixext. No human identity is admitted to the ScratchBird
+  filesystem service group by the installer.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <SetProperty
+      Id="ScratchBirdPostInstall"
+      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Before="ScratchBirdPostInstall"
+      Sequence="execute"
+      Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <CustomAction
+      Id="ScratchBirdPostInstall"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      HideTarget="yes" />
+
+    <SetProperty
+      Id="ScratchBirdPreRemove"
+      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PreRemove -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Before="ScratchBirdPreRemove"
+      Sequence="execute"
+      Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction
+      Id="ScratchBirdPreRemove"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      HideTarget="yes" />
+  </Fragment>
+
+  <Fragment>
+    <InstallExecuteSequence>
+      <Custom
+        Action="ScratchBirdPostInstall"
+        Before="InstallFinalize"
+        Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom
+        Action="ScratchBirdPreRemove"
+        Before="RemoveFiles"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

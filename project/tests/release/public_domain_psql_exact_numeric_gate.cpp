@@ -11,6 +11,7 @@
 #include "domain_support/domain_store.hpp"
 #include "memory.hpp"
 #include "query/expression_api.hpp"
+#include "public_release_authz_fixture.hpp"
 #include "sbl_numeric.hpp"
 #include "sblr_domain_runtime.hpp"
 #include "transaction/transaction_api.hpp"
@@ -516,7 +517,7 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
                                   text_domain_uuid,
                                   "character",
                                   "sblr_predicate:length_gte:3",
-                                  "builtin:upper;require_right:DOMAIN_METHOD_EXEC");
+                                  "builtin:upper;require_right:DOMAIN_METHOD");
   const auto numeric_domain = Domain(writer.local_transaction_id,
                                      numeric_domain_uuid,
                                      "int128",
@@ -525,7 +526,7 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
                                  udr_domain_uuid,
                                  "character",
                                  "sblr_predicate:not_empty",
-                                 "udr:package.method;require_right:DOMAIN_METHOD_EXEC");
+                                 "udr:package.method;require_right:DOMAIN_METHOD");
   const auto no_method_domain = Domain(writer.local_transaction_id,
                                        no_method_domain_uuid,
                                        "character",
@@ -616,10 +617,11 @@ bool TestDomainSurfaces(DatabaseFixture fixture) {
   invoke.method_name = "upper";
   const auto denied = api::EngineInvokeDomainMethod(invoke);
   ok &= ExpectDiagnosticDetail(denied,
-                               "domain_method_right_denied:DOMAIN_METHOD_EXEC",
+                               "domain_method_right_denied:DOMAIN_METHOD",
                                "domain method right denial did not fail closed");
 
-  invoke.context.trace_tags.push_back("right:DOMAIN_METHOD_EXEC");
+  scratchbird::tests::release::GrantMaterializedRight(
+      &invoke.context, "DOMAIN_METHOD");
   const auto upper = api::EngineInvokeDomainMethod(invoke);
   ok &= ExpectApiOk(upper, "domain builtin method invocation failed");
   ok &= Expect(upper.value.encoded_value == "ALPHA",

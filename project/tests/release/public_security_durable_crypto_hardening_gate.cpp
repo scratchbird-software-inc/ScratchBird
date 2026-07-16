@@ -11,10 +11,16 @@
 #include "security/security_principal_lifecycle.hpp"
 #include "uuid.hpp"
 
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,8 +38,10 @@ constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-constexpr std::string_view kPassword = "scratchbird";
-constexpr std::string_view kWrongPassword = "scratchbird-wrong";
+constexpr std::string_view kInitialPassword = "scratchbird-initial-password";
+constexpr std::string_view kPassword = "scratchbird-rotated-password";
+constexpr std::string_view kWrongPassword = "scratchbird-wrong-password";
+constexpr int kPasswordPbkdf2Iterations = 600000;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -42,6 +50,49 @@ constexpr std::string_view kWrongPassword = "scratchbird-wrong";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) { Fail(message); }
+}
+
+template <std::size_t N>
+std::string HexEncode(const std::array<unsigned char, N>& bytes) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string output;
+  output.reserve(bytes.size() * 2);
+  for (const unsigned char byte : bytes) {
+    output.push_back(kHex[(byte >> 4) & 0x0f]);
+    output.push_back(kHex[byte & 0x0f]);
+  }
+  return output;
+}
+
+std::string DeriveLocalPasswordFingerprint(std::string_view password) {
+  Require(!password.empty() &&
+              password.size() <=
+                  static_cast<std::size_t>((std::numeric_limits<int>::max)()) &&
+              password.find('\0') == std::string_view::npos,
+          "PBKDF2 password fixture is invalid");
+  std::array<unsigned char, 16> salt{};
+  std::array<unsigned char, 32> verifier{};
+  const bool derived =
+      RAND_priv_bytes(salt.data(), static_cast<int>(salt.size())) == 1 &&
+      PKCS5_PBKDF2_HMAC(password.data(),
+                        static_cast<int>(password.size()),
+                        salt.data(),
+                        static_cast<int>(salt.size()),
+                        kPasswordPbkdf2Iterations,
+                        EVP_sha256(),
+                        static_cast<int>(verifier.size()),
+                        verifier.data()) == 1;
+  std::string fingerprint;
+  if (derived) {
+    fingerprint = "local-password-pbkdf2-sha256:v1:iterations=" +
+                  std::to_string(kPasswordPbkdf2Iterations) +
+                  ":salt=" + HexEncode(salt) +
+                  ":verifier=" + HexEncode(verifier);
+  }
+  OPENSSL_cleanse(salt.data(), salt.size());
+  OPENSSL_cleanse(verifier.data(), verifier.size());
+  Require(derived, "PBKDF2-HMAC-SHA-256 password fingerprint derivation failed");
+  return fingerprint;
 }
 
 api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
@@ -116,15 +167,13 @@ std::string FieldValue(const api::EngineApiResult& result, std::string_view key)
 api::EngineRequestContext SecurityAdminContext(const Fixture& fixture,
                                                std::uint64_t local_tx) {
   auto context = Context(fixture);
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.security_context_present = true;
-  context.trace_tags.push_back("security.bootstrap");
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
   context.local_transaction_id = local_tx;
   context.snapshot_visible_through_local_transaction_id = local_tx;
   return context;
-}
-
-std::string LocalPasswordFingerprint(std::string_view verifier) {
-  return "local-password-verifier:v1:sha256:" + api::SecuritySha256Hex(verifier);
 }
 
 std::string TemporaryTokenFingerprint(std::string_view token_handle,
@@ -194,20 +243,15 @@ void WriteGlobalGrantEvent(const Fixture& fixture,
   Require(static_cast<bool>(events), "failed to write durable global grant event");
 }
 
-std::string LocalPasswordEvidence(std::string_view principal,
-                                  const api::EngineUuid& principal_uuid,
-                                  std::string_view verifier,
-                                  std::string_view authorization_tags = {}) {
+std::string StructuredVerifierClaim(std::string_view principal,
+                                    const api::EngineUuid& principal_uuid,
+                                    std::string_view verifier) {
   std::string evidence = "scheme=local_password_v1;principal=";
   evidence += principal;
   evidence += ";principal_uuid=";
   evidence += principal_uuid.canonical;
   evidence += ";storage_authority=durable_security_catalog;verifier=";
   evidence += verifier;
-  if (!authorization_tags.empty()) {
-    evidence += ";authorization_tags=";
-    evidence += authorization_tags;
-  }
   return evidence;
 }
 
@@ -314,42 +358,50 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       fixture,
       "alice",
       fixture.principal,
-      LocalPasswordEvidence("alice", fixture.principal, kVerifier)));
+      std::string(kInitialPassword),
+      false));
   Require(!sidecar_only.ok &&
               HasDiagnosticDetail(sidecar_only,
                                   "durable_principal_credential_missing"),
           "sidecar local-password state or caller evidence was accepted as authority");
 
+  const std::string initial_fingerprint =
+      DeriveLocalPasswordFingerprint(kInitialPassword);
   CreatePrincipalCredential(fixture,
                             fixture.principal,
                             "alice",
-                            LocalPasswordFingerprint(kVerifier),
+                            initial_fingerprint,
                             91);
   WriteGlobalGrantEvent(fixture, fixture.principal, "CONNECT", 92);
 
-  const auto mismatch = api::EngineAuthenticate(LocalPasswordRequest(
+  const auto structured_verifier_claim = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
       "alice",
       fixture.principal,
-      LocalPasswordEvidence("alice", fixture.principal, kWrongVerifier)));
-  Require(!mismatch.ok && HasDiagnosticDetail(mismatch, "credential_verifier_mismatch"),
-          "durable verifier mismatch was accepted");
+      StructuredVerifierClaim("alice", fixture.principal, kVerifier)));
+  Require(!structured_verifier_claim.ok &&
+              HasDiagnosticDetail(structured_verifier_claim,
+                                  "password_secret_required_for_pbkdf2_verification"),
+          "caller-supplied verifier claim bypassed PBKDF2 password verification");
 
-  const auto good = api::EngineAuthenticate(LocalPasswordRequest(
+  auto initial_good_request = LocalPasswordRequest(
       fixture,
       "alice",
       fixture.principal,
-      LocalPasswordEvidence("alice",
-                            fixture.principal,
-                            kVerifier,
-                            "group:APP,right:OBS_MANAGEMENT_CONTROL")));
+      std::string(kInitialPassword),
+      false);
+  initial_good_request.context.trace_tags.push_back("group:APP");
+  initial_good_request.context.trace_tags.push_back("right:OBS_MANAGEMENT_CONTROL");
+  const auto good = api::EngineAuthenticate(initial_good_request);
   Require(good.ok && good.authenticated,
-          "durable local-password verifier was rejected");
+          "durable PBKDF2 local-password verifier was rejected");
   Require(good.connection_security_context.effective_user_uuid.canonical ==
               fixture.principal.canonical,
           "authenticated context did not use durable principal UUID");
-  Require(HasEvidence(good, "security_state_authority", "durable_security_catalog"),
-          "durable security authority evidence missing");
+  Require(HasEvidence(good,
+                      "security_state_authority",
+                      "mga_security_principal_lifecycle"),
+          "MGA durable security authority evidence missing");
   Require(!HasEvidence(good, "authorized_group", "APP"),
           "client-supplied authorization group was trusted");
   Require(!HasAuthorizationTag(good, "right:OBS_MANAGEMENT_CONTROL"),
@@ -357,11 +409,25 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
   Require(HasAuthorizationTag(good, "right:CONNECT"),
           "server-side durable CONNECT grant was not materialized");
 
+  const std::string rotated_fingerprint =
+      DeriveLocalPasswordFingerprint(kPassword);
+  Require(rotated_fingerprint != initial_fingerprint,
+          "password rotation reused a PBKDF2 salt");
   AlterPrincipalCredential(fixture,
                            fixture.principal,
                            "alice",
-                           LocalPasswordFingerprint(api::SecuritySha256Hex(kPassword)),
+                           rotated_fingerprint,
                            191);
+
+  const auto previous_password = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture,
+      "alice",
+      fixture.principal,
+      std::string(kInitialPassword),
+      false));
+  Require(!previous_password.ok &&
+              HasDiagnosticDetail(previous_password, "credential_verifier_mismatch"),
+          "rotated local password remained valid");
 
   const auto raw_mismatch = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -396,15 +462,16 @@ void TestPrincipalNameDoesNotEscalate(const Fixture& fixture) {
   CreatePrincipalCredential(fixture,
                             fixture.admin_principal,
                             "admin",
-                            LocalPasswordFingerprint(kVerifier),
+                            DeriveLocalPasswordFingerprint(kPassword),
                             92);
   const auto admin = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
       "admin",
       fixture.admin_principal,
-      LocalPasswordEvidence("admin", fixture.admin_principal, kVerifier)));
+      std::string(kPassword),
+      false));
   Require(admin.ok && admin.authenticated,
-          "durable admin-named principal verifier was rejected");
+          "durable admin-named principal PBKDF2 verifier was rejected");
   Require(!HasEvidence(admin, "bootstrap_authority", "true"),
           "admin name synthesized bootstrap authority");
   Require(!HasEvidence(admin, "authorized_group", "ROOT") &&
@@ -469,9 +536,19 @@ void TestSecurityLifecycleStableTokenUsesSha256(const Fixture& fixture) {
   const auto created = api::EngineSecurityCreatePrincipal(request);
   Require(created.ok && created.principal_created,
           "security principal lifecycle did not create principal");
-  const std::string fingerprint = FieldValue(created, "credential_fingerprint");
+  Require(FieldValue(created, "credential_fingerprint").empty(),
+          "security lifecycle response exposed the credential fingerprint");
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(request.context);
+  Require(loaded.ok, "security lifecycle durable state did not reload");
+  std::string fingerprint;
+  for (const auto& principal : loaded.state.principals) {
+    if (principal.principal_uuid == fixture.lifecycle_principal.canonical) {
+      fingerprint = principal.credential_fingerprint;
+      break;
+    }
+  }
   Require(fingerprint.rfind("credential-fingerprint:v1:sha256:", 0) == 0,
-          "security lifecycle credential token did not use SHA-256");
+          "durable security lifecycle credential token did not use SHA-256");
   Require(fingerprint.find("fnv") == std::string::npos,
           "security lifecycle credential token exposed legacy FNV marker");
 }

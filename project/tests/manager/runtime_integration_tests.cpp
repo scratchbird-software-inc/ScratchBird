@@ -1260,10 +1260,13 @@ void TestManagementCommandSpecificAuthorization() {
 
   const auto security_token_store_path = root / "temporary_auth_tokens.tsv";
   const std::string limited_token = "limited-management-token";
+  const std::string malformed_rights_token = "malformed-rights-token";
   std::filesystem::create_directories(root);
   {
     std::ofstream out(security_token_store_path, std::ios::trunc);
     out << limited_token << "\tlimited\t0\tactive\tmanager.config.validate,manager.status\n";
+    out << malformed_rights_token
+        << "\tmalformed\t0\tactive\tmanager.status,manager support\n";
   }
 
   node::ManagerConfig config;
@@ -1312,6 +1315,18 @@ void TestManagementCommandSpecificAuthorization() {
     Check(EntryValue(support_entries, "required_right") == "manager.support.export",
           "limited management token denial must disclose required right");
     ::close(limited_fd);
+  }
+
+  const int malformed_fd = ConnectControlWhenReady(config.control_dir / "sbmn_manager.control.sock");
+  Check(malformed_fd >= 0, "command-authz malformed-rights control socket must become reachable");
+  if (malformed_fd >= 0) {
+    auto auth = SendFrame(
+        malformed_fd,
+        proto::SbdbFrame{0x66, 0,
+                         AuthStartPayload(malformed_rights_token, "malformed")});
+    Check(!auth || auth->type != 0x11 || auth->payload.empty() || auth->payload[0] != 0,
+          "local token rows with any malformed right must fail closed without partial authority");
+    ::close(malformed_fd);
   }
 
   const int admin_fd = ConnectControlWhenReady(config.control_dir / "sbmn_manager.control.sock");
@@ -1847,6 +1862,7 @@ void TestServiceValidateConfigHasNoDaemonSideEffects() {
 
   node::ManagerConfig config;
   config.proxy_enabled = false;
+  config.proxy_tls_required = true;
   config.service = true;
   config.validate_config = true;
   config.runtime_dir = root / "runtime";
@@ -1854,7 +1870,10 @@ void TestServiceValidateConfigHasNoDaemonSideEffects() {
   config.log_path = "stderr";
 
   const auto result = node::RunManager(config);
-  Check(result.exit_code == 0, "service validate-config must not enter daemon handoff");
+  Check(result.exit_code == 0,
+        "disabled proxy validate-config must not require TLS key material or enter daemon handoff");
+  Check(!HasDiagnostic(result.diagnostics, "MANAGER.PROXY_TLS_CONFIG_INVALID"),
+        "disabled proxy must not prepare a TLS context");
   Check(!HasDiagnostic(result.diagnostics, "MANAGER.SERVICE_MODE_UNSUPPORTED"),
         "service validate-config must not emit service-mode unsupported");
   Check(!std::filesystem::exists(config.control_dir / "sbmn_manager.owner"),

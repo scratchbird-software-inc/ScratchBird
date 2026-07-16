@@ -57,7 +57,9 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
                                          std::uint64_t visible_through = 0,
                                          bool admin = false) {
   engine_api::EngineRequestContext context;
-  context.trust_mode = engine_api::EngineTrustMode::server_isolated;
+  context.trust_mode = admin
+                           ? engine_api::EngineTrustMode::embedded_in_process
+                           : engine_api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
   context.database_uuid.canonical = std::string(kDatabaseUuid);
   context.local_transaction_id = tx;
@@ -66,10 +68,12 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
   context.security_context_present = true;
   context.snapshot_visible_through_local_transaction_id = visible_through;
   if (admin) {
-    context.trace_tags.push_back("security.bootstrap");
-    context.trace_tags.push_back("group:ROOT");
-    context.trace_tags.push_back("group:SEC");
-    context.trace_tags.push_back("group:AUD");
+    context.trace_tags.push_back("security.fixture_trace_authority");
+    context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+    context.trace_tags.push_back("right:SEC_MEMBERSHIP_ADMIN");
+    context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
+    context.trace_tags.push_back("right:POLICY_ADMIN");
+    context.trace_tags.push_back("right:AUDIT_READ");
   }
   return context;
 }
@@ -441,8 +445,6 @@ void TestAuditEvidenceAndAuthorityDiagnostics(const std::filesystem::path& datab
 int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc013ae.sbdb";
-  std::ofstream touch(database_path, std::ios::app);
-  Require(static_cast<bool>(touch), "DBLC-013AE database fixture create failed");
 
   TestPrincipalRoleGroupAndProtectedMaterial(database_path);
   TestDefaultDenyGrantRevokeAndMgaVisibility(database_path);

@@ -127,6 +127,9 @@ struct DurableAuthorizationState {
   std::vector<DurableAuthorizationMembershipRecord> memberships;
   std::vector<DurableAuthorizationGrantRecord> grants;
   std::vector<DurableAuthorizationPolicyRecord> policies;
+  // Resolved from the immutable engine-owned bootstrap catalog record.  A
+  // mutable role/group display name is never sufficient for this authority.
+  EngineUuid engine_owned_sysarch_role_uuid;
 };
 
 struct DurableAuthorizationMaterializeRequest {

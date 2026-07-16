@@ -64,8 +64,7 @@ TResult RepairHistoryFailure(const EngineRequestContext& context,
 }
 
 bool HasRepairInspectRight(const EngineRequestContext& context) {
-  return SecurityContextHasTag(context, "security.bootstrap") ||
-         SecurityContextHasRight(context, "REPAIR_HISTORY_INSPECT") ||
+  return SecurityContextHasRight(context, "REPAIR_HISTORY_INSPECT") ||
          SecurityContextHasRight(context, "MGA_TRANSACTION_INSPECT") ||
          SecurityContextHasRight(context, "OBS_RUNTIME_ALL");
 }

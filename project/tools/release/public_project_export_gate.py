@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -123,6 +124,10 @@ GIT_REFERENCE_ALLOWLIST = {
     Path("project/resources/seed-packs/initial-resource-pack/resources/timezones/tz-link.html"),
 }
 
+GIT_METADATA_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\." + r"git(?:modules\b|(?![A-Za-z0-9_]))"
+)
+
 RELEASE_METADATA_DIR = Path("release") / "metadata"
 PACKAGE_FILE_LIST_REL = RELEASE_METADATA_DIR / "public-export-file-list.txt"
 CLEANUP_MANIFEST_REL = RELEASE_METADATA_DIR / "public-export-cleanup-manifest.json"
@@ -199,6 +204,12 @@ def banned_needles() -> list[tuple[str, str]]:
         ("private_repo_reference", "ScratchBird" + "-Private"),
         ("legacy_repo_runtime_reference", "local workspace" + "/" + "ScratchBird"),
     ]
+
+
+def contains_banned_reference(label: str, needle: str, text: str) -> bool:
+    if label == "git_metadata_reference":
+        return GIT_METADATA_REFERENCE_RE.search(text) is not None
+    return needle in text
 
 
 def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
@@ -391,7 +402,7 @@ def scan_private_references(stage_root: Path) -> None:
         for label, needle in banned_needles():
             if label == "git_metadata_reference" and rel in GIT_REFERENCE_ALLOWLIST:
                 continue
-            if needle in text:
+            if contains_banned_reference(label, needle, text):
                 findings.append(f"{rel}: {label}: {needle}")
     if findings:
         print("public export private-reference scan failed")

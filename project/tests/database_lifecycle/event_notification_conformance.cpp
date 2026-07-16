@@ -121,7 +121,8 @@ api::EngineRequestContext Context(const Fixture& fixture,
   if (authorized) {
     context.trust_mode = api::EngineTrustMode::embedded_in_process;
     context.trace_tags.push_back("security.fixture_trace_authority");
-    context.trace_tags.push_back("group:DBA");
+    context.trace_tags.push_back("right:EVENT_CREATE");
+    context.trace_tags.push_back("right:EVENT_PUBLISH");
   }
   return context;
 }
@@ -225,7 +226,9 @@ server::ParserServerEventSession EventSession(const Fixture& fixture,
     session.engine_context.trust_mode =
         server::ParserServerEventTrustMode::embedded_in_process;
     session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
-    session.engine_context.trace_tags.push_back("group:DBA");
+    session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
+    session.engine_context.trace_tags.push_back("right:EVENT_DELIVERY_READ");
+    session.engine_context.trace_tags.push_back("right:EVENT_DELIVERY_ACK");
   }
   session.session_bound = true;
   return session;

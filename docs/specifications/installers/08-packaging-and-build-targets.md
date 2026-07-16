@@ -27,9 +27,17 @@ they flip to `supported` as each pipeline begins producing signed artifacts.
 
 | Platform | Coordinator | Service mechanism | Conventions |
 | --- | --- | --- | --- |
-| Windows | WiX Burn bundle (feature tree, repair/update, Add/Remove) | Windows Service via SCM | `%ProgramFiles%\ScratchBird`, `%ProgramData%\ScratchBird` |
-| macOS | `productbuild` distribution `.pkg` with `choices` | launchd LaunchDaemon | `/usr/local/{bin,lib}`, `/Library/Application Support/ScratchBird` |
-| Linux | coordinator over native packages + metapackages; apt/dnf repo as later wrapper | systemd unit; postinst creates service user + enables unit | `/var/lib/scratchbird`, `/etc/scratchbird`, journald |
+| Windows | WiX Burn bundle (feature tree, repair/update, Add/Remove) | SCM service installed as Manual and stopped under restricted `NT SERVICE\scratchbird` | `%ProgramFiles%\ScratchBird`, `%ProgramData%\ScratchBird` |
+| macOS | `productbuild` distribution `.pkg` with `choices` | launchd definitions installed disabled, unloaded, and not started under the non-login `scratchbird` identity | `/opt/ScratchBird`, `/Library/Application Support/ScratchBird` |
+| Linux | coordinator over native packages + metapackages; apt/dnf repo as later wrapper | systemd unit installed disabled and not started; postinst creates or verifies the non-login `scratchbird` identity and required directories only | `/var/lib/scratchbird`, `/etc/scratchbird`, journald |
+
+No platform installer creates a database or credential sidecar. Database
+bootstrap is a separate, explicit `SBsec` embedded operation after installation;
+root/Administrator is its sole create-time OS authorization gate. The locked
+service identity/group is used only for ownership, privilege drop or ACL handoff,
+and process execution and grants no database/security authority. Installers never
+add a human account to the service group. Service activation remains an operator
+action after configuration and bootstrap.
 
 ## Cross-compile-first build strategy
 

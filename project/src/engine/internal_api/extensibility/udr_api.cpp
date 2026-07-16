@@ -12,6 +12,7 @@
 #include "extensibility/extensibility_support.hpp"
 #include "metric_registry.hpp"
 #include "sb_udr_runtime.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -90,29 +91,23 @@ std::uint64_t U64Option(const EngineApiRequest& request, const std::string& pref
 }
 
 bool HasUdrManageRight(const EngineApiRequest& request) {
-  return HasOptionToken(request, "permission:manage_udr") ||
-         HasOptionToken(request, "permission:udr_manage") ||
-         HasOptionToken(request, "right:UDR_MANAGE") ||
-         HasOptionToken(request, "right:MANAGE_UDR") ||
-         HasOptionToken(request, "grant:MANAGE_UDR") ||
-         HasOptionToken(request, "role:DBA") ||
-         HasOptionToken(request, "role:SEC") ||
-         HasOptionToken(request, "udr_admin");
+  return SecurityContextHasRight(request.context,
+                                 "UDR_MANAGE",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasUdrInspectRight(const EngineApiRequest& request) {
   return HasUdrManageRight(request) ||
-         HasOptionToken(request, "permission:inspect_udr") ||
-         HasOptionToken(request, "right:UDR_INSPECT") ||
-         HasOptionToken(request, "grant:INSPECT_UDR");
+         SecurityContextHasRight(request.context,
+                                 "UDR_INSPECT",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasUdrInvokeRight(const EngineApiRequest& request) {
   return HasUdrManageRight(request) ||
-         HasOptionToken(request, "permission:invoke_udr") ||
-         HasOptionToken(request, "permission:udr_invoke") ||
-         HasOptionToken(request, "right:UDR_INVOKE") ||
-         HasOptionToken(request, "grant:INVOKE_UDR");
+         SecurityContextHasRight(request.context,
+                                 "UDR_INVOKE",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasTrustedUdrProfile(const EngineApiRequest& request) {

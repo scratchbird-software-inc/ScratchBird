@@ -455,11 +455,29 @@ engine_api::EngineRequestContext ServerAgentBaseContext(
   context.resource_epoch = epochs.resource_epoch;
   context.name_resolution_epoch = epochs.name_resolution_epoch;
   context.current_monotonic_ns = std::to_string(CurrentMonotonicNs());
-  context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("group:OPS");
-  context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
-  context.trace_tags.push_back("right:OBS_AGENT_EVIDENCE_READ");
-  context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
+  context.trace_tags.push_back("server.agent.engine_materialized_authority");
+
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid = context.database_uuid;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = 1;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  authorization.effective_subjects.push_back({context.principal_uuid, "principal"});
+  for (const std::string_view right : {
+           "OBS_AGENT_STATE_READ",
+           "OBS_AGENT_EVIDENCE_READ",
+           "OBS_AGENT_CONTROL",
+       }) {
+    engine_api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical = "server-agent-engine-grant:" + std::string(right);
+    grant.subject_uuid = context.principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = right;
+    grant.security_epoch = context.security_epoch;
+    authorization.grants.push_back(std::move(grant));
+  }
   return context;
 }
 

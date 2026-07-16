@@ -424,7 +424,7 @@ const std::vector<ReferenceProtocolProfile>& ReferenceProtocolProfiles() {
       {"vitess", "sbp_vitess", "mysql.wire.v10", 15306, false},
       {"xtdb", "sbp_xtdb", "xtql.v2", 3000, false},
       {"yugabytedb", "sbp_yugabytedb", "postgresql.wire.v3", 5433, false},
-      {"sbsql", "sbp_sbsql", "sbsql.v3", 3050, true},
+      {"sbsql", "sbp_sbsql", "sbsql.v3", 3092, true},
   };
   return profiles;
 }

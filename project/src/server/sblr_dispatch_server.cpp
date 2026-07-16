@@ -504,8 +504,19 @@ void AppendExistingOperationOperands(std::string_view encoded, std::string* oper
     const std::string_view line =
         encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
     if (line.starts_with("operand=")) {
-      operation_envelope->append(line);
-      operation_envelope->push_back('\n');
+      const std::string_view payload = line.substr(std::string_view("operand=").size());
+      const std::size_t first = payload.find('\t');
+      const std::size_t second = first == std::string_view::npos
+                                     ? std::string_view::npos
+                                     : payload.find('\t', first + 1);
+      const bool caller_supplied_authority =
+          first != std::string_view::npos && second != std::string_view::npos &&
+          UnescapeOperationOperandField(
+              payload.substr(first + 1, second - first - 1)) == "authorization_tag";
+      if (!caller_supplied_authority) {
+        operation_envelope->append(line);
+        operation_envelope->push_back('\n');
+      }
     }
     if (end == std::string_view::npos) break;
     start = end + 1;
@@ -1156,7 +1167,6 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
   context.name_resolution_epoch = session.name_resolution_epoch;
   PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
-  context.trace_tags.push_back("security.bootstrap");
   return context;
 }
 
@@ -4568,8 +4578,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   std::string_view dispatch_operation_family = operation_family;
   std::string virtual_projection;
   const std::string decoded_operation_text =
-      operation_id == "dml.select_rows" ? DecodedBinaryOperationEnvelopeText(encoded)
-                                        : std::string{};
+      LooksLikeBinarySblrEnvelope(encoded)
+          ? DecodedBinaryOperationEnvelopeText(encoded)
+          : std::string{};
   const std::string_view inspection_text =
       decoded_operation_text.empty()
           ? encoded
@@ -4578,7 +4589,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   if (operation_id == "dml.select_rows") {
     virtual_projection = ServerVirtualProjectionForDispatch(encoded, inspection_text);
   }
-  if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty()) {
+  if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty() &&
+      !operation_id.starts_with("security.")) {
     return std::string(encoded);
   }
   if (operation_id == "dml.select_rows" && virtual_projection == "sys.version") {
@@ -4737,9 +4749,6 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   }
   append_session_operand("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
   append_session_operand("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
-  for (const auto& tag : session.engine_authorization_trace_tags) {
-    append_session_operand("authorization_tag", tag);
-  }
   if (const auto savepoint_name = SavepointOperandForDispatch(encoded, dispatch_operation_id)) {
     operation_envelope += "savepoint_name=";
     operation_envelope += EscapeOperationOperandField(*savepoint_name);
@@ -4942,8 +4951,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind", "grantee_uuid",
         "grantee_kind", "privilege", "grant_effect", "grant_uuid"};
     for (const auto field : kSecurityFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+      const auto value = JsonTextField(inspection_text, field).value_or(
+          TextLineValue(inspection_text, field).value_or(""));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -4957,8 +4966,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kSecurityMembershipFields[] = {
         "membership_uuid", "member_principal_uuid", "container_uuid", "container_kind"};
     for (const auto field : kSecurityMembershipFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+      const auto value = JsonTextField(inspection_text, field).value_or(
+          TextLineValue(inspection_text, field).value_or(""));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -4970,8 +4979,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   if (dispatch_operation_id == "security.session.set_role") {
     constexpr std::string_view kSecurityRoleFields[] = {"role_uuid", "role_mode"};
     for (const auto field : kSecurityRoleFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+      const auto value = JsonTextField(inspection_text, field).value_or(
+          TextLineValue(inspection_text, field).value_or(""));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -5040,8 +5049,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "principal_kind", "lifecycle_state",
         "credential_protected_material_ref", "credential_fingerprint"};
     for (const auto field : kSecurityPrincipalFields) {
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+      const auto value = JsonTextField(inspection_text, field).value_or(
+          TextLineValue(inspection_text, field).value_or(""));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;

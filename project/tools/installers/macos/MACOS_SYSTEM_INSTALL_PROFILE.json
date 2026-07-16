@@ -1,0 +1,121 @@
+{
+  "config_defaults_path": "/opt/ScratchBird/share/scratchbird/config-defaults",
+  "configuration_path": "/Library/Application Support/ScratchBird",
+  "database_files_created": false,
+  "directories": [
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "root",
+      "path": "/Library/Application Support/ScratchBird"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "root",
+      "path": "/var/lib/scratchbird"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/lib/scratchbird/data"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "root",
+      "path": "/var/lib/scratchbird/install"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/log/scratchbird"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/run/scratchbird/sb_server/control"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/run/scratchbird/listener/control"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/run/scratchbird/listener/runtime"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/run/scratchbird/manager/control"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/run/scratchbird/manager/runtime"
+    }
+  ],
+  "distribution_profile": "native-sbsql-only",
+  "create_time_os_authorization": "root_only",
+  "human_service_group_membership_mutation": "forbidden",
+  "lifecycle": {
+    "helper": "/opt/ScratchBird/libexec/scratchbird-macos-system-install",
+    "install_evidence": "/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json",
+    "package_postinstall": "postinstall",
+    "package_scripts_load_or_enable_services": false
+  },
+  "native_default_port": 3092,
+  "os_identity": {
+    "group": "scratchbird",
+    "package_installer_root_is_never_inferred_or_added": true,
+    "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
+    "service_administrator_group_membership": "forbidden",
+    "service_administrator_membership_validation": "direct local record, direct nested-group GUID, and transitive dseditgroup checkmember must all deny membership",
+    "service_explicit_supplementary_group_membership": "forbidden_except_scratchbird",
+    "service_resolved_effective_group_set": "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",
+    "service_group_nested_in_other_local_group": "forbidden",
+    "service_implicit_baseline_groups": "macos_computed_everyone_and_localaccounts_are_not_explicit_membership",
+    "service_hidden": true,
+    "service_login": "forbidden",
+    "service_user": "scratchbird",
+    "uid_policy": {
+      "allocation": "first_locally_unused_uid",
+      "apple_reserved_uid_range_excluded": "0-500",
+      "maximum_exclusive": 60000,
+      "minimum_inclusive": 501,
+      "rationale": "Apple reserves UIDs 0 through 500; a daemon must use a locally unique dedicated UID",
+      "uniqueness_validation": "exactly_one_local_open_directory_record"
+    }
+  },
+  "schema_id": "scratchbird.macos_system_install_profile.v1",
+  "security_sidecars_created": false,
+  "service": {
+    "default_activity": "not_started",
+    "default_enablement": "disabled",
+    "launchd_labels": [
+      "com.scratchbird.sbsrv",
+      "com.scratchbird.sbmgr"
+    ],
+    "run_at_load": false
+  },
+  "topology": {
+    "manager": "optional_SBmgr_before_listener",
+    "native_route": "SBsrv_to_shared_SBgate_to_standalone_SBParser_to_IPC_engine",
+    "parser_process_model": "one_standalone_parser_per_emulation_or_native_dialect",
+    "top_level_native_service": "SBsrv"
+  },
+  "upgrade_policy": {
+    "configuration": "copy_defaults_only_when_missing",
+    "data": "preserve",
+    "service_state": "do_not_load_enable_or_start"
+  }
+}

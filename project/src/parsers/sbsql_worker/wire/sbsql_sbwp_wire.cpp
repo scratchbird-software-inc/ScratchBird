@@ -6724,20 +6724,6 @@ bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope&
     metrics_->Increment("sys.metrics.parsers.auth.attempts_total");
   }
   if (config_.embedded_engine_direct) {
-    if (!config_.embedded_auth_bypass_sysarch) {
-      if (messages != nullptr) {
-        messages->diagnostics.push_back(MakeDiagnostic(
-            "SBSQL.EMBEDDED.AUTH_BYPASS_NOT_ENABLED",
-            "ERROR",
-            "embedded engine direct mode requires the explicit local sysarch authorization bypass",
-            "sbp_sbsql.embedded"));
-      }
-      if (metrics_) {
-        metrics_->Increment("sys.metrics.parsers.auth.failures_total");
-        metrics_->SetState(ParserState::kIdlePreAuth);
-      }
-      return false;
-    }
     if (embedded_client_ == nullptr) {
       embedded_client_ = std::make_unique<EmbeddedEngineClient>(config_);
     }
@@ -6750,6 +6736,21 @@ bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope&
       if (accepted) {
         if (metrics_) metrics_->SetState(ParserState::kAuthenticated);
         return true;
+      }
+      if (metrics_) {
+        metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+        metrics_->SetState(ParserState::kIdlePreAuth);
+      }
+      return false;
+    }
+    if (!config_.allow_uncredentialed_fixture_database ||
+        !config_.embedded_auth_bypass_sysarch) {
+      if (messages != nullptr) {
+        messages->diagnostics.push_back(MakeDiagnostic(
+            "SBSQL.EMBEDDED.CREDENTIAL_REQUIRED",
+            "ERROR",
+            "embedded engine authentication requires credential evidence",
+            "sbp_sbsql.embedded"));
       }
       if (metrics_) {
         metrics_->Increment("sys.metrics.parsers.auth.failures_total");

@@ -127,6 +127,14 @@ function(sb_public_configure_output_stage project_root python_executable)
     "  \"short_brand\": \"${SB_PUBLIC_PRODUCT_SHORT_BRAND}\",\n"
     "  \"platform\": \"${SB_PUBLIC_TARGET_PLATFORM}\",\n"
     "  \"artifact_root\": \"${SB_PUBLIC_ARTIFACT_ROOT}\",\n"
+    "  \"runtime_requirements\": {\n"
+    "    \"llvm\": {\n"
+    "      \"link_mode\": \"${SB_LLVM_LINK_MODE}\",\n"
+    "      \"runtime_library\": \"${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}\",\n"
+    "      \"delivery\": \"${SB_LLVM_RUNTIME_DELIVERY}\",\n"
+    "      \"minimum_major\": ${SB_LLVM_MIN_MAJOR}\n"
+    "    }\n"
+    "  },\n"
     "  \"layout\": {\n"
     "    \"bin\": \"bin\",\n"
     "    \"lib\": \"lib\",\n"
@@ -161,6 +169,9 @@ function(sb_public_configure_output_stage project_root python_executable)
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${project_root}/config/templates/SBParser.conf"
             "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBParser.conf"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${project_root}/config/templates/SBbootstrap.profile"
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBbootstrap.profile"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${project_root}/docs/public_api"
             "${SB_PUBLIC_ARTIFACT_ROOT}/share/scratchbird/docs/public_api"

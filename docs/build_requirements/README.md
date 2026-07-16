@@ -37,8 +37,23 @@ All support-eligible platforms must provide before support is claimed:
 - UBSan
 - TSan
 
-macOS GitHub-hosted proof runners currently use Homebrew LLVM 22; the macOS
+macOS GitHub-hosted proof runners currently use Homebrew LLVM 22, and the macOS
 public-release preset records that exception with `SB_LLVM_MIN_MAJOR=22`.
+Windows GitHub-hosted proof workflows use the current MSYS2 UCRT64 LLVM 22
+package and pass the same bounded exception explicitly; other Windows release
+proofs retain the common LLVM 23 floor.
+
+LLVM is mandatory at runtime as well as at build time. Release binaries do not
+embed a Linux or Windows build-machine path: Linux loads the versioned LLVM
+SONAME supplied by `libllvm23`/`llvm-libs >= 23`, while the Windows bundle
+ships the configured LLVM DLL and its import closure beside the executables.
+macOS QA packages deliberately do not bundle Homebrew LLVM; testers must run
+`brew install llvm`, and the build records the stable
+`$(brew --prefix llvm)/lib/libLLVM.dylib` runtime path. This external macOS
+prerequisite is part of the package support metadata and dynamic-library audit.
+Release-complete binaries redact the producer's LLVM source, tools, and staging
+directories; a post-build binary gate rejects those configured paths if they
+survive in `SBsrv` or `SBcore`.
 
 Every support-eligible platform must prove before support is claimed:
 
@@ -46,6 +61,9 @@ Every support-eligible platform must prove before support is claimed:
 - `SB_ENABLE_CLUSTER_PROVIDER=OFF`
 - `SB_CLUSTER_PROVIDER_STUB=ON`
 - `SB_LLVM_LINK_MODE=dynamic`
+- `SB_LLVM_RUNTIME_LIBRARY` is either a relocatable SONAME/DLL basename or the
+  declared stable Homebrew `opt` path; an absolute Linux/Windows build path is
+  rejected for release-complete builds.
 - `ctest --test-dir` release gates for `public_release_correctness`
 - `ctest --test-dir` release gates for `engine_listener_enterprise`
 - macOS artifacts must include launchd payload proof, dynamic-library path audit, and signing state proof.

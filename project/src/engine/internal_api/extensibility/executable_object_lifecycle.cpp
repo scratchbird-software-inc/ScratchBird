@@ -11,6 +11,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -387,37 +388,33 @@ bool RequestsExecutionBoundaryBypass(const EngineApiRequest& request) {
 }
 
 bool HasManagePermission(const EngineApiRequest& request) {
-  return HasOptionToken(request, "permission:manage_executable") ||
-         HasOptionToken(request, "permission:manage_routine") ||
-         HasOptionToken(request, "right:MANAGE_EXECUTABLE_OBJECT") ||
-         HasOptionToken(request, "role:DBA");
+  return SecurityContextHasRight(request.context,
+                                 "CATALOG_MUTATE",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasInspectPermission(const EngineApiRequest& request) {
   return HasManagePermission(request) ||
-         HasOptionToken(request, "permission:inspect_executable") ||
-         HasOptionToken(request, "right:INSPECT_EXECUTABLE_OBJECT");
+         SecurityContextHasRight(request.context,
+                                 "DISCOVER",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasInvokePermission(const EngineApiRequest& request, const std::string& object_uuid) {
   return HasManagePermission(request) ||
-         HasOptionToken(request, "permission:invoke_executable") ||
-         HasOptionToken(request, "permission:execute") ||
-         HasOptionToken(request, "execute:" + object_uuid) ||
-         HasOptionToken(request, "right:EXECUTE_EXECUTABLE_OBJECT");
+         SecurityContextHasRight(request.context, "EXECUTE", object_uuid);
 }
 
 bool HasEventTriggerManagePermission(const EngineApiRequest& request) {
-  return HasManagePermission(request) &&
-         (HasOptionToken(request, "permission:manage_event_trigger") ||
-          HasOptionToken(request, "right:MANAGE_EVENT_TRIGGER") ||
-          HasOptionToken(request, "role:DBA"));
+  return SecurityContextHasRight(request.context,
+                                 "EVENT_ADMIN",
+                                 request.target_object.uuid.canonical);
 }
 
 bool HasEventTriggerDispatchAuthority(const EngineApiRequest& request) {
-  return HasOptionToken(request, "engine_event_trigger_dispatch:true") ||
-         HasOptionToken(request, "permission:fire_event_trigger") ||
-         HasManagePermission(request);
+  return SecurityContextHasRight(request.context,
+                                 "EVENT_PUBLISH",
+                                 request.target_object.uuid.canonical);
 }
 
 bool SideEffectAllowed(const EngineApiRequest& request, const std::string& side_effect_class) {

@@ -21,6 +21,7 @@ Install or provide:
 - libgtest-dev
 - unixodbc-dev
 - LLVM 23+
+- libllvm23 (runtime; provides the versioned `libLLVM.so.23.*` SONAME)
 - clang-tidy-18
 - cppcheck
 - clang-tidy-18 cppcheck
@@ -40,3 +41,8 @@ ctest --test-dir build-linux-public-release-proof -L engine_listener_enterprise 
 
 cluster execution succeeds without the external cluster provider only for the
 public noncluster release-complete profile.
+
+DEB metadata declares `libllvm23`; RPM and AUR recipes declare
+`llvm-libs >= 23`. Portable tarball testers must install the equivalent system
+runtime package before starting ScratchBird. The binaries load the versioned
+SONAME through the system loader and never retain the CI/build-tree path.

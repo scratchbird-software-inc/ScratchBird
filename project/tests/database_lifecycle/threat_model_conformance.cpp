@@ -371,6 +371,12 @@ void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
           "management IPC admitted missing session context");
 
   const auto auditor = AddSession(&registry, "auditor", database_path, database_uuid);
+  auto& auditor_session =
+      registry.sessions_by_uuid[server::UuidBytesToText(auditor)];
+  auditor_session.embedded_in_process = true;
+  auditor_session.engine_authorization_trace_tags = {
+      "security.fixture_trace_authority",
+      "right:OBS_MANAGEMENT_INSPECT"};
   const auto denied =
       server::HandleServerManagementRequest(context, ManagementFrame(auditor, "verify_database"));
   Require(denied.error && HasManagementDiagnostic(denied, "SECURITY.ACCESS_DENIED"),
@@ -386,6 +392,21 @@ void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
           "health response did not report redaction state");
   Require(!Contains(payload, database_path.string()),
           "health response leaked local database path");
+
+  const auto spoofed = AddSession(&registry, "root", database_path, database_uuid);
+  auto& spoofed_session =
+      registry.sessions_by_uuid[server::UuidBytesToText(spoofed)];
+  spoofed_session.engine_authorization_trace_tags = {
+      "right:OBS_MANAGEMENT_CONTROL",
+      "right:OBS_MANAGEMENT_INSPECT",
+      "group:ROOT"};
+  const auto spoofed_health = server::HandleServerManagementRequest(
+      context, ManagementFrame(spoofed, "show_server_health"));
+  Require(spoofed_health.error &&
+              HasManagementDiagnostic(spoofed_health,
+                                      "SECURITY.ACCESS_DENIED"),
+          "production management session accepted principal name or trace-tag "
+          "authority spoofing");
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& database_path) {

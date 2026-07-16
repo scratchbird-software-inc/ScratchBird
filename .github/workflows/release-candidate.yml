@@ -17,7 +17,7 @@ on:
         default: true
         type: boolean
       require-msi:
-        description: Require WiX MSI generation on Windows
+        description: Retained for compatibility; Windows MSI proof is mandatory
         required: true
         default: true
         type: boolean
@@ -36,7 +36,7 @@ jobs:
     with:
       platform: all
       version: ${{ inputs.version }}
-      require-msi: ${{ inputs['require-msi'] }}
+      require-msi: true
 
   publish:
     name: Publish draft release candidate
@@ -49,35 +49,115 @@ jobs:
       - name: Download installer artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: scratchbird-*-installers
           path: release-artifacts
+          merge-multiple: false
 
       - name: Verify downloaded installers
         run: |
-          linux_root="$(find release-artifacts/scratchbird-linux-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
-          windows_root="$(find release-artifacts/scratchbird-windows-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
+          set -euo pipefail
+          resolve_installer_root() {
+            local artifact_dir="$1"
+            mapfile -t manifests < <(find "$artifact_dir" -type f -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
+            if [ "${#manifests[@]}" -ne 1 ]; then
+              echo "Expected exactly one installer manifest in $artifact_dir; found ${#manifests[@]}." >&2
+              return 1
+            fi
+            dirname "${manifests[0]}"
+          }
+          linux_root="$(resolve_installer_root release-artifacts/scratchbird-linux-installers)"
+          windows_root="$(resolve_installer_root release-artifacts/scratchbird-windows-installers)"
+          macos_x86_root="$(resolve_installer_root release-artifacts/scratchbird-macos-x86_64-installers)"
+          macos_arm_root="$(resolve_installer_root release-artifacts/scratchbird-macos-arm64-installers)"
           python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
-          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
-          while IFS= read -r macos_manifest; do
-            macos_root="$(dirname "$macos_manifest")"
-            python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_root"
-          done < <(find release-artifacts -path '*scratchbird-macos-*-installers*' -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
-          find release-artifacts -name INSTALLER_ARTIFACT_MANIFEST.json -print
+          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root" --require-msi
+          python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_x86_root"
+          python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_arm_root"
+          mapfile -t universal_manifests < <(find release-artifacts/scratchbird-macos-universal-installers -type f -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json | sort)
+          if [ "${#universal_manifests[@]}" -ne 1 ]; then
+            echo "Expected exactly one macOS universal manifest; found ${#universal_manifests[@]}." >&2
+            exit 1
+          fi
+
+      - name: Create verified native-only release-candidate assets
+        env:
+          SB_RC_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SB_RC_VERSION" =~ ^[0-9A-Za-z]([0-9A-Za-z.+~_-]*[0-9A-Za-z])?$ ]]; then
+            echo "Release-candidate version contains unsupported characters." >&2
+            exit 1
+          fi
+          python3 project/tools/installers/create_nightly_release_bundle.py \
+            --input-root release-artifacts \
+            --output-root validated-portable-assets \
+            --version "$SB_RC_VERSION" \
+            --source-revision "$GITHUB_SHA" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT"
+          (
+            cd validated-portable-assets
+            sha256sum --check --strict scratchbird-nightly-SHA256SUMS
+          )
+
+          mkdir release-candidate-assets
+          install -m 0644 validated-portable-assets/scratchbird-nightly-linux-x86_64.tar.gz \
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-linux-x86_64.tar.gz"
+          install -m 0644 validated-portable-assets/scratchbird-nightly-windows-x86_64.zip \
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-windows-x86_64.zip"
+          install -m 0644 validated-portable-assets/scratchbird-nightly-macos-x86_64.tar.gz \
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-x86_64.tar.gz"
+          install -m 0644 validated-portable-assets/scratchbird-nightly-macos-arm64.tar.gz \
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-arm64.tar.gz"
+          install -m 0644 validated-portable-assets/scratchbird-nightly-macos-universal.tar.gz \
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-universal.tar.gz"
+          (
+            cd release-candidate-assets
+            sha256sum \
+              "scratchbird-${SB_RC_VERSION}-linux-x86_64.tar.gz" \
+              "scratchbird-${SB_RC_VERSION}-windows-x86_64.zip" \
+              "scratchbird-${SB_RC_VERSION}-macos-x86_64.tar.gz" \
+              "scratchbird-${SB_RC_VERSION}-macos-arm64.tar.gz" \
+              "scratchbird-${SB_RC_VERSION}-macos-universal.tar.gz" \
+              > "scratchbird-${SB_RC_VERSION}-SHA256SUMS"
+            sha256sum --check --strict "scratchbird-${SB_RC_VERSION}-SHA256SUMS"
+          )
+          test "$(find release-candidate-assets -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 6
+          test "$(find release-candidate-assets -mindepth 1 -maxdepth 1 | wc -l)" -eq 6
 
       - name: Create or update release candidate
         env:
           GH_TOKEN: ${{ github.token }}
+          SB_RC_DRAFT: ${{ inputs.draft }}
+          SB_RC_TAG: ${{ inputs.tag }}
+          SB_RC_VERSION: ${{ inputs.version }}
         run: |
-          tag="${{ inputs.tag }}"
-          gh release delete "$tag" --yes || true
-          git tag -f "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag" --force
-          draft_flag=""
-          if [ "${{ inputs.draft }}" = "true" ]; then
-            draft_flag="--draft"
+          set -euo pipefail
+          if [[ ! "$SB_RC_TAG" =~ ^[0-9A-Za-z] ]]; then
+            echo "Release-candidate tag must begin with an ASCII letter or digit." >&2
+            exit 1
           fi
-          mapfile -t assets < <(find release-artifacts -type f | sort)
-          gh release create "$tag" "${assets[@]}" \
-            --title "ScratchBird ${{ inputs.version }}" \
-            --notes "Release candidate generated from $GITHUB_SHA." \
-            --prerelease \
-            $draft_flag
+          git check-ref-format "refs/tags/$SB_RC_TAG"
+          gh release delete "$SB_RC_TAG" --yes || true
+          git tag -f "$SB_RC_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$SB_RC_TAG" --force
+          release_flags=(--prerelease)
+          if [ "$SB_RC_DRAFT" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          assets=(
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-linux-x86_64.tar.gz"
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-windows-x86_64.zip"
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-x86_64.tar.gz"
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-arm64.tar.gz"
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-macos-universal.tar.gz"
+            "release-candidate-assets/scratchbird-${SB_RC_VERSION}-SHA256SUMS"
+          )
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+          test "$(find release-candidate-assets -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq "${#assets[@]}"
+          gh release create "$SB_RC_TAG" "${assets[@]}" \
+            --title "ScratchBird $SB_RC_VERSION" \
+            --notes "Native-only release candidate generated from $GITHUB_SHA. Public assets are the verified portable archives; DEB, RPM, AUR, PKG, MSI, and smoke proofs remain workflow artifacts." \
+            "${release_flags[@]}"

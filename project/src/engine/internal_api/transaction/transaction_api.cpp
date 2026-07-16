@@ -15,6 +15,7 @@
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "security/security_model.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_lock.hpp"
 #include "transaction_policy.hpp"
@@ -927,16 +928,10 @@ bool EngineOwnedTableFenceAuthorized(const EngineLockTableRequest& request) {
   const bool requested =
       RequestOptionBool(request, "engine_owned_admission_fence:", false) ||
       RequestOptionBool(request, "ddl_admin_admission_fence:", false) ||
-      RequestOptionBool(request, "migration_admission_fence:", false) ||
-      ContextHasTraceTag(request.context, "engine_owned_admission_fence");
+      RequestOptionBool(request, "migration_admission_fence:", false);
   if (!requested) return false;
-  return ContextHasTraceTag(request.context, "right:CATALOG_MUTATE") ||
-         ContextHasTraceTag(request.context, "right:DDL_ADMIN") ||
-         ContextHasTraceTag(request.context, "right:MIGRATION_ADMIN") ||
-         ContextHasTraceTag(request.context,
-                            "engine_owned_ddl_admission_fence_authorized") ||
-         ContextHasTraceTag(request.context,
-                            "engine_owned_migration_admission_fence_authorized");
+  return SecurityContextHasRight(request.context, "CATALOG_MUTATE") ||
+         SecurityContextHasRight(request.context, "MIGRATE_DATABASE");
 }
 
 template <typename TResult>

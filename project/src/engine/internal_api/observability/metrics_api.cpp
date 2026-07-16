@@ -53,14 +53,12 @@ void AddPublicExactMetricsEvidence(EngineApiResult* result, const EngineApiReque
 
 bool HasSensitiveMetricRight(const EngineRequestContext& context) {
   return SecurityContextHasRight(context, "OBS_METRICS_READ_ALL") ||
-         SecurityContextHasRight(context, "OBS_METRICS_EXPORT") ||
-         SecurityContextHasTag(context, "security.bootstrap");
+         SecurityContextHasRight(context, "OBS_METRICS_EXPORT");
 }
 
 bool HasMetricsRetentionControlRight(const EngineRequestContext& context) {
   return SecurityContextHasRight(context, "OBS_METRICS_RETENTION_CONTROL") ||
-         SecurityContextHasRight(context, "OBS_METRICS_EXPORT_CONTROL") ||
-         SecurityContextHasTag(context, "security.bootstrap");
+         SecurityContextHasRight(context, "OBS_METRICS_EXPORT_CONTROL");
 }
 
 bool DescriptorMatches(const EngineApiRequest& request, const MetricDescriptor& descriptor, bool cluster_surface) {

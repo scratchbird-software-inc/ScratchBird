@@ -395,6 +395,7 @@ void TestLprefaceHandoffClaimRoundTrip() {
 void TestRuntimeProxyFailsClosed() {
   node::ManagerConfig config;
   config.proxy_enabled = true;
+  config.native_port = 4092;
   config.control_dir = std::filesystem::temp_directory_path() / "sbmn_manager_proxy_fails_closed_control";
   config.runtime_dir = std::filesystem::temp_directory_path() / "sbmn_manager_proxy_fails_closed_runtime";
   const auto result = node::RunManager(config);
@@ -402,9 +403,70 @@ void TestRuntimeProxyFailsClosed() {
   Check(HasDiagnostic(result.diagnostics, "MANAGER.SECRET_REQUIRED"), "proxy fail-closed diagnostic required");
 }
 
+void TestManagerSafeCompiledDefaults() {
+  const node::ManagerConfig defaults;
+  Check(!defaults.proxy_enabled, "manager proxy must be disabled by default");
+  Check(defaults.bind_address == "127.0.0.1",
+        "manager front door must bind loopback by default");
+  Check(defaults.proxy_port == 3092,
+        "manager client-facing native port default must be 3092");
+  Check(defaults.proxy_tls_required,
+        "manager client-facing TLS must be required by default");
+  Check(defaults.native_bind == "127.0.0.1",
+        "manager backend bind must default to loopback");
+  Check(defaults.native_port == 0,
+        "manager backend port must use zero as the unset sentinel");
+}
+
+void TestManagerProxyBackendValidation() {
+  node::ManagerConfig missing;
+  missing.proxy_enabled = true;
+  auto result = node::RunManager(missing);
+  Check(result.exit_code != 0,
+        "enabled manager proxy must reject an unset backend before bind");
+  Check(HasDiagnostic(result.diagnostics, "MANAGER.PROXY_BACKEND_REQUIRED"),
+        "unset manager backend diagnostic required");
+
+  node::ManagerConfig same;
+  same.proxy_enabled = true;
+  same.native_port = same.proxy_port;
+  result = node::RunManager(same);
+  Check(result.exit_code != 0,
+        "enabled manager proxy must reject a backend that aliases the front door");
+  Check(HasDiagnostic(result.diagnostics,
+                      "MANAGER.PROXY_BACKEND_PORT_CONFLICT"),
+        "same-port manager backend diagnostic required");
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    "sbmn_manager_distinct_backend_unit";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const auto config_path = root / "SBmgr.conf";
+  {
+    std::ofstream out(config_path);
+    out << "manager.proxy.enabled = true\n"
+        << "manager.proxy.port = 3092\n"
+        << "manager.backend.native_bind = 127.0.0.1\n"
+        << "manager.backend.native_port = 4092\n";
+  }
+  std::string config_arg = config_path.string();
+  char arg0[] = "SBmgr";
+  char arg1[] = "--config";
+  char* argv[] = {arg0, arg1, config_arg.data()};
+  const node::ManagerConfigResolutionContext context{
+      root / "tools" / "SBmgr", root, false, false};
+  const auto parsed = node::ParseManagerCliWithContext(3, argv, context);
+  Check(parsed.ok(),
+        "enabled manager proxy must accept an explicit distinct backend endpoint");
+  Check(parsed.config.native_port == 4092,
+        "distinct manager backend port must be retained");
+  std::filesystem::remove_all(root);
+}
+
 void TestRuntimeProxyLprefaceRequiresDatabaseUuid() {
   node::ManagerConfig config;
   config.proxy_enabled = true;
+  config.native_port = 4092;
   config.mcp_secret_ref = "literal:test-secret";
   config.release_profile = "developer";
   config.listener_control_socket_dir = std::filesystem::temp_directory_path();
@@ -429,14 +491,129 @@ void TestRestartDescriptorValidation() {
 }
 
 void TestServiceModeCliValidation() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    "sbmn_manager_service_config_unit";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const node::ManagerConfigResolutionContext context{
+      root / "tools" / "SBmgr", root, false, false};
   const char* argv_conflict[] = {"sbmn_manager", "--service", "--foreground"};
-  auto result = node::ParseManagerCli(3, const_cast<char**>(argv_conflict));
+  auto result = node::ParseManagerCliWithContext(
+      3, const_cast<char**>(argv_conflict), context);
   Check(!result.ok(), "service and foreground modes must conflict");
   Check(HasDiagnostic(result.diagnostics, "MANAGER.CLI_MODE_CONFLICT"), "service/foreground conflict diagnostic required");
 
   const char* argv_validate[] = {"sbmn_manager", "--service", "--validate-config"};
-  result = node::ParseManagerCli(3, const_cast<char**>(argv_validate));
-  Check(result.ok(), "service plus validate-config must parse because validate-config has no runtime side effects");
+  result = node::ParseManagerCliWithContext(
+      3, const_cast<char**>(argv_validate), context);
+  Check(!result.ok(),
+        "service plus validate-config must fail when no selected config exists");
+  Check(HasDiagnostic(result.diagnostics, "MANAGER.CONFIG_REQUIRED") ||
+            HasDiagnostic(result.diagnostics, "MANAGER.CONFIG_LOAD_FAILED"),
+        "service missing-config diagnostic required");
+  std::filesystem::remove_all(root);
+}
+
+void TestManagerConfigPathResolutionAndPrecedence() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    "sbmn_manager_path_resolution_unit";
+  const auto install_root = root / "portable";
+  const auto installed_config_root = install_root / "etc" / "scratchbird";
+  const auto cwd = root / "untrusted-cwd";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(installed_config_root);
+  std::filesystem::create_directories(install_root / "bin");
+  std::filesystem::create_directories(cwd);
+  {
+    std::ofstream out(installed_config_root / "SBmgr.conf");
+    out << "manager.proxy.enabled = false\n"
+        << "manager.runtime_dir = runtime/manager\n"
+        << "manager.owner.database_path = data/default.sbdb\n";
+  }
+  {
+    std::ofstream out(cwd / "SBmgr.conf");
+    out << "manager.proxy.enabled = true\n"
+        << "manager.backend.native_port = 3092\n";
+  }
+
+  const node::ManagerConfigResolutionContext installed_context{
+      install_root / "bin" / "SBmgr", cwd, false, false};
+  const auto discovered = node::DiscoverManagerConfigPath(installed_context,
+                                                           false);
+  Check(discovered == installed_config_root / "SBmgr.conf",
+        "installed manager config must precede current-directory config");
+  const auto service_discovered = node::DiscoverManagerConfigPath(
+      installed_context, true);
+  Check(service_discovered == installed_config_root / "SBmgr.conf",
+        "manager service discovery must retain installed config precedence");
+
+  const auto macos_system_root =
+      root / "Library" / "Application Support" / "ScratchBird";
+  const auto etc_system_root = root / "etc" / "scratchbird";
+  std::filesystem::create_directories(macos_system_root);
+  std::filesystem::create_directories(etc_system_root);
+  {
+    std::ofstream out(macos_system_root / "SBmgr.conf");
+    out << "manager.proxy.enabled = false\n";
+  }
+  {
+    std::ofstream out(etc_system_root / "SBmgr.conf");
+    out << "manager.proxy.enabled = false\n";
+  }
+  node::ManagerConfigResolutionContext macos_context{
+      root / "tools" / "SBmgr", cwd, false, true};
+  macos_context.system_config_roots = {macos_system_root, etc_system_root};
+  const auto macos_discovered =
+      node::DiscoverManagerConfigPath(macos_context, false);
+  Check(macos_discovered == macos_system_root / "SBmgr.conf",
+        "macOS /Library/Application Support/ScratchBird manager config must "
+        "precede /etc and current-directory config");
+
+  std::string config_arg = (installed_config_root / "SBmgr.conf").string();
+  char arg0[] = "SBmgr";
+  char arg1[] = "--config";
+  char* argv[] = {arg0, arg1, config_arg.data()};
+  auto parsed = node::ParseManagerCliWithContext(3, argv, installed_context);
+  Check(parsed.ok(), "installed manager config-relative paths must parse");
+  Check(parsed.config.runtime_dir == install_root / "runtime" / "manager",
+        "manager runtime path must resolve from executable installation root");
+  Check(parsed.config.owner_database_path == install_root / "data" / "default.sbdb",
+        "manager database path must resolve from executable installation root");
+
+  const auto external_config_root = root / "external-config";
+  std::filesystem::create_directories(external_config_root);
+  const auto external_config = external_config_root / "SBmgr.conf";
+  {
+    std::ofstream out(external_config);
+    out << "manager.proxy.enabled = false\n"
+        << "manager.runtime_dir = runtime\n";
+  }
+  const node::ManagerConfigResolutionContext external_context{
+      root / "tools" / "SBmgr", cwd, false, false};
+  config_arg = external_config.string();
+  argv[2] = config_arg.data();
+  parsed = node::ParseManagerCliWithContext(3, argv, external_context);
+  Check(parsed.ok(), "non-installed manager config-relative paths must parse");
+  Check(parsed.config.runtime_dir == external_config_root / "runtime",
+        "non-installed manager paths must resolve from selected config directory");
+
+  const node::ManagerConfigResolutionContext service_cwd_context{
+      root / "tools" / "SBmgr", cwd, false, false};
+  char service_arg[] = "--service";
+  char* service_argv[] = {arg0, service_arg};
+  parsed = node::ParseManagerCliWithContext(2, service_argv,
+                                            service_cwd_context);
+  Check(!parsed.ok(),
+        "manager service mode must not consume current-directory config");
+  Check(parsed.config.config_path != cwd / "SBmgr.conf",
+        "manager service selected a current-directory config");
+
+  char help_arg[] = "--help";
+  char* help_argv[] = {arg0, help_arg};
+  parsed = node::ParseManagerCliWithContext(2, help_argv,
+                                            service_cwd_context);
+  Check(parsed.ok(), "manager help must remain usable without configuration");
+  std::filesystem::remove_all(root);
 }
 
 void TestCliNumericValidation() {
@@ -492,7 +669,11 @@ void TestStandaloneDefaultDatabasePathCliScopesRuntime() {
                         runtime_arg.c_str(),
                         "--owner-db-path",
                         db_arg.c_str()};
-  auto result = node::ParseManagerCli(5, const_cast<char**>(argv));
+  auto result = node::ParseManagerCliWithContext(
+      5,
+      const_cast<char**>(argv),
+      node::ManagerConfigResolutionContext{
+          runtime_dir / "tools" / "SBmgr", runtime_dir, false, false});
   Check(result.ok(), "standalone manager owner database path CLI must parse");
   Check(result.config.owner_database_path == std::filesystem::absolute(db_path).lexically_normal(),
         "standalone manager owner database path must be normalized");
@@ -593,9 +774,9 @@ void TestSupportBundleModule() {
   config.control_dir = root / "control";
   config.proxy_enabled = true;
   config.bind_address = "127.0.0.1";
-  config.proxy_port = 3090;
+  config.proxy_port = 3100;
   config.native_bind = "127.0.0.1";
-  config.native_port = 3392;
+  config.native_port = 3101;
   config.owner_database_name = "main";
   config.listener_id = 1;
   config.mcp_secret_ref = "literal:redacted";
@@ -687,6 +868,30 @@ void TestAuditRecordSchemaRedactsAndChecksums() {
         "audit record must not leak config_ref path canaries");
 }
 
+void TestBrandedManagerConfigDiscovery() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    "sbmn_manager_branded_config_discovery";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  {
+    std::ofstream out(root / "SBmgr.conf");
+    out << "manager.proxy.enabled = false\n";
+    out << "manager.proxy.tls_required = true\n";
+  }
+  char arg0[] = "SBmgr";
+  char arg1[] = "--validate-config";
+  char* argv[] = {arg0, arg1};
+  const auto parsed = node::ParseManagerCliWithContext(
+      2,
+      argv,
+      node::ManagerConfigResolutionContext{
+          root / "tools" / "SBmgr", root, false, false});
+  Check(parsed.ok(), "branded SBmgr.conf discovery must parse");
+  Check(parsed.config.config_path.filename() == "SBmgr.conf",
+        "manager must prefer the shipped branded SBmgr.conf name");
+  std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -700,10 +905,13 @@ int main() {
   TestDbbtKeyringRejectsUnknownAndDuplicateKeys();
   TestLprefaceRoundTrip();
   TestLprefaceHandoffClaimRoundTrip();
+  TestManagerSafeCompiledDefaults();
+  TestManagerProxyBackendValidation();
   TestRuntimeProxyFailsClosed();
   TestRuntimeProxyLprefaceRequiresDatabaseUuid();
   TestRestartDescriptorValidation();
   TestServiceModeCliValidation();
+  TestManagerConfigPathResolutionAndPrecedence();
   TestCliNumericValidation();
   TestStandaloneDefaultDatabasePathCliScopesRuntime();
   TestLifecycleRejectsInvalidTransition();
@@ -711,6 +919,7 @@ int main() {
   TestLifecycleWriteFailureReportsDiagnostic();
   TestSupportBundleModule();
   TestAuditRecordSchemaRedactsAndChecksums();
+  TestBrandedManagerConfigDiscovery();
   if (failures != 0) {
     std::cerr << failures << " manager protocol/runtime unit failure(s)\n";
     return EXIT_FAILURE;

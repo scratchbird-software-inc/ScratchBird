@@ -571,6 +571,50 @@ std::string RenderReal128Boost(const BoostReal128& value) {
 #endif
 
 NumericResult Real128Operation(const NumericRequest& request) {
+#if (defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH) || \
+    (defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && \
+     SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD)
+  SpecialValue left_special;
+  if (!ParseSpecial(request.left.encoded, true, &left_special)) {
+    return Failure(NumericStatusCode::invalid_left, "numeric.real128_left_invalid");
+  }
+  if (request.operation == NumericOperation::canonicalize &&
+      left_special.kind != SpecialKind::finite) {
+    NumericResult result;
+    result.value = {NumericType::real128, left_special.canonical, false};
+    return result;
+  }
+  if (request.operation == NumericOperation::canonicalize) {
+    ParsedDecimal parsed_zero;
+    if (ParseDecimal(request.left.encoded, true, &parsed_zero) &&
+        parsed_zero.negative_zero) {
+      NumericResult result;
+      result.value = {NumericType::real128, "-0", false};
+      return result;
+    }
+  }
+  if (request.operation != NumericOperation::canonicalize) {
+    SpecialValue right_special;
+    if (!ParseSpecial(request.right.encoded, true, &right_special)) {
+      return Failure(NumericStatusCode::invalid_right,
+                     "numeric.real128_right_invalid");
+    }
+    const bool has_nan =
+        left_special.kind == SpecialKind::quiet_nan ||
+        left_special.kind == SpecialKind::signaling_nan ||
+        right_special.kind == SpecialKind::quiet_nan ||
+        right_special.kind == SpecialKind::signaling_nan;
+    if (has_nan) {
+      if (request.operation == NumericOperation::compare) {
+        return Failure(NumericStatusCode::unordered,
+                       "numeric.real128_nan_unordered");
+      }
+      NumericResult result;
+      result.value = {NumericType::real128, "NaN", false};
+      return result;
+    }
+  }
+#endif
 #if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
   __float128 left = 0;
   if (!ParseReal128(request.left.encoded, &left)) {
@@ -696,6 +740,16 @@ const char* NumericOperationName(NumericOperation operation) {
     case NumericOperation::compare: return "compare";
   }
   return "unknown";
+}
+
+const char* Real128BackendName() {
+#if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
+  return "libquadmath::__float128";
+#elif defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD
+  return "boost::multiprecision::cpp_bin_float_quad";
+#else
+  return "unavailable";
+#endif
 }
 
 NumericResult ApplyNumericOperation(const NumericRequest& request) {

@@ -3,20 +3,27 @@
 Status: public specification baseline
 Search key: `INSTALLER-IDENTITY`
 
-When an installation creates a first database, it must choose how identities are
-authenticated and authorized. This is a **native-SBsql** decision — it governs how
-native SBsql clients authenticate (through the manager or against the database
-itself). Foreign-dialect clients are always authenticated at their own listener and
-are outside this model (see "Foreign-dialect authentication" below).
+Platform installation and database security bootstrap are separate operations.
+An installer places binaries, resources, policy templates, configuration
+defaults, and locked service identities. It never creates or opens a database,
+collects a database password, creates a principal or role, maps an OS identity to
+a database identity, provisions a security database, or activates a service.
 
-The choice seeds the initial security-provider chain (it is materialized from
-catalog policy and is fail-closed). It is **reconfigurable later** — not a one-way
-door — and the installer collects it only when a first database is created;
-embedded/development installs that defer database creation default to option (a).
+The first database and first `sysarch` principal are created only by a later,
+explicit `SBsec bootstrap --mode=embedded` operation. Root/Administrator is the
+sole create-time OS authorization gate. After that gate, the locked
+`scratchbird` service identity is used only for directory/file ownership,
+privilege drop or ACL handoff, and process execution. It never names or grants a
+database principal, authentication right, role, or security authority. The
+engine-owned MGA create transaction materializes the selected policy and first
+principal atomically; credentials are accepted by `SBsec`, never by an installer.
 
 ## Native-SBsql identity options
 
-Modeled as points on an authentication-source × authorization-source matrix.
+These are post-install database-policy choices, modeled as points on an
+authentication-source × authorization-source matrix. Installer component
+selection may place the provider implementation needed by a future choice, but
+it does not select, configure, or activate that choice for a database.
 
 | Option | AuthN source | AuthZ source | Initial `sysarch` | Where users/rights live |
 | --- | --- | --- | --- | --- |
@@ -28,28 +35,27 @@ Modeled as points on an authentication-source × authorization-source matrix.
 
 Local authentication and authorization; the creator is added with the `sysarch`
 role; all users and rights live inside the database. No external dependency, fully
-portable. This is the default-local-password posture and the default for
-standalone, embedded, evaluation, and appliance installs. The installer collects
-the initial `sysarch` credentials.
+portable. This is the explicit first-database bootstrap posture. `SBsec` prompts
+for the requested initial principal credential through protected input and the
+engine records it inside the database transaction; no credential sidecar exists.
 
 ### (b) External authN + hybrid authorization
 
 Authentication is delegated to a directory or single-sign-on system
-(LDAP / Kerberos / SSO / OIDC). Authorization is **hybrid**: the installer collects
-a directory-group→role map (for example, members of a chosen administrators group
-become `sysarch`), and all other authorization is kept locally. The installer
-collects the directory connection (URL / realm / issuer) and the group→role
-mapping. Choosing this option auto-selects the matching authentication-provider
-element from the catalog (02).
+(LDAP / Kerberos / SSO / OIDC). Authorization is **hybrid**: an authenticated
+database administrator later configures a directory-group→role map, and all
+other authorization is kept locally. Provider connection material and mappings
+are database/security configuration, not installer inputs. The matching provider
+element must already be installed from the catalog (02) before activation.
 
 ### (c) Central authN + authorization
 
 Both authentication and authorization live in a dedicated security database — the
 manager's master/security database — shared by a group of databases, local or
-remote. The bootstrap `sysarch` is provisioned there. The installer collects the
-location/connection of the security database and links the new database to it.
-Choosing this option implies a manager (03) and auto-selects the matching provider
-element.
+remote. An explicit authenticated administration operation provisions and links
+that authority after the required manager/provider components are installed.
+The platform installer does not collect its location or credentials and does not
+provision or link any database.
 
 ## How the manager fits
 
@@ -76,16 +82,18 @@ listener, which performs that dialect's **native authentication handshake** and
 maps the result to an SB identity. This is true regardless of whether a manager
 exists for the native-SBsql side. Consequently:
 
-- The identity options above scope to native SBsql only. The installer presents
-  the choice as "how do native SBsql clients authenticate."
+- The identity options above scope to native SBsql only. Database/security
+  administration presents the choice; the platform installer does not.
 - Each exposed foreign dialect carries its own listener-handled authentication.
 - To expose a foreign dialect across a network boundary, bind its listener to the
   reachable network directly (05); there is no manager in that path.
 
 ## Enforcement posture
 
-The installer only **seeds** the security-provider chain; enforcement is engine-
-owned, materialized from catalog policy, and fail-closed. The outer layers
-(parsers, listeners, manager, drivers) are untrusted with respect to data
-authority. Changing the identity topology after install is a policy reconfiguration,
-not a reinstall.
+The installer only places allowlisted provider binaries, public resources, and
+inactive configuration templates. Security-provider configuration and
+enforcement are engine-owned, materialized through explicit MGA-backed database
+operations, and fail-closed. The outer layers (parsers, listeners, manager,
+drivers) and the OS service identity are untrusted with respect to database
+authority. Changing identity topology is an authenticated database policy
+operation, not an installer action or reinstall.

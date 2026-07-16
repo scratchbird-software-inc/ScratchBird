@@ -2271,13 +2271,18 @@ core::Status NetworkClient::openSocket(bool require_identity,
 
     if (config_.ssl_mode != network::SSLMode::DISABLED) {
         security::TLSClientConfig tls_config;
-        tls_config.expected_hostname = config_.host;
-        tls_config.sni_hostname = config_.host;
         tls_config.cert_file = config_.ssl_cert;
         tls_config.key_file = config_.ssl_key;
         tls_config.ca_file = config_.ssl_root_cert;
         tls_config.verify_server = (config_.ssl_mode == network::SSLMode::VERIFY_CA ||
                                     config_.ssl_mode == network::SSLMode::VERIFY_FULL);
+        tls_config.verify_identity = config_.ssl_mode == network::SSLMode::VERIFY_FULL;
+        if (tls_config.verify_identity) {
+            tls_config.expected_hostname = config_.host;
+        }
+        if (tls_config.use_sni && !security::isIpAddressLiteral(config_.host)) {
+            tls_config.sni_hostname = config_.host;
+        }
 
         tls_ctx_ = security::TLSContext::createClient(tls_config, ctx);
         if (!tls_ctx_ || !tls_ctx_->isValid()) {
@@ -2290,7 +2295,11 @@ core::Status NetworkClient::openSocket(bool require_identity,
             return setError(ctx, core::Status::CONNECTION_FAILURE, "TLS socket attach failed");
         }
         if (tls_config.sni_hostname.size() > 0) {
-            tls_conn_->setSNIHostname(tls_config.sni_hostname);
+            if (tls_conn_->setSNIHostname(tls_config.sni_hostname) != core::Status::OK) {
+                disconnectSocketForReconnect();
+                return setError(ctx, core::Status::CONNECTION_FAILURE,
+                                "TLS SNI configuration failed");
+            }
         }
         if (tls_conn_->connect() != core::Status::OK) {
             disconnectSocketForReconnect();
@@ -2453,7 +2462,6 @@ core::Status NetworkClient::openEmbeddedBridge(core::ErrorContext* ctx) {
                     parser_config.server_endpoint.clear();
                     parser_config.database_token = database_path;
                     parser_config.embedded_engine_direct = true;
-                    parser_config.embedded_auth_bypass_sysarch = true;
                     parser_config.embedded_database_ownership_prelocked = true;
                     parser_config.embedded_database_path = database_path;
                     parser_config.dialect = "sbsql";

@@ -29,8 +29,17 @@ DbbtGateResult LoadDbbtKeyMaterial(const ListenerConfig& config, DbbtKeyMaterial
       return {false, MakeMessageVectorSet(std::move(diagnostics), config.language, config.dialect)};
     }
     out->bytes = proto::FromHex(key);
+    if (out->bytes.size() < 32) {
+      diagnostics.push_back(MakeDiagnostic(
+          "LISTENER.DBBT.KEYRING_KEY_INVALID",
+          "ERROR",
+          "keyring DBBT material must decode to at least 32 bytes",
+          "sb_listener.dbbt"));
+      out->bytes.clear();
+      return {false, MakeMessageVectorSet(std::move(diagnostics), config.language, config.dialect)};
+    }
     out->source_name = "keyring";
-    return {!out->bytes.empty(), MakeMessageVectorSet({}, config.language, config.dialect)};
+    return {true, MakeMessageVectorSet({}, config.language, config.dialect)};
   }
   if (config.dbbt_key_source == DbbtKeySource::kDevEnvironment) {
     if (!config.allow_dev_dbbt_env) {

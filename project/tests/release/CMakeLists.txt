@@ -92,12 +92,19 @@ option(SB_PUBLIC_RELEASE_EXPORT_NESTED
 option(SB_PUBLIC_RELEASE_HARDENING_NESTED
   "Suppress recursive public hardening CTest registration while proving sanitizer/static-analysis profiles"
   OFF)
+set(SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM "4" CACHE STRING
+  "Maximum parallel compile jobs used by the clean public-project export proof")
+if(NOT SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR
+    "SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM must be a positive integer")
+endif()
 
 set(_sb_release_nested_configure_env)
 foreach(_sb_forwarded_var
         SB_LLVM_PROJECT_ROOT
         SB_LLVM_TOOLS_ROOT
         SB_LLVM_LIBRARY
+        SB_LLVM_RUNTIME_LIBRARY
         SB_LLVM_LINK_MODE
         SB_LLVM_MIN_MAJOR)
   if(DEFINED ${_sb_forwarded_var} AND NOT "${${_sb_forwarded_var}}" STREQUAL "")
@@ -2308,6 +2315,73 @@ set_tests_properties(web_distribution_bundle_test PROPERTIES
   LABELS "public_release_correctness;web_distribution_bundle_test;PCR-GATE-160;PCR-160;installers;webserver_export;artifact_manifest;checksums;no_github_release;fail_closed"
 )
 
+add_test(
+  NAME llvm_runtime_release_contract_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/llvm_runtime_release_contract_test.py
+)
+set_tests_properties(llvm_runtime_release_contract_test PROPERTIES
+  LABELS "public_release_correctness;llvm_runtime_library;installers;runtime_dependencies;fail_closed"
+)
+
+add_test(
+  NAME macos_universal_llvm_profile_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/macos_universal_llvm_profile_test.py
+)
+set_tests_properties(macos_universal_llvm_profile_test PROPERTIES
+  LABELS "public_release_correctness;llvm_runtime_library;installers;macos;universal;archive_safety;fail_closed"
+)
+
+add_test(
+  NAME nightly_release_bundle_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/nightly_release_bundle_test.py
+)
+set_tests_properties(nightly_release_bundle_test PROPERTIES
+  LABELS "public_release_correctness;nightly_release;installers;native_sbsql;llvm_runtime_library;fail_closed"
+)
+
+add_test(
+  NAME native_release_bundle_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/native_release_bundle_test.py
+)
+set_tests_properties(native_release_bundle_test PROPERTIES
+  LABELS "public_release_correctness;native_release_bundle;installers;native_sbsql;llvm_runtime_library;fail_closed"
+)
+
+add_test(
+  NAME standalone_sbparser_graph_contract_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/standalone_sbparser_graph_contract_test.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+          --cmake ${CMAKE_COMMAND}
+)
+set_tests_properties(standalone_sbparser_graph_contract_test PROPERTIES
+  LABELS "public_release_correctness;native_sbsql;parser_boundary;standalone_parser;build_graph;fail_closed"
+)
+
+add_test(
+  NAME rolling_nightly_publisher_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/rolling_nightly_publisher_test.py
+)
+set_tests_properties(rolling_nightly_publisher_test PROPERTIES
+  LABELS "public_release_correctness;nightly_release;github_release;publication;fail_closed"
+)
+
+# PUBLIC_CONFIG_POLICY_MIGRATION_GATE
+add_test(
+  NAME native_qa_bootstrap_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/native_qa_bootstrap_test.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+)
+set_tests_properties(native_qa_bootstrap_test PROPERTIES
+  LABELS "public_release_correctness;native_qa_bootstrap_test;installers;operational_readiness;native_sbsql;tls;dbbt;secure_bootstrap;fail_closed"
+)
+
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
 add_test(
   NAME public_config_policy_migration_gate
@@ -2385,7 +2459,7 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
             --ctest ${CMAKE_CTEST_COMMAND}
             --c-compiler ${CMAKE_C_COMPILER}
             --cxx-compiler ${CMAKE_CXX_COMPILER}
-            --parallel 1
+            --parallel ${SB_PUBLIC_RELEASE_EXPORT_BUILD_PARALLELISM}
   )
   # PUBLIC_RELEASE_CLEANUP_GATE
   set_tests_properties(public_project_export_gate PROPERTIES

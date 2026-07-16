@@ -30,8 +30,12 @@ METADATA_NAMES = {
     "PUBLIC_RELEASE_ARTIFACT_MANIFEST.json",
     "STANDALONE_OUTPUT_MANIFEST.json",
     "MACOS_SUPPORT_MATRIX.json",
-    "MACOS_LAUNCHD_MANIFEST.json",
+    "NATIVE_RELEASE_PROFILE.json",
 }
+
+NATIVE_PROFILE_RELATIVE_PATH = Path(
+    "opt/ScratchBird/share/scratchbird/release/NATIVE_RELEASE_PROFILE.json"
+)
 
 
 def fail(message: str) -> None:
@@ -64,8 +68,50 @@ def run(command: list[str], cwd: Path) -> str:
 
 def extract_tarball(tarball: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tarball, "r:gz") as archive:
-        archive.extractall(target)
+    names: set[str] = set()
+    total_size = 0
+    try:
+        with tarfile.open(tarball, "r:gz") as archive:
+            for index, member in enumerate(archive, start=1):
+                if index > 100_000:
+                    fail(f"archive_member_limit:{tarball.name}")
+                raw_name = member.name.rstrip("/")
+                if not raw_name:
+                    continue
+                relative = Path(raw_name)
+                if (
+                    relative.is_absolute()
+                    or "\\" in raw_name
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                ):
+                    fail(f"archive_path_unsafe:{tarball.name}:{member.name}")
+                normalized = relative.as_posix()
+                if normalized in names:
+                    fail(f"archive_path_duplicate:{tarball.name}:{normalized}")
+                names.add(normalized)
+                destination = target / relative
+                if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                    fail(f"archive_special_entry_forbidden:{tarball.name}:{normalized}")
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    destination.chmod(member.mode & 0o777)
+                    continue
+                if not member.isfile():
+                    fail(f"archive_member_type_forbidden:{tarball.name}:{normalized}")
+                total_size += member.size
+                if member.size < 0 or total_size > 16 * 1024 * 1024 * 1024:
+                    fail(f"archive_uncompressed_size_limit:{tarball.name}")
+                source = archive.extractfile(member)
+                if source is None:
+                    fail(f"archive_member_unreadable:{tarball.name}:{normalized}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("wb") as handle:
+                    shutil.copyfileobj(source, handle, length=1024 * 1024)
+                if destination.stat().st_size != member.size:
+                    fail(f"archive_member_size_mismatch:{tarball.name}:{normalized}")
+                destination.chmod(member.mode & 0o777)
+    except (OSError, tarfile.TarError) as exc:
+        fail(f"archive_invalid:{tarball.name}:{exc}")
 
 
 def is_macho(path: Path) -> bool:
@@ -84,6 +130,81 @@ def is_lipo_candidate(path: Path) -> bool:
 
 def is_metadata_path(path: Path) -> bool:
     return path.name in METADATA_NAMES and "share/scratchbird/release" in path.as_posix()
+
+
+def load_native_profile(root: Path, architecture: str) -> dict[str, Any]:
+    path = root / NATIVE_PROFILE_RELATIVE_PATH
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"native_profile_invalid:{architecture}:{exc}")
+    if not isinstance(value, dict):
+        fail(f"native_profile_not_object:{architecture}")
+    if value.get("schema_id") != "scratchbird.native_release_profile.v1":
+        fail(f"native_profile_schema_invalid:{architecture}")
+    if value.get("profile") != "native-sbsql-only" or value.get("platform") != "macos":
+        fail(f"native_profile_identity_invalid:{architecture}")
+    return value
+
+
+def reconcile_native_profile(
+    x86_root: Path,
+    arm_root: Path,
+    universal_root: Path,
+) -> None:
+    x86_profile = load_native_profile(x86_root, "x86_64")
+    arm_profile = load_native_profile(arm_root, "arm64")
+    x86_llvm = x86_profile.pop("llvm_runtime", None)
+    arm_llvm = arm_profile.pop("llvm_runtime", None)
+    if x86_profile != arm_profile:
+        fail("native_profile_non_llvm_difference")
+    if not isinstance(x86_llvm, dict) or not isinstance(arm_llvm, dict):
+        fail("native_profile_llvm_runtime_missing")
+    for field, expected in (
+        ("link_mode", "dynamic"),
+        ("delivery", "external-homebrew"),
+    ):
+        if x86_llvm.get(field) != expected or arm_llvm.get(field) != expected:
+            fail(f"native_profile_llvm_runtime_field_invalid:{field}")
+    x86_minimum_major = x86_llvm.get("minimum_major")
+    arm_minimum_major = arm_llvm.get("minimum_major")
+    if (
+        not isinstance(x86_minimum_major, int)
+        or isinstance(x86_minimum_major, bool)
+        or x86_minimum_major < 22
+        or arm_minimum_major != x86_minimum_major
+    ):
+        fail(
+            "native_profile_llvm_runtime_minimum_major_invalid:"
+            f"x86_64={x86_minimum_major}:arm64={arm_minimum_major}"
+        )
+    x86_path = x86_llvm.get("runtime_library")
+    arm_path = arm_llvm.get("runtime_library")
+    if (
+        not isinstance(x86_path, str)
+        or not x86_path.startswith("/usr/local/opt/llvm/lib/")
+        or not isinstance(arm_path, str)
+        or not arm_path.startswith("/opt/homebrew/opt/llvm/lib/")
+    ):
+        fail(
+            "native_profile_llvm_runtime_architecture_path_invalid:"
+            f"x86_64={x86_path}:arm64={arm_path}"
+        )
+    x86_profile["llvm_runtime"] = {
+        "link_mode": "dynamic",
+        "runtime_library": None,
+        "runtime_libraries_by_architecture": {
+            "x86_64": x86_path,
+            "arm64": arm_path,
+        },
+        "delivery": "external-homebrew",
+        "minimum_major": x86_minimum_major,
+    }
+    target = universal_root / NATIVE_PROFILE_RELATIVE_PATH
+    target.write_text(
+        json.dumps(x86_profile, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def collect_files(root: Path) -> list[dict[str, Any]]:
@@ -217,6 +338,7 @@ def main() -> int:
         extract_tarball(args.x86_tar.resolve(), x86_root)
         extract_tarball(args.arm_tar.resolve(), arm_root)
         assemble(x86_root, arm_root, universal_root)
+        reconcile_native_profile(x86_root, arm_root, universal_root)
         rewrite_payload_metadata(universal_root, args.version, args.build_id)
         tarball = make_tarball(universal_root, output_root, args.version)
     manifest = write_manifest(output_root, tarball, args.x86_tar.resolve(), args.arm_tar.resolve(), args.version, args.build_id)

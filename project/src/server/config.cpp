@@ -14,6 +14,7 @@
 #include "security/auth_provider_model.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
@@ -24,6 +25,18 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
 
 namespace scratchbird::server {
 
@@ -302,6 +315,15 @@ std::filesystem::path NormalizePath(const std::filesystem::path& raw) {
   return path.lexically_normal();
 }
 
+std::filesystem::path NormalizePathAgainst(
+    const std::filesystem::path& raw,
+    const std::filesystem::path& base) {
+  if (raw.empty()) return {};
+  if (raw.is_absolute()) return raw.lexically_normal();
+  if (!base.empty()) return (base / raw).lexically_normal();
+  return NormalizePath(raw);
+}
+
 std::filesystem::path ExistingDirectoryOrEmpty(const std::filesystem::path& raw) {
   if (raw.empty()) {
     return {};
@@ -314,77 +336,194 @@ std::filesystem::path ExistingDirectoryOrEmpty(const std::filesystem::path& raw)
   return {};
 }
 
-std::filesystem::path EnvironmentPathOrEmpty(const char* name) {
+std::filesystem::path EnvironmentPathOrEmpty(
+    const char* name,
+    const std::filesystem::path& caller_base) {
   const char* value = std::getenv(name);
   if (value == nullptr || *value == '\0') {
     return {};
   }
-  return NormalizePath(std::string(value));
+  return NormalizePathAgainst(std::string(value), caller_base);
 }
 
-std::filesystem::path DefaultResourceSeedPackRoot() {
-  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
-          "SCRATCHBIRD_RESOURCE_SEED_PACK_ROOT"));
-      !path.empty()) {
-    return path;
+std::filesystem::path CurrentExecutablePath() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768, L'\0');
+  const DWORD count = ::GetModuleFileNameW(
+      nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (count == 0 || count >= buffer.size()) {
+    return {};
+  }
+  return std::filesystem::path(std::wstring(buffer.data(), count));
+#elif defined(__APPLE__)
+  std::uint32_t size = 0;
+  (void)::_NSGetExecutablePath(nullptr, &size);
+  if (size == 0) {
+    return {};
+  }
+  std::vector<char> buffer(size + 1, '\0');
+  if (::_NSGetExecutablePath(buffer.data(), &size) != 0) {
+    return {};
+  }
+  return std::filesystem::path(buffer.data());
+#elif defined(__linux__)
+  std::array<char, 4096> buffer{};
+  const auto count = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+  if (count <= 0 || static_cast<std::size_t>(count) >= buffer.size()) {
+    return {};
+  }
+  buffer[static_cast<std::size_t>(count)] = '\0';
+  return std::filesystem::path(buffer.data());
+#else
+  return {};
+#endif
+}
+
+std::filesystem::path ServerInstallRoot(
+    const ServerConfigResolutionContext& context) {
+  if (context.executable_path.empty()) return {};
+  const auto executable_dir = context.executable_path.parent_path();
+  if (executable_dir.filename() != "bin") return {};
+  return executable_dir.parent_path().lexically_normal();
+}
+
+std::filesystem::path ResolveServerConfigRelativePathImpl(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ServerConfigResolutionContext& context) {
+  if (value.empty() || value.is_absolute()) return value.lexically_normal();
+  auto base = ServerInstallRoot(context);
+  if (base.empty() && !config_path.empty()) base = config_path.parent_path();
+  if (base.empty()) base = context.current_directory;
+  return NormalizePathAgainst(value, base);
+}
+
+ServerPackagedResourceRoots DiscoverServerPackagedResourceRootsImpl(
+    const std::filesystem::path& executable_path,
+    const std::filesystem::path& current_directory) {
+  std::vector<std::filesystem::path> install_roots;
+  if (!executable_path.empty()) {
+    auto executable_dir = executable_path.parent_path();
+    install_roots.push_back(
+        executable_dir.filename() == "bin" ? executable_dir.parent_path()
+                                            : executable_dir);
+  }
+  if (!current_directory.empty()) {
+    install_roots.push_back(current_directory);
   }
 
-  std::error_code ec;
-  const auto cwd = std::filesystem::current_path(ec);
-  if (!ec) {
+  ServerPackagedResourceRoots roots;
+  for (const auto& install_root : install_roots) {
+    const auto resources = install_root / "share" / "scratchbird" / "resources";
+    if (roots.resource_seed_pack_root.empty()) {
+      roots.resource_seed_pack_root = ExistingDirectoryOrEmpty(
+          resources / "seed-packs" / "initial-resource-pack");
+    }
+    if (roots.policy_seed_pack_root.empty()) {
+      roots.policy_seed_pack_root = ExistingDirectoryOrEmpty(
+          resources / "policy-packs" / "default-local-password");
+    }
+  }
+  return roots;
+}
+
+std::filesystem::path DefaultResourceSeedPackRoot(
+    const ServerConfigResolutionContext& context,
+    bool allow_current_directory) {
+  if (context.include_environment) {
+    if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+            "SCRATCHBIRD_RESOURCE_SEED_PACK_ROOT", context.current_directory));
+        !path.empty()) {
+      return path;
+    }
+  }
+
+  const auto packaged = DiscoverServerPackagedResourceRootsImpl(
+      context.executable_path,
+      allow_current_directory ? context.current_directory
+                              : std::filesystem::path{});
+  if (!packaged.resource_seed_pack_root.empty()) {
+    return packaged.resource_seed_pack_root;
+  }
+
+  if (allow_current_directory && !context.current_directory.empty()) {
     if (auto path = ExistingDirectoryOrEmpty(
-            cwd / "project" / "resources" / "seed-packs" /
+            context.current_directory / "project" / "resources" / "seed-packs" /
             "initial-resource-pack");
         !path.empty()) {
       return path;
     }
   }
 
-  if (auto path = ExistingDirectoryOrEmpty(
-          "/usr/share/scratchbird/resources/seed-packs/initial-resource-pack");
-      !path.empty()) {
-    return path;
-  }
-  if (auto path = ExistingDirectoryOrEmpty(
-          "/opt/scratchbird/resources/seed-packs/initial-resource-pack");
-      !path.empty()) {
-    return path;
+  if (context.include_system_paths) {
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/usr/share/scratchbird/resources/seed-packs/initial-resource-pack");
+        !path.empty()) {
+      return path;
+    }
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/opt/ScratchBird/share/scratchbird/resources/seed-packs/initial-resource-pack");
+        !path.empty()) {
+      return path;
+    }
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/opt/scratchbird/resources/seed-packs/initial-resource-pack");
+        !path.empty()) {
+      return path;
+    }
   }
   return {};
 }
 
-std::filesystem::path DefaultPolicySeedPackRoot() {
-  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
-          "SCRATCHBIRD_POLICY_SEED_PACK_ROOT"));
-      !path.empty()) {
-    return path;
-  }
-  if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
-          "SCRATCHBIRD_POLICY_PACK_ROOT"));
-      !path.empty()) {
-    return path;
+std::filesystem::path DefaultPolicySeedPackRoot(
+    const ServerConfigResolutionContext& context,
+    bool allow_current_directory) {
+  if (context.include_environment) {
+    if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+            "SCRATCHBIRD_POLICY_SEED_PACK_ROOT", context.current_directory));
+        !path.empty()) {
+      return path;
+    }
+    if (auto path = ExistingDirectoryOrEmpty(EnvironmentPathOrEmpty(
+            "SCRATCHBIRD_POLICY_PACK_ROOT", context.current_directory));
+        !path.empty()) {
+      return path;
+    }
   }
 
-  std::error_code ec;
-  const auto cwd = std::filesystem::current_path(ec);
-  if (!ec) {
+  const auto packaged = DiscoverServerPackagedResourceRootsImpl(
+      context.executable_path,
+      allow_current_directory ? context.current_directory
+                              : std::filesystem::path{});
+  if (!packaged.policy_seed_pack_root.empty()) {
+    return packaged.policy_seed_pack_root;
+  }
+
+  if (allow_current_directory && !context.current_directory.empty()) {
     if (auto path = ExistingDirectoryOrEmpty(
-            cwd / "project" / "resources" / "policy-packs" /
+            context.current_directory / "project" / "resources" / "policy-packs" /
             "default-local-password");
         !path.empty()) {
       return path;
     }
   }
 
-  if (auto path = ExistingDirectoryOrEmpty(
-          "/usr/share/scratchbird/resources/policy-packs/default-local-password");
-      !path.empty()) {
-    return path;
-  }
-  if (auto path = ExistingDirectoryOrEmpty(
-          "/opt/scratchbird/resources/policy-packs/default-local-password");
-      !path.empty()) {
-    return path;
+  if (context.include_system_paths) {
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/usr/share/scratchbird/resources/policy-packs/default-local-password");
+        !path.empty()) {
+      return path;
+    }
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/opt/ScratchBird/share/scratchbird/resources/policy-packs/default-local-password");
+        !path.empty()) {
+      return path;
+    }
+    if (auto path = ExistingDirectoryOrEmpty(
+            "/opt/scratchbird/resources/policy-packs/default-local-password");
+        !path.empty()) {
+      return path;
+    }
   }
   return {};
 }
@@ -473,35 +612,85 @@ std::optional<ParsedConfig> ParseConfigFile(const std::filesystem::path& path,
   return parsed;
 }
 
-std::optional<std::filesystem::path> DiscoverConfigFile(const ServerCliOptions& cli) {
+struct ServerConfigSelection {
+  std::filesystem::path path;
+  std::string source;
+};
+
+std::optional<ServerConfigSelection> DiscoverConfigFile(
+    const ServerCliOptions& cli,
+    const ServerConfigResolutionContext& context) {
   if (!cli.config_path.empty()) {
-    return NormalizePath(cli.config_path);
+    return ServerConfigSelection{
+        NormalizePathAgainst(cli.config_path, context.current_directory),
+        "explicit_file"};
   }
-  if (const char* env = std::getenv("SCRATCHBIRD_CONFIG"); env != nullptr && *env != '\0') {
-    return NormalizePath(std::string(env));
+  if (context.include_environment) {
+    if (const char* env = std::getenv("SCRATCHBIRD_CONFIG");
+        env != nullptr && *env != '\0') {
+      return ServerConfigSelection{
+          NormalizePathAgainst(std::string(env), context.current_directory),
+          "environment_file"};
+    }
   }
-  const auto current = std::filesystem::current_path() / "sb_server.conf";
-  if (std::filesystem::is_regular_file(current)) {
-    return current.lexically_normal();
+  const auto first_existing = [](const std::filesystem::path& root)
+      -> std::optional<std::filesystem::path> {
+    for (const char* name : {"SBsrv.conf", "sb_server.conf"}) {
+      const auto path = root / name;
+      if (std::filesystem::is_regular_file(path)) {
+        return path.lexically_normal();
+      }
+    }
+    return std::nullopt;
+  };
+  const auto install_root = ServerInstallRoot(context);
+  if (!install_root.empty()) {
+    if (auto path = first_existing(install_root / "etc" / "scratchbird");
+        path.has_value()) {
+      return ServerConfigSelection{*path, "installed_file"};
+    }
+  }
+  if (context.include_system_paths) {
+    auto system_roots = context.system_config_roots;
+    if (system_roots.empty()) {
+#if defined(__APPLE__)
+      system_roots.emplace_back(
+          "/Library/Application Support/ScratchBird");
+#endif
+#if !defined(_WIN32)
+      system_roots.emplace_back("/etc/scratchbird");
+#endif
+    }
+    for (const auto& root : system_roots) {
+      if (auto path = first_existing(root); path.has_value()) {
+        return ServerConfigSelection{*path, "system_file"};
+      }
+    }
   }
 #ifndef _WIN32
-  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && *xdg != '\0') {
-    const auto path = std::filesystem::path(xdg) / "scratchbird" / "sb_server.conf";
-    if (std::filesystem::is_regular_file(path)) {
-      return path.lexically_normal();
+  if (!cli.service && context.include_environment) {
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME");
+        xdg != nullptr && *xdg != '\0') {
+      if (auto path = first_existing(std::filesystem::path(xdg) / "scratchbird");
+          path.has_value()) {
+        return ServerConfigSelection{*path, "user_file"};
+      }
     }
-  }
-  if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-    const auto path = std::filesystem::path(home) / ".config" / "scratchbird" / "sb_server.conf";
-    if (std::filesystem::is_regular_file(path)) {
-      return path.lexically_normal();
+    if (const char* home = std::getenv("HOME");
+        home != nullptr && *home != '\0') {
+      if (auto path = first_existing(
+              std::filesystem::path(home) / ".config" / "scratchbird");
+          path.has_value()) {
+        return ServerConfigSelection{*path, "user_file"};
+      }
     }
-  }
-  const auto system = std::filesystem::path("/etc/scratchbird/sb_server.conf");
-  if (std::filesystem::is_regular_file(system)) {
-    return system;
   }
 #endif
+  if (!cli.service && !context.current_directory.empty()) {
+    if (auto path = first_existing(context.current_directory); path.has_value()) {
+      return ServerConfigSelection{*path, "current_directory"};
+    }
+  }
   return std::nullopt;
 }
 
@@ -859,6 +1048,8 @@ bool ValidateServerMemoryPolicy(const ServerBootstrapConfig& config,
 
 bool ApplyParsedConfig(const ParsedConfig& parsed,
                        ServerBootstrapConfig* config,
+                       const std::filesystem::path& config_path,
+                       const ServerConfigResolutionContext& context,
                        std::vector<ServerDiagnostic>* diagnostics) {
   auto invalid = [&](const std::string& code, const std::string& key, const std::string& value) {
     diagnostics->push_back(ConfigDiagnostic(code,
@@ -866,6 +1057,9 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
                                             "A configuration value is invalid.",
                                             {{"canonical_key", key}, {"value_redacted", value}}));
     return false;
+  };
+  const auto configured_path = [&](const std::string& value) {
+    return ResolveServerConfigRelativePathImpl(value, config_path, context);
   };
 
   for (const auto& [key, value] : parsed.values) {
@@ -883,17 +1077,17 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
     } else if (key == "server.config.allow_current_directory") {
       if (!ParseBool(value, &config->allow_current_directory)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.runtime.data_dir") {
-      config->data_dir = NormalizePath(value);
+      config->data_dir = configured_path(value);
     } else if (key == "server.runtime.control_dir") {
-      config->control_dir = NormalizePath(value);
+      config->control_dir = configured_path(value);
     } else if (key == "server.runtime.pid_file") {
-      config->pid_file = NormalizePath(value);
+      config->pid_file = configured_path(value);
     } else if (key == "server.runtime.lifecycle_state_file") {
-      config->lifecycle_state_file = NormalizePath(value);
+      config->lifecycle_state_file = configured_path(value);
     } else if (key == "server.runtime.lifecycle_journal_file") {
-      config->lifecycle_journal_file = NormalizePath(value);
+      config->lifecycle_journal_file = configured_path(value);
     } else if (key == "server.logging.log_file") {
-      config->log_file = value;
+      config->log_file = value == "stderr" ? value : configured_path(value).string();
     } else if (key == "server.logging.log_level") {
       if (!EnumAllowed(lower, {"trace","debug","info","warning","warn","error","critical","fatal"})) {
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
@@ -924,7 +1118,7 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       }
       config->security_authority_mode = lower;
     } else if (key == "server.security.database_path") {
-      config->security_database_path = NormalizePath(value);
+      config->security_database_path = configured_path(value);
     } else if (key == "server.security.policy_generation") {
       if (!ParseUint64(value, &config->security_policy_generation) ||
           config->security_policy_generation == 0) {
@@ -956,11 +1150,11 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
         return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
       }
     } else if (key == "server.database.default_path") {
-      config->database_default_path = NormalizePath(value);
+      config->database_default_path = configured_path(value);
     } else if (key == "server.database.resource_seed_pack_root") {
-      config->database_resource_seed_pack_root = NormalizePath(value);
+      config->database_resource_seed_pack_root = configured_path(value);
     } else if (key == "server.database.policy_seed_pack_root") {
-      config->database_policy_seed_pack_root = NormalizePath(value);
+      config->database_policy_seed_pack_root = configured_path(value);
     } else if (key == "server.database.auto_create") {
       if (!ParseBool(value, &config->database_auto_create)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.database.create_page_size_bytes") {
@@ -990,21 +1184,21 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
     } else if (key == "server.listener.native.port") {
       if (!ParseUint64(value, &config->listener_native_port)) return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
     } else if (key == "server.listener.native.executable_path") {
-      config->listener_native_executable_path = NormalizePath(value);
+      config->listener_native_executable_path = configured_path(value);
     } else if (key == "server.listener.native.parser_executable_path") {
-      config->listener_native_parser_executable_path = NormalizePath(value);
+      config->listener_native_parser_executable_path = configured_path(value);
     } else if (key == "server.listener.native.control_dir") {
-      config->listener_native_control_dir = NormalizePath(value);
+      config->listener_native_control_dir = configured_path(value);
     } else if (key == "server.listener.native.runtime_dir") {
-      config->listener_native_runtime_dir = NormalizePath(value);
+      config->listener_native_runtime_dir = configured_path(value);
     } else if (key == "server.listener.native.tls_required") {
       if (!ParseBool(value, &config->listener_native_tls_required)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.listener.native.tls_cert_file") {
-      config->listener_native_tls_cert_file = NormalizePath(value);
+      config->listener_native_tls_cert_file = configured_path(value);
     } else if (key == "server.listener.native.tls_key_file") {
-      config->listener_native_tls_key_file = NormalizePath(value);
+      config->listener_native_tls_key_file = configured_path(value);
     } else if (key == "server.listener.native.tls_ca_file") {
-      config->listener_native_tls_ca_file = NormalizePath(value);
+      config->listener_native_tls_ca_file = configured_path(value);
     } else if (key == "server.listener.native.ready_timeout_ms") {
       if (!ParseDurationMs(value, &config->listener_native_ready_timeout_ms)) return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
     } else if (key == "server.metrics.enabled") {
@@ -1081,7 +1275,7 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
         return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
       }
     } else if (key == "server.parser.registry_path") {
-      config->parser_registry_path = NormalizePath(value);
+      config->parser_registry_path = configured_path(value);
     } else if (key == "server.parser.worker_restart_max") {
       if (!ParseUint64(value, &config->parser_worker_restart_max)) return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
     } else if (key == "server.parser.worker_restart_window_ms") {
@@ -1089,7 +1283,7 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
     } else if (key == "server.parser.sbps_enabled") {
       if (!ParseBool(value, &config->sbps_enabled)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.parser.sbps_endpoint") {
-      config->sbps_endpoint = NormalizePath(value);
+      config->sbps_endpoint = configured_path(value);
     } else if (key == "server.parser.sbps_max_frame_bytes") {
       if (!ParseUint64(value, &config->sbps_max_frame_bytes)) return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
     } else if (key == "server.parser.sbps_max_streams") {
@@ -1101,7 +1295,9 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
   return true;
 }
 
-void ApplyCliOverrides(const ServerCliOptions& cli, ServerBootstrapConfig* config) {
+void ApplyCliOverrides(const ServerCliOptions& cli,
+                       const ServerConfigResolutionContext& context,
+                       ServerBootstrapConfig* config) {
   if (cli.foreground) config->mode = ServerMode::kForeground;
   if (cli.service) config->mode = ServerMode::kService;
   if (cli.validate_config || cli.validate_endpoints) config->mode = ServerMode::kValidationOnly;
@@ -1120,15 +1316,30 @@ void ApplyCliOverrides(const ServerCliOptions& cli, ServerBootstrapConfig* confi
   if (cli.create_page_size_bytes != 0) {
     config->database_create_page_size_bytes = cli.create_page_size_bytes;
   }
-  if (!cli.control_dir.empty()) config->control_dir = NormalizePath(cli.control_dir);
-  if (!cli.runtime_dir.empty()) config->data_dir = NormalizePath(cli.runtime_dir);
-  if (!cli.database_ref.empty()) config->database_default_path = NormalizePath(cli.database_ref);
-  if (!cli.sbps_endpoint.empty()) config->sbps_endpoint = NormalizePath(cli.sbps_endpoint);
-  if (!cli.log_path.empty()) config->log_file = cli.log_path;
+  if (!cli.control_dir.empty()) {
+    config->control_dir = NormalizePathAgainst(cli.control_dir, context.current_directory);
+  }
+  if (!cli.runtime_dir.empty()) {
+    config->data_dir = NormalizePathAgainst(cli.runtime_dir, context.current_directory);
+  }
+  if (!cli.database_ref.empty()) {
+    config->database_default_path = NormalizePathAgainst(cli.database_ref, context.current_directory);
+  }
+  if (!cli.sbps_endpoint.empty()) {
+    config->sbps_endpoint = NormalizePathAgainst(cli.sbps_endpoint, context.current_directory);
+  }
+  if (!cli.log_path.empty()) {
+    config->log_file = cli.log_path == "stderr"
+                           ? cli.log_path
+                           : NormalizePathAgainst(cli.log_path,
+                                                  context.current_directory)
+                                 .string();
+  }
   if (!cli.log_level.empty()) config->log_level = cli.log_level;
 }
 
-void FinalizeDerivedPaths(ServerBootstrapConfig* config) {
+void FinalizeDerivedPaths(ServerBootstrapConfig* config,
+                          const ServerConfigResolutionContext& context) {
   if (config->mode == ServerMode::kForeground || config->mode == ServerMode::kValidationOnly) {
     if (config->log_file.empty()) {
       config->log_file = "stderr";
@@ -1155,10 +1366,14 @@ void FinalizeDerivedPaths(ServerBootstrapConfig* config) {
     config->sbps_endpoint = config->control_dir / "sb_server.sbps.sock";
   }
   if (config->database_resource_seed_pack_root.empty()) {
-    config->database_resource_seed_pack_root = DefaultResourceSeedPackRoot();
+    config->database_resource_seed_pack_root = DefaultResourceSeedPackRoot(
+        context,
+        config->allow_current_directory && config->mode != ServerMode::kService);
   }
   if (config->database_policy_seed_pack_root.empty()) {
-    config->database_policy_seed_pack_root = DefaultPolicySeedPackRoot();
+    config->database_policy_seed_pack_root = DefaultPolicySeedPackRoot(
+        context,
+        config->allow_current_directory && config->mode != ServerMode::kService);
   }
   if (config->listener_native_control_dir.empty()) {
     config->listener_native_control_dir = config->control_dir / "listeners";
@@ -1184,6 +1399,28 @@ void FinalizeDerivedPaths(ServerBootstrapConfig* config) {
 }
 
 }  // namespace
+
+ServerPackagedResourceRoots DiscoverServerPackagedResourceRoots(
+    const std::filesystem::path& executable_path,
+    const std::filesystem::path& current_directory) {
+  return DiscoverServerPackagedResourceRootsImpl(executable_path,
+                                                  current_directory);
+}
+
+std::optional<std::filesystem::path> DiscoverServerConfigPath(
+    const ServerCliOptions& cli,
+    const ServerConfigResolutionContext& context) {
+  const auto selected = DiscoverConfigFile(cli, context);
+  if (!selected) return std::nullopt;
+  return selected->path;
+}
+
+std::filesystem::path ResolveServerConfigRelativePath(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ServerConfigResolutionContext& context) {
+  return ResolveServerConfigRelativePathImpl(value, config_path, context);
+}
 
 const char* ServerModeName(ServerMode mode) {
   switch (mode) {
@@ -1294,24 +1531,60 @@ memory::MemoryPolicyConfigResolveResult ResolveServerMemoryAllocationPolicy(
   return memory::ResolveMemoryPolicyConfig(BuildMemoryPolicyConfig(config));
 }
 
-ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli) {
+ServerConfigLoadResult ResolveServerBootstrapConfig(
+    const ServerCliOptions& cli,
+    const ServerConfigResolutionContext& context) {
   ServerConfigLoadResult result;
-  auto selected = DiscoverConfigFile(cli);
+  auto selected = DiscoverConfigFile(cli, context);
   std::optional<ParsedConfig> parsed_config;
   if (selected) {
-    result.config.selected_config_path = *selected;
-    result.config.selected_config_source = cli.config_path.empty() ? "discovered_file" : "explicit_file";
-    auto parsed = ParseConfigFile(*selected, &result.diagnostics);
+    result.config.selected_config_path = selected->path;
+    result.config.selected_config_source = selected->source;
+    auto parsed = ParseConfigFile(selected->path, &result.diagnostics);
     if (!parsed) {
       return result;
     }
-    if (!ApplyParsedConfig(*parsed, &result.config, &result.diagnostics)) {
+    if (!ApplyParsedConfig(*parsed,
+                           &result.config,
+                           selected->path,
+                           context,
+                           &result.diagnostics)) {
+      return result;
+    }
+    if (selected->source == "current_directory" &&
+        (result.config.mode == ServerMode::kService ||
+         !result.config.allow_current_directory)) {
+      result.diagnostics.push_back(ConfigDiagnostic(
+          "CONFIG.CURRENT_DIRECTORY_FORBIDDEN",
+          "config.current_directory_forbidden",
+          "Service configuration cannot be selected from the process current directory.",
+          {{"source", selected->source}}));
       return result;
     }
     parsed_config = std::move(*parsed);
+  } else if (cli.service || cli.validate_config || cli.validate_endpoints) {
+    result.diagnostics.push_back(ConfigDiagnostic(
+        "CONFIG.FILE_REQUIRED",
+        "config.file_required",
+        "Service and configuration-validation modes require a selected configuration file."));
+    return result;
   }
-  ApplyCliOverrides(cli, &result.config);
-  FinalizeDerivedPaths(&result.config);
+  if (cli.create_if_missing) {
+    result.diagnostics.push_back(ConfigDiagnostic(
+        "BOOTSTRAP.SERVICE_START_FORBIDDEN",
+        "bootstrap.service_start_forbidden",
+        "Public server startup cannot create a missing database; use the approved embedded bootstrap tool first."));
+    return result;
+  }
+  ApplyCliOverrides(cli, context, &result.config);
+  if (result.config.database_auto_create) {
+    result.diagnostics.push_back(ConfigDiagnostic(
+        "BOOTSTRAP.SERVICE_START_FORBIDDEN",
+        "bootstrap.service_start_forbidden",
+        "server.database.auto_create is forbidden for the public server path."));
+    return result;
+  }
+  FinalizeDerivedPaths(&result.config, context);
   const auto explicit_memory_keys =
       ExplicitServerMemoryKeys(parsed_config ? &*parsed_config : nullptr);
   if (!ApplyDefaultMemoryPolicyFromPolicyPack(&result.config,
@@ -1323,6 +1596,15 @@ ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli)
     return result;
   }
   return result;
+}
+
+ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli) {
+  std::error_code ec;
+  auto current_directory = std::filesystem::current_path(ec);
+  if (ec) current_directory.clear();
+  return ResolveServerBootstrapConfig(
+      cli,
+      ServerConfigResolutionContext{CurrentExecutablePath(), current_directory});
 }
 
 }  // namespace scratchbird::server

@@ -580,7 +580,7 @@ target_compile_definitions(agent_enterprise_parser_support_gate PRIVATE
 )
 target_link_libraries(agent_enterprise_parser_support_gate PRIVATE
   sb_engine_internal_api
-  sbl_sbsql_parser_worker_core
+  sb_engine_parser_lifecycle_bridge
 )
 add_test(NAME agent_enterprise_parser_support_gate
   COMMAND agent_enterprise_parser_support_gate)

@@ -295,6 +295,7 @@ void TestHostedEngineAndSessionHealthPublication(const std::filesystem::path& pa
   scratchbird::server::ServerBootstrapConfig config;
   config.database_default_path = path;
   config.database_auto_create = false;
+  config.allow_uncredentialed_fixture_database = true;
   config.sbps_enabled = true;
   config.security_default_policy_installed = true;
   config.security_provider_family = "local_password";

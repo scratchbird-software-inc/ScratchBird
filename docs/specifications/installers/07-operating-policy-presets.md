@@ -14,11 +14,11 @@ and a spare machine may run a dedicated-server policy regardless of persona.
 
 | Preset | Strategy it encodes | Typical picker |
 | --- | --- | --- |
-| Developer — on demand | small resident footprint, manual start/stop, autostart off, loopback, tiny cache; coexists politely on a shared workstation | application developer |
-| Balanced / shared host | modest fixed share of RAM, autostart optional | mixed-use machine |
-| Dedicated server | assertive — large RAM share, autostart on, worker/connection counts from CPU, data directory on a dedicated volume | operator / DBA on dedicated hardware |
+| Developer — on demand | small resident footprint, manual start/stop, loopback, tiny cache; coexists politely on a shared workstation | application developer |
+| Balanced / shared host | modest fixed share of RAM | mixed-use machine |
+| Dedicated server | assertive — large RAM share, worker/connection counts from CPU, data directory on a dedicated volume | operator / DBA on dedicated hardware |
 | Minimal / embedded | smallest cache, in-process, data directory under the user profile | embedder, constrained host |
-| Evaluation / sandbox | tiny, sample data, easy teardown | evaluator |
+| Evaluation / sandbox | tiny, example bootstrap recipe and sample schema, easy teardown; no pre-created database | evaluator |
 | Custom | start from the probed numbers, edit every knob | anyone |
 
 Each preset is the same set of knobs with a different strategy. The probe fills in
@@ -32,14 +32,15 @@ definitions power the wizard and the silent-install answer file (06).
 | --- | --- | --- |
 | Engine memory budget | free RAM | page/buffer cache + work memory, as a capped fraction of RAM |
 | Data directory | per-volume free disk | placed on the roomiest eligible volume; shows free space; warns when low |
-| Autostart | preset / persona | off by default for developer presets |
+| Service activation | never performed by installation | an operator may start or enable a configured service only after explicit database bootstrap |
 | Max connections / workers | CPU cores | |
 | Background maintenance cadence | preset | the engine's idle/background maintenance rhythm |
 | Listener bind / port / firewall | network probe (05) | safe default loopback, firewall closed |
 
 Embedded mode uses a light policy (cache + data directory under the user profile,
 loopback). Service mode uses the full policy plus the safe-by-default service
-settings (loopback, autostart off, firewall closed unless opted in).
+settings (loopback and firewall closed). Every installed service remains disabled
+and stopped; activation is never a preset side effect.
 
 ## Resource division across databases
 
@@ -65,6 +66,7 @@ preset accounts for this when the manager is configured to proxy.
 
 ## Reconfiguration
 
-Operating policy is engine configuration materialized from catalog policy; it is
-editable after install. The installer seeds the initial values — it does not lock
-them.
+Operating policy templates are editable after install. The installer may place
+initial configuration-file values, but it never materializes database catalog
+policy, creates a database, or activates a service. Database policy is
+materialized only by an explicit MGA-backed database operation.

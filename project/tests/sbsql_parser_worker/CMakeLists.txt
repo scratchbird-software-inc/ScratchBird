@@ -3004,7 +3004,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_numeric_backend_reconciliation_conformance
   )
   set_tests_properties(sbsql_numeric_backend_reconciliation_conformance PROPERTIES
-    LABELS "sbsql_numeric_backend_reconciliation_conformance;CBQ-008;CBQ-021-NUMERIC-BACKEND-STRATEGY;numeric_128_backend_gate;sbsql_parser_worker"
+    LABELS "public_release_correctness;sbsql_numeric_backend_reconciliation_conformance;CBQ-008;CBQ-021-NUMERIC-BACKEND-STRATEGY;numeric_128_backend_gate;real128_backend_truth;sbsql_parser_worker"
   )
 
   add_executable(
@@ -4490,7 +4490,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
   )
 endif()
 
-if(NOT WIN32 AND TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server_core)
+if(NOT WIN32 AND TARGET sbl_sbsql_embedded_client_bridge AND TARGET sb_server_core)
   add_executable(
     sbsql_native_wire_p1_conformance
     sbsql_native_wire_p1_conformance.cpp
@@ -4499,8 +4499,10 @@ if(NOT WIN32 AND TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server_core)
   target_link_libraries(
     sbsql_native_wire_p1_conformance
     PRIVATE
-      sbl_sbsql_parser_worker_core
+      sbl_sbsql_embedded_client_bridge
       sb_core_datatypes
+      sb_core_uuid
+      sb_storage_database
       sb_server_core
   )
   add_test(

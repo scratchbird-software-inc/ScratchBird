@@ -17,6 +17,7 @@
 #include "session_registry.hpp"
 #include "sbps.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace scratchbird::server {
@@ -27,9 +28,22 @@ struct ServerIpcEndpointResult {
   bool ok() const { return diagnostics.empty(); }
 };
 
+struct ParserServerIpcLifecycleCallbacks {
+  std::function<void()> on_ready;
+  std::function<void()> on_stopping;
+};
+
+// Process-lifetime stop state for the parser-server endpoint. The request API
+// is safe to call from service-control and worker threads; the endpoint polls
+// it and performs its normal listener/session/lifecycle cleanup before return.
+void ResetParserServerStopRequest();
+void RequestParserServerStop();
+bool ParserServerStopRequested();
+
 ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& config,
                                                    const ServerLifecycleArtifacts& artifacts,
-                                                   const HostedEngineState& engine_state);
+                                                   const HostedEngineState& engine_state,
+                                                   const ParserServerIpcLifecycleCallbacks& callbacks = {});
 
 std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(
     const sbps::Frame& frame,

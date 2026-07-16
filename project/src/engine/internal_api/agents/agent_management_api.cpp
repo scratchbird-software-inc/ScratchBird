@@ -8,6 +8,7 @@
 
 #include "agents/agent_management_api.hpp"
 
+#include "agents/agent_authorization_context.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agent_metric_runtime.hpp"
 #include "agent_runtime.hpp"
@@ -428,12 +429,8 @@ AgentRuntimeContext AgentContextFromRequest(const EngineApiRequest& request) {
   context.principal_uuid = request.context.principal_uuid.canonical;
   context.database_uuid = request.context.database_uuid.canonical;
   context.cluster_uuid = request.context.cluster_uuid.canonical;
-  for (const auto& tag : request.context.trace_tags) {
-    if (tag.rfind("right:", 0) == 0) { context.rights.push_back(tag.substr(6)); }
-    if (tag.rfind("group:", 0) == 0) { context.groups.push_back(tag.substr(6)); }
-    context.trace_tags.push_back(tag);
-  }
-  if (SecurityContextHasTag(request.context, "security.bootstrap")) { context.trace_tags.push_back("security.bootstrap"); }
+  agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
+                                                            &context);
   context.wall_now_microseconds = 1;
   const auto wall = OptionValue(request, "wall_now_us:");
   if (!wall.empty()) { try { context.wall_now_microseconds = static_cast<std::uint64_t>(std::stoull(wall)); } catch (...) {} }

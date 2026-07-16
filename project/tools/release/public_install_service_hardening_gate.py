@@ -186,7 +186,8 @@ CHECKS: tuple[dict[str, Any], ...] = (
         "surface": "manager_runtime_paths_and_support",
         "path": "project/src/manager/node/manager_runtime.cpp",
         "required_tokens": (
-            "/etc/scratchbird/sbmn_manager.conf",
+            '"SBmgr.conf", "sbmn_manager.conf"',
+            'system_roots.emplace_back("/etc/scratchbird")',
             "/run/scratchbird",
             "DefaultManagerControlDir",
             "support-bundles",
@@ -219,6 +220,9 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "manager.status",
             "StatusJson",
             "MetricsSnapshotJson",
+        ),
+        "forbidden_tokens": (
+            "/etc/scratchbird/sbmn_manager.conf",
         ),
     },
     {

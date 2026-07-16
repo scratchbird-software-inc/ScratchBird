@@ -412,6 +412,28 @@ bool DefaultManagerInstallsConfiguredPolicyOnce() {
                 "idempotent default memory policy install should report initialized manager");
 }
 
+bool PackagedResourceRootsResolveBesideExecutable() {
+  const auto root = TempRoot() / "packaged-resource-discovery";
+  std::filesystem::remove_all(root);
+  const auto install_root = root / "opt" / "ScratchBird";
+  const auto resource_root = install_root / "share" / "scratchbird" / "resources";
+  const auto seed_pack = resource_root / "seed-packs" / "initial-resource-pack";
+  const auto policy_pack =
+      resource_root / "policy-packs" / "default-local-password";
+  std::filesystem::create_directories(seed_pack);
+  std::filesystem::create_directories(policy_pack);
+
+  const auto discovered = server::DiscoverServerPackagedResourceRoots(
+      install_root / "bin" / "SBsrv", root / "unrelated-working-directory");
+  const bool ok =
+      Expect(discovered.resource_seed_pack_root == seed_pack,
+             "packaged resource seed pack must resolve relative to the executable") &&
+      Expect(discovered.policy_seed_pack_root == policy_pack,
+             "packaged default policy pack must resolve relative to the executable");
+  std::filesystem::remove_all(root);
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -427,6 +449,7 @@ int main() {
   ok = FixturePathProbeIsDeterministic() && ok;
   ok = EffectiveHardBoundsDerivedLimits() && ok;
   ok = DefaultManagerInstallsConfiguredPolicyOnce() && ok;
+  ok = PackagedResourceRootsResolveBesideExecutable() && ok;
   ok = InvalidConfigFailsClosed("soft_gt_hard.conf",
                                 "hard_limit_bytes = 67108864\n"
                                 "soft_limit_bytes = 134217728\n",

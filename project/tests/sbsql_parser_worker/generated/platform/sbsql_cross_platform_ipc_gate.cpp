@@ -115,7 +115,7 @@ void ValidateControlPlanePayloads(Harness* harness) {
   handoff.connection_id = 42;
   handoff.protocol = "sbsql";
   handoff.client_addr = "127.0.0.1";
-  handoff.client_port = 3050;
+  handoff.client_port = 3092;
   handoff.db_uuid = UuidSeed(0x10);
   handoff.dbbt_id = UuidSeed(0x20);
   handoff.manager_session_id = UuidSeed(0x30);

@@ -176,8 +176,16 @@ void TestDedicatedConfigDerivesDatabaseScopedRuntime(const std::filesystem::path
 }
 
 void TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(const std::filesystem::path& root) {
+  const auto config_path = root / "packaged_service.conf";
+  {
+    std::ofstream out(config_path);
+    out << "[config]\nformat = SBCD1\n"
+        << "[server]\nmode = service\n"
+        << "[server.memory]\nenable_platform_memory_probe = false\n";
+  }
   ServerCliOptions cli;
   cli.service = true;
+  cli.config_path = config_path.string();
   cli.database_ref = (root / "packaged_default.sbdb").string();
   const auto loaded = ResolveServerBootstrapConfig(cli);
   Require(loaded.ok(), "DBLC-013Q packaged service defaults failed to resolve");
