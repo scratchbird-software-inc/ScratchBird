@@ -1094,12 +1094,13 @@ def tar_bytes_from_dir(
     mode: str = "w:gz",
     *,
     normalize_ownership: bool = False,
+    archive_format: int = tarfile.PAX_FORMAT,
 ) -> bytes:
     temp = tempfile.NamedTemporaryFile(delete=False)
     temp.close()
     temp_path = Path(temp.name)
     try:
-        with tarfile.open(temp_path, mode, format=tarfile.PAX_FORMAT) as archive:
+        with tarfile.open(temp_path, mode, format=archive_format) as archive:
             for path in sorted(root.rglob("*")):
                 archive.add(
                     path,
@@ -1216,8 +1217,20 @@ exit 0
     )
 
     deb = output_root / f"scratchbird_{sanitize_version(version).replace('-', '+')}_amd64.deb"
-    control_tar = tar_bytes_from_dir(control_root, normalize_ownership=True)
-    data_tar = tar_bytes_from_dir(payload_root, normalize_ownership=True)
+    # Debian's dpkg tar reader does not accept POSIX PAX extended headers
+    # (typeflag ``x``).  GNU tar format retains long-path support while keeping
+    # both DEB members consumable by dpkg.  Other installer archives keep their
+    # existing format through tar_bytes_from_dir's PAX default.
+    control_tar = tar_bytes_from_dir(
+        control_root,
+        normalize_ownership=True,
+        archive_format=tarfile.GNU_FORMAT,
+    )
+    data_tar = tar_bytes_from_dir(
+        payload_root,
+        normalize_ownership=True,
+        archive_format=tarfile.GNU_FORMAT,
+    )
     with deb.open("wb") as handle:
         handle.write(b"!<arch>\n")
         handle.write(ar_member("debian-binary", b"2.0\n"))
