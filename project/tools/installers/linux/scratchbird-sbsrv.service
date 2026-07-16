@@ -1,0 +1,54 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+[Unit]
+Description=ScratchBird native database server
+Documentation=file:///opt/ScratchBird/share/doc/scratchbird/index.html
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=scratchbird
+Group=scratchbird
+WorkingDirectory=/var/lib/scratchbird
+UMask=0027
+
+# SBsrv owns the shared SBgate listener, and SBgate owns the standalone native
+# SBParser. The native SBSQL listener default is TCP port 3092.
+ExecStart=/opt/ScratchBird/bin/SBsrv --config /etc/scratchbird/SBsrv.conf --foreground
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=90s
+KillSignal=SIGTERM
+
+RuntimeDirectory=scratchbird
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=scratchbird/data
+StateDirectoryMode=0750
+LogsDirectory=scratchbird
+LogsDirectoryMode=0750
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/opt/ScratchBird /etc/scratchbird
+ReadWritePaths=/var/lib/scratchbird /var/log/scratchbird /run/scratchbird
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -36,6 +36,15 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -451,6 +460,13 @@ bool ParseU16(const std::string& value, std::uint16_t* out) {
   return true;
 }
 
+bool ParseU16OrZero(const std::string& value, std::uint16_t* out) {
+  std::uint64_t n = 0;
+  if (!ParseUnsignedDecimal(value, std::numeric_limits<std::uint16_t>::max(), &n)) return false;
+  *out = static_cast<std::uint16_t>(n);
+  return true;
+}
+
 bool ParseU32(const std::string& value, std::uint32_t* out) {
   std::uint64_t n = 0;
   if (!ParseUnsignedDecimal(value, std::numeric_limits<std::uint32_t>::max(), &n)) return false;
@@ -480,6 +496,111 @@ bool ParseUuidHex(std::string value, proto::UuidBytes* out) {
   return true;
 }
 
+std::filesystem::path CurrentManagerExecutablePath() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768, L'\0');
+  const DWORD count = ::GetModuleFileNameW(
+      nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (count == 0 || count >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), count));
+#elif defined(__APPLE__)
+  std::uint32_t size = 0;
+  (void)::_NSGetExecutablePath(nullptr, &size);
+  if (size == 0) return {};
+  std::vector<char> buffer(size + 1, '\0');
+  if (::_NSGetExecutablePath(buffer.data(), &size) != 0) return {};
+  return std::filesystem::path(buffer.data());
+#elif defined(__linux__)
+  std::array<char, 4096> buffer{};
+  const auto count = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+  if (count <= 0 || static_cast<std::size_t>(count) >= buffer.size()) return {};
+  buffer[static_cast<std::size_t>(count)] = '\0';
+  return std::filesystem::path(buffer.data());
+#else
+  return {};
+#endif
+}
+
+std::filesystem::path ManagerInstallRoot(
+    const ManagerConfigResolutionContext& context) {
+  if (context.executable_path.empty()) return {};
+  const auto executable_dir = context.executable_path.parent_path();
+  if (executable_dir.filename() != "bin") return {};
+  return executable_dir.parent_path().lexically_normal();
+}
+
+std::filesystem::path NormalizeManagerCallerPath(
+    const std::filesystem::path& value,
+    const ManagerConfigResolutionContext& context) {
+  if (value.empty()) return {};
+  if (value.is_absolute()) return value.lexically_normal();
+  if (!context.current_directory.empty()) {
+    return (context.current_directory / value).lexically_normal();
+  }
+  return std::filesystem::absolute(value).lexically_normal();
+}
+
+std::filesystem::path ResolveManagerConfigRelativePathImpl(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ManagerConfigResolutionContext& context) {
+  if (value.empty() || value.is_absolute()) return value.lexically_normal();
+  auto base = ManagerInstallRoot(context);
+  if (base.empty() && !config_path.empty()) base = config_path.parent_path();
+  if (base.empty()) base = context.current_directory;
+  return (base / value).lexically_normal();
+}
+
+std::optional<std::filesystem::path> DiscoverDefaultManagerConfigPath(
+    const ManagerConfigResolutionContext& context,
+    bool service_mode) {
+  const auto first_existing = [](const std::filesystem::path& root)
+      -> std::optional<std::filesystem::path> {
+    for (const char* name : {"SBmgr.conf", "sbmn_manager.conf"}) {
+      const auto path = root / name;
+      if (std::filesystem::is_regular_file(path)) return path.lexically_normal();
+    }
+    return std::nullopt;
+  };
+  if (context.include_environment) {
+    if (const char* home = std::getenv("SCRATCHBIRD_HOME");
+        home != nullptr && *home != '\0') {
+      if (auto path = first_existing(std::filesystem::path(home) / "conf");
+          path.has_value()) {
+        return *path;
+      }
+    }
+  }
+  const auto install_root = ManagerInstallRoot(context);
+  if (!install_root.empty()) {
+    if (auto path = first_existing(install_root / "etc" / "scratchbird");
+        path.has_value()) {
+      return path;
+    }
+  }
+  if (context.include_system_paths) {
+    auto system_roots = context.system_config_roots;
+    if (system_roots.empty()) {
+#if defined(__APPLE__)
+      system_roots.emplace_back(
+          "/Library/Application Support/ScratchBird");
+#endif
+#if !defined(_WIN32)
+      system_roots.emplace_back("/etc/scratchbird");
+#endif
+    }
+    for (const auto& root : system_roots) {
+      if (auto path = first_existing(root); path.has_value()) return *path;
+    }
+  }
+  if (!service_mode && !context.current_directory.empty()) {
+    if (auto path = first_existing(context.current_directory); path.has_value()) {
+      return path;
+    }
+  }
+  return std::nullopt;
+}
+
 
 std::string Trim(std::string value) {
   auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
@@ -489,14 +610,8 @@ std::string Trim(std::string value) {
 }
 
 void ApplyDefaultPaths(ManagerConfig* config) {
-  const char* home = std::getenv("SCRATCHBIRD_HOME");
   const char* xdg = std::getenv("XDG_RUNTIME_DIR");
   const bool control_dir_was_empty = config->control_dir.empty();
-  if (config->config_path.empty()) {
-    if (const char* env_config = std::getenv("SCRATCHBIRD_MANAGER_CONFIG")) config->config_path = env_config;
-    else if (home) config->config_path = std::filesystem::path(home) / "conf" / "sbmn_manager.conf";
-    else config->config_path = "/etc/scratchbird/sbmn_manager.conf";
-  }
   if (config->runtime_dir.empty()) {
     if (xdg) config->runtime_dir = std::filesystem::path(xdg) / "scratchbird";
     else config->runtime_dir = "/run/scratchbird";
@@ -518,7 +633,11 @@ void ApplyDefaultPaths(ManagerConfig* config) {
   if (config->log_path.empty()) config->log_path = config->foreground || config->validate_config ? "stderr" : (config->runtime_dir / "logs" / "sbmn_manager.log");
 }
 
-bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::string& value, std::vector<proto::Diagnostic>* diagnostics) {
+bool ApplyKeyValue(ManagerConfig* config,
+                   const std::string& key,
+                   const std::string& value,
+                   const ManagerConfigResolutionContext& context,
+                   std::vector<proto::Diagnostic>* diagnostics) {
   auto invalid = [&]() {
     diagnostics->push_back(Diag("MANAGER.CONFIG_FIELD_INVALID", "Manager configuration field is invalid.", {{"key", key}}));
     return false;
@@ -535,6 +654,9 @@ bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::str
     *out = parsed;
     return true;
   };
+  const auto configured_path = [&](const std::string& raw) {
+    return ResolveManagerConfigRelativePathImpl(raw, config->config_path, context);
+  };
   if (key == "manager.proxy.enabled") return ParseBool(value, &config->proxy_enabled) || invalid();
   if (key == "manager.proxy.bind") { config->bind_address = value; return true; }
   if (key == "manager.proxy.port") return ParseU16(value, &config->proxy_port) || invalid();
@@ -544,9 +666,9 @@ bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::str
   if (key == "manager.proxy.backend_connect_timeout_ms") return ParseU64(value, &config->proxy_backend_connect_timeout_ms) || invalid();
   if (key == "manager.proxy.io_timeout_ms") return ParseU64(value, &config->proxy_io_timeout_ms) || invalid();
   if (key == "manager.proxy.tls_required") return ParseBool(value, &config->proxy_tls_required) || invalid();
-  if (key == "manager.proxy.tls_cert_file") { config->proxy_tls_cert_file = value; return true; }
-  if (key == "manager.proxy.tls_key_file") { config->proxy_tls_key_file = value; return true; }
-  if (key == "manager.proxy.tls_ca_file") { config->proxy_tls_ca_file = value; return true; }
+  if (key == "manager.proxy.tls_cert_file") { config->proxy_tls_cert_file = configured_path(value); return true; }
+  if (key == "manager.proxy.tls_key_file") { config->proxy_tls_key_file = configured_path(value); return true; }
+  if (key == "manager.proxy.tls_ca_file") { config->proxy_tls_ca_file = configured_path(value); return true; }
   if (key == "manager.control.backlog") return parse_nonzero_u32(&config->management_backlog) || invalid();
   if (key == "manager.control.max_clients") return parse_nonzero_u32(&config->management_max_clients) || invalid();
   if (key == "manager.control.max_payload_bytes") {
@@ -557,23 +679,23 @@ bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::str
   }
   if (key == "manager.control.idle_timeout_ms") return parse_nonzero_u64(&config->management_idle_timeout_ms) || invalid();
   if (key == "manager.backend.native_bind") { config->native_bind = value; return true; }
-  if (key == "manager.backend.native_port") return ParseU16(value, &config->native_port) || invalid();
+  if (key == "manager.backend.native_port") return ParseU16OrZero(value, &config->native_port) || invalid();
   if (key == "manager.owner.database_name") { config->owner_database_name = value; return !value.empty() || invalid(); }
   if (key == "manager.owner.database_path" || key == "manager.default_database.path") {
-    config->owner_database_path = std::filesystem::absolute(value).lexically_normal();
+    config->owner_database_path = configured_path(value);
     if (config->owner_database_name.empty() || config->owner_database_name == "main") {
       config->owner_database_name = config->owner_database_path.string();
     }
     return true;
   }
   if (key == "manager.owner.database_uuid") { config->owner_database_uuid_set = ParseUuidHex(value, &config->owner_database_uuid); return config->owner_database_uuid_set || invalid(); }
-  if (key == "manager.security.temporary_token_store_path") { config->security_token_store_path = value; return true; }
+  if (key == "manager.security.temporary_token_store_path") { config->security_token_store_path = configured_path(value); return true; }
   if (key == "manager.listener.default_id") return ParseU32(value, &config->listener_id) || invalid();
-  if (key == "manager.listener.control_socket_dir") { config->listener_control_socket_dir = value; return true; }
+  if (key == "manager.listener.control_socket_dir") { config->listener_control_socket_dir = configured_path(value); return true; }
   if (key == "manager.dbbt.ttl_ms") return ParseU64(value, &config->dbbt_ttl_ms) || invalid();
   if (key == "manager.dbbt.clock_skew_ms") return ParseU64(value, &config->dbbt_clock_skew_ms) || invalid();
   if (key == "manager.dbbt.replay_cache_entries") return ParseU32(value, &config->dbbt_replay_cache_entries) || invalid();
-  if (key == "manager.dbbt.keyring_path") { config->dbbt_keyring_path = value; return true; }
+  if (key == "manager.dbbt.keyring_path") { config->dbbt_keyring_path = configured_path(value); return true; }
   if (key == "manager.auth.mcp_secret_ref") { config->mcp_secret_ref = value; return true; }
   if (key == "manager.auth.mcp_secret_rights") {
     std::vector<std::string> rights;
@@ -591,23 +713,40 @@ bool ApplyKeyValue(ManagerConfig* config, const std::string& key, const std::str
   if (key == "manager.server.restart.window_ms") return ParseU64(value, &config->restart_window_ms) || invalid();
   if (key == "manager.server.restart.initial_backoff_ms") return ParseU64(value, &config->restart_initial_backoff_ms) || invalid();
   if (key == "manager.server.restart.max_backoff_ms") return ParseU64(value, &config->restart_max_backoff_ms) || invalid();
-  if (key == "manager.server.restart.executable") { config->restart_executable = value; return RestartExecutableValid(value) || invalid(); }
+  if (key == "manager.server.restart.executable") {
+    config->restart_executable = configured_path(value);
+    return RestartExecutableValid(config->restart_executable.string()) || invalid();
+  }
   if (key == "manager.server.restart.arguments") { config->restart_arguments = value; return RestartArgumentsValid(value) || invalid(); }
   if (key == "manager.third_party.enabled") return ParseBool(value, &config->third_party_management_enabled) || invalid();
   if (key == "manager.threading.no_spin_required") return ParseBool(value, &config->no_spin_required) || invalid();
   if (key == "manager.release.profile") { config->release_profile = value; return ManagerReleaseProfileValid(value) || invalid(); }
-  if (key == "manager.runtime_dir") { config->runtime_dir = value; return true; }
-  if (key == "manager.control_dir") { config->control_dir = value; return true; }
-  if (key == "manager.log.path") { config->log_path = value; return true; }
+  if (key == "manager.runtime_dir") { config->runtime_dir = configured_path(value); return true; }
+  if (key == "manager.control_dir") { config->control_dir = configured_path(value); return true; }
+  if (key == "manager.log.path") {
+    config->log_path = value == "stderr" ? std::filesystem::path("stderr")
+                                          : configured_path(value);
+    return true;
+  }
   if (key == "manager.log.level") { config->log_level = value; return true; }
   diagnostics->push_back(Diag("MANAGER.CONFIG_FIELD_INVALID", "Unknown manager configuration key is forbidden.", {{"key", key}}));
   return false;
 }
 
-void LoadConfigFile(ManagerConfig* config, std::vector<proto::Diagnostic>* diagnostics, bool explicit_config) {
-  if (config->config_path.empty()) return;
+void LoadConfigFile(ManagerConfig* config,
+                    const ManagerConfigResolutionContext& context,
+                    std::vector<proto::Diagnostic>* diagnostics,
+                    bool explicit_config,
+                    bool require_config) {
+  if (config->config_path.empty()) {
+    if (require_config) {
+      diagnostics->push_back(Diag("MANAGER.CONFIG_REQUIRED",
+                                  "Manager service and configuration validation require a selected configuration file."));
+    }
+    return;
+  }
   if (!std::filesystem::exists(config->config_path)) {
-    if (explicit_config) diagnostics->push_back(Diag("MANAGER.CONFIG_LOAD_FAILED", "Manager configuration file could not be loaded.", {{"path", config->config_path.string()}}));
+    if (explicit_config || require_config) diagnostics->push_back(Diag("MANAGER.CONFIG_LOAD_FAILED", "Manager configuration file could not be loaded.", {{"path", config->config_path.string()}}));
     return;
   }
   std::ifstream in(config->config_path);
@@ -626,7 +765,30 @@ void LoadConfigFile(ManagerConfig* config, std::vector<proto::Diagnostic>* diagn
       diagnostics->push_back(Diag("MANAGER.CONFIG_VALIDATION_FAILED", "Manager configuration line is malformed."));
       continue;
     }
-    ApplyKeyValue(config, Trim(line.substr(0, eq)), Trim(line.substr(eq + 1)), diagnostics);
+    ApplyKeyValue(config,
+                  Trim(line.substr(0, eq)),
+                  Trim(line.substr(eq + 1)),
+                  context,
+                  diagnostics);
+  }
+}
+
+void AddManagerEndpointDiagnostics(const ManagerConfig& config,
+                                   std::vector<proto::Diagnostic>* diagnostics) {
+  if (!config.proxy_enabled) return;
+  if (config.native_bind.empty() || config.native_port == 0) {
+    diagnostics->push_back(Diag(
+        "MANAGER.PROXY_BACKEND_REQUIRED",
+        "An enabled manager proxy requires an explicitly configured backend listener endpoint.",
+        {{"key", config.native_bind.empty() ? "manager.backend.native_bind"
+                                             : "manager.backend.native_port"}}));
+  }
+  if (config.native_port != 0 && config.native_port == config.proxy_port) {
+    diagnostics->push_back(Diag(
+        "MANAGER.PROXY_BACKEND_PORT_CONFLICT",
+        "The manager proxy backend port must be distinct from its client-facing port.",
+        {{"proxy_port", std::to_string(config.proxy_port)},
+         {"backend_port", std::to_string(config.native_port)}}));
   }
 }
 
@@ -1167,19 +1329,6 @@ bool ManagerRightNameValid(const std::string& right) {
   return true;
 }
 
-std::vector<std::string> SplitManagerRights(const std::string& rights_text) {
-  std::vector<std::string> rights;
-  std::size_t start = 0;
-  while (start <= rights_text.size()) {
-    const auto comma = rights_text.find(',', start);
-    auto right = Trim(rights_text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
-    if (!right.empty() && ManagerRightNameValid(right)) rights.push_back(std::move(right));
-    if (comma == std::string::npos) break;
-    start = comma + 1;
-  }
-  return rights;
-}
-
 std::vector<std::string> DeveloperMcpSecretRights() {
   return {"*"};
 }
@@ -1203,8 +1352,7 @@ std::string BuildEngineTemporaryTokenEvidenceFragment(const std::string& token,
                                                       const std::string& token_handle,
                                                       const std::string& storage_authority,
                                                       const std::string& state,
-                                                      const std::string& expires_at_ms,
-                                                      const std::string& authorization_tags) {
+                                                      const std::string& expires_at_ms) {
   std::string fragment = token;
   if (principal_uuid.empty() && token_handle.empty() && storage_authority.empty()) return fragment;
   const std::string authority = storage_authority.empty() ? "mga_security_principal_lifecycle" : storage_authority;
@@ -1216,15 +1364,7 @@ std::string BuildEngineTemporaryTokenEvidenceFragment(const std::string& token,
   fragment += ";token_digest=" + TemporaryTokenDigestHex(token);
   fragment += ";state=" + row_state;
   fragment += ";expires_at_ms=" + row_expires;
-  if (!authorization_tags.empty()) fragment += ";authorization_tags=" + authorization_tags;
   return fragment;
-}
-
-bool RightsGrantDatabaseConnect(const std::vector<std::string>& rights) {
-  for (const auto& right : rights) {
-    if (right == "*" || right == "database.connect" || right == "database.*") return true;
-  }
-  return false;
 }
 
 bool ParseManagerRightsStrict(const std::string& rights_text, std::vector<std::string>* rights) {
@@ -1319,8 +1459,10 @@ bool ValidateManagerSecurityToken(const ManagerConfig& config,
     if (expires_at_ms != 0 && expires_at_ms < now_ms) {
       return fail("security_database_temporary_token_expired");
     }
-    const auto rights = SplitManagerRights(row_rights);
-    if (rights.empty()) return fail("security_database_temporary_token_rights_required");
+    std::vector<std::string> rights;
+    if (!ParseManagerRightsStrict(row_rights, &rights) || rights.empty()) {
+      return fail("security_database_temporary_token_rights_invalid");
+    }
     const bool has_durable_metadata = !row_principal_uuid.empty() ||
                                       !row_token_handle.empty() ||
                                       !row_storage_authority.empty();
@@ -1337,10 +1479,7 @@ bool ValidateManagerSecurityToken(const ManagerConfig& config,
                                                                         row_token_handle,
                                                                         row_storage_authority,
                                                                         row_state,
-                                                                        row_expires,
-                                                                        RightsGrantDatabaseConnect(rights)
-                                                                            ? "right:CONNECT"
-                                                                            : "");
+                                                                        row_expires);
     }
     if (failure_detail != nullptr) failure_detail->clear();
     return true;
@@ -1494,6 +1633,88 @@ bool RecvControlPlaneMessage(int fd,
   return true;
 }
 
+enum class ManagerAuthorizationSource : std::uint8_t {
+  kNone = 0,
+  kDeveloperLocalTokenStore = 1,
+  kConfiguredMcpSecret = 2,
+};
+
+struct ManagerMaterializedAuthorizationGrant {
+  std::string right;
+};
+
+struct ManagerMaterializedAuthorizationContext {
+  ManagerAuthorizationSource source = ManagerAuthorizationSource::kNone;
+  // These fields bind the server-owned grant set to the admitted credential.
+  // Neither the presented name nor the credential digest grants authority.
+  std::string admitted_principal;
+  std::string credential_digest;
+  std::vector<ManagerMaterializedAuthorizationGrant> grants;
+};
+
+bool ManagerMaterializedGrantValid(const std::string& right) {
+  if (!ManagerRightNameValid(right)) return false;
+  const auto wildcard = right.find('*');
+  if (wildcard == std::string::npos || right == "*") return true;
+  return wildcard + 1 == right.size() && wildcard >= 2 &&
+         right[wildcard - 1] == '.' &&
+         right.find('*', wildcard + 1) == std::string::npos;
+}
+
+bool MaterializeManagerAuthorization(
+    const ManagerConfig& config,
+    ManagerAuthorizationSource source,
+    const std::string& principal,
+    const std::string& admitted_credential,
+    const std::vector<std::string>& validated_rights,
+    ManagerMaterializedAuthorizationContext* output,
+    std::string* failure_detail) {
+  if (output != nullptr) *output = {};
+  auto fail = [&](std::string detail) {
+    if (failure_detail != nullptr) *failure_detail = std::move(detail);
+    return false;
+  };
+  if (output == nullptr || source == ManagerAuthorizationSource::kNone) {
+    return fail("manager_authorization_source_required");
+  }
+  if (principal.empty() || admitted_credential.empty()) {
+    return fail("manager_authorization_credential_binding_required");
+  }
+  if (source == ManagerAuthorizationSource::kDeveloperLocalTokenStore &&
+      !ReleaseProfileAllowsLocalTokenStore(config.release_profile)) {
+    return fail("manager_authorization_local_token_store_forbidden_by_release_profile");
+  }
+  if (source == ManagerAuthorizationSource::kConfiguredMcpSecret &&
+      config.mcp_secret_ref.empty()) {
+    return fail("manager_authorization_configured_secret_required");
+  }
+
+  ManagerMaterializedAuthorizationContext materialized;
+  materialized.source = source;
+  materialized.admitted_principal = principal;
+  materialized.credential_digest = TemporaryTokenDigestHex(admitted_credential);
+  for (const auto& right : validated_rights) {
+    if (!ManagerMaterializedGrantValid(right)) {
+      return fail("manager_authorization_right_invalid");
+    }
+    const auto duplicate = std::find_if(
+        materialized.grants.begin(),
+        materialized.grants.end(),
+        [&](const ManagerMaterializedAuthorizationGrant& grant) {
+          return grant.right == right;
+        });
+    if (duplicate == materialized.grants.end()) {
+      materialized.grants.push_back({right});
+    }
+  }
+  if (materialized.grants.empty()) {
+    return fail("manager_authorization_rights_required");
+  }
+  *output = std::move(materialized);
+  if (failure_detail != nullptr) failure_detail->clear();
+  return true;
+}
+
 struct McpSession {
   bool auth_started = false;
   // MCP authentication admits the client to the manager proxy/control transport.
@@ -1506,7 +1727,7 @@ struct McpSession {
   std::string username;
   std::string security_token;
   std::string security_provider_family = std::string(kSecurityDatabaseTemporaryTokenProvider);
-  std::vector<std::string> management_rights;
+  ManagerMaterializedAuthorizationContext management_authorization;
   proto::UuidBytes session_id = proto::MakePseudoUuidV7();
 };
 
@@ -1528,8 +1749,15 @@ bool ManagerRightMatches(const std::string& grant, const std::string& required) 
 
 bool SessionHasManagementRight(const McpSession& session, const std::string& required) {
   if (!session.authenticated || required.empty()) return false;
-  for (const auto& grant : session.management_rights) {
-    if (ManagerRightMatches(grant, required)) return true;
+  const auto& authorization = session.management_authorization;
+  if (authorization.source == ManagerAuthorizationSource::kNone ||
+      authorization.admitted_principal.empty() ||
+      authorization.admitted_principal != session.username ||
+      authorization.credential_digest.size() != 64) {
+    return false;
+  }
+  for (const auto& grant : authorization.grants) {
+    if (ManagerRightMatches(grant.right, required)) return true;
   }
   return false;
 }
@@ -1972,7 +2200,7 @@ bool ManagerRuntime::PrepareRuntime(std::vector<proto::Diagnostic>* diagnostics)
 }
 
 bool ManagerRuntime::PrepareProxyTls(std::vector<proto::Diagnostic>* diagnostics) {
-  if (!config_.proxy_tls_required) return true;
+  if (!config_.proxy_enabled || !config_.proxy_tls_required) return true;
   if (!FileReadableRegular(config_.proxy_tls_cert_file) ||
       !FileReadableRegular(config_.proxy_tls_key_file)) {
     diagnostics->push_back(Diag("MANAGER.PROXY_TLS_CONFIG_INVALID",
@@ -2035,6 +2263,7 @@ void ManagerRuntime::CleanupRuntime() {
 }
 
 void ManagerRuntime::StartHeartbeat() {
+  if (config_.native_port == 0) return;
   threads_.emplace_back([this]() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (!stopping_.load()) {
@@ -2401,13 +2630,30 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
       std::string token_failure;
       std::string engine_token_fragment;
       std::vector<std::string> token_rights;
-      if (!initial_data.empty() &&
+      const bool token_validated =
+          !initial_data.empty() &&
           ValidateManagerSecurityToken(config_,
                                        username,
                                        initial_data,
                                        &token_rights,
                                        &engine_token_fragment,
-                                       &token_failure)) {
+                                       &token_failure);
+      if (token_validated) {
+        ManagerMaterializedAuthorizationContext authorization;
+        const std::string admitted_token(initial_data.begin(), initial_data.end());
+        if (!MaterializeManagerAuthorization(
+                config_,
+                ManagerAuthorizationSource::kDeveloperLocalTokenStore,
+                username,
+                admitted_token,
+                token_rights,
+                &authorization,
+                &token_failure)) {
+          AuditEvent("MANAGER_AUTH_DECISION", false, "MANAGER.AUTHORIZATION_MATERIALIZATION_FAILED",
+                     {{"user", username}, {"detail", token_failure}});
+          return proto::SbdbFrame{0x11, 0,
+                                  AuthResponsePayload(1, "manager authorization materialization failed")};
+        }
         if (!AuditEvent("MANAGER_AUTH_DECISION", true, "security_database_token_accepted", {{"user", username}, {"method", "TOKEN"}})) {
           return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MANAGER.AUDIT_WRITE_FAILED")};
         }
@@ -2418,7 +2664,7 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
                                       ? std::string(initial_data.begin(), initial_data.end())
                                       : engine_token_fragment;
         session->security_provider_family = std::string(kSecurityDatabaseTemporaryTokenProvider);
-        session->management_rights = std::move(token_rights);
+        session->management_authorization = std::move(authorization);
         return proto::SbdbFrame{0x11, 0, AuthResponsePayload(0, "")};
       }
       if (secret.empty()) {
@@ -2430,11 +2676,27 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
       session->username = username;
       session->session_id = proto::MakePseudoUuidV7();
       if (!initial_data.empty() && TimingSafeEqual(initial_data, secret)) {
+        ManagerMaterializedAuthorizationContext authorization;
+        auto secret_rights = McpSecretGrantedRights(config_);
+        std::string authorization_failure;
+        if (!MaterializeManagerAuthorization(
+                config_,
+                ManagerAuthorizationSource::kConfiguredMcpSecret,
+                username,
+                secret,
+                secret_rights,
+                &authorization,
+                &authorization_failure)) {
+          AuditEvent("MANAGER_AUTH_DECISION", false, "MANAGER.AUTHORIZATION_MATERIALIZATION_FAILED",
+                     {{"user", username}, {"detail", authorization_failure}});
+          return proto::SbdbFrame{0x11, 0,
+                                  AuthResponsePayload(1, "manager authorization materialization failed")};
+        }
         if (!AuditEvent("MANAGER_AUTH_DECISION", true, "accepted", {{"user", username}, {"method", "TOKEN"}})) {
           return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MANAGER.AUDIT_WRITE_FAILED")};
         }
         session->authenticated = true;
-        session->management_rights = McpSecretGrantedRights(config_);
+        session->management_authorization = std::move(authorization);
         return proto::SbdbFrame{0x11, 0, AuthResponsePayload(0, "")};
       }
       AuditEvent("MANAGER_AUTH_DECISION", true, "challenge_issued", {{"user", username}, {"method", "TOKEN"}});
@@ -2465,12 +2727,31 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
       std::string token_failure;
       std::string engine_token_fragment;
       std::vector<std::string> token_rights;
-      if (ValidateManagerSecurityToken(config_,
+      const bool token_validated =
+          ValidateManagerSecurityToken(config_,
                                        session->username,
                                        continuation,
                                        &token_rights,
                                        &engine_token_fragment,
-                                       &token_failure)) {
+                                       &token_failure);
+      if (token_validated) {
+        ManagerMaterializedAuthorizationContext authorization;
+        const std::string admitted_token(continuation.begin(), continuation.end());
+        if (!MaterializeManagerAuthorization(
+                config_,
+                ManagerAuthorizationSource::kDeveloperLocalTokenStore,
+                session->username,
+                admitted_token,
+                token_rights,
+                &authorization,
+                &token_failure)) {
+          session->authenticated = false;
+          session->management_authorization = {};
+          AuditEvent("MANAGER_AUTH_DECISION", false, "MANAGER.AUTHORIZATION_MATERIALIZATION_FAILED",
+                     {{"user", session->username}, {"detail", token_failure}});
+          return proto::SbdbFrame{0x11, 0,
+                                  AuthResponsePayload(1, "manager authorization materialization failed")};
+        }
         if (!AuditEvent("MANAGER_AUTH_DECISION", true, "security_database_token_accepted", {{"user", session->username}, {"method", "TOKEN"}})) {
           return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MANAGER.AUDIT_WRITE_FAILED")};
         }
@@ -2479,18 +2760,37 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
                                       ? std::string(continuation.begin(), continuation.end())
                                       : engine_token_fragment;
         session->security_provider_family = std::string(kSecurityDatabaseTemporaryTokenProvider);
-        session->management_rights = std::move(token_rights);
+        session->management_authorization = std::move(authorization);
         return proto::SbdbFrame{0x11, 0, AuthResponsePayload(0, "")};
       }
       if (!secret.empty() && TimingSafeEqual(continuation, secret)) {
+        ManagerMaterializedAuthorizationContext authorization;
+        auto secret_rights = McpSecretGrantedRights(config_);
+        std::string authorization_failure;
+        if (!MaterializeManagerAuthorization(
+                config_,
+                ManagerAuthorizationSource::kConfiguredMcpSecret,
+                session->username,
+                secret,
+                secret_rights,
+                &authorization,
+                &authorization_failure)) {
+          session->authenticated = false;
+          session->management_authorization = {};
+          AuditEvent("MANAGER_AUTH_DECISION", false, "MANAGER.AUTHORIZATION_MATERIALIZATION_FAILED",
+                     {{"user", session->username}, {"detail", authorization_failure}});
+          return proto::SbdbFrame{0x11, 0,
+                                  AuthResponsePayload(1, "manager authorization materialization failed")};
+        }
         if (!AuditEvent("MANAGER_AUTH_DECISION", true, "accepted", {{"user", session->username}, {"method", "TOKEN"}})) {
           return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MANAGER.AUDIT_WRITE_FAILED")};
         }
         session->authenticated = true;
-        session->management_rights = McpSecretGrantedRights(config_);
+        session->management_authorization = std::move(authorization);
         return proto::SbdbFrame{0x11, 0, AuthResponsePayload(0, "")};
       }
       session->authenticated = false;
+      session->management_authorization = {};
       AuditEvent("MANAGER_AUTH_DECISION", false, "MCP_AUTHENTICATION_FAILED", {{"user", session->username}, {"detail", token_failure}});
       return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MCP authentication failed")};
     }
@@ -3087,8 +3387,16 @@ proto::SbdbFrame ManagerRuntime::HandleConfigCommand(const std::string& operatio
     explicit_config = !candidate.config_path.empty();
   }
   std::vector<proto::Diagnostic> diagnostics;
-  LoadConfigFile(&candidate, &diagnostics, explicit_config);
+  ManagerConfigResolutionContext resolution_context{
+      CurrentManagerExecutablePath(), std::filesystem::current_path()};
+  const bool selected_config_file = !candidate.config_path.empty();
+  LoadConfigFile(&candidate,
+                 resolution_context,
+                 &diagnostics,
+                 explicit_config,
+                 selected_config_file || mutating);
   ApplyDefaultPaths(&candidate);
+  AddManagerEndpointDiagnostics(candidate, &diagnostics);
   if (!candidate.no_spin_required) {
     diagnostics.push_back(Diag("MANAGER.NO_SPIN_REQUIRED", "No-spin synchronization invariant must remain enabled."));
   }
@@ -3498,6 +3806,11 @@ bool ManagerRuntime::LaunchServerRestart() {
 
 RuntimeResult ManagerRuntime::Run() {
   RuntimeResult result;
+  AddManagerEndpointDiagnostics(config_, &result.diagnostics);
+  if (!result.diagnostics.empty()) {
+    result.exit_code = 2;
+    return result;
+  }
   if (!config_.no_spin_required) {
     result.exit_code = 2;
     result.diagnostics.push_back(Diag("MANAGER.NO_SPIN_REQUIRED", "No-spin synchronization invariant is disabled."));
@@ -3697,19 +4010,26 @@ std::string HelpText() {
          "  --help\n  --version\n";
 }
 
-ParseResult ParseManagerCli(int argc, char** argv) {
+ParseResult ParseManagerCliWithContext(
+    int argc,
+    char** argv,
+    const ManagerConfigResolutionContext& context) {
   ParseResult result;
   bool explicit_config = false;
-  bool explicit_control_dir = false;
-  ApplyDefaultPaths(&result.config);
-  const auto initial_auto_control_dir = result.config.control_dir;
+  bool explicit_owner_database_name = false;
+  const auto caller_path = [&](const std::string& value) {
+    return NormalizeManagerCallerPath(value, context);
+  };
   auto report_invalid_cli_value = [&](const std::string& option, const std::string& value) {
     result.diagnostics.push_back(Diag("MANAGER.CLI_VALUE_INVALID",
                                       "Manager CLI option value is invalid.",
                                       {{"option", option}, {"value", value}}));
   };
-  auto parse_cli_u16 = [&](const std::string& option, const std::string& value, std::uint16_t* out) {
-    if (ParseU16(value, out)) return;
+  auto parse_cli_u16 = [&](const std::string& option,
+                           const std::string& value,
+                           std::uint16_t* out,
+                           bool allow_zero = false) {
+    if ((allow_zero ? ParseU16OrZero(value, out) : ParseU16(value, out))) return;
     report_invalid_cli_value(option, value);
   };
   auto parse_cli_u32 = [&](const std::string& option, const std::string& value, std::uint32_t* out) {
@@ -3750,15 +4070,15 @@ ParseResult ParseManagerCli(int argc, char** argv) {
     else if (arg == "--foreground") result.config.foreground = true;
     else if (arg == "--service") result.config.service = true;
     else if (arg == "--validate-config") result.config.validate_config = true;
-    else if (arg == "--config") { if (auto v = require_value(arg)) { result.config.config_path = *v; explicit_config = true; } }
-    else if (arg == "--runtime-dir") { if (auto v = require_value(arg)) result.config.runtime_dir = *v; }
-    else if (arg == "--control-dir") { if (auto v = require_value(arg)) { result.config.control_dir = *v; explicit_control_dir = true; } }
+    else if (arg == "--config") { if (auto v = require_value(arg)) { result.config.config_path = caller_path(*v); explicit_config = true; } }
+    else if (arg == "--runtime-dir") { if (auto v = require_value(arg)) result.config.runtime_dir = caller_path(*v); }
+    else if (arg == "--control-dir") { if (auto v = require_value(arg)) result.config.control_dir = caller_path(*v); }
     else if (arg == "--bind") { if (auto v = require_value(arg)) result.config.bind_address = *v; }
     else if (arg == "--port") { if (auto v = require_value(arg)) parse_cli_u16(arg, *v, &result.config.proxy_port); }
     else if (arg == "--tls-required") { if (auto v = require_value(arg)) parse_cli_bool(arg, *v, &result.config.proxy_tls_required); }
-    else if (arg == "--tls-cert-file") { if (auto v = require_value(arg)) result.config.proxy_tls_cert_file = *v; }
-    else if (arg == "--tls-key-file") { if (auto v = require_value(arg)) result.config.proxy_tls_key_file = *v; }
-    else if (arg == "--tls-ca-file") { if (auto v = require_value(arg)) result.config.proxy_tls_ca_file = *v; }
+    else if (arg == "--tls-cert-file") { if (auto v = require_value(arg)) result.config.proxy_tls_cert_file = caller_path(*v); }
+    else if (arg == "--tls-key-file") { if (auto v = require_value(arg)) result.config.proxy_tls_key_file = caller_path(*v); }
+    else if (arg == "--tls-ca-file") { if (auto v = require_value(arg)) result.config.proxy_tls_ca_file = caller_path(*v); }
     else if (arg == "--management-backlog") { if (auto v = require_value(arg)) parse_cli_nonzero_u32(arg, *v, &result.config.management_backlog); }
     else if (arg == "--management-max-clients") { if (auto v = require_value(arg)) parse_cli_nonzero_u32(arg, *v, &result.config.management_max_clients); }
     else if (arg == "--management-max-payload-bytes") {
@@ -3769,12 +4089,17 @@ ParseResult ParseManagerCli(int argc, char** argv) {
     }
     else if (arg == "--management-idle-timeout-ms") { if (auto v = require_value(arg)) parse_cli_nonzero_u64(arg, *v, &result.config.management_idle_timeout_ms); }
     else if (arg == "--native-bind") { if (auto v = require_value(arg)) result.config.native_bind = *v; }
-    else if (arg == "--native-port") { if (auto v = require_value(arg)) parse_cli_u16(arg, *v, &result.config.native_port); }
-    else if (arg == "--owner-db") { if (auto v = require_value(arg)) result.config.owner_database_name = *v; }
+    else if (arg == "--native-port") { if (auto v = require_value(arg)) parse_cli_u16(arg, *v, &result.config.native_port, true); }
+    else if (arg == "--owner-db") {
+      if (auto v = require_value(arg)) {
+        result.config.owner_database_name = *v;
+        explicit_owner_database_name = true;
+      }
+    }
     else if (arg == "--owner-db-path" || arg == "--default-database") {
       if (auto v = require_value(arg)) {
-        result.config.owner_database_path = std::filesystem::absolute(*v).lexically_normal();
-        if (result.config.owner_database_name.empty() || result.config.owner_database_name == "main") {
+        result.config.owner_database_path = caller_path(*v);
+        if (!explicit_owner_database_name) {
           result.config.owner_database_name = result.config.owner_database_path.string();
         }
       }
@@ -3788,7 +4113,7 @@ ParseResult ParseManagerCli(int argc, char** argv) {
       }
     }
     else if (arg == "--listener-id") { if (auto v = require_value(arg)) parse_cli_u32(arg, *v, &result.config.listener_id); }
-    else if (arg == "--listener-control-dir") { if (auto v = require_value(arg)) result.config.listener_control_socket_dir = *v; }
+    else if (arg == "--listener-control-dir") { if (auto v = require_value(arg)) result.config.listener_control_socket_dir = caller_path(*v); }
     else if (arg == "--server-restart-executable") {
       if (auto v = require_value(arg)) {
         result.config.restart_executable = *v;
@@ -3805,8 +4130,8 @@ ParseResult ParseManagerCli(int argc, char** argv) {
         }
       }
     }
-    else if (arg == "--dbbt-keyring") { if (auto v = require_value(arg)) result.config.dbbt_keyring_path = *v; }
-    else if (arg == "--security-token-store") { if (auto v = require_value(arg)) result.config.security_token_store_path = *v; }
+    else if (arg == "--dbbt-keyring") { if (auto v = require_value(arg)) result.config.dbbt_keyring_path = caller_path(*v); }
+    else if (arg == "--security-token-store") { if (auto v = require_value(arg)) result.config.security_token_store_path = caller_path(*v); }
     else if (arg == "--mcp-secret-ref") { if (auto v = require_value(arg)) result.config.mcp_secret_ref = *v; }
     else if (arg == "--mcp-secret-rights") {
       if (auto v = require_value(arg)) {
@@ -3826,16 +4151,41 @@ ParseResult ParseManagerCli(int argc, char** argv) {
         if (!ManagerReleaseProfileValid(*v)) report_invalid_cli_value(arg, *v);
       }
     }
-    else if (arg == "--log") { if (auto v = require_value(arg)) result.config.log_path = *v; }
+    else if (arg == "--log") { if (auto v = require_value(arg)) result.config.log_path = *v == "stderr" ? std::filesystem::path("stderr") : caller_path(*v); }
     else if (arg == "--log-level") { if (auto v = require_value(arg)) result.config.log_level = *v; }
     else result.diagnostics.push_back(Diag("MANAGER.CLI_UNKNOWN_OPTION", "Unknown manager CLI option.", {{"option", arg}}));
   }
   if (result.config.foreground && result.config.service) {
     result.diagnostics.push_back(Diag("MANAGER.CLI_MODE_CONFLICT", "Manager foreground and service modes conflict."));
   }
-  LoadConfigFile(&result.config, &result.diagnostics, explicit_config);
-  if (const char* level = std::getenv("SCRATCHBIRD_MANAGER_LOG_LEVEL")) result.config.log_level = level;
-  if (result.config.mcp_secret_ref.empty()) {
+  if (!result.config.help && !result.config.version) {
+    if (result.config.config_path.empty()) {
+      if (context.include_environment) {
+        if (const char* env_config = std::getenv("SCRATCHBIRD_MANAGER_CONFIG");
+            env_config != nullptr && *env_config != '\0') {
+          result.config.config_path = caller_path(env_config);
+          explicit_config = true;
+        }
+      }
+      if (result.config.config_path.empty()) {
+        if (const auto discovered =
+                DiscoverDefaultManagerConfigPath(context,
+                                                 result.config.service);
+            discovered.has_value()) {
+          result.config.config_path = *discovered;
+        }
+      }
+    }
+    LoadConfigFile(&result.config,
+                   context,
+                   &result.diagnostics,
+                   explicit_config,
+                   result.config.service || result.config.validate_config);
+  }
+  if (context.include_environment) {
+    if (const char* level = std::getenv("SCRATCHBIRD_MANAGER_LOG_LEVEL")) result.config.log_level = level;
+  }
+  if (context.include_environment && result.config.mcp_secret_ref.empty()) {
     if (const char* secret = std::getenv("SCRATCHBIRD_MCP_AUTH_SECRET")) result.config.mcp_secret_ref = std::string("env:SCRATCHBIRD_MCP_AUTH_SECRET:") + std::to_string(std::strlen(secret));
   }
   for (int i = 1; i < argc; ++i) {
@@ -3858,14 +4208,14 @@ ParseResult ParseManagerCli(int argc, char** argv) {
       (void)ParseBool(text, out);
     };
     if (arg == "--config") { (void)value(); }
-    else if (arg == "--runtime-dir") { if (auto v = value()) result.config.runtime_dir = *v; }
-    else if (arg == "--control-dir") { if (auto v = value()) { result.config.control_dir = *v; explicit_control_dir = true; } }
+    else if (arg == "--runtime-dir") { if (auto v = value()) result.config.runtime_dir = caller_path(*v); }
+    else if (arg == "--control-dir") { if (auto v = value()) result.config.control_dir = caller_path(*v); }
     else if (arg == "--bind") { if (auto v = value()) result.config.bind_address = *v; }
     else if (arg == "--port") { if (auto v = value()) (void)ParseU16(*v, &result.config.proxy_port); }
     else if (arg == "--tls-required") { if (auto v = value()) apply_bool(*v, &result.config.proxy_tls_required); }
-    else if (arg == "--tls-cert-file") { if (auto v = value()) result.config.proxy_tls_cert_file = *v; }
-    else if (arg == "--tls-key-file") { if (auto v = value()) result.config.proxy_tls_key_file = *v; }
-    else if (arg == "--tls-ca-file") { if (auto v = value()) result.config.proxy_tls_ca_file = *v; }
+    else if (arg == "--tls-cert-file") { if (auto v = value()) result.config.proxy_tls_cert_file = caller_path(*v); }
+    else if (arg == "--tls-key-file") { if (auto v = value()) result.config.proxy_tls_key_file = caller_path(*v); }
+    else if (arg == "--tls-ca-file") { if (auto v = value()) result.config.proxy_tls_ca_file = caller_path(*v); }
     else if (arg == "--management-backlog") { if (auto v = value()) apply_nonzero_u32(*v, &result.config.management_backlog); }
     else if (arg == "--management-max-clients") { if (auto v = value()) apply_nonzero_u32(*v, &result.config.management_max_clients); }
     else if (arg == "--management-max-payload-bytes") {
@@ -3878,12 +4228,12 @@ ParseResult ParseManagerCli(int argc, char** argv) {
     }
     else if (arg == "--management-idle-timeout-ms") { if (auto v = value()) apply_nonzero_u64(*v, &result.config.management_idle_timeout_ms); }
     else if (arg == "--native-bind") { if (auto v = value()) result.config.native_bind = *v; }
-    else if (arg == "--native-port") { if (auto v = value()) (void)ParseU16(*v, &result.config.native_port); }
+    else if (arg == "--native-port") { if (auto v = value()) (void)ParseU16OrZero(*v, &result.config.native_port); }
     else if (arg == "--owner-db") { if (auto v = value()) result.config.owner_database_name = *v; }
     else if (arg == "--owner-db-path" || arg == "--default-database") {
       if (auto v = value()) {
-        result.config.owner_database_path = std::filesystem::absolute(*v).lexically_normal();
-        if (result.config.owner_database_name.empty() || result.config.owner_database_name == "main") {
+        result.config.owner_database_path = caller_path(*v);
+        if (!explicit_owner_database_name) {
           result.config.owner_database_name = result.config.owner_database_path.string();
         }
       }
@@ -3897,7 +4247,7 @@ ParseResult ParseManagerCli(int argc, char** argv) {
       }
     }
     else if (arg == "--listener-id") { if (auto v = value()) (void)ParseU32(*v, &result.config.listener_id); }
-    else if (arg == "--listener-control-dir") { if (auto v = value()) result.config.listener_control_socket_dir = *v; }
+    else if (arg == "--listener-control-dir") { if (auto v = value()) result.config.listener_control_socket_dir = caller_path(*v); }
     else if (arg == "--server-restart-executable") {
       if (auto v = value()) {
         result.config.restart_executable = *v;
@@ -3914,8 +4264,8 @@ ParseResult ParseManagerCli(int argc, char** argv) {
         }
       }
     }
-    else if (arg == "--dbbt-keyring") { if (auto v = value()) result.config.dbbt_keyring_path = *v; }
-    else if (arg == "--security-token-store") { if (auto v = value()) result.config.security_token_store_path = *v; }
+    else if (arg == "--dbbt-keyring") { if (auto v = value()) result.config.dbbt_keyring_path = caller_path(*v); }
+    else if (arg == "--security-token-store") { if (auto v = value()) result.config.security_token_store_path = caller_path(*v); }
     else if (arg == "--mcp-secret-ref") { if (auto v = value()) result.config.mcp_secret_ref = *v; }
     else if (arg == "--mcp-secret-rights") {
       if (auto v = value()) {
@@ -3924,16 +4274,40 @@ ParseResult ParseManagerCli(int argc, char** argv) {
       }
     }
     else if (arg == "--release-profile") { if (auto v = value()) result.config.release_profile = *v; }
-    else if (arg == "--log") { if (auto v = value()) result.config.log_path = *v; }
+    else if (arg == "--log") { if (auto v = value()) result.config.log_path = *v == "stderr" ? std::filesystem::path("stderr") : caller_path(*v); }
     else if (arg == "--log-level") { if (auto v = value()) result.config.log_level = *v; }
   }
   result.config.owner_database_runtime_scope_id = ManagerOwnerDatabaseRuntimeScopeIdImpl(result.config);
-  if (!explicit_control_dir && result.config.control_dir == initial_auto_control_dir) {
-    result.config.control_dir.clear();
-  }
   ApplyDefaultPaths(&result.config);
+  if (!result.config.help && !result.config.version) {
+    AddManagerEndpointDiagnostics(result.config, &result.diagnostics);
+  }
   if (!result.config.no_spin_required) result.diagnostics.push_back(Diag("MANAGER.NO_SPIN_REQUIRED", "No-spin synchronization invariant must remain enabled."));
   return result;
+}
+
+std::optional<std::filesystem::path> DiscoverManagerConfigPath(
+    const ManagerConfigResolutionContext& context,
+    bool service_mode) {
+  return DiscoverDefaultManagerConfigPath(context, service_mode);
+}
+
+std::filesystem::path ResolveManagerConfigRelativePath(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ManagerConfigResolutionContext& context) {
+  return ResolveManagerConfigRelativePathImpl(value, config_path, context);
+}
+
+ParseResult ParseManagerCli(int argc, char** argv) {
+  std::error_code ec;
+  auto current_directory = std::filesystem::current_path(ec);
+  if (ec) current_directory.clear();
+  return ParseManagerCliWithContext(
+      argc,
+      argv,
+      ManagerConfigResolutionContext{CurrentManagerExecutablePath(),
+                                     current_directory});
 }
 
 RuntimeResult RunManager(const ManagerConfig& config) {

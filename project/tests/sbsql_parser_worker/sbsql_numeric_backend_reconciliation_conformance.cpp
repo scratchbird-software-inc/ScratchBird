@@ -29,6 +29,9 @@ namespace sblr = scratchbird::engine::sblr;
 constexpr std::string_view kInt128Max = "170141183460469231731687303715884105727";
 constexpr std::string_view kInt128Min = "-170141183460469231731687303715884105728";
 constexpr std::string_view kUint128Max = "340282366920938463463374607431768211455";
+constexpr std::string_view kQuadmathReal128Provider = "libquadmath::__float128";
+constexpr std::string_view kBoostReal128Provider =
+    "boost::multiprecision::cpp_bin_float_quad";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -131,18 +134,28 @@ void TestCapabilityManifest() {
   bool saw_int128 = false;
   bool saw_uint128 = false;
   bool saw_real128 = false;
+  std::string real128_provider;
   for (const auto& capability : check.manifest.capabilities) {
     saw_int128 = saw_int128 || (capability.key == "numeric.int128" &&
                                 capability.state == platform::CapabilityState::present);
     saw_uint128 = saw_uint128 || (capability.key == "numeric.uint128" &&
                                   capability.state == platform::CapabilityState::present);
-    saw_real128 = saw_real128 || (capability.key == "numeric.real128" &&
-                                  capability.state == platform::CapabilityState::present &&
-                                  capability.provider.find("quadmath") != std::string::npos);
+    if (capability.key == "numeric.real128" &&
+        capability.state == platform::CapabilityState::present) {
+      saw_real128 = true;
+      real128_provider = capability.provider;
+    }
   }
   Require(saw_int128, "numeric.int128 capability missing from manifest");
   Require(saw_uint128, "numeric.uint128 capability missing from manifest");
-  Require(saw_real128, "numeric.real128 quadmath capability missing from manifest");
+  Require(saw_real128, "numeric.real128 capability missing from manifest");
+  Require(real128_provider == kQuadmathReal128Provider ||
+              real128_provider == kBoostReal128Provider,
+          "numeric.real128 capability reports an unsupported provider");
+  Require(real128_provider == numeric::Real128BackendName(),
+          "numeric.real128 capability provider does not match the compiled sbl_numeric backend");
+  std::cout << "real128_backend_truth=passed;provider="
+            << real128_provider << '\n';
 }
 
 void TestSblNumericIntegerFamilies() {
@@ -229,6 +242,36 @@ void TestSblNumericReal128AndDecimalSeparation() {
   Require(result.status == numeric::NumericStatusCode::ok &&
               result.value.encoded == "NaN",
           "real128 NaN canonicalization failed");
+
+  result = RunNumeric(numeric::NumericType::real128,
+                      numeric::NumericOperation::canonicalize,
+                      "sNaN");
+  Require(result.status == numeric::NumericStatusCode::ok &&
+              result.value.encoded == "sNaN",
+          "real128 signaling NaN canonicalization failed");
+
+  result = RunNumeric(numeric::NumericType::real128,
+                      numeric::NumericOperation::canonicalize,
+                      "Infinity");
+  Require(result.status == numeric::NumericStatusCode::ok &&
+              result.value.encoded == "Infinity",
+          "real128 infinity canonicalization failed");
+
+  result = RunNumeric(numeric::NumericType::real128,
+                      numeric::NumericOperation::multiply,
+                      "1.5",
+                      "-2");
+  Require(result.status == numeric::NumericStatusCode::ok &&
+              result.value.encoded == "-3",
+          "real128 multiply failed");
+
+  result = RunNumeric(numeric::NumericType::real128,
+                      numeric::NumericOperation::divide,
+                      "1",
+                      "0");
+  Require(result.status == numeric::NumericStatusCode::divide_by_zero &&
+              result.diagnostic_code == "numeric.real128_divide_by_zero",
+          "real128 division by zero did not fail closed");
 
   result = RunNumeric(numeric::NumericType::real128,
                       numeric::NumericOperation::compare,

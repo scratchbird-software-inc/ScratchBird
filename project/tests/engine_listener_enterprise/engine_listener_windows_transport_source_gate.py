@@ -240,8 +240,10 @@ def main() -> None:
         "int SbsqlTestWireSession::ServeFd(std::intptr_t fd)",
     ):
         require(token in parser_wire, f"sbsql_windows_wire_token_missing:{token}")
-    require("target_link_libraries(sbl_sbsql_parser_worker_core PUBLIC ws2_32)" in parser_cmake,
-            "sbsql_worker_ws2_32_link_missing")
+    require("target_link_libraries(${target_name} PUBLIC ws2_32)" in parser_cmake,
+            "sbsql_worker_configurator_ws2_32_link_missing")
+    require("sbsql_configure_parser_worker_core(sbl_sbsql_parser_worker_core)" in parser_cmake,
+            "sbsql_worker_ws2_32_configurator_not_applied")
     require("MANAGER.LISTENER_PLATFORM_UNAVAILABLE" not in manager_control,
             "windows_manager_listener_control_still_unavailable")
     require("Listener management sockets are not attached on Windows." not in manager_control,
@@ -290,8 +292,8 @@ def main() -> None:
         "LISTENER.START_TIMEOUT",
     ):
         require(token in server_orchestrator, f"windows_server_control_token_missing:{token}")
-    require("target_link_libraries(sb_server_core PUBLIC ws2_32)" in server_core_cmake,
-            "windows_server_ws2_32_link_missing")
+    require("target_link_libraries(sb_server_core PUBLIC ws2_32 advapi32)" in server_core_cmake,
+            "windows_server_transport_and_service_libraries_missing")
 
     compiler = shutil.which("x86_64-w64-mingw32-g++")
     require(compiler is not None, "mingw_windows_x64_cross_compiler_missing")

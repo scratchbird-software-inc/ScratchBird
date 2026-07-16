@@ -35,6 +35,9 @@ In this mode, SBsrv runs as a standalone process. It hosts the engine and expose
 - The staged output is present and all binaries are executable.
 - `etc/scratchbird/SBsrv.conf` has been copied and edited for the deployment.
 - The `data_dir` and `control_dir` paths are writable by the process user.
+- The database already exists. Create it before service startup with the
+  approved embedded `SBsec bootstrap` flow and the packaged platform profile;
+  the server does not create a missing database.
 - If `tls_required = true` (the default and recommended setting), TLS certificates are configured.
 - The `share/scratchbird/resources/` tree is present.
 
@@ -44,16 +47,22 @@ Edit a copy of `etc/scratchbird/SBsrv.conf`. Key decisions:
 
 1. Set `[server.runtime] data_dir` and `control_dir` to the deployment's runtime paths.
 2. Set `[server.database] default_path` to the database file location.
-3. Set `[server.database] auto_create = true` only for the initial setup run; reset it to `false` after the database exists.
-4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3050`).
+3. Keep `[server.database] auto_create = false`. Bootstrap the database
+   separately with `SBsec` in approved embedded mode before starting SBsrv.
+4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3092`; port `3050` is Firebird-only).
 5. Verify `[server.listener.native] executable_path` and `parser_executable_path` resolve to the correct binaries.
 6. Confirm `[server.parser] sbps_endpoint` will be writable and accessible to SBgate.
+
+Relative paths in SBsrv.conf resolve from the SBsrv installation root when the
+binary is under `bin/`; they do not depend on the shell's current directory.
+Service and validation commands require a selected configuration file.
 
 ### Startup Sequence
 
 1. Start SBsrv with the configuration file path as an argument.
 2. SBsrv reads and validates configuration. Invalid configuration causes immediate exit with diagnostics to stderr.
-3. SBsrv opens or creates the database, depending on `auto_create`.
+3. SBsrv opens the existing database. A missing database is refused; service
+   startup never performs database bootstrap or create-if-missing behavior.
 4. SBsrv writes startup lifecycle artifacts (PID file, lifecycle state file, SBPS socket).
 5. If `[server.listener.native] enabled = true`, SBsrv spawns SBgate and waits up to `ready_timeout_ms` (default 8 000 ms) for SBgate to report ready.
 6. Once SBgate reports ready, SBsrv transitions to the `ready` state.
@@ -69,7 +78,7 @@ After startup, confirm readiness by:
 ### First Transaction Proof
 
 ```
-bin/SBsql --host 127.0.0.1 --port 3050 --database default
+bin/SBsql --host 127.0.0.1 --port 3092 --database default
 SBsql> SELECT 1;
 SBsql> \quit
 ```
@@ -124,7 +133,7 @@ server_endpoint = runtime/control/sb_server.sbps.sock
 
 # Where to accept clients
 bind_address = 127.0.0.1
-port = 3050
+port = 3092
 tls_required = true           # do not set false on any network-exposed interface
 
 # Parser pool — start with 1, allow up to 16
@@ -180,7 +189,7 @@ SBmgr is the single-node manager. It supervises both SBsrv and SBgate, restarts 
 - `etc/scratchbird/SBmgr.conf` has been copied and edited.
 - `etc/scratchbird/SBsrv.conf` and `etc/scratchbird/SBgate.conf` are configured for the managed deployment.
 - `manager.management_auth_required = true` is retained (the default).
-- The proxy port (`3090` by default) is accessible from clients.
+- The proxy is explicitly enabled and its configured port (the native default is `3092`) is accessible from clients.
 
 ### Configuration Inputs
 
@@ -189,7 +198,7 @@ Edit a copy of `etc/scratchbird/SBmgr.conf`. Key decisions:
 1. Set `manager.control_dir` and `manager.runtime_dir` to writable paths.
 2. Confirm `manager.listener_command` and `manager.server_command` resolve to the correct binaries.
 3. Set `manager.restart_policy`, `manager.restart_max`, and `manager.restart_window_ms` to match operational expectations.
-4. If you want to override the proxy port, add `manager.proxy.port = <value>`. The default is `3090`.
+4. The proxy is disabled by default. If you enable it, retain required TLS and configure a nonzero `manager.backend.native_port` distinct from the client-facing `manager.proxy.port`. The only native default is the front-door port `3092`; backend `0` means unset, while `3050` is Firebird-only.
 
 ### Startup Sequence (Manager Lifecycle States)
 

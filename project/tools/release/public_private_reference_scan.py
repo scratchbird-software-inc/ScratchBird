@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 
 
 SKIP_DIRS = {
@@ -92,6 +93,10 @@ LABEL_REFERENCE_ALLOWLIST = {
     ),
 }
 
+GIT_METADATA_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\." + r"git(?:modules\b|(?![A-Za-z0-9_]))"
+)
+
 
 def io_path(path: Path) -> str:
     text = str(path.resolve())
@@ -139,6 +144,12 @@ def banned_needles() -> list[tuple[str, str]]:
     ]
 
 
+def contains_banned_reference(label: str, needle: str, text: str) -> bool:
+    if label == "git_metadata_reference":
+        return GIT_METADATA_REFERENCE_RE.search(text) is not None
+    return needle in text
+
+
 def iter_files(root: Path):
     walk_root = io_path(root) if os.name == "nt" else str(root)
     for dirpath, dirnames, filenames in os.walk(walk_root):
@@ -167,7 +178,7 @@ def scan(root: Path) -> list[str]:
         for label, needle in banned_needles():
             if allow_labeled_reference(label, rel):
                 continue
-            if needle in text:
+            if contains_banned_reference(label, needle, text):
                 findings.append(f"{rel}: {label}: {needle}")
     return findings
 

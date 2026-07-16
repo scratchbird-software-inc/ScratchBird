@@ -2028,15 +2028,16 @@ AgentSecurityGrantRequirement NamedReq(std::string right, int alternative_group 
 }
 
 bool HasInternalTraceGrant(const AgentRuntimeContext& context) {
-  return Contains(context.trace_tags, "security.bootstrap") ||
-         Contains(context.trace_tags, "engine.internal") ||
-         Contains(context.trace_tags, "agent.internal") ||
-         Contains(context.trace_tags, "internal") ||
+  return (context.fixture_authorization_authority &&
+          (Contains(context.trace_tags, "engine.internal") ||
+           Contains(context.trace_tags, "agent.internal") ||
+           Contains(context.trace_tags, "internal"))) ||
          Contains(context.rights, "OBS_AGENT_INTERNAL") ||
          Contains(context.rights, "SB_AGENT_INTERNAL_TRACE");
 }
 
 bool GroupGrantsRight(const AgentRuntimeContext& context, AgentSecurityRight right) {
+  if (!context.fixture_authorization_authority) { return false; }
   if (Contains(context.groups, "ROOT")) { return true; }
   const bool ops = Contains(context.groups, "OPS");
   const bool sup = Contains(context.groups, "SUP");
@@ -2094,13 +2095,15 @@ bool GroupGrantsRight(const AgentRuntimeContext& context, AgentSecurityRight rig
 bool HasRequirement(const AgentRuntimeContext& context,
                     const AgentSecurityGrantRequirement& req) {
   if (!context.security_context_present) { return false; }
-  if (Contains(context.groups, "ROOT")) { return true; }
+  if (context.fixture_authorization_authority &&
+      Contains(context.groups, "ROOT")) { return true; }
   if (req.internal_trace_allowed && HasInternalTraceGrant(context)) { return true; }
   if (req.right == AgentSecurityRight::internal_agent_trace) {
     return HasInternalTraceGrant(context);
   }
   if (Contains(context.rights, req.right_name) ||
-      Contains(context.trace_tags, "right:" + req.right_name)) {
+      (context.fixture_authorization_authority &&
+       Contains(context.trace_tags, "right:" + req.right_name))) {
     return true;
   }
   if (req.right != AgentSecurityRight::external_named_right &&

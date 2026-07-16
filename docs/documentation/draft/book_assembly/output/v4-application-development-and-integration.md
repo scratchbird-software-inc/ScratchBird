@@ -4038,7 +4038,7 @@ conn = scratchbird.connect(
 ```python
 conn = scratchbird.connect(
     host="proxy.example.com",
-    port=3090,
+    port=3092,
     database="prod",
     user="alice",
     password="secret",
@@ -4716,7 +4716,7 @@ the bridge config.
 ### Connection string (manager-proxy ingress)
 
 ```ini
-Driver={ScratchBird};Server=127.0.0.1;Port=3090;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
+Driver={ScratchBird};Server=127.0.0.1;Port=3092;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
 ```
 
 ### DSN entry (odbc.ini / registry)
@@ -10067,7 +10067,7 @@ host=localhost port=3092 dbname=mydb user=myuser password=mypass
 **Manager-proxy URI:**
 
 ```
-scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token
+scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token
 ```
 
 ### Selected DSN keys

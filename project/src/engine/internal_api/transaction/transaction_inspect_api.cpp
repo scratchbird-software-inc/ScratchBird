@@ -65,8 +65,7 @@ TResult TransactionInspectFailure(const EngineApiRequest& request,
 }
 
 bool HasInspectRight(const EngineRequestContext& context, const std::string& right) {
-  return SecurityContextHasTag(context, "security.bootstrap") ||
-         SecurityContextHasRight(context, right) ||
+  return SecurityContextHasRight(context, right) ||
          SecurityContextHasRight(context, "MGA_TRANSACTION_INSPECT") ||
          SecurityContextHasRight(context, "OBS_RUNTIME_ALL");
 }

@@ -236,6 +236,8 @@ NATIVE_PROOF_CONTRACTS: dict[str, dict[str, Any]] = {
             "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF "
             "-DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF "
             "-DSB_LLVM_LINK_MODE=dynamic "
+            '-DSB_LLVM_LIBRARY="$(brew --prefix llvm)/lib/libLLVM.dylib" '
+            '-DSB_LLVM_RUNTIME_LIBRARY="$(brew --prefix llvm)/lib/libLLVM.dylib" '
             "-DSB_LLVM_MIN_MAJOR=22 "
             "-DSB_PUBLIC_TARGET_PLATFORM=macos"
         ),
@@ -453,6 +455,12 @@ def validate_native_proof_contract(
         "SB_LLVM_LINK_MODE=dynamic",
         *(f"-L {label} --output-on-failure" for label in NATIVE_PROOF_LABELS),
     )
+    if platform_id == "macos":
+        required_tokens += (
+            "SB_LLVM_LIBRARY=",
+            "SB_LLVM_RUNTIME_LIBRARY=",
+            "brew --prefix llvm",
+        )
     token_digests: list[str] = []
     for token in required_tokens:
         require(token in text, f"native_contract_token_missing:{platform_id}:{token}")

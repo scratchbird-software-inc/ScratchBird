@@ -39,6 +39,16 @@ REQUIRED_SUFFIXES = {
 MACOS_REQUIRED_SIDECARS = (
     "MACOS_DYNAMIC_LIBRARY_AUDIT.json",
     "MACOS_SIGNING_STATE.json",
+    "MACOS_SYSTEM_PACKAGE_EVIDENCE.json",
+)
+WINDOWS_REQUIRED_SIDECARS = (
+    "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json",
+    "scratchbird-windows-lifecycle.wxs",
+)
+LINUX_REQUIRED_SIDECARS = ("LINUX_SYSTEM_PACKAGE_EVIDENCE.json",)
+SERVICE_AUTHORITY_SCOPE = (
+    "filesystem_directory_and_process_execution_only_"
+    "no_database_or_security_authority"
 )
 
 
@@ -83,6 +93,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--platform", choices=("linux", "windows", "macos"), required=True)
+    parser.add_argument(
+        "--require-msi",
+        action="store_true",
+        help="Require a material MSI in addition to the portable Windows ZIP.",
+    )
     args = parser.parse_args()
 
     root = args.artifact_root.resolve()
@@ -101,6 +116,11 @@ def main() -> int:
     for suffix in REQUIRED_SUFFIXES[args.platform]:
         if not any(isinstance(path, str) and path.endswith(suffix) for path in paths):
             fail(f"required_artifact_missing:{suffix}")
+    if args.platform == "windows" and args.require_msi:
+        if not any(
+            isinstance(path, str) and path.endswith(".msi") for path in paths
+        ):
+            fail("required_artifact_missing:.msi")
     for row in artifacts:
         if not isinstance(row, dict):
             fail("manifest_row_not_object")
@@ -114,6 +134,77 @@ def main() -> int:
             fail(f"manifest_size_mismatch:{rel}")
         if row.get("sha256") != sha256_file(path):
             fail(f"manifest_sha256_mismatch:{rel}")
+    if args.platform == "linux":
+        for sidecar in LINUX_REQUIRED_SIDECARS:
+            if sidecar not in paths:
+                fail(f"linux_sidecar_missing:{sidecar}")
+        evidence = json.loads(
+            (root / "LINUX_SYSTEM_PACKAGE_EVIDENCE.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        identity = evidence.get("os_identity")
+        if (
+            not isinstance(identity, dict)
+            or identity.get("service_authority_scope")
+            != SERVICE_AUTHORITY_SCOPE
+            or identity.get("service_effective_group_policy")
+            != "only_scratchbird_effective_group"
+            or identity.get("create_time_os_authorization") != "root_only"
+            or identity.get("human_service_group_membership_mutation") is not False
+        ):
+            fail("linux_system_service_authority_scope_invalid")
+    if args.platform == "windows":
+        windows_block = data.get("windows")
+        if not isinstance(windows_block, dict):
+            fail("windows_manifest_block_missing")
+        if windows_block.get("service_name") != "scratchbird":
+            fail("windows_service_name_mismatch")
+        if windows_block.get("service_account") != r"NT SERVICE\scratchbird":
+            fail("windows_service_account_mismatch")
+        if windows_block.get("native_default_port") != 3092:
+            fail("windows_native_port_mismatch")
+        if windows_block.get("actual_install_smoke_required") is not True:
+            fail("windows_actual_install_smoke_not_required")
+        for sidecar in WINDOWS_REQUIRED_SIDECARS:
+            if sidecar not in paths:
+                fail(f"windows_sidecar_missing:{sidecar}")
+        evidence = json.loads(
+            (root / "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        if (
+            evidence.get("native_default_port") != 3092
+            or evidence.get("database_files_created") is not False
+            or evidence.get("security_sidecars_created") is not False
+        ):
+            fail("windows_system_evidence_invalid")
+        service = evidence.get("service")
+        identity = evidence.get("os_identity")
+        if (
+            not isinstance(service, dict)
+            or service.get("name") != "scratchbird"
+            or service.get("account") != r"NT SERVICE\scratchbird"
+            or service.get("default_start_type") != "manual"
+            or service.get("default_activity") != "stopped"
+            or service.get("fresh_install_creates_missing_service") is not True
+            or service.get("creation_mechanism")
+            != "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService"
+            or service.get("parser_or_listener_services_installed") is not False
+            or service.get("manager_service_installed") is not False
+        ):
+            fail("windows_system_service_evidence_invalid")
+        if (
+            not isinstance(identity, dict)
+            or identity.get("service_authority_scope")
+            != SERVICE_AUTHORITY_SCOPE
+            or identity.get("local_sam_group_membership") is not False
+            or identity.get("create_time_os_authorization")
+            != "administrator_only"
+            or identity.get("human_service_group_membership_mutation") is not False
+        ):
+            fail("windows_system_service_authority_scope_invalid")
     if args.platform == "macos":
         macos_block = data.get("macos")
         if not isinstance(macos_block, dict):
@@ -138,6 +229,28 @@ def main() -> int:
                 status = sidecar_data.get("status")
                 if status not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
                     fail(f"macos_signing_state_invalid:{status}")
+            if sidecar == "MACOS_SYSTEM_PACKAGE_EVIDENCE.json":
+                if sidecar_data.get("schema_id") != (
+                    "scratchbird.macos_system_package_evidence.v1"
+                ):
+                    fail("macos_system_package_evidence_schema_mismatch")
+                if sidecar_data.get("native_default_port") != 3092:
+                    fail("macos_system_package_evidence_native_port_mismatch")
+                if sidecar_data.get("database_files_created") is not False:
+                    fail("macos_system_package_evidence_database_creation")
+                if sidecar_data.get("security_sidecars_created") is not False:
+                    fail("macos_system_package_evidence_security_sidecar_creation")
+                identity = sidecar_data.get("os_identity")
+                if (
+                    not isinstance(identity, dict)
+                    or identity.get("service_authority_scope")
+                    != SERVICE_AUTHORITY_SCOPE
+                    or identity.get("create_time_os_authorization") != "root_only"
+                    or identity.get("human_service_group_membership_mutation") is not False
+                    or identity.get("resolved_effective_group_policy")
+                    != "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+                ):
+                    fail("macos_system_service_authority_scope_invalid")
     scan(root)
     print(f"verify_installer_artifacts=passed:{root}")
     return 0

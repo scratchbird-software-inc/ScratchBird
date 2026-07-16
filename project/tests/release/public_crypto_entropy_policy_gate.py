@@ -69,14 +69,50 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "row_id": "password_verifier_sha256",
+        "row_id": "password_verifier_derivation",
+        "surface": "password",
+        "path": "drivers/tool/cli/bootstrap_password_verifier.cpp",
+        "tokens": (
+            "RAND_priv_bytes",
+            "PKCS5_PBKDF2_HMAC(",
+            "kBootstrapPasswordPbkdf2Iterations",
+            "local-password-pbkdf2-sha256:v1:iterations=",
+            "OPENSSL_cleanse",
+        ),
+    },
+    {
+        "row_id": "password_verifier_minimum_work_factor",
+        "surface": "password",
+        "path": "drivers/tool/cli/bootstrap_password_verifier.hpp",
+        "tokens": (
+            "kBootstrapPasswordPbkdf2Iterations = 600000",
+            "BootstrapPasswordSecretValid",
+            "DeriveBootstrapPasswordVerifier",
+        ),
+    },
+    {
+        "row_id": "password_verifier_pbkdf2_verification",
         "surface": "password",
         "path": "src/engine/internal_api/security/authentication_api.cpp",
         "tokens": (
-            "local-password-verifier:v1:sha256:",
-            "SecuritySha256Hex(verifier)",
-            "SecurityConstantTimeEqual",
+            "local-password-pbkdf2-sha256:v1:iterations=",
+            "iterations < 600000",
+            "PKCS5_PBKDF2_HMAC(",
+            "CRYPTO_memcmp(",
+            "OPENSSL_cleanse(",
             "credential_verifier_mismatch",
+        ),
+    },
+    {
+        "row_id": "password_verifier_durable_catalog_validation",
+        "surface": "password",
+        "path": "src/storage/database/database_lifecycle.cpp",
+        "tokens": (
+            "local-password-pbkdf2-sha256:v1:iterations=",
+            "iterations < 600000",
+            "salt == std::string(32, '0')",
+            "verifier_nonzero",
+            "bootstrap_credential_fingerprint_invalid",
         ),
     },
     {
@@ -102,8 +138,8 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "row_id": "security_lifecycle_sha256_fingerprint",
-        "surface": "password",
+        "row_id": "security_lifecycle_protected_material_reference_fingerprint",
+        "surface": "protected_material",
         "path": "src/engine/internal_api/security/security_principal_lifecycle.cpp",
         "tokens": (
             "StableToken(",
@@ -129,6 +165,10 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "SHA-256 known answer mismatch",
             "HMAC-SHA-256 known answer mismatch",
+            "RAND_priv_bytes",
+            "PKCS5_PBKDF2_HMAC(",
+            "local-password-pbkdf2-sha256:v1:iterations=",
+            "password_secret_required_for_pbkdf2_verification",
             "security_database_temporary_token_not_found",
             "security_database_temporary_token_revoked",
             "credential-fingerprint:v1:sha256:",
@@ -199,6 +239,18 @@ BANNED_POLICY_TOKENS = (
     "weak_checksum",
 )
 
+FORBIDDEN_PASSWORD_VERIFIER_TOKENS = (
+    "local-password-" + "verifier:v1:sha256:",
+    "SecuritySha256Hex(" + "verifier)",
+)
+
+PASSWORD_VERIFIER_POLICY_PATHS = (
+    "drivers/tool/cli/bootstrap_password_verifier.cpp",
+    "src/engine/internal_api/security/authentication_api.cpp",
+    "src/storage/database/database_lifecycle.cpp",
+    "tests/release/public_security_durable_crypto_hardening_gate.cpp",
+)
+
 
 def fail(message: str) -> None:
     print(f"public_crypto_entropy_policy_gate=fail:{message}", file=sys.stderr)
@@ -262,6 +314,11 @@ def validate_rows(project_root: Path) -> list[dict[str, Any]]:
     for banned in BANNED_POLICY_TOKENS:
         if banned in policy_text:
             fail(f"banned_crypto_policy_token:{banned}")
+    for relative in PASSWORD_VERIFIER_POLICY_PATHS:
+        password_policy_text = read_project_file(project_root, relative)
+        for forbidden in FORBIDDEN_PASSWORD_VERIFIER_TOKENS:
+            if forbidden in password_policy_text:
+                fail(f"retired_password_verifier_token:{relative}:{forbidden}")
     return rows
 
 
@@ -279,6 +336,11 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
             "private_docs_required": False,
             "approved_hash": "sha256",
             "approved_mac": "hmac-sha256",
+            "approved_password_kdf": "pbkdf2-hmac-sha256",
+            "password_kdf_minimum_iterations": 600000,
+            "password_salt_bytes": 16,
+            "password_salt_source": "openssl-private-csprng",
+            "legacy_single_hash_password_verifier": False,
             "signature_ready_metadata": "ed25519_envelope_ready",
             "protected_material_plaintext_returned": False,
             "weak_checksums_authority": False,

@@ -239,6 +239,9 @@ struct AgentTypeDescriptor {
 
 struct AgentRuntimeContext {
   bool security_context_present = false;
+  // Legacy right/group trace and display-name authority is available only to
+  // explicitly marked embedded fixtures. Production adapters leave false.
+  bool fixture_authorization_authority = false;
   bool cluster_authority_available = false;
   bool cluster_time_majority_available = false;
   bool private_features_available = true;

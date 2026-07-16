@@ -677,15 +677,13 @@ void AddBackupLifecycleEvidence(EngineApiResult* result,
 bool HasBackupCreateRight(const EngineRequestContext& context) {
   return SecurityContextHasRight(context, "BACKUP_CREATE") ||
          SecurityContextHasRight(context, "BACKUP_CONTROL") ||
-         SecurityContextHasRight(context, "SYS_BACKUP") ||
-         SecurityContextHasTag(context, "security.bootstrap");
+         SecurityContextHasRight(context, "SYS_BACKUP");
 }
 
 bool HasBackupRestoreRight(const EngineRequestContext& context) {
   return SecurityContextHasRight(context, "BACKUP_RESTORE") ||
          SecurityContextHasRight(context, "BACKUP_CONTROL") ||
-         SecurityContextHasRight(context, "SYS_BACKUP") ||
-         SecurityContextHasTag(context, "security.bootstrap");
+         SecurityContextHasRight(context, "SYS_BACKUP");
 }
 
 struct LogicalBackupRecordSet {

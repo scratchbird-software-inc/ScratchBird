@@ -16,8 +16,7 @@ namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_STANDARD_BUNDLE_API_BEHAVIOR
 EngineSeedStandardSecurityBundlesResult EngineSeedStandardSecurityBundles(
     const EngineSeedStandardSecurityBundlesRequest& request) {
-  if (!SecurityContextHasRight(request.context, "SEC_GRANT_ADMIN") &&
-      !SecurityContextHasTag(request.context, "security.bootstrap")) {
+  if (!SecurityContextHasRight(request.context, "SEC_GRANT_ADMIN")) {
     return SecurityFailure<EngineSeedStandardSecurityBundlesResult>(
         request.context,
         "security.seed_standard_bundles",

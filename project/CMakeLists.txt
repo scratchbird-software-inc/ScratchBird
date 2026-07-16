@@ -413,6 +413,7 @@ add_test(
           "-DSB_LLVM_PROJECT_ROOT=${SB_LLVM_PROJECT_ROOT}"
           "-DSB_LLVM_TOOLS_ROOT=${SB_LLVM_TOOLS_ROOT}"
           "-DSB_LLVM_LIBRARY=${SB_LLVM_LIBRARY}"
+          "-DSB_LLVM_RUNTIME_LIBRARY=${SB_LLVM_RUNTIME_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
           "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AgentProductionConfigureGateMatrix.cmake"
@@ -462,6 +463,7 @@ add_test(
           "-DSB_LLVM_PROJECT_ROOT=${SB_LLVM_PROJECT_ROOT}"
           "-DSB_LLVM_TOOLS_ROOT=${SB_LLVM_TOOLS_ROOT}"
           "-DSB_LLVM_LIBRARY=${SB_LLVM_LIBRARY}"
+          "-DSB_LLVM_RUNTIME_LIBRARY=${SB_LLVM_RUNTIME_LIBRARY}"
           "-DSB_LLVM_LINK_MODE=${SB_LLVM_LINK_MODE}"
           "-DSB_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/OptimizerProductionConfigureGateMatrix.cmake"
@@ -3849,6 +3851,39 @@ sb_public_brand_target(sb_verify "SBdoc" "ScratchBird Doctor" "cli")
 sb_public_brand_target(sbdriver_conformance "SBcop" "ScratchBird Conformance Officer" "cli")
 
 sb_public_write_branding_manifest("${CMAKE_BINARY_DIR}/public_branding_manifest.tsv")
+if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE AND
+   TARGET sb_server AND TARGET sb_engine_shared)
+  set(_sb_llvm_release_forbidden_paths
+    "${SB_LLVM_PROJECT_ROOT}"
+    "${SB_LLVM_FALLBACK_PROJECT_ROOT}"
+    "${SB_LLVM_TOOLS_ROOT}"
+    "${SB_LLVM_STAGING_BUILD_DIR}"
+  )
+  if(NOT SB_PUBLIC_TARGET_PLATFORM STREQUAL "macos")
+    list(APPEND _sb_llvm_release_forbidden_paths "${SB_LLVM_LIBRARY}")
+  endif()
+  set(_sb_llvm_release_binary_path_args)
+  foreach(_sb_llvm_release_forbidden_path IN LISTS _sb_llvm_release_forbidden_paths)
+    if(_sb_llvm_release_forbidden_path)
+      list(APPEND _sb_llvm_release_binary_path_args
+        "--forbidden-fragment=${_sb_llvm_release_forbidden_path}")
+    endif()
+  endforeach()
+  add_test(
+    NAME llvm_release_binary_path_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/verify_llvm_release_binary_paths.py"
+            "--binary=$<TARGET_FILE:sb_server>"
+            "--binary=$<TARGET_FILE:sb_engine_shared>"
+            ${_sb_llvm_release_binary_path_args}
+  )
+  set_tests_properties(llvm_release_binary_path_gate PROPERTIES
+    LABELS "public_release_correctness;llvm_runtime_library;release_hygiene;build_path_redaction"
+  )
+  unset(_sb_llvm_release_binary_path_args)
+  unset(_sb_llvm_release_forbidden_path)
+  unset(_sb_llvm_release_forbidden_paths)
+endif()
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   sb_public_configure_output_stage("${CMAKE_CURRENT_SOURCE_DIR}" "${Python3_EXECUTABLE}")
 endif()

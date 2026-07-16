@@ -37,6 +37,10 @@ set(SB_CPP_DRIVER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/cpp" CACHE PATH
 if (NOT TARGET scratchbird_client)
     add_subdirectory("${SB_CPP_DRIVER_DIR}" "${CMAKE_BINARY_DIR}/drivers/driver/cpp")
 endif()
+if (NOT TARGET sb_storage_database)
+    add_subdirectory("${SB_PROJECT_ROOT}/src/storage/database"
+                     "${CMAKE_BINARY_DIR}/storage_database_for_cli")
+endif()
 
 add_executable(sb_isql
     sb_isql.cpp
@@ -51,6 +55,8 @@ add_executable(sb_backup sb_backup.cpp)
 add_executable(sb_security
     sb_security.cpp
     cli_auth_bootstrap.cpp
+    bootstrap_os_authority.cpp
+    bootstrap_password_verifier.cpp
 )
 add_executable(sb_verify sb_verify.cpp)
 add_executable(sbdriver_conformance
@@ -237,6 +243,17 @@ foreach(target IN LISTS cli_targets)
     endif()
 endforeach()
 
+target_link_libraries(sb_security PRIVATE OpenSSL::Crypto sb_storage_database)
+if(WIN32)
+    target_link_libraries(sb_security PRIVATE advapi32 netapi32)
+endif()
+
+add_executable(sb_bootstrap_password_verifier_tests
+    bootstrap_password_verifier_test.cpp
+    bootstrap_password_verifier.cpp
+)
+target_link_libraries(sb_bootstrap_password_verifier_tests PRIVATE OpenSSL::Crypto)
+
 sb_public_brand_target(sb_isql "SBsql" "ScratchBird SQL" "cli")
 sb_public_brand_target(sb_admin "SBadm" "ScratchBird Administrator" "cli")
 sb_public_brand_target(sb_backup "SBbak" "ScratchBird Backup Manager" "cli")
@@ -310,6 +327,18 @@ target_include_directories(sbdriver_auth_bootstrap_tests
 )
 target_link_libraries(sbdriver_auth_bootstrap_tests PRIVATE scratchbird_client)
 
+add_executable(sb_bootstrap_os_authority_tests
+    bootstrap_os_authority_test.cpp
+    bootstrap_os_authority.cpp
+)
+target_include_directories(sb_bootstrap_os_authority_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+if(WIN32)
+    target_link_libraries(sb_bootstrap_os_authority_tests PRIVATE advapi32 netapi32)
+endif()
+
 add_executable(sbdriver_conformance_assertion_tests
     conformance_assertions_test.cpp
     conformance_assertions.cpp
@@ -322,6 +351,8 @@ target_link_libraries(sbdriver_conformance_assertion_tests PRIVATE scratchbird_c
 
 if (BUILD_TESTING)
     add_test(NAME cli_auth_bootstrap_tests COMMAND sbdriver_auth_bootstrap_tests)
+    add_test(NAME cli_bootstrap_os_authority_tests COMMAND sb_bootstrap_os_authority_tests)
+    add_test(NAME cli_bootstrap_password_verifier_tests COMMAND sb_bootstrap_password_verifier_tests)
     add_test(NAME cli_txn_exec_parity_tests COMMAND sbdriver_txn_exec_tests)
     add_test(NAME cli_metadata_shaping_tests COMMAND sbdriver_metadata_shaping_tests)
     add_test(NAME cli_res_lifecycle_tests COMMAND sbdriver_res_lifecycle_tests)

@@ -32,19 +32,19 @@ struct ManagerConfig {
   bool foreground = false;
   bool service = false;
   bool validate_config = false;
-  bool proxy_enabled = true;
+  bool proxy_enabled = false;
   bool restart_enabled = false;
   bool third_party_management_enabled = false;
   bool no_spin_required = true;
   std::string release_profile = "enterprise";
-  std::string bind_address = "0.0.0.0";
-  std::uint16_t proxy_port = 3090;
+  std::string bind_address = "127.0.0.1";
+  std::uint16_t proxy_port = 3092;
   std::uint32_t proxy_backlog = 128;
   std::uint32_t proxy_max_clients = 1024;
   std::uint64_t proxy_client_idle_timeout_ms = 300000;
   std::uint64_t proxy_backend_connect_timeout_ms = 5000;
   std::uint64_t proxy_io_timeout_ms = 30000;
-  bool proxy_tls_required = false;
+  bool proxy_tls_required = true;
   std::filesystem::path proxy_tls_cert_file;
   std::filesystem::path proxy_tls_key_file;
   std::filesystem::path proxy_tls_ca_file;
@@ -53,7 +53,9 @@ struct ManagerConfig {
   std::uint32_t management_max_payload_bytes = 1024 * 1024;
   std::uint64_t management_idle_timeout_ms = 30000;
   std::string native_bind = "127.0.0.1";
-  std::uint16_t native_port = 3392;
+  // Zero means that the proxy backend has not been configured.  It must never
+  // silently reuse the client-facing native port.
+  std::uint16_t native_port = 0;
   std::string owner_database_name = "main";
   std::filesystem::path owner_database_path;
   proto::UuidBytes owner_database_uuid{};
@@ -88,6 +90,16 @@ struct ParseResult {
   ManagerConfig config;
   std::vector<proto::Diagnostic> diagnostics;
   bool ok() const { return diagnostics.empty(); }
+};
+
+struct ManagerConfigResolutionContext {
+  std::filesystem::path executable_path;
+  std::filesystem::path current_directory;
+  bool include_environment = true;
+  bool include_system_paths = true;
+  // Empty selects the host defaults. Tests and embedders may inject an
+  // ordered root set to exercise platform discovery deterministically.
+  std::vector<std::filesystem::path> system_config_roots;
 };
 
 struct RuntimeResult {
@@ -130,6 +142,16 @@ ManagerRuntimeValidation ValidateManagerRuntimeArtifacts(const ManagerConfig& co
                                                          bool require_existing_files);
 RuntimeResult CleanupManagerRuntimeArtifacts(const ManagerConfig& config,
                                              ManagerRuntimeCleanupOperation operation);
+std::optional<std::filesystem::path> DiscoverManagerConfigPath(
+    const ManagerConfigResolutionContext& context,
+    bool service_mode);
+std::filesystem::path ResolveManagerConfigRelativePath(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ManagerConfigResolutionContext& context);
+ParseResult ParseManagerCliWithContext(int argc,
+                                      char** argv,
+                                      const ManagerConfigResolutionContext& context);
 ParseResult ParseManagerCli(int argc, char** argv);
 RuntimeResult RunManager(const ManagerConfig& config);
 

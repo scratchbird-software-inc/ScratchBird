@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "observability/repair_history_api.hpp"
+#include "public_release_authz_fixture.hpp"
 #include "repair_event_ledger.hpp"
 #include "repair_history_inspection.hpp"
 #include "row_version.hpp"
@@ -228,7 +229,8 @@ api::EngineRequestContext AuthorizedContext(const std::filesystem::path& work_di
   context.catalog_generation_id = 5;
   context.security_epoch = 7;
   context.resource_epoch = 9;
-  context.trace_tags.push_back("security.bootstrap");
+  scratchbird::tests::release::GrantMaterializedRight(
+      &context, "MGA_TRANSACTION_INSPECT");
   return context;
 }
 
@@ -373,6 +375,7 @@ bool EngineInspectionProof(const Fixture& fixture,
 
   auto unauthorized = request;
   unauthorized.context.trace_tags.clear();
+  unauthorized.context.authorization_context = {};
   const auto denied = api::EngineInspectRepairHistory(unauthorized);
   ok = Expect(!denied.ok,
               "engine repair history inspection should require authorization") &&

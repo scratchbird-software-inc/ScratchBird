@@ -13,6 +13,15 @@ Each service reads its own configuration file independently. There is no central
 
 SBgate (`listener_config.cpp`) uses a flat key=value parser: each line is split on the first `=`, whitespace is trimmed, and keys are normalized to lowercase with hyphens replaced by underscores. SBsrv (`SBsrv.conf`) uses a `[section]` format with a `format = SBCD1` header. SBmgr uses a flat `manager.*` key namespace. SBParser uses a flat `parser.*` namespace.
 
+SBsrv and SBmgr search the executable installation configuration before the
+process current directory. Service mode never selects a configuration from the
+current directory, and service or `--validate-config` exits with an error when
+no selected configuration exists. When the executable is installed under
+`bin/`, relative paths in SBsrv.conf or SBmgr.conf resolve from that executable's
+installation root. For a non-installed executable, they resolve from the
+selected configuration file's directory. Relative paths supplied explicitly on
+the command line remain relative to the caller's current directory.
+
 Configuration files are read at startup only. In-place reloading is not described in the configuration templates; the `RELOAD` management command is available via the listener control plane (see [Service Lifecycle](service_lifecycle.md)).
 
 Unknown keys are currently ignored by most parsers, which means typos in key names will not produce an error at load time. Always verify configuration takes effect by checking service logs or querying STATUS.
@@ -37,7 +46,7 @@ SBsrv is the IPC server that hosts the engine and manages database opens. Its co
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
-| `data_dir` | `runtime/data` | Directory for engine data files. Relative paths are resolved from the working directory at startup. |
+| `data_dir` | `runtime/data` | Directory for engine data files. Relative configuration values resolve from the executable installation root, or from the config directory for a non-installed executable. |
 | `control_dir` | `runtime/control` | Directory for control-plane sockets and PID/lifecycle files. |
 
 ### `[server.logging]`
@@ -72,9 +81,9 @@ This section configures the native SBsql listener that SBsrv will supervise. Whe
 | --- | --- | --- |
 | `enabled` | `true` | Whether to start the listener. |
 | `bind_host` | `127.0.0.1` | Listener bind address. |
-| `port` | `3050` | Listener TCP port. |
-| `executable_path` | `bin/SBgate` | Path to the SBgate binary, relative to working directory. |
-| `parser_executable_path` | `bin/SBParser` | Path to the parser worker binary. |
+| `port` | `3092` | Native SBSQL listener TCP port. Port 3050 is reserved for Firebird compatibility endpoints. |
+| `executable_path` | `bin/SBgate` | Path to the shared SBgate binary, relative to the deterministic configuration base. |
+| `parser_executable_path` | `bin/SBParser` | Path to the standalone native parser worker, relative to the same base. |
 | `control_dir` | `runtime/listener/control` | Control-plane socket directory for the listener. |
 | `runtime_dir` | `runtime/listener/runtime` | Runtime directory for the listener. |
 | `tls_required` | `true` | Whether TLS is required for client connections. Setting this to `false` is strongly discouraged on any network-exposed interface. |
@@ -152,7 +161,7 @@ SBgate (the listener) accepts TCP connections from clients, manages a warm pool 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
 | `bind_address` | `127.0.0.1` | Address on which to accept client connections. |
-| `port` | `3050` | TCP port. |
+| `port` | `3092` | Native SBSQL TCP port. Port 3050 is Firebird-only. |
 | `accept_backlog` | `128` | OS-level accept queue depth. |
 | `tls_required` | `true` | Whether clients must use TLS. |
 | `per_client_max_connections` | `0` | Maximum concurrent connections per client address. `0` means no limit. |
@@ -225,13 +234,23 @@ SBmgr supervises SBsrv and SBgate as a pair. It restarts them if they fail, expo
 | `manager.metrics_enabled` | `true` | Whether metrics collection is active. |
 | `manager.management_auth_required` | `true` | Whether management-plane connections require authentication. Setting this to `false` is unsafe except in isolated testing. |
 
-The manager's proxy port defaults to `3090` and its bind address defaults to `0.0.0.0` (source: `manager_runtime.hpp:41`). These can be overridden via `manager.proxy.port` and `manager.proxy.bind`. The native management interface defaults to `127.0.0.1:3392`.
+The manager proxy is disabled by default. Its client-facing compiled defaults
+are loopback bind, required TLS, and the native SBSQL port `3092`. The backend
+port defaults to `0`, which is an unset sentinel rather than a second native
+default. Enabling the proxy requires an explicit nonzero
+`manager.backend.native_port` distinct from `manager.proxy.port`; missing or
+same-port backends are rejected before the front door is bound. Port `3050`
+remains Firebird compatibility only.
 
 ---
 
 ## SBParser.conf — Core Parser
 
-SBParser is the native SBsql parser worker. It is spawned and managed by SBgate. Its configuration uses a flat `parser.*` namespace.
+SBParser is the native SBsql parser worker. It is spawned and managed by the
+shared SBgate listener. Every parser executable is standalone for one dialect:
+it must not load, invoke, or fall through to another parser. A network parser
+has no in-process engine path; it sends SBLR over SBPS IPC to the SBsrv-owned
+engine endpoint. Its configuration uses a flat `parser.*` namespace.
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
@@ -246,12 +265,20 @@ SBParser is the native SBsql parser worker. It is spawned and managed by SBgate.
 | `parser.resource.max_streams` | `256` | Maximum concurrent streams. |
 | `parser.security.auth_relay_required` | `true` | Whether the engine must relay authentication context to the parser. |
 | `parser.execution.engine_authority_required` | `true` | Whether the engine must hold execution authority before the parser will proceed. |
+| `parser.execution.engine_transport` | `sbps_ipc_only` | Requires the standalone network parser to reach the engine only through SBPS IPC. |
+| `parser.execution.direct_engine_link` | `forbidden` | Forbids linking the network parser executable to the embedded engine/server core. |
+| `parser.execution.cross_parser_dependency` | `forbidden` | Forbids using any other dialect parser as a parse or fallback implementation. |
 
 ---
 
 ## Dialect Parser Templates
 
-Each dialect parser (e.g. `SB_PGSQL_Parser.conf`, `SB_MYSQL_Parser.conf`) follows the same structure as `SBParser.conf` but uses a different `parser.family` and `parser.bundle_contract_id`. They also include compatibility keys that constrain what the parser is allowed to do:
+Each dialect parser follows the same standalone structure as `SBParser.conf`
+but uses a different `parser.family` and `parser.bundle_contract_id`. The same
+SBgate executable hosts the configured network and selects/spawns the one
+standalone parser required by that listener profile; there is not a distinct
+listener executable per parser. Dialect templates also include compatibility
+keys that constrain what the parser is allowed to do:
 
 | Key | Meaning |
 | --- | --- |

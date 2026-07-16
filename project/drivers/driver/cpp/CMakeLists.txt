@@ -56,13 +56,15 @@ target_link_libraries(sb_regress_cpp PRIVATE scratchbird_client OpenSSL::Crypto)
 
 if (TARGET sbl_sbsql_parser_worker_core)
     target_compile_definitions(scratchbird_client PRIVATE SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE)
-    if (TARGET sb_server_core)
+    if (TARGET sbl_sbsql_embedded_client_bridge)
         target_compile_definitions(scratchbird_client PRIVATE SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
         if (TARGET sb_core_memory)
             target_link_libraries(scratchbird_client PRIVATE sb_core_memory)
         endif()
+        target_link_libraries(scratchbird_client PRIVATE sbl_sbsql_embedded_client_bridge)
+    else()
+        target_link_libraries(scratchbird_client PRIVATE sbl_sbsql_parser_worker_core)
     endif()
-    target_link_libraries(scratchbird_client PRIVATE sbl_sbsql_parser_worker_core)
 endif()
 
 if (WIN32)
@@ -107,6 +109,24 @@ if (BUILD_TESTING)
     )
     set_tests_properties(scratchbird_client_prepared_handle_authority_test PROPERTIES
         LABELS "IPAR-P1-03;IPAR-P5-04;driver;prepared_handle_authority;mga_transaction_regression"
+    )
+
+    add_executable(scratchbird_client_tls_peer_identity_test
+        tests/test_tls_peer_identity.cpp
+    )
+    target_compile_features(scratchbird_client_tls_peer_identity_test PRIVATE cxx_std_17)
+    target_link_libraries(scratchbird_client_tls_peer_identity_test
+        PRIVATE
+            scratchbird_client
+            OpenSSL::SSL
+            OpenSSL::Crypto
+    )
+    add_test(
+        NAME scratchbird_client_tls_peer_identity_test
+        COMMAND scratchbird_client_tls_peer_identity_test
+    )
+    set_tests_properties(scratchbird_client_tls_peer_identity_test PROPERTIES
+        LABELS "driver;cpp;tls;verify_full;hostname_verification;fail_closed"
     )
 
     find_package(GTest)

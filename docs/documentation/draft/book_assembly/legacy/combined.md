@@ -88238,7 +88238,7 @@ This section configures the native SBsql listener that SBsrv will supervise. Whe
 | --- | --- | --- |
 | `enabled` | `true` | Whether to start the listener. |
 | `bind_host` | `127.0.0.1` | Listener bind address. |
-| `port` | `3050` | Listener TCP port. |
+| `port` | `3092` | Native SBSQL listener TCP port. Port 3050 is reserved for Firebird compatibility endpoints. |
 | `executable_path` | `bin/SBgate` | Path to the SBgate binary, relative to working directory. |
 | `parser_executable_path` | `bin/SBParser` | Path to the parser worker binary. |
 | `control_dir` | `runtime/listener/control` | Control-plane socket directory for the listener. |
@@ -88318,7 +88318,7 @@ SBgate (the listener) accepts TCP connections from clients, manages a warm pool 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
 | `bind_address` | `127.0.0.1` | Address on which to accept client connections. |
-| `port` | `3050` | TCP port. |
+| `port` | `3092` | Native SBSQL TCP port. Port 3050 is Firebird-only. |
 | `accept_backlog` | `128` | OS-level accept queue depth. |
 | `tls_required` | `true` | Whether clients must use TLS. |
 | `per_client_max_connections` | `0` | Maximum concurrent connections per client address. `0` means no limit. |
@@ -88391,7 +88391,7 @@ SBmgr supervises SBsrv and SBgate as a pair. It restarts them if they fail, expo
 | `manager.metrics_enabled` | `true` | Whether metrics collection is active. |
 | `manager.management_auth_required` | `true` | Whether management-plane connections require authentication. Setting this to `false` is unsafe except in isolated testing. |
 
-The manager's proxy port defaults to `3090` and its bind address defaults to `0.0.0.0` (source: `manager_runtime.hpp:41`). These can be overridden via `manager.proxy.port` and `manager.proxy.bind`. The native management interface defaults to `127.0.0.1:3392`.
+The manager proxy is disabled by default. Its client-facing compiled defaults are loopback bind, required TLS, and native SBSQL port `3092`. The backend port defaults to `0`, which is an unset sentinel rather than a second native default. Enabling the proxy requires an explicit nonzero `manager.backend.native_port` distinct from `manager.proxy.port`; missing or same-port backends are rejected before bind. Port `3050` remains Firebird compatibility only.
 
 ---
 
@@ -88500,7 +88500,7 @@ Edit a copy of `etc/scratchbird/SBsrv.conf`. Key decisions:
 1. Set `[server.runtime] data_dir` and `control_dir` to the deployment's runtime paths.
 2. Set `[server.database] default_path` to the database file location.
 3. Set `[server.database] auto_create = true` only for the initial setup run; reset it to `false` after the database exists.
-4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3050`).
+4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3092`; port `3050` is Firebird-only).
 5. Verify `[server.listener.native] executable_path` and `parser_executable_path` resolve to the correct binaries.
 6. Confirm `[server.parser] sbps_endpoint` will be writable and accessible to SBgate.
 
@@ -88524,7 +88524,7 @@ After startup, confirm readiness by:
 ### First Transaction Proof
 
 ```
-bin/SBsql --host 127.0.0.1 --port 3050 --database default
+bin/SBsql --host 127.0.0.1 --port 3092 --database default
 SBsql> SELECT 1;
 SBsql> \quit
 ```
@@ -88579,7 +88579,7 @@ server_endpoint = runtime/control/sb_server.sbps.sock
 
 # Where to accept clients
 bind_address = 127.0.0.1
-port = 3050
+port = 3092
 tls_required = true           # do not set false on any network-exposed interface
 
 # Parser pool — start with 1, allow up to 16
@@ -88635,7 +88635,7 @@ SBmgr is the single-node manager. It supervises both SBsrv and SBgate, restarts 
 - `etc/scratchbird/SBmgr.conf` has been copied and edited.
 - `etc/scratchbird/SBsrv.conf` and `etc/scratchbird/SBgate.conf` are configured for the managed deployment.
 - `manager.management_auth_required = true` is retained (the default).
-- The proxy port (`3090` by default) is accessible from clients.
+- The proxy is explicitly enabled and its configured port (the native default is `3092`) is accessible from clients.
 
 ### Configuration Inputs
 
@@ -88644,7 +88644,7 @@ Edit a copy of `etc/scratchbird/SBmgr.conf`. Key decisions:
 1. Set `manager.control_dir` and `manager.runtime_dir` to writable paths.
 2. Confirm `manager.listener_command` and `manager.server_command` resolve to the correct binaries.
 3. Set `manager.restart_policy`, `manager.restart_max`, and `manager.restart_window_ms` to match operational expectations.
-4. If you want to override the proxy port, add `manager.proxy.port = <value>`. The default is `3090`.
+4. The proxy is disabled by default. If you enable it, retain required TLS and configure a nonzero `manager.backend.native_port` distinct from the client-facing `manager.proxy.port`. The only native default is front-door port `3092`; backend `0` means unset, while `3050` is Firebird-only.
 
 ### Startup Sequence (Manager Lifecycle States)
 
@@ -88761,7 +88761,7 @@ SBmgr has the most complex lifecycle because it supervises other processes. Its 
 | `server_supervision_starting` | Spawning SBsrv |
 | `listener_endpoint_resolving` | Determining which SBgate endpoint to supervise |
 | `listener_supervision_starting` | Spawning SBgate |
-| `proxy_binding` | Binding the proxy TCP port (default `3090`) |
+| `proxy_binding` | Binding the proxy TCP port (native default `3092`; disabled in the secure release template) |
 | `management_binding` | Binding the management interface |
 | `server_heartbeat_starting` | Starting heartbeat to SBsrv |
 | `ready` | All supervised processes are running; accepting work |
@@ -101375,7 +101375,7 @@ conn = scratchbird.connect(
 ```python
 conn = scratchbird.connect(
     host="proxy.example.com",
-    port=3090,
+    port=3092,
     database="prod",
     user="alice",
     password="secret",
@@ -102043,7 +102043,7 @@ the bridge config.
 ### Connection string (manager-proxy ingress)
 
 ```ini
-Driver={ScratchBird};Server=127.0.0.1;Port=3090;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
+Driver={ScratchBird};Server=127.0.0.1;Port=3092;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
 ```
 
 ### DSN entry (odbc.ini / registry)
@@ -107304,7 +107304,7 @@ host=localhost port=3092 dbname=mydb user=myuser password=mypass
 **Manager-proxy URI:**
 
 ```
-scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token
+scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token
 ```
 
 ### Selected DSN keys
@@ -118053,6 +118053,3 @@ is refused, not silently emulated. See
 - [Conformance And Compatibility Targets](../conformance_and_status.md)
 - [Reference Parser List](../README.md)
 - [Client And Driver Guide](../../Client_Driver_Guide/README.md)
-
-
-

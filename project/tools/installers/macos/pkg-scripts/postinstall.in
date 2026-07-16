@@ -1,0 +1,28 @@
+#!/bin/sh
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+    printf '%s\n' BOOTSTRAP.OS_AUTHORITY_DENIED >&2
+    exit 1
+fi
+
+target_volume=${3:-/}
+if [ "$target_volume" != / ]; then
+    printf '%s\n' BOOTSTRAP.INSTALL_DEFAULTS_INVALID >&2
+    exit 1
+fi
+
+helper=/opt/ScratchBird/libexec/scratchbird-macos-system-install
+if [ ! -x "$helper" ]; then
+    printf '%s\n' BOOTSTRAP.INSTALL_DEFAULTS_INVALID >&2
+    exit 1
+fi
+
+exec "$helper" post-install \
+    --identity-mode system \
+    --root / \
+    --package-format pkg \
+    --package-version '@SCRATCHBIRD_VERSION@'

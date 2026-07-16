@@ -107,7 +107,7 @@ const AuthFamilyRegistryEntry* RegistryEntryForFamily(const std::string& provide
 }
 
 bool HasAdmin(const EngineRequestContext& context) {
-  return SecurityContextHasRight(context, "AUTH_PROVIDER_ADMIN") || SecurityContextHasTag(context, "security.bootstrap");
+  return SecurityContextHasRight(context, "AUTH_PROVIDER_ADMIN");
 }
 
 AuthProviderDecision Fail(const EngineApiRequest& request, std::string code, std::string detail) {

@@ -14,6 +14,7 @@
 #include "dml/constraint_enforcement.hpp"
 #include "hash_digest.hpp"
 #include "runtime_platform.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -323,22 +324,11 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-bool HasTraceTag(const EngineRequestContext& context, const std::string& tag) {
-  for (const auto& candidate : context.trace_tags) {
-    if (candidate == tag) { return true; }
-  }
-  return false;
-}
-
 bool HasDomainRight(const EngineRequestContext& context,
                     const std::string& domain_uuid,
                     const std::string& right) {
-  if (!context.security_context_present) { return false; }
-  if (HasTraceTag(context, "group:ROOT") || HasTraceTag(context, "role:ROOT")) { return true; }
-  if (HasTraceTag(context, "right:" + right)) { return true; }
-  if (!domain_uuid.empty() && HasTraceTag(context, "right:" + right + ":" + domain_uuid)) { return true; }
-  if (!domain_uuid.empty() && HasTraceTag(context, "domain_right:" + domain_uuid + ":" + right)) { return true; }
-  return false;
+  return context.security_context_present &&
+         SecurityContextHasRight(context, right, domain_uuid);
 }
 
 std::string RequiredRightFromPolicy(const std::string& policy) {

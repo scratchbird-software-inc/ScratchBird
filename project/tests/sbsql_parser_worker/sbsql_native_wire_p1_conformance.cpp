@@ -7,8 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "embedded/embedded_engine_client.hpp"
+#include "database_lifecycle.hpp"
 #include "datatype_wire_metadata.hpp"
 #include "sbps.hpp"
+#include "uuid.hpp"
 
 #include <poll.h>
 #include <signal.h>
@@ -16,10 +19,12 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -60,6 +65,9 @@ constexpr std::uint32_t kOidInt8 = 20;
 constexpr std::uint32_t kOidText = 25;
 
 namespace datatypes = scratchbird::core::datatypes;
+namespace database = scratchbird::storage::database;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
 
 struct Frame {
   std::uint8_t type{0};
@@ -245,12 +253,33 @@ std::vector<Frame> ExchangeConversation(const std::vector<std::vector<std::uint8
 }
 
 std::string MakeTempDatabasePath() {
+  static std::atomic<std::uint64_t> identity_time{1784200000000ULL};
   std::string tmpl = "/tmp/sb_p1_wire_array_bind.XXXXXX";
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "array-bind temp database directory was not created");
-  return std::string(made) + "/array_bind.sbdb";
+  const std::string path = std::string(made) + "/array_bind.sbdb";
+  const auto database_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::database, identity_time.fetch_add(2));
+  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
+      UuidKind::filespace, identity_time.fetch_add(2));
+  Require(database_uuid.ok() && filespace_uuid.ok(),
+          "array-bind fixture identity generation failed");
+  database::DatabaseCreateConfig create;
+  create.path = path;
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = identity_time.fetch_add(2);
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  const auto created = database::CreateDatabaseFile(create);
+  Require(created.ok() &&
+              created.create_finality ==
+                  database::DatabaseCreateFinalityClass::committed,
+          "array-bind fixture database was not durably published");
+  return path;
 }
 
 std::vector<Frame> ExchangeAuthenticatedQueryConversation(
@@ -263,8 +292,10 @@ std::vector<Frame> ExchangeAuthenticatedQueryConversation(
   scratchbird::parser::sbsql::ParserConfig config;
   config.probe_mode = true;
   config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
   config.embedded_auth_bypass_sysarch = true;
-  config.embedded_database_path = MakeTempDatabasePath();
+  const std::filesystem::path fixture_database = MakeTempDatabasePath();
+  config.embedded_database_path = fixture_database.string();
   scratchbird::parser::sbsql::ParserMetrics metrics;
   scratchbird::parser::sbsql::SblrTemplateCache cache;
   scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
@@ -313,6 +344,8 @@ std::vector<Frame> ExchangeAuthenticatedQueryConversation(
   (void)::shutdown(fds[0], SHUT_WR);
   worker.join();
   (void)::close(fds[0]);
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
   return responses;
 }
 
@@ -334,8 +367,10 @@ std::vector<Frame> ExchangeAuthenticatedArrayBindConversation(
   scratchbird::parser::sbsql::ParserConfig config;
   config.probe_mode = true;
   config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
   config.embedded_auth_bypass_sysarch = true;
-  config.embedded_database_path = MakeTempDatabasePath();
+  const std::filesystem::path fixture_database = MakeTempDatabasePath();
+  config.embedded_database_path = fixture_database.string();
   scratchbird::parser::sbsql::ParserMetrics metrics;
   scratchbird::parser::sbsql::SblrTemplateCache cache;
   scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
@@ -371,6 +406,8 @@ std::vector<Frame> ExchangeAuthenticatedArrayBindConversation(
   (void)::shutdown(fds[0], SHUT_WR);
   worker.join();
   (void)::close(fds[0]);
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(fixture_database.parent_path(), cleanup_error);
   return responses;
 }
 
@@ -545,6 +582,42 @@ void CheckSbpsUnknownCapabilityBits() {
           "SBPS hello with high-byte unknown capability bit was not refused");
 }
 
+void CheckEmbeddedClientNeverCreatesMissingDatabase() {
+  std::string tmpl = "/tmp/sb_p1_embedded_no_create.XXXXXX";
+  std::vector<char> writable(tmpl.begin(), tmpl.end());
+  writable.push_back('\0');
+  char* made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "embedded no-create fixture directory was not created");
+  const std::string path = std::string(made) + "/must_not_be_created.sbdb";
+
+  scratchbird::parser::sbsql::ParserConfig config;
+  config.embedded_engine_direct = true;
+  config.embedded_database_path = path;
+  scratchbird::parser::sbsql::EmbeddedEngineClient client(config);
+  scratchbird::parser::sbsql::AuthCredentialEnvelope credentials;
+  credentials.provider_family = "local_password";
+  credentials.principal = "fixture_user";
+  credentials.requested_database = path;
+  credentials.credential_evidence_present = true;
+  credentials.credential_evidence = "not-a-valid-credential";
+  scratchbird::parser::sbsql::SessionContext session;
+  scratchbird::parser::sbsql::MessageVectorSet messages;
+  Require(!client.AuthenticateAndAttach(credentials, &session, &messages),
+          "embedded client unexpectedly opened a missing database");
+  Require(!std::filesystem::exists(path),
+          "embedded client connection attempt created a database file");
+  bool saw_not_found = false;
+  for (const auto& diagnostic : messages.diagnostics) {
+    if (diagnostic.code == "SERVER.ENGINE_HOST.DATABASE_NOT_FOUND") {
+      saw_not_found = true;
+    }
+  }
+  Require(saw_not_found,
+          "embedded missing database refusal did not retain the exact diagnostic");
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(std::filesystem::path(made), cleanup_error);
+}
+
 void CheckArrayBindPacketNegotiated() {
   const auto responses = ExchangeAuthenticatedArrayBindConversation({
       EncodeFrame(kStartup,
@@ -629,6 +702,7 @@ int main() {
   CheckFrameFailClosedPaths();
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();
+  CheckEmbeddedClientNeverCreatesMissingDatabase();
   CheckArrayBindPacketNegotiated();
   CheckScriptIngestQueryMetadata();
   CheckScriptIngestPartialQueryFrames();

@@ -64,6 +64,8 @@ inline constexpr const char* kSecurityPrincipalDiagnosticProtectedMaterialPlaint
     "SECURITY.PROTECTED_MATERIAL.PLAINTEXT_REFUSED";
 inline constexpr const char* kSecurityPrincipalDiagnosticAuditEvidenceRequired =
     "SECURITY.AUDIT.EVIDENCE_REQUIRED";
+inline constexpr const char* kSecurityPrincipalDiagnosticCatalogAuthorityRequired =
+    "SECURITY.CATALOG_AUTHORITY_REQUIRED";
 
 struct EngineSecurityPrincipalRecord {
   std::uint64_t creator_tx = 0;
@@ -181,6 +183,15 @@ struct EngineLoadSecurityPrincipalLifecycleStateResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   EngineSecurityPrincipalLifecycleState state;
+};
+
+struct EngineOwnedSysarchRoleIdentityResult {
+  bool ok = false;
+  bool present = false;
+  std::string role_uuid;
+  std::string principal_uuid;
+  std::uint64_t policy_generation = 0;
+  EngineApiDiagnostic diagnostic;
 };
 
 struct EngineSecurityCreatePrincipalRequest : EngineApiRequest {
@@ -573,6 +584,9 @@ EngineSecurityInspectOperationResult EngineSecurityInspectOperation(
     const EngineSecurityInspectOperationRequest& request);
 
 EngineLoadSecurityPrincipalLifecycleStateResult LoadSecurityPrincipalLifecycleState(
+    const EngineRequestContext& context);
+
+EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
     const EngineRequestContext& context);
 
 std::string RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::string text);

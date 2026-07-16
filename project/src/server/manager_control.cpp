@@ -188,19 +188,6 @@ std::string EngineRightForManagementRight(const std::string& required_right) {
   return required_right;
 }
 
-bool HasRequiredRight(const ServerSessionRecord& session, const std::string& right) {
-  const auto principal = session.principal_claim;
-  if (principal == "alice" || principal == "sysdba" || principal == "root" || principal == "admin") {
-    return true;
-  }
-  if ((principal == "auditor" || principal == "operator") &&
-      (right == "OBS_MANAGEMENT_INSPECT" || right == "OBS_CONFIG_INSPECT" ||
-       right == "METRICS_INSPECT" || right == "PARSER_INSPECT")) {
-    return true;
-  }
-  return false;
-}
-
 void AddManagementSessionGrant(
     engine_api::EngineMaterializedAuthorizationContext* authorization,
     const engine_api::EngineUuid& subject_uuid,
@@ -244,16 +231,19 @@ MaterializeManagementSessionAuthorizationContext(
 
   auto durable_context =
       MaterializeDurableManagementAuthorizationContext(session, context);
-  if (durable_context.present &&
-      (!durable_context.grants.empty() ||
-       durable_context.effective_subjects.size() > 1)) {
+  if (durable_context.present) {
     durable_context.evidence_tags.push_back(
         "server.management.durable_authorization_context");
     return durable_context;
   }
 
+  const bool fixture_authority =
+      context.trust_mode == engine_api::EngineTrustMode::embedded_in_process &&
+      engine_api::SecurityContextHasTag(
+          context, "security.fixture_trace_authority");
   for (const auto& tag : session.engine_authorization_trace_tags) {
     authorization.evidence_tags.push_back(tag);
+    if (!fixture_authority) continue;
     if (tag.rfind("deny:", 0) == 0) {
       AddManagementSessionGrant(
           &authorization,
@@ -268,10 +258,13 @@ MaterializeManagementSessionAuthorizationContext(
           false);
     }
   }
+  authorization.present = true;
   if (!authorization.grants.empty()) {
-    authorization.present = true;
     authorization.evidence_tags.push_back(
         "server.management.materialized_authorization_context");
+  } else {
+    authorization.evidence_tags.push_back(
+        "server.management.authorization_trace_tags_not_authority");
   }
   return authorization;
 }
@@ -281,7 +274,9 @@ engine_api::EngineRequestContext EngineContextForManagement(
     const ServerSessionRecord& session,
     const sbps::Frame& frame) {
   engine_api::EngineRequestContext engine_context;
-  engine_context.trust_mode = engine_api::EngineTrustMode::server_isolated;
+  engine_context.trust_mode = session.embedded_in_process
+                                  ? engine_api::EngineTrustMode::embedded_in_process
+                                  : engine_api::EngineTrustMode::server_isolated;
   engine_context.request_id = UuidBytesToText(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
   engine_context.database_uuid.canonical = session.database_uuid;
@@ -299,17 +294,6 @@ engine_api::EngineRequestContext EngineContextForManagement(
   PopulateEngineLanguageContextFromSession(session,
                                            &engine_context.language_context);
   engine_context.trace_tags = session.engine_authorization_trace_tags;
-  if (session.principal_claim == "root" || session.principal_claim == "sysdba") {
-    engine_context.trace_tags.push_back("group:ROOT");
-  } else if (session.principal_claim == "admin") {
-    engine_context.trace_tags.push_back("group:OPS");
-    engine_context.trace_tags.push_back("group:DBA");
-  } else if (session.principal_claim == "operator") {
-    engine_context.trace_tags.push_back("group:OPS");
-  } else if (session.principal_claim == "auditor") {
-    engine_context.trace_tags.push_back("group:AUD");
-    engine_context.trace_tags.push_back("group:SUP");
-  }
   engine_context.trace_tags.push_back("sb_server.management_request");
   if (context.engine_state != nullptr) {
     for (const auto& database : context.engine_state->databases) {
@@ -346,14 +330,12 @@ std::optional<ServerDiagnostic> EngineAuthorizeManagement(
   authorize.option_envelopes.push_back("operation_key:" + operation_key);
   const auto authorized = engine_api::EngineAuthorize(authorize);
   if (authorized.ok && authorized.authorized) return std::nullopt;
-  const std::string code = authorized.diagnostics.empty()
-      ? "SECURITY.AUTHORIZATION.DENIED"
-      : authorized.diagnostics.front().code;
   const std::string detail = authorized.diagnostics.empty()
       ? required_right
-      : authorized.diagnostics.front().detail;
+      : authorized.diagnostics.front().code + ":" +
+            authorized.diagnostics.front().detail;
   return ManagementDiagnostic(
-      code,
+      "SECURITY.ACCESS_DENIED",
       "The engine denied the server management request.",
       {{"required_right", required_right},
        {"engine_required_right", engine_right},
@@ -1193,22 +1175,6 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                                "Server management requests require a bound server session.")});
   }
   const auto required_right = RequiredRightForOperation(decoded->operation_key);
-  if (!HasRequiredRight(*session, required_right)) {
-    RecordManagementLifecycleObservability(context,
-                                           frame,
-                                           decoded->operation_key,
-                                           "refused",
-                                           "SECURITY.ACCESS_DENIED",
-                                           {},
-                                           {},
-                                           session->database_uuid,
-                                           "server-side right precheck denied");
-    return ErrorResponse(frame,
-                         {ManagementDiagnostic("SECURITY.ACCESS_DENIED",
-                                               "The session does not hold the required management right.",
-                                               {{"required_right", required_right},
-                                                {"operation_key", decoded->operation_key}})});
-  }
   if (auto denial = EngineAuthorizeManagement(context,
                                               *session,
                                               frame,

@@ -8,6 +8,7 @@
 
 #include "agents/agent_action_hooks_api.hpp"
 
+#include "agents/agent_authorization_context.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agent_metric_runtime.hpp"
 #include "agent_runtime.hpp"
@@ -311,12 +312,8 @@ AgentRuntimeContext AgentContextFromHookRequest(const EngineAgentActionHookReque
   context.principal_uuid = request.context.principal_uuid.canonical;
   context.database_uuid = request.context.database_uuid.canonical;
   context.cluster_uuid = request.context.cluster_uuid.canonical;
-  for (const auto& tag : request.context.trace_tags) {
-    if (tag.rfind("right:", 0) == 0) { context.rights.push_back(tag.substr(6)); }
-    if (tag.rfind("group:", 0) == 0) { context.groups.push_back(tag.substr(6)); }
-    context.trace_tags.push_back(tag);
-  }
-  if (SecurityContextHasTag(request.context, "security.bootstrap")) { context.trace_tags.push_back("security.bootstrap"); }
+  agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
+                                                            &context);
   const auto wall = OptionValue(request, "wall_now_us:");
   const auto mono = OptionValue(request, "monotonic_now_us:");
   const auto cluster = OptionValue(request, "cluster_now_us:");

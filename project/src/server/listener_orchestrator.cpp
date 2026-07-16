@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -91,13 +92,17 @@ bool RawListenerCommandAllowed(std::string_view command) {
          command == "POOL_STATUS" || command == "POOL STATUS";
 }
 
-#ifdef _WIN32
-proto::Bytes ServerManagedListenerDbbtKey() {
-  static constexpr std::string_view kServerManagedTestKey =
-      "scratchbird-listener-test-dbbt-key-v1";
-  return proto::Bytes(kServerManagedTestKey.begin(), kServerManagedTestKey.end());
+std::optional<proto::Bytes> ServerManagedListenerDbbtKey() {
+  const char* encoded = std::getenv("SCRATCHBIRD_LISTENER_DBBT_KEY_HEX");
+  if (encoded == nullptr || *encoded == '\0') {
+    return std::nullopt;
+  }
+  auto key = proto::FromHex(encoded);
+  if (key.size() < 32) {
+    return std::nullopt;
+  }
+  return key;
 }
-#endif
 
 std::string HexDigestPrefix(const proto::Sha256Digest& digest, std::size_t bytes) {
   static constexpr char hex[] = "0123456789abcdef";
@@ -171,7 +176,7 @@ std::string ParserExecutablePath(const ServerBootstrapConfig& config) {
   if (!config.listener_native_parser_executable_path.empty()) {
     return config.listener_native_parser_executable_path.string();
   }
-  return SiblingExecutable("sbp_native");
+  return SiblingExecutable("SBParser");
 }
 
 std::string ProfileUuid(std::uint64_t generation) {
@@ -421,9 +426,19 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
       return result;
     }
 #ifdef _WIN32
+    const auto management_key = ServerManagedListenerDbbtKey();
+    if (!management_key.has_value()) {
+      CloseListenerManagementSocket(fd);
+      result.diagnostics.push_back(ListenerDiagnostic(
+          "LISTENER.DBBT.KEYRING_KEY_MISSING",
+          "The server-managed listener DBBT key is unavailable or invalid.",
+          {{"listener_uuid", profile->listener_uuid}}));
+      result.state_after = profile->state;
+      return result;
+    }
     scratchbird::listener::SignListenerManagementEnvelopeHmacSha256(
         &*envelope,
-        ServerManagedListenerDbbtKey());
+        *management_key);
 #endif
     frame.payload = scratchbird::listener::EncodeListenerManagementEnvelope(*envelope);
   }
@@ -512,6 +527,16 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.state_after = profile->state;
     return result;
   }
+  if (!ServerManagedListenerDbbtKey().has_value()) {
+    profile->state = "failed";
+    profile->diagnostic_code = "LISTENER.DBBT.KEYRING_KEY_MISSING";
+    result.diagnostics.push_back(ListenerDiagnostic(
+        profile->diagnostic_code,
+        "The server-managed listener requires protected DBBT key material.",
+        {{"listener_uuid", profile->listener_uuid}}));
+    result.state_after = profile->state;
+    return result;
+  }
 
   std::error_code ec;
   std::filesystem::create_directories(profile->control_dir, ec);
@@ -553,17 +578,16 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   std::vector<std::string> args{
       profile->listener_executable_path,
       "--managed",
-      "--protocol-family=native",
+      "--protocol-family=sbsql",
       "--listener-profile=native",
       listener_uuid_arg,
       listener_profile_uuid_arg,
       lifecycle_arg,
       "--controller-type=server",
       controller_arg,
-      "--parser-package=sbp_native",
-      "--parser-package-uuid=builtin-test-package",
-      "--dialect-profile-uuid=sbwp-v1",
-      "--bundle-contract-id=bundle.default@1",
+      "--parser-package=SBParser",
+      "--dialect-profile-uuid=sbsql.v3",
+      "--bundle-contract-id=sbp_sbsql@1",
       server_arg,
       database_arg,
       parser_arg,
@@ -573,8 +597,8 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
       port_arg,
       ready_min_arg,
       ready_max_arg,
-      "--dbbt-key-source=test_builtin",
-      "--allow-test-dbbt-builtin=true",
+      "--dbbt-key-source=keyring",
+      "--allow-test-dbbt-builtin=false",
   };
   if (profile->tls_required) {
     args.push_back("--tls-required=true");

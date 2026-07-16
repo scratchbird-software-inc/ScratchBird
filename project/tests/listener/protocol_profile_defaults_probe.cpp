@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "listener_config.hpp"
+#include "dbbt_lpreface.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -36,6 +37,26 @@ bool HasDiagnostic(const scratchbird::listener::ConfigResult& result, std::strin
   return false;
 }
 
+bool HasDiagnostic(const scratchbird::listener::DbbtGateResult& result,
+                   std::string_view code) {
+  for (const auto& diagnostic : result.messages.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+void SetDbbtEnvironment(const char* value) {
+#ifdef _WIN32
+  _putenv_s("SCRATCHBIRD_LISTENER_DBBT_KEY_HEX", value);
+#else
+  if (*value == '\0') {
+    unsetenv("SCRATCHBIRD_LISTENER_DBBT_KEY_HEX");
+  } else {
+    setenv("SCRATCHBIRD_LISTENER_DBBT_KEY_HEX", value, 1);
+  }
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -54,6 +75,9 @@ int main() {
   if (!Expect(sbsql.config.dialect == "sbsql.v3", "SBSQL default dialect mismatch")) {
     return EXIT_FAILURE;
   }
+  if (!Expect(sbsql.config.port == 3092, "SBSQL default port must be 3092")) {
+    return EXIT_FAILURE;
+  }
 
   auto native = Load({"listener_profile_defaults_probe",
                       "--validate-config",
@@ -68,6 +92,9 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!Expect(native.config.dialect == "sbwp.v1", "Native default dialect mismatch")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(native.config.port == 3092, "Native default port must be 3092")) {
     return EXIT_FAILURE;
   }
 
@@ -85,6 +112,32 @@ int main() {
   }
   if (!Expect(firebird.config.dialect == "firebird.wire.v13",
               "Firebird default dialect mismatch")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(firebird.config.port == 3050,
+              "Firebird default port must remain 3050")) {
+    return EXIT_FAILURE;
+  }
+
+  scratchbird::listener::ListenerConfig keyring_config;
+  keyring_config.dbbt_key_source = scratchbird::listener::DbbtKeySource::kKeyring;
+  scratchbird::listener::DbbtKeyMaterial key_material;
+  SetDbbtEnvironment("0011223344556677");
+  const auto short_key =
+      scratchbird::listener::LoadDbbtKeyMaterial(keyring_config, &key_material);
+  if (!Expect(!short_key.ok, "short DBBT keyring material must fail closed") ||
+      !Expect(HasDiagnostic(short_key, "LISTENER.DBBT.KEYRING_KEY_INVALID"),
+              "short DBBT keyring material diagnostic mismatch")) {
+    SetDbbtEnvironment("");
+    return EXIT_FAILURE;
+  }
+  SetDbbtEnvironment(
+      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+  const auto valid_key =
+      scratchbird::listener::LoadDbbtKeyMaterial(keyring_config, &key_material);
+  SetDbbtEnvironment("");
+  if (!Expect(valid_key.ok && key_material.bytes.size() == 32,
+              "32-byte DBBT keyring material must be accepted")) {
     return EXIT_FAILURE;
   }
 

@@ -34,10 +34,10 @@ struct ServerListenerProfileRuntime {
   std::string profile_name = "native";
   std::string state = "disabled";
   std::string bind_host = "127.0.0.1";
-  std::uint64_t port = 3050;
+  std::uint64_t port = 3092;
   bool enabled = false;
   bool reloadable = true;
-  std::string parser_package_ref = "builtin_test_package";
+  std::string parser_package_ref = "SBParser";
   std::string engine_endpoint;
   std::string database_selector;
   std::string listener_executable_path;

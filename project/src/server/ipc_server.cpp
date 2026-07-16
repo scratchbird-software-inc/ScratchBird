@@ -97,7 +97,7 @@ std::string CurrentMonotonicNsText() {
 }
 
 void HandleStopSignal(int) {
-  g_stop_requested.store(true);
+  g_stop_requested.store(true, std::memory_order_release);
 }
 
 ServerDiagnostic EndpointDiagnostic(std::string code,
@@ -2391,6 +2391,18 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
 
 }  // namespace
 
+void ResetParserServerStopRequest() {
+  g_stop_requested.store(false, std::memory_order_release);
+}
+
+void RequestParserServerStop() {
+  g_stop_requested.store(true, std::memory_order_release);
+}
+
+bool ParserServerStopRequested() {
+  return g_stop_requested.load(std::memory_order_acquire);
+}
+
 std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(
     const sbps::Frame& frame,
     const HostedEngineState& engine_state,
@@ -2406,7 +2418,8 @@ std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(
 
 ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& config,
                                                    const ServerLifecycleArtifacts& artifacts,
-                                                   const HostedEngineState& engine_state) {
+                                                   const HostedEngineState& engine_state,
+                                                   const ParserServerIpcLifecycleCallbacks& callbacks) {
   ServerIpcEndpointResult result;
 #ifdef _WIN32
   if (!EnsureWinsockInitialized()) {
@@ -2534,13 +2547,16 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     return result;
   }
   WriteServingState(config, artifacts, daemon_lifecycle);
+  if (!ParserServerStopRequested() && callbacks.on_ready) {
+    callbacks.on_ready();
+  }
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
   ServerObservabilityState observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
   std::mutex client_dispatch_mutex;
   std::vector<std::thread> client_threads;
 
-  while (!g_stop_requested.load()) {
+  while (!ParserServerStopRequested()) {
 #ifdef _WIN32
     fd_set read_set;
     FD_ZERO(&read_set);
@@ -2614,7 +2630,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                  &observability,
                                  &client_dispatch_mutex]() {
       bool release_heap_after_close = false;
-      while (!g_stop_requested.load()) {
+      while (!ParserServerStopRequested()) {
         if (!ClientSocketReady(client_fd)) {
           continue;
         }
@@ -2634,7 +2650,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                         &observability,
                                         &release_heap_after_close);
           if (maintenance_coordinator.shutdown_requested) {
-            g_stop_requested.store(true);
+            RequestParserServerStop();
           }
         }
         if (!keep_open) {
@@ -2649,7 +2665,10 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     });
   }
 
-  g_stop_requested.store(true);
+  RequestParserServerStop();
+  if (callbacks.on_stopping) {
+    callbacks.on_stopping();
+  }
   for (auto& client_thread : client_threads) {
     if (client_thread.joinable()) {
       client_thread.join();

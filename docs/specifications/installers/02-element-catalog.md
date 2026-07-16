@@ -75,7 +75,7 @@ engine in different modes (embedded vs service) and under different policies (07
 | Operator / DBA | manager + per-database server + listeners + admin CLI; no docs/examples |
 | Single-driver consumer | `runtime.shared-client` + one driver |
 | Embedder | embeddable engine lib + headers only |
-| Evaluator | engine + one CLI + sample database |
+| Evaluator | engine + one CLI + example bootstrap recipe and sample schema; no pre-created database |
 
 ## Metapackages
 

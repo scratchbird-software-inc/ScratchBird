@@ -664,60 +664,6 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                            operand.type.starts_with("row_field:");
     const bool row_null_field = operand.type == "row_null_field" ||
                                 operand.type.starts_with("row_null_field:");
-    if (operand.type == "text" && operand.name == "authorization_tag" &&
-        !operand.value.empty() &&
-        std::find(api_request.context.trace_tags.begin(),
-                  api_request.context.trace_tags.end(),
-                  operand.value) == api_request.context.trace_tags.end()) {
-      api_request.context.trace_tags.push_back(operand.value);
-      if (operand.value.rfind("right:", 0) == 0 ||
-          operand.value.rfind("deny:", 0) == 0) {
-        auto& authorization = api_request.context.authorization_context;
-        authorization.present = true;
-        if (authorization.principal_uuid.canonical.empty()) {
-          authorization.principal_uuid = api_request.context.principal_uuid;
-        }
-        if (authorization.authority_uuid.canonical.empty()) {
-          authorization.authority_uuid = api_request.context.database_uuid;
-        }
-        if (authorization.security_epoch == 0) {
-          authorization.security_epoch = api_request.context.security_epoch;
-        }
-        if (authorization.policy_epoch == 0) {
-          authorization.policy_epoch = 1;
-        }
-        if (authorization.catalog_generation_id == 0) {
-          authorization.catalog_generation_id =
-              api_request.context.catalog_generation_id == 0
-                  ? 1
-                  : api_request.context.catalog_generation_id;
-        }
-        if (authorization.effective_subjects.empty()) {
-          authorization.effective_subjects.push_back(
-              {api_request.context.principal_uuid, "principal"});
-        }
-        const bool deny = operand.value.rfind("deny:", 0) == 0;
-        const std::string right = operand.value.substr(deny ? 5 : 6);
-        const auto duplicate = std::find_if(
-            authorization.grants.begin(),
-            authorization.grants.end(),
-            [&](const auto& grant) {
-              return grant.right == right && grant.deny == deny &&
-                     grant.target_uuid.canonical.empty();
-            });
-        if (!right.empty() && duplicate == authorization.grants.end()) {
-          scratchbird::engine::internal_api::EngineMaterializedAuthorizationGrant grant;
-          grant.grant_uuid.canonical =
-              "public-abi-admitted-auth-tag:" + std::string(deny ? "deny:" : "right:") + right;
-          grant.subject_uuid = api_request.context.principal_uuid;
-          grant.subject_kind = "principal";
-          grant.right = right;
-          grant.deny = deny;
-          grant.security_epoch = authorization.security_epoch;
-          authorization.grants.push_back(std::move(grant));
-        }
-      }
-    }
     if (!operand.name.empty() && !row_field && !row_null_field) {
       api_request.option_envelopes.push_back(operand.name + ":" + operand.value);
     }

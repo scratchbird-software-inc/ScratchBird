@@ -72,7 +72,7 @@ struct ListenerConfig {
   std::string database_selector;
   std::string server_endpoint;
   std::string bind_address{"127.0.0.1"};
-  std::uint16_t port{3050};
+  std::uint16_t port{3092};
   std::string control_dir{"/tmp/scratchbird/listener/control"};
   std::string runtime_dir{"/tmp/scratchbird/listener/runtime"};
   std::string metrics_namespace{"sys.metrics.listener"};

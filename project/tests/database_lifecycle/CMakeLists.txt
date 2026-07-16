@@ -909,6 +909,35 @@ if(TARGET sb_storage_database)
     LABELS "database_lifecycle_create_bootstrap_conformance;database_lifecycle;database_lifecycle_storage;database_lifecycle_default_policy_catalog;database_lifecycle_tx_gate"
   )
 
+  add_executable(database_lifecycle_bootstrap_security_publication_conformance
+    bootstrap_security_publication_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_bootstrap_security_publication_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(
+    database_lifecycle_bootstrap_security_publication_conformance
+    PRIVATE
+      SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  target_link_libraries(database_lifecycle_bootstrap_security_publication_conformance
+    PRIVATE
+      sb_core_catalog
+      sb_core_memory
+      sb_core_platform
+      sb_core_uuid
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_bootstrap_security_publication_conformance
+    COMMAND database_lifecycle_bootstrap_security_publication_conformance
+  )
+  set_tests_properties(database_lifecycle_bootstrap_security_publication_conformance PROPERTIES
+    LABELS "database_lifecycle_bootstrap_security_publication_conformance;database_lifecycle;database_lifecycle_storage;database_lifecycle_security;mga_transaction_regression"
+  )
+
   add_executable(database_lifecycle_first_open_activation_conformance
     first_open_activation_conformance.cpp
   )
@@ -4856,6 +4885,23 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(database_lifecycle_server_daemon_conformance PROPERTIES
     LABELS "database_lifecycle_server_daemon_conformance;database_lifecycle;database_lifecycle_server_daemon;database_lifecycle_server_route;database_lifecycle_process_association;database_lifecycle_listener;database_lifecycle_session_request_cursor;server_lifecycle_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_windows_service_runtime_contract
+    windows_service_runtime_contract.cpp
+  )
+  target_compile_features(database_lifecycle_windows_service_runtime_contract PRIVATE cxx_std_23)
+  target_link_libraries(database_lifecycle_windows_service_runtime_contract
+    PRIVATE
+      sb_server_core
+  )
+
+  add_test(
+    NAME database_lifecycle_windows_service_runtime_contract
+    COMMAND database_lifecycle_windows_service_runtime_contract
+  )
+  set_tests_properties(database_lifecycle_windows_service_runtime_contract PROPERTIES
+    LABELS "database_lifecycle_windows_service_runtime_contract;database_lifecycle;server_lifecycle_gate;windows_service_runtime"
   )
 
   if(TARGET sb_local_ipc AND TARGET sbl_listener_runtime)

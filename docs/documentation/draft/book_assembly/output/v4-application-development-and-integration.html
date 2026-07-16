@@ -9708,7 +9708,7 @@ version <code>0.1.0</code>.</p>
 <h3 id="manager-proxy-ingress">Manager-proxy ingress</h3>
 <div class="sourceCode" id="cb83"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb83-1"><a href="#cb83-1" aria-hidden="true" tabindex="-1"></a>conn <span class="op">=</span> scratchbird.<span class="ex">connect</span>(</span>
 <span id="cb83-2"><a href="#cb83-2" aria-hidden="true" tabindex="-1"></a>    host<span class="op">=</span><span class="st">&quot;proxy.example.com&quot;</span>,</span>
-<span id="cb83-3"><a href="#cb83-3" aria-hidden="true" tabindex="-1"></a>    port<span class="op">=</span><span class="dv">3090</span>,</span>
+<span id="cb83-3"><a href="#cb83-3" aria-hidden="true" tabindex="-1"></a>    port<span class="op">=</span><span class="dv">3092</span>,</span>
 <span id="cb83-4"><a href="#cb83-4" aria-hidden="true" tabindex="-1"></a>    database<span class="op">=</span><span class="st">&quot;prod&quot;</span>,</span>
 <span id="cb83-5"><a href="#cb83-5" aria-hidden="true" tabindex="-1"></a>    user<span class="op">=</span><span class="st">&quot;alice&quot;</span>,</span>
 <span id="cb83-6"><a href="#cb83-6" aria-hidden="true" tabindex="-1"></a>    password<span class="op">=</span><span class="st">&quot;secret&quot;</span>,</span>
@@ -10621,7 +10621,7 @@ auth)</h3>
 config.</p>
 <h3 id="connection-string-manager-proxy-ingress">Connection string
 (manager-proxy ingress)</h3>
-<div class="sourceCode" id="cb112"><pre class="sourceCode ini"><code class="sourceCode ini"><span id="cb112-1"><a href="#cb112-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Driver</span><span class="ot">=</span><span class="st">{ScratchBird};Server=127.0.0.1;Port=3090;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token</span></span></code></pre></div>
+<div class="sourceCode" id="cb112"><pre class="sourceCode ini"><code class="sourceCode ini"><span id="cb112-1"><a href="#cb112-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Driver</span><span class="ot">=</span><span class="st">{ScratchBird};Server=127.0.0.1;Port=3092;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token</span></span></code></pre></div>
 <h3 id="dsn-entry-odbc.ini-registry">DSN entry (odbc.ini /
 registry)</h3>
 <p>The driver registers under the name <code>ScratchBird</code>.
@@ -18318,7 +18318,7 @@ exported for use outside the DBI calling convention.</p>
 <p><strong>Key-value (space- or semicolon-separated):</strong></p>
 <pre><code>host=localhost port=3092 dbname=mydb user=myuser password=mypass</code></pre>
 <p><strong>Manager-proxy URI:</strong></p>
-<pre><code>scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&amp;manager_auth_token=token</code></pre>
+<pre><code>scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&amp;manager_auth_token=token</code></pre>
 <h3 id="selected-dsn-keys">Selected DSN keys</h3>
 <table>
 <colgroup>

@@ -117,6 +117,39 @@ api::EngineAgentCommandSurfaceRequest CommandRequest(
   return request;
 }
 
+api::EngineRequestContext ProductionContext(
+    const Fixture& fixture,
+    std::initializer_list<std::string_view> allowed_rights,
+    std::initializer_list<std::string_view> denied_rights = {}) {
+  auto context = Context(fixture, {});
+  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.trace_tags.clear();
+  auto& authorization = context.authorization_context;
+  authorization.present = true;
+  authorization.authority_uuid = context.database_uuid;
+  authorization.principal_uuid = context.principal_uuid;
+  authorization.security_epoch = context.security_epoch;
+  authorization.policy_epoch = context.resource_epoch;
+  authorization.catalog_generation_id = context.catalog_generation_id;
+  authorization.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  std::uint64_t index = 0;
+  auto add_grant = [&](std::string_view right, bool deny) {
+    api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical =
+        "pfar-014-production-grant-" + std::to_string(index++);
+    grant.subject_uuid = context.principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = std::string(right);
+    grant.deny = deny;
+    grant.security_epoch = context.security_epoch;
+    authorization.grants.push_back(std::move(grant));
+  };
+  for (const auto right : allowed_rights) add_grant(right, false);
+  for (const auto right : denied_rights) add_grant(right, true);
+  return context;
+}
+
 api::EngineObjectReference FilespaceTarget(const Fixture& fixture) {
   api::EngineObjectReference target;
   target.uuid.canonical = fixture.filespace_uuid;
@@ -327,6 +360,51 @@ void TestCommandSurfaceAuthorization(const Fixture& fixture) {
           "stale policy diagnostic drifted");
 }
 
+void TestProductionAgentAuthorityRejectsTraceAndNameSpoofing(
+    const Fixture& fixture) {
+  api::EngineAgentCommandSurfaceRequest trace_spoof;
+  trace_spoof.context = ProductionContext(fixture, {});
+  trace_spoof.context.trace_tags = {
+      "right:OBS_AGENT_RECOMMENDATION_READ", "group:ROOT"};
+  trace_spoof.operation_id = "agents.actions.list";
+  const auto trace_spoof_result =
+      api::EngineAgentCommandSurfaceOperation(trace_spoof);
+  Require(!trace_spoof_result.ok,
+          "production agent command accepted caller right/group trace tags");
+  Require(HasDiagnostic(trace_spoof_result, "ACTION.PERMISSION_DENIED"),
+          "production agent trace spoof denial diagnostic drifted");
+
+  auto materialized = trace_spoof;
+  materialized.context = ProductionContext(
+      fixture, {"OBS_AGENT_RECOMMENDATION_READ"});
+  const auto materialized_result =
+      api::EngineAgentCommandSurfaceOperation(materialized);
+  Require(materialized_result.ok,
+          "materialized agent grant did not authorize production command");
+
+  auto denied = materialized;
+  denied.context = ProductionContext(
+      fixture,
+      {"OBS_AGENT_RECOMMENDATION_READ"},
+      {"OBS_AGENT_RECOMMENDATION_READ"});
+  const auto denied_result = api::EngineAgentCommandSurfaceOperation(denied);
+  Require(!denied_result.ok,
+          "explicit materialized deny did not override agent allow grant");
+  Require(HasDiagnostic(denied_result, "ACTION.PERMISSION_DENIED"),
+          "materialized agent deny diagnostic drifted");
+
+  auto hook_spoof = PageHookRequest(fixture);
+  hook_spoof.context = ProductionContext(fixture, {});
+  hook_spoof.context.trace_tags = {
+      "right:OBS_AGENT_STATE_READ", "right:OBS_AGENT_CONTROL", "group:ROOT"};
+  const auto hook_spoof_result = api::EngineRequestPagePreallocation(hook_spoof);
+  Require(!hook_spoof_result.ok,
+          "production agent action hook accepted caller trace authority");
+  Require(hook_spoof_result.refusal_reason.rfind("SB_AGENT_SECURITY.", 0) == 0,
+          "agent action hook trace spoof denial drifted: " +
+              hook_spoof_result.refusal_reason);
+}
+
 void TestFilespacePreallocateAuthorization(const Fixture& fixture) {
   auto missing_security_context = FilespacePreallocateRequest(
       fixture, {"OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL"});
@@ -482,6 +560,7 @@ void TestClusterSecurityBeforeProvider(const Fixture& fixture) {
 int main() {
   const auto fixture = MakeFixture();
   TestCommandSurfaceAuthorization(fixture);
+  TestProductionAgentAuthorityRejectsTraceAndNameSpoofing(fixture);
   TestFilespacePreallocateAuthorization(fixture);
   TestHookOpenModeAuthorization(fixture);
   TestHookRequiresStrictObservedMetricSnapshot(fixture);

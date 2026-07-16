@@ -10,11 +10,14 @@
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_registry.hpp"
+#include "database_lifecycle.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -150,6 +153,8 @@ EngineApiDiagnostic PrincipalDiagnostic(const char* code, std::string detail = {
     key = "security.protected_material.plaintext_refused";
   } else if (code_text == kSecurityPrincipalDiagnosticAuditEvidenceRequired) {
     key = "security.audit.evidence_required";
+  } else if (code_text == kSecurityPrincipalDiagnosticCatalogAuthorityRequired) {
+    key = "security.catalog_authority_required";
   }
   return MakeEngineApiDiagnostic(code_text, std::move(key), std::move(detail), true);
 }
@@ -395,6 +400,19 @@ std::string RoleUuid(const EngineSecurityCreateRoleRequest& request) {
   return request.target_object.uuid.canonical;
 }
 
+bool IsEngineOwnedSysarchRoleUuid(const std::string& uuid) {
+  return uuid ==
+         scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid;
+}
+
+bool IsEngineOwnedBootstrapPrincipal(const EngineRequestContext& context,
+                                     const std::string& principal_uuid) {
+  if (principal_uuid.empty()) return false;
+  const auto identity = ResolveEngineOwnedSysarchRoleIdentity(context);
+  return identity.ok && identity.present &&
+         identity.principal_uuid == principal_uuid;
+}
+
 std::string GroupUuid(const EngineSecurityCreateGroupRequest& request) {
   if (!request.group_uuid.empty()) { return request.group_uuid; }
   return request.target_object.uuid.canonical;
@@ -607,6 +625,14 @@ EngineApiDiagnostic AppendEvents(const EngineRequestContext& context,
   if (context.database_path.empty()) {
     return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabasePathRequired, "database_path");
   }
+  std::error_code exists_error;
+  const bool database_exists =
+      std::filesystem::exists(context.database_path, exists_error);
+  if (exists_error || database_exists) {
+    return PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+        "page_backed_mga_security_mutation_not_implemented");
+  }
   std::ofstream out(EventPath(context), std::ios::binary | std::ios::app);
   if (!out) { return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabaseWriteFailed, "open"); }
   for (const auto& event : events) { out << event << '\n'; }
@@ -633,6 +659,76 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
   if (context.database_path.empty()) {
     result.diagnostic = PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabasePathRequired,
                                             "database_path");
+    return result;
+  }
+
+  std::error_code exists_error;
+  const bool database_exists =
+      std::filesystem::exists(context.database_path, exists_error);
+  if (exists_error) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+        "database_identity_check_failed");
+    return result;
+  }
+  if (database_exists) {
+    const auto catalog =
+        scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+            context.database_path);
+    if (!catalog.ok()) {
+      result.diagnostic = PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+          catalog.diagnostic.diagnostic_code.empty()
+              ? "bootstrap_security_catalog_unavailable"
+              : catalog.diagnostic.diagnostic_code);
+      return result;
+    }
+    const auto& state = catalog.state;
+    if (state.sysarch_role_uuid.valid()) {
+      EngineSecurityRoleRecord role;
+      role.creator_tx = state.creator_tx;
+      role.event_sequence = 1;
+      role.role_uuid = scratchbird::core::uuid::UuidToString(
+          state.sysarch_role_uuid.value);
+      role.role_name = "ROLE_SYSARCH";
+      role.lifecycle_state = "active";
+      role.security_generation = state.policy_generation;
+      result.state.roles.push_back(std::move(role));
+    }
+    if (state.present) {
+      EngineSecurityPrincipalRecord principal;
+      principal.creator_tx = state.creator_tx;
+      principal.event_sequence = 1;
+      principal.principal_uuid = scratchbird::core::uuid::UuidToString(
+          state.principal_uuid.value);
+      principal.principal_name = state.principal_name;
+      principal.principal_kind = "user";
+      principal.lifecycle_state = "active";
+      principal.credential_fingerprint = state.credential_fingerprint;
+      principal.security_generation = state.policy_generation;
+      result.state.principals.push_back(std::move(principal));
+
+      EngineSecurityMembershipRecord membership;
+      membership.creator_tx = state.creator_tx;
+      membership.event_sequence = 1;
+      membership.membership_uuid = scratchbird::core::uuid::UuidToString(
+          state.membership_uuid.value);
+      membership.member_principal_uuid =
+          scratchbird::core::uuid::UuidToString(state.principal_uuid.value);
+      membership.container_uuid =
+          scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid;
+      membership.container_kind = "role";
+      membership.grantor_principal_uuid = membership.member_principal_uuid;
+      membership.security_generation = state.policy_generation;
+      result.state.memberships.push_back(std::move(membership));
+    }
+    result.state.security_generation =
+        std::max<std::uint64_t>(1, state.policy_generation);
+    result.state.policy_generation =
+        std::max<std::uint64_t>(1, state.policy_generation);
+    result.state.cache_invalidation_epoch = result.state.security_generation;
+    result.ok = true;
+    result.diagnostic = OkDiagnostic();
     return result;
   }
 
@@ -1000,6 +1096,58 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadSecurityPrincipalLifecycleSt
   return LoadState(context, {.enforce_visibility = true});
 }
 
+EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
+    const EngineRequestContext& context) {
+  EngineOwnedSysarchRoleIdentityResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticDatabasePathRequired, "database_path");
+    return result;
+  }
+  std::error_code exists_error;
+  if (!std::filesystem::exists(context.database_path, exists_error)) {
+    if (exists_error) {
+      result.diagnostic = PrincipalDiagnostic(
+          kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+          "database_identity_check_failed");
+      return result;
+    }
+    result.ok = true;
+    result.diagnostic = OkDiagnostic();
+    return result;
+  }
+  const auto catalog =
+      scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+          context.database_path);
+  if (!catalog.ok()) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+        catalog.diagnostic.diagnostic_code.empty()
+            ? "bootstrap_security_catalog_unavailable"
+            : catalog.diagnostic.diagnostic_code);
+    return result;
+  }
+  const std::string role_uuid = scratchbird::core::uuid::UuidToString(
+      catalog.state.sysarch_role_uuid.value);
+  if (role_uuid !=
+      scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid) {
+    result.diagnostic = PrincipalDiagnostic(
+        kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+        "engine_owned_sysarch_uuid_mismatch");
+    return result;
+  }
+  result.ok = true;
+  result.present = catalog.state.present;
+  result.role_uuid = role_uuid;
+  if (catalog.state.present) {
+    result.principal_uuid = scratchbird::core::uuid::UuidToString(
+        catalog.state.principal_uuid.value);
+  }
+  result.policy_generation = catalog.state.policy_generation;
+  result.diagnostic = OkDiagnostic();
+  return result;
+}
+
 EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
     const EngineSecurityCreatePrincipalRequest& request) {
   constexpr const char* kOperation = "security.principal.create";
@@ -1099,7 +1247,6 @@ EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
          {{"principal_uuid", principal_uuid},
           {"principal_name", principal_name},
           {"principal_kind", kind},
-          {"credential_fingerprint", record.credential_fingerprint},
           {"credential_protected_material_ref", "<protected-material-redacted>"},
           {"plaintext_material_stored", "false"},
           {"security_generation", std::to_string(generation)}});
@@ -1128,6 +1275,13 @@ EngineSecurityAlterPrincipalResult EngineSecurityAlterPrincipal(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticPrincipalInvalid,
                             "principal_uuid_required"));
+  }
+  if (IsEngineOwnedBootstrapPrincipal(request.context, principal_uuid)) {
+    return DiagnosticResult<EngineSecurityAlterPrincipalResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "bootstrap_principal_is_create_time_catalog_owned"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
@@ -1208,7 +1362,6 @@ EngineSecurityAlterPrincipalResult EngineSecurityAlterPrincipal(
           {"principal_name", principal_name},
           {"principal_kind", kind},
           {"lifecycle_state", lifecycle},
-          {"credential_fingerprint", record.credential_fingerprint},
           {"credential_protected_material_ref", "<protected-material-redacted>"},
           {"plaintext_material_stored", "false"},
           {"security_generation", std::to_string(generation)}});
@@ -1231,6 +1384,13 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid,
                             "role_uuid_and_role_name_required"));
+  }
+  if (IsEngineOwnedSysarchRoleUuid(role_uuid)) {
+    return DiagnosticResult<EngineSecurityCreateRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_role_is_immutable"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
@@ -1375,6 +1535,13 @@ EngineSecurityDropRoleResult EngineSecurityDropRole(
         request.context,
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, "role_uuid_required"));
+  }
+  if (IsEngineOwnedSysarchRoleUuid(role_uuid)) {
+    return DiagnosticResult<EngineSecurityDropRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_role_is_immutable"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
@@ -1531,6 +1698,14 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantInvalid,
                             "member_principal_container_required"));
   }
+  if (container_kind == "role" &&
+      IsEngineOwnedSysarchRoleUuid(request.container_uuid)) {
+    return DiagnosticResult<EngineSecurityGrantMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_membership_is_create_time_only"));
+  }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
     return DiagnosticResult<EngineSecurityGrantMembershipResult>(request.context,
@@ -1618,6 +1793,14 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantInvalid,
                             "member_principal_container_required"));
+  }
+  if (container_kind == "role" &&
+      IsEngineOwnedSysarchRoleUuid(request.container_uuid)) {
+    return DiagnosticResult<EngineSecurityRevokeMembershipResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_membership_is_immutable"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
@@ -1710,6 +1893,13 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
                             global_grant ? "grantee_global_privilege_not_allowed"
                                          : "grantee_target_privilege_required"));
   }
+  if (IsEngineOwnedSysarchRoleUuid(request.grantee_uuid)) {
+    return DiagnosticResult<EngineSecurityGrantPrivilegeResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_grants_are_catalog_derived"));
+  }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
     return DiagnosticResult<EngineSecurityGrantPrivilegeResult>(request.context,
@@ -1782,6 +1972,13 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticGrantInvalid,
                             "grantee_target_privilege_required"));
+  }
+  if (IsEngineOwnedSysarchRoleUuid(request.grantee_uuid)) {
+    return DiagnosticResult<EngineSecurityRevokePrivilegeResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticCatalogAuthorityRequired,
+                            "engine_owned_sysarch_grants_are_catalog_derived"));
   }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
@@ -1860,30 +2057,27 @@ EngineSecuritySetRoleResult EngineSecuritySetRole(
   }
 
   std::uint64_t security_generation = 0;
-  if (!HasTraceTag(request.context, "security.bootstrap") &&
-      !HasTraceTag(request.context, "group:ROOT")) {
-    const auto loaded = LoadState(request.context, {.enforce_visibility = true});
-    if (!loaded.ok) {
-      return DiagnosticResult<EngineSecuritySetRoleResult>(request.context,
-                                                          kOperation,
-                                                          loaded.diagnostic);
-    }
-    security_generation = loaded.state.security_generation;
-    if (FindRole(loaded.state, request.role_uuid) == nullptr) {
-      return DiagnosticResult<EngineSecuritySetRoleResult>(
-          request.context,
-          kOperation,
-          PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, request.role_uuid));
-    }
-    const auto grantees =
-        EffectiveGranteeSet(loaded.state, request.context.principal_uuid.canonical);
-    if (grantees.count(request.role_uuid) == 0) {
-      return DiagnosticResult<EngineSecuritySetRoleResult>(
-          request.context,
-          kOperation,
-          PrincipalDiagnostic(kSecurityPrincipalDiagnosticAccessDenied,
-                              "role_not_granted:" + request.role_uuid));
-    }
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<EngineSecuritySetRoleResult>(request.context,
+                                                        kOperation,
+                                                        loaded.diagnostic);
+  }
+  security_generation = loaded.state.security_generation;
+  if (FindRole(loaded.state, request.role_uuid) == nullptr) {
+    return DiagnosticResult<EngineSecuritySetRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, request.role_uuid));
+  }
+  const auto grantees =
+      EffectiveGranteeSet(loaded.state, request.context.principal_uuid.canonical);
+  if (grantees.count(request.role_uuid) == 0) {
+    return DiagnosticResult<EngineSecuritySetRoleResult>(
+        request.context,
+        kOperation,
+        PrincipalDiagnostic(kSecurityPrincipalDiagnosticAccessDenied,
+                            "role_not_granted:" + request.role_uuid));
   }
 
   auto result = SuccessResult<EngineSecuritySetRoleResult>(request.context, kOperation);

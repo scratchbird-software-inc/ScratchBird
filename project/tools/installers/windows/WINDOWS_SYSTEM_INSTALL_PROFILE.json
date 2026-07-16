@@ -1,0 +1,138 @@
+{
+  "schema_id": "scratchbird.windows_system_install_profile.v1",
+  "configuration": {
+    "defaults": "%ProgramFiles%\\ScratchBird\\share\\scratchbird\\config-defaults",
+    "operator_path": "%ProgramData%\\ScratchBird\\config",
+    "upgrade_behavior": "copy_missing_defaults_only"
+  },
+  "database_files_created": false,
+  "directories": [
+    {
+      "acl": "msi_owned_service_explicit_read_execute",
+      "path": "%ProgramFiles%\\ScratchBird"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_modify_service_read",
+      "path": "%ProgramData%\\ScratchBird\\config"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_and_service_modify",
+      "path": "%ProgramData%\\ScratchBird\\data"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_and_service_modify",
+      "path": "%ProgramData%\\ScratchBird\\log"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_and_service_modify",
+      "path": "%ProgramData%\\ScratchBird\\run"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_and_service_modify",
+      "path": "%ProgramData%\\ScratchBird\\run\\control"
+    },
+    {
+      "acl": "administrators_system_full_service_read",
+      "path": "%ProgramData%\\ScratchBird\\tls"
+    },
+    {
+      "acl": "administrators_system_full_service_read",
+      "path": "%ProgramData%\\ScratchBird\\secrets"
+    },
+    {
+      "acl": "administrators_system_full_scratchbird_group_read",
+      "path": "%ProgramData%\\ScratchBird\\install"
+    }
+  ],
+  "distribution_profile": "native-sbsql-only",
+  "create_time_os_authorization": "administrator_only",
+  "human_service_group_membership_mutation": "forbidden",
+  "lifecycle": {
+    "database_files_created": false,
+    "helper": "%ProgramFiles%\\ScratchBird\\libexec\\scratchbird-windows-system-install.ps1",
+    "install_evidence": "%ProgramData%\\ScratchBird\\install\\WINDOWS_SYSTEM_INSTALL_STATE.json",
+    "security_sidecars_created": false
+  },
+  "native_default_port": 3092,
+  "os_identity": {
+    "group": "ScratchBird",
+    "group_purpose": "filesystem_operations_only_no_database_or_security_authority",
+    "group_namespace": "local_SAM",
+    "group_principal": "exact_local_SAM_alias",
+    "naming_constraint": "local_SAM_user_and_group_names_are_case_insensitive_so_the_service_identity_uses_the_distinct_NT_SERVICE_namespace",
+    "package_manager_administrator_or_SYSTEM_is_never_added": true,
+    "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
+    "service_account": "NT SERVICE\\scratchbird",
+    "service_account_kind": "restricted_managed_virtual_service_account",
+    "service_account_leaf_name": "scratchbird",
+    "service_account_namespace": "NT SERVICE",
+    "service_admin_group_membership": "forbidden_and_verified_absent",
+    "service_local_sam_group_membership": "forbidden_and_verified_absent_across_all_local_groups",
+    "service_login": "service_control_manager_only",
+    "service_password": "none",
+    "service_registry_acl": "protected_administrators_system_full_service_read",
+    "service_sam_user_created": false,
+    "interactive_remote_network_batch_credentials": "unavailable_managed_virtual_account_has_no_password_or_SAM_logon_principal"
+  },
+  "product": "ScratchBird",
+  "runtime_root": "%ProgramFiles%\\ScratchBird",
+  "security_sidecars_created": false,
+  "service": {
+    "arguments": [
+      "--config",
+      "%ProgramData%\\ScratchBird\\config\\SBsrv.conf",
+      "--service"
+    ],
+    "binary": "%ProgramFiles%\\ScratchBird\\bin\\SBsrv.exe",
+    "create_if_missing": true,
+    "creation_mechanism": "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService",
+    "default_activity": "stopped",
+    "default_start_type": "manual",
+    "fresh_install_failure_service_rollback": "remove_service_created_by_this_install_attempt",
+    "name": "scratchbird",
+    "scm_runtime_handoff": "native_SBsrv_ServiceMain_in_process_no_wrapper",
+    "scm_running_gate": "SBPS_and_shared_SBgate_management_ready",
+    "scm_stop_path": "in_process_parser_server_stop_api",
+    "scm_validation_state": "focused_contract_green_hosted_configured_database_start_stop_pending",
+    "service_sid_type": "restricted",
+    "top_level_process": "SBsrv"
+  },
+  "shipped_native_components": [
+    "SBsrv",
+    "SBgate",
+    "SBParser",
+    "SBmgr",
+    "SBsql",
+    "SBadm",
+    "SBbak",
+    "SBsec",
+    "SBdoc",
+    "SBcop"
+  ],
+  "topology": {
+    "cross_parser_dependency": "forbidden",
+    "direct_engine_link": "forbidden",
+    "listener_executable": "SBgate",
+    "listener_model": "one_shared_listener_executable_for_all_parser_families",
+    "manager": "optional_SBmgr_disabled_by_default_bypassed_not_used_with_emulation_not_installed_as_a_service",
+    "native_route": "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine",
+    "parser_engine_transport": "sbps_ipc_only",
+    "parser_process_model": "one_standalone_parser_for_the_selected_dialect",
+    "parser_specific_services": false,
+    "top_level_native_service": "scratchbird"
+  },
+  "uninstall_policy": {
+    "configuration": "preserve",
+    "data": "preserve",
+    "logs": "preserve",
+    "os_group": "preserve",
+    "service_record": "remove"
+  },
+  "upgrade_policy": {
+    "configuration": "preserve_existing_copy_missing_defaults_only",
+    "data": "preserve",
+    "service_activity": "preserve",
+    "service_start_type": "preserve",
+    "silent_activation": false
+  }
+}

@@ -1665,11 +1665,12 @@ layout:</p>
   share/        resources, documentation, and examples
   pdb/          platform debug information (where applicable)
   STANDALONE_OUTPUT_MANIFEST.json</code></pre>
-<p>Every path used in configuration files shipped with the output — such
-as <code>bin/SBgate</code> in <code>SBsrv.conf</code> — is relative to
-this root. An operator who relocates the tree should update those paths
-accordingly, or run the processes from the output root so that relative
-paths resolve correctly.</p>
+<p>Every relative path used in configuration files shipped with the
+output — such as <code>bin/SBgate</code> in <code>SBsrv.conf</code> — is
+relative to this installation root when the executable is under
+<code>bin/</code>. Resolution does not depend on the shell’s current
+directory. An operator who changes the layout should update the paths
+accordingly.</p>
 <h2 id="binaries">Binaries</h2>
 <h3 id="runtime-binaries">Runtime Binaries</h3>
 <p>The core runtime components are placed in <code>bin/</code>:</p>
@@ -1720,10 +1721,10 @@ are different and are not visible to administrators.</p>
 <p><code>lib/libSBcore.so</code> (on Linux) is the ScratchBird engine
 shared library. Applications that embed the engine directly link against
 this library rather than running SBsrv. The library’s public brand name
-is <code>SBcore</code>; the static variant is <code>SBcore_static</code>
-and is not placed in the staged output.</p>
+is <code>SBcore</code>; the native release also includes the platform’s
+<code>SBcore_static</code> archive.</p>
 <h3 id="command-line-utilities">Command-Line Utilities</h3>
-<p>Five administrative utilities are placed in <code>bin/</code>:</p>
+<p>Six administrative utilities are placed in <code>bin/</code>:</p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -1807,37 +1808,18 @@ any deployment. The templates are copied from
 <td>Core parser (SBParser)</td>
 </tr>
 <tr class="odd">
-<td><code>SB_PGSQL_Parser.conf</code></td>
-<td>PostgreSQL-compatibility parser worker</td>
-</tr>
-<tr class="even">
-<td><code>SB_MYSQL_Parser.conf</code></td>
-<td>MySQL-compatibility parser worker</td>
-</tr>
-<tr class="odd">
-<td><code>SB_MARIADB_Parser.conf</code></td>
-<td>MariaDB-compatibility parser worker</td>
-</tr>
-<tr class="even">
-<td><code>SB_SQLITE_Parser.conf</code></td>
-<td>SQLite-compatibility parser worker</td>
-</tr>
-<tr class="odd">
-<td><code>SB_FBSQL_Parser.conf</code></td>
-<td>Firebird-compatibility parser worker</td>
-</tr>
-<tr class="even">
-<td><code>SB_DUCKDB_Parser.conf</code>,
-<code>SB_CLICKHOUSE_Parser.conf</code>, …</td>
-<td>Additional dialect workers</td>
+<td><code>SBbootstrap.profile</code></td>
+<td>Platform identity profile template for explicit embedded database
+bootstrap</td>
 </tr>
 </tbody>
 </table>
-<p>The full set of parser templates corresponds to the set of
-compatibility parser-worker build options available in
-<code>CMakeLists.txt</code>. Not all parser workers are built by
-default; their configuration templates are installed regardless so that
-operators can prepare for future enablement.</p>
+<p>The native bundle contains exactly these five files and only the
+standalone SBsql parser. Compatibility parser workers and their
+configuration templates are separate profile or add-on artifacts; the
+native bundle does not install them in anticipation of later enablement.
+Each selected dialect runs as its own standalone parser process behind
+the shared <code>SBgate</code> executable.</p>
 <p>See <a href="#ch-operations-administration-configuration-reference-md">Configuration
 Reference</a> for the contents and keys of each file.</p>
 <h2 id="resources">Resources</h2>
@@ -1913,8 +1895,9 @@ configuration that produced the output.</p>
 </tr>
 <tr class="odd">
 <td>Database files</td>
-<td>Configured <code>data_dir</code>, not in output tree</td>
-<td>Created by the engine when a database is first opened</td>
+<td>Configured data path, not in output tree</td>
+<td>Created only by an explicit approved embedded
+<code>SBsec bootstrap</code> operation before service startup</td>
 </tr>
 <tr class="even">
 <td>Log files</td>
@@ -1928,8 +1911,10 @@ configuration that produced the output.</p>
 <ol type="1">
 <li>All expected binaries are present in <code>bin/</code> and are
 executable.</li>
-<li>All four service configuration templates are present in
-<code>etc/scratchbird/</code>.</li>
+<li>Exactly the five native configuration files are present in
+<code>etc/scratchbird/</code>: <code>SBsrv.conf</code>,
+<code>SBgate.conf</code>, <code>SBmgr.conf</code>,
+<code>SBParser.conf</code>, and <code>SBbootstrap.profile</code>.</li>
 <li>The <code>share/scratchbird/resources/</code> tree is present and
 non-empty.</li>
 <li>The <code>STANDALONE_OUTPUT_MANIFEST.json</code> is readable.</li>
@@ -1979,6 +1964,16 @@ underscores. SBsrv (<code>SBsrv.conf</code>) uses a
 <code>[section]</code> format with a <code>format = SBCD1</code> header.
 SBmgr uses a flat <code>manager.*</code> key namespace. SBParser uses a
 flat <code>parser.*</code> namespace.</p>
+<p>SBsrv and SBmgr search the executable installation configuration
+before the process current directory. Service mode never selects a
+configuration from the current directory, and service or
+<code>--validate-config</code> exits with an error when no selected
+configuration exists. When the executable is installed under
+<code>bin/</code>, relative paths in SBsrv.conf or SBmgr.conf resolve
+from that executable’s installation root. For a non-installed
+executable, they resolve from the selected configuration file’s
+directory. Relative paths supplied explicitly on the command line remain
+relative to the caller’s current directory.</p>
 <p>Configuration files are read at startup only. In-place reloading is
 not described in the configuration templates; the <code>RELOAD</code>
 management command is available via the listener control plane (see <a href="#ch-operations-administration-service-lifecycle-md">Service
@@ -2059,8 +2054,9 @@ foreground (no daemonization). The source also defines
 <tr class="odd">
 <td><code>data_dir</code></td>
 <td><code>runtime/data</code></td>
-<td>Directory for engine data files. Relative paths are resolved from
-the working directory at startup.</td>
+<td>Directory for engine data files. Relative configuration values
+resolve from the executable installation root, or from the config
+directory for a non-installed executable.</td>
 </tr>
 <tr class="even">
 <td><code>control_dir</code></td>
@@ -2196,18 +2192,21 @@ and keep it alive.</p>
 </tr>
 <tr class="odd">
 <td><code>port</code></td>
-<td><code>3050</code></td>
-<td>Listener TCP port.</td>
+<td><code>3092</code></td>
+<td>Native SBSQL listener TCP port. Port 3050 is reserved for Firebird
+compatibility endpoints.</td>
 </tr>
 <tr class="even">
 <td><code>executable_path</code></td>
 <td><code>bin/SBgate</code></td>
-<td>Path to the SBgate binary, relative to working directory.</td>
+<td>Path to the shared SBgate binary, relative to the deterministic
+configuration base.</td>
 </tr>
 <tr class="odd">
 <td><code>parser_executable_path</code></td>
 <td><code>bin/SBParser</code></td>
-<td>Path to the parser worker binary.</td>
+<td>Path to the standalone native parser worker, relative to the same
+base.</td>
 </tr>
 <tr class="even">
 <td><code>control_dir</code></td>
@@ -2525,8 +2524,8 @@ satisfy.</td>
 </tr>
 <tr class="even">
 <td><code>port</code></td>
-<td><code>3050</code></td>
-<td>TCP port.</td>
+<td><code>3092</code></td>
+<td>Native SBSQL TCP port. Port 3050 is Firebird-only.</td>
 </tr>
 <tr class="odd">
 <td><code>accept_backlog</code></td>
@@ -2848,16 +2847,23 @@ this to <code>false</code> is unsafe except in isolated testing.</td>
 </tr>
 </tbody>
 </table>
-<p>The manager’s proxy port defaults to <code>3090</code> and its bind
-address defaults to <code>0.0.0.0</code> (source:
-<code>manager_runtime.hpp:41</code>). These can be overridden via
-<code>manager.proxy.port</code> and <code>manager.proxy.bind</code>. The
-native management interface defaults to <code>127.0.0.1:3392</code>.</p>
+<p>The manager proxy is disabled by default. Its client-facing compiled
+defaults are loopback bind, required TLS, and the native SBSQL port
+<code>3092</code>. The backend port defaults to <code>0</code>, which is
+an unset sentinel rather than a second native default. Enabling the
+proxy requires an explicit nonzero
+<code>manager.backend.native_port</code> distinct from
+<code>manager.proxy.port</code>; missing or same-port backends are
+rejected before the front door is bound. Port <code>3050</code> remains
+Firebird compatibility only.</p>
 <hr />
 <h2 id="sbparser.conf-core-parser">SBParser.conf — Core Parser</h2>
 <p>SBParser is the native SBsql parser worker. It is spawned and managed
-by SBgate. Its configuration uses a flat <code>parser.*</code>
-namespace.</p>
+by the shared SBgate listener. Every parser executable is standalone for
+one dialect: it must not load, invoke, or fall through to another
+parser. A network parser has no in-process engine path; it sends SBLR
+over SBPS IPC to the SBsrv-owned engine endpoint. Its configuration uses
+a flat <code>parser.*</code> namespace.</p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -2930,16 +2936,36 @@ parser.</td>
 <td>Whether the engine must hold execution authority before the parser
 will proceed.</td>
 </tr>
+<tr class="even">
+<td><code>parser.execution.engine_transport</code></td>
+<td><code>sbps_ipc_only</code></td>
+<td>Requires the standalone network parser to reach the engine only
+through SBPS IPC.</td>
+</tr>
+<tr class="odd">
+<td><code>parser.execution.direct_engine_link</code></td>
+<td><code>forbidden</code></td>
+<td>Forbids linking the network parser executable to the embedded
+engine/server core.</td>
+</tr>
+<tr class="even">
+<td><code>parser.execution.cross_parser_dependency</code></td>
+<td><code>forbidden</code></td>
+<td>Forbids using any other dialect parser as a parse or fallback
+implementation.</td>
+</tr>
 </tbody>
 </table>
 <hr />
 <h2 id="dialect-parser-templates">Dialect Parser Templates</h2>
-<p>Each dialect parser (e.g. <code>SB_PGSQL_Parser.conf</code>,
-<code>SB_MYSQL_Parser.conf</code>) follows the same structure as
+<p>Each dialect parser follows the same standalone structure as
 <code>SBParser.conf</code> but uses a different
 <code>parser.family</code> and <code>parser.bundle_contract_id</code>.
-They also include compatibility keys that constrain what the parser is
-allowed to do:</p>
+The same SBgate executable hosts the configured network and
+selects/spawns the one standalone parser required by that listener
+profile; there is not a distinct listener executable per parser. Dialect
+templates also include compatibility keys that constrain what the parser
+is allowed to do:</p>
 <table>
 <colgroup>
 <col style="width: 50%" />
@@ -3065,6 +3091,9 @@ simplest networked deployment.</p>
 for the deployment.</li>
 <li>The <code>data_dir</code> and <code>control_dir</code> paths are
 writable by the process user.</li>
+<li>The database already exists. Create it before service startup with
+the approved embedded <code>SBsec bootstrap</code> flow and the packaged
+platform profile; the server does not create a missing database.</li>
 <li>If <code>tls_required = true</code> (the default and recommended
 setting), TLS certificates are configured.</li>
 <li>The <code>share/scratchbird/resources/</code> tree is present.</li>
@@ -3077,25 +3106,30 @@ decisions:</p>
 <code>control_dir</code> to the deployment’s runtime paths.</li>
 <li>Set <code>[server.database] default_path</code> to the database file
 location.</li>
-<li>Set <code>[server.database] auto_create = true</code> only for the
-initial setup run; reset it to <code>false</code> after the database
-exists.</li>
+<li>Keep <code>[server.database] auto_create = false</code>. Bootstrap
+the database separately with <code>SBsec</code> in approved embedded
+mode before starting SBsrv.</li>
 <li>Set <code>[server.listener.native] bind_host</code> and
-<code>port</code> (defaults: <code>127.0.0.1</code>,
-<code>3050</code>).</li>
+<code>port</code> (defaults: <code>127.0.0.1</code>, <code>3092</code>;
+port <code>3050</code> is Firebird-only).</li>
 <li>Verify <code>[server.listener.native] executable_path</code> and
 <code>parser_executable_path</code> resolve to the correct
 binaries.</li>
 <li>Confirm <code>[server.parser] sbps_endpoint</code> will be writable
 and accessible to SBgate.</li>
 </ol>
+<p>Relative paths in SBsrv.conf resolve from the SBsrv installation root
+when the binary is under <code>bin/</code>; they do not depend on the
+shell’s current directory. Service and validation commands require a
+selected configuration file.</p>
 <h3 id="startup-sequence">Startup Sequence</h3>
 <ol type="1">
 <li>Start SBsrv with the configuration file path as an argument.</li>
 <li>SBsrv reads and validates configuration. Invalid configuration
 causes immediate exit with diagnostics to stderr.</li>
-<li>SBsrv opens or creates the database, depending on
-<code>auto_create</code>.</li>
+<li>SBsrv opens the existing database. A missing database is refused;
+service startup never performs database bootstrap or create-if-missing
+behavior.</li>
 <li>SBsrv writes startup lifecycle artifacts (PID file, lifecycle state
 file, SBPS socket).</li>
 <li>If <code>[server.listener.native] enabled = true</code>, SBsrv
@@ -3115,7 +3149,7 @@ spawns SBgate and waits up to <code>ready_timeout_ms</code> (default 8
 as <code>SELECT 1;</code>.</li>
 </ul>
 <h3 id="first-transaction-proof">First Transaction Proof</h3>
-<pre><code>bin/SBsql --host 127.0.0.1 --port 3050 --database default
+<pre><code>bin/SBsql --host 127.0.0.1 --port 3092 --database default
 SBsql&gt; SELECT 1;
 SBsql&gt; \quit</code></pre>
 <p>A successful response confirms that the listener is accepting
@@ -3182,7 +3216,7 @@ server_endpoint = runtime/control/sb_server.sbps.sock
 
 # Where to accept clients
 bind_address = 127.0.0.1
-port = 3050
+port = 3092
 tls_required = true           # do not set false on any network-exposed interface
 
 # Parser pool — start with 1, allow up to 16
@@ -3257,8 +3291,8 @@ edited.</li>
 deployment.</li>
 <li><code>manager.management_auth_required = true</code> is retained
 (the default).</li>
-<li>The proxy port (<code>3090</code> by default) is accessible from
-clients.</li>
+<li>The proxy is explicitly enabled and its configured port (the native
+default is <code>3092</code>) is accessible from clients.</li>
 </ul>
 <h3 id="configuration-inputs-2">Configuration Inputs</h3>
 <p>Edit a copy of <code>etc/scratchbird/SBmgr.conf</code>. Key
@@ -3273,9 +3307,12 @@ binaries.</li>
 <code>manager.restart_max</code>, and
 <code>manager.restart_window_ms</code> to match operational
 expectations.</li>
-<li>If you want to override the proxy port, add
-<code>manager.proxy.port = &lt;value&gt;</code>. The default is
-<code>3090</code>.</li>
+<li>The proxy is disabled by default. If you enable it, retain required
+TLS and configure a nonzero <code>manager.backend.native_port</code>
+distinct from the client-facing <code>manager.proxy.port</code>. The
+only native default is the front-door port <code>3092</code>; backend
+<code>0</code> means unset, while <code>3050</code> is
+Firebird-only.</li>
 </ol>
 <h3 id="startup-sequence-manager-lifecycle-states">Startup Sequence
 (Manager Lifecycle States)</h3>
@@ -3514,7 +3551,8 @@ this endpoint</td>
 </tr>
 <tr class="even">
 <td><code>proxy_binding</code></td>
-<td>Binding the proxy TCP port (default <code>3090</code>)</td>
+<td>Binding the proxy TCP port (native default <code>3092</code>;
+disabled in the secure release template)</td>
 </tr>
 <tr class="odd">
 <td><code>management_binding</code></td>
@@ -3676,6 +3714,11 @@ defines:</p>
 </tbody>
 </table>
 <p>The configuration template ships <code>mode = foreground</code>.</p>
+<p>Service startup requires a selected SBsrv.conf and never searches the
+process current directory. SBmgr applies the same rule to SBmgr.conf.
+Both services reject a missing selected configuration before creating
+runtime artifacts or binding an endpoint. Help and version output remain
+available without loading a configuration.</p>
 <hr />
 <h2 id="listener-sbgate-lifecycle">Listener (SBgate) Lifecycle</h2>
 <p>SBgate has an owner token and a lifecycle state file, both in the

@@ -45,8 +45,12 @@ using scratchbird::server::ServerSessionRegistry;
 using scratchbird::server::SessionOperationResult;
 namespace sbps = scratchbird::server::sbps;
 
-constexpr std::string_view kVerifier =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+constexpr std::string_view kPassword = "DBLC013G-fixture-password";
+constexpr std::string_view kCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=4ce03aa5a5657aaf221192635ed9c63a"
+    "cdb76d78a0994ec6e6ab55286e29e6a5";
 
 struct AttachedSession {
   std::array<std::uint8_t, 16> connection_uuid{};
@@ -112,6 +116,10 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   create.creation_unix_epoch_millis = 1780000001002;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "admin";
+  create.bootstrap_credential_fingerprint = std::string(kCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-013G database create failed");
@@ -120,13 +128,6 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-013G clean shutdown marker failed");
   return uuid::UuidToString(create.database_uuid.value);
-}
-
-void WriteAuthStore(const std::filesystem::path& database_path) {
-  std::ofstream out(database_path.string() + ".sb.local_password_auth", std::ios::trunc);
-  out << "admin\tlocal_password\t" << kVerifier << '\n';
-  out << "alice\tlocal_password\t" << kVerifier << '\n';
-  Require(static_cast<bool>(out), "DBLC-013G auth store write failed");
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
@@ -144,14 +145,6 @@ HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
   return engine_state;
 }
 
-std::string Evidence(std::string_view principal) {
-  std::string evidence = "scheme=local_password_v1;principal=";
-  evidence += principal;
-  evidence += ";verifier=";
-  evidence += kVerifier;
-  return evidence;
-}
-
 std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connection_uuid,
                                       std::string_view principal) {
   std::vector<std::uint8_t> out;
@@ -164,7 +157,7 @@ std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connec
   PutString(&out, principal);
   PutString(&out, "default");
   PutString(&out, "en");
-  PutString(&out, Evidence(principal));
+  PutString(&out, kPassword);
   return out;
 }
 
@@ -218,6 +211,34 @@ AttachedSession AttachAuthenticatedSession(ServerSessionRegistry* registry,
   const auto session_uuid = scratchbird::server::DecodeSessionUuidForTest(attach.payload);
   Require(session_uuid.has_value(), "DBLC-013G session UUID decode failed");
   attached.session_uuid = *session_uuid;
+  return attached;
+}
+
+AttachedSession AddDeniedSession(ServerSessionRegistry* registry,
+                                 const HostedEngineState& engine_state,
+                                 std::string_view principal) {
+  AttachedSession attached;
+  attached.connection_uuid = sbps::MakeUuidV7Bytes();
+  attached.auth_context_uuid = sbps::MakeUuidV7Bytes();
+  attached.session_uuid = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerSessionRecord session;
+  session.connection_uuid = attached.connection_uuid;
+  session.auth_context_uuid = attached.auth_context_uuid;
+  session.session_uuid = attached.session_uuid;
+  session.effective_user_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_claim = std::string(principal);
+  if (!engine_state.databases.empty()) {
+    session.database_path = engine_state.databases.front().database_path;
+    session.database_uuid = engine_state.databases.front().database_uuid;
+  }
+  session.catalog_generation = 1;
+  session.security_epoch = 1;
+  session.policy_generation = 1;
+  session.resource_epoch = 1;
+  session.name_resolution_epoch = 1;
+  session.session_binding_present = true;
+  registry->sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(attached.session_uuid)] = session;
   return attached;
 }
 
@@ -440,7 +461,7 @@ void TestCancelAndFinalityManagement(const HostedEngineState& engine_state,
   const auto denied = scratchbird::server::HandleServerManagementRequest(
       context, ManagementFrame(alice.session_uuid, "cancel_request", finality_token));
   Require(denied.error, "DBLC-013G alice cancel was not denied by engine auth");
-  Require(HasDiagnostic(denied, "SECURITY.AUTHORIZATION.DENIED"),
+  Require(HasDiagnostic(denied, "SECURITY.ACCESS_DENIED"),
           "DBLC-013G cancel denial did not come from engine authorization");
   (void)RequireRequest(*registry,
                        cursor_uuid,
@@ -524,12 +545,11 @@ int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc013g_session_request_cursor.sbdb";
   const std::string database_uuid = CreateOpenDatabase(database_path);
-  WriteAuthStore(database_path);
   const auto engine_state = MakeEngineState(database_path, database_uuid);
 
   ServerSessionRegistry registry;
   const auto admin = AttachAuthenticatedSession(&registry, engine_state, "admin");
-  const auto alice = AttachAuthenticatedSession(&registry, engine_state, "alice");
+  const auto alice = AddDeniedSession(&registry, engine_state, "alice");
 
   ServerBootstrapConfig config;
   config.database_default_path = database_path;

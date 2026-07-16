@@ -114,7 +114,7 @@ host=localhost port=3092 dbname=mydb user=myuser password=mypass
 **Manager-proxy URI:**
 
 ```
-scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token
+scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token
 ```
 
 ### Selected DSN keys

@@ -999,6 +999,9 @@ std::string JoinMetricBuckets(const MetricDescriptor& descriptor) {
 struct CatalogRowsBuildResult {
   Status status;
   std::vector<CatalogPageRow> rows;
+  TypedUuid bootstrap_principal_uuid;
+  TypedUuid bootstrap_sysarch_role_uuid;
+  TypedUuid bootstrap_membership_uuid;
   DiagnosticRecord diagnostic;
 
   bool ok() const {
@@ -1387,6 +1390,109 @@ bool IsSha256Hex(const std::string& value) {
     }
   }
   return true;
+}
+
+bool IsSafeBootstrapPrincipalName(const std::string& value) {
+  if (value.empty() || value.size() > 128) {
+    return false;
+  }
+  const auto first = static_cast<unsigned char>(value.front());
+  if (!std::isalpha(first) && value.front() != '_') {
+    return false;
+  }
+  for (const char ch : value) {
+    const auto uch = static_cast<unsigned char>(ch);
+    if (!std::isalnum(uch) && ch != '_' && ch != '-' && ch != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+struct BootstrapCredentialFingerprintFields {
+  u64 iterations = 0;
+  std::string salt_hex;
+};
+
+bool ParseBootstrapCredentialFingerprint(
+    const std::string& value,
+    BootstrapCredentialFingerprintFields* parsed_fields = nullptr) {
+  static constexpr const char* kPrefix =
+      "local-password-pbkdf2-sha256:v1:iterations=";
+  static constexpr const char* kSaltMarker = ":salt=";
+  static constexpr const char* kVerifierMarker = ":verifier=";
+  const std::string prefix(kPrefix);
+  if (value.compare(0, prefix.size(), prefix) != 0) {
+    return false;
+  }
+  const std::size_t salt_marker = value.find(kSaltMarker, prefix.size());
+  if (salt_marker == std::string::npos) {
+    return false;
+  }
+  const std::string iterations_text =
+      value.substr(prefix.size(), salt_marker - prefix.size());
+  if (iterations_text.empty() || iterations_text.size() > 8 ||
+      (iterations_text.size() > 1 && iterations_text.front() == '0')) {
+    return false;
+  }
+  u64 iterations = 0;
+  for (const char ch : iterations_text) {
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+    iterations = iterations * 10 + static_cast<u64>(ch - '0');
+  }
+  if (iterations < 600000 || iterations > 10000000) {
+    return false;
+  }
+  const std::size_t salt_begin = salt_marker + std::strlen(kSaltMarker);
+  const std::size_t verifier_marker = value.find(kVerifierMarker, salt_begin);
+  if (verifier_marker == std::string::npos ||
+      verifier_marker - salt_begin != 32) {
+    return false;
+  }
+  const std::size_t verifier_begin =
+      verifier_marker + std::strlen(kVerifierMarker);
+  if (value.size() - verifier_begin != 64) {
+    return false;
+  }
+  auto lowercase_hex = [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      const char ch = value[i];
+      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!lowercase_hex(salt_begin, verifier_marker) ||
+      !lowercase_hex(verifier_begin, value.size())) {
+    return false;
+  }
+  const std::string salt = value.substr(salt_begin, 32);
+  if (salt == std::string(32, '0')) {
+    return false;
+  }
+  bool verifier_nonzero = false;
+  for (std::size_t i = verifier_begin; i < value.size(); ++i) {
+    const char ch = value[i];
+    if (ch != '0') {
+      verifier_nonzero = true;
+      break;
+    }
+  }
+  if (!verifier_nonzero) {
+    return false;
+  }
+  if (parsed_fields != nullptr) {
+    parsed_fields->iterations = iterations;
+    parsed_fields->salt_hex = salt;
+  }
+  return true;
+}
+
+bool IsBootstrapCredentialFingerprint(const std::string& value) {
+  return ParseBootstrapCredentialFingerprint(value, nullptr);
 }
 
 const std::set<std::string>& RequiredPolicyProfileAreas() {
@@ -2496,12 +2602,10 @@ std::vector<BootstrapRecordSeed> PackDefaultRegistryPolicyRecords(const LoadedPo
 std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCreateConfig& config,
                                                                const LoadedPolicySeedPack& policy_seed_pack) {
   std::vector<BootstrapRecordSeed> records = PackDefaultRegistryPolicyRecords(policy_seed_pack);
-  const std::array<BootstrapRecordSeed, 15> additional_records = {{
+  const std::array<BootstrapRecordSeed, 13> additional_records = {{
       {CatalogRecordKind::config_profile, KeyValuePayload({{"profile_name", "default_local_node_profile"}, {"scope", "local_database"}, {"unsafe_combinations_fail_closed", "1"}})},
-      {CatalogRecordKind::user_account, KeyValuePayload({{"principal_name", "ROOT"}, {"account_class", "break_glass"}, {"enabled", "0"}})},
       {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "PUBLIC"}, {"ambient_rights", "minimal"}, {"connect_only", "1"}})},
       {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "DBA"}, {"operational_role", "database_administration"}, {"created_disabled", "1"}})},
-      {CatalogRecordKind::role_account, KeyValuePayload({{"role_name", "ROOT_ROLE"}, {"break_glass", "1"}, {"created_disabled", "1"}})},
       {CatalogRecordKind::grant_record, KeyValuePayload({{"grant_name", "PUBLIC_CONNECT_BASELINE"}, {"target", "PUBLIC"}, {"right", "CONNECT"}, {"ambient", "0"}})},
       {CatalogRecordKind::masking_policy, KeyValuePayload({{"policy_name", "default_no_unmask_without_grant"}, {"unmask_requires_explicit_right", "1"}})},
       {CatalogRecordKind::rls_policy, KeyValuePayload({{"policy_name", "default_rls_engine_authority"}, {"parser_authority", "0"}, {"fail_closed", "1"}})},
@@ -2515,6 +2619,135 @@ std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCr
   }};
   records.insert(records.end(), additional_records.begin(), additional_records.end());
   return records;
+}
+
+CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
+    std::vector<CatalogPageRow>* rows,
+    u32* ordinal,
+    u64 identity_seed,
+    const DatabaseCreateConfig& config,
+    const LoadedPolicySeedPack& policy_seed_pack,
+    TypedUuid security_parent_uuid) {
+  for (const auto& role : policy_seed_pack.roles) {
+    if (role.role_uuid == kCanonicalSysarchRoleObjectUuid ||
+        role.role_code == "ROLE_SYSARCH") {
+      const auto error = LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE",
+          "storage.database_lifecycle.bootstrap_security_sysarch_duplicate",
+          config.path,
+          role.role_uuid + ":" + role.role_code);
+      return CatalogRowsBuildError(error.status, error.diagnostic);
+    }
+  }
+
+  const auto parsed_sysarch =
+      ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  if (!parsed_sysarch.ok()) {
+    return CatalogRowsBuildError(parsed_sysarch.status,
+                                 parsed_sysarch.diagnostic);
+  }
+  const u32 policy_generation = policy_seed_pack.image.active
+                                    ? policy_seed_pack.image.policy_generation
+                                    : 1;
+  auto typed = AddTypedCatalogRecord(
+      rows,
+      CatalogRecordKind::role_account,
+      ordinal,
+      identity_seed,
+      KeyValuePayload({{"role_uuid", kCanonicalSysarchRoleObjectUuid},
+                       {"role_code", "ROLE_SYSARCH"},
+                       {"authority_class", "engine_owned_sysarch"},
+                       {"engine_owned", "1"},
+                       {"identity_authority", "uuid"},
+                       {"immutable", "1"},
+                       {"create_time_only", "1"},
+                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
+                       {"policy_generation", std::to_string(policy_generation)},
+                       {"active", "1"}}),
+      security_parent_uuid,
+      parsed_sysarch.value);
+  if (!typed.ok()) {
+    return typed;
+  }
+
+  CatalogRowsBuildResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  result.bootstrap_sysarch_role_uuid = parsed_sysarch.value;
+
+  if (config.bootstrap_principal_name.empty()) {
+    return result;
+  }
+
+  const auto principal = GenerateEngineIdentityV7(
+      UuidKind::principal, identity_seed + 2);
+  if (!principal.ok()) {
+    return CatalogRowsBuildError(principal.status, principal.diagnostic);
+  }
+  TypedUuid principal_object_uuid;
+  principal_object_uuid.kind = UuidKind::object;
+  principal_object_uuid.value = principal.value.value;
+  const std::string principal_uuid_text =
+      scratchbird::core::uuid::UuidToString(principal.value.value);
+
+  typed = AddTypedCatalogRecord(
+      rows,
+      CatalogRecordKind::user_account,
+      ordinal,
+      identity_seed + 4,
+      KeyValuePayload({{"principal_uuid", principal_uuid_text},
+                       {"principal_name", config.bootstrap_principal_name},
+                       {"credential_fingerprint", config.bootstrap_credential_fingerprint},
+                       {"kind", "user"},
+                       {"principal_kind", "user"},
+                       {"active", "1"},
+                       {"security_generation", "1"},
+                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
+                       {"policy_generation", std::to_string(policy_generation)},
+                       {"identity_authority", "uuid"},
+                       {"create_time_only", "1"},
+                       {"bootstrap_principal", "1"}}),
+      security_parent_uuid,
+      principal_object_uuid);
+  if (!typed.ok()) {
+    return typed;
+  }
+
+  const auto membership = GenerateEngineIdentityV7(
+      UuidKind::object, identity_seed + 6);
+  if (!membership.ok()) {
+    return CatalogRowsBuildError(membership.status, membership.diagnostic);
+  }
+  const std::string membership_uuid_text =
+      scratchbird::core::uuid::UuidToString(membership.value.value);
+  typed = AddTypedCatalogRecord(
+      rows,
+      CatalogRecordKind::grant_record,
+      ordinal,
+      identity_seed + 8,
+      KeyValuePayload({{"membership_uuid", membership_uuid_text},
+                       {"grant_uuid", membership_uuid_text},
+                       {"grant_class", "role_membership"},
+                       {"member_uuid", principal_uuid_text},
+                       {"member_kind", "principal"},
+                       {"parent_uuid", kCanonicalSysarchRoleObjectUuid},
+                       {"parent_kind", "role"},
+                       {"principal_uuid", principal_uuid_text},
+                       {"role_uuid", kCanonicalSysarchRoleObjectUuid},
+                       {"active", "1"},
+                       {"security_generation", "1"},
+                       {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
+                       {"policy_generation", std::to_string(policy_generation)},
+                       {"identity_authority", "uuid"},
+                       {"create_time_only", "1"}}),
+      security_parent_uuid,
+      membership.value);
+  if (!typed.ok()) {
+    return typed;
+  }
+
+  result.bootstrap_principal_uuid = principal.value;
+  result.bootstrap_membership_uuid = membership.value;
+  return result;
 }
 
 CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config,
@@ -2802,6 +3035,23 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   if (!policy_seed_rows.ok()) {
     return policy_seed_rows;
   }
+
+  const auto bootstrap_security_rows = MaterializeBootstrapSecurityRows(
+      &result.rows,
+      &ordinal,
+      config.creation_unix_epoch_millis + 900000,
+      config,
+      policy_seed_pack,
+      sys_security_object.value);
+  if (!bootstrap_security_rows.ok()) {
+    return bootstrap_security_rows;
+  }
+  result.bootstrap_principal_uuid =
+      bootstrap_security_rows.bootstrap_principal_uuid;
+  result.bootstrap_sysarch_role_uuid =
+      bootstrap_security_rows.bootstrap_sysarch_role_uuid;
+  result.bootstrap_membership_uuid =
+      bootstrap_security_rows.bootstrap_membership_uuid;
 
   // SEARCH_KEY: SB_METRICS_HISTORY_BOOTSTRAP_DATABASE_CREATE
   const std::array<std::string, 13> metric_history_surfaces = {{
@@ -3645,17 +3895,14 @@ struct LifecycleTransactionEvidence {
   u64 committed_local_transaction_id = 0;
 };
 
-DatabaseLifecycleResult WriteInitialTransactionInventoryPage(FileDevice* device,
-                                                            const PageManagerContext& page_context,
-                                                            u64 creation_unix_epoch_millis,
-                                                            LifecycleTransactionEvidence* evidence) {
+DatabaseLifecycleResult PrepareInitialTransactionInventory(
+    const PageManagerContext& page_context,
+    u64 creation_unix_epoch_millis,
+    LifecycleTransactionEvidence* evidence) {
   if (evidence == nullptr) {
     return LifecycleError("SB-DB-LIFECYCLE-TXN-ARGUMENT-INVALID",
                           "storage.database_lifecycle.transaction_argument_invalid");
   }
-  const auto initialized =
-      WriteTransactionInventoryPage(device, page_context.page_size, MakeEmptyLocalTransactionInventory());
-  if (!initialized.ok()) { return initialized; }
 
   const auto bootstrap_tx_uuid =
       GenerateEngineIdentityV7(UuidKind::transaction, creation_unix_epoch_millis + 10001);
@@ -3682,14 +3929,95 @@ DatabaseLifecycleResult WriteInitialTransactionInventoryPage(FileDevice* device,
   if (!computed_horizons.ok()) {
     return PropagateDiagnostic(computed_horizons.status, computed_horizons.diagnostic);
   }
-  const auto written = WriteTransactionInventoryPage(device, page_context.page_size, committed.inventory);
-  if (!written.ok()) { return written; }
   evidence->committed_local_transaction_id = kBootstrapCatalogTransactionId;
   evidence->horizons = computed_horizons.horizons;
   evidence->inventory = std::move(committed.inventory);
 
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
+  return result;
+}
+
+struct InitialTransactionInventoryPublishResult {
+  DatabaseLifecycleResult lifecycle;
+  bool database_sync_completed = false;
+
+  bool ok() const {
+    return lifecycle.ok();
+  }
+};
+
+InitialTransactionInventoryPublishResult PublishInitialTransactionInventoryPage(
+    FileDevice* device,
+    const PageManagerContext& page_context,
+    const LifecycleTransactionEvidence& evidence,
+    const std::string& fault_injection_point) {
+  auto failure = [](DatabaseLifecycleResult lifecycle,
+                    bool database_sync_completed = false) {
+    InitialTransactionInventoryPublishResult result;
+    result.lifecycle = std::move(lifecycle);
+    result.database_sync_completed = database_sync_completed;
+    return result;
+  };
+  if (fault_injection_point == "inventory_publish_write") {
+    return failure(LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-INVENTORY-WRITE",
+        "storage.database_lifecycle.create_fault_inventory_write",
+        device == nullptr ? std::string{} : device->path(),
+        "injected_before_committed_inventory_publication"));
+  }
+  TransactionInventoryPageBody body;
+  body.page_number = kTransactionInventoryPageNumber;
+  body.inventory_generation = std::max<u64>(
+      1,
+      evidence.inventory.next_local_transaction_id == 0
+          ? 1
+          : evidence.inventory.next_local_transaction_id - 1);
+  body.inventory = evidence.inventory;
+  body.horizons = evidence.horizons;
+  const auto built = BuildTransactionInventoryPageBody(
+      body,
+      page_context.page_size);
+  if (!built.ok()) {
+    return failure(PropagateDiagnostic(built.status, built.diagnostic));
+  }
+  const auto body_offset = CheckedPageBodyOffset(
+      page_context.page_size,
+      kTransactionInventoryPageNumber,
+      kPageHeaderSerializedBytes);
+  if (!body_offset.ok()) {
+    return failure(PropagateDiagnostic(body_offset.status,
+                                       body_offset.diagnostic));
+  }
+  const auto written = device->WriteAt(body_offset.offset,
+                                       built.serialized.data(),
+                                       built.serialized.size());
+  if (!written.ok()) {
+    return failure(PropagateDiagnostic(written.status, written.diagnostic));
+  }
+  if (fault_injection_point == "inventory_publish_sync") {
+    return failure(LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-INVENTORY-SYNC",
+        "storage.database_lifecycle.create_fault_inventory_sync",
+        device->path(),
+        "injected_after_committed_inventory_write_before_sync"));
+  }
+  const auto sync = device->Sync();
+  if (!sync.ok()) {
+    return failure(PropagateDiagnostic(sync.status, sync.diagnostic));
+  }
+  if (fault_injection_point == "subordinate_publish_journal") {
+    return failure(
+        LifecycleError(
+            "SB-DB-LIFECYCLE-CREATE-FAULT-SUBORDINATE-PUBLISH-JOURNAL",
+            "storage.database_lifecycle.create_fault_subordinate_publish_journal",
+            device->path(),
+            "injected_after_committed_inventory_sync"),
+        true);
+  }
+  InitialTransactionInventoryPublishResult result;
+  result.lifecycle.status = DatabaseLifecycleOkStatus();
+  result.database_sync_completed = true;
   return result;
 }
 
@@ -3702,6 +4030,100 @@ DatabaseLifecycleResult ReadTransactionInventoryPage(FileDevice* device,
   *inventory = loaded.inventory;
   *horizons = loaded.horizons;
 
+  DatabaseLifecycleResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  return result;
+}
+
+DatabaseLifecycleResult ReadTransactionInventoryPageWithoutJournal(
+    FileDevice* device,
+    u32 page_size,
+    LocalTransactionInventory* inventory,
+    LocalTransactionHorizons* horizons) {
+  if (device == nullptr || inventory == nullptr || horizons == nullptr) {
+    return LifecycleError(
+        "SB-DB-LIFECYCLE-TXN-ARGUMENT-INVALID",
+        "storage.database_lifecycle.transaction_argument_invalid");
+  }
+  LocalTransactionInventory loaded;
+  std::set<u64> visited;
+  u64 page_number = kTransactionInventoryPageNumber;
+  u64 previous_page_number = 0;
+  u64 inventory_generation = 0;
+  while (page_number != 0) {
+    if (visited.size() >= 4096 || !visited.insert(page_number).second) {
+      return LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-CHAIN-INVALID",
+          "storage.database_lifecycle.bootstrap_inventory_chain_invalid",
+          device->path(),
+          std::to_string(page_number));
+    }
+    const auto page_header = ReadDevicePageHeader(
+        device,
+        page_size,
+        page_number,
+        LifecycleDiskPolicy(page_size, true, true));
+    if (!page_header.ok()) {
+      return PropagateDiagnostic(page_header.status, page_header.diagnostic);
+    }
+    if (page_header.classification.page_type != PageType::transaction_inventory) {
+      return LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-PAGE-TYPE-INVALID",
+          "storage.database_lifecycle.bootstrap_inventory_page_type_invalid",
+          device->path(),
+          std::to_string(page_number));
+    }
+    const auto body_offset = CheckedPageBodyOffset(
+        page_size, page_number, kPageHeaderSerializedBytes);
+    if (!body_offset.ok()) {
+      return PropagateDiagnostic(body_offset.status, body_offset.diagnostic);
+    }
+    std::vector<scratchbird::core::platform::byte> serialized_body(
+        page_size - kPageHeaderSerializedBytes, 0);
+    const auto read = device->ReadAt(body_offset.offset,
+                                     serialized_body.data(),
+                                     serialized_body.size());
+    if (!read.ok()) {
+      return PropagateDiagnostic(read.status, read.diagnostic);
+    }
+    const auto parsed =
+        ParseTransactionInventoryPageBody(serialized_body, page_number);
+    if (!parsed.ok()) {
+      return PropagateDiagnostic(parsed.status, parsed.diagnostic);
+    }
+    if (parsed.body.previous_page_number != previous_page_number ||
+        (inventory_generation != 0 &&
+         parsed.body.inventory_generation != inventory_generation)) {
+      return LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-CHAIN-INVALID",
+          "storage.database_lifecycle.bootstrap_inventory_chain_invalid",
+          device->path(),
+          std::to_string(page_number));
+    }
+    if (inventory_generation == 0) {
+      inventory_generation = parsed.body.inventory_generation;
+      loaded.next_local_transaction_id =
+          parsed.body.inventory.next_local_transaction_id;
+    } else if (loaded.next_local_transaction_id !=
+               parsed.body.inventory.next_local_transaction_id) {
+      return LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-NEXT-ID-MISMATCH",
+          "storage.database_lifecycle.bootstrap_inventory_next_id_mismatch",
+          device->path(),
+          std::to_string(page_number));
+    }
+    loaded.entries.insert(loaded.entries.end(),
+                          parsed.body.inventory.entries.begin(),
+                          parsed.body.inventory.entries.end());
+    previous_page_number = page_number;
+    page_number = parsed.body.next_page_number;
+  }
+  const auto computed = ComputeLocalTransactionHorizons(loaded);
+  if (!computed.ok()) {
+    return PropagateDiagnostic(computed.status, computed.diagnostic);
+  }
+  *inventory = std::move(loaded);
+  *horizons = computed.horizons;
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
   return result;
@@ -4446,6 +4868,54 @@ DatabaseLifecycleResult ValidateCreateConfig(const DatabaseCreateConfig& config)
                           "storage.database_lifecycle.resource_seed_pack_required",
                           config.path);
   }
+  if (config.bootstrap_principal_name.empty() &&
+      !config.bootstrap_credential_fingerprint.empty()) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-NAME-REQUIRED",
+        "storage.database_lifecycle.bootstrap_principal_name_required",
+        config.path);
+  }
+  if (!config.bootstrap_principal_name.empty() &&
+      !IsSafeBootstrapPrincipalName(config.bootstrap_principal_name)) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-NAME-INVALID",
+        "storage.database_lifecycle.bootstrap_principal_name_invalid",
+        config.path,
+        config.bootstrap_principal_name);
+  }
+  if (!config.bootstrap_principal_name.empty() &&
+      !IsBootstrapCredentialFingerprint(
+          config.bootstrap_credential_fingerprint)) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-FINGERPRINT-INVALID",
+        "storage.database_lifecycle.bootstrap_credential_fingerprint_invalid",
+        config.path);
+  }
+  if (config.require_bootstrap_principal &&
+      config.bootstrap_principal_name.empty() &&
+      !config.allow_uncredentialed_bootstrap) {
+    return LifecycleError(
+        "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-REQUIRED",
+        "storage.database_lifecycle.bootstrap_principal_required",
+        config.path);
+  }
+  static const std::set<std::string> kCreateFaultPoints = {
+      "",
+      "before_catalog",
+      "after_catalog_before_prepublish_sync",
+      "after_prepublish_sync_before_inventory_publish",
+      "inventory_publish_write",
+      "inventory_publish_sync",
+      "subordinate_publish_journal",
+      "after_inventory_durable_before_readback",
+  };
+  if (kCreateFaultPoints.count(config.create_fault_injection_point) == 0) {
+    return LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-POINT-INVALID",
+        "storage.database_lifecycle.create_fault_point_invalid",
+        config.path,
+        config.create_fault_injection_point);
+  }
 
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
@@ -5141,17 +5611,58 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     return PropagateDiagnostic(serialized.status, serialized.diagnostic);
   }
 
-  if (config.allow_overwrite) {
-    std::error_code ignored;
-    std::filesystem::remove(config.path + ".sb.crud_events", ignored);
-    std::filesystem::remove(config.path + ".sb.api_events", ignored);
-  }
-
   FileDevice device;
-  const auto open = device.Open(config.path,
-                                config.allow_overwrite ? FileOpenMode::create_or_truncate : FileOpenMode::create_new);
+  struct CreateArtifactGuard {
+    FileDevice* device = nullptr;
+    std::string path;
+    bool armed = false;
+    bool committed_by_inventory = false;
+
+    ~CreateArtifactGuard() {
+      if (!armed || committed_by_inventory || path.empty()) {
+        return;
+      }
+      if (device != nullptr && device->is_open()) {
+        (void)device->Close();
+      }
+      const std::array<std::string, 5> artifacts = {{
+          path + ".sb.txn_publish.tmp",
+          path + ".sb.txn_publish",
+          path + ".sb.security_principal_events",
+          path + ".sb.local_password_auth",
+          path,
+      }};
+      std::error_code ec;
+      for (const auto& artifact : artifacts) {
+        std::filesystem::remove(artifact, ec);
+        ec.clear();
+      }
+      if (std::filesystem::exists(path, ec)) {
+        const std::filesystem::path quarantine(
+            path + ".sb.prepublication-quarantine." +
+            std::to_string(CurrentUnixEpochMillis()));
+        ec.clear();
+        std::filesystem::rename(path, quarantine, ec);
+      }
+    }
+  } create_guard{&device, config.path, false, false};
+
+  // CREATE DATABASE is replay-refusing.  allow_overwrite is retained only for
+  // source compatibility; it never authorizes truncating an admitted database.
+  const auto open = device.Open(config.path, FileOpenMode::create_new);
   if (!open.ok()) {
     return PropagateDiagnostic(open.status, open.diagnostic);
+  }
+  create_guard.armed = true;
+  {
+    std::error_code ignored;
+    std::filesystem::remove(config.path + ".sb.security_principal_events", ignored);
+    ignored.clear();
+    std::filesystem::remove(config.path + ".sb.local_password_auth", ignored);
+    ignored.clear();
+    std::filesystem::remove(config.path + ".sb.txn_publish", ignored);
+    ignored.clear();
+    std::filesystem::remove(config.path + ".sb.txn_publish.tmp", ignored);
   }
   const auto create_health = CheckDiskDeviceHealth(device,
                                                    LifecycleDiskPolicy(config.page_size, false, false));
@@ -5200,23 +5711,22 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   StartupStateRecord initial_startup_state =
       MakeInitialStartupState(config.database_uuid, config.filespace_uuid, config.page_size);
   LifecycleTransactionEvidence bootstrap_evidence;
-  const auto write_txn_inventory =
-      WriteInitialTransactionInventoryPage(&device,
-                                           page_context,
-                                           config.creation_unix_epoch_millis,
-                                           &bootstrap_evidence);
-  if (!write_txn_inventory.ok()) {
-    return MarkStoragePartial(write_txn_inventory, config.path, "create.transaction_inventory");
-  }
-  initial_startup_state.bootstrap_local_transaction_id =
-      bootstrap_evidence.committed_local_transaction_id;
-  initial_startup_state = RecordStartupLifecycleEvidence(
-      std::move(initial_startup_state),
-      StartupLifecycleDurablePhase::create_tx1_committed,
-      bootstrap_evidence.committed_local_transaction_id,
+  const auto prepare_txn_inventory = PrepareInitialTransactionInventory(
+      page_context,
       config.creation_unix_epoch_millis,
-      StartupLifecycleEvidenceFlag::bootstrap_tx1_committed);
-  initial_startup_state.completed_phases.push_back("create.bootstrap_transaction_committed");
+      &bootstrap_evidence);
+  if (!prepare_txn_inventory.ok()) {
+    return MarkStoragePartial(prepare_txn_inventory,
+                              config.path,
+                              "create.transaction_inventory_prepare");
+  }
+  if (config.create_fault_injection_point == "before_catalog") {
+    return LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-BEFORE-CATALOG",
+        "storage.database_lifecycle.create_fault_before_catalog",
+        config.path,
+        "injected_prepublication_failure");
+  }
 
   ResourceSeedCatalogImage resource_seed_catalog;
   if (!config.resource_seed_pack_root.empty()) {
@@ -5258,8 +5768,10 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
 
   DatabaseCatalogSummaryResult created_catalog_summary;
   created_catalog_summary.status = DatabaseLifecycleOkStatus();
-  if (resource_seed_catalog.active || resource_seed_catalog.minimal_bootstrap ||
-      policy_seed_pack.image.active) {
+  TypedUuid bootstrap_principal_uuid;
+  TypedUuid bootstrap_sysarch_role_uuid;
+  TypedUuid bootstrap_membership_uuid;
+  {
     const auto catalog_rows = BuildCreateCatalogRows(config,
                                                      resource_seed_catalog,
                                                      policy_seed_pack);
@@ -5277,6 +5789,9 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     if (!created_catalog_summary.ok()) {
       return PropagateDiagnostic(created_catalog_summary.status, created_catalog_summary.diagnostic);
     }
+    bootstrap_principal_uuid = catalog_rows.bootstrap_principal_uuid;
+    bootstrap_sysarch_role_uuid = catalog_rows.bootstrap_sysarch_role_uuid;
+    bootstrap_membership_uuid = catalog_rows.bootstrap_membership_uuid;
     const auto write_catalog = WriteCatalogPageBodies(&device,
                                                       page_context,
                                                       catalog_rows.rows,
@@ -5292,50 +5807,615 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     return PropagateDiagnostic(write_startup_state.status, write_startup_state.diagnostic);
   }
 
-  const auto sync = SyncFileDeviceWithPolicy(&device,
-                                             LifecycleDiskPolicy(config.page_size, false, true));
-  if (!sync.ok()) {
-    return PropagateStorageFailure(sync.status,
-                                   sync.diagnostic,
-                                   config.path,
-                                   "create.sync",
-                                   true);
+  if (config.create_fault_injection_point ==
+      "after_catalog_before_prepublish_sync") {
+    return LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-AFTER-CATALOG",
+        "storage.database_lifecycle.create_fault_after_catalog",
+        config.path,
+        "injected_prepublication_failure");
   }
-  const auto final_create_health = CheckDiskDeviceHealth(device,
-                                                         LifecycleDiskPolicy(config.page_size, false, true));
-  if (!final_create_health.ok()) {
-    return PropagateStorageFailure(final_create_health.status,
-                                   final_create_health.diagnostic,
+
+  const auto prepublication_sync = SyncFileDeviceWithPolicy(
+      &device,
+      LifecycleDiskPolicy(config.page_size, false, true));
+  if (!prepublication_sync.ok()) {
+    return PropagateStorageFailure(prepublication_sync.status,
+                                   prepublication_sync.diagnostic,
                                    config.path,
-                                   "create.final_health",
-                                   true);
-  }
-  const auto close = device.Close();
-  if (!close.ok()) {
-    return PropagateStorageFailure(close.status,
-                                   close.diagnostic,
-                                   config.path,
-                                   "create.close",
+                                   "create.prepublication_sync",
                                    true);
   }
 
-  DatabaseLifecycleResult result;
+  if (config.create_fault_injection_point ==
+      "after_prepublish_sync_before_inventory_publish") {
+    return LifecycleError(
+        "SB-DB-LIFECYCLE-CREATE-FAULT-BEFORE-INVENTORY-PUBLISH",
+        "storage.database_lifecycle.create_fault_before_inventory_publish",
+        config.path,
+        "injected_prepublication_failure");
+  }
+
+  auto make_committed_result = [&](DatabaseCreateFinalityClass finality,
+                                   DiskHealthSnapshot disk_health,
+                                   std::string warning_code = {},
+                                   std::string warning_detail = {}) {
+    DatabaseLifecycleResult result;
+    result.status = DatabaseLifecycleOkStatus();
+    if (finality == DatabaseCreateFinalityClass::committed_with_warning) {
+      result.status.severity = Severity::warning;
+    }
+    result.state = MakeState(config.path,
+                             header_result.header,
+                             config.database_uuid,
+                             config.filespace_uuid,
+                             DatabaseLifecyclePhase::created,
+                             false,
+                             false,
+                             false,
+                             std::move(disk_health),
+                             resource_seed_catalog,
+                             policy_seed_pack.image,
+                             created_catalog_summary,
+                             bootstrap_evidence.inventory,
+                             bootstrap_evidence.horizons,
+                             initial_startup_state);
+    result.create_finality = finality;
+    result.bootstrap_principal_uuid = bootstrap_principal_uuid;
+    result.bootstrap_sysarch_role_uuid = bootstrap_sysarch_role_uuid;
+    result.bootstrap_membership_uuid = bootstrap_membership_uuid;
+    if (!warning_code.empty()) {
+      result.diagnostic = MakeDatabaseLifecycleDiagnostic(
+          result.status,
+          std::move(warning_code),
+          "storage.database_lifecycle.create_committed_with_warning",
+          config.path,
+          std::move(warning_detail));
+    }
+    return result;
+  };
+
+  auto persist_committed_startup_evidence = [&]() {
+    StartupStateRecord committed_startup_state = initial_startup_state;
+    committed_startup_state.bootstrap_local_transaction_id =
+        bootstrap_evidence.committed_local_transaction_id;
+    committed_startup_state = RecordStartupLifecycleEvidence(
+        std::move(committed_startup_state),
+        StartupLifecycleDurablePhase::create_tx1_committed,
+        bootstrap_evidence.committed_local_transaction_id,
+        config.creation_unix_epoch_millis,
+        StartupLifecycleEvidenceFlag::bootstrap_tx1_committed);
+    committed_startup_state.completed_phases.push_back(
+        "create.bootstrap_transaction_committed");
+    const auto written = WriteStartupStatePageBody(&device,
+                                                   committed_startup_state);
+    if (!written.ok()) {
+      return PropagateDiagnostic(written.status, written.diagnostic);
+    }
+    const auto synced = SyncFileDeviceWithPolicy(
+        &device,
+        LifecycleDiskPolicy(config.page_size, false, true));
+    if (!synced.ok()) {
+      return PropagateDiagnostic(synced.status, synced.diagnostic);
+    }
+    initial_startup_state = std::move(committed_startup_state);
+    DatabaseLifecycleResult result;
+    result.status = DatabaseLifecycleOkStatus();
+    return result;
+  };
+
+  const auto publish_txn_inventory = PublishInitialTransactionInventoryPage(
+      &device,
+      page_context,
+      bootstrap_evidence,
+      config.create_fault_injection_point);
+  if (!publish_txn_inventory.ok()) {
+    if (!publish_txn_inventory.database_sync_completed) {
+      return MarkStoragePartial(publish_txn_inventory.lifecycle,
+                                config.path,
+                                "create.inventory_publish_sync");
+    }
+    LocalTransactionInventory inventory_readback;
+    LocalTransactionHorizons horizons_readback;
+    const auto direct_read = ReadTransactionInventoryPageWithoutJournal(
+        &device,
+        config.page_size,
+        &inventory_readback,
+        &horizons_readback);
+    const auto committed_readback = direct_read.ok()
+                                        ? ValidateCommittedLifecycleTransaction(
+                                              inventory_readback,
+                                              kBootstrapCatalogTransactionId,
+                                              config.path,
+                                              "SB-DB-LIFECYCLE-BOOTSTRAP-TX-MISSING",
+                                              "SB-DB-LIFECYCLE-BOOTSTRAP-TX-INVALID-STATE")
+                                        : direct_read;
+    if (!committed_readback.ok()) {
+      return MarkStoragePartial(publish_txn_inventory.lifecycle,
+                                config.path,
+                                "create.inventory_publish");
+    }
+    create_guard.committed_by_inventory = true;
+    const auto startup_evidence = persist_committed_startup_evidence();
+    const auto close_after_warning = device.Close();
+    std::string detail =
+        publish_txn_inventory.lifecycle.diagnostic.diagnostic_code;
+    if (!startup_evidence.ok()) {
+      detail += ";startup_evidence=" +
+                startup_evidence.diagnostic.diagnostic_code;
+    }
+    if (!close_after_warning.ok()) {
+      detail += ";close=" + close_after_warning.diagnostic.diagnostic_code;
+    }
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-SUBORDINATE-WARNING",
+        detail);
+  }
+  create_guard.committed_by_inventory =
+      publish_txn_inventory.database_sync_completed;
+
+  LocalTransactionInventory authoritative_inventory;
+  LocalTransactionHorizons authoritative_horizons;
+  const auto authoritative_read = ReadTransactionInventoryPageWithoutJournal(
+      &device,
+      config.page_size,
+      &authoritative_inventory,
+      &authoritative_horizons);
+  const auto authoritative_commit = authoritative_read.ok()
+                                        ? ValidateCommittedLifecycleTransaction(
+                                              authoritative_inventory,
+                                              kBootstrapCatalogTransactionId,
+                                              config.path,
+                                              "SB-DB-LIFECYCLE-BOOTSTRAP-TX-MISSING",
+                                              "SB-DB-LIFECYCLE-BOOTSTRAP-TX-INVALID-STATE")
+                                        : authoritative_read;
+  if (!authoritative_commit.ok()) {
+    const auto close_after_warning = device.Close();
+    std::string detail = authoritative_commit.diagnostic.diagnostic_code;
+    if (!close_after_warning.ok()) {
+      detail += ";close=" + close_after_warning.diagnostic.diagnostic_code;
+    }
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-READBACK-WARNING",
+        detail);
+  }
+
+  const auto startup_evidence = persist_committed_startup_evidence();
+  if (!startup_evidence.ok()) {
+    const auto close_after_warning = device.Close();
+    std::string detail = startup_evidence.diagnostic.diagnostic_code;
+    if (!close_after_warning.ok()) {
+      detail += ";close=" + close_after_warning.diagnostic.diagnostic_code;
+    }
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-STARTUP-EVIDENCE-WARNING",
+        detail);
+  }
+
+  if (config.create_fault_injection_point ==
+      "after_inventory_durable_before_readback") {
+    const auto close_after_warning = device.Close();
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-POSTPUBLICATION-WARNING",
+        close_after_warning.ok()
+            ? "injected_after_inventory_durable_before_readback"
+            : "injected_after_inventory_durable_before_readback;close=" +
+                  close_after_warning.diagnostic.diagnostic_code);
+  }
+
+  const auto final_create_health = CheckDiskDeviceHealth(device,
+                                                         LifecycleDiskPolicy(config.page_size, false, true));
+  if (!final_create_health.ok()) {
+    const auto close_after_warning = device.Close();
+    std::string detail = final_create_health.diagnostic.diagnostic_code;
+    if (!close_after_warning.ok()) {
+      detail += ";close=" + close_after_warning.diagnostic.diagnostic_code;
+    }
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        final_create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-HEALTH-WARNING",
+        detail);
+  }
+  const auto close = device.Close();
+  if (!close.ok()) {
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        final_create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-CLOSE-WARNING",
+        close.diagnostic.diagnostic_code);
+  }
+
+  const auto bootstrap_security_readback =
+      ReadDatabaseBootstrapSecurityCatalog(config.path);
+  if (!bootstrap_security_readback.ok()) {
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        final_create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-CATALOG-READBACK-WARNING",
+        bootstrap_security_readback.diagnostic.diagnostic_code);
+  }
+
+  return make_committed_result(DatabaseCreateFinalityClass::committed,
+                               final_create_health.snapshot);
+}
+
+DatabaseBootstrapSecurityCatalogReadResult
+ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
+  auto fail = [&](std::string code,
+                  std::string message_key,
+                  std::string detail = {}) {
+    const auto lifecycle = LifecycleError(std::move(code),
+                                          std::move(message_key),
+                                          path,
+                                          std::move(detail));
+    DatabaseBootstrapSecurityCatalogReadResult result;
+    result.status = lifecycle.status;
+    result.diagnostic = lifecycle.diagnostic;
+    return result;
+  };
+  auto propagate = [&](Status status, DiagnosticRecord diagnostic) {
+    DatabaseBootstrapSecurityCatalogReadResult result;
+    result.status = status;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+
+  if (path.empty()) {
+    return fail("SB-DB-BOOTSTRAP-SECURITY-PATH-REQUIRED",
+                "storage.database_lifecycle.bootstrap_security_path_required");
+  }
+  for (const char* suffix : {".sb.security_principal_events",
+                             ".sb.local_password_auth"}) {
+    std::error_code ec;
+    if (std::filesystem::exists(path + suffix, ec) && !ec) {
+      return fail(
+          "SB-DB-BOOTSTRAP-SECURITY-SIDECAR-FORBIDDEN",
+          "storage.database_lifecycle.bootstrap_security_sidecar_forbidden",
+          suffix);
+    }
+  }
+
+  FileDevice device;
+  const auto open = device.Open(path, FileOpenMode::open_existing_read_only);
+  if (!open.ok()) {
+    return propagate(open.status, open.diagnostic);
+  }
+  SerializedDatabaseHeader serialized_header{};
+  const auto read_header = device.ReadAt(0,
+                                         serialized_header.data(),
+                                         serialized_header.size());
+  if (!read_header.ok()) {
+    return propagate(read_header.status, read_header.diagnostic);
+  }
+  const auto parsed_header = ParseDatabaseHeader(serialized_header);
+  if (!parsed_header.ok()) {
+    return propagate(parsed_header.status, parsed_header.diagnostic);
+  }
+  const auto read_policy = LifecycleDiskPolicy(parsed_header.header.page_size,
+                                               true,
+                                               true);
+  const auto health = CheckDiskDeviceHealth(device, read_policy);
+  if (!health.ok()) {
+    return propagate(health.status, health.diagnostic);
+  }
+  const auto core_pages = ValidateCorePageHeaders(&device,
+                                                  parsed_header.header.page_size,
+                                                  read_policy);
+  if (!core_pages.ok()) {
+    return propagate(core_pages.status, core_pages.diagnostic);
+  }
+  TypedUuid database_uuid;
+  database_uuid.kind = UuidKind::database;
+  database_uuid.value = parsed_header.header.database_uuid;
+  const auto startup = ReadStartupStatePageBody(&device,
+                                                parsed_header.header.page_size);
+  if (!startup.ok()) {
+    return propagate(startup.status, startup.diagnostic);
+  }
+  if (!(startup.state.database_uuid.value == database_uuid.value)) {
+    return fail(
+        "SB-DB-BOOTSTRAP-SECURITY-DATABASE-UUID-MISMATCH",
+        "storage.database_lifecycle.bootstrap_security_database_uuid_mismatch");
+  }
+  const auto startup_identities = ValidateStartupPageIdentities(
+      &device,
+      parsed_header.header.page_size,
+      read_policy,
+      database_uuid,
+      startup.state.first_filespace_uuid);
+  if (!startup_identities.ok()) {
+    return propagate(startup_identities.status,
+                     startup_identities.diagnostic);
+  }
+
+  std::vector<CatalogPageRow> catalog_rows;
+  const auto catalog_read = ReadCatalogPageRows(&device,
+                                                parsed_header.header.page_size,
+                                                &catalog_rows);
+  if (!catalog_read.ok()) {
+    return propagate(catalog_read.status, catalog_read.diagnostic);
+  }
+
+  LocalTransactionInventory inventory;
+  LocalTransactionHorizons horizons;
+  const auto inventory_read = ReadTransactionInventoryPageWithoutJournal(
+      &device,
+      parsed_header.header.page_size,
+      &inventory,
+      &horizons);
+  if (!inventory_read.ok()) {
+    return propagate(inventory_read.status, inventory_read.diagnostic);
+  }
+  const auto tx1 = ValidateCommittedLifecycleTransaction(
+      inventory,
+      kBootstrapCatalogTransactionId,
+      path,
+      "SB-DB-BOOTSTRAP-SECURITY-TX1-MISSING",
+      "SB-DB-BOOTSTRAP-SECURITY-TX1-NOT-COMMITTED");
+  if (!tx1.ok()) {
+    return propagate(tx1.status, tx1.diagnostic);
+  }
+
+  DatabaseBootstrapSecurityCatalogState state;
+  state.committed_by_inventory = true;
+  std::set<std::string> principal_names;
+  std::set<std::string> principal_uuids;
+  std::set<std::string> membership_uuids;
+  std::set<std::string> credential_salts;
+  u32 sysarch_count = 0;
+  u32 bootstrap_principal_count = 0;
+  u32 bootstrap_membership_count = 0;
+  TypedUuid membership_principal_uuid;
+
+  auto exact_field = [](const std::map<std::string, std::string>& fields,
+                        const std::string& key,
+                        const std::string& value) {
+    const auto found = fields.find(key);
+    return found != fields.end() && found->second == value;
+  };
+  auto lower = [](std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](char ch) {
+      return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    });
+    return value;
+  };
+
+  for (const auto& row : catalog_rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) {
+      continue;
+    }
+    const auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) {
+      return propagate(decoded.status, decoded.diagnostic);
+    }
+    if (decoded.record.header.deleted) {
+      continue;
+    }
+    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+
+    if (decoded.record.header.kind == CatalogRecordKind::role_account) {
+      const std::string role_code = fields.count("role_code") == 0
+                                        ? std::string{}
+                                        : fields.at("role_code");
+      const std::string role_uuid = fields.count("role_uuid") == 0
+                                        ? std::string{}
+                                        : fields.at("role_uuid");
+      const std::string role_name = fields.count("role_name") == 0
+                                        ? std::string{}
+                                        : fields.at("role_name");
+      if (role_name == "ROOT_ROLE") {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-LEGACY-ROLE-REFUSED",
+            "storage.database_lifecycle.bootstrap_security_legacy_role_refused",
+            role_name);
+      }
+      if (role_code != "ROLE_SYSARCH" &&
+          role_uuid != kCanonicalSysarchRoleObjectUuid &&
+          (fields.count("authority_class") == 0 ||
+           fields.at("authority_class") != "engine_owned_sysarch")) {
+        continue;
+      }
+      ++sysarch_count;
+      const std::string header_uuid = decoded.record.header.object_uuid.valid()
+                                          ? scratchbird::core::uuid::UuidToString(
+                                                decoded.record.header.object_uuid.value)
+                                          : std::string{};
+      if (header_uuid != kCanonicalSysarchRoleObjectUuid ||
+          role_uuid != kCanonicalSysarchRoleObjectUuid ||
+          role_code != "ROLE_SYSARCH" ||
+          !exact_field(fields, "authority_class", "engine_owned_sysarch") ||
+          !exact_field(fields, "engine_owned", "1") ||
+          !exact_field(fields, "identity_authority", "uuid") ||
+          !exact_field(fields, "immutable", "1") ||
+          !exact_field(fields, "create_time_only", "1") ||
+          !exact_field(fields, "creator_tx", "1") ||
+          !exact_field(fields, "active", "1") ||
+          ParseU32Field(fields, "policy_generation") == 0) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID",
+            "storage.database_lifecycle.bootstrap_security_sysarch_provenance_invalid",
+            header_uuid + ":" + role_uuid + ":" + role_code);
+      }
+      const auto parsed_role = ParseTypedUuid(UuidKind::object, role_uuid);
+      if (!parsed_role.ok()) {
+        return propagate(parsed_role.status, parsed_role.diagnostic);
+      }
+      state.sysarch_role_uuid = parsed_role.value;
+      state.creator_tx = ParseU64Field(fields, "creator_tx");
+      state.policy_generation = ParseU32Field(fields, "policy_generation");
+      continue;
+    }
+
+    if (decoded.record.header.kind == CatalogRecordKind::user_account) {
+      const std::string principal_name = fields.count("principal_name") == 0
+                                             ? std::string{}
+                                             : fields.at("principal_name");
+      if (!principal_name.empty() &&
+          !principal_names.insert(lower(principal_name)).second) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-NAME-DUPLICATE",
+            "storage.database_lifecycle.bootstrap_security_principal_name_duplicate",
+            principal_name);
+      }
+      const bool bootstrap = exact_field(fields, "bootstrap_principal", "1");
+      if (principal_name == "ROOT" && !bootstrap) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-LEGACY-ROOT-REFUSED",
+            "storage.database_lifecycle.bootstrap_security_legacy_root_refused",
+            principal_name);
+      }
+      if (!bootstrap) {
+        continue;
+      }
+      ++bootstrap_principal_count;
+      const std::string principal_uuid = fields.count("principal_uuid") == 0
+                                             ? std::string{}
+                                             : fields.at("principal_uuid");
+      const std::string fingerprint =
+          fields.count("credential_fingerprint") == 0
+              ? std::string{}
+              : fields.at("credential_fingerprint");
+      const std::string header_uuid = decoded.record.header.object_uuid.valid()
+                                          ? scratchbird::core::uuid::UuidToString(
+                                                decoded.record.header.object_uuid.value)
+                                          : std::string{};
+      BootstrapCredentialFingerprintFields fingerprint_fields;
+      const bool fingerprint_valid = ParseBootstrapCredentialFingerprint(
+          fingerprint,
+          &fingerprint_fields);
+      if (!principal_uuids.insert(principal_uuid).second ||
+          header_uuid != principal_uuid ||
+          !IsSafeBootstrapPrincipalName(principal_name) ||
+          !fingerprint_valid ||
+          !credential_salts.insert(fingerprint_fields.salt_hex).second ||
+          !exact_field(fields, "kind", "user") ||
+          !exact_field(fields, "principal_kind", "user") ||
+          !exact_field(fields, "active", "1") ||
+          !exact_field(fields, "security_generation", "1") ||
+          !exact_field(fields, "creator_tx", "1") ||
+          !exact_field(fields, "identity_authority", "uuid") ||
+          !exact_field(fields, "create_time_only", "1") ||
+          ParseU32Field(fields, "policy_generation") == 0) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID",
+            "storage.database_lifecycle.bootstrap_security_principal_invalid",
+            principal_name + ":" + principal_uuid);
+      }
+      const auto parsed_principal = ParseTypedUuid(UuidKind::principal,
+                                                  principal_uuid);
+      if (!parsed_principal.ok()) {
+        return propagate(parsed_principal.status,
+                         parsed_principal.diagnostic);
+      }
+      state.principal_uuid = parsed_principal.value;
+      state.principal_name = principal_name;
+      state.credential_fingerprint = fingerprint;
+      if (state.creator_tx != ParseU64Field(fields, "creator_tx") ||
+          state.policy_generation != ParseU32Field(fields,
+                                                   "policy_generation")) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+            "storage.database_lifecycle.bootstrap_security_generation_mismatch",
+            principal_name);
+      }
+      continue;
+    }
+
+    if (decoded.record.header.kind == CatalogRecordKind::grant_record &&
+        (exact_field(fields, "role_uuid", kCanonicalSysarchRoleObjectUuid) ||
+         exact_field(fields, "parent_uuid", kCanonicalSysarchRoleObjectUuid))) {
+      ++bootstrap_membership_count;
+      const std::string membership_uuid =
+          fields.count("membership_uuid") == 0
+              ? std::string{}
+              : fields.at("membership_uuid");
+      const std::string member_uuid = fields.count("member_uuid") == 0
+                                          ? std::string{}
+                                          : fields.at("member_uuid");
+      const std::string header_uuid = decoded.record.header.object_uuid.valid()
+                                          ? scratchbird::core::uuid::UuidToString(
+                                                decoded.record.header.object_uuid.value)
+                                          : std::string{};
+      if (!membership_uuids.insert(membership_uuid).second ||
+          (!header_uuid.empty() && header_uuid != membership_uuid) ||
+          !exact_field(fields, "grant_uuid", membership_uuid) ||
+          !exact_field(fields, "grant_class", "role_membership") ||
+          !exact_field(fields, "member_kind", "principal") ||
+          !exact_field(fields, "parent_uuid", kCanonicalSysarchRoleObjectUuid) ||
+          !exact_field(fields, "parent_kind", "role") ||
+          !exact_field(fields, "principal_uuid", member_uuid) ||
+          !exact_field(fields, "role_uuid", kCanonicalSysarchRoleObjectUuid) ||
+          !exact_field(fields, "active", "1") ||
+          !exact_field(fields, "security_generation", "1") ||
+          !exact_field(fields, "creator_tx", "1") ||
+          !exact_field(fields, "identity_authority", "uuid") ||
+          !exact_field(fields, "create_time_only", "1") ||
+          ParseU32Field(fields, "policy_generation") == 0) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID",
+            "storage.database_lifecycle.bootstrap_security_membership_invalid",
+            membership_uuid);
+      }
+      const auto parsed_membership = ParseTypedUuid(UuidKind::object,
+                                                   membership_uuid);
+      if (!parsed_membership.ok()) {
+        return propagate(parsed_membership.status,
+                         parsed_membership.diagnostic);
+      }
+      const auto parsed_member = ParseTypedUuid(UuidKind::principal,
+                                                member_uuid);
+      if (!parsed_member.ok()) {
+        return propagate(parsed_member.status, parsed_member.diagnostic);
+      }
+      state.membership_uuid = parsed_membership.value;
+      membership_principal_uuid = parsed_member.value;
+      if (state.policy_generation != ParseU32Field(fields,
+                                                   "policy_generation")) {
+        return fail(
+            "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+            "storage.database_lifecycle.bootstrap_security_generation_mismatch",
+            membership_uuid);
+      }
+    }
+  }
+
+  if (sysarch_count != 1) {
+    return fail(
+        "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-CARDINALITY-INVALID",
+        "storage.database_lifecycle.bootstrap_security_sysarch_cardinality_invalid",
+        std::to_string(sysarch_count));
+  }
+  if (bootstrap_principal_count == 0 && bootstrap_membership_count == 0) {
+    state.present = false;
+  } else if (bootstrap_principal_count != 1 ||
+             bootstrap_membership_count != 1 ||
+             !(state.principal_uuid.value ==
+               membership_principal_uuid.value)) {
+    return fail(
+        "SB-DB-BOOTSTRAP-SECURITY-CARDINALITY-INVALID",
+        "storage.database_lifecycle.bootstrap_security_cardinality_invalid",
+        "principals=" + std::to_string(bootstrap_principal_count) +
+            ";memberships=" + std::to_string(bootstrap_membership_count));
+  } else {
+    state.present = true;
+  }
+
+  const auto close = device.Close();
+  if (!close.ok()) {
+    return propagate(close.status, close.diagnostic);
+  }
+  DatabaseBootstrapSecurityCatalogReadResult result;
   result.status = DatabaseLifecycleOkStatus();
-  result.state = MakeState(config.path,
-                           header_result.header,
-                           config.database_uuid,
-                           config.filespace_uuid,
-                           DatabaseLifecyclePhase::created,
-                           false,
-                           false,
-                           false,
-                           final_create_health.snapshot,
-                           resource_seed_catalog,
-                           policy_seed_pack.image,
-                           created_catalog_summary,
-                           bootstrap_evidence.inventory,
-                           bootstrap_evidence.horizons,
-                           initial_startup_state);
+  result.state = std::move(state);
   return result;
 }
 

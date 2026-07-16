@@ -392,7 +392,8 @@ ParserServerEventSession EventSession(const std::filesystem::path& database_path
   session.engine_context.trust_mode =
       scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
   session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
-  session.engine_context.trace_tags.push_back("group:DBA");
+  session.engine_context.trace_tags.push_back("right:EVENT_CREATE");
+  session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
   return session;
 }
 

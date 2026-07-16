@@ -15,6 +15,7 @@
 #include "product_identity.hpp"
 #include "server_daemon_lifecycle.hpp"
 #include "startup.hpp"
+#include "windows_service_runtime.hpp"
 
 #include <iostream>
 #include <string>
@@ -29,35 +30,32 @@ int EmitDiagnostics(const std::vector<scratchbird::server::ServerDiagnostic>& di
   return diagnostics.empty() ? 0 : 2;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  const auto parse = scratchbird::server::ParseServerCli(argc, argv);
-  if (!parse.ok()) {
-    return EmitDiagnostics(parse.diagnostics);
-  }
-
-  if (parse.options.help) {
+int RunServerProduct(
+    const scratchbird::server::ServerCliOptions& options,
+    const scratchbird::server::ParserServerIpcLifecycleCallbacks& ipc_callbacks = {}) {
+  if (options.help) {
     std::cout << scratchbird::server::ServerHelpText();
     return 0;
   }
 
-  if (parse.options.version) {
+  if (options.version) {
     std::cout << scratchbird::server::ProductVersionLine() << '\n';
     return 0;
   }
 
-  const auto startup = scratchbird::server::RunServerStartup(parse.options);
+  const auto startup = scratchbird::server::RunServerStartup(options);
   if (!startup.stdout_text.empty()) {
     std::cout << startup.stdout_text;
   }
   if (!startup.diagnostics.empty()) {
     EmitDiagnostics(startup.diagnostics);
   }
-  if (startup.exit_code != 0 || startup.effective_config.mode == scratchbird::server::ServerMode::kValidationOnly) {
+  if (startup.exit_code != 0 ||
+      startup.effective_config.mode == scratchbird::server::ServerMode::kValidationOnly) {
     return startup.exit_code;
   }
-  const auto engine_host = scratchbird::server::StartHostedEngine(startup.effective_config);
+  const auto engine_host =
+      scratchbird::server::StartHostedEngine(startup.effective_config);
   if (!engine_host.diagnostics.empty()) {
     EmitDiagnostics(engine_host.diagnostics);
     return 2;
@@ -71,11 +69,42 @@ int main(int argc, char** argv) {
   if (startup.exit_code == 0 && startup.serving_requested) {
     std::cout.flush();
     const auto ipc = scratchbird::server::RunParserServerIpcEndpoint(
-        startup.effective_config, startup.lifecycle_artifacts, engine_host.state);
+        startup.effective_config,
+        startup.lifecycle_artifacts,
+        engine_host.state,
+        ipc_callbacks);
     if (!ipc.diagnostics.empty()) {
       EmitDiagnostics(ipc.diagnostics);
     }
     return ipc.exit_code;
   }
   return startup.exit_code;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const auto parse = scratchbird::server::ParseServerCli(argc, argv);
+  if (!parse.ok()) {
+    return EmitDiagnostics(parse.diagnostics);
+  }
+
+  scratchbird::server::ResetParserServerStopRequest();
+#if defined(_WIN32)
+  if (parse.options.service) {
+    const auto service = scratchbird::server::DispatchWindowsServerService(
+        [&options = parse.options](
+            const scratchbird::server::WindowsServiceWorkerCallbacks& callbacks) {
+          scratchbird::server::ParserServerIpcLifecycleCallbacks ipc_callbacks;
+          ipc_callbacks.on_ready = callbacks.report_ready;
+          ipc_callbacks.on_stopping = callbacks.report_stopping;
+          return RunServerProduct(options, ipc_callbacks);
+        });
+    if (!service.diagnostics.empty()) {
+      EmitDiagnostics(service.diagnostics);
+    }
+    return service.exit_code;
+  }
+#endif
+  return RunServerProduct(parse.options);
 }

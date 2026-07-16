@@ -13,6 +13,7 @@ add_library(sb_core_platform
 )
 
 include(CheckCXXSourceCompiles)
+include("${CMAKE_SOURCE_DIR}/cmake/ResolveLlvmRuntimeLibrary.cmake")
 
 set(SB_SAVED_CMAKE_REQUIRED_LIBRARIES "${CMAKE_REQUIRED_LIBRARIES}")
 set(CMAKE_REQUIRED_LIBRARIES quadmath)
@@ -60,6 +61,8 @@ set(SB_LLVM_MIN_MAJOR 23 CACHE STRING
   "Minimum LLVM major version accepted by release-complete ScratchBird builds")
 set(SB_LLVM_LIBRARY "" CACHE FILEPATH
   "ScratchBird LLVM library; leave empty to auto-detect from tools/local/system paths")
+set(SB_LLVM_RUNTIME_LIBRARY "" CACHE STRING
+  "Installed runtime LLVM load reference; leave empty for the platform-safe default")
 # SEARCH_KEY: OEIC_LLVM_STATIC_LINK_OPTION
 set(SB_LLVM_LINK_MODE "dynamic" CACHE STRING
   "ScratchBird LLVM integration link mode: dynamic, static, or disabled")
@@ -247,6 +250,62 @@ if(SB_LLVM_LIBRARY)
   endif()
 endif()
 
+sb_resolve_llvm_runtime_library(
+  SB_LLVM_RUNTIME_LIBRARY_RESOLVED
+  SB_LLVM_RUNTIME_DELIVERY
+  PLATFORM "${SB_PUBLIC_TARGET_PLATFORM}"
+  LINK_MODE "${SB_LLVM_LINK_MODE}"
+  BUILD_LIBRARY "${SB_LLVM_LIBRARY}"
+  EXPLICIT_RUNTIME_LIBRARY "${SB_LLVM_RUNTIME_LIBRARY}"
+)
+set(SB_LLVM_RUNTIME_LIBRARY_RESOLVED
+  "${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}" CACHE INTERNAL
+  "Resolved installed runtime LLVM load reference" FORCE)
+set(SB_LLVM_RUNTIME_DELIVERY
+  "${SB_LLVM_RUNTIME_DELIVERY}" CACHE INTERNAL
+  "Resolved installed runtime LLVM delivery policy" FORCE)
+
+if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE AND
+   SB_LLVM_LINK_MODE STREQUAL "dynamic")
+  if(NOT SB_LLVM_RUNTIME_LIBRARY_RESOLVED)
+    message(FATAL_ERROR
+      "release-complete dynamic LLVM requires a runtime load reference")
+  endif()
+  if(SB_PUBLIC_TARGET_PLATFORM STREQUAL "linux" OR
+     SB_PUBLIC_TARGET_PLATFORM STREQUAL "windows")
+    if(IS_ABSOLUTE "${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+      message(FATAL_ERROR
+        "release-complete ${SB_PUBLIC_TARGET_PLATFORM} LLVM runtime reference "
+        "must be relocatable, got ${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+    endif()
+    if(SB_PUBLIC_TARGET_PLATFORM STREQUAL "linux" AND
+       NOT SB_LLVM_RUNTIME_LIBRARY_RESOLVED MATCHES
+           "^libLLVM(-[0-9]+)?[.]so([.][0-9]+)*$")
+      message(FATAL_ERROR
+        "release-complete Linux LLVM runtime reference must be a versioned "
+        "loader SONAME, got ${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+    elseif(SB_PUBLIC_TARGET_PLATFORM STREQUAL "windows" AND
+           NOT SB_LLVM_RUNTIME_LIBRARY_RESOLVED MATCHES
+               "^libLLVM-[0-9]+[A-Za-z0-9._+-]*[.]dll$")
+      message(FATAL_ERROR
+        "release-complete Windows LLVM runtime reference must be a DLL "
+        "basename, got ${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+    endif()
+  elseif(SB_PUBLIC_TARGET_PLATFORM STREQUAL "macos")
+    if(NOT IS_ABSOLUTE "${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+      message(FATAL_ERROR
+        "release-complete macOS LLVM runtime reference must be the absolute "
+        "external Homebrew opt path, got ${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+    endif()
+    if(NOT SB_LLVM_RUNTIME_LIBRARY_RESOLVED MATCHES
+       "^/(opt/homebrew|usr/local)/opt/llvm/lib/libLLVM(-[0-9]+)?[.]dylib$")
+      message(FATAL_ERROR
+        "release-complete macOS LLVM runtime reference must use the stable "
+        "Homebrew opt path, got ${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}")
+    endif()
+  endif()
+endif()
+
 target_compile_features(sb_core_platform PUBLIC cxx_std_17)
 target_include_directories(sb_core_platform PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -269,13 +328,26 @@ elseif(SB_HAS_REAL128_BOOST_BIN_FLOAT_QUAD)
   endif()
 endif()
 
+set(SB_LLVM_COMPILE_SOURCE_ROOT "${SB_LLVM_EFFECTIVE_PROJECT_ROOT}")
+set(SB_LLVM_COMPILE_TOOLS_ROOT "${SB_LLVM_TOOLS_ROOT}")
+set(SB_LLVM_COMPILE_STAGING_BUILD_DIR "${SB_LLVM_STAGING_BUILD_DIR}")
+if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE)
+  # Release artifacts retain runtime identity and digests, never local LLVM
+  # source/tool/build locations from the producing machine.
+  set(SB_LLVM_COMPILE_SOURCE_ROOT "")
+  set(SB_LLVM_COMPILE_TOOLS_ROOT "")
+  set(SB_LLVM_COMPILE_STAGING_BUILD_DIR "")
+endif()
+
 if(SB_LLVM_LIBRARY)
-  if(SB_LLVM_TOOLS_LIBRARY_AVAILABLE)
-    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|tools-root=${SB_LLVM_TOOLS_ROOT}|local-source=${SB_LLVM_EFFECTIVE_PROJECT_ROOT}|library=${SB_LLVM_LIBRARY}")
+  if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE)
+    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|runtime-library=${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}|delivery=${SB_LLVM_RUNTIME_DELIVERY}|build-provenance=redacted")
+  elseif(SB_LLVM_TOOLS_LIBRARY_AVAILABLE)
+    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|tools-root=${SB_LLVM_TOOLS_ROOT}|local-source=${SB_LLVM_EFFECTIVE_PROJECT_ROOT}|runtime-library=${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}|delivery=${SB_LLVM_RUNTIME_DELIVERY}")
   elseif(SB_LLVM_LOCAL_SOURCE_AVAILABLE)
-    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|local-source=${SB_LLVM_EFFECTIVE_PROJECT_ROOT}|library=${SB_LLVM_LIBRARY}")
+    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|local-source=${SB_LLVM_EFFECTIVE_PROJECT_ROOT}|runtime-library=${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}|delivery=${SB_LLVM_RUNTIME_DELIVERY}")
   else()
-    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|library=${SB_LLVM_LIBRARY}")
+    set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|runtime-library=${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}|delivery=${SB_LLVM_RUNTIME_DELIVERY}")
   endif()
 else()
   set(SB_LLVM_PROVIDER "link-mode=${SB_LLVM_LINK_MODE}|missing|min-major=${SB_LLVM_MIN_MAJOR}|local-source=${SB_LLVM_EFFECTIVE_PROJECT_ROOT}")
@@ -287,11 +359,21 @@ target_compile_definitions(sb_core_platform PUBLIC
   SCRATCHBIRD_LLVM_DETECTED_MAJOR=${SB_LLVM_DETECTED_MAJOR}
   SCRATCHBIRD_LLVM_MIN_MAJOR=${SB_LLVM_MIN_MAJOR}
   SCRATCHBIRD_LLVM_LINK_MODE="${SB_LLVM_LINK_MODE}"
-  SCRATCHBIRD_LLVM_LIBRARY_PATH="${SB_LLVM_LIBRARY}"
-  SCRATCHBIRD_LLVM_SOURCE_ROOT="${SB_LLVM_EFFECTIVE_PROJECT_ROOT}"
-  SCRATCHBIRD_LLVM_TOOLS_ROOT="${SB_LLVM_TOOLS_ROOT}"
-  SCRATCHBIRD_LLVM_STAGING_BUILD_DIR="${SB_LLVM_STAGING_BUILD_DIR}"
+  SCRATCHBIRD_LLVM_LIBRARY_PATH="${SB_LLVM_RUNTIME_LIBRARY_RESOLVED}"
+  SCRATCHBIRD_LLVM_SOURCE_ROOT="${SB_LLVM_COMPILE_SOURCE_ROOT}"
+  SCRATCHBIRD_LLVM_TOOLS_ROOT="${SB_LLVM_COMPILE_TOOLS_ROOT}"
+  SCRATCHBIRD_LLVM_STAGING_BUILD_DIR="${SB_LLVM_COMPILE_STAGING_BUILD_DIR}"
   SCRATCHBIRD_LLVM_PROVIDER="${SB_LLVM_PROVIDER}"
+)
+
+add_test(
+  NAME llvm_runtime_library_cmake_gate
+  COMMAND "${CMAKE_COMMAND}"
+          "-DSB_PROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+          -P "${CMAKE_SOURCE_DIR}/cmake/LlvmRuntimeLibraryGate.cmake"
+)
+set_tests_properties(llvm_runtime_library_cmake_gate PROPERTIES
+  LABELS "public_release_correctness;llvm_runtime_library;cmake_config"
 )
 
 if(SB_LLVM_LIBRARY AND SB_LLVM_VERSION_OK)

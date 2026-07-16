@@ -28,8 +28,9 @@ remote repository.
 The installer is split into an unprivileged front-end and a privileged executor:
 
 1. The **front-end** runs without elevation: probe, target-group selection,
-   component menu, configuration (engine mode, identity topology, listeners/network,
-   policy), and a review **summary**.
+   component menu, configuration-file defaults (engine mode, listener/network,
+   operating policy), and a review **summary**. Database identity topology and
+   credentials are outside installer scope.
 2. **Elevation is requested once, at commit**, after the summary — UAC on Windows,
    Authorization Services on macOS, `pkexec`/`sudo` (polkit) on Linux.
 3. The **executor** performs file placement, package installs, service registration,
@@ -70,9 +71,10 @@ state-aware rather than requiring a separate tool.
    shows per-element *what/why/size*, and displays a live total with a free-space
    check.
 
-Configuration steps follow as applicable: engine install mode (embedded vs service),
-identity topology (04, only when a first database is created), exposed dialects /
-listener network bindings (05), and the operating-policy preset (07).
+Configuration steps follow as applicable: engine install mode (embedded vs
+service), inactive listener network templates (05), and the operating-policy
+preset (07). First-database creation, identity topology, credential collection,
+and service activation are explicit post-install operations (04, 08).
 
 ## Silent / headless install
 

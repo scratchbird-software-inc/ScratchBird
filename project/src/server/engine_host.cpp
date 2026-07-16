@@ -16,7 +16,6 @@
 #include "scratchbird/engine/engine.h"
 #include "uuid.hpp"
 
-#include <chrono>
 #include <filesystem>
 #include <sstream>
 
@@ -63,11 +62,6 @@ HostedDatabaseState StateForConfig(const ServerBootstrapConfig& config) {
     return HostedDatabaseState::kReadOnly;
   }
   return HostedDatabaseState::kOpen;
-}
-
-std::uint64_t CurrentUnixMillis() {
-  const auto now = std::chrono::system_clock::now().time_since_epoch();
-  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
 }  // namespace
@@ -159,60 +153,46 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
     return result;
   }
 
-  bool created_database = false;
   if (!exists && config.database_auto_create) {
-    namespace db = scratchbird::storage::database;
-    namespace uuid = scratchbird::core::uuid;
-    using scratchbird::core::platform::UuidKind;
+    snapshot.state = HostedDatabaseState::kFailed;
+    snapshot.diagnostic_code = "BOOTSTRAP.SERVICE_START_FORBIDDEN";
+    snapshot.diagnostic_message_key = "bootstrap.service_start_forbidden";
+    result.diagnostics.push_back(EngineHostDiagnostic(
+        snapshot.diagnostic_code,
+        snapshot.diagnostic_message_key,
+        "Public server startup cannot create a missing database; run the approved embedded bootstrap first.",
+        snapshot.database_path));
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
 
-    const auto now = CurrentUnixMillis();
-    const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
-    const auto filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
-    if (!database_uuid.ok() || !filespace_uuid.ok()) {
+  if (exists && config.security_provider_family == "local_password" &&
+      !config.allow_uncredentialed_fixture_database) {
+    const auto bootstrap_security =
+        scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+            snapshot.database_path);
+    const std::string sysarch_role_uuid = bootstrap_security.ok()
+        ? scratchbird::core::uuid::UuidToString(
+              bootstrap_security.state.sysarch_role_uuid.value)
+        : std::string{};
+    if (!bootstrap_security.ok() || !bootstrap_security.state.present ||
+        !bootstrap_security.state.committed_by_inventory ||
+        bootstrap_security.state.credential_fingerprint.empty() ||
+        sysarch_role_uuid !=
+            scratchbird::storage::database::kCanonicalSysarchRoleObjectUuid) {
       snapshot.state = HostedDatabaseState::kFailed;
-      snapshot.diagnostic_code = "SERVER.ENGINE_HOST.DATABASE_CREATE_UUID_FAILED";
-      snapshot.diagnostic_message_key = "server.engine_host.database_create_uuid_failed";
-      result.diagnostics.push_back(EngineHostDiagnostic(snapshot.diagnostic_code,
-                                                        snapshot.diagnostic_message_key,
-                                                        "The configured database could not allocate durable bootstrap UUIDs.",
-                                                        snapshot.database_path));
+      snapshot.diagnostic_code = "BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE";
+      snapshot.diagnostic_message_key =
+          "bootstrap.security_database_unavailable";
+      result.diagnostics.push_back(ServerDiagnostic{
+          snapshot.diagnostic_code,
+          snapshot.diagnostic_message_key,
+          ServerDiagnosticSeverity::kError,
+          snapshot.diagnostic_code,
+          {}});
       result.state.databases.push_back(snapshot);
       return result;
     }
-
-    db::DatabaseCreateConfig create;
-    create.path = snapshot.database_path;
-    create.database_uuid = database_uuid.value;
-    create.filespace_uuid = filespace_uuid.value;
-    create.page_size = static_cast<std::uint32_t>(config.database_create_page_size_bytes);
-    create.creation_unix_epoch_millis = now;
-    create.resource_seed_pack_root = config.database_resource_seed_pack_root.string();
-    create.policy_seed_pack_root = config.database_policy_seed_pack_root.string();
-    create.allow_minimal_resource_bootstrap =
-        config.database_resource_seed_pack_root.empty();
-    create.require_resource_seed_pack =
-        !config.database_resource_seed_pack_root.empty();
-    create.require_policy_seed_pack =
-        !config.database_policy_seed_pack_root.empty();
-    create.allow_overwrite = false;
-    const auto created = db::CreateDatabaseFile(create);
-    if (!created.ok()) {
-      snapshot.state = HostedDatabaseState::kFailed;
-      snapshot.diagnostic_code = created.diagnostic.diagnostic_code.empty()
-          ? "SERVER.ENGINE_HOST.DATABASE_CREATE_FAILED"
-          : created.diagnostic.diagnostic_code;
-      snapshot.diagnostic_message_key = created.diagnostic.message_key.empty()
-          ? "server.engine_host.database_create_failed"
-          : created.diagnostic.message_key;
-      result.diagnostics.push_back(EngineHostDiagnostic(snapshot.diagnostic_code,
-                                                        snapshot.diagnostic_message_key,
-                                                        "The configured database could not be created by storage lifecycle.",
-                                                        snapshot.database_path));
-      result.state.databases.push_back(snapshot);
-      return result;
-    }
-    exists = true;
-    created_database = true;
   }
 
   namespace db = scratchbird::storage::database;
@@ -264,7 +244,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
     result.state.databases.push_back(snapshot);
     return result;
   }
-  snapshot.database_created = created_database;
+  snapshot.database_created = false;
   snapshot.database_open = true;
   snapshot.database_uuid =
       scratchbird::core::uuid::UuidToString(lifecycle_open.state.database_uuid.value);

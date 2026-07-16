@@ -14,7 +14,7 @@ on:
       require-msi:
         required: false
         type: boolean
-        default: false
+        default: true
   workflow_dispatch:
     inputs:
       platform:
@@ -32,13 +32,17 @@ on:
         required: true
         default: 0.0.0-nightly
       require-msi:
-        description: Require WiX MSI generation on Windows
+        description: Retained for caller compatibility; Windows MSI proof is mandatory
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
   contents: read
+
+env:
+  SB_INSTALLER_VERSION: ${{ inputs.version || '0.0.0-nightly' }}
+  SB_REQUIRE_MSI: ${{ inputs['require-msi'] }}
 
 concurrency:
   group: installer-verify-${{ github.ref }}-${{ inputs.platform || 'all' }}
@@ -61,7 +65,11 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
+            ninja-build \
             python3 \
+            clang-tidy-18 \
+            cppcheck \
+            g++-mingw-w64-x86-64 \
             wget \
             gnupg \
             lsb-release \
@@ -91,34 +99,105 @@ jobs:
         working-directory: project
         run: cmake --preset public-release-linux
 
+      - name: Record LLVM version and configured runtime resolution
+        working-directory: project
+        run: |
+          set -euo pipefail
+          llvm_config="$(command -v llvm-config-23)"
+          llvm_version="$("$llvm_config" --version)"
+          llvm_major="${llvm_version%%.*}"
+          test "$llvm_major" -ge 23
+          llvm_cmake_dir="$("$llvm_config" --cmakedir)"
+          test -d "$llvm_cmake_dir"
+
+          cache="../build/public-release-linux/CMakeCache.txt"
+          test -f "$cache"
+          cache_value() {
+            local key="$1"
+            local line
+            line="$(grep -E "^${key}:[^=]+=" "$cache" | tail -n 1 || true)"
+            if [ -z "$line" ]; then
+              echo "Missing configured LLVM evidence key: $key" >&2
+              return 1
+            fi
+            printf '%s\n' "${line#*=}"
+          }
+          configured_llvm_dir="$(cache_value LLVM_DIR)"
+          configured_library="$(cache_value SB_LLVM_LIBRARY)"
+          configured_runtime="$(cache_value SB_LLVM_RUNTIME_LIBRARY_RESOLVED)"
+          configured_delivery="$(cache_value SB_LLVM_RUNTIME_DELIVERY)"
+          configured_minimum="$(cache_value SB_LLVM_MIN_MAJOR)"
+          test -d "$configured_llvm_dir"
+          test -f "$configured_library"
+          test "$configured_minimum" -ge 23
+          test "$configured_delivery" = system-package
+          [[ "$configured_runtime" =~ ^libLLVM(-[0-9]+)?[.]so([.][0-9]+)*$ ]]
+          [[ "$configured_runtime" != */* ]]
+
+          {
+            echo "### Linux LLVM installer configuration"
+            echo
+            echo "- llvm-config: \`$llvm_config\`"
+            echo "- LLVM version: \`$llvm_version\`"
+            echo "- LLVM CMake package: \`$configured_llvm_dir\`"
+            echo "- Configured build library: \`$configured_library\`"
+            echo "- Installed runtime reference: \`$configured_runtime\`"
+            echo "- Runtime delivery: \`$configured_delivery\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build
         working-directory: project
         run: cmake --build --preset public-release-linux
 
       - name: CTest
         working-directory: project
-        run: ctest --preset public-release-linux
+        run: |
+          status=0
+          ctest --preset public-release-linux -L public_release_correctness || status=1
+          ctest --preset public-release-linux -L engine_listener_enterprise || status=1
+          exit "$status"
 
       - name: Verify public bundle
         run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-linux/output/linux
+
+      - name: Stage and verify native-only SB bundle
+        run: |
+          python3 project/tools/release/stage_native_release_bundle.py \
+            --source-root build/public-release-linux/output/linux \
+            --output-root build/native-release-linux/output/linux \
+            --platform linux
+          python3 project/tools/release/verify_public_release_bundle.py build/native-release-linux/output/linux
+          python3 project/tools/release/verify_native_release_bundle.py \
+            build/native-release-linux/output/linux --platform linux
+          cmake -E remove_directory build/public-release-linux
 
       - name: Build installers
         run: |
           python3 project/tools/installers/build_installers.py \
             --platform linux \
-            --artifact-root build/public-release-linux/output/linux \
+            --artifact-root build/native-release-linux/output/linux \
             --output-root build/installers/linux \
-            --version "${{ inputs.version || '0.0.0-nightly' }}" \
+            --version "$SB_INSTALLER_VERSION" \
             --build-id "${{ github.run_id }}" \
+            --require-native-only \
             --require-rpm
 
       - name: Verify installer artifacts
-        run: python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root build/installers/linux
+        run: |
+          python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root build/installers/linux
+          cmake -E remove_directory build/native-release-linux/output/linux
 
       - name: Smoke tarball install
         run: |
           archive="$(ls build/installers/linux/scratchbird-linux-*.tar.gz | head -n 1)"
           project/tools/installers/smoke_install_linux.sh "$archive" build/install-smoke/linux
+
+      - name: Smoke Linux system-package lifecycle
+        run: |
+          python3 project/tools/installers/smoke_install_linux_system.py \
+            --artifact-root build/installers/linux \
+            --work-root build/install-smoke/linux/system-package-proof \
+            --run-privileged-deb-install
 
       - name: Upload Linux installers
         uses: actions/upload-artifact@v4
@@ -164,7 +243,10 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-cppcheck
             mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-boost
             mingw-w64-ucrt-x86_64-icu
             mingw-w64-ucrt-x86_64-libxml2
             mingw-w64-ucrt-x86_64-zlib
@@ -174,12 +256,14 @@ jobs:
             mingw-w64-ucrt-x86_64-proj
             mingw-w64-ucrt-x86_64-gtest
 
-      - name: Optional WiX setup
-        if: ${{ inputs['require-msi'] }}
+      - name: Set up WiX and utility extension
         shell: pwsh
         run: |
-          dotnet tool install --global wix
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          dotnet tool install --global wix --version 4.0.6
+          $toolRoot = "$env:USERPROFILE\.dotnet\tools"
+          $env:PATH = "$toolRoot;$env:PATH"
+          $toolRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          wix extension add -g "WixToolset.Util.wixext/4.0.6"
 
       - name: Static release gates
         run: |
@@ -188,7 +272,38 @@ jobs:
 
       - name: Configure
         working-directory: project
-        run: cmake --preset public-release-windows
+        run: |
+          set -euo pipefail
+          LLVM_CONFIG="${MINGW_PREFIX:-/ucrt64}/bin/llvm-config"
+          if [ ! -x "$LLVM_CONFIG" ]; then
+            LLVM_CONFIG="$(command -v llvm-config)"
+          fi
+          LLVM_CMAKE_DIR="$("$LLVM_CONFIG" --cmakedir)"
+          LLVM_LIB_DIR="$("$LLVM_CONFIG" --libdir)"
+          LLVM_MAJOR="$("$LLVM_CONFIG" --version | sed -E 's/^([0-9]+).*/\1/')"
+          LLVM_REQUIRED_MAJOR=22
+          test "$LLVM_MAJOR" -ge "$LLVM_REQUIRED_MAJOR"
+          LLVM_BIN_DIR="${MINGW_PREFIX:-/ucrt64}/bin"
+          LLVM_LIBRARY="${LLVM_BIN_DIR}/libLLVM-${LLVM_MAJOR}.dll"
+          if [ ! -f "$LLVM_LIBRARY" ]; then
+            LLVM_LIBRARY="$(find "$LLVM_BIN_DIR" -maxdepth 1 -name "libLLVM-${LLVM_MAJOR}*.dll" | sort | head -n 1)"
+          fi
+          LLVM_RUNTIME_LIBRARY="$(basename "$LLVM_LIBRARY")"
+          test -d "$LLVM_CMAKE_DIR"
+          test -f "$LLVM_LIBRARY"
+          echo "LLVM_CONFIG=$LLVM_CONFIG"
+          echo "LLVM_CMAKE_DIR=$LLVM_CMAKE_DIR"
+          echo "LLVM_LIB_DIR=$LLVM_LIB_DIR"
+          echo "LLVM_BIN_DIR=$LLVM_BIN_DIR"
+          echo "LLVM_LIBRARY=$LLVM_LIBRARY"
+          echo "LLVM_RUNTIME_LIBRARY=$LLVM_RUNTIME_LIBRARY"
+          echo "LLVM_MAJOR=$LLVM_MAJOR"
+          echo "LLVM_REQUIRED_MAJOR=$LLVM_REQUIRED_MAJOR"
+          cmake --preset public-release-windows \
+            -DLLVM_DIR="$LLVM_CMAKE_DIR" \
+            -DSB_LLVM_LIBRARY="$LLVM_LIBRARY" \
+            -DSB_LLVM_RUNTIME_LIBRARY="$LLVM_RUNTIME_LIBRARY" \
+            -DSB_LLVM_MIN_MAJOR="$LLVM_REQUIRED_MAJOR"
 
       - name: Build
         working-directory: project
@@ -196,39 +311,53 @@ jobs:
 
       - name: CTest
         working-directory: project
-        run: ctest --preset public-release-windows
+        run: |
+          status=0
+          ctest --preset public-release-windows -L public_release_correctness || status=1
+          ctest --preset public-release-windows -L engine_listener_enterprise || status=1
+          exit "$status"
 
       - name: Verify public bundle
         run: python project/tools/release/verify_public_release_bundle.py build/public-release-windows/output/windows
 
+      - name: Stage and verify native-only SB bundle
+        run: |
+          python project/tools/release/stage_native_release_bundle.py \
+            --source-root build/public-release-windows/output/windows \
+            --output-root build/native-release-windows/output/windows \
+            --platform windows \
+            --runtime-search-root "${MINGW_PREFIX:-/ucrt64}/bin"
+          python project/tools/release/verify_public_release_bundle.py build/native-release-windows/output/windows
+          python project/tools/release/verify_native_release_bundle.py \
+            build/native-release-windows/output/windows --platform windows
+          cmake -E remove_directory build/public-release-windows
+
       - name: Build installers
         run: |
-          extra=""
-          if [ "${{ inputs['require-msi'] }}" = "true" ]; then
-            extra="--require-msi"
-          fi
           python project/tools/installers/build_installers.py \
             --platform windows \
-            --artifact-root build/public-release-windows/output/windows \
+            --artifact-root build/native-release-windows/output/windows \
             --output-root build/installers/windows \
-            --version "${{ inputs.version || '0.0.0-nightly' }}" \
+            --version "$SB_INSTALLER_VERSION" \
             --build-id "${{ github.run_id }}" \
-            $extra
+            --require-native-only \
+            --require-msi
 
       - name: Verify installer artifacts
-        run: python project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root build/installers/windows
+        run: |
+          python project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root build/installers/windows --require-msi
+          cmake -E remove_directory build/native-release-windows/output/windows
 
       - name: Smoke Windows package
         shell: pwsh
         run: |
           $package = Get-ChildItem build/installers/windows -Filter "scratchbird-windows-*.msi" | Select-Object -First 1
           if (-not $package) {
-            $package = Get-ChildItem build/installers/windows -Filter "scratchbird-windows-*.zip" | Select-Object -First 1
+            throw "No Windows MSI package found"
           }
-          if (-not $package) {
-            throw "No Windows package found"
-          }
-          project/tools/installers/smoke_install_windows.ps1 -PackagePath $package.FullName -WorkRoot build/install-smoke/windows
+          project/tools/installers/smoke_install_windows.ps1 `
+            -PackagePath $package.FullName `
+            -WorkRoot build/install-smoke/windows
 
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
@@ -277,6 +406,7 @@ jobs:
             ninja \
             llvm \
             openssl@3 \
+            boost \
             icu4c \
             libxml2 \
             lz4 \
@@ -288,7 +418,15 @@ jobs:
             pkg-config
           {
             echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
+            echo "ICU_ROOT=$(brew --prefix icu4c)"
+            echo "BOOST_ROOT=$(brew --prefix boost)"
+            echo "LIBXML2_ROOT=$(brew --prefix libxml2)"
             echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
+            echo "SB_LLVM_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib"
+            echo "SB_LLVM_RUNTIME_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib"
+            echo "ODBC_ROOT=$(brew --prefix unixodbc)"
+            echo "SB_LLVM_MIN_MAJOR=22"
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm);$(brew --prefix unixodbc)"
             echo "PATH=$(brew --prefix llvm)/bin:$PATH"
             echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$PKG_CONFIG_PATH"
           } >> "$GITHUB_ENV"
@@ -298,9 +436,24 @@ jobs:
           python3 project/tools/release/public_packaging_history_gate.py
           python3 project/tools/release/github_actions_static_gate.py
 
+      - name: Verify external Homebrew LLVM runtime
+        run: |
+          test -f "$SB_LLVM_RUNTIME_LIBRARY"
+          python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$SB_LLVM_RUNTIME_LIBRARY"
+
       - name: Configure
         working-directory: project
-        run: cmake --preset public-release-macos -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+        run: |
+          cmake --preset public-release-macos \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DICU_ROOT="$ICU_ROOT" \
+            -DODBC_INCLUDE_DIR="$ODBC_ROOT/include" \
+            -DODBC_LIBRARY="$ODBC_ROOT/lib/libodbc.dylib" \
+            -DSB_LLVM_LIBRARY="$SB_LLVM_LIBRARY" \
+            -DSB_LLVM_RUNTIME_LIBRARY="$SB_LLVM_RUNTIME_LIBRARY" \
+            -DSB_LLVM_MIN_MAJOR="$SB_LLVM_MIN_MAJOR" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
 
       - name: Build
         working-directory: project
@@ -308,10 +461,25 @@ jobs:
 
       - name: CTest
         working-directory: project
-        run: ctest --preset public-release-macos
+        run: |
+          status=0
+          ctest --preset public-release-macos -L public_release_correctness --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd" || status=1
+          ctest --preset public-release-macos -L engine_listener_enterprise --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd" || status=1
+          exit "$status"
 
       - name: Verify public bundle
         run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-macos/output/macos
+
+      - name: Stage and verify native-only SB bundle
+        run: |
+          python3 project/tools/release/stage_native_release_bundle.py \
+            --source-root build/public-release-macos/output/macos \
+            --output-root build/native-release-macos/output/macos \
+            --platform macos
+          python3 project/tools/release/verify_public_release_bundle.py build/native-release-macos/output/macos
+          python3 project/tools/release/verify_native_release_bundle.py \
+            build/native-release-macos/output/macos --platform macos
+          cmake -E remove_directory build/public-release-macos
 
       - name: Build installers
         env:
@@ -319,23 +487,203 @@ jobs:
         run: |
           python3 project/tools/installers/build_installers.py \
             --platform macos \
-            --artifact-root build/public-release-macos/output/macos \
+            --artifact-root build/native-release-macos/output/macos \
             --output-root build/installers/macos-${{ matrix.arch }} \
-            --version "${{ inputs.version || '0.0.0-nightly' }}" \
-            --build-id "${{ github.run_id }}-${{ matrix.arch }}"
+            --version "$SB_INSTALLER_VERSION" \
+            --build-id "${{ github.run_id }}-${{ matrix.arch }}" \
+            --require-native-only
 
       - name: Verify installer artifacts
-        run: python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root build/installers/macos-${{ matrix.arch }}
+        run: |
+          python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root build/installers/macos-${{ matrix.arch }}
+          cmake -E remove_directory build/native-release-macos/output/macos
 
       - name: Smoke tarball install
         run: |
           archive="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.tar.gz | head -n 1)"
           project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-${{ matrix.arch }}-tar
 
-      - name: Smoke package install
+      - name: Smoke system package install and cleanup
         run: |
+          set -euo pipefail
           package="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.pkg | head -n 1)"
-          project/tools/installers/smoke_install_macos.sh "$package" build/install-smoke/macos-${{ matrix.arch }}-pkg
+          proof_root="build/install-smoke/macos-${{ matrix.arch }}-pkg-system"
+          for existing_path in \
+            /opt/ScratchBird \
+            "/Library/Application Support/ScratchBird" \
+            /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
+            /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+            /var/lib/scratchbird \
+            /var/log/scratchbird \
+            /var/run/scratchbird; do
+            if [ -e "$existing_path" ]; then
+              echo "Refusing to overwrite pre-existing hosted-runner state: $existing_path" >&2
+              exit 1
+            fi
+          done
+          if sudo dscl . -read /Users/scratchbird >/dev/null 2>&1 || \
+             sudo dscl . -read /Groups/scratchbird >/dev/null 2>&1 || \
+             pkgutil --pkg-info com.scratchbird.cde >/dev/null 2>&1; then
+            echo "Refusing to overwrite a pre-existing ScratchBird identity or package receipt." >&2
+            exit 1
+          fi
+          cleanup_system_install() {
+            local cleanup_status=0
+            set +e
+            mkdir -p "$proof_root"
+            if [ -x /opt/ScratchBird/libexec/scratchbird-macos-system-install ]; then
+              if sudo /opt/ScratchBird/libexec/scratchbird-macos-system-install \
+                pre-remove --package-format pkg --package-version "$SB_INSTALLER_VERSION" \
+                > "$proof_root/pre-remove.txt" 2>&1; then
+                sudo test -d /var/lib/scratchbird/install/config-preserve || cleanup_status=1
+              else
+                cleanup_status=1
+              fi
+            else
+              cleanup_status=1
+            fi
+            for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
+              if launchctl print "system/$label" >/dev/null 2>&1; then
+                sudo launchctl bootout "system/$label" || cleanup_status=1
+              fi
+            done
+            sudo rm -f \
+              /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
+              /Library/LaunchDaemons/com.scratchbird.sbmgr.plist || cleanup_status=1
+            sudo rm -rf \
+              /opt/ScratchBird \
+              "/Library/Application Support/ScratchBird" \
+              /var/lib/scratchbird \
+              /var/log/scratchbird \
+              /var/run/scratchbird || cleanup_status=1
+            sudo pkgutil --forget com.scratchbird.cde \
+              > "$proof_root/pkg-forget.txt" 2>&1 || true
+            if sudo dscl . -read /Users/scratchbird >/dev/null 2>&1; then
+              sudo dscl . -delete /Users/scratchbird || cleanup_status=1
+            fi
+            if sudo dscl . -read /Groups/scratchbird >/dev/null 2>&1; then
+              sudo dscl . -delete /Groups/scratchbird || cleanup_status=1
+            fi
+            for removed_path in \
+              /opt/ScratchBird \
+              "/Library/Application Support/ScratchBird" \
+              /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
+              /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+              /var/lib/scratchbird \
+              /var/log/scratchbird \
+              /var/run/scratchbird; do
+              if [ -e "$removed_path" ]; then
+                echo "System-install cleanup left $removed_path" >&2
+                cleanup_status=1
+              fi
+            done
+            sudo dscl . -read /Users/scratchbird >/dev/null 2>&1 && cleanup_status=1
+            sudo dscl . -read /Groups/scratchbird >/dev/null 2>&1 && cleanup_status=1
+            launchctl print system/com.scratchbird.sbsrv >/dev/null 2>&1 && cleanup_status=1
+            launchctl print system/com.scratchbird.sbmgr >/dev/null 2>&1 && cleanup_status=1
+            pkgutil --pkg-info com.scratchbird.cde >/dev/null 2>&1 && cleanup_status=1
+            if [ "$cleanup_status" -eq 0 ]; then
+              {
+                echo "system_uninstall_cleanup=passed"
+                echo "pre_remove_config_preservation=passed"
+                echo "runtime_removed=passed"
+                echo "launchd_plists_removed=passed"
+                echo "service_identity_removed=passed"
+                echo "package_receipt_forgotten=passed"
+              } > "$proof_root/macos-system-uninstall-cleanup.txt"
+              echo "host_runner_uninstall_cleanup=passed" >> "$proof_root/macos-lifecycle-smoke.txt"
+            fi
+            set -e
+            return "$cleanup_status"
+          }
+          cleanup_on_exit() {
+            local primary_status=$?
+            local cleanup_status=0
+            trap - EXIT
+            cleanup_system_install || cleanup_status=$?
+            if [ "$primary_status" -ne 0 ]; then
+              exit "$primary_status"
+            fi
+            exit "$cleanup_status"
+          }
+          trap cleanup_on_exit EXIT
+
+          project/tools/installers/smoke_install_macos.sh "$package" "$proof_root"
+          sudo installer -pkg "$package" -target / \
+            2>&1 | tee "$proof_root/system-installer.txt"
+          python3 project/tools/release/verify_native_installed_payload.py \
+            /opt/ScratchBird \
+            --config-root "/Library/Application Support/ScratchBird" \
+            --expected-architecture "${{ matrix.arch }}"
+          python3 - /Library/LaunchDaemons <<'PY'
+          import pathlib
+          import plistlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          for label in ("com.scratchbird.sbsrv", "com.scratchbird.sbmgr"):
+              data = plistlib.loads((root / f"{label}.plist").read_bytes())
+              if data.get("UserName") != "scratchbird" or data.get("GroupName") != "scratchbird":
+                  raise SystemExit(f"macos_system_launchd_identity_mismatch:{label}")
+              if data.get("Disabled") is not True:
+                  raise SystemExit(f"macos_system_launchd_not_disabled:{label}")
+              if data.get("RunAtLoad") is not False or data.get("KeepAlive") is not False:
+                  raise SystemExit(f"macos_system_launchd_activity_mismatch:{label}")
+          PY
+          for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
+            if launchctl print "system/$label" >/dev/null 2>&1; then
+              echo "System package unexpectedly loaded $label." >&2
+              exit 1
+            fi
+          done
+          pkgutil --pkg-info com.scratchbird.cde > "$proof_root/pkg-receipt.txt"
+          sudo cat /var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json \
+            > "$proof_root/MACOS_SYSTEM_INSTALL_STATE.json"
+          python3 - "$proof_root/MACOS_SYSTEM_INSTALL_STATE.json" <<'PY'
+          import json
+          import sys
+
+          state = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "service_user": "scratchbird",
+              "service_group": "scratchbird",
+              "service_administrator_group_membership": False,
+              "service_enablement_default": "disabled",
+              "service_activity_default": "not_started",
+              "launchd_load_performed": False,
+              "native_default_port": 3092,
+              "database_files_created": False,
+              "security_sidecars_created": False,
+          }
+          for key, value in expected.items():
+              if state.get(key) != value:
+                  raise SystemExit(f"macos_system_state_mismatch:{key}")
+          PY
+          service_shell="$(sudo dscl . -read /Users/scratchbird UserShell | awk 'NR == 1 { print $2 }')"
+          service_home="$(sudo dscl . -read /Users/scratchbird NFSHomeDirectory | awk 'NR == 1 { print $2 }')"
+          service_hidden="$(sudo dscl . -read /Users/scratchbird IsHidden | awk 'NR == 1 { print $2 }')"
+          service_password="$(sudo dscl . -read /Users/scratchbird Password | awk 'NR == 1 { print $2 }')"
+          host_user="$(id -un)"
+          sudo dseditgroup -n . -o checkmember -m "$host_user" scratchbird \
+            > "$proof_root/host-user-group-membership.txt"
+          if grep -Eq '^yes([[:space:]]|$)' "$proof_root/host-user-group-membership.txt"; then
+            echo "System package granted the hosted runner user service-group membership." >&2
+            exit 1
+          fi
+          grep -Eq '^no([[:space:]]|$)' "$proof_root/host-user-group-membership.txt"
+          test "$service_shell" = /usr/bin/false
+          test "$service_home" = /var/lib/scratchbird
+          test "$service_hidden" = 1
+          [[ "$service_password" == \** ]]
+          {
+            echo "system_install=passed"
+            echo "service_user=scratchbird"
+            echo "service_shell=$service_shell"
+            echo "service_home=$service_home"
+            echo "service_hidden=$service_hidden"
+            echo "host_user_group_admission=not_performed"
+            echo "launchd_default_state=disabled_not_loaded"
+          } > "$proof_root/macos-system-identity.txt"
 
       - name: Upload macOS installers
         uses: actions/upload-artifact@v4
@@ -382,7 +730,7 @@ jobs:
             --x86-tar "$x86_tar" \
             --arm-tar "$arm_tar" \
             --output-root build/installers/macos-universal \
-            --version "${{ inputs.version || '0.0.0-nightly' }}-universal" \
+            --version "$SB_INSTALLER_VERSION-universal" \
             --build-id "${{ github.run_id }}-universal"
 
       - name: Smoke universal tarball

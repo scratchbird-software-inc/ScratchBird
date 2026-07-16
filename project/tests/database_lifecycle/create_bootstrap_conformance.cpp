@@ -463,6 +463,20 @@ int main() {
       if (!path.empty()) {
         std::error_code ignored;
         std::filesystem::remove(path, ignored);
+        ignored.clear();
+        std::filesystem::remove(path.string() + ".sb.txn_publish", ignored);
+        ignored.clear();
+        std::filesystem::remove(path.string() + ".sb.txn_publish.tmp", ignored);
+        ignored.clear();
+        std::filesystem::remove(path.string() + ".sb.owner.lock", ignored);
+        ignored.clear();
+        std::filesystem::remove(path.string() +
+                                ".sb.security_principal_events",
+                                ignored);
+        ignored.clear();
+        std::filesystem::remove(path.string() +
+                                ".sb.local_password_auth",
+                                ignored);
       }
     }
   } cleanup{database_path};
@@ -480,13 +494,50 @@ int main() {
   create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   create.require_resource_seed_pack = true;
   create.allow_minimal_resource_bootstrap = false;
-  create.allow_overwrite = true;
+  create.bootstrap_principal_name = "ROOT";
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=0123456789abcdef0123456789abcdef"
+      "0123456789abcdef0123456789abcdef";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.allow_overwrite = false;
 
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << '\n';
   }
   Require(created.ok(), "CreateDatabaseFile failed");
+  if (created.create_finality != db::DatabaseCreateFinalityClass::committed) {
+    std::cerr << "create_finality="
+              << static_cast<std::uint16_t>(created.create_finality)
+              << " diagnostic=" << created.diagnostic.diagnostic_code << '\n';
+    for (const auto& argument : created.diagnostic.arguments) {
+      std::cerr << argument.key << '=' << argument.value << '\n';
+    }
+    const auto debug_rows = ReadCatalogRows(database_path, created.state.header.page_size);
+    for (const auto& debug_record : DecodeTypedRecords(debug_rows)) {
+      if (debug_record.record.header.kind == catalog::CatalogRecordKind::grant_record &&
+          debug_record.fields.count("role_uuid") != 0 &&
+          debug_record.fields.at("role_uuid") == db::kCanonicalSysarchRoleObjectUuid) {
+        std::cerr << "membership_header_uuid="
+                  << uuid::UuidToString(debug_record.record.header.object_uuid.value)
+                  << '\n';
+        for (const auto& field : debug_record.fields) {
+          std::cerr << "membership." << field.first << '=' << field.second << '\n';
+        }
+      }
+    }
+  }
+  Require(created.create_finality == db::DatabaseCreateFinalityClass::committed,
+          "create did not return committed finality");
+  Require(created.bootstrap_principal_uuid.valid(),
+          "create did not return bootstrap principal UUID");
+  Require(created.bootstrap_sysarch_role_uuid.valid(),
+          "create did not return canonical SYSARCH role UUID");
+  Require(created.bootstrap_membership_uuid.valid(),
+          "create did not return bootstrap membership UUID");
   Require(created.state.resource_seed_catalog_present, "create did not return resource seed catalog");
   Require(created.state.resource_seed_catalog.active, "resource seed catalog was not active");
   Require(created.state.resource_seed_catalog.seed_pack_name == "initial-resource-pack",
@@ -502,6 +553,29 @@ int main() {
   RequireResourceSeedData(rows, records);
   RequireMetricBootstrapData(records);
   RequireSecurityBootstrapData(records);
+
+  const auto bootstrap_security =
+      db::ReadDatabaseBootstrapSecurityCatalog(database_path.string());
+  if (!bootstrap_security.ok()) {
+    std::cerr << bootstrap_security.diagnostic.diagnostic_code << '\n';
+  }
+  Require(bootstrap_security.ok(),
+          "bootstrap security catalog reader rejected created database");
+  Require(bootstrap_security.state.present,
+          "bootstrap security catalog was not present");
+  Require(bootstrap_security.state.committed_by_inventory,
+          "bootstrap security catalog was not committed by tx inventory");
+  Require(bootstrap_security.state.principal_name == "ROOT",
+          "bootstrap principal name did not round-trip");
+  Require(uuid::UuidToString(bootstrap_security.state.sysarch_role_uuid.value) ==
+              db::kCanonicalSysarchRoleObjectUuid,
+          "bootstrap SYSARCH UUID was not canonical");
+  Require(!std::filesystem::exists(database_path.string() +
+                                   ".sb.security_principal_events"),
+          "security principal sidecar was created");
+  Require(!std::filesystem::exists(database_path.string() +
+                                   ".sb.local_password_auth"),
+          "local password sidecar was created");
 
   return EXIT_SUCCESS;
 }

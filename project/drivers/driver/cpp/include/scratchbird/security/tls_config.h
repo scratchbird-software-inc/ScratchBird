@@ -191,7 +191,8 @@ struct TLSClientConfig {
 
     // Server verification
     bool verify_server = true;      // Verify server certificate
-    std::string expected_hostname;  // Expected server hostname
+    bool verify_identity = false;   // Verify the DNS name or IP address
+    std::string expected_hostname;  // Expected server DNS name or IP literal
 
     // Client certificate (optional)
     std::string cert_file;          // Client certificate (PEM)
@@ -584,6 +585,12 @@ core::Status verifyCertificateChain(X509* cert,
                                      const std::vector<X509*>& chain,
                                      const std::string& ca_file,
                                      core::ErrorContext* ctx = nullptr);
+
+/**
+ * Return true when an endpoint identity is an IPv4 or IPv6 literal.
+ * Bracketed IPv6 literals and IPv6 zone identifiers are accepted.
+ */
+bool isIpAddressLiteral(const std::string& identity);
 
 /**
  * Check if hostname matches certificate

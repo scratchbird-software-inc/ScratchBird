@@ -112,7 +112,11 @@ output/linux/
   STANDALONE_OUTPUT_MANIFEST.json
 ```
 
-Every path used in configuration files shipped with the output — such as `bin/SBgate` in `SBsrv.conf` — is relative to this root. An operator who relocates the tree should update those paths accordingly, or run the processes from the output root so that relative paths resolve correctly.
+Every relative path used in configuration files shipped with the output — such
+as `bin/SBgate` in `SBsrv.conf` — is relative to this installation root when the
+executable is under `bin/`. Resolution does not depend on the shell's current
+directory. An operator who changes the layout should update the paths
+accordingly.
 
 ## Binaries
 
@@ -131,11 +135,11 @@ Each binary is named by its public brand (`sb_public_brand_target` in `CMakeList
 
 ### Shared Library
 
-`lib/libSBcore.so` (on Linux) is the ScratchBird engine shared library. Applications that embed the engine directly link against this library rather than running SBsrv. The library's public brand name is `SBcore`; the static variant is `SBcore_static` and is not placed in the staged output.
+`lib/libSBcore.so` (on Linux) is the ScratchBird engine shared library. Applications that embed the engine directly link against this library rather than running SBsrv. The library's public brand name is `SBcore`; the native release also includes the platform's `SBcore_static` archive.
 
 ### Command-Line Utilities
 
-Five administrative utilities are placed in `bin/`:
+Six administrative utilities are placed in `bin/`:
 
 | Binary | Internal Target | Role |
 | --- | --- | --- |
@@ -158,14 +162,13 @@ The `etc/scratchbird/` directory contains configuration templates for every serv
 | `SBgate.conf` | Listener (SBgate) |
 | `SBmgr.conf` | Single-node manager (SBmgr) |
 | `SBParser.conf` | Core parser (SBParser) |
-| `SB_PGSQL_Parser.conf` | PostgreSQL-compatibility parser worker |
-| `SB_MYSQL_Parser.conf` | MySQL-compatibility parser worker |
-| `SB_MARIADB_Parser.conf` | MariaDB-compatibility parser worker |
-| `SB_SQLITE_Parser.conf` | SQLite-compatibility parser worker |
-| `SB_FBSQL_Parser.conf` | Firebird-compatibility parser worker |
-| `SB_DUCKDB_Parser.conf`, `SB_CLICKHOUSE_Parser.conf`, ... | Additional dialect workers |
+| `SBbootstrap.profile` | Platform identity profile template for explicit embedded database bootstrap |
 
-The full set of parser templates corresponds to the set of compatibility parser-worker build options available in `CMakeLists.txt`. Not all parser workers are built by default; their configuration templates are installed regardless so that operators can prepare for future enablement.
+The native bundle contains exactly these five files and only the standalone
+SBsql parser. Compatibility parser workers and their configuration templates
+are separate profile or add-on artifacts; the native bundle does not install
+them in anticipation of later enablement. Each selected dialect runs as its own
+standalone parser process behind the shared `SBgate` executable.
 
 See [Configuration Reference](#ch-operations-administration-configuration-reference-md) for the contents and keys of each file.
 
@@ -197,7 +200,7 @@ The staged output does **not** contain a `runtime/` directory. Runtime directori
 | Configuration | `etc/scratchbird/` | Copy and edit for deployment; do not edit in place |
 | Resources | `share/scratchbird/resources/` | Do not modify; must match the binary version |
 | Runtime sockets and PID files | Configured paths, not in output tree | Created by processes at startup |
-| Database files | Configured `data_dir`, not in output tree | Created by the engine when a database is first opened |
+| Database files | Configured data path, not in output tree | Created only by an explicit approved embedded `SBsec bootstrap` operation before service startup |
 | Log files | Configured `log_file`, not in output tree | Defaults to stderr |
 
 ## Verifying the Output
@@ -205,7 +208,7 @@ The staged output does **not** contain a `runtime/` directory. Runtime directori
 Before using a staged output for the first time, confirm that:
 
 1. All expected binaries are present in `bin/` and are executable.
-2. All four service configuration templates are present in `etc/scratchbird/`.
+2. Exactly the five native configuration files are present in `etc/scratchbird/`: `SBsrv.conf`, `SBgate.conf`, `SBmgr.conf`, `SBParser.conf`, and `SBbootstrap.profile`.
 3. The `share/scratchbird/resources/` tree is present and non-empty.
 4. The `STANDALONE_OUTPUT_MANIFEST.json` is readable.
 
@@ -241,6 +244,15 @@ Each service reads its own configuration file independently. There is no central
 
 SBgate (`listener_config.cpp`) uses a flat key=value parser: each line is split on the first `=`, whitespace is trimmed, and keys are normalized to lowercase with hyphens replaced by underscores. SBsrv (`SBsrv.conf`) uses a `[section]` format with a `format = SBCD1` header. SBmgr uses a flat `manager.*` key namespace. SBParser uses a flat `parser.*` namespace.
 
+SBsrv and SBmgr search the executable installation configuration before the
+process current directory. Service mode never selects a configuration from the
+current directory, and service or `--validate-config` exits with an error when
+no selected configuration exists. When the executable is installed under
+`bin/`, relative paths in SBsrv.conf or SBmgr.conf resolve from that executable's
+installation root. For a non-installed executable, they resolve from the
+selected configuration file's directory. Relative paths supplied explicitly on
+the command line remain relative to the caller's current directory.
+
 Configuration files are read at startup only. In-place reloading is not described in the configuration templates; the `RELOAD` management command is available via the listener control plane (see [Service Lifecycle](#ch-operations-administration-service-lifecycle-md)).
 
 Unknown keys are currently ignored by most parsers, which means typos in key names will not produce an error at load time. Always verify configuration takes effect by checking service logs or querying STATUS.
@@ -265,7 +277,7 @@ SBsrv is the IPC server that hosts the engine and manages database opens. Its co
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
-| `data_dir` | `runtime/data` | Directory for engine data files. Relative paths are resolved from the working directory at startup. |
+| `data_dir` | `runtime/data` | Directory for engine data files. Relative configuration values resolve from the executable installation root, or from the config directory for a non-installed executable. |
 | `control_dir` | `runtime/control` | Directory for control-plane sockets and PID/lifecycle files. |
 
 ### `[server.logging]`
@@ -300,9 +312,9 @@ This section configures the native SBsql listener that SBsrv will supervise. Whe
 | --- | --- | --- |
 | `enabled` | `true` | Whether to start the listener. |
 | `bind_host` | `127.0.0.1` | Listener bind address. |
-| `port` | `3050` | Listener TCP port. |
-| `executable_path` | `bin/SBgate` | Path to the SBgate binary, relative to working directory. |
-| `parser_executable_path` | `bin/SBParser` | Path to the parser worker binary. |
+| `port` | `3092` | Native SBSQL listener TCP port. Port 3050 is reserved for Firebird compatibility endpoints. |
+| `executable_path` | `bin/SBgate` | Path to the shared SBgate binary, relative to the deterministic configuration base. |
+| `parser_executable_path` | `bin/SBParser` | Path to the standalone native parser worker, relative to the same base. |
 | `control_dir` | `runtime/listener/control` | Control-plane socket directory for the listener. |
 | `runtime_dir` | `runtime/listener/runtime` | Runtime directory for the listener. |
 | `tls_required` | `true` | Whether TLS is required for client connections. Setting this to `false` is strongly discouraged on any network-exposed interface. |
@@ -380,7 +392,7 @@ SBgate (the listener) accepts TCP connections from clients, manages a warm pool 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
 | `bind_address` | `127.0.0.1` | Address on which to accept client connections. |
-| `port` | `3050` | TCP port. |
+| `port` | `3092` | Native SBSQL TCP port. Port 3050 is Firebird-only. |
 | `accept_backlog` | `128` | OS-level accept queue depth. |
 | `tls_required` | `true` | Whether clients must use TLS. |
 | `per_client_max_connections` | `0` | Maximum concurrent connections per client address. `0` means no limit. |
@@ -453,13 +465,23 @@ SBmgr supervises SBsrv and SBgate as a pair. It restarts them if they fail, expo
 | `manager.metrics_enabled` | `true` | Whether metrics collection is active. |
 | `manager.management_auth_required` | `true` | Whether management-plane connections require authentication. Setting this to `false` is unsafe except in isolated testing. |
 
-The manager's proxy port defaults to `3090` and its bind address defaults to `0.0.0.0` (source: `manager_runtime.hpp:41`). These can be overridden via `manager.proxy.port` and `manager.proxy.bind`. The native management interface defaults to `127.0.0.1:3392`.
+The manager proxy is disabled by default. Its client-facing compiled defaults
+are loopback bind, required TLS, and the native SBSQL port `3092`. The backend
+port defaults to `0`, which is an unset sentinel rather than a second native
+default. Enabling the proxy requires an explicit nonzero
+`manager.backend.native_port` distinct from `manager.proxy.port`; missing or
+same-port backends are rejected before the front door is bound. Port `3050`
+remains Firebird compatibility only.
 
 ---
 
 ## SBParser.conf — Core Parser
 
-SBParser is the native SBsql parser worker. It is spawned and managed by SBgate. Its configuration uses a flat `parser.*` namespace.
+SBParser is the native SBsql parser worker. It is spawned and managed by the
+shared SBgate listener. Every parser executable is standalone for one dialect:
+it must not load, invoke, or fall through to another parser. A network parser
+has no in-process engine path; it sends SBLR over SBPS IPC to the SBsrv-owned
+engine endpoint. Its configuration uses a flat `parser.*` namespace.
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
@@ -474,12 +496,20 @@ SBParser is the native SBsql parser worker. It is spawned and managed by SBgate.
 | `parser.resource.max_streams` | `256` | Maximum concurrent streams. |
 | `parser.security.auth_relay_required` | `true` | Whether the engine must relay authentication context to the parser. |
 | `parser.execution.engine_authority_required` | `true` | Whether the engine must hold execution authority before the parser will proceed. |
+| `parser.execution.engine_transport` | `sbps_ipc_only` | Requires the standalone network parser to reach the engine only through SBPS IPC. |
+| `parser.execution.direct_engine_link` | `forbidden` | Forbids linking the network parser executable to the embedded engine/server core. |
+| `parser.execution.cross_parser_dependency` | `forbidden` | Forbids using any other dialect parser as a parse or fallback implementation. |
 
 ---
 
 ## Dialect Parser Templates
 
-Each dialect parser (e.g. `SB_PGSQL_Parser.conf`, `SB_MYSQL_Parser.conf`) follows the same structure as `SBParser.conf` but uses a different `parser.family` and `parser.bundle_contract_id`. They also include compatibility keys that constrain what the parser is allowed to do:
+Each dialect parser follows the same standalone structure as `SBParser.conf`
+but uses a different `parser.family` and `parser.bundle_contract_id`. The same
+SBgate executable hosts the configured network and selects/spawns the one
+standalone parser required by that listener profile; there is not a distinct
+listener executable per parser. Dialect templates also include compatibility
+keys that constrain what the parser is allowed to do:
 
 | Key | Meaning |
 | --- | --- |
@@ -557,6 +587,9 @@ In this mode, SBsrv runs as a standalone process. It hosts the engine and expose
 - The staged output is present and all binaries are executable.
 - `etc/scratchbird/SBsrv.conf` has been copied and edited for the deployment.
 - The `data_dir` and `control_dir` paths are writable by the process user.
+- The database already exists. Create it before service startup with the
+  approved embedded `SBsec bootstrap` flow and the packaged platform profile;
+  the server does not create a missing database.
 - If `tls_required = true` (the default and recommended setting), TLS certificates are configured.
 - The `share/scratchbird/resources/` tree is present.
 
@@ -566,16 +599,22 @@ Edit a copy of `etc/scratchbird/SBsrv.conf`. Key decisions:
 
 1. Set `[server.runtime] data_dir` and `control_dir` to the deployment's runtime paths.
 2. Set `[server.database] default_path` to the database file location.
-3. Set `[server.database] auto_create = true` only for the initial setup run; reset it to `false` after the database exists.
-4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3050`).
+3. Keep `[server.database] auto_create = false`. Bootstrap the database
+   separately with `SBsec` in approved embedded mode before starting SBsrv.
+4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3092`; port `3050` is Firebird-only).
 5. Verify `[server.listener.native] executable_path` and `parser_executable_path` resolve to the correct binaries.
 6. Confirm `[server.parser] sbps_endpoint` will be writable and accessible to SBgate.
+
+Relative paths in SBsrv.conf resolve from the SBsrv installation root when the
+binary is under `bin/`; they do not depend on the shell's current directory.
+Service and validation commands require a selected configuration file.
 
 ### Startup Sequence
 
 1. Start SBsrv with the configuration file path as an argument.
 2. SBsrv reads and validates configuration. Invalid configuration causes immediate exit with diagnostics to stderr.
-3. SBsrv opens or creates the database, depending on `auto_create`.
+3. SBsrv opens the existing database. A missing database is refused; service
+   startup never performs database bootstrap or create-if-missing behavior.
 4. SBsrv writes startup lifecycle artifacts (PID file, lifecycle state file, SBPS socket).
 5. If `[server.listener.native] enabled = true`, SBsrv spawns SBgate and waits up to `ready_timeout_ms` (default 8 000 ms) for SBgate to report ready.
 6. Once SBgate reports ready, SBsrv transitions to the `ready` state.
@@ -591,7 +630,7 @@ After startup, confirm readiness by:
 ### First Transaction Proof
 
 ```
-bin/SBsql --host 127.0.0.1 --port 3050 --database default
+bin/SBsql --host 127.0.0.1 --port 3092 --database default
 SBsql> SELECT 1;
 SBsql> \quit
 ```
@@ -646,7 +685,7 @@ server_endpoint = runtime/control/sb_server.sbps.sock
 
 # Where to accept clients
 bind_address = 127.0.0.1
-port = 3050
+port = 3092
 tls_required = true           # do not set false on any network-exposed interface
 
 # Parser pool — start with 1, allow up to 16
@@ -702,7 +741,7 @@ SBmgr is the single-node manager. It supervises both SBsrv and SBgate, restarts 
 - `etc/scratchbird/SBmgr.conf` has been copied and edited.
 - `etc/scratchbird/SBsrv.conf` and `etc/scratchbird/SBgate.conf` are configured for the managed deployment.
 - `manager.management_auth_required = true` is retained (the default).
-- The proxy port (`3090` by default) is accessible from clients.
+- The proxy is explicitly enabled and its configured port (the native default is `3092`) is accessible from clients.
 
 ### Configuration Inputs
 
@@ -711,7 +750,7 @@ Edit a copy of `etc/scratchbird/SBmgr.conf`. Key decisions:
 1. Set `manager.control_dir` and `manager.runtime_dir` to writable paths.
 2. Confirm `manager.listener_command` and `manager.server_command` resolve to the correct binaries.
 3. Set `manager.restart_policy`, `manager.restart_max`, and `manager.restart_window_ms` to match operational expectations.
-4. If you want to override the proxy port, add `manager.proxy.port = <value>`. The default is `3090`.
+4. The proxy is disabled by default. If you enable it, retain required TLS and configure a nonzero `manager.backend.native_port` distinct from the client-facing `manager.proxy.port`. The only native default is the front-door port `3092`; backend `0` means unset, while `3050` is Firebird-only.
 
 ### Startup Sequence (Manager Lifecycle States)
 
@@ -833,7 +872,7 @@ SBmgr has the most complex lifecycle because it supervises other processes. Its 
 | `server_supervision_starting` | Spawning SBsrv |
 | `listener_endpoint_resolving` | Determining which SBgate endpoint to supervise |
 | `listener_supervision_starting` | Spawning SBgate |
-| `proxy_binding` | Binding the proxy TCP port (default `3090`) |
+| `proxy_binding` | Binding the proxy TCP port (native default `3092`; disabled in the secure release template) |
 | `management_binding` | Binding the management interface |
 | `server_heartbeat_starting` | Starting heartbeat to SBsrv |
 | `ready` | All supervised processes are running; accepting work |
@@ -898,6 +937,12 @@ The `ServerMode` enum in `server/config.hpp` defines:
 | `read_only` | Open the database in read-only mode |
 
 The configuration template ships `mode = foreground`.
+
+Service startup requires a selected SBsrv.conf and never searches the process
+current directory. SBmgr applies the same rule to SBmgr.conf. Both services
+reject a missing selected configuration before creating runtime artifacts or
+binding an endpoint. Help and version output remain available without loading a
+configuration.
 
 ---
 

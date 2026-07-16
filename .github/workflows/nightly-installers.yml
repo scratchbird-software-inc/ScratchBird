@@ -18,21 +18,21 @@ on:
           - artifacts-only
           - rolling-prerelease
       require-msi:
-        description: Require WiX MSI generation on Windows
+        description: Retained for compatibility; Windows MSI proof is mandatory
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: nightly-installers-${{ github.ref }}
+  group: scratchbird-rolling-nightly
   cancel-in-progress: false
 
 jobs:
   gold-gate:
-    name: Windows gold nightly enablement gate
+    name: All-platform native nightly enablement gate
     runs-on: ubuntu-24.04
     outputs:
       enabled: ${{ steps.enabled.outputs.value }}
@@ -42,8 +42,11 @@ jobs:
     steps:
       - name: Check scheduled-nightly enablement
         id: enabled
+        env:
+          SB_EVENT_NAME: ${{ github.event_name }}
+          SB_NIGHTLY_ENABLED: ${{ vars.SB_NIGHTLY_INSTALLERS_ENABLED }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.SB_NIGHTLY_INSTALLERS_ENABLED }}" != "true" ]; then
+          if [ "$SB_EVENT_NAME" = "schedule" ] && [ "$SB_NIGHTLY_ENABLED" != "true" ]; then
             echo "Scheduled nightly installers are disabled until SB_NIGHTLY_INSTALLERS_ENABLED is true."
             echo "value=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -52,15 +55,30 @@ jobs:
 
       - name: Resolve version
         id: version
-        run: echo "value=${{ inputs.version || '0.0.0-nightly' }}" >> "$GITHUB_OUTPUT"
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || '0.0.0-nightly' }}
+        run: |
+          if [[ ! "$REQUESTED_VERSION" =~ ^[0-9A-Za-z.+~_-]+$ ]]; then
+            echo "Nightly version contains unsupported characters." >&2
+            exit 1
+          fi
+          echo "value=$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Resolve publish mode
         id: publish
-        run: echo "value=${{ inputs['publish-mode'] || 'artifacts-only' }}" >> "$GITHUB_OUTPUT"
+        env:
+          SB_EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs['publish-mode'] || 'artifacts-only' }}
+        run: |
+          if [ "$SB_EVENT_NAME" = "schedule" ]; then
+            echo "value=rolling-prerelease" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$REQUESTED_MODE" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve MSI policy
         id: msi
-        run: echo "value=${{ inputs['require-msi'] || false }}" >> "$GITHUB_OUTPUT"
+        run: echo "value=true" >> "$GITHUB_OUTPUT"
 
   build-installers:
     name: Build and verify nightly installers
@@ -78,8 +96,10 @@ jobs:
     needs:
       - gold-gate
       - build-installers
-    if: ${{ needs.gold-gate.outputs.enabled == 'true' && needs.gold-gate.outputs.publish-mode == 'rolling-prerelease' }}
+    if: ${{ success() && github.ref == 'refs/heads/main' && needs.gold-gate.outputs.enabled == 'true' && needs.gold-gate.outputs.publish-mode == 'rolling-prerelease' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,30 +107,83 @@ jobs:
       - name: Download installer artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: scratchbird-*-installers
           path: nightly-artifacts
+          merge-multiple: false
 
       - name: Verify downloaded installers
         run: |
-          linux_root="$(find nightly-artifacts/scratchbird-linux-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
-          windows_root="$(find nightly-artifacts/scratchbird-windows-installers -name INSTALLER_ARTIFACT_MANIFEST.json -exec dirname {} \; | head -n 1)"
+          set -euo pipefail
+          resolve_installer_root() {
+            local artifact_dir="$1"
+            mapfile -t manifests < <(find "$artifact_dir" -type f -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
+            if [ "${#manifests[@]}" -ne 1 ]; then
+              echo "Expected exactly one installer manifest in $artifact_dir; found ${#manifests[@]}." >&2
+              return 1
+            fi
+            dirname "${manifests[0]}"
+          }
+          linux_root="$(resolve_installer_root nightly-artifacts/scratchbird-linux-installers)"
+          windows_root="$(resolve_installer_root nightly-artifacts/scratchbird-windows-installers)"
+          macos_x86_root="$(resolve_installer_root nightly-artifacts/scratchbird-macos-x86_64-installers)"
+          macos_arm_root="$(resolve_installer_root nightly-artifacts/scratchbird-macos-arm64-installers)"
           python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
-          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
-          while IFS= read -r macos_manifest; do
-            macos_root="$(dirname "$macos_manifest")"
-            python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_root"
-          done < <(find nightly-artifacts -path '*scratchbird-macos-*-installers*' -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
+          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root" --require-msi
+          python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_x86_root"
+          python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_arm_root"
+          mapfile -t universal_manifests < <(find nightly-artifacts/scratchbird-macos-universal-installers -type f -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json | sort)
+          test "${#universal_manifests[@]}" -eq 1
 
-      - name: Publish rolling prerelease
+      - name: Create native-only nightly release bundle
+        env:
+          SB_NIGHTLY_VERSION: ${{ needs.gold-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 project/tools/installers/create_nightly_release_bundle.py \
+            --input-root nightly-artifacts \
+            --output-root nightly-release-assets \
+            --version "$SB_NIGHTLY_VERSION" \
+            --source-revision "$GITHUB_SHA" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT"
+          (
+            cd nightly-release-assets
+            sha256sum --check --strict scratchbird-nightly-SHA256SUMS
+          )
+
+      - name: Write native nightly release notes
+        env:
+          SB_NIGHTLY_VERSION: ${{ needs.gold-gate.outputs.version }}
+        run: |
+          {
+            echo "ScratchBird native nightly build for testing."
+            echo
+            echo "- Native ScratchBird platform only: SBmgr, SBgate, SBParser using native SBSQL, and SBsrv are included."
+            echo "- No compatibility parser or emulation packages are included."
+            echo "- The native ScratchBird listener default is TCP port 3092."
+            echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
+            echo "- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23+, Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22+."
+            echo "- Public nightly assets are the fully inspected portable tar.gz/ZIP bundles."
+            echo "- DEB, RPM, AUR, PKG, and MSI packages remain workflow artifacts until equivalent direct payload proof is available."
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Requested version: $SB_NIGHTLY_VERSION"
+            echo "- Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Linux, Windows, and macOS build, CTest, package verification, and smoke-install jobs completed successfully before publication."
+            echo "- macOS QA packages are unsigned and unnotarized unless the manifest explicitly records signed payloads."
+            echo
+            echo "Verify downloads with scratchbird-nightly-SHA256SUMS."
+          } > nightly-release-notes.md
+
+      - name: Publish rolling prerelease in place
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="nightly"
-          title="ScratchBird Nightly Installers"
-          gh release delete "$tag" --yes || true
-          git tag -f "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag" --force
-          mapfile -t assets < <(find nightly-artifacts -type f | sort)
-          gh release create "$tag" "${assets[@]}" \
-            --title "$title" \
-            --notes "Automated nightly installer build for $GITHUB_SHA." \
-            --prerelease
+          python3 project/tools/installers/publish_rolling_nightly.py \
+            --asset-root nightly-release-assets \
+            --repository "$GITHUB_REPOSITORY" \
+            --target-sha "$GITHUB_SHA" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --title "ScratchBird Native Nightly Builds" \
+            --notes-file nightly-release-notes.md \
+            --checkout-root "$GITHUB_WORKSPACE"

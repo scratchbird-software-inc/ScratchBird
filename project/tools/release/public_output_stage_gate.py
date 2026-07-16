@@ -39,17 +39,17 @@ REQUIRED_PARSER_UDR_LIBRARIES = tuple(
     f"{parser_name}_udr" for parser_name in REQUIRED_PARSER_EXECUTABLES
 )
 
-REQUIRED_PARSER_CONFIGS = tuple(
-    f"etc/scratchbird/{parser_name}.conf"
-    for parser_name in REQUIRED_PARSER_EXECUTABLES
+REQUIRED_CONFIG_FILES = (
+    "SBsrv.conf",
+    "SBgate.conf",
+    "SBmgr.conf",
+    "SBParser.conf",
+    "SBbootstrap.profile",
 )
 
 REQUIRED_FILES = (
     "STANDALONE_OUTPUT_MANIFEST.json",
-    "etc/scratchbird/SBsrv.conf",
-    "etc/scratchbird/SBgate.conf",
-    "etc/scratchbird/SBmgr.conf",
-    *REQUIRED_PARSER_CONFIGS,
+    *(f"etc/scratchbird/{name}" for name in REQUIRED_CONFIG_FILES),
     "share/scratchbird/resources/seed-packs/initial-resource-pack/RESOURCE_SEED_MANIFEST.csv",
     "share/scratchbird/resources/seed-packs/initial-resource-pack/resources/charsets/charsets.json",
     "share/scratchbird/resources/seed-packs/initial-resource-pack/resources/collations/collations.json",
@@ -78,6 +78,7 @@ REQUIRED_EXECUTABLES = (
     "SBcop",
     "SBsrv",
     "SBgate",
+    "SBmgr",
     *REQUIRED_PARSER_EXECUTABLES,
 )
 
@@ -144,6 +145,19 @@ def main() -> int:
         path = root / rel
         if not path.is_file():
             failures.append(f"missing_file:{rel}")
+
+    config_root = root / "etc/scratchbird"
+    if config_root.is_dir():
+        actual_configs = {
+            path.name for path in config_root.iterdir() if path.is_file()
+        }
+        expected_configs = set(REQUIRED_CONFIG_FILES)
+        if actual_configs != expected_configs:
+            failures.append(
+                "native_config_set_mismatch:"
+                f"missing={sorted(expected_configs - actual_configs)}:"
+                f"unexpected={sorted(actual_configs - expected_configs)}"
+            )
 
     executable_suffix = ".exe" if args.platform == "windows" else ""
     for name in REQUIRED_EXECUTABLES:

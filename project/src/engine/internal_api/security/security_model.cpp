@@ -148,103 +148,6 @@ std::set<std::string> KnownRights() {
       "MANAGER_ADMISSION_ADMIN"};
 }
 
-bool GroupAllows(const std::string& group, const std::string& right) {
-  if (group == "ROOT") { return true; }
-  if (group == "SEC") {
-    return right == "SEC_IDENTITY_ADMIN" || right == "SEC_MEMBERSHIP_ADMIN" || right == "SEC_GRANT_ADMIN" ||
-           right == "POLICY_ADMIN" || right == "AUDIT_READ" || right == "AUDIT_ADMIN" ||
-           right == "AUTH_PROVIDER_ADMIN" || right == "UDR_TRUST_ADMIN" || right == "MANAGER_ADMISSION_ADMIN" ||
-           right == "UDR_MANAGE" || right == "UDR_INSPECT" || right == "UDR_INVOKE" ||
-           right == "BACKUP_CREATE" || right == "BACKUP_RESTORE" || right == "BACKUP_CONTROL" ||
-           right == "BACKUP_INSPECT" ||
-           right == "PROTECTED_MATERIAL_RELEASE" || right == "KEY_RELEASE_APPROVE" ||
-           right == "EVENT_ADMIN" || right == "EVENT_CREATE" || right == "EVENT_ALTER" ||
-           right == "EVENT_DROP" || right == "EVENT_SUBSCRIBE" || right == "EVENT_PUBLISH" ||
-           right == "EVENT_DELIVERY_READ" || right == "EVENT_DELIVERY_ACK" ||
-           right == "SUPPORT_EXPORT" ||
-           right == "OBS_CONFIG_INSPECT" || right == "OBS_MANAGEMENT_INSPECT" ||
-           right == "OBS_METRICS_POLICY_INSPECT" || right == "OBS_METRICS_POLICY_CONTROL" ||
-           right == "SEC_AUTH_METRICS_READ" || right == "OBS_POLICY_READ" ||
-           right == "OBS_AGENT_EVIDENCE_READ" || right == "OBS_AGENT_POLICY_CONTROL" ||
-           right == "OBS_AGENT_OVERRIDE" || right == "MGA_LINEAGE_INSPECT" ||
-           right == "MGA_FORENSIC_INSPECT" || right == "MGA_METRICS_READ";
-  }
-  if (group == "OPS") {
-    return right == "OBS_RUNTIME_ALL" || right == "OBS_METRICS_READ_ALL" || right == "OBS_METRICS_READ_FAMILY" ||
-           right == "OBS_METRICS_READ_DATABASE" || right == "OBS_METRICS_READ_NODE" ||
-           right == "OBS_METRICS_READ_CLUSTER" || right == "OBS_METRICS_EXPORT_READ" ||
-           right == "OBS_MANAGEMENT_INSPECT" || right == "OBS_MANAGEMENT_CONTROL" ||
-           right == "OBS_CONFIG_INSPECT" || right == "OBS_CONFIG_CONTROL" ||
-           right == "OBS_CLUSTER_HEALTH_INSPECT" || right == "OBS_CLUSTER_CONTROL" ||
-           right == "OBS_DATA_MOVEMENT_INSPECT" || right == "MANAGER_ADMISSION_ADMIN" ||
-           right == "OBS_METRICS_EXPORT" || right == "OBS_METRICS_EXPORT_CONTROL" ||
-           right == "SUPPORT_EXPORT" ||
-           right == "BACKUP_CREATE" || right == "BACKUP_RESTORE" || right == "BACKUP_CONTROL" ||
-           right == "BACKUP_INSPECT" ||
-           right == "OBS_AGENT_STATE_READ" || right == "OBS_AGENT_EVIDENCE_READ" ||
-           right == "OBS_AGENT_CONTROL" || right == "OBS_AGENT_POLICY_CONTROL" ||
-           right == "OBS_AGENT_OVERRIDE" || right == "MGA_TRANSACTION_INSPECT" ||
-           right == "MGA_RECOVERY_INSPECT" || right == "MGA_CLEANUP_INSPECT" ||
-           right == "MGA_CLEANUP_CONTROL" || right == "MGA_HORIZON_INSPECT" ||
-           right == "MGA_LINEAGE_INSPECT" || right == "MGA_METRICS_READ";
-  }
-  if (group == "SUP") {
-    return right == "OBS_RUNTIME_ALL" || right == "OBS_METRICS_READ_ALL" || right == "OBS_METRICS_READ_FAMILY" ||
-           right == "OBS_METRICS_READ_DATABASE" || right == "OBS_METRICS_READ_NODE" ||
-           right == "OBS_METRICS_READ_CLUSTER" || right == "OBS_METRICS_EXPORT_READ" ||
-           right == "OBS_MANAGEMENT_INSPECT" || right == "OBS_CLUSTER_HEALTH_INSPECT" ||
-           right == "SUPPORT_EXPORT" ||
-           right == "OBS_AGENT_STATE_READ" || right == "MGA_TRANSACTION_INSPECT" ||
-           right == "MGA_RECOVERY_INSPECT" || right == "MGA_HORIZON_INSPECT" ||
-           right == "MGA_LINEAGE_INSPECT" || right == "MGA_METRICS_READ";
-  }
-  if (group == "DBA") {
-    return right == "VISIBLE" || right == "DISCOVER" || right == "LIST_CHILD" || right == "SELECT" ||
-           right == "INSERT" || right == "UPDATE" || right == "DELETE" || right == "EXECUTE" ||
-           right == "CREATE" || right == "ALTER" || right == "DROP" || right == "DOMAIN_USE" ||
-           right == "DOMAIN_CAST" || right == "DOMAIN_METHOD" || right == "DOMAIN_POLICY_ADMIN" ||
-           right == "DOMAIN_UNMASK" || right == "UDR_INSPECT" || right == "UDR_INVOKE" ||
-           right == "BACKUP_CREATE" || right == "BACKUP_RESTORE" || right == "BACKUP_INSPECT" ||
-           right == "EVENT_ADMIN" || right == "EVENT_CREATE" || right == "EVENT_ALTER" ||
-           right == "EVENT_DROP" || right == "EVENT_SUBSCRIBE" || right == "EVENT_PUBLISH" ||
-           right == "EVENT_DELIVERY_READ" || right == "EVENT_DELIVERY_ACK" ||
-           right == "OBS_RUNTIME_ALL" || right == "OBS_METRICS_READ_ALL" || right == "OBS_METRICS_READ_FAMILY" ||
-           right == "OBS_METRICS_READ_DATABASE" || right == "OBS_METRICS_READ_NODE" ||
-           right == "OBS_INDEX_PROFILE_READ" || right == "OBS_CONFIG_INSPECT" ||
-           right == "OBS_CLUSTER_HEALTH_INSPECT" || right == "OBS_DATA_MOVEMENT_INSPECT" ||
-           right == "MGA_TRANSACTION_INSPECT" || right == "MGA_RECOVERY_INSPECT" ||
-           right == "MGA_CLEANUP_INSPECT" || right == "MGA_CLEANUP_CONTROL" ||
-           right == "MGA_HORIZON_INSPECT" || right == "MGA_LINEAGE_INSPECT" ||
-           right == "MGA_METRICS_READ";
-  }
-  if (group == "AUD") {
-    return right == "AUDIT_READ" || right == "OBS_RUNTIME_ALL" || right == "OBS_METRICS_READ_ALL" || right == "OBS_METRICS_READ_FAMILY" ||
-           right == "OBS_METRICS_READ_DATABASE" || right == "OBS_METRICS_READ_NODE" ||
-           right == "OBS_METRICS_READ_CLUSTER" || right == "OBS_METRICS_EXPORT_READ" ||
-           right == "SEC_AUTH_METRICS_READ" || right == "OBS_POLICY_READ" ||
-           right == "OBS_CONFIG_INSPECT" || right == "OBS_CLUSTER_HEALTH_INSPECT" ||
-           right == "SUPPORT_EXPORT" ||
-           right == "OBS_AGENT_STATE_READ" || right == "OBS_AGENT_EVIDENCE_READ" ||
-           right == "MGA_TRANSACTION_INSPECT" || right == "MGA_RECOVERY_INSPECT" ||
-           right == "MGA_HORIZON_INSPECT" || right == "MGA_LINEAGE_INSPECT" ||
-           right == "MGA_FORENSIC_INSPECT" || right == "MGA_METRICS_READ";
-  }
-  if (group == "DEV") {
-    return right == "OBS_RUNTIME_SELF" || right == "OBS_METRICS_READ_SELF" || right == "VISIBLE" || right == "DISCOVER" ||
-           right == "OBS_INDEX_PROFILE_READ";
-  }
-  if (group == "APP") {
-    return right == "CONNECT" || right == "OBS_RUNTIME_SELF" ||
-           right == "EVENT_SUBSCRIBE" || right == "EVENT_PUBLISH" ||
-           right == "EVENT_DELIVERY_READ" || right == "EVENT_DELIVERY_ACK";
-  }
-  if (group == "ETL" || group == "SCH") {
-    return right == "CONNECT" || right == "EXECUTE" || right == "OBS_METRICS_READ_FAMILY";
-  }
-  if (group == "ANL") { return right == "CONNECT" || right == "SELECT" || right == "VISIBLE" || right == "DISCOVER"; }
-  return false;
-}
-
 }  // namespace
 
 std::string SecurityLower(std::string value) {
@@ -287,7 +190,6 @@ bool SecurityContextHasTag(const EngineRequestContext& context, const std::strin
 
 // SEARCH_KEY: SB_ENGINE_SECURITY_MATERIALIZED_AUTHORIZATION_BOUNDARY
 bool SecurityTraceAuthorizationFallbackAllowed(const EngineRequestContext& context) {
-  if (SecurityContextHasTag(context, "security.bootstrap")) { return true; }
   return context.trust_mode == EngineTrustMode::embedded_in_process &&
          SecurityContextHasTag(context, "security.fixture_trace_authority");
 }
@@ -427,6 +329,28 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
   }
 
   context.effective_subjects = subjects;
+
+  // SysArch authority is keyed only by the immutable engine-owned bootstrap
+  // catalog UUID.  Display names such as ROOT or ROOT_ROLE are not authority.
+  // Explicit durable denies below still take precedence during evaluation.
+  for (const auto& subject : context.effective_subjects) {
+    if (subject.subject_kind != "role" ||
+        !UuidPresent(state.engine_owned_sysarch_role_uuid) ||
+        !UuidEquals(subject.subject_uuid, state.engine_owned_sysarch_role_uuid)) {
+      continue;
+    }
+    for (const auto& right : KnownRights()) {
+      EngineMaterializedAuthorizationGrant grant;
+      grant.grant_uuid.canonical =
+          "engine-owned-sysarch-grant:" + right;
+      grant.subject_uuid = subject.subject_uuid;
+      grant.subject_kind = "role";
+      grant.right = right;
+      grant.security_epoch = state.security_epoch;
+      context.grants.push_back(std::move(grant));
+    }
+    context.evidence_tags.push_back("engine_owned_sysarch_bundle");
+  }
 
   for (const auto& grant : state.grants) {
     if (!grant.active) { continue; }
@@ -597,29 +521,11 @@ bool SecurityContextHasRight(const EngineRequestContext& context,
                                              right,
                                              target_uuid).authorized;
   }
-  if (SecurityContextHasTag(context, "security.bootstrap")) { return true; }
   if (!SecurityTraceAuthorizationFallbackAllowed(context)) { return false; }
   if (SecurityContextHasTag(context, "deny:" + right)) { return false; }
   if (!target_uuid.empty() && SecurityContextHasTag(context, "deny:" + right + ":" + target_uuid)) { return false; }
   if (SecurityContextHasTag(context, "right:" + right)) { return true; }
   if (!target_uuid.empty() && SecurityContextHasTag(context, "right:" + right + ":" + target_uuid)) { return true; }
-  for (const auto& tag : context.trace_tags) {
-    if (StartsWith(tag, "group:") && GroupAllows(tag.substr(6), right)) { return true; }
-    if (StartsWith(tag, "role:ROLE_SECURITY_ADMIN") &&
-        (right == "SEC_IDENTITY_ADMIN" || right == "SEC_MEMBERSHIP_ADMIN" || right == "SEC_GRANT_ADMIN" ||
-         right == "POLICY_ADMIN")) {
-      return true;
-    }
-    if (StartsWith(tag, "role:ROLE_OPERATOR") &&
-        (right == "OBS_MANAGEMENT_CONTROL" || right == "OBS_CONFIG_CONTROL" || right == "OBS_CLUSTER_CONTROL" ||
-         right == "MGA_CLEANUP_CONTROL")) {
-      return true;
-    }
-    if (StartsWith(tag, "role:ROLE_AUDIT_READER") &&
-        (right == "AUDIT_READ" || right == "MGA_LINEAGE_INSPECT" || right == "MGA_FORENSIC_INSPECT")) {
-      return true;
-    }
-  }
   return false;
 }
 

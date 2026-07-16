@@ -110,6 +110,7 @@ if(SB_BUILD_SERVER)
     sblr_admission.cpp
     sblr_dispatch_server.cpp
     startup.cpp
+    windows_service_runtime.cpp
   )
 
   target_include_directories(sb_server_core PUBLIC
@@ -131,7 +132,7 @@ if(SB_BUILD_SERVER)
     sbl_listener_control_plane
   )
   if(WIN32)
-    target_link_libraries(sb_server_core PUBLIC ws2_32)
+    target_link_libraries(sb_server_core PUBLIC ws2_32 advapi32)
   endif()
 
   add_executable(sb_server

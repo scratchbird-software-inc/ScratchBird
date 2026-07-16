@@ -14,6 +14,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "cluster_provider/cluster_provider.hpp"
+#include "security/security_model.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -101,12 +102,6 @@ bool ProductionRetentionPath(const EngineEvaluateAgentEvidenceRetentionRequest& 
   return OptionEnabled(request, "agent_evidence_retention_production_live") ||
          OptionBool(request, "agent_evidence_retention_production_live:", false) ||
          OptionEnabled(request, "agent_durable_catalog_store_required");
-}
-
-bool HasTraceRight(const EngineRequestContext& context, std::string_view right) {
-  const std::string token = "right:" + std::string(right);
-  return std::find(context.trace_tags.begin(), context.trace_tags.end(), token) !=
-         context.trace_tags.end();
 }
 
 std::string SafeOrRedacted(std::string value) {
@@ -246,8 +241,9 @@ EngineEvaluateAgentEvidenceRetentionResult ClusterProviderRoute(
 
 bool PrivilegedView(const EngineEvaluateAgentEvidenceRetentionRequest& request) {
   if (ProductionRetentionPath(request)) {
-    return HasTraceRight(request.context, "OBS_AGENT_EVIDENCE_READ") ||
-           HasTraceRight(request.context, "OBS_AGENT_AUDIT_READ");
+    return SecurityContextHasRight(request.context,
+                                   "OBS_AGENT_EVIDENCE_READ") ||
+           SecurityContextHasRight(request.context, "AUDIT_READ");
   }
   return request.admin_view || request.sysarch_view;
 }

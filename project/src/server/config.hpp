@@ -77,11 +77,14 @@ struct ServerBootstrapConfig {
   std::string database_open_mode = "normal";
   std::string database_daemon_scope = "shared";
   bool database_ownership_prelocked = false;
+  // Internal test-only bypass. This field has no public configuration or CLI
+  // parser and defaults fail-closed in every packaged build.
+  bool allow_uncredentialed_fixture_database = false;
   std::string database_ownership_owner_kind = "server";
   bool embedded_direct_mode = false;
   bool listener_native_enabled = false;
   std::string listener_native_bind_host = "127.0.0.1";
-  std::uint64_t listener_native_port = 3050;
+  std::uint64_t listener_native_port = 3092;
   std::filesystem::path listener_native_executable_path;
   std::filesystem::path listener_native_parser_executable_path;
   std::filesystem::path listener_native_control_dir;
@@ -133,6 +136,22 @@ struct ServerConfigLoadResult {
   bool ok() const { return diagnostics.empty(); }
 };
 
+struct ServerPackagedResourceRoots {
+  std::filesystem::path resource_seed_pack_root;
+  std::filesystem::path policy_seed_pack_root;
+};
+
+struct ServerConfigResolutionContext {
+  std::filesystem::path executable_path;
+  std::filesystem::path current_directory;
+  bool include_environment = true;
+  bool include_system_paths = true;
+  // Empty selects the host defaults. Tests and embedders may provide an
+  // ordered root set so platform precedence is exercised without depending
+  // on the machine running the test.
+  std::vector<std::filesystem::path> system_config_roots;
+};
+
 struct ServerConfigCompatibilityResult {
   bool accepted = false;
   bool migration_required = false;
@@ -151,6 +170,19 @@ ServerConfigCompatibilityResult ClassifyServerConfigFormat(
 std::string ServerDatabaseRuntimeScopeId(const std::filesystem::path& database_path);
 scratchbird::core::memory::MemoryPolicyConfigResolveResult ResolveServerMemoryAllocationPolicy(
     const ServerBootstrapConfig& config);
+ServerPackagedResourceRoots DiscoverServerPackagedResourceRoots(
+    const std::filesystem::path& executable_path,
+    const std::filesystem::path& current_directory);
+std::optional<std::filesystem::path> DiscoverServerConfigPath(
+    const ServerCliOptions& cli,
+    const ServerConfigResolutionContext& context);
+std::filesystem::path ResolveServerConfigRelativePath(
+    const std::filesystem::path& value,
+    const std::filesystem::path& config_path,
+    const ServerConfigResolutionContext& context);
+ServerConfigLoadResult ResolveServerBootstrapConfig(
+    const ServerCliOptions& cli,
+    const ServerConfigResolutionContext& context);
 ServerConfigLoadResult ResolveServerBootstrapConfig(const ServerCliOptions& cli);
 
 }  // namespace scratchbird::server

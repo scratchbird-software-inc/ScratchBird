@@ -19,7 +19,7 @@ Use MSYS2 UCRT64 with GNU C++ and gcc 15. Install or provide:
 - mingw-w64-ucrt-x86_64-proj
 - mingw-w64-ucrt-x86_64-gtest
 - odbc32
-- LLVM 23+
+- LLVM 23+, or LLVM 22 on GitHub-hosted MSYS2 UCRT64 proof runners
 - clang-tidy
 - cppcheck
 - MSVC warnings-as-errors
@@ -53,3 +53,9 @@ Native Platform Handoff Proof Package:
 
 cluster execution succeeds without the external cluster provider only after
 native public release evidence passes.
+
+Dynamic LLVM is a mandatory installed runtime. The release build embeds only
+the configured LLVM DLL basename. Native staging explicitly copies that DLL
+from the MSYS2 UCRT64 runtime and recursively closes its non-system imports;
+the ZIP/MSI verifier fails if the declared LLVM DLL is absent. Testers do not
+need a separate LLVM installation for the packaged Windows build.

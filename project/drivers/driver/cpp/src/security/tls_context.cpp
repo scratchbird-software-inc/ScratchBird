@@ -114,6 +114,30 @@ static TLSVersion sslVersionToTLS(int version) {
     }
 }
 
+static std::string normalizeIpAddressLiteral(std::string identity) {
+    if (identity.size() >= 2 && identity.front() == '[' && identity.back() == ']') {
+        identity = identity.substr(1, identity.size() - 2);
+    }
+    const auto zone = identity.find('%');
+    if (zone != std::string::npos && identity.find(':') != std::string::npos) {
+        identity.erase(zone);
+    }
+    return identity;
+}
+
+bool isIpAddressLiteral(const std::string& identity) {
+    const std::string normalized = normalizeIpAddressLiteral(identity);
+    if (normalized.empty()) {
+        return false;
+    }
+    in_addr ipv4{};
+    if (inet_pton(AF_INET, normalized.c_str(), &ipv4) == 1) {
+        return true;
+    }
+    in6_addr ipv6{};
+    return inet_pton(AF_INET6, normalized.c_str(), &ipv6) == 1;
+}
+
 // ============================================================================
 // OpenSSL Error Helpers
 // ============================================================================
@@ -211,6 +235,21 @@ core::Status TLSClientConfig::validate(core::ErrorContext* ctx) const {
     // If verify_server is true, need CA
     if (verify_server && ca_file.empty() && ca_path.empty() && !use_system_ca) {
         if (ctx) ctx->message = "CA file/path or system CA required for server verification";
+        return core::Status::INVALID_ARGUMENT;
+    }
+
+    if (verify_identity && !verify_server) {
+        if (ctx) ctx->message = "Server identity verification requires certificate verification";
+        return core::Status::INVALID_ARGUMENT;
+    }
+
+    if (verify_identity && expected_hostname.empty()) {
+        if (ctx) ctx->message = "Expected server DNS name or IP address required for identity verification";
+        return core::Status::INVALID_ARGUMENT;
+    }
+
+    if (expected_hostname.find('\0') != std::string::npos) {
+        if (ctx) ctx->message = "Expected server identity contains an embedded NUL";
         return core::Status::INVALID_ARGUMENT;
     }
 
@@ -783,6 +822,34 @@ core::Status TLSContext::initClient(const TLSClientConfig& config, core::ErrorCo
             status = loadCA(config.ca_file, config.ca_path, ctx);
             if (status != core::Status::OK) {
                 return status;
+            }
+        }
+
+        if (config.verify_identity) {
+            X509_VERIFY_PARAM* verify_params = SSL_CTX_get0_param(ctx_);
+            if (verify_params == nullptr) {
+                if (ctx) ctx->message = "Failed to access TLS peer verification parameters";
+                return core::Status::INTERNAL_ERROR;
+            }
+
+            int identity_configured = 0;
+            if (isIpAddressLiteral(config.expected_hostname)) {
+                const std::string address = normalizeIpAddressLiteral(config.expected_hostname);
+                identity_configured =
+                    X509_VERIFY_PARAM_set1_ip_asc(verify_params, address.c_str());
+            } else {
+                X509_VERIFY_PARAM_set_hostflags(
+                    verify_params, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+                identity_configured = X509_VERIFY_PARAM_set1_host(
+                    verify_params,
+                    config.expected_hostname.c_str(),
+                    config.expected_hostname.size());
+            }
+            if (identity_configured != 1) {
+                if (ctx) {
+                    ctx->message = "Failed to configure TLS server identity verification";
+                }
+                return core::Status::INVALID_ARGUMENT;
             }
         }
     } else {

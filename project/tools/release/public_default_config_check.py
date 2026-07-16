@@ -48,6 +48,7 @@ REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
         'bool embedded_direct_mode = false',
         'bool listener_native_enabled = false',
         'std::string listener_native_bind_host = "127.0.0.1"',
+        "std::uint64_t listener_native_port = 3092",
         'bool listener_native_tls_required = true',
         'std::string memory_policy_name = "default_local_server_memory_cache_v1"',
         "memory_min_startup_available_bytes",
@@ -68,6 +69,57 @@ REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
         "ApplyDefaultMemoryPolicyFromPolicyPack",
         "config->allow_current_directory = false",
         'config->log_file = "/var/log/scratchbird/sb_server.log"',
+        '"SBsrv.conf", "sb_server.conf"',
+        '"CONFIG.FILE_REQUIRED"',
+        '"CONFIG.CURRENT_DIRECTORY_FORBIDDEN"',
+        "ResolveServerConfigRelativePathImpl",
+        '"installed_file"',
+        '"/opt/ScratchBird/share/scratchbird/resources/seed-packs/initial-resource-pack"',
+    ),
+    "project/src/server/listener_orchestrator.cpp": (
+        '"--protocol-family=sbsql"',
+        '"--parser-package=SBParser"',
+        '"--dialect-profile-uuid=sbsql.v3"',
+        '"--bundle-contract-id=sbp_sbsql@1"',
+        '"--dbbt-key-source=keyring"',
+        '"--allow-test-dbbt-builtin=false"',
+        'SiblingExecutable("SBParser")',
+        '"SCRATCHBIRD_LISTENER_DBBT_KEY_HEX"',
+        '"LISTENER.DBBT.KEYRING_KEY_MISSING"',
+    ),
+    "project/src/server/listener_orchestrator.hpp": (
+        'std::string parser_package_ref = "SBParser"',
+        "std::uint64_t port = 3092",
+    ),
+    "project/src/listener/listener_config.hpp": (
+        "std::uint16_t port{3092}",
+    ),
+    "project/src/listener/dbbt_lpreface.cpp": (
+        "out->bytes.size() < 32",
+        '"LISTENER.DBBT.KEYRING_KEY_INVALID"',
+    ),
+    "project/src/manager/node/manager_runtime.hpp": (
+        "bool proxy_enabled = false",
+        'std::string bind_address = "127.0.0.1"',
+        "std::uint16_t proxy_port = 3092",
+        "bool proxy_tls_required = true",
+        "std::uint16_t native_port = 0",
+    ),
+    "project/src/manager/node/manager_runtime.cpp": (
+        '"SBmgr.conf", "sbmn_manager.conf"',
+        "DiscoverDefaultManagerConfigPath",
+        "ResolveManagerConfigRelativePathImpl",
+        '"MANAGER.CONFIG_REQUIRED"',
+        '"MANAGER.PROXY_BACKEND_REQUIRED"',
+        '"MANAGER.PROXY_BACKEND_PORT_CONFLICT"',
+        "if (!config_.proxy_enabled || !config_.proxy_tls_required) return true",
+    ),
+    "project/config/templates/SBmgr.conf": (
+        "manager.proxy.enabled = false",
+        "manager.proxy.bind = 127.0.0.1",
+        "manager.proxy.port = 3092",
+        "manager.proxy.tls_required = true",
+        "manager.backend.native_port = 0",
     ),
     "project/src/server/lifecycle.cpp": (
         "HasPrivatePermissions",
@@ -92,6 +144,43 @@ REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
         "SERVER.RUNTIME.DIRECTORY_VALIDATION_FAILED",
         "SERVER.RUNTIME.PID_FILE_INVALID",
         "default_local_server_memory_cache_v1",
+    ),
+}
+
+FORBIDDEN_TOKENS: dict[str, tuple[str, ...]] = {
+    "project/src/server/listener_orchestrator.cpp": (
+        '"--protocol-family=native"',
+        '"--parser-package=sbp_native"',
+        'SiblingExecutable("sbp_native")',
+        '"--parser-package-uuid=builtin-test-package"',
+        '"--dbbt-key-source=test_builtin"',
+        '"--allow-test-dbbt-builtin=true"',
+        "scratchbird-listener-test-dbbt-key-v1",
+    ),
+    "project/src/server/listener_orchestrator.hpp": (
+        "builtin_test_package",
+    ),
+    "project/src/server/config.hpp": (
+        "listener_native_port = 3050",
+    ),
+    "project/src/listener/listener_config.hpp": (
+        "port{3050}",
+    ),
+    "project/src/manager/node/manager_runtime.hpp": (
+        "proxy_port = 3050",
+        "native_port = 3050",
+        "proxy_port = 3090",
+        "native_port = 3092",
+        "native_port = 3392",
+    ),
+    "project/config/templates/SBmgr.conf": (
+        "manager.proxy.port = 3050",
+        "manager.proxy.port = 3090",
+        "manager.proxy.port = 3392",
+        "manager.backend.native_port = 3050",
+        "manager.backend.native_port = 3090",
+        "manager.backend.native_port = 3092",
+        "manager.backend.native_port = 3392",
     ),
 }
 
@@ -153,6 +242,20 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 "token_count": len(tokens),
                 "sha256": sha256_text(text),
                 "status": "secure_default_tokens_present",
+            }
+        )
+    for path_text, tokens in FORBIDDEN_TOKENS.items():
+        reject_private_reference(path_text, "forbidden_check_path")
+        text = require_file(repo_root, path_text)
+        for token in tokens:
+            if token in text:
+                fail(f"{path_text}_forbidden:{token}")
+        checks.append(
+            {
+                "path": path_text,
+                "forbidden_token_count": len(tokens),
+                "sha256": sha256_text(text),
+                "status": "insecure_native_bootstrap_tokens_absent",
             }
         )
 

@@ -31,8 +31,12 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
+            ninja-build \
             python3 \
             python3-pip \
+            clang-tidy-18 \
+            cppcheck \
+            g++-mingw-w64-x86-64 \
             wget \
             gnupg \
             lsb-release \
@@ -62,16 +66,77 @@ jobs:
         working-directory: project
         run: cmake --preset public-release-linux
 
+      - name: Record LLVM version and configured runtime resolution
+        working-directory: project
+        run: |
+          set -euo pipefail
+          llvm_config="$(command -v llvm-config-23)"
+          llvm_version="$("$llvm_config" --version)"
+          llvm_major="${llvm_version%%.*}"
+          test "$llvm_major" -ge 23
+          llvm_cmake_dir="$("$llvm_config" --cmakedir)"
+          test -d "$llvm_cmake_dir"
+
+          cache="../build/public-release-linux/CMakeCache.txt"
+          test -f "$cache"
+          cache_value() {
+            local key="$1"
+            local line
+            line="$(grep -E "^${key}:[^=]+=" "$cache" | tail -n 1 || true)"
+            if [ -z "$line" ]; then
+              echo "Missing configured LLVM evidence key: $key" >&2
+              return 1
+            fi
+            printf '%s\n' "${line#*=}"
+          }
+          configured_llvm_dir="$(cache_value LLVM_DIR)"
+          configured_library="$(cache_value SB_LLVM_LIBRARY)"
+          configured_runtime="$(cache_value SB_LLVM_RUNTIME_LIBRARY_RESOLVED)"
+          configured_delivery="$(cache_value SB_LLVM_RUNTIME_DELIVERY)"
+          configured_minimum="$(cache_value SB_LLVM_MIN_MAJOR)"
+          test -d "$configured_llvm_dir"
+          test -f "$configured_library"
+          test "$configured_minimum" -ge 23
+          test "$configured_delivery" = system-package
+          [[ "$configured_runtime" =~ ^libLLVM(-[0-9]+)?[.]so([.][0-9]+)*$ ]]
+          [[ "$configured_runtime" != */* ]]
+
+          {
+            echo "### Linux LLVM release configuration"
+            echo
+            echo "- llvm-config: \`$llvm_config\`"
+            echo "- LLVM version: \`$llvm_version\`"
+            echo "- LLVM CMake package: \`$configured_llvm_dir\`"
+            echo "- Configured build library: \`$configured_library\`"
+            echo "- Installed runtime reference: \`$configured_runtime\`"
+            echo "- Runtime delivery: \`$configured_delivery\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build
         working-directory: project
         run: cmake --build --preset public-release-linux
 
       - name: CTest
         working-directory: project
-        run: ctest --preset public-release-linux
+        run: |
+          status=0
+          ctest --preset public-release-linux -L public_release_correctness || status=1
+          ctest --preset public-release-linux -L engine_listener_enterprise || status=1
+          exit "$status"
 
       - name: Verify staged public bundle
         run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-linux/output/linux
+
+      - name: Stage and verify native-only SB bundle
+        run: |
+          python3 project/tools/release/stage_native_release_bundle.py \
+            --source-root build/public-release-linux/output/linux \
+            --output-root build/native-release-linux/output/linux \
+            --platform linux
+          python3 project/tools/release/verify_public_release_bundle.py build/native-release-linux/output/linux
+          python3 project/tools/release/verify_native_release_bundle.py \
+            build/native-release-linux/output/linux --platform linux
+          cmake -E remove_directory build/public-release-linux/output/linux
 
       - name: Upload Linux staged output
         uses: actions/upload-artifact@v4
@@ -79,7 +144,7 @@ jobs:
         with:
           name: scratchbird-linux-public-output
           path: |
-            build/public-release-linux/output/linux
+            build/native-release-linux/output/linux
             build/public-release-linux/Testing
           if-no-files-found: warn
           retention-days: 14

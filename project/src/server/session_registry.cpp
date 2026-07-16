@@ -690,6 +690,11 @@ engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
     record.security_epoch = state.security_epoch;
     state.grants.push_back(std::move(record));
   }
+  const auto sysarch_identity =
+      engine_api::ResolveEngineOwnedSysarchRoleIdentity(context);
+  if (sysarch_identity.ok) {
+    state.engine_owned_sysarch_role_uuid.canonical = sysarch_identity.role_uuid;
+  }
   return state;
 }
 
@@ -846,8 +851,7 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
   }
 
   const auto durable = MaterializeDurableAuthorizationForSession(session, context);
-  if (durable.ok &&
-      (!durable.context.grants.empty() || durable.context.effective_subjects.size() > 1)) {
+  if (durable.ok) {
     auto durable_context = durable.context;
     durable_context.evidence_tags.push_back(
         "server.session.durable_authorization_context");
@@ -861,6 +865,11 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
 
   for (const auto& tag : session.engine_authorization_trace_tags) {
     authorization.evidence_tags.push_back(tag);
+    const bool fixture_authority =
+        context.trust_mode == engine_api::EngineTrustMode::embedded_in_process &&
+        engine_api::SecurityContextHasTag(
+            context, "security.fixture_trace_authority");
+    if (!fixture_authority) continue;
     if (StartsWith(tag, "deny:")) {
       AddMaterializedSessionGrant(&authorization,
                                   authorization.principal_uuid,
@@ -873,9 +882,12 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
                                   false);
     }
   }
+  authorization.present = true;
   if (!authorization.grants.empty()) {
-    authorization.present = true;
     authorization.evidence_tags.push_back("server.session.materialized_authorization_context");
+  } else {
+    authorization.evidence_tags.push_back(
+        "server.session.authorization_trace_tags_not_authority");
   }
   return authorization;
 }

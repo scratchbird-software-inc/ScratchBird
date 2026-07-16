@@ -271,11 +271,12 @@ void ProductionTraceTagsAreNotAuthorization() {
 void ExplicitBootstrapAndFixtureFallbackAreFenced() {
   const FixtureIds ids;
   auto bootstrap = BaseContext(ids);
-  bootstrap.trace_tags = {"security.bootstrap"};
-  Require(api::SecurityTraceAuthorizationFallbackAllowed(bootstrap),
-          "bootstrap fallback was not explicit");
-  Require(api::SecurityContextHasRight(bootstrap, "SELECT", ids.table.canonical),
-          "bootstrap context did not authorize helper route");
+  bootstrap.trace_tags = {"security.bootstrap", "group:ROOT", "role:ROOT",
+                          "right:SELECT"};
+  Require(!api::SecurityTraceAuthorizationFallbackAllowed(bootstrap),
+          "bootstrap/name tags enabled production trace fallback");
+  Require(!api::SecurityContextHasRight(bootstrap, "SELECT", ids.table.canonical),
+          "bootstrap/name tags authorized helper route");
 
   auto embedded_without_fixture = BaseContext(ids);
   embedded_without_fixture.trust_mode = api::EngineTrustMode::embedded_in_process;

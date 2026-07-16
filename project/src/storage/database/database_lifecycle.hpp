@@ -36,6 +36,8 @@ using scratchbird::core::platform::u64;
 using scratchbird::storage::disk::DatabaseHeader;
 
 inline constexpr u64 kDatabaseHeaderPageNumber = 0;
+inline constexpr const char* kCanonicalSysarchRoleObjectUuid =
+    "018f7a10-1280-7000-8000-000000000105";
 
 struct DatabaseCreateConfig {
   std::string path;
@@ -51,6 +53,13 @@ struct DatabaseCreateConfig {
   bool allow_minimal_resource_bootstrap = false;
   std::string policy_seed_pack_root;
   bool require_policy_seed_pack = false;
+  std::string bootstrap_principal_name;
+  std::string bootstrap_credential_fingerprint;
+  bool require_bootstrap_principal = false;
+  // Fixture-only escape hatch. Production create callers must provide a
+  // credentialed bootstrap principal when require_bootstrap_principal is set.
+  bool allow_uncredentialed_bootstrap = false;
+  std::string create_fault_injection_point;
   bool allow_overwrite = false;
 };
 
@@ -117,6 +126,34 @@ enum class DatabaseLifecyclePhase : u16 {
   dropped,
   quarantined,
   failed
+};
+
+enum class DatabaseCreateFinalityClass : u16 {
+  not_published,
+  committed,
+  committed_with_warning
+};
+
+struct DatabaseBootstrapSecurityCatalogState {
+  bool present = false;
+  bool committed_by_inventory = false;
+  TypedUuid principal_uuid;
+  std::string principal_name;
+  std::string credential_fingerprint;
+  TypedUuid sysarch_role_uuid;
+  TypedUuid membership_uuid;
+  u64 creator_tx = 0;
+  u32 policy_generation = 0;
+};
+
+struct DatabaseBootstrapSecurityCatalogReadResult {
+  Status status;
+  DatabaseBootstrapSecurityCatalogState state;
+  DiagnosticRecord diagnostic;
+
+  bool ok() const {
+    return status.ok();
+  }
 };
 
 enum class DatabaseOpenCompatibilityClass : u16 {
@@ -235,6 +272,11 @@ struct DatabaseLifecycleResult {
   Status status;
   DatabaseLifecycleState state;
   DiagnosticRecord diagnostic;
+  DatabaseCreateFinalityClass create_finality =
+      DatabaseCreateFinalityClass::not_published;
+  TypedUuid bootstrap_principal_uuid;
+  TypedUuid bootstrap_sysarch_role_uuid;
+  TypedUuid bootstrap_membership_uuid;
 
   bool ok() const {
     return status.ok();
@@ -297,6 +339,8 @@ DatabaseOpenCompatibilityClass ClassifyDatabaseOpenCompatibility(
     const std::string& migration_plan_id = {});
 PolicySeedPackDescriptor DefaultPolicyPackDescriptor();
 DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config);
+DatabaseBootstrapSecurityCatalogReadResult ReadDatabaseBootstrapSecurityCatalog(
+    const std::string& path);
 DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config);
 DatabaseLifecycleResult EnterDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);
 DatabaseLifecycleResult ExitDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);

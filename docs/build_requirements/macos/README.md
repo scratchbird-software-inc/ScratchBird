@@ -35,8 +35,14 @@ Install or provide:
 
 Native proof contract:
 
+Homebrew LLVM is a mandatory external runtime prerequisite for the current QA
+package. Install it with `brew install llvm`. The QA build and package manifest
+record `$(brew --prefix llvm)/lib/libLLVM.dylib`; LLVM is not bundled in the
+tarball or PKG. This limitation applies to both x86_64 and arm64 packages and
+to the universal QA bundle.
+
 ```sh
-cmake -S project -B build-macos-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic -DSB_LLVM_MIN_MAJOR=22 -DSB_PUBLIC_TARGET_PLATFORM=macos
+cmake -S project -B build-macos-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic -DSB_LLVM_LIBRARY="$(brew --prefix llvm)/lib/libLLVM.dylib" -DSB_LLVM_RUNTIME_LIBRARY="$(brew --prefix llvm)/lib/libLLVM.dylib" -DSB_LLVM_MIN_MAJOR=22 -DSB_PUBLIC_TARGET_PLATFORM=macos
 cmake --build build-macos-public-release-proof -j2
 ctest --test-dir build-macos-public-release-proof -L public_release_correctness --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
 ctest --test-dir build-macos-public-release-proof -L engine_listener_enterprise --output-on-failure -LE "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
@@ -51,7 +57,9 @@ auditable.
 Installer proof contract:
 
 ```sh
-python3 project/tools/installers/build_installers.py --platform macos --artifact-root build/public-release-macos/output/macos --output-root build/installers/macos --version 0.0.0-nightly
+python3 project/tools/release/stage_native_release_bundle.py --source-root build/public-release-macos/output/macos --output-root build/native-release-macos/output/macos --platform macos
+python3 project/tools/release/verify_native_release_bundle.py build/native-release-macos/output/macos --platform macos
+python3 project/tools/installers/build_installers.py --platform macos --artifact-root build/native-release-macos/output/macos --output-root build/installers/macos --version 0.0.0-nightly --require-native-only
 python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root build/installers/macos
 project/tools/installers/smoke_install_macos.sh build/installers/macos/scratchbird-macos-0.0.0-nightly.tar.gz build/install-smoke/macos-tar
 project/tools/installers/smoke_install_macos.sh build/installers/macos/scratchbird-macos-0.0.0-nightly.pkg build/install-smoke/macos-pkg

@@ -22,7 +22,11 @@ output/linux/
   STANDALONE_OUTPUT_MANIFEST.json
 ```
 
-Every path used in configuration files shipped with the output — such as `bin/SBgate` in `SBsrv.conf` — is relative to this root. An operator who relocates the tree should update those paths accordingly, or run the processes from the output root so that relative paths resolve correctly.
+Every relative path used in configuration files shipped with the output — such
+as `bin/SBgate` in `SBsrv.conf` — is relative to this installation root when the
+executable is under `bin/`. Resolution does not depend on the shell's current
+directory. An operator who changes the layout should update the paths
+accordingly.
 
 ## Binaries
 
@@ -41,11 +45,11 @@ Each binary is named by its public brand (`sb_public_brand_target` in `CMakeList
 
 ### Shared Library
 
-`lib/libSBcore.so` (on Linux) is the ScratchBird engine shared library. Applications that embed the engine directly link against this library rather than running SBsrv. The library's public brand name is `SBcore`; the static variant is `SBcore_static` and is not placed in the staged output.
+`lib/libSBcore.so` (on Linux) is the ScratchBird engine shared library. Applications that embed the engine directly link against this library rather than running SBsrv. The library's public brand name is `SBcore`; the native release also includes the platform's `SBcore_static` archive.
 
 ### Command-Line Utilities
 
-Five administrative utilities are placed in `bin/`:
+Six administrative utilities are placed in `bin/`:
 
 | Binary | Internal Target | Role |
 | --- | --- | --- |
@@ -68,14 +72,13 @@ The `etc/scratchbird/` directory contains configuration templates for every serv
 | `SBgate.conf` | Listener (SBgate) |
 | `SBmgr.conf` | Single-node manager (SBmgr) |
 | `SBParser.conf` | Core parser (SBParser) |
-| `SB_PGSQL_Parser.conf` | PostgreSQL-compatibility parser worker |
-| `SB_MYSQL_Parser.conf` | MySQL-compatibility parser worker |
-| `SB_MARIADB_Parser.conf` | MariaDB-compatibility parser worker |
-| `SB_SQLITE_Parser.conf` | SQLite-compatibility parser worker |
-| `SB_FBSQL_Parser.conf` | Firebird-compatibility parser worker |
-| `SB_DUCKDB_Parser.conf`, `SB_CLICKHOUSE_Parser.conf`, ... | Additional dialect workers |
+| `SBbootstrap.profile` | Platform identity profile template for explicit embedded database bootstrap |
 
-The full set of parser templates corresponds to the set of compatibility parser-worker build options available in `CMakeLists.txt`. Not all parser workers are built by default; their configuration templates are installed regardless so that operators can prepare for future enablement.
+The native bundle contains exactly these five files and only the standalone
+SBsql parser. Compatibility parser workers and their configuration templates
+are separate profile or add-on artifacts; the native bundle does not install
+them in anticipation of later enablement. Each selected dialect runs as its own
+standalone parser process behind the shared `SBgate` executable.
 
 See [Configuration Reference](configuration_reference.md) for the contents and keys of each file.
 
@@ -107,7 +110,7 @@ The staged output does **not** contain a `runtime/` directory. Runtime directori
 | Configuration | `etc/scratchbird/` | Copy and edit for deployment; do not edit in place |
 | Resources | `share/scratchbird/resources/` | Do not modify; must match the binary version |
 | Runtime sockets and PID files | Configured paths, not in output tree | Created by processes at startup |
-| Database files | Configured `data_dir`, not in output tree | Created by the engine when a database is first opened |
+| Database files | Configured data path, not in output tree | Created only by an explicit approved embedded `SBsec bootstrap` operation before service startup |
 | Log files | Configured `log_file`, not in output tree | Defaults to stderr |
 
 ## Verifying the Output
@@ -115,7 +118,7 @@ The staged output does **not** contain a `runtime/` directory. Runtime directori
 Before using a staged output for the first time, confirm that:
 
 1. All expected binaries are present in `bin/` and are executable.
-2. All four service configuration templates are present in `etc/scratchbird/`.
+2. Exactly the five native configuration files are present in `etc/scratchbird/`: `SBsrv.conf`, `SBgate.conf`, `SBmgr.conf`, `SBParser.conf`, and `SBbootstrap.profile`.
 3. The `share/scratchbird/resources/` tree is present and non-empty.
 4. The `STANDALONE_OUTPUT_MANIFEST.json` is readable.
 

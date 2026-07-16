@@ -245,6 +245,13 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
   auto config = Config("shared");
   config.database_default_path = path;
   config.database_auto_create = false;
+  const auto refused = scratchbird::server::StartHostedEngine(config);
+  Require(!refused.ok() && !refused.diagnostics.empty() &&
+              refused.diagnostics.front().code ==
+                  "BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE",
+          "DBLC-013E public server accepted an uncredentialed fixture database");
+
+  config.allow_uncredentialed_fixture_database = true;
   const auto hosted = scratchbird::server::StartHostedEngine(config);
   if (!hosted.ok()) {
     for (const auto& diagnostic : hosted.diagnostics) {
