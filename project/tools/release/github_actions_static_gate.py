@@ -376,6 +376,24 @@ def check_native_release_stage(
             )
     if require_installer:
         require_token(block, "--require-native-only", rel)
+        if platform == "windows":
+            installer_block = workflow_step_block(
+                block, "Build installers", rel, job_name
+            )
+            wix_path_bridge = (
+                'export PATH="$(cygpath -u "$USERPROFILE")/.dotnet/tools:$PATH"'
+            )
+            wix_path_probe = "command -v wix"
+            for token in (wix_path_bridge, wix_path_probe):
+                require_token(installer_block, token, rel)
+            builder = "python project/tools/installers/build_installers.py"
+            require_token(installer_block, builder, rel)
+            if not (
+                installer_block.index(wix_path_bridge)
+                < installer_block.index(wix_path_probe)
+                < installer_block.index(builder)
+            ):
+                fail(f"windows_wix_path_bridge_order_invalid:{rel}:{job_name}")
         if not retain_native_proof_artifacts:
             require_token(
                 block,

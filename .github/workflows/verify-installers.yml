@@ -334,6 +334,8 @@ jobs:
 
       - name: Build installers
         run: |
+          export PATH="$(cygpath -u "$USERPROFILE")/.dotnet/tools:$PATH"
+          command -v wix
           python project/tools/installers/build_installers.py \
             --platform windows \
             --artifact-root build/native-release-windows/output/windows \
