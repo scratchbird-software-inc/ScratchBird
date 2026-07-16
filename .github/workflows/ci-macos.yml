@@ -309,6 +309,11 @@ jobs:
           python3 project/tools/release/verify_public_release_bundle.py build/native-release-macos/output/macos
           python3 project/tools/release/verify_native_release_bundle.py \
             build/native-release-macos/output/macos --platform macos
+          mkdir -p build/bootstrap-probes
+          cp build/public-release-macos/output/macos/bin/sb_bootstrap_os_authority_tests \
+            build/bootstrap-probes/sb_bootstrap_os_authority_tests-${{ matrix.arch }}
+          chmod 0755 \
+            build/bootstrap-probes/sb_bootstrap_os_authority_tests-${{ matrix.arch }}
           cmake -E remove_directory build/public-release-macos/output/macos
 
       - name: Build macOS installers
@@ -491,6 +496,12 @@ jobs:
               if state.get(key) != value:
                   raise SystemExit(f"macos_system_state_mismatch:{key}")
           PY
+          authority_probe="$GITHUB_WORKSPACE/build/bootstrap-probes/sb_bootstrap_os_authority_tests-${{ matrix.arch }}"
+          sudo "$authority_probe" --verify-installed-service-identity \
+            "/Library/Application Support/ScratchBird/SBbootstrap.profile" \
+            | tee "$proof_root/bootstrap-os-authority.txt"
+          grep -Fx 'installed_service_identity_assumption=passed' \
+            "$proof_root/bootstrap-os-authority.txt"
           service_shell="$(sudo dscl . -read /Users/scratchbird UserShell | awk 'NR == 1 { print $2 }')"
           service_home="$(sudo dscl . -read /Users/scratchbird NFSHomeDirectory | awk 'NR == 1 { print $2 }')"
           service_hidden="$(sudo dscl . -read /Users/scratchbird IsHidden | awk 'NR == 1 { print $2 }')"
@@ -514,6 +525,7 @@ jobs:
             echo "service_home=$service_home"
             echo "service_hidden=$service_hidden"
             echo "host_user_group_admission=not_performed"
+            echo "bootstrap_authority_identity_drop=passed"
             echo "launchd_default_state=disabled_not_loaded"
           } > "$proof_root/macos-system-identity.txt"
 

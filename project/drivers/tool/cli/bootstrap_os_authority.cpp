@@ -4,10 +4,12 @@
 #include "bootstrap_os_authority.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -318,10 +320,17 @@ bool GrantServiceIdentityAccess(const std::wstring& path,
 
 #else
 
+#ifdef __APPLE__
+constexpr std::array<std::uint64_t, 2> kMacOsImplicitServiceGroupIds = {
+    kMacOsImplicitEveryoneGroupId,
+    kMacOsImplicitLocalAccountsGroupId,
+};
+#endif
+
 std::vector<std::uint64_t> PlatformImplicitServiceGroupAllowlist() {
 #ifdef __APPLE__
-  return {kMacOsImplicitEveryoneGroupId,
-          kMacOsImplicitLocalAccountsGroupId};
+  return std::vector<std::uint64_t>(kMacOsImplicitServiceGroupIds.begin(),
+                                    kMacOsImplicitServiceGroupIds.end());
 #else
   return {};
 #endif
@@ -331,11 +340,31 @@ bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
                                            gid_t primary_group,
                                            gid_t required_group) {
   if (primary_group != required_group) return false;
+#ifdef __APPLE__
+  if (static_cast<std::uint64_t>(primary_group) >
+      static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+    return false;
+  }
+  using GroupListId = int;
+  const GroupListId group_list_primary = static_cast<int>(primary_group);
+  // Darwin returns success without updating the count when the group buffer is
+  // null.  Supply enough space for the configured group plus the two implicit
+  // macOS groups accepted by the least-authority contract.  A larger inventory
+  // returns -1 and is rejected below rather than being truncated.
+  constexpr std::size_t kMaximumAcceptedGroupCount =
+      1 + kMacOsImplicitServiceGroupIds.size();
+  int count = static_cast<int>(kMaximumAcceptedGroupCount);
+  std::array<GroupListId, kMaximumAcceptedGroupCount> groups{};
+#else
+  using GroupListId = gid_t;
+  const GroupListId group_list_primary = primary_group;
   int count = 0;
-  (void)getgrouplist(identity.c_str(), primary_group, nullptr, &count);
+  (void)getgrouplist(identity.c_str(), group_list_primary, nullptr, &count);
   if (count <= 0) return false;
-  std::vector<gid_t> groups(static_cast<std::size_t>(count));
-  if (getgrouplist(identity.c_str(), primary_group, groups.data(), &count) < 0) {
+  std::vector<GroupListId> groups(static_cast<std::size_t>(count));
+#endif
+  if (getgrouplist(identity.c_str(), group_list_primary, groups.data(),
+                   &count) < 0) {
     return false;
   }
   if (count <= 0 || static_cast<std::size_t>(count) > groups.size()) {
@@ -345,6 +374,9 @@ bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
   resolved_group_ids.reserve(static_cast<std::size_t>(count) + 1);
   resolved_group_ids.push_back(static_cast<std::uint64_t>(primary_group));
   for (int index = 0; index < count; ++index) {
+#ifdef __APPLE__
+    if (groups[static_cast<std::size_t>(index)] < 0) return false;
+#endif
     resolved_group_ids.push_back(
         static_cast<std::uint64_t>(groups[static_cast<std::size_t>(index)]));
   }

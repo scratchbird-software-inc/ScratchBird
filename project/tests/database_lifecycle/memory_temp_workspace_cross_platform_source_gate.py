@@ -37,6 +37,19 @@ def main() -> None:
         "BCryptGenRandom": text,
         "bcrypt": cmake_text,
         "CreateFileW": text,
+        "GetFullPathNameW": text,
+        "kWindowsExtendedPathPrefix": text,
+        "kWindowsExtendedUncPathPrefix": text,
+        "kWindowsDevicePathPrefix": text,
+        "IsWindowsDriveAbsolutePath": text,
+        "IsWindowsUncPath": text,
+        "PlatformFilesystemPath": text,
+        "const auto path_wide = WidePath(path);": text,
+        "const auto parent_wide = WidePath(parent);": text,
+        "const auto temp_wide = WidePath(temp_path);": text,
+        "const auto target_wide = WidePath(target_path);": text,
+        "const auto root_wide = WidePath(root_path);": text,
+        "const auto file_wide = WidePath(file_path);": text,
         "FILE_ATTRIBUTE_REPARSE_POINT": text,
         "SetFileInformationByHandle": text,
         "arc4random_buf": text,
@@ -54,6 +67,16 @@ def main() -> None:
             "MMCH-043 still has unsupported-platform secure tempfile fallback")
     require("secure random source is not wired for this platform" not in text,
             "MMCH-043 still has unwired secure-random fallback")
+    require("CreateFileW(path.wstring().c_str()" not in text,
+            "MMCH-043 direct CreateFileW path bypasses extended-path normalization")
+    require("MoveFileExW(temp_path.wstring().c_str()" not in text,
+            "MMCH-043 direct MoveFileExW path bypasses extended-path normalization")
+    require("CreateFileW(parent.wstring().c_str()" not in text,
+            "MMCH-043 parent-directory durable sync bypasses extended-path normalization")
+    require("GetFileAttributesW(root_path.wstring().c_str()" not in text,
+            "MMCH-043 root inspection bypasses extended-path normalization")
+    require("DeleteFileW(file_path.wstring().c_str()" not in text,
+            "MMCH-043 cleanup bypasses extended-path normalization")
 
     print("MMCH-043 source gate passed")
 

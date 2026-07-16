@@ -9,6 +9,10 @@
 #include <iostream>
 #include <string>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace {
 
 std::string Platform() {
@@ -49,9 +53,54 @@ void Write(const std::filesystem::path& path, const std::string& body) {
   out << body;
 }
 
+int VerifyInstalledServiceIdentity(const std::string& profile_path) {
+#ifdef _WIN32
+  (void)profile_path;
+  std::cerr << "installed service identity probe is POSIX-only\n";
+  return EXIT_FAILURE;
+#else
+  if (geteuid() != 0) {
+    std::cerr << "installed service identity probe requires root\n";
+    return EXIT_FAILURE;
+  }
+  const auto loaded =
+      scratchbird::cli::LoadBootstrapPlatformProfile(profile_path);
+  if (!loaded.ok) {
+    std::cerr << "installed service identity profile was rejected\n";
+    return EXIT_FAILURE;
+  }
+  const auto assumed =
+      scratchbird::cli::VerifyAndAssumeBootstrapServiceIdentity(loaded.profile);
+  if (!assumed.ok || !assumed.service_identity_assumed ||
+      !assumed.ownership_handoff_ready || geteuid() == 0 || getegid() == 0 ||
+      assumed.service_identity != "scratchbird" ||
+      assumed.service_group != "scratchbird") {
+    std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
+    return EXIT_FAILURE;
+  }
+  if (setgid(0) == 0 || setuid(0) == 0 || geteuid() == 0 || getegid() == 0) {
+    std::cerr << "service identity regained OS bootstrap authority\n";
+    return EXIT_FAILURE;
+  }
+  std::cout << "installed_service_identity_assumption=passed\n";
+  std::cout << "effective_user=scratchbird\n";
+  std::cout << "effective_group=scratchbird\n";
+  std::cout << "bootstrap_authority_regain=refused\n";
+  return EXIT_SUCCESS;
+#endif
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 3 &&
+      std::string(argv[1]) == "--verify-installed-service-identity") {
+    return VerifyInstalledServiceIdentity(argv[2]);
+  }
+  if (argc != 1) {
+    std::cerr << "unsupported bootstrap authority test arguments\n";
+    return EXIT_FAILURE;
+  }
   const auto root = std::filesystem::temp_directory_path() /
                     "scratchbird-bootstrap-os-authority-test";
   std::error_code ignored;

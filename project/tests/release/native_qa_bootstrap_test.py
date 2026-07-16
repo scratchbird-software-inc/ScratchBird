@@ -218,7 +218,12 @@ class NativeQaBootstrapTest(unittest.TestCase):
         command[group_index] = "DOMAIN\\scratchbird-qa-testers"
         result = self.run_command(command)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("service_group_invalid", result.stdout)
+        expected = (
+            "windows_local_scratchbird_group_required"
+            if os.name == "nt"
+            else "service_group_invalid"
+        )
+        self.assertIn(expected, result.stdout)
 
     def test_windows_managed_service_identity_contract_is_exact(self) -> None:
         accepted = self.helper.validate_service_authority(

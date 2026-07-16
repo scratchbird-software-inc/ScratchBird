@@ -437,7 +437,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       false));
   Require(!raw_mismatch.ok &&
               HasDiagnosticDetail(raw_mismatch, "credential_verifier_mismatch"),
-          "raw local-password mismatch was accepted");
+          "durable verifier mismatch was accepted");
 
   const auto raw_good = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,

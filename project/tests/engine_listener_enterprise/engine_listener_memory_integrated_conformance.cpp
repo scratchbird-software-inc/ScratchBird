@@ -269,6 +269,13 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
                                        &ledger);
   const auto spill = spill_arena.Grant(GrantRequest(
       memory::QueryMemoryFamily::document, 1024, true, "spill_grant"));
+  if (!spill.ok()) {
+    std::string detail = spill.diagnostic.diagnostic_code;
+    for (const auto& argument : spill.diagnostic.arguments) {
+      detail += ";" + argument.key + "=" + argument.value;
+    }
+    Fail("ELER-050 spillable query grant failed: " + detail);
+  }
   Require(spill.ok() && spill.grant.has_value() && spill.grant->spilled,
           "ELER-050 spillable query grant was not routed to temp workspace");
   Require(ledger.Snapshot().current_bytes == 1024 &&
