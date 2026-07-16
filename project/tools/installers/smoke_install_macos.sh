@@ -62,17 +62,21 @@ case "$package" in
         (cd "$payload_root" && cpio -idm --quiet) < "$payload_file"
       fi
     fi
-    scripts_file="$(find "$work_root/pkg-expanded" -name Scripts -type f | head -n 1)"
-    [[ -n "$scripts_file" ]] || fail "pkg_scripts_missing"
-    pkg_scripts_root="$work_root/pkg-scripts"
-    mkdir -p "$pkg_scripts_root"
-    if command -v ditto >/dev/null 2>&1; then
-      ditto -x "$scripts_file" "$pkg_scripts_root"
+    scripts_path="$(find "$work_root/pkg-expanded" -name Scripts \( -type d -o -type f \) | head -n 1)"
+    [[ -n "$scripts_path" ]] || fail "pkg_scripts_missing"
+    if [[ -d "$scripts_path" ]]; then
+      pkg_scripts_root="$scripts_path"
     else
-      if gzip -t "$scripts_file" >/dev/null 2>&1; then
-        gzip -dc "$scripts_file" | (cd "$pkg_scripts_root" && cpio -idm --quiet)
+      pkg_scripts_root="$work_root/pkg-scripts"
+      mkdir -p "$pkg_scripts_root"
+      if command -v ditto >/dev/null 2>&1; then
+        ditto -x "$scripts_path" "$pkg_scripts_root"
       else
-        (cd "$pkg_scripts_root" && cpio -idm --quiet) < "$scripts_file"
+        if gzip -t "$scripts_path" >/dev/null 2>&1; then
+          gzip -dc "$scripts_path" | (cd "$pkg_scripts_root" && cpio -idm --quiet)
+        else
+          (cd "$pkg_scripts_root" && cpio -idm --quiet) < "$scripts_path"
+        fi
       fi
     fi
     postinstall_script="$(find "$pkg_scripts_root" -name postinstall -type f | head -n 1)"

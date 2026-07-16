@@ -502,6 +502,89 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("portable_launchd_root_forbidden", smoke)
         self.assertIn("execution_mode=foreground_only", smoke)
 
+    @unittest.skipUnless(
+        os.name != "nt" and shutil.which("bash"), "bash is not installed"
+    )
+    def test_macos_pkg_smoke_accepts_both_scripts_representations(self) -> None:
+        fake_bin = self.root / "fake-macos-tools"
+        fake_bin.mkdir()
+        fake_uname = fake_bin / "uname"
+        fake_uname.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\necho Darwin\n",
+            encoding="utf-8",
+        )
+        fake_pkgutil = fake_bin / "pkgutil"
+        fake_pkgutil.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+test "${1:-}" = --expand
+expanded="${3:?expanded package root is required}"
+mkdir -p "$expanded"
+: > "$expanded/Payload"
+case "${SB_TEST_PKG_SCRIPTS_REPRESENTATION:?}" in
+  directory)
+    mkdir -p "$expanded/Scripts"
+    printf '%s\\n' '#!/bin/sh' \\
+      '/opt/ScratchBird/libexec/scratchbird-macos-system-install post-install' \\
+      > "$expanded/Scripts/postinstall"
+    ;;
+  archive)
+    : > "$expanded/Scripts"
+    printf '%s\\n' '#!/bin/sh' \\
+      '/opt/ScratchBird/libexec/scratchbird-macos-system-install post-install' \\
+      > "$expanded/Scripts.postinstall"
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        fake_ditto = fake_bin / "ditto"
+        fake_ditto.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+test "${1:-}" = -x
+source_path="${2:?source is required}"
+target_path="${3:?target is required}"
+mkdir -p "$target_path"
+if [[ "$(basename "$source_path")" = Scripts ]]; then
+  cp "$source_path.postinstall" "$target_path/postinstall"
+fi
+""",
+            encoding="utf-8",
+        )
+        for executable in (fake_uname, fake_pkgutil, fake_ditto):
+            executable.chmod(0o755)
+
+        package = self.root / "scratchbird-fixture.pkg"
+        package.touch()
+        smoke = REPO_ROOT / "project/tools/installers/smoke_install_macos.sh"
+        for representation in ("directory", "archive"):
+            work_root = self.root / f"macos-pkg-smoke-{representation}"
+            environment = os.environ.copy()
+            environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+            environment["SB_TEST_PKG_SCRIPTS_REPRESENTATION"] = representation
+            result = subprocess.run(
+                ["bash", str(smoke), str(package), str(work_root)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("smoke_install_macos=fail:runtime_bin_missing", result.stdout)
+            self.assertNotIn("pkg_scripts_missing", result.stdout)
+            self.assertNotIn("pkg_postinstall_missing", result.stdout)
+            postinstall = (
+                work_root / "pkg-expanded/Scripts/postinstall"
+                if representation == "directory"
+                else work_root / "pkg-scripts/postinstall"
+            )
+            self.assertTrue(postinstall.is_file(), result.stdout)
+
     def test_linux_system_payload_materializes_runtime_and_identity(self) -> None:
         builder_path = REPO_ROOT / "project/tools/installers/build_installers.py"
         builder_spec = importlib.util.spec_from_file_location(
