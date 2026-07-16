@@ -33,6 +33,25 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def native_config_fixture(name: str, marker: str) -> bytes:
+    tokens = native.REQUIRED_CONFIG_TOKENS[name]
+    if name == "SBsrv.conf":
+        section_tokens = {
+            "server.security": tokens[0:2],
+            "server.database": tokens[2:3],
+            "server.listener.native": tokens[3:6],
+            "server.memory": tokens[6:7],
+        }
+        body = "\n".join(
+            line
+            for section, section_values in section_tokens.items()
+            for line in (f"[{section}]", *section_values)
+        )
+    else:
+        body = "\n".join(tokens)
+    return f"# {marker}:{name}\n{body}\n".encode()
+
+
 def native_profile(
     platform: str,
     *,
@@ -226,9 +245,7 @@ def native_archive(
         **libraries,
         **runtime_files,
         **{
-            f"etc/scratchbird/{name}": (
-                f"# {marker}:{name}\n" + "\n".join(native.REQUIRED_CONFIG_TOKENS[name]) + "\n"
-            ).encode()
+            f"etc/scratchbird/{name}": native_config_fixture(name, marker)
             for name in native.NATIVE_CONFIGS
         },
         **{
