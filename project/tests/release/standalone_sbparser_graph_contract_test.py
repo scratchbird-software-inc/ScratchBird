@@ -139,22 +139,30 @@ def synthetic_project(
         "add_library(sb_core_datatypes INTERFACE)",
         "add_library(sb_core_uuid INTERFACE)",
         "add_library(allowed_mid INTERFACE)",
-        "target_link_libraries(allowed_mid INTERFACE "
-        "sbl_parser_server_ipc_schema sbl_listener_control_plane "
-        "sb_core_datatypes sb_core_uuid)",
+        (
+            "target_link_libraries(allowed_mid INTERFACE "
+            + "sbl_parser_server_ipc_schema sbl_listener_control_plane "
+            + "sb_core_datatypes sb_core_uuid)"
+        ),
         "add_library(sbl_sbsql_parser_pipeline INTERFACE)",
-        "target_link_libraries(sbl_sbsql_parser_pipeline INTERFACE "
-        "sbl_parser_server_ipc_schema)",
+        (
+            "target_link_libraries(sbl_sbsql_parser_pipeline INTERFACE "
+            + "sbl_parser_server_ipc_schema)"
+        ),
         "add_library(sbl_sbsql_parser_worker_core INTERFACE)",
-        "target_link_libraries(sbl_sbsql_parser_worker_core INTERFACE "
-        "sbl_sbsql_parser_pipeline allowed_mid)",
+        (
+            "target_link_libraries(sbl_sbsql_parser_worker_core INTERFACE "
+            + "sbl_sbsql_parser_pipeline allowed_mid)"
+        ),
         "add_library(sbp_sbsql INTERFACE)",
     ]
     if forbidden_target is None:
         lines.extend(
             (
-                "target_link_libraries(sbp_sbsql INTERFACE "
-                "sbl_sbsql_parser_worker_core)",
+                (
+                    "target_link_libraries(sbp_sbsql INTERFACE "
+                    + "sbl_sbsql_parser_worker_core)"
+                ),
                 "sbsql_assert_standalone_parser_link_closure(sbp_sbsql)",
             )
         )
@@ -172,8 +180,10 @@ def synthetic_project(
         )
     lines.extend(
         (
-            "target_link_libraries(sbp_sbsql INTERFACE "
-            "sbl_sbsql_parser_worker_core)",
+            (
+                "target_link_libraries(sbp_sbsql INTERFACE "
+                + "sbl_sbsql_parser_worker_core)"
+            ),
             "sbsql_assert_standalone_parser_link_closure(sbp_sbsql)",
         )
     )
