@@ -175,15 +175,71 @@ function Assert-InstalledWindowsSystem {
     throw "Windows system install evidence is invalid"
   }
 
-  foreach ($configName in @("SBsrv.conf", "SBgate.conf", "SBmgr.conf")) {
+  $configRoot = Join-Path $stateRoot "config"
+  $runtimeValue = $runtimeRoot.Replace("\", "/")
+  $stateValue = $stateRoot.Replace("\", "/")
+  $expectedConfigTokens = @{
+    "SBsrv.conf" = @(
+      "data_dir = $stateValue/run/sb_server",
+      "control_dir = $stateValue/run/sb_server/control",
+      "log_file = $stateValue/log/SBsrv.log",
+      "default_path = $stateValue/data/default.sbdb",
+      "executable_path = $runtimeValue/bin/SBgate.exe",
+      "parser_executable_path = $runtimeValue/bin/SBParser.exe",
+      "control_dir = $stateValue/run/listener/control",
+      "runtime_dir = $stateValue/run/listener/runtime",
+      "sbps_endpoint = $stateValue/run/sb_server/control/sb_server.sbps.sock",
+      "port = 3092"
+    )
+    "SBgate.conf" = @(
+      "parser_executable = $runtimeValue/bin/SBParser.exe",
+      "server_endpoint = $stateValue/run/sb_server/control/sb_server.sbps.sock",
+      "control_dir = $stateValue/run/listener/control",
+      "runtime_dir = $stateValue/run/listener/runtime",
+      "port = 3092"
+    )
+    "SBmgr.conf" = @(
+      "manager.runtime_dir = $stateValue/run/manager/runtime",
+      "manager.control_dir = $stateValue/run/manager/control",
+      "manager.log.path = $stateValue/log/SBmgr.log",
+      "manager.owner.database_path = $stateValue/data/default.sbdb",
+      "manager.proxy.port = 3092",
+      "manager.backend.native_port = 0"
+    )
+    "SBParser.conf" = @(
+      "parser.family = sbsql",
+      "parser.worker_binary = $runtimeValue/bin/SBParser.exe",
+      "parser.execution.engine_transport = sbps_ipc_only",
+      "parser.execution.direct_engine_link = forbidden",
+      "parser.execution.cross_parser_dependency = forbidden"
+    )
+    "SBbootstrap.profile" = @(
+      "platform = windows",
+      'service_identity = NT SERVICE\scratchbird',
+      "service_group = ScratchBird"
+    )
+  }
+  foreach ($configName in $expectedConfigTokens.Keys) {
     $configPath = Join-Path $stateRoot "config\$configName"
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
       throw "installed configuration missing: $configName"
     }
     $configText = Get-Content -LiteralPath $configPath -Raw
-    if ($configText.Contains("3050") -or -not $configText.Contains("3092")) {
-      throw "native port contract failed: $configName"
+    foreach ($token in $expectedConfigTokens[$configName]) {
+      if (-not $configText.Contains($token)) {
+        throw "installed configuration token missing: $configName $token"
+      }
     }
+    if ($configText -match '(?i)@SCRATCHBIRD_|operator_required|compatibility|emulation|firebird|mysql|postgres') {
+      throw "installed configuration contains a forbidden marker: $configName"
+    }
+  }
+  python project/tools/release/verify_native_installed_payload.py `
+    $runtimeRoot `
+    --config-root $configRoot `
+    --config-mode system-installed
+  if ($LASTEXITCODE -ne 0) {
+    throw "installed native system verification failed: $LASTEXITCODE"
   }
   Assert-NoInstallerDatabaseArtifacts $stateRoot
   return @{
@@ -233,7 +289,15 @@ if (-not $binDir) {
   throw "missing ScratchBird bin directory"
 }
 
-python project/tools/release/verify_native_installed_payload.py $payloadRoot
+if ($isMsi) {
+  $configDefaults = Join-Path $binDir.Parent.FullName "share\scratchbird\config-defaults"
+  python project/tools/release/verify_native_installed_payload.py `
+    $payloadRoot `
+    --config-root $configDefaults `
+    --config-mode system-defaults
+} else {
+  python project/tools/release/verify_native_installed_payload.py $payloadRoot
+}
 if ($LASTEXITCODE -ne 0) {
   throw "native installed payload verification failed: $LASTEXITCODE"
 }

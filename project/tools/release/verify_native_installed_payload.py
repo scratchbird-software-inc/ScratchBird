@@ -9,9 +9,49 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 import stage_native_release_bundle as native
+
+SYSTEM_CONFIG_FORBIDDEN_MARKERS = (
+    "compatibility",
+    "emulation",
+    "firebird",
+    "mysql",
+    "postgres",
+)
+PORTABLE_SYSTEM_REWRITE_TOKENS = {
+    "SBsrv.conf": (
+        "data_dir = runtime/data",
+        "control_dir = runtime/control",
+        "log_file = stderr",
+        "default_path = data/default.sbdb",
+        "executable_path = bin/SBgate",
+        "parser_executable_path = bin/SBParser",
+        "control_dir = runtime/listener/control",
+        "runtime_dir = runtime/listener/runtime",
+        "sbps_endpoint = runtime/control/sb_server.sbps.sock",
+    ),
+    "SBgate.conf": (
+        "parser_executable = bin/SBParser",
+        "server_endpoint = runtime/control/sb_server.sbps.sock",
+        "control_dir = runtime/listener/control",
+        "runtime_dir = runtime/listener/runtime",
+    ),
+    "SBmgr.conf": (
+        "manager.runtime_dir = runtime/manager/runtime",
+        "manager.control_dir = runtime/manager/control",
+        "manager.log.path = stderr",
+        "manager.owner.database_path = data/default.sbdb",
+    ),
+    "SBParser.conf": ("parser.worker_binary = bin/SBParser",),
+    "SBbootstrap.profile": (
+        "platform = operator_required",
+        "service_identity = operator_required",
+        "service_group = operator_required",
+    ),
+}
 
 
 def fail(message: str) -> None:
@@ -36,6 +76,129 @@ def regular_names(root: Path) -> set[str]:
     return names
 
 
+def unique_tokens(tokens: list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(tokens))
+
+
+def system_config_tokens(
+    platform: str,
+    mode: str,
+    runtime_root: Path,
+    config_root: Path,
+) -> dict[str, tuple[str, ...]]:
+    if mode == "system-defaults":
+        if platform != "windows":
+            fail(f"system_defaults_platform_invalid:{platform}")
+        install_root = "@SCRATCHBIRD_INSTALL_ROOT@"
+        state_root = "@SCRATCHBIRD_STATE_ROOT@"
+        executable_suffix = ".exe"
+    elif mode == "system-installed":
+        if platform == "windows":
+            install_root = runtime_root.as_posix()
+            state_root = config_root.parent.as_posix()
+            executable_suffix = ".exe"
+        else:
+            install_root = "/opt/ScratchBird"
+            state_root = ""
+            executable_suffix = ""
+    else:
+        fail(f"system_config_mode_invalid:{mode}")
+
+    if platform == "linux":
+        run_root = "/run/scratchbird"
+        data_root = "/var/lib/scratchbird"
+        log_root = "/var/log/scratchbird"
+        server_runtime = f"{run_root}/runtime"
+        server_control = f"{run_root}/control"
+    elif platform == "macos":
+        run_root = "/var/run/scratchbird"
+        data_root = "/var/lib/scratchbird"
+        log_root = "/var/log/scratchbird"
+        server_runtime = f"{run_root}/sb_server"
+        server_control = f"{run_root}/sb_server/control"
+    elif platform == "windows":
+        run_root = f"{state_root}/run"
+        data_root = state_root
+        log_root = f"{state_root}/log"
+        server_runtime = f"{run_root}/sb_server"
+        server_control = f"{run_root}/sb_server/control"
+    else:
+        fail(f"system_config_platform_invalid:{platform}")
+
+    parser = f"{install_root}/bin/SBParser{executable_suffix}"
+    return {
+        "SBsrv.conf": (
+            f"data_dir = {server_runtime}",
+            f"control_dir = {server_control}",
+            f"log_file = {log_root}/SBsrv.log",
+            f"default_path = {data_root}/data/default.sbdb",
+            f"executable_path = {install_root}/bin/SBgate{executable_suffix}",
+            f"parser_executable_path = {parser}",
+            f"control_dir = {run_root}/listener/control",
+            f"runtime_dir = {run_root}/listener/runtime",
+            f"sbps_endpoint = {server_control}/sb_server.sbps.sock",
+        ),
+        "SBgate.conf": (
+            f"parser_executable = {parser}",
+            f"server_endpoint = {server_control}/sb_server.sbps.sock",
+            f"control_dir = {run_root}/listener/control",
+            f"runtime_dir = {run_root}/listener/runtime",
+        ),
+        "SBmgr.conf": (
+            f"manager.runtime_dir = {run_root}/manager/runtime",
+            f"manager.control_dir = {run_root}/manager/control",
+            f"manager.log.path = {log_root}/SBmgr.log",
+            f"manager.owner.database_path = {data_root}/data/default.sbdb",
+        ),
+        "SBParser.conf": (f"parser.worker_binary = {parser}",),
+        "SBbootstrap.profile": (
+            f"platform = {platform}",
+            "service_identity = "
+            + (r"NT SERVICE\scratchbird" if platform == "windows" else "scratchbird"),
+            "service_group = "
+            + ("ScratchBird" if platform == "windows" else "scratchbird"),
+        ),
+    }
+
+
+def require_system_configs(
+    config_root: Path,
+    platform: str,
+    runtime_root: Path,
+    mode: str,
+) -> None:
+    system_tokens = system_config_tokens(platform, mode, runtime_root, config_root)
+    required: dict[str, tuple[str, ...]] = {}
+    forbidden: dict[str, tuple[str, ...]] = {}
+    for file_name, portable_tokens in native.REQUIRED_CONFIG_TOKENS.items():
+        rewritten_tokens = PORTABLE_SYSTEM_REWRITE_TOKENS[file_name]
+        path = native.require_regular_file(
+            config_root / file_name, f"system_config:{file_name}"
+        )
+        text = path.read_text(encoding="utf-8").casefold()
+        for marker in SYSTEM_CONFIG_FORBIDDEN_MARKERS:
+            if marker in text:
+                fail(f"system_config_forbidden_marker:{file_name}:{marker}")
+        placeholders = set(re.findall(r"@[A-Z0-9_]+@", text.upper()))
+        if mode == "system-defaults" and placeholders - {
+            "@SCRATCHBIRD_INSTALL_ROOT@",
+            "@SCRATCHBIRD_STATE_ROOT@",
+        }:
+            fail(f"system_config_unknown_placeholder:{file_name}")
+        if mode == "system-installed" and placeholders:
+            fail(f"system_config_unresolved_placeholder:{file_name}")
+        required[file_name] = unique_tokens(
+            [token for token in portable_tokens if token not in rewritten_tokens]
+            + list(system_tokens[file_name])
+        )
+        forbidden[file_name] = rewritten_tokens
+    native.require_native_configs(
+        config_root,
+        required_tokens=required,
+        forbidden_tokens=forbidden,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("payload_root", type=Path)
@@ -51,7 +214,21 @@ def main() -> int:
             "pristine defaults outside the portable /etc layout."
         ),
     )
+    parser.add_argument(
+        "--config-mode",
+        choices=("portable", "system-defaults", "system-installed"),
+        default="portable",
+        help=(
+            "Configuration layout contract. Portable mode uses packaged relative "
+            "paths; system-defaults permits only Windows MSI materialization "
+            "placeholders; system-installed requires final absolute paths."
+        ),
+    )
     args = parser.parse_args()
+    if args.config_mode == "portable" and args.config_root is not None:
+        fail("portable_config_root_must_be_implicit")
+    if args.config_mode != "portable" and args.config_root is None:
+        fail(f"explicit_config_root_required:{args.config_mode}")
     payload_root = args.payload_root.resolve()
     profiles = list(payload_root.rglob("NATIVE_RELEASE_PROFILE.json"))
     profile_path = exactly_one(profiles, "native_profile")
@@ -169,7 +346,15 @@ def main() -> int:
             f"installed_config_set_mismatch:missing={sorted(expected_configs - actual_configs)}:"
             f"unexpected={sorted(actual_configs - expected_configs)}"
         )
-    native.require_native_configs(config_root)
+    if args.config_mode == "portable":
+        native.require_native_configs(config_root)
+    else:
+        require_system_configs(
+            config_root,
+            platform,
+            runtime_root,
+            args.config_mode,
+        )
     print(f"verify_native_installed_payload=passed:{runtime_root}")
     return 0
 

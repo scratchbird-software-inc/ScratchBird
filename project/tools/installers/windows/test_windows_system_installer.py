@@ -468,6 +468,21 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn(
             "service_local_sam_group_membership = $false", lifecycle
         )
+        smoke = (
+            REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
+        ).read_text(encoding="utf-8")
+        installed_block = smoke[
+            smoke.index("function Assert-InstalledWindowsSystem") :
+            smoke.index("if (Test-Path $WorkRoot)")
+        ]
+        self.assertIn("--config-mode system-installed", installed_block)
+        for config_name in installers.WINDOWS_NATIVE_CONFIGS:
+            self.assertIn(f'"{config_name}"', installed_block)
+        defaults_block = smoke[
+            smoke.index("$configDefaults =") : smoke.index("$savedPath =")
+        ]
+        self.assertIn("--config-mode system-defaults", defaults_block)
+        self.assertNotIn("--config-mode system-installed", defaults_block)
 
 
 if __name__ == "__main__":

@@ -154,6 +154,31 @@ def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> 
             fail(f"macos_real128_dependency_missing:{rel}:{job_name}:{label}")
 
 
+def check_macos_system_installed_verifier(
+    text: str,
+    rel: str,
+    job_name: str,
+    step_name: str,
+) -> None:
+    job = workflow_job_block(text, job_name, rel)
+    step = workflow_step_block(job, step_name, rel, job_name)
+    smoke = "project/tools/installers/smoke_install_macos.sh"
+    installer = "sudo installer -pkg"
+    verifier = "project/tools/release/verify_native_installed_payload.py"
+    mode = "--config-mode system-installed"
+    for token in (smoke, installer, verifier, mode):
+        require_token(step, token, rel)
+    verifier_offset = step.index(verifier)
+    mode_offset = step.find(mode, verifier_offset)
+    if not (
+        step.index(smoke)
+        < step.index(installer)
+        < verifier_offset
+        < mode_offset
+    ):
+        fail(f"macos_system_verifier_order_invalid:{rel}:{job_name}")
+
+
 def check_ctest_label_contract(
     text: str,
     rel: str,
@@ -426,6 +451,12 @@ def main() -> int:
             require_token(text, token, name)
         if name == "ci-macos.yml":
             check_macos_real128_build_dependency(text, name, "public-release-macos")
+            check_macos_system_installed_verifier(
+                text,
+                name,
+                "public-release-macos",
+                "Smoke macOS system package install and cleanup",
+            )
             check_native_release_stage(
                 text,
                 name,
@@ -448,6 +479,12 @@ def main() -> int:
             )
         elif name == "verify-installers.yml":
             check_macos_real128_build_dependency(text, name, "macos-installers")
+            check_macos_system_installed_verifier(
+                text,
+                name,
+                "macos-installers",
+                "Smoke system package install and cleanup",
+            )
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")
             check_ctest_label_contract(

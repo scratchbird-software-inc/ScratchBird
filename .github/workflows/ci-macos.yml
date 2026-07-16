@@ -451,6 +451,7 @@ jobs:
           python3 project/tools/release/verify_native_installed_payload.py \
             /opt/ScratchBird \
             --config-root "/Library/Application Support/ScratchBird" \
+            --config-mode system-installed \
             --expected-architecture "${{ matrix.arch }}"
           python3 - /Library/LaunchDaemons <<'PY'
           import pathlib

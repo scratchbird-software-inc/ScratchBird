@@ -414,8 +414,19 @@ def validate_policy_pack(policy_root: Path) -> int:
     return len(rows)
 
 
-def require_native_configs(config_root: Path) -> None:
-    for file_name, tokens in REQUIRED_CONFIG_TOKENS.items():
+def require_native_configs(
+    config_root: Path,
+    *,
+    required_tokens: dict[str, tuple[str, ...]] | None = None,
+    forbidden_tokens: dict[str, tuple[str, ...]] | None = None,
+) -> None:
+    required = REQUIRED_CONFIG_TOKENS if required_tokens is None else required_tokens
+    forbidden = {} if forbidden_tokens is None else forbidden_tokens
+    if set(required) != set(REQUIRED_CONFIG_TOKENS):
+        fail("native_config_required_token_file_set_mismatch")
+    if set(forbidden) - set(REQUIRED_CONFIG_TOKENS):
+        fail("native_config_forbidden_token_file_set_mismatch")
+    for file_name, tokens in required.items():
         path = require_regular_file(config_root / file_name, f"native_config:{file_name}")
         text = path.read_text(encoding="utf-8")
         if re.search(
@@ -433,6 +444,9 @@ def require_native_configs(config_root: Path) -> None:
         for token in tokens:
             if token not in text:
                 fail(f"native_config_token_missing:{file_name}:{token}")
+        for token in forbidden.get(file_name, ()):
+            if token in text:
+                fail(f"native_config_forbidden_token:{file_name}:{token}")
         if any(marker in text for marker in EMBEDDED_TLS_MARKERS):
             fail(f"native_config_embedded_tls_material_forbidden:{file_name}")
 

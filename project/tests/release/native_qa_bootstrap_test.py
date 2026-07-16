@@ -501,6 +501,16 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("portable_launchd_manifest_forbidden", smoke)
         self.assertIn("portable_launchd_root_forbidden", smoke)
         self.assertIn("execution_mode=foreground_only", smoke)
+        self.assertIn(
+            '"$runtime_root" --config-root "$config_root" '
+            "--config-mode system-installed",
+            smoke,
+        )
+        self.assertNotIn(
+            '"$payload_root" --config-root "$config_root" '
+            "--config-mode system-installed",
+            smoke,
+        )
 
     @unittest.skipUnless(
         os.name != "nt" and shutil.which("bash"), "bash is not installed"
@@ -694,6 +704,170 @@ fi
             portable / "etc/scratchbird/SBParser.conf"
         ).read_text(encoding="utf-8")
         self.assertIn("parser.worker_binary = bin/SBParser", portable_parser)
+
+    def test_system_config_verifier_uses_platform_installer_contracts(self) -> None:
+        builder_path = REPO_ROOT / "project/tools/installers/build_installers.py"
+        builder_spec = importlib.util.spec_from_file_location(
+            "sb_build_installers_system_contract_test", builder_path
+        )
+        self.assertIsNotNone(builder_spec)
+        self.assertIsNotNone(builder_spec.loader if builder_spec else None)
+        builder = importlib.util.module_from_spec(builder_spec)
+        assert builder_spec is not None and builder_spec.loader is not None
+        builder_spec.loader.exec_module(builder)
+
+        release_tools = REPO_ROOT / "project/tools/release"
+        sys.path.insert(0, str(release_tools))
+        try:
+            verifier_path = release_tools / "verify_native_installed_payload.py"
+            verifier_spec = importlib.util.spec_from_file_location(
+                "sb_verify_native_system_contract_test", verifier_path
+            )
+            self.assertIsNotNone(verifier_spec)
+            self.assertIsNotNone(verifier_spec.loader if verifier_spec else None)
+            verifier = importlib.util.module_from_spec(verifier_spec)
+            assert verifier_spec is not None and verifier_spec.loader is not None
+            verifier_spec.loader.exec_module(verifier)
+        finally:
+            sys.path.remove(str(release_tools))
+
+        templates = REPO_ROOT / "project/config/templates"
+
+        def portable_fixture(name: str) -> Path:
+            portable = self.root / f"{name}-portable"
+            (portable / "opt/ScratchBird/bin").mkdir(parents=True)
+            (portable / "opt/ScratchBird/lib").mkdir()
+            (portable / "opt/ScratchBird/share").mkdir()
+            config = portable / "etc/scratchbird"
+            config.mkdir(parents=True)
+            for config_name in self.helper.CONFIG_NAMES:
+                shutil.copy2(templates / config_name, config / config_name)
+            return portable
+
+        linux_system = self.root / "linux-system-contract"
+        builder.stage_linux_system_install_tree(
+            portable_fixture("linux"), linux_system, "0.0.0-test", "contract-test"
+        )
+        verifier.require_system_configs(
+            linux_system / "etc/scratchbird",
+            "linux",
+            linux_system / "opt/ScratchBird",
+            "system-installed",
+        )
+
+        macos_system = self.root / "macos-system-contract"
+        builder.stage_macos_system_install_tree(
+            portable_fixture("macos"), macos_system, "0.0.0-test", "contract-test"
+        )
+        macos_config = (
+            macos_system
+            / "opt/ScratchBird/share/scratchbird/config-defaults"
+        )
+        verifier.require_system_configs(
+            macos_config,
+            "macos",
+            macos_system / "opt/ScratchBird",
+            "system-installed",
+        )
+
+        windows_defaults = self.root / "windows-system-contract"
+        builder.stage_windows_system_install_tree(
+            portable_fixture("windows"),
+            windows_defaults,
+            "0.0.0-test",
+            "contract-test",
+        )
+        windows_defaults_config = (
+            windows_defaults / "share/scratchbird/config-defaults"
+        )
+        verifier.require_system_configs(
+            windows_defaults_config,
+            "windows",
+            windows_defaults,
+            "system-defaults",
+        )
+        defaults_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(windows_defaults_config.iterdir())
+        )
+        self.assertIn("@SCRATCHBIRD_INSTALL_ROOT@/bin/SBParser.exe", defaults_text)
+        self.assertIn("@SCRATCHBIRD_STATE_ROOT@/data/default.sbdb", defaults_text)
+
+        windows_runtime = self.root / "windows-installed/Program Files/ScratchBird"
+        windows_state = self.root / "windows-installed/ProgramData/ScratchBird"
+        windows_config = windows_state / "config"
+        windows_config.mkdir(parents=True)
+        install_value = windows_runtime.as_posix()
+        state_value = windows_state.as_posix()
+        for source in windows_defaults_config.iterdir():
+            text = source.read_text(encoding="utf-8")
+            text = text.replace("@SCRATCHBIRD_INSTALL_ROOT@", install_value)
+            text = text.replace("@SCRATCHBIRD_STATE_ROOT@", state_value)
+            (windows_config / source.name).write_text(text, encoding="utf-8")
+        verifier.require_system_configs(
+            windows_config,
+            "windows",
+            windows_runtime,
+            "system-installed",
+        )
+        windows_parser = (windows_config / "SBParser.conf").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            f"parser.worker_binary = {install_value}/bin/SBParser.exe",
+            windows_parser,
+        )
+
+        parser_path = macos_config / "SBParser.conf"
+        valid_parser = parser_path.read_text(encoding="utf-8")
+        invalid_variants = {
+            "portable_parser_path": valid_parser.replace(
+                "/opt/ScratchBird/bin/SBParser", "bin/SBParser", 1
+            ),
+            "compatibility_assignment": (
+                valid_parser + "\nparser.compatibility.enabled = true\n"
+            ),
+            "emulation_assignment": (
+                valid_parser + "\nparser.emulation.enabled = true\n"
+            ),
+            "unresolved_system_placeholder": (
+                valid_parser + "\nparser.state_root = @SCRATCHBIRD_STATE_ROOT@\n"
+            ),
+            "unknown_system_placeholder": (
+                valid_parser + "\nparser.state_root = @OTHER_ROOT@\n"
+            ),
+        }
+        for label, invalid_text in invalid_variants.items():
+            with self.subTest(rejection=label):
+                parser_path.write_text(invalid_text, encoding="utf-8")
+                with (
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    verifier.require_system_configs(
+                        macos_config,
+                        "macos",
+                        macos_system / "opt/ScratchBird",
+                        "system-installed",
+                    )
+        parser_path.write_text(valid_parser, encoding="utf-8")
+
+        server_path = macos_config / "SBsrv.conf"
+        valid_server = server_path.read_text(encoding="utf-8")
+        server_path.write_text(
+            valid_server.replace("port = 3092", "port = 3050", 1),
+            encoding="utf-8",
+        )
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            verifier.require_system_configs(
+                macos_config,
+                "macos",
+                macos_system / "opt/ScratchBird",
+                "system-installed",
+            )
 
 
 def main() -> int:

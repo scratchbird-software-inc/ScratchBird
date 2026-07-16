@@ -119,8 +119,13 @@ fi
 [[ -f "$runtime_root/share/scratchbird/release/NATIVE_RELEASE_PROFILE.json" ]] || fail "native_release_profile_missing"
 [[ -f "$runtime_root/share/scratchbird/release/MACOS_SUPPORT_MATRIX.json" ]] || fail "macos_support_matrix_missing"
 
-python3 "$(dirname "$0")/../release/verify_native_installed_payload.py" \
-  "$payload_root" --config-root "$config_root"
+if [[ "$package_kind" == "system-pkg" ]]; then
+  python3 "$(dirname "$0")/../release/verify_native_installed_payload.py" \
+    "$runtime_root" --config-root "$config_root" --config-mode system-installed
+else
+  python3 "$(dirname "$0")/../release/verify_native_installed_payload.py" \
+    "$payload_root"
+fi
 
 if [[ "$package_kind" == "system-pkg" ]]; then
   [[ ! -e "$payload_root/etc/scratchbird" ]] || fail "pkg_duplicate_etc_config_root"
