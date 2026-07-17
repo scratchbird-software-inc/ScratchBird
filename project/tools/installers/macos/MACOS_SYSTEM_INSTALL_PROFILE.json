@@ -80,14 +80,17 @@
     "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
     "service_administrator_group_membership": "forbidden",
     "service_administrator_membership_validation": "direct local record, direct nested-group GUID, and transitive dseditgroup checkmember must all deny membership",
-    "service_explicit_supplementary_group_membership": "forbidden_except_scratchbird",
+    "service_explicit_supplementary_group_membership": "forbidden",
     "service_group_group_members": "exact_service_user_generated_uid_only",
     "service_group_group_membership": "exact_scratchbird_user_only",
     "service_group_nested_groups": "forbidden_and_verified_empty",
-    "service_resolved_effective_group_set": "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",
+    "service_resolved_effective_group_set": "host_computed_directory_groups_not_copied_into_service_process",
     "service_group_nested_in_other_local_group": "forbidden",
-    "service_implicit_baseline_groups": "macos_computed_everyone_and_localaccounts_are_not_explicit_membership",
+    "service_implicit_baseline_groups": "macos_host_computed_directory_groups_are_not_installer_membership",
     "service_hidden": true,
+    "service_password_record": "literal_asterisk_lock",
+    "service_authentication_authority": "absent",
+    "service_shadow_hash_data": "absent",
     "service_login": "forbidden",
     "service_user": "scratchbird",
     "uid_policy": {
@@ -104,6 +107,7 @@
   "service": {
     "default_activity": "not_started",
     "default_enablement": "disabled",
+    "launchd_init_groups": false,
     "launchd_labels": [
       "com.scratchbird.sbsrv",
       "com.scratchbird.sbmgr"

@@ -50,6 +50,9 @@ SERVICE_AUTHORITY_SCOPE = (
     "filesystem_directory_and_process_execution_only_"
     "no_database_or_security_authority"
 )
+MACOS_SERVICE_PROCESS_GROUP_POLICY = (
+    "host_computed_directory_groups_not_copied_into_service_process"
+)
 
 
 def fail(message: str) -> None:
@@ -240,6 +243,8 @@ def main() -> int:
                     fail("macos_system_package_evidence_database_creation")
                 if sidecar_data.get("security_sidecars_created") is not False:
                     fail("macos_system_package_evidence_security_sidecar_creation")
+                if sidecar_data.get("service", {}).get("launchd_init_groups") is not False:
+                    fail("macos_system_launchd_init_groups_not_disabled")
                 identity = sidecar_data.get("os_identity")
                 if (
                     not isinstance(identity, dict)
@@ -247,10 +252,13 @@ def main() -> int:
                     != SERVICE_AUTHORITY_SCOPE
                     or identity.get("create_time_os_authorization") != "root_only"
                     or identity.get("human_service_group_membership_mutation") is not False
+                    or identity.get("password_record") != "literal_asterisk_lock"
+                    or identity.get("authentication_authority") != "absent"
+                    or identity.get("shadow_hash_data") != "absent"
                     or identity.get("group_membership_policy")
                     != "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
                     or identity.get("resolved_effective_group_policy")
-                    != "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+                    != MACOS_SERVICE_PROCESS_GROUP_POLICY
                 ):
                     fail("macos_system_service_authority_scope_invalid")
     scan(root)

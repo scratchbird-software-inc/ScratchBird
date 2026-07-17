@@ -238,24 +238,6 @@ ensure_service_is_not_admin() {
     esac
 }
 
-ensure_service_resolved_group_set_is_least_authority() {
-    required_gid=$1
-    resolved_group_ids=$(id -G "$SERVICE_USER" 2>/dev/null) || \
-        fail BOOTSTRAP.GROUP_INPUT_INVALID
-    required_group_seen=false
-    for effective_gid in $resolved_group_ids; do
-        case "$effective_gid" in
-            ''|*[!0123456789]*) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
-        esac
-        case "$effective_gid" in
-            "$required_gid") required_group_seen=true ;;
-            12|61) ;;
-            *) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
-        esac
-    done
-    [ "$required_group_seen" = true ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
-}
-
 create_service_user() {
     group_gid=$1
     next_uid=$(dscl . -list /Users UniqueID 2>/dev/null | awk \
@@ -327,6 +309,8 @@ ensure_service_identity() {
     user_hidden=$(dscl_value "/Users/$SERVICE_USER" IsHidden)
     user_password=$(dscl_value "/Users/$SERVICE_USER" Password)
     user_generated_uid=$(dscl_value "/Users/$SERVICE_USER" GeneratedUID)
+    user_record=$(dscl . -read "/Users/$SERVICE_USER" 2>/dev/null) || \
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
     case "$user_uid" in
         ''|*[!0123456789]*) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
     esac
@@ -344,10 +328,17 @@ ensure_service_identity() {
     [ "$user_home" = "$SERVICE_HOME" ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_shell" = "$NON_LOGIN_SHELL" ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_hidden" = 1 ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
-    case "$user_password" in
-        \**) ;;
-        *) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
-    esac
+    [ "$user_password" = '*' ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
+    if dscl . -read "/Users/$SERVICE_USER" AuthenticationAuthority \
+        >/dev/null 2>&1 || \
+        dscl . -read "/Users/$SERVICE_USER" ShadowHashData \
+        >/dev/null 2>&1; then
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    fi
+    if printf '%s\n' "$user_record" | \
+        grep -Eq '^(AuthenticationAuthority|ShadowHashData|dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)):'; then
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    fi
     numeric_identity_is_unique /Users UniqueID "$user_uid" || \
         fail BOOTSTRAP.GROUP_INPUT_INVALID
 
@@ -361,7 +352,6 @@ ensure_service_identity() {
     ensure_service_has_no_explicit_supplementary_membership \
         "$group_generated_uid" "$user_generated_uid"
     ensure_service_is_not_admin "$group_generated_uid"
-    ensure_service_resolved_group_set_is_least_authority "$group_gid"
 }
 
 make_directory() {
@@ -453,7 +443,7 @@ write_fixture_identity_evidence() {
     fixture_user_generated_uid=fixture-scratchbird-user-generated-uid
     printf '%s\n' '{"name":"scratchbird","kind":"local_group","group_membership":["scratchbird"],"group_members":["fixture-scratchbird-user-generated-uid"],"nested_groups":[]}' \
         > "$fixture_root/group.json"
-    printf '%s\n' "{\"name\":\"scratchbird\",\"kind\":\"non_login_service\",\"hidden\":true,\"administrator_group_membership\":false,\"primary_group\":\"scratchbird\",\"generated_uid\":\"$fixture_user_generated_uid\"}" \
+    printf '%s\n' "{\"name\":\"scratchbird\",\"kind\":\"non_login_service\",\"hidden\":true,\"password_record\":\"literal_asterisk_lock\",\"authentication_authority_present\":false,\"shadow_hash_data_present\":false,\"administrator_group_membership\":false,\"primary_group\":\"scratchbird\",\"generated_uid\":\"$fixture_user_generated_uid\"}" \
         > "$fixture_root/service.json"
     chmod 0640 "$fixture_root/group.json" "$fixture_root/service.json"
 }
@@ -496,10 +486,14 @@ write_install_evidence() {
         printf '  "service_user": "scratchbird",\n'
         printf '  "service_group": "scratchbird",\n'
         printf '  "service_uid_policy": "locally_unique_501_through_59999",\n'
+        printf '  "service_password_record_locked": true,\n'
+        printf '  "service_authentication_authority_present": false,\n'
+        printf '  "service_shadow_hash_data_present": false,\n'
         printf '  "service_administrator_group_membership": false,\n'
         printf '  "service_authority_scope": "filesystem_directory_and_process_execution_only_no_database_or_security_authority",\n'
         printf '  "service_group_membership_policy": "exact_scratchbird_name_and_generated_uid_only_no_nested_groups",\n'
-        printf '  "resolved_effective_group_policy": "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",\n'
+        printf '  "resolved_effective_group_policy": "host_computed_directory_groups_not_copied_into_service_process",\n'
+        printf '  "launchd_init_groups": false,\n'
         printf '  "human_service_group_membership_mutated": false,\n'
         printf '  "create_time_os_authorization": "root_only",\n'
         printf '  "service_enablement_default": "disabled",\n'

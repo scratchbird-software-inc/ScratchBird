@@ -23,6 +23,9 @@ from types import ModuleType
 SERVICE_USER = "scratchbird"
 SERVICE_GROUP = "scratchbird"
 NATIVE_PORT = 3092
+MACOS_SERVICE_PROCESS_GROUP_POLICY = (
+    "host_computed_directory_groups_not_copied_into_service_process"
+)
 CONFIG_NAMES = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -187,10 +190,17 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
         fail("profile_service_login_not_forbidden")
     if identity.get("service_hidden") is not True:
         fail("profile_service_identity_not_hidden")
+    if identity.get("service_password_record") != "literal_asterisk_lock":
+        fail("profile_service_password_record_not_locked")
+    if identity.get("service_authentication_authority") != "absent":
+        fail("profile_service_authentication_authority_not_absent")
+    if identity.get("service_shadow_hash_data") != "absent":
+        fail("profile_service_shadow_hash_data_not_absent")
     if identity.get("service_administrator_group_membership") != "forbidden":
         fail("profile_service_admin_membership_not_forbidden")
-    if identity.get("service_explicit_supplementary_group_membership") != (
-        "forbidden_except_scratchbird"
+    if (
+        identity.get("service_explicit_supplementary_group_membership")
+        != "forbidden"
     ):
         fail("profile_service_supplementary_membership_not_forbidden")
     if identity.get("service_group_group_membership") != (
@@ -208,11 +218,11 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
     if identity.get("service_group_nested_in_other_local_group") != "forbidden":
         fail("profile_service_group_nesting_not_forbidden")
     if identity.get("service_implicit_baseline_groups") != (
-        "macos_computed_everyone_and_localaccounts_are_not_explicit_membership"
+        "macos_host_computed_directory_groups_are_not_installer_membership"
     ):
         fail("profile_service_implicit_baseline_policy_mismatch")
     if identity.get("service_resolved_effective_group_set") != (
-        "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+        MACOS_SERVICE_PROCESS_GROUP_POLICY
     ):
         fail("profile_service_resolved_group_policy_mismatch")
     if identity.get("service_authority_scope") != (
@@ -243,6 +253,8 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
         fail("profile_service_not_inactive")
     if service.get("run_at_load") is not False:
         fail("profile_service_run_at_load")
+    if service.get("launchd_init_groups") is not False:
+        fail("profile_service_launchd_init_groups")
     labels = service.get("launchd_labels")
     if labels != ["com.scratchbird.sbsrv", "com.scratchbird.sbmgr"]:
         fail("profile_launchd_service_set_mismatch")
@@ -300,6 +312,8 @@ def validate_launchd(asset_root: Path) -> dict[str, Any]:
             fail(f"launchd_user_mismatch:{path.name}")
         if payload.get("GroupName") != SERVICE_GROUP:
             fail(f"launchd_group_mismatch:{path.name}")
+        if payload.get("InitGroups") is not False:
+            fail(f"launchd_init_groups_not_disabled:{path.name}")
         if payload.get("RunAtLoad") is not False:
             fail(f"launchd_run_at_load:{path.name}")
         if payload.get("KeepAlive") is not False:
@@ -333,7 +347,9 @@ def validate_launchd(asset_root: Path) -> dict[str, Any]:
             fail(f"launchd_database_creation_forbidden:{path.name}")
         if any("SBgate" in str(value) or "SBParser" in str(value) for value in arguments):
             fail(f"launchd_child_process_service_forbidden:{path.name}")
-        rows.append({"label": label, "arguments": arguments})
+        rows.append(
+            {"label": label, "arguments": arguments, "init_groups": False}
+        )
     return {"services": rows, "default_state": "disabled_unloaded_not_run_at_load"}
 
 
@@ -349,7 +365,8 @@ def validate_helper_static(helper: Path) -> None:
         "ensure_service_is_not_admin",
         "ensure_service_group_membership_is_exact",
         "ensure_service_has_no_explicit_supplementary_membership",
-        "ensure_service_resolved_group_set_is_least_authority",
+        "dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)",
+        '[ "$user_password" = \'*\' ]',
         "local_group_has_guid_member",
         "local_group_nests_group_guid",
         "GroupMembers",
@@ -359,11 +376,11 @@ def validate_helper_static(helper: Path) -> None:
         '[ "$membership_count" -eq 1 ]',
         '[ "$guid_membership_count" -eq 1 ]',
         'ensure_service_group_membership_is_exact "$user_generated_uid"',
+        "host_computed_directory_groups_not_copied_into_service_process",
+        'printf \'  "launchd_init_groups": false',
         "/Groups/admin",
         'dseditgroup -n . -o checkmember',
         'admin 2>/dev/null || true',
-        'id -G "$SERVICE_USER"',
-        "12|61",
         "dscl . -create",
         "dseditgroup -o edit",
         '"/Library/Application Support/ScratchBird"',
@@ -388,6 +405,8 @@ def validate_helper_static(helper: Path) -> None:
         "SBsrv",
         "--create-if-missing",
         ".sbdb",
+        'id -G "$SERVICE_USER"',
+        "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",
         ".sbrd",
         "security_principal_events",
         "local_password_auth",
@@ -610,6 +629,11 @@ def validate_builder_integration(
         "installed_disabled_unloaded_not_run_at_load"
     ):
         fail("builder_launchd_manifest_default_state_mismatch")
+    launchd_services = launchd_manifest.get("services")
+    if not isinstance(launchd_services, list) or not launchd_services:
+        fail("builder_launchd_manifest_services_missing")
+    if any(row.get("init_groups") is not False for row in launchd_services):
+        fail("builder_launchd_manifest_init_groups_not_disabled")
 
     staged_helper = (
         system_root
@@ -687,6 +711,12 @@ def validate_builder_integration(
         "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
     ):
         fail("builder_system_evidence_group_membership_policy_mismatch")
+    if evidence.get("os_identity", {}).get("resolved_effective_group_policy") != (
+        MACOS_SERVICE_PROCESS_GROUP_POLICY
+    ):
+        fail("builder_system_evidence_process_group_policy_mismatch")
+    if evidence.get("service", {}).get("launchd_init_groups") is not False:
+        fail("builder_system_evidence_launchd_init_groups_not_disabled")
 
     staged_plists = sorted(
         (system_root / "Library" / "LaunchDaemons").glob(
@@ -704,6 +734,8 @@ def validate_builder_integration(
             fail(f"builder_launchd_user_mismatch:{path.name}")
         if payload.get("GroupName") != SERVICE_GROUP:
             fail(f"builder_launchd_group_mismatch:{path.name}")
+        if payload.get("InitGroups") is not False:
+            fail(f"builder_launchd_init_groups_not_disabled:{path.name}")
         if payload.get("Disabled") is not True:
             fail(f"builder_launchd_not_disabled:{path.name}")
 
@@ -764,6 +796,9 @@ def run_fixture_smoke(
         service.get("name") != SERVICE_USER
         or service.get("kind") != "non_login_service"
         or service.get("hidden") is not True
+        or service.get("password_record") != "literal_asterisk_lock"
+        or service.get("authentication_authority_present") is not False
+        or service.get("shadow_hash_data_present") is not False
         or service.get("administrator_group_membership") is not False
         or service.get("primary_group") != SERVICE_GROUP
         or service.get("generated_uid") != expected_fixture_uid
@@ -783,6 +818,9 @@ def run_fixture_smoke(
         "service_user": SERVICE_USER,
         "service_group": SERVICE_GROUP,
         "service_uid_policy": "locally_unique_501_through_59999",
+        "service_password_record_locked": True,
+        "service_authentication_authority_present": False,
+        "service_shadow_hash_data_present": False,
         "service_administrator_group_membership": False,
         "service_authority_scope": (
             "filesystem_directory_and_process_execution_only_"
@@ -792,8 +830,9 @@ def run_fixture_smoke(
             "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
         ),
         "resolved_effective_group_policy": (
-            "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+            MACOS_SERVICE_PROCESS_GROUP_POLICY
         ),
+        "launchd_init_groups": False,
         "human_service_group_membership_mutated": False,
         "create_time_os_authorization": "root_only",
         "service_enablement_default": "disabled",

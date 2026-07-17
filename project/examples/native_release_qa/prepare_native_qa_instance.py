@@ -68,7 +68,6 @@ WINDOWS_SERVICE_IDENTITY = r"NT SERVICE\scratchbird"
 WINDOWS_SERVICE_GROUP = "ScratchBird"
 POSIX_SERVICE_IDENTITY = "scratchbird"
 POSIX_SERVICE_GROUP = "scratchbird"
-MACOS_IMPLICIT_BASELINE_GIDS = frozenset({12, 61})
 
 
 def require_posix_service_authority() -> tuple[str, str]:
@@ -130,12 +129,16 @@ def require_posix_service_authority() -> tuple[str, str]:
         if POSIX_SERVICE_IDENTITY in row.gr_mem
     }
     recorded_groups.add(user_by_uid.pw_gid)
-    allowed_current_groups = {effective_gid}
-    if sys.platform == "darwin":
-        allowed_current_groups.update(MACOS_IMPLICIT_BASELINE_GIDS)
+    # Darwin's unlimited getgroups variant reports Open Directory defaults,
+    # not a kernel group set changed by launchd InitGroups=false or setgroups.
+    # The system-package gate proves the real launchd credential with the
+    # compiled kernel-level probe. Here, retain exact direct group-record
+    # validation without turning host-computed directory groups into authority.
+    current_group_policy_valid = effective_gid in current_groups
+    if sys.platform != "darwin":
+        current_group_policy_valid = current_groups == {effective_gid}
     if (
-        effective_gid not in current_groups
-        or not current_groups.issubset(allowed_current_groups)
+        not current_group_policy_valid
         or recorded_groups != {effective_gid}
     ):
         fail("posix_service_numeric_membership_not_exact")

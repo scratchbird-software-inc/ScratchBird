@@ -88,10 +88,15 @@ that will own and execute the installation. The helper refuses UID 0 and any
 other service identity or group, preventing a root-owned or operator-owned
 runtime profile. The local `scratchbird` group must be the account's primary
 filesystem group; that relationship grants no database-bootstrap authority.
-Linux permits only that exact numeric group. macOS may additionally report
-Apple's computed implicit `everyone`
-(GID 12) and `localaccounts` (GID 61) baselines; any other or explicit
-supplementary group membership is rejected.
+Linux permits only that exact numeric group. macOS Open Directory may report
+additional host-computed memberships for a locked local account; those results
+are diagnostic and do not become an allowlist. The system package rejects every
+explicit non-`scratchbird` membership and all administrator membership, sets
+`InitGroups=false` for its LaunchDaemons, and separately proves that the actual
+launchd process has no group beyond its primary `scratchbird` filesystem group.
+The macOS account is hidden, uses `/usr/bin/false`, has a literal `*` password
+lock, and has no `AuthenticationAuthority` or `ShadowHashData` record. It is a
+headless process/filesystem identity, not a database principal.
 
 On Windows, the service must first be registered with the exact service name
 `scratchbird`, so Windows exposes the passwordless virtual identity

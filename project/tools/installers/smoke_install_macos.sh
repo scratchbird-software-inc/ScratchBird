@@ -187,6 +187,8 @@ for label, config in expected.items():
         raise SystemExit(f"launchd_user_mismatch:{label}")
     if payload.get("GroupName") != "scratchbird":
         raise SystemExit(f"launchd_group_mismatch:{label}")
+    if payload.get("InitGroups") is not False:
+        raise SystemExit(f"launchd_init_groups_not_disabled:{label}")
     if payload.get("Disabled") is not True:
         raise SystemExit(f"launchd_not_disabled:{label}")
     if payload.get("RunAtLoad") is not False or payload.get("KeepAlive") is not False:

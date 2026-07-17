@@ -171,6 +171,8 @@ def check_macos_system_installed_verifier(
     inventory = "sudo find /var/lib/scratchbird -xdev -type f -print"
     membership_check = "sudo dseditgroup -n . -o checkmember"
     membership_proof = "host-user-group-membership.txt"
+    launchd_probe = "smoke_macos_launchd_credential.sh"
+    launchd_proof = "launchd-service-credential.txt"
     installer_status = 'installer_status=${PIPESTATUS[0]}'
     failure_identity = "installer-failure-service-identity"
     resolved_group_ids = "resolved-group-ids.txt"
@@ -187,6 +189,24 @@ def check_macos_system_installed_verifier(
         inventory_proof,
         membership_check,
         membership_proof,
+        launchd_probe,
+        launchd_proof,
+        "launchd_service_process_credential=passed",
+        "supplementary_group_policy=exact_scratchbird_only",
+        "host_computed_authority_canaries=refused",
+        "host_computed_authority_canary_count",
+        "bootstrap_authority_regain=refused",
+        "com.scratchbird.credential-probe",
+        'sudo launchctl bootout "system/$label"',
+        'data.get("InitGroups") is not False',
+        "host_computed_directory_groups_not_copied_into_service_process",
+        "service_authentication_authority_present",
+        "service_shadow_hash_data_present",
+        "AuthenticationAuthority",
+        "ShadowHashData",
+        'test "$service_password" = \'*\'',
+        "authentication_authority_existing_account=refused",
+        ";ScratchBirdRegressionAuth;",
         installer_status,
         failure_identity,
         resolved_group_ids,
@@ -214,6 +234,11 @@ def check_macos_system_installed_verifier(
         < inventory_offset
     ):
         fail(f"macos_system_verifier_order_invalid:{rel}:{job_name}")
+    root_probe_offset = step.index("--verify-installed-service-identity")
+    launchd_probe_offset = step.index(launchd_probe, root_probe_offset)
+    identity_proof_offset = step.index("macos-system-identity.txt", launchd_probe_offset)
+    if not root_probe_offset < launchd_probe_offset < identity_proof_offset:
+        fail(f"macos_launchd_credential_probe_order_invalid:{rel}:{job_name}")
     membership_offset = step.index(membership_check)
     membership_proof_offset = step.index(membership_proof, membership_offset)
     tolerant_status_offset = step.find("2>&1 || true", membership_proof_offset)

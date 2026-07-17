@@ -14,8 +14,6 @@ inline constexpr const char* kBootstrapPlatformProfileSchema =
     "scratchbird.bootstrap_platform_profile.v1";
 inline constexpr const char* kBootstrapDeniedDiagnostic =
     "SECURITY.BOOTSTRAP_DENIED";
-inline constexpr std::uint64_t kMacOsImplicitEveryoneGroupId = 12;
-inline constexpr std::uint64_t kMacOsImplicitLocalAccountsGroupId = 61;
 
 struct BootstrapPlatformProfile {
   std::string schema_id;
@@ -54,14 +52,19 @@ bool BootstrapPlatformProfileContractValidForPlatform(
     const BootstrapPlatformProfile& profile,
     std::string_view expected_platform);
 
-// A service identity must have the configured ScratchBird group and no
-// additional authority-bearing group. macOS callers may supply only the
-// test-visible computed baseline group IDs above; Linux supplies an empty
-// implicit allowlist.
+// A process group set must contain the configured ScratchBird group and no
+// other group. There is intentionally no exception surface: the dedicated OS
+// identity carries filesystem/process authority only.
 bool BootstrapServiceIdentityGroupSetIsLeastAuthority(
     const std::vector<std::uint64_t>& resolved_group_ids,
-    std::uint64_t configured_group_id,
-    const std::vector<std::uint64_t>& implicit_group_allowlist);
+    std::uint64_t configured_group_id);
+
+// Verify the current POSIX process credential through the platform's kernel
+// group-list surface. On Darwin this deliberately bypasses the unlimited
+// directory-service getgroups variant, which reports account defaults rather
+// than a group set changed by launchd or setgroups.
+bool BootstrapCurrentProcessHasOnlyConfiguredGroup(
+    std::uint64_t configured_group_id);
 
 // Windows managed virtual service accounts receive filesystem access by
 // direct ACL only. An incomplete local-group inventory or any explicit local

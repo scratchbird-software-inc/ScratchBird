@@ -159,27 +159,37 @@ non-login `scratchbird` service identity. It prepares data under
 `/var/lib/scratchbird`, logs under `/var/log/scratchbird`, and server,
 listener, and manager runtime/control paths under `/var/run/scratchbird`, with
 mode `0750` and explicit ownership. It creates no database or security sidecar.
-The launchd definitions specify `UserName=scratchbird` and
-`GroupName=scratchbird`; only `SBsrv` and optional `SBmgr` are top-level jobs.
-Both jobs remain disabled, unloaded, and `RunAtLoad=false` after installation.
+The launchd definitions specify `UserName=scratchbird`,
+`GroupName=scratchbird`, and `InitGroups=false`; only `SBsrv` and optional
+`SBmgr` are top-level jobs. Both jobs remain disabled, unloaded, and
+`RunAtLoad=false` after installation.
 `SBsrv` owns the shared `SBgate`, which owns the standalone native `SBParser`.
 The sole native default listener port is 3092.
 
 Apple reserves UIDs 0 through 500 for the operating system and recommends a
 locally unique UID for each daemon. The lifecycle helper therefore allocates
 the first unused local UID in 501 through 59999, marks the account hidden,
-locks its password, assigns `/usr/bin/false` as its shell, and rejects an
-existing `scratchbird` user record unless its nonzero UID is unique and remains in
-that range. The `scratchbird` group must contain exactly the service user by
-name and generated UID, with no nested groups. Explicit membership of the
-service user in any other local group, and nesting of the `scratchbird` group
-inside any other local group, are forbidden. The transitive `admin` membership
-check remains an additional fail-closed guard. The resolved numeric group
-inventory must contain only the primary `scratchbird` GID plus Apple's
-unavoidable computed `everyone` (12) and `localaccounts` (61) baselines. The
-package never adds a human account to the service group. Root alone authorizes
-explicit create-time bootstrap; the numeric service identity is used only for
-ownership and process execution.
+stores the literal `*` password lock, requires both `AuthenticationAuthority`
+and `ShadowHashData` to be absent, and assigns `/usr/bin/false` as its shell.
+An existing `scratchbird` user is rejected unless it satisfies that complete
+headless contract and its nonzero UID is unique and remains in that range. The
+hosted gate also injects an authentication-authority record temporarily and
+proves the installer refuses it before restoring and revalidating the locked
+account. The `scratchbird` group must contain exactly the service user by name
+and generated UID, with no nested groups. Explicit membership of the service
+user in any other local group, and nesting of the `scratchbird` group inside
+any other local group, are forbidden. The transitive `admin` membership check
+remains an additional fail-closed guard. Open Directory may report
+host-computed groups such as `everyone`, `localaccounts`, `_lpoperator`, or a
+local sharepoint group even though the package added no such membership. That
+directory inventory is diagnostic, never an installer allowlist. Disabling
+launchd group initialization prevents those host-computed groups from being
+copied into a service process. The hosted package gate launches a one-shot
+credential probe—not a ScratchBird service—and verifies the raw kernel group
+set plus read/write denial against files owned by authority-bearing computed
+groups. The package never adds a human account to the service group. Root alone
+authorizes explicit create-time bootstrap; the numeric service identity is used
+only for ScratchBird filesystem ownership and process execution.
 
 The packaged launchd jobs pass the canonical configuration paths explicitly,
 so service operation does not depend on implicit discovery. Interactive

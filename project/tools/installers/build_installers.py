@@ -108,6 +108,9 @@ MACOS_SYSTEM_ASSETS = {
 MACOS_SYSTEM_PROFILE_ASSET = "MACOS_SYSTEM_INSTALL_PROFILE.json"
 MACOS_CONFIG_ROOT = "/Library/Application Support/ScratchBird"
 MACOS_CONFIG_DEFAULTS_REL = "opt/ScratchBird/share/scratchbird/config-defaults"
+MACOS_SERVICE_PROCESS_GROUP_POLICY = (
+    "host_computed_directory_groups_not_copied_into_service_process"
+)
 MACOS_PKG_SCRIPTS = ("postinstall.in",)
 MACOS_NATIVE_CONFIGS = (
     "SBsrv.conf",
@@ -830,6 +833,7 @@ def write_macos_system_launchd_manifest(root: Path) -> Path:
         if (
             payload.get("UserName") != "scratchbird"
             or payload.get("GroupName") != "scratchbird"
+            or payload.get("InitGroups") is not False
             or payload.get("RunAtLoad") is not False
             or payload.get("KeepAlive") is not False
             or payload.get("Disabled") is not True
@@ -843,6 +847,7 @@ def write_macos_system_launchd_manifest(root: Path) -> Path:
                 "plist": f"/Library/LaunchDaemons/{plist_path.name}",
                 "user": "scratchbird",
                 "group": "scratchbird",
+                "init_groups": False,
                 "run_at_load": False,
                 "disabled": True,
             }
@@ -1844,6 +1849,7 @@ def write_macos_system_package_evidence(
             "default_enablement": "disabled",
             "default_activity": "not_started",
             "run_at_load": False,
+            "launchd_init_groups": False,
             "top_level_process": "SBsrv",
             "child_process_ownership": (
                 "SBsrv_to_shared_SBgate_to_standalone_SBParser"
@@ -1854,6 +1860,9 @@ def write_macos_system_package_evidence(
             "group": "scratchbird",
             "login": "forbidden",
             "hidden": True,
+            "password_record": "literal_asterisk_lock",
+            "authentication_authority": "absent",
+            "shadow_hash_data": "absent",
             "administrator_group_membership": False,
             "service_authority_scope": (
                 "filesystem_directory_and_process_execution_only_"
@@ -1864,7 +1873,7 @@ def write_macos_system_package_evidence(
                 "exact_scratchbird_name_and_generated_uid_only_no_nested_groups"
             ),
             "resolved_effective_group_policy": (
-                "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+                MACOS_SERVICE_PROCESS_GROUP_POLICY
             ),
             "create_time_os_authorization": "root_only",
             "human_service_group_membership_mutation": False,

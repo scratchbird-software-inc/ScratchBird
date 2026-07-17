@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import stat
@@ -358,7 +359,7 @@ class NativeQaBootstrapTest(unittest.TestCase):
 
         with contextlib.ExitStack() as stack:
             for patcher in identity_patches(
-                [4242, 12, 61], [service_group]
+                [4242, 12, 61, 701, 100], [service_group]
             ):
                 stack.enter_context(patcher)
             stack.enter_context(
@@ -371,7 +372,7 @@ class NativeQaBootstrapTest(unittest.TestCase):
 
         with contextlib.ExitStack() as stack:
             for patcher in identity_patches(
-                [4242, 12, 61, 80], [service_group]
+                [4242, 12, 61, 701, 100, 80], [service_group, admin_group]
             ):
                 stack.enter_context(patcher)
             stack.enter_context(
@@ -390,11 +391,53 @@ class NativeQaBootstrapTest(unittest.TestCase):
             "NetApiBufferFree",
             "BootstrapWindowsServiceSidGroupInventoryIsLeastAuthority",
             "service_identity_explicit_local_group_membership_forbidden_or_",
+            'SbKernelGetGroups(int, gid_t[]) __asm("_getgroups")',
+            "setgroups(0, nullptr)",
+            "BootstrapCurrentProcessHasOnlyConfiguredGroup",
         ):
             self.assertIn(token, authority_source)
         self.assertNotIn("LookupIntendedLocalGroup", authority_source)
         self.assertNotIn("configured_local_group_membership_required", authority_source)
         self.assertNotIn("root_and_configured_group_membership_required", authority_source)
+        self.assertNotIn("kMacOsImplicitServiceGroupIds", authority_source)
+        authority_surface = "\n".join(
+            (
+                authority_source,
+                (
+                    REPO_ROOT
+                    / "project/drivers/tool/cli/bootstrap_os_authority.hpp"
+                ).read_text(encoding="utf-8"),
+                (
+                    REPO_ROOT
+                    / "project/drivers/tool/cli/bootstrap_os_authority_test.cpp"
+                ).read_text(encoding="utf-8"),
+            )
+        )
+        self.assertNotIn("implicit_group_allowlist", authority_surface)
+        self.assertNotIn("allowlist", authority_surface)
+        launchd_probe = (
+            REPO_ROOT
+            / "project/tools/installers/smoke_macos_launchd_credential.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("<key>InitGroups</key>", launchd_probe)
+        self.assertIn("<false/>", launchd_probe)
+        self.assertIn("--verify-running-service-identity", launchd_probe)
+        self.assertIn('sudo test -e "$path"', launchd_probe)
+        self.assertIn('sudo launchctl bootout "system/$label"', launchd_probe)
+        self.assertIn("host_computed_authority_canaries=refused", launchd_probe)
+        self.assertIn('[[ "$canary_count" -gt 0 ]]', launchd_probe)
+        self.assertIn("launchd_service_process_credential=passed", launchd_probe)
+        self.assertNotIn("/opt/ScratchBird/bin/SBsrv", launchd_probe)
+        self.assertNotIn("/opt/ScratchBird/bin/SBmgr", launchd_probe)
+        lifecycle_helper = (
+            REPO_ROOT
+            / "project/tools/installers/macos/scratchbird-macos-system-install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)",
+            lifecycle_helper,
+        )
+        self.assertIn('[ "$user_password" = \'*\' ]', lifecycle_helper)
         profile_source = (
             REPO_ROOT / "project/config/templates/SBbootstrap.profile"
         ).read_text(encoding="utf-8")
@@ -501,6 +544,7 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("portable_launchd_manifest_forbidden", smoke)
         self.assertIn("portable_launchd_root_forbidden", smoke)
         self.assertIn("execution_mode=foreground_only", smoke)
+        self.assertIn('payload.get("InitGroups") is not False', smoke)
         canonical_work_root = 'work_root="$(cd "$work_root" && pwd -P)"'
         self.assertIn(canonical_work_root, smoke)
         self.assertLess(
@@ -517,6 +561,44 @@ class NativeQaBootstrapTest(unittest.TestCase):
             "--config-mode system-installed",
             smoke,
         )
+
+    def test_macos_launchd_initgroups_is_fail_closed(self) -> None:
+        module_path = (
+            REPO_ROOT / "project/tools/installers/smoke_install_macos_system.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "sb_macos_initgroups_contract", module_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader if spec else None)
+        module = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        spec.loader.exec_module(module)
+
+        asset_root = self.root / "macos-initgroups-assets"
+        asset_root.mkdir()
+        source_root = REPO_ROOT / "project/tools/installers/macos"
+        for name in (
+            "com.scratchbird.sbsrv.plist",
+            "com.scratchbird.sbmgr.plist",
+        ):
+            shutil.copy2(source_root / name, asset_root / name)
+        module.validate_launchd(asset_root)
+
+        target = asset_root / "com.scratchbird.sbsrv.plist"
+        original = target.read_bytes()
+        for value in (None, True):
+            payload = plistlib.loads(original)
+            if value is None:
+                payload.pop("InitGroups", None)
+            else:
+                payload["InitGroups"] = value
+            target.write_bytes(plistlib.dumps(payload))
+            with self.subTest(init_groups=value), self.assertRaises(
+                module.SmokeFailure
+            ):
+                module.validate_launchd(asset_root)
+        target.write_bytes(original)
 
     @unittest.skipUnless(
         os.name != "nt" and shutil.which("bash"), "bash is not installed"

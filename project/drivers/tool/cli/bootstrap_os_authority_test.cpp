@@ -10,6 +10,8 @@
 #include <string>
 
 #ifndef _WIN32
+#include <grp.h>
+#include <pwd.h>
 #include <unistd.h>
 #endif
 
@@ -90,12 +92,97 @@ int VerifyInstalledServiceIdentity(const std::string& profile_path) {
 #endif
 }
 
+int VerifyRunningServiceIdentity(const std::string& profile_path,
+                                 const std::string& canary_root) {
+#ifdef _WIN32
+  (void)profile_path;
+  (void)canary_root;
+  std::cerr << "running service identity probe is POSIX-only\n";
+  return EXIT_FAILURE;
+#else
+  if (geteuid() == 0) {
+    std::cerr << "running service identity probe must not run as root\n";
+    return EXIT_FAILURE;
+  }
+  const auto loaded =
+      scratchbird::cli::LoadBootstrapPlatformProfile(profile_path);
+  if (!loaded.ok || loaded.profile.service_identity != "scratchbird" ||
+      loaded.profile.service_group != "scratchbird") {
+    std::cerr << "running service identity profile was rejected\n";
+    return EXIT_FAILURE;
+  }
+  const passwd* service_user_record = getpwnam("scratchbird");
+  if (service_user_record == nullptr) {
+    std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
+    return EXIT_FAILURE;
+  }
+  const uid_t service_user_id = service_user_record->pw_uid;
+  const group* service_group = getgrnam("scratchbird");
+  if (service_group == nullptr || service_user_id == 0 ||
+      service_group->gr_gid == 0 || getuid() != service_user_id ||
+      geteuid() != service_user_id ||
+      getgid() != service_group->gr_gid || getegid() != service_group->gr_gid ||
+      !scratchbird::cli::BootstrapCurrentProcessHasOnlyConfiguredGroup(
+          static_cast<std::uint64_t>(service_group->gr_gid))) {
+    std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
+    return EXIT_FAILURE;
+  }
+  if (setgid(0) == 0 || setuid(0) == 0 || geteuid() == 0 || getegid() == 0) {
+    std::cerr << "running service identity regained OS bootstrap authority\n";
+    return EXIT_FAILURE;
+  }
+  std::error_code canary_error;
+  const std::filesystem::path canary_directory(canary_root);
+  if (canary_root.empty() ||
+      !std::filesystem::is_directory(canary_directory, canary_error) ||
+      canary_error) {
+    std::cerr << "host-computed authority canary directory was rejected\n";
+    return EXIT_FAILURE;
+  }
+  std::size_t canary_count = 0;
+  for (const auto& entry :
+       std::filesystem::directory_iterator(canary_directory, canary_error)) {
+    if (canary_error || !entry.is_regular_file(canary_error) || canary_error) {
+      std::cerr << "host-computed authority canary inventory failed\n";
+      return EXIT_FAILURE;
+    }
+    ++canary_count;
+    std::ifstream canary(entry.path(), std::ios::binary);
+    if (canary.is_open()) {
+      std::cerr << "host-computed authority group remained effective\n";
+      return EXIT_FAILURE;
+    }
+    std::ofstream canary_write(entry.path(), std::ios::binary | std::ios::app);
+    if (canary_write.is_open()) {
+      std::cerr << "host-computed authority group retained write access\n";
+      return EXIT_FAILURE;
+    }
+  }
+  if (canary_error) {
+    std::cerr << "host-computed authority canary inventory failed\n";
+    return EXIT_FAILURE;
+  }
+  std::cout << "effective_user=scratchbird\n";
+  std::cout << "effective_group=scratchbird\n";
+  std::cout << "supplementary_group_policy=exact_scratchbird_only\n";
+  std::cout << "host_computed_authority_canaries=refused\n";
+  std::cout << "host_computed_authority_canary_count=" << canary_count << '\n';
+  std::cout << "bootstrap_authority_regain=refused\n";
+  std::cout << "launchd_service_process_credential=passed\n" << std::flush;
+  return EXIT_SUCCESS;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc == 3 &&
       std::string(argv[1]) == "--verify-installed-service-identity") {
     return VerifyInstalledServiceIdentity(argv[2]);
+  }
+  if (argc == 4 &&
+      std::string(argv[1]) == "--verify-running-service-identity") {
+    return VerifyRunningServiceIdentity(argv[2], argv[3]);
   }
   if (argc != 1) {
     std::cerr << "unsupported bootstrap authority test arguments\n";
@@ -179,44 +266,37 @@ int main(int argc, char** argv) {
   constexpr std::uint64_t kScratchBirdGroupId = 997;
   ok = Expect(
            scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {kScratchBirdGroupId}, kScratchBirdGroupId, {}),
+               {kScratchBirdGroupId}, kScratchBirdGroupId),
            "exact Linux service group set was rejected") &&
        ok;
   ok = Expect(
+           scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
+               {kScratchBirdGroupId, kScratchBirdGroupId,
+                kScratchBirdGroupId},
+               kScratchBirdGroupId),
+           "duplicate observations of the exact service group were rejected") &&
+       ok;
+  ok = Expect(
            !scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {}, kScratchBirdGroupId, {}),
+               {}, kScratchBirdGroupId),
            "empty service group set was accepted") &&
        ok;
   ok = Expect(
            !scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {kScratchBirdGroupId, 27}, kScratchBirdGroupId, {}),
+               {kScratchBirdGroupId, 27}, kScratchBirdGroupId),
            "Linux supplementary authority group was accepted") &&
        ok;
-  const std::vector<std::uint64_t> macos_implicit_groups = {
-      scratchbird::cli::kMacOsImplicitEveryoneGroupId,
-      scratchbird::cli::kMacOsImplicitLocalAccountsGroupId,
-  };
   ok = Expect(
-           scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {kScratchBirdGroupId,
-                scratchbird::cli::kMacOsImplicitEveryoneGroupId,
-                scratchbird::cli::kMacOsImplicitLocalAccountsGroupId},
-               kScratchBirdGroupId, macos_implicit_groups),
-           "known macOS implicit baseline groups were rejected") &&
+           !scratchbird::cli::
+               BootstrapServiceIdentityGroupSetIsLeastAuthority(
+                   {kScratchBirdGroupId, 12, 61, 701, 100},
+                   kScratchBirdGroupId),
+           "host-computed directory groups were copied into process policy") &&
        ok;
   ok = Expect(
            !scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {kScratchBirdGroupId,
-                scratchbird::cli::kMacOsImplicitEveryoneGroupId, 80},
-               kScratchBirdGroupId, macos_implicit_groups),
-           "unknown macOS authority group was accepted") &&
-       ok;
-  ok = Expect(
-           !scratchbird::cli::BootstrapServiceIdentityGroupSetIsLeastAuthority(
-               {scratchbird::cli::kMacOsImplicitEveryoneGroupId,
-                scratchbird::cli::kMacOsImplicitLocalAccountsGroupId},
-               kScratchBirdGroupId, macos_implicit_groups),
-           "macOS group set without scratchbird was accepted") &&
+               {12, 61}, kScratchBirdGroupId),
+           "group set without scratchbird was accepted") &&
        ok;
   ok = Expect(
            scratchbird::cli::
