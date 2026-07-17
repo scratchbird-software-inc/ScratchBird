@@ -331,7 +331,7 @@ if ($LASTEXITCODE -ne 0) {
 $savedPath = $env:PATH
 $env:PATH = "$($binDir.FullName);$env:SystemRoot\System32;$env:SystemRoot"
 try {
-  $nativeProfile = Get-ChildItem -Path $WorkRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" | Select-Object -First 1
+  $nativeProfile = Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" | Select-Object -First 1
   if (-not $nativeProfile) {
     throw "missing NATIVE_RELEASE_PROFILE.json"
   }

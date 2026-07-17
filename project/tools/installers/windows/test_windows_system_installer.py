@@ -481,6 +481,16 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn("function New-ShortAdministrativeExtractRoot", smoke)
         self.assertIn("if ($path.Length -gt 48)", smoke)
         self.assertIn("$script:AdministrativeExtractRoot = $payloadRoot", smoke)
+        self.assertIn(
+            'Get-ChildItem -Path $payloadRoot -Recurse -Filter '
+            '"NATIVE_RELEASE_PROFILE.json"',
+            smoke,
+        )
+        self.assertNotIn(
+            'Get-ChildItem -Path $WorkRoot -Recurse -Filter '
+            '"NATIVE_RELEASE_PROFILE.json"',
+            smoke,
+        )
         self.assertIn("administrative-extract-cleanup-proof.json", smoke)
         self.assertNotIn(
             'Join-Path $WorkRoot "administrative-extract"', smoke

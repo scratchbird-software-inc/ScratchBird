@@ -402,6 +402,7 @@ def main() -> int:
             "function New-ShortAdministrativeExtractRoot",
             "if ($path.Length -gt 48)",
             "$script:AdministrativeExtractRoot = $payloadRoot",
+            'Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json"',
             "administrative-extract-cleanup-proof.json",
             '$group.PSBase.Invoke("Members")',
             "ScratchBird filesystem-operations group must have no members",
@@ -426,6 +427,11 @@ def main() -> int:
     require(
         'Join-Path $WorkRoot "administrative-extract"' not in smoke,
         "msi_administrative_extract_workspace_path_forbidden",
+    )
+    require(
+        'Get-ChildItem -Path $WorkRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json"'
+        not in smoke,
+        "msi_native_profile_workspace_search_forbidden",
     )
     require(
         smoke.index('"/a"') < smoke.index('"/i"'),
