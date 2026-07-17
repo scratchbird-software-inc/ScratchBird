@@ -345,6 +345,7 @@ jobs:
           set -euo pipefail
           package="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.pkg | head -n 1)"
           proof_root="build/install-smoke/macos-${{ matrix.arch }}-pkg-system"
+          verifier_root="/tmp/scratchbird-native-verifier-${{ github.run_id }}-${{ matrix.arch }}"
           for existing_path in \
             /opt/ScratchBird \
             "/Library/Application Support/ScratchBird" \
@@ -353,8 +354,9 @@ jobs:
             /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
             /var/lib/scratchbird \
             /var/log/scratchbird \
-            /var/run/scratchbird; do
-            if [ -e "$existing_path" ]; then
+            /var/run/scratchbird \
+            "$verifier_root"; do
+            if [ -e "$existing_path" ] || [ -L "$existing_path" ]; then
               echo "Refusing to overwrite pre-existing hosted-runner state: $existing_path" >&2
               exit 1
             fi
@@ -396,7 +398,8 @@ jobs:
               "/Library/Application Support/ScratchBird" \
               /var/lib/scratchbird \
               /var/log/scratchbird \
-              /var/run/scratchbird || cleanup_status=1
+              /var/run/scratchbird \
+              "$verifier_root" || cleanup_status=1
             sudo pkgutil --forget com.scratchbird.cde \
               > "$proof_root/pkg-forget.txt" 2>&1 || true
             if sudo dscl . -read /Users/scratchbird >/dev/null 2>&1; then
@@ -413,8 +416,9 @@ jobs:
               /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
               /var/lib/scratchbird \
               /var/log/scratchbird \
-              /var/run/scratchbird; do
-              if [ -e "$removed_path" ]; then
+              /var/run/scratchbird \
+              "$verifier_root"; do
+              if [ -e "$removed_path" ] || [ -L "$removed_path" ]; then
                 echo "System-install cleanup left $removed_path" >&2
                 cleanup_status=1
               fi
@@ -499,12 +503,25 @@ jobs:
           fi
           python_bin="$(command -v python3)"
           [[ "$python_bin" = /* && -x "$python_bin" ]]
-          sudo -u scratchbird -g scratchbird "$python_bin" \
+          sudo install -d -o root -g scratchbird -m 0750 "$verifier_root"
+          for verifier_source in \
             project/tools/release/verify_native_installed_payload.py \
-            /opt/ScratchBird \
-            --config-root "/Library/Application Support/ScratchBird" \
-            --config-mode system-installed \
-            --expected-architecture "${{ matrix.arch }}"
+            project/tools/release/stage_native_release_bundle.py; do
+            sudo install -o root -g scratchbird -m 0640 \
+              "$verifier_source" "$verifier_root/"
+          done
+          (
+            cd /tmp
+            sudo -u scratchbird -g scratchbird "$python_bin" \
+              "$verifier_root/verify_native_installed_payload.py" \
+              /opt/ScratchBird \
+              --config-root "/Library/Application Support/ScratchBird" \
+              --config-mode system-installed \
+              --expected-architecture "${{ matrix.arch }}"
+          )
+          sudo rm -rf "$verifier_root"
+          sudo test ! -e "$verifier_root"
+          sudo test ! -L "$verifier_root"
           python3 - /Library/LaunchDaemons <<'PY'
           import pathlib
           import plistlib
