@@ -251,8 +251,58 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertIn("NOT UPGRADINGPRODUCTCODE", lifecycle)
             self.assertNotIn("@SCRATCHBIRD_VERSION@", lifecycle)
-            ET.fromstring(main)
-            ET.fromstring(lifecycle)
+            ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+            main_tree = ET.fromstring(main)
+            lifecycle_tree = ET.fromstring(lifecycle)
+            refs = {
+                row.get("Id")
+                for row in main_tree.findall(
+                    "./w:Package/w:CustomActionRef", ns
+                )
+            }
+            self.assertEqual(refs, {"ScratchBirdPostInstall"})
+
+            fragments = lifecycle_tree.findall("./w:Fragment", ns)
+            self.assertEqual(len(fragments), 1)
+            fragment = fragments[0]
+            action_ids = {
+                row.get("Id")
+                for row in fragment.findall("./w:CustomAction", ns)
+            }
+            property_ids = {
+                row.get("Id")
+                for row in fragment.findall("./w:SetProperty", ns)
+            }
+            self.assertEqual(
+                action_ids,
+                {"ScratchBirdPostInstall", "ScratchBirdPreRemove"},
+            )
+            self.assertEqual(property_ids, action_ids)
+            self.assertTrue(refs.issubset(action_ids))
+
+            scheduled = {
+                row.get("Action"): row
+                for row in fragment.findall(
+                    "./w:InstallExecuteSequence/w:Custom", ns
+                )
+            }
+            self.assertEqual(set(scheduled), action_ids)
+            self.assertEqual(
+                scheduled["ScratchBirdPostInstall"].get("Before"),
+                "InstallFinalize",
+            )
+            self.assertEqual(
+                scheduled["ScratchBirdPostInstall"].get("Condition"),
+                'NOT (REMOVE~="ALL")',
+            )
+            self.assertEqual(
+                scheduled["ScratchBirdPreRemove"].get("Before"),
+                "RemoveFiles",
+            )
+            self.assertEqual(
+                scheduled["ScratchBirdPreRemove"].get("Condition"),
+                'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE',
+            )
 
     @unittest.skipUnless(
         os.name == "nt" and shutil.which("wix"),

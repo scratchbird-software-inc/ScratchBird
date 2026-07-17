@@ -1663,6 +1663,7 @@ def make_wix_msi(payload_root: Path, output_root: Path, version: str, require_ms
   <Package Name="{PRODUCT_NAME}" Manufacturer="{MANUFACTURER}" Version="{windows_msi_version(version)}" UpgradeCode="{WINDOWS_UPGRADE_CODE}" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer ScratchBird build is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <CustomActionRef Id="ScratchBirdPostInstall" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="ScratchBird">
 {directory_xml}

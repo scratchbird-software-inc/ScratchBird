@@ -341,6 +341,9 @@ def main() -> int:
     except ET.ParseError as exc:
         fail(f"wix_xml:{exc}")
     ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+    fragments = tree.findall("./w:Fragment", ns)
+    require(len(fragments) == 1, "wix_lifecycle_fragment_not_atomic")
+    fragment = fragments[0]
     properties = tree.findall(".//w:Property", ns)
     require(
         all(row.get("Id") != "SB_INSTALLER_USER" for row in properties),
@@ -353,7 +356,7 @@ def main() -> int:
     )
     actions = {
         row.get("Id"): row
-        for row in tree.findall(".//w:CustomAction", ns)
+        for row in fragment.findall("./w:CustomAction", ns)
     }
     for action_id in ("ScratchBirdPostInstall", "ScratchBirdPreRemove"):
         require(action_id in actions, f"wix_action_missing:{action_id}")
@@ -371,7 +374,7 @@ def main() -> int:
         )
     set_properties = {
         row.get("Id"): row.get("Value", "")
-        for row in tree.findall(".//w:SetProperty", ns)
+        for row in fragment.findall("./w:SetProperty", ns)
     }
     for action_id in ("ScratchBirdPostInstall", "ScratchBirdPreRemove"):
         require(
@@ -379,6 +382,25 @@ def main() -> int:
             in set_properties.get(action_id, ""),
             f"wix_install_root_trailing_separator_guard:{action_id}",
         )
+    scheduled = {
+        row.get("Action"): row
+        for row in fragment.findall(
+            "./w:InstallExecuteSequence/w:Custom", ns
+        )
+    }
+    require(
+        set(scheduled) == set(actions),
+        "wix_lifecycle_actions_not_scheduled_in_linked_fragment",
+    )
+    require(
+        scheduled["ScratchBirdPostInstall"].get("Before")
+        == "InstallFinalize",
+        "wix_post_install_sequence",
+    )
+    require(
+        scheduled["ScratchBirdPreRemove"].get("Before") == "RemoveFiles",
+        "wix_pre_remove_sequence",
+    )
     require(
         "REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" in wix,
         "wix_upgrade_remove_guard",
@@ -451,6 +473,7 @@ def main() -> int:
             "stage_windows_system_install_tree(",
             "write_windows_system_package_evidence(",
             '"WixToolset.Util.wixext"',
+            '<CustomActionRef Id="ScratchBirdPostInstall" />',
             '"native_default_port": 3092',
             r'service_identity = NT SERVICE\scratchbird',
             "@SCRATCHBIRD_STATE_ROOT@",

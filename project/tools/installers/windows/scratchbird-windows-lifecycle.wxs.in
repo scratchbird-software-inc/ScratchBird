@@ -37,9 +37,7 @@
       Impersonate="no"
       Return="check"
       HideTarget="yes" />
-  </Fragment>
 
-  <Fragment>
     <InstallExecuteSequence>
       <Custom
         Action="ScratchBirdPostInstall"
