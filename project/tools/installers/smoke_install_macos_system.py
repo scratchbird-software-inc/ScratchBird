@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -365,6 +366,8 @@ def validate_helper_static(helper: Path) -> None:
         "ensure_service_is_not_admin",
         "ensure_service_group_membership_is_exact",
         "ensure_service_has_no_explicit_supplementary_membership",
+        '[ "$identity_mode" = fixture ] || return 0',
+        '[ -d "$config_root" ] || return 0',
         "dsAttrType(Native|Standard):(AuthenticationAuthority|ShadowHashData)",
         '[ "$user_password" = \'*\' ]',
         "local_group_has_guid_member",
@@ -392,6 +395,8 @@ def validate_helper_static(helper: Path) -> None:
     for fragment in required:
         if fragment not in text:
             fail(f"lifecycle_contract_missing:{fragment}")
+    if re.search(r"[|][|] return[ \t]*(?:\n|$)", text):
+        fail("lifecycle_status_inheriting_bare_return")
     for forbidden in (
         "SUDO_USER",
         "${USER",

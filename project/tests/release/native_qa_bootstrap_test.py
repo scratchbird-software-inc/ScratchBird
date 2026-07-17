@@ -446,6 +446,13 @@ class NativeQaBootstrapTest(unittest.TestCase):
             lifecycle_helper,
         )
         self.assertIn('[ "$user_password" = \'*\' ]', lifecycle_helper)
+        self.assertIn(
+            '[ "$identity_mode" = fixture ] || return 0', lifecycle_helper
+        )
+        self.assertIn('[ -d "$config_root" ] || return 0', lifecycle_helper)
+        self.assertIsNone(
+            re.search(r"[|][|] return[ \t]*(?:\n|$)", lifecycle_helper)
+        )
         profile_source = (
             REPO_ROOT / "project/config/templates/SBbootstrap.profile"
         ).read_text(encoding="utf-8")
