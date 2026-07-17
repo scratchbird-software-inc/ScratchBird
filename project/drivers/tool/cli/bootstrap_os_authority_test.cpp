@@ -15,6 +15,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef __APPLE__
+extern "C" int SbTestKernelGetGroups(int, gid_t[]) __asm("_getgroups");
+#endif
+
 namespace {
 
 std::string Platform() {
@@ -54,6 +58,47 @@ void Write(const std::filesystem::path& path, const std::string& body) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   out << body;
 }
+
+#ifndef _WIN32
+void PrintRunningCredentialDiagnostic(uid_t expected_uid,
+                                      gid_t expected_gid,
+                                      bool exact_group_policy) {
+  std::cerr << "launchd_credential_expected_uid=" << expected_uid << '\n';
+  std::cerr << "launchd_credential_expected_gid=" << expected_gid << '\n';
+  std::cerr << "launchd_credential_real_uid=" << getuid() << '\n';
+  std::cerr << "launchd_credential_effective_uid=" << geteuid() << '\n';
+  std::cerr << "launchd_credential_real_gid=" << getgid() << '\n';
+  std::cerr << "launchd_credential_effective_gid=" << getegid() << '\n';
+  std::cerr << "launchd_credential_exact_group_policy="
+            << (exact_group_policy ? "passed" : "failed") << '\n';
+#ifdef __APPLE__
+  const int count = SbTestKernelGetGroups(0, nullptr);
+#else
+  const int count = getgroups(0, nullptr);
+#endif
+  if (count < 0 || count > 1024) {
+    std::cerr << "launchd_credential_raw_group_ids=unavailable\n";
+    return;
+  }
+  std::vector<gid_t> groups(static_cast<std::size_t>(count), 0);
+#ifdef __APPLE__
+  const int loaded =
+      count == 0 ? 0 : SbTestKernelGetGroups(count, groups.data());
+#else
+  const int loaded = count == 0 ? 0 : getgroups(count, groups.data());
+#endif
+  if (loaded != count) {
+    std::cerr << "launchd_credential_raw_group_ids=unavailable\n";
+    return;
+  }
+  std::cerr << "launchd_credential_raw_group_ids=";
+  for (int index = 0; index < count; ++index) {
+    if (index != 0) std::cerr << ',';
+    std::cerr << groups[static_cast<std::size_t>(index)];
+  }
+  std::cerr << '\n';
+}
+#endif
 
 int VerifyInstalledServiceIdentity(const std::string& profile_path) {
 #ifdef _WIN32
@@ -118,12 +163,21 @@ int VerifyRunningServiceIdentity(const std::string& profile_path,
   }
   const uid_t service_user_id = service_user_record->pw_uid;
   const group* service_group = getgrnam("scratchbird");
-  if (service_group == nullptr || service_user_id == 0 ||
-      service_group->gr_gid == 0 || getuid() != service_user_id ||
-      geteuid() != service_user_id ||
-      getgid() != service_group->gr_gid || getegid() != service_group->gr_gid ||
-      !scratchbird::cli::BootstrapCurrentProcessHasOnlyConfiguredGroup(
-          static_cast<std::uint64_t>(service_group->gr_gid))) {
+  if (service_group == nullptr) {
+    std::cerr << "launchd_credential_group_record=missing\n";
+    std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
+    return EXIT_FAILURE;
+  }
+  const gid_t service_group_id = service_group->gr_gid;
+  const bool exact_group_policy =
+      scratchbird::cli::BootstrapCurrentProcessHasOnlyConfiguredGroup(
+          static_cast<std::uint64_t>(service_group_id));
+  if (service_user_id == 0 || service_group_id == 0 ||
+      getuid() != service_user_id || geteuid() != service_user_id ||
+      getgid() != service_group_id || getegid() != service_group_id ||
+      !exact_group_policy) {
+    PrintRunningCredentialDiagnostic(service_user_id, service_group_id,
+                                     exact_group_policy);
     std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
     return EXIT_FAILURE;
   }

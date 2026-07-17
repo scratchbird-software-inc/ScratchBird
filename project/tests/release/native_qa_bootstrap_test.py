@@ -400,6 +400,15 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertNotIn("configured_local_group_membership_required", authority_source)
         self.assertNotIn("root_and_configured_group_membership_required", authority_source)
         self.assertNotIn("kMacOsImplicitServiceGroupIds", authority_source)
+        authority_test_source = (
+            REPO_ROOT
+            / "project/drivers/tool/cli/bootstrap_os_authority_test.cpp"
+        ).read_text(encoding="utf-8")
+        for token in (
+            "launchd_credential_raw_group_ids=",
+            "launchd_credential_exact_group_policy=",
+        ):
+            self.assertIn(token, authority_test_source)
         authority_surface = "\n".join(
             (
                 authority_source,
@@ -407,10 +416,7 @@ class NativeQaBootstrapTest(unittest.TestCase):
                     REPO_ROOT
                     / "project/drivers/tool/cli/bootstrap_os_authority.hpp"
                 ).read_text(encoding="utf-8"),
-                (
-                    REPO_ROOT
-                    / "project/drivers/tool/cli/bootstrap_os_authority_test.cpp"
-                ).read_text(encoding="utf-8"),
+                authority_test_source,
             )
         )
         self.assertNotIn("implicit_group_allowlist", authority_surface)
