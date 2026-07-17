@@ -673,7 +673,10 @@ jobs:
             fi
             exit "$installer_status"
           fi
-          python3 project/tools/release/verify_native_installed_payload.py \
+          python_bin="$(command -v python3)"
+          [[ "$python_bin" = /* && -x "$python_bin" ]]
+          sudo -u scratchbird -g scratchbird "$python_bin" \
+            project/tools/release/verify_native_installed_payload.py \
             /opt/ScratchBird \
             --config-root "/Library/Application Support/ScratchBird" \
             --config-mode system-installed \

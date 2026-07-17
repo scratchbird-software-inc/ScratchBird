@@ -183,6 +183,8 @@ def check_macos_system_installed_verifier(
         smoke,
         installer,
         verifier,
+        'python_bin="$(command -v python3)"',
+        'sudo -u scratchbird -g scratchbird "$python_bin"',
         mode,
         inventory,
         forbidden_inventory,
