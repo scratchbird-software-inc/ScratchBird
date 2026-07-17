@@ -192,8 +192,9 @@ fi
 helper=/opt/ScratchBird/libexec/scratchbird-macos-system-install
 config_root="/Library/Application Support/ScratchBird"
 state=/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json
-[[ -x "$helper" && -f "$config_root/SBsrv.conf" && -f "$state" ]] || \
-  fail "installed_system_surface_missing"
+sudo test -x "$helper" || fail "installed_helper_missing_or_not_executable"
+sudo test -f "$config_root/SBsrv.conf" || fail "installed_server_config_missing"
+sudo test -f "$state" || fail "installed_state_evidence_missing"
 
 bootstrap_dummy_job com.scratchbird.sbsrv
 config_before="$(sudo shasum -a 256 "$config_root/SBsrv.conf" | awk '{print $1}')"
