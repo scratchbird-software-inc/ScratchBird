@@ -140,6 +140,50 @@ function Get-LocalScratchBirdGroup {
   return $row
 }
 
+function Get-LocalAccountsModuleManifest {
+  $moduleRoot = Join-Path $PSHOME "Modules\Microsoft.PowerShell.LocalAccounts"
+  if (-not (Test-Path -LiteralPath $moduleRoot -PathType Container)) {
+    throw [IO.DirectoryNotFoundException]::new()
+  }
+  Assert-NotReparsePoint $moduleRoot
+
+  $manifestName = "Microsoft.PowerShell.LocalAccounts.psd1"
+  $candidates = @()
+  $directManifest = Join-Path $moduleRoot $manifestName
+  if (Test-Path -LiteralPath $directManifest -PathType Leaf) {
+    $candidates += $directManifest
+  }
+  foreach ($versionDirectory in @(Get-ChildItem -LiteralPath $moduleRoot -Directory -Force -ErrorAction Stop)) {
+    if ($versionDirectory.Name -notmatch '^\d+(?:\.\d+){1,3}$') {
+      continue
+    }
+    Assert-NotReparsePoint $versionDirectory.FullName
+    $versionedManifest = Join-Path $versionDirectory.FullName $manifestName
+    if (Test-Path -LiteralPath $versionedManifest -PathType Leaf) {
+      $candidates += $versionedManifest
+    }
+  }
+  if ($candidates.Count -ne 1) {
+    throw [InvalidOperationException]::new()
+  }
+  Assert-NotReparsePoint ($candidates[0])
+
+  $canonicalRoot = [IO.Path]::GetFullPath($moduleRoot).TrimEnd("\")
+  $canonicalManifest = [IO.Path]::GetFullPath($candidates[0])
+  $relativeManifest = $canonicalManifest.Substring($canonicalRoot.Length).TrimStart("\")
+  $directLayout = [string]::Equals(
+      $relativeManifest,
+      $manifestName,
+      [StringComparison]::OrdinalIgnoreCase)
+  $versionedLayout = $relativeManifest -match (
+    '^\d+(?:\.\d+){1,3}\\' + [regex]::Escape($manifestName) + '$'
+  )
+  if (-not $directLayout -and -not $versionedLayout) {
+    throw [InvalidOperationException]::new()
+  }
+  return $canonicalManifest
+}
+
 function Ensure-LocalScratchBirdGroup {
   $script:LifecyclePhase = "GROUP_IDENTITY_INVENTORY"
   $rows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
@@ -149,31 +193,47 @@ function Ensure-LocalScratchBirdGroup {
   }
   if ($rows.Count -eq 0) {
     try {
+      $script:LifecyclePhase = "GROUP_IDENTITY_MODULE_MANIFEST"
+      $moduleManifest = Get-LocalAccountsModuleManifest
+      $script:LifecyclePhase = "GROUP_IDENTITY_MODULE_IMPORT"
+      Import-Module -Name $moduleManifest -Force -ErrorAction Stop | Out-Null
       $script:LifecyclePhase = "GROUP_IDENTITY_COMMAND_DISCOVERY"
-      $command = Get-Command `
+      $commands = @(Get-Command `
         -Name "Microsoft.PowerShell.LocalAccounts\New-LocalGroup" `
         -CommandType Cmdlet `
-        -ErrorAction Stop
+        -ErrorAction Stop)
+      if ($commands.Count -ne 1) {
+        throw [InvalidOperationException]::new()
+      }
+      $command = $commands[0]
       if (-not [string]::Equals(
           $command.ModuleName,
           "Microsoft.PowerShell.LocalAccounts",
           [StringComparison]::Ordinal)) {
-        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+        throw [InvalidOperationException]::new()
+      }
+      if (-not [string]::Equals(
+          $command.Source,
+          "Microsoft.PowerShell.LocalAccounts",
+          [StringComparison]::Ordinal)) {
+        throw [InvalidOperationException]::new()
       }
       $script:LifecyclePhase = "GROUP_IDENTITY_CREATE"
-      Microsoft.PowerShell.LocalAccounts\New-LocalGroup `
+      & $command `
         -Name $GroupName `
         -Description "ScratchBird filesystem operations group; no database or security authority" `
+        -Confirm:$false `
         -ErrorAction Stop | Out-Null
       $script:GroupCreatedByThisRun = $true
     } catch {
+      $creationFailurePhase = $script:LifecyclePhase
       # A concurrent administrator or installer may have created the exact
       # group after the initial inventory. Accept only that independently
       # verified final state; module/creation failures otherwise stay closed.
       $script:LifecyclePhase = "GROUP_IDENTITY_POSTFAILURE_INVENTORY"
       $postFailureRows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
       if ($postFailureRows.Count -ne 1) {
-        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED.$creationFailurePhase"
       }
     }
   } elseif ($rows.Count -ne 1) {

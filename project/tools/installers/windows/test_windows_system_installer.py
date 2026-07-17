@@ -558,16 +558,57 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             lifecycle,
         )
         self.assertIn(
-            "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup `",
+            "function Get-LocalAccountsModuleManifest",
+            lifecycle,
+        )
+        self.assertIn(
+            'Join-Path $PSHOME "Modules\\Microsoft.PowerShell.LocalAccounts"',
+            lifecycle,
+        )
+        self.assertIn(
+            '$manifestName = "Microsoft.PowerShell.LocalAccounts.psd1"',
+            lifecycle,
+        )
+        self.assertIn(
+            "Get-ChildItem -LiteralPath $moduleRoot -Directory -Force",
+            lifecycle,
+        )
+        self.assertIn("$versionDirectory.Name -notmatch", lifecycle)
+        self.assertIn(
+            "if ($candidates.Count -ne 1)",
+            lifecycle,
+        )
+        self.assertIn(
+            "$moduleManifest = Get-LocalAccountsModuleManifest",
+            lifecycle,
+        )
+        self.assertIn(
+            "Import-Module -Name $moduleManifest -Force -ErrorAction Stop",
+            lifecycle,
+        )
+        self.assertIn("if ($commands.Count -ne 1)", lifecycle)
+        self.assertIn("$command.ModuleName", lifecycle)
+        self.assertIn("$command.Source", lifecycle)
+        self.assertIn(
+            "& $command `",
+            lifecycle,
+        )
+        self.assertIn(
+            "-Confirm:$false `",
             lifecycle,
         )
         for phase in (
+            "GROUP_IDENTITY_MODULE_MANIFEST",
+            "GROUP_IDENTITY_MODULE_IMPORT",
             "GROUP_IDENTITY_COMMAND_DISCOVERY",
             "GROUP_IDENTITY_CREATE",
             "GROUP_IDENTITY_POSTFAILURE_INVENTORY",
             "GROUP_IDENTITY_FINAL_VALIDATE",
         ):
             self.assertIn(f'$script:LifecyclePhase = "{phase}"', lifecycle)
+        self.assertIn(
+            '"BOOTSTRAP.GROUP_CREATE_FAILED.$creationFailurePhase"', lifecycle
+        )
         self.assertNotIn('$computer.Create("group", $GroupName)', lifecycle)
         self.assertNotIn("$group.SetInfo()", lifecycle)
         self.assertLess(
