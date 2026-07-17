@@ -361,6 +361,7 @@ def validate_helper_static(helper: Path) -> None:
         'ensure_service_group_membership_is_exact "$user_generated_uid"',
         "/Groups/admin",
         'dseditgroup -n . -o checkmember',
+        'admin 2>/dev/null || true',
         'id -G "$SERVICE_USER"',
         "12|61",
         "dscl . -create",
@@ -392,6 +393,7 @@ def validate_helper_static(helper: Path) -> None:
         "local_password_auth",
         "--installer-user",
         "GROUP_MEMBERSHIP_REQUIRED",
+        "admin 2>/dev/null) ||",
     ):
         if forbidden in text:
             fail(f"lifecycle_forbidden_fragment:{forbidden}")

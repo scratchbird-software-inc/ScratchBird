@@ -223,9 +223,13 @@ ensure_service_is_not_admin() {
             fail BOOTSTRAP.GROUP_INPUT_INVALID
         fi
     done
-    effective_admin_membership=$(dseditgroup -n . -o checkmember \
-        -m "$SERVICE_USER" admin 2>/dev/null) || \
-        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    # checkmember reports the required non-member result with a nonzero status
+    # on current macOS releases.  Its exact code-only answer remains the
+    # authority; command failure or an unrecognized answer still fails closed.
+    effective_admin_membership=$(
+        dseditgroup -n . -o checkmember \
+            -m "$SERVICE_USER" admin 2>/dev/null || true
+    )
     set -- $effective_admin_membership
     case "${1:-}" in
         yes) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;

@@ -161,12 +161,16 @@ def check_macos_system_installed_verifier(
     step_name: str,
 ) -> None:
     job = workflow_job_block(text, job_name, rel)
+    for diagnostic_token in ("/var/log/install.log", "tail -n 4000"):
+        require_token(job, diagnostic_token, rel)
     step = workflow_step_block(job, step_name, rel, job_name)
     smoke = "project/tools/installers/smoke_install_macos.sh"
     installer = "sudo installer -pkg"
     verifier = "project/tools/release/verify_native_installed_payload.py"
     mode = "--config-mode system-installed"
     inventory = "sudo find /var/lib/scratchbird -xdev -type f -print"
+    membership_check = "sudo dseditgroup -n . -o checkmember"
+    membership_proof = "host-user-group-membership.txt"
     forbidden_inventory = "macos-system-forbidden-artifacts.txt"
     inventory_proof = "macos-system-database-security-proof.txt"
     for token in (
@@ -177,6 +181,8 @@ def check_macos_system_installed_verifier(
         inventory,
         forbidden_inventory,
         inventory_proof,
+        membership_check,
+        membership_proof,
         "-iname '*.sbdb'",
         "-iname '*.sbrd'",
         "-iname '*security_principal_events*'",
@@ -196,6 +202,16 @@ def check_macos_system_installed_verifier(
         < inventory_offset
     ):
         fail(f"macos_system_verifier_order_invalid:{rel}:{job_name}")
+    membership_offset = step.index(membership_check)
+    membership_proof_offset = step.index(membership_proof, membership_offset)
+    tolerant_status_offset = step.find("2>&1 || true", membership_proof_offset)
+    membership_result_offset = step.find("if grep -Eq '^yes", membership_proof_offset)
+    if not (
+        membership_proof_offset
+        < tolerant_status_offset
+        < membership_result_offset
+    ):
+        fail(f"macos_nonmember_status_handling_invalid:{rel}:{job_name}")
 
 
 def check_ctest_label_contract(

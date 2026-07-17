@@ -534,7 +534,7 @@ jobs:
           service_password="$(sudo dscl . -read /Users/scratchbird Password | awk 'NR == 1 { print $2 }')"
           host_user="$(id -un)"
           sudo dseditgroup -n . -o checkmember -m "$host_user" scratchbird \
-            > "$proof_root/host-user-group-membership.txt"
+            > "$proof_root/host-user-group-membership.txt" 2>&1 || true
           if grep -Eq '^yes([[:space:]]|$)' "$proof_root/host-user-group-membership.txt"; then
             echo "System package granted the hosted runner user service-group membership." >&2
             exit 1
@@ -561,6 +561,10 @@ jobs:
           mkdir -p build/macos-proof/${{ matrix.arch }}/logs
           cp -R build/public-release-macos/Testing build/macos-proof/${{ matrix.arch }}/Testing || true
           cp -R build/ctest-chunks/macos-${{ matrix.arch }} build/macos-proof/${{ matrix.arch }}/ctest-chunks || true
+          if sudo test -f /var/log/install.log; then
+            sudo tail -n 4000 /var/log/install.log \
+              > build/macos-proof/${{ matrix.arch }}/logs/install.log || true
+          fi
           log show --last 5m --style compact > build/macos-proof/${{ matrix.arch }}/logs/system-log-last-5m.txt || true
 
       - name: Upload macOS staged output
