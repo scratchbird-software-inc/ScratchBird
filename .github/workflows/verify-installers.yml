@@ -622,8 +622,31 @@ jobs:
           trap cleanup_on_exit EXIT
 
           project/tools/installers/smoke_install_macos.sh "$package" "$proof_root"
+          installer_status=0
+          set +e
           sudo installer -pkg "$package" -target / \
             2>&1 | tee "$proof_root/system-installer.txt"
+          installer_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$installer_status" -ne 0 ]; then
+            identity_diagnostic_root="$proof_root/installer-failure-service-identity"
+            mkdir -p "$identity_diagnostic_root"
+            if sudo dscl . -read /Users/scratchbird >/dev/null 2>&1; then
+              sudo id -G scratchbird \
+                > "$identity_diagnostic_root/resolved-group-ids.txt" 2>&1 || true
+              sudo id -Gn scratchbird \
+                > "$identity_diagnostic_root/resolved-group-names.txt" 2>&1 || true
+              sudo dscl . -read /Users/scratchbird \
+                UniqueID PrimaryGroupID NFSHomeDirectory UserShell IsHidden GeneratedUID \
+                > "$identity_diagnostic_root/user-record.txt" 2>&1 || true
+            fi
+            if sudo dscl . -read /Groups/scratchbird >/dev/null 2>&1; then
+              sudo dscl . -read /Groups/scratchbird \
+                PrimaryGroupID GroupMembership GroupMembers NestedGroups GeneratedUID \
+                > "$identity_diagnostic_root/group-record.txt" 2>&1 || true
+            fi
+            exit "$installer_status"
+          fi
           python3 project/tools/release/verify_native_installed_payload.py \
             /opt/ScratchBird \
             --config-root "/Library/Application Support/ScratchBird" \

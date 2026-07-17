@@ -171,6 +171,10 @@ def check_macos_system_installed_verifier(
     inventory = "sudo find /var/lib/scratchbird -xdev -type f -print"
     membership_check = "sudo dseditgroup -n . -o checkmember"
     membership_proof = "host-user-group-membership.txt"
+    installer_status = 'installer_status=${PIPESTATUS[0]}'
+    failure_identity = "installer-failure-service-identity"
+    resolved_group_ids = "resolved-group-ids.txt"
+    resolved_group_names = "resolved-group-names.txt"
     forbidden_inventory = "macos-system-forbidden-artifacts.txt"
     inventory_proof = "macos-system-database-security-proof.txt"
     for token in (
@@ -183,6 +187,12 @@ def check_macos_system_installed_verifier(
         inventory_proof,
         membership_check,
         membership_proof,
+        installer_status,
+        failure_identity,
+        resolved_group_ids,
+        resolved_group_names,
+        "sudo id -G scratchbird",
+        "sudo id -Gn scratchbird",
         "-iname '*.sbdb'",
         "-iname '*.sbrd'",
         "-iname '*security_principal_events*'",
@@ -197,6 +207,8 @@ def check_macos_system_installed_verifier(
     if not (
         step.index(smoke)
         < step.index(installer)
+        < step.index(installer_status)
+        < step.index(failure_identity)
         < verifier_offset
         < mode_offset
         < inventory_offset
