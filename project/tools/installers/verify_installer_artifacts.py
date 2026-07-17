@@ -51,7 +51,7 @@ SERVICE_AUTHORITY_SCOPE = (
     "no_database_or_security_authority"
 )
 MACOS_SERVICE_PROCESS_GROUP_POLICY = (
-    "host_computed_directory_groups_not_copied_into_service_process"
+    "launchd_host_computed_groups_cleared_before_scratchbird_product_exec"
 )
 
 
@@ -203,6 +203,10 @@ def main() -> int:
             or identity.get("service_authority_scope")
             != SERVICE_AUTHORITY_SCOPE
             or identity.get("local_sam_group_membership") is not False
+            or identity.get("filesystem_operations_group_creation_mechanism")
+            != r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup"
+            or identity.get("lifecycle_process_architecture")
+            != "64_bit_required"
             or identity.get("create_time_os_authorization")
             != "administrator_only"
             or identity.get("human_service_group_membership_mutation") is not False
@@ -245,6 +249,37 @@ def main() -> int:
                     fail("macos_system_package_evidence_security_sidecar_creation")
                 if sidecar_data.get("service", {}).get("launchd_init_groups") is not False:
                     fail("macos_system_launchd_init_groups_not_disabled")
+                service = sidecar_data.get("service")
+                if (
+                    not isinstance(service, dict)
+                    or service.get("launchd_bootstrap_identity") != "root:wheel"
+                    or service.get("launchd_definition_path_policy")
+                    != "root_owned_0644_no_extended_acl_no_symlink_single_link_exact_fixed_selector"
+                    or service.get("launchd_standard_log_root")
+                    != "/var/log/scratchbird/launchd"
+                    or service.get("launchd_standard_log_file_identity")
+                    != "root:scratchbird:0640_no_extended_acl"
+                    or service.get("service_launcher")
+                    != "/opt/ScratchBird/bin/SBlaunch"
+                    or service.get("service_launcher_interface")
+                    != "fixed_selector_only_no_forwarded_arguments"
+                    or service.get("service_launcher_path_policy")
+                    != "root_owned_nonwritable_no_extended_acl_no_symlink_single_link_launcher"
+                    or service.get("final_product_identity")
+                    != "scratchbird:scratchbird"
+                    or service.get("final_supplementary_groups") != []
+                    or service.get("service_runtime_log_root")
+                    != "/var/log/scratchbird/runtime"
+                    or service.get("loaded_legacy_launchd_job_upgrade_policy")
+                    != "reject_before_payload_replacement_and_recheck_postinstall"
+                    or service.get("package_preinstall_existing_topology_policy")
+                    != "reject_unsafe_existing_root_helper_launcher_and_plist_paths_before_payload"
+                    or service.get("package_postinstall_helper_path_policy")
+                    != "pre_exec_root_owned_0755_no_extended_acl_no_symlink_single_link_helper"
+                    or service.get("legacy_packaged_log_default_migration_policy")
+                    != "exact_prior_packaged_line_only_preserve_all_other_configuration_lines"
+                ):
+                    fail("macos_system_service_launcher_evidence_invalid")
                 identity = sidecar_data.get("os_identity")
                 if (
                     not isinstance(identity, dict)

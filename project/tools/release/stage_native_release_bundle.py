@@ -54,6 +54,17 @@ NATIVE_EXECUTABLES = (
     "SBcop",
 )
 
+PLATFORM_NATIVE_EXECUTABLES = {
+    # SBlaunch is the tiny, fixed-selector launchd privilege-drop boundary. It
+    # is built only on macOS and never replaces SBsrv, SBmgr, SBgate, or the
+    # standalone SBParser in the native process topology.
+    "macos": ("SBlaunch",),
+}
+
+
+def native_executables(platform: str) -> tuple[str, ...]:
+    return NATIVE_EXECUTABLES + PLATFORM_NATIVE_EXECUTABLES.get(platform, ())
+
 NATIVE_CONFIGS = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -858,7 +869,7 @@ def stage(
     (output_root / "lib").mkdir(parents=True)
 
     copied_bins: list[str] = []
-    for name in NATIVE_EXECUTABLES:
+    for name in native_executables(platform):
         file_name = platform_executable(name, platform)
         copy_file(source_root / "bin" / file_name, output_root / "bin" / file_name)
         copied_bins.append(file_name)

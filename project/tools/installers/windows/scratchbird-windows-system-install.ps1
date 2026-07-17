@@ -31,6 +31,7 @@ $GroupName = "ScratchBird"
 $EvidenceName = "WINDOWS_SYSTEM_INSTALL_STATE.json"
 $AllowedActions = @("PostInstall", "PreRemove", "Verify")
 $ServiceCreatedByThisRun = $false
+$GroupCreatedByThisRun = $false
 $LifecyclePhase = "PRECHECK"
 
 function Rollback-CreatedService {
@@ -129,10 +130,18 @@ function Get-LocalScratchBirdGroup {
   if ($members.Count -ne 0) {
     Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
   }
+  # Keep this check in the final validator, not just the pre-create inventory:
+  # a concurrent local-user creation must never be admitted as the managed
+  # virtual service account used by the SCM.
+  $conflictingUsers = @(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE")
+  if ($conflictingUsers.Count -ne 0) {
+    Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
+  }
   return $row
 }
 
 function Ensure-LocalScratchBirdGroup {
+  $script:LifecyclePhase = "GROUP_IDENTITY_INVENTORY"
   $rows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
   $conflictingUsers = @(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE")
   if ($conflictingUsers.Count -ne 0) {
@@ -140,16 +149,37 @@ function Ensure-LocalScratchBirdGroup {
   }
   if ($rows.Count -eq 0) {
     try {
-      $computer = [ADSI]("WinNT://{0},computer" -f $env:COMPUTERNAME)
-      $group = $computer.Create("group", $GroupName)
-      $group.Description = "ScratchBird filesystem operations group; no database or security authority"
-      $group.SetInfo()
+      $script:LifecyclePhase = "GROUP_IDENTITY_COMMAND_DISCOVERY"
+      $command = Get-Command `
+        -Name "Microsoft.PowerShell.LocalAccounts\New-LocalGroup" `
+        -CommandType Cmdlet `
+        -ErrorAction Stop
+      if (-not [string]::Equals(
+          $command.ModuleName,
+          "Microsoft.PowerShell.LocalAccounts",
+          [StringComparison]::Ordinal)) {
+        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+      }
+      $script:LifecyclePhase = "GROUP_IDENTITY_CREATE"
+      Microsoft.PowerShell.LocalAccounts\New-LocalGroup `
+        -Name $GroupName `
+        -Description "ScratchBird filesystem operations group; no database or security authority" `
+        -ErrorAction Stop | Out-Null
+      $script:GroupCreatedByThisRun = $true
     } catch {
-      Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+      # A concurrent administrator or installer may have created the exact
+      # group after the initial inventory. Accept only that independently
+      # verified final state; module/creation failures otherwise stay closed.
+      $script:LifecyclePhase = "GROUP_IDENTITY_POSTFAILURE_INVENTORY"
+      $postFailureRows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
+      if ($postFailureRows.Count -ne 1) {
+        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+      }
     }
   } elseif ($rows.Count -ne 1) {
     Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"
   }
+  $script:LifecyclePhase = "GROUP_IDENTITY_FINAL_VALIDATE"
   return Get-LocalScratchBirdGroup
 }
 
@@ -405,6 +435,9 @@ function Write-InstallEvidence {
     native_default_port = 3092
     filesystem_operations_group_sid = [string]$Group.SID
     filesystem_operations_group_member_count = 0
+    filesystem_operations_group_creation_policy = "Microsoft.PowerShell.LocalAccounts\New-LocalGroup_when_missing"
+    filesystem_operations_group_created_by_this_run = [bool]$GroupCreatedByThisRun
+    lifecycle_process_architecture = "64_bit"
     human_service_group_membership_mutated = $false
     create_time_os_authorization = "administrator_only"
     service_name = $ServiceName
@@ -459,6 +492,9 @@ try {
   }
   if (-not (Test-Administrator)) {
     Fail-Code "BOOTSTRAP.OS_AUTHORITY_DENIED"
+  }
+  if (-not [Environment]::Is64BitProcess) {
+    Fail-Code "BOOTSTRAP.INSTALL_DEFAULTS_INVALID" 2
   }
   if ($PackageVersion -notmatch '^[A-Za-z0-9._+~-]{1,96}$' -or $PackageFormat -notmatch '^[A-Za-z0-9._-]{1,32}$') {
     Fail-Code "BOOTSTRAP.INSTALL_DEFAULTS_INVALID" 2

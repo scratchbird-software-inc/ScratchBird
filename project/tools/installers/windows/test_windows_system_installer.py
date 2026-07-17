@@ -157,6 +157,14 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                 "forbidden_and_verified_absent_across_all_local_groups",
             )
             self.assertEqual(
+                profile["os_identity"]["group_creation_mechanism"],
+                r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup",
+            )
+            self.assertEqual(
+                profile["os_identity"]["group_creation_process_architecture"],
+                "64_bit_required",
+            )
+            self.assertEqual(
                 profile["create_time_os_authorization"], "administrator_only"
             )
             self.assertEqual(
@@ -521,13 +529,51 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "scratchbird-windows-system-install.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn('Win32_Group -Filter "LocalAccount=TRUE"', lifecycle)
+        self.assertGreaterEqual(
+            lifecycle.count(
+                'Get-CimInstance -ClassName Win32_UserAccount -Filter '
+                '"Name=\'scratchbird\' AND LocalAccount=TRUE"'
+            ),
+            2,
+        )
         self.assertIn('$group.PSBase.Invoke("Members")', lifecycle)
         self.assertIn("if ($members.Count -ne 0)", lifecycle)
         self.assertIn("filesystem_operations_group_member_count = 0", lifecycle)
         self.assertIn(
+            'filesystem_operations_group_creation_policy = "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            lifecycle,
+        )
+        self.assertIn(
+            "filesystem_operations_group_created_by_this_run = [bool]$GroupCreatedByThisRun",
+            lifecycle,
+        )
+        self.assertIn('lifecycle_process_architecture = "64_bit"', lifecycle)
+        self.assertIn(
             "service_local_sam_group_membership = $false", lifecycle
         )
         self.assertIn('$LifecyclePhase = "PRECHECK"', lifecycle)
+        self.assertIn("[Environment]::Is64BitProcess", lifecycle)
+        self.assertIn(
+            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"',
+            lifecycle,
+        )
+        self.assertIn(
+            "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup `",
+            lifecycle,
+        )
+        for phase in (
+            "GROUP_IDENTITY_COMMAND_DISCOVERY",
+            "GROUP_IDENTITY_CREATE",
+            "GROUP_IDENTITY_POSTFAILURE_INVENTORY",
+            "GROUP_IDENTITY_FINAL_VALIDATE",
+        ):
+            self.assertIn(f'$script:LifecyclePhase = "{phase}"', lifecycle)
+        self.assertNotIn('$computer.Create("group", $GroupName)', lifecycle)
+        self.assertNotIn("$group.SetInfo()", lifecycle)
+        self.assertLess(
+            lifecycle.index("[Environment]::Is64BitProcess"),
+            lifecycle.index("$LifecyclePhase = \"PATH_VALIDATION\""),
+        )
         self.assertIn(
             '"BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase"',
             lifecycle,
@@ -536,6 +582,9 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         smoke = (
             REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
         ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ScratchBird must not create a local SAM service user", smoke
+        )
         self.assertIn("function New-ShortAdministrativeExtractRoot", smoke)
         self.assertIn("if ($path.Length -gt 48)", smoke)
         self.assertIn("$script:AdministrativeExtractRoot = $payloadRoot", smoke)
@@ -550,6 +599,15 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             smoke,
         )
         self.assertIn("administrative-extract-cleanup-proof.json", smoke)
+        self.assertIn("without a pre-existing ScratchBird SAM identity", smoke)
+        self.assertIn(
+            "Assert-InstalledWindowsSystem -RequireGroupCreatedByThisRun",
+            smoke,
+        )
+        self.assertIn(
+            "filesystem_operations_group_preserved_after_uninstall",
+            smoke,
+        )
         self.assertNotIn(
             'Join-Path $WorkRoot "administrative-extract"', smoke
         )
@@ -571,6 +629,27 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn("if ($members.Count -ne 0)", group_block)
         self.assertIn(
             "$evidence.filesystem_operations_group_member_count -ne 0",
+            installed_block,
+        )
+        self.assertIn(
+            '$evidence.filesystem_operations_group_creation_policy -ne '
+            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            installed_block,
+        )
+        self.assertIn(
+            "$evidence.filesystem_operations_group_created_by_this_run -isnot [bool]",
+            installed_block,
+        )
+        self.assertIn(
+            '$evidence.lifecycle_process_architecture -ne "64_bit"',
+            installed_block,
+        )
+        self.assertIn(
+            "param([switch] $RequireGroupCreatedByThisRun)",
+            installed_block,
+        )
+        self.assertIn(
+            "Fresh MSI install did not create the ScratchBird group",
             installed_block,
         )
         self.assertIn("--config-mode system-installed", installed_block)

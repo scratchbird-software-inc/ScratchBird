@@ -90,9 +90,10 @@ MACOS_SUPPORT_MATRIX = {
     },
 }
 MACOS_LAUNCHD_SERVICES = (
-    ("com.scratchbird.sbsrv", "SBsrv", "SBsrv.conf"),
-    ("com.scratchbird.sbmgr", "SBmgr", "SBmgr.conf"),
+    ("com.scratchbird.sbsrv", "sbsrv", "SBsrv", "SBsrv.conf"),
+    ("com.scratchbird.sbmgr", "sbmgr", "SBmgr", "SBmgr.conf"),
 )
+MACOS_SERVICE_LAUNCHER = "/opt/ScratchBird/bin/SBlaunch"
 MACOS_ASSET_ROOT = Path(__file__).resolve().parent / "macos"
 MACOS_SYSTEM_ASSETS = {
     "scratchbird-macos-system-install.sh": (
@@ -109,9 +110,9 @@ MACOS_SYSTEM_PROFILE_ASSET = "MACOS_SYSTEM_INSTALL_PROFILE.json"
 MACOS_CONFIG_ROOT = "/Library/Application Support/ScratchBird"
 MACOS_CONFIG_DEFAULTS_REL = "opt/ScratchBird/share/scratchbird/config-defaults"
 MACOS_SERVICE_PROCESS_GROUP_POLICY = (
-    "host_computed_directory_groups_not_copied_into_service_process"
+    "launchd_host_computed_groups_cleared_before_scratchbird_product_exec"
 )
-MACOS_PKG_SCRIPTS = ("postinstall.in",)
+MACOS_PKG_SCRIPTS = ("preinstall.in", "postinstall.in")
 MACOS_NATIVE_CONFIGS = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -812,7 +813,7 @@ def write_macos_system_install_profile(
 def write_macos_system_launchd_manifest(root: Path) -> Path:
     launchd_root = root / "Library" / "LaunchDaemons"
     rows: list[dict[str, Any]] = []
-    for label, binary, config in MACOS_LAUNCHD_SERVICES:
+    for label, selector, binary, config in MACOS_LAUNCHD_SERVICES:
         plist_path = launchd_root / f"{label}.plist"
         if not plist_path.is_file():
             fail(f"macos_system_launchd_asset_missing:{plist_path}")
@@ -824,15 +825,11 @@ def write_macos_system_launchd_manifest(root: Path) -> Path:
             fail(f"macos_system_launchd_label_mismatch:{plist_path.name}")
         arguments = payload.get("ProgramArguments")
         expected_config = f"{MACOS_CONFIG_ROOT}/{config}"
-        if (
-            not isinstance(arguments, list)
-            or "--config" not in arguments
-            or expected_config not in arguments
-        ):
+        if arguments != [MACOS_SERVICE_LAUNCHER, selector]:
             fail(f"macos_system_launchd_config_mismatch:{plist_path.name}")
         if (
-            payload.get("UserName") != "scratchbird"
-            or payload.get("GroupName") != "scratchbird"
+            payload.get("UserName") != "root"
+            or payload.get("GroupName") != "wheel"
             or payload.get("InitGroups") is not False
             or payload.get("RunAtLoad") is not False
             or payload.get("KeepAlive") is not False
@@ -842,11 +839,16 @@ def write_macos_system_launchd_manifest(root: Path) -> Path:
         rows.append(
             {
                 "label": label,
-                "binary": binary,
+                "launcher": MACOS_SERVICE_LAUNCHER,
+                "selector": selector,
+                "target_binary": f"/opt/ScratchBird/bin/{binary}",
                 "config": expected_config,
                 "plist": f"/Library/LaunchDaemons/{plist_path.name}",
-                "user": "scratchbird",
-                "group": "scratchbird",
+                "launchd_bootstrap_user": "root",
+                "launchd_bootstrap_group": "wheel",
+                "final_user": "scratchbird",
+                "final_group": "scratchbird",
+                "final_supplementary_groups": [],
                 "init_groups": False,
                 "run_at_load": False,
                 "disabled": True,
@@ -914,7 +916,9 @@ def stage_macos_system_install_tree(
             "control_dir = runtime/control": (
                 "control_dir = /var/run/scratchbird/sb_server/control"
             ),
-            "log_file = stderr": "log_file = /var/log/scratchbird/SBsrv.log",
+            "log_file = stderr": (
+                "log_file = /var/log/scratchbird/runtime/SBsrv.log"
+            ),
             "default_path = data/default.sbdb": (
                 "default_path = /var/lib/scratchbird/data/default.sbdb"
             ),
@@ -966,7 +970,7 @@ def stage_macos_system_install_tree(
                 "manager.control_dir = /var/run/scratchbird/manager/control"
             ),
             "manager.log.path = stderr": (
-                "manager.log.path = /var/log/scratchbird/SBmgr.log"
+                "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log"
             ),
             "manager.owner.database_path = data/default.sbdb": (
                 "manager.owner.database_path = /var/lib/scratchbird/data/"
@@ -1042,13 +1046,16 @@ def materialize_macos_pkg_scripts(scripts_root: Path, version: str) -> Path:
         if not source.is_file():
             fail(f"macos_pkg_script_asset_missing:{source}")
         text = source.read_text(encoding="utf-8")
-        if text.count("@SCRATCHBIRD_VERSION@") != 1:
+        expected_version_tokens = 1 if template_name == "postinstall.in" else 0
+        if text.count("@SCRATCHBIRD_VERSION@") != expected_version_tokens:
             fail(f"macos_pkg_script_version_token_mismatch:{template_name}")
         target = scripts_root / template_name.removesuffix(".in")
-        target.write_text(
-            text.replace("@SCRATCHBIRD_VERSION@", sanitize_version(version), 1),
-            encoding="utf-8",
-        )
+        materialized = text
+        if expected_version_tokens:
+            materialized = text.replace(
+                "@SCRATCHBIRD_VERSION@", sanitize_version(version), 1
+            )
+        target.write_text(materialized, encoding="utf-8")
         target.chmod(0o755)
     scan_private_text(scripts_root)
     return scripts_root
@@ -1795,6 +1802,10 @@ def write_windows_system_package_evidence(
             "filesystem_operations_group": "ScratchBird",
             "filesystem_operations_group_namespace": "local_SAM",
             "filesystem_operations_group_member_policy": "must_be_empty",
+            "filesystem_operations_group_creation_mechanism": (
+                "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"
+            ),
+            "lifecycle_process_architecture": "64_bit_required",
             "service_account_namespace": "NT SERVICE",
             "service_account_leaf_name": "scratchbird",
             "service_password": "none",
@@ -1851,6 +1862,38 @@ def write_macos_system_package_evidence(
             "default_activity": "not_started",
             "run_at_load": False,
             "launchd_init_groups": False,
+            "launchd_bootstrap_identity": "root:wheel",
+            "launchd_definition_path_policy": (
+                "root_owned_0644_no_extended_acl_no_symlink_single_link_"
+                "exact_fixed_selector"
+            ),
+            "launchd_standard_log_root": "/var/log/scratchbird/launchd",
+            "launchd_standard_log_file_identity": (
+                "root:scratchbird:0640_no_extended_acl"
+            ),
+            "service_launcher": MACOS_SERVICE_LAUNCHER,
+            "service_launcher_interface": "fixed_selector_only_no_forwarded_arguments",
+            "service_launcher_path_policy": (
+                "root_owned_nonwritable_no_extended_acl_no_symlink_"
+                "single_link_launcher"
+            ),
+            "final_product_identity": "scratchbird:scratchbird",
+            "final_supplementary_groups": [],
+            "service_runtime_log_root": "/var/log/scratchbird/runtime",
+            "loaded_legacy_launchd_job_upgrade_policy": (
+                "reject_before_payload_replacement_and_recheck_postinstall"
+            ),
+            "package_preinstall_existing_topology_policy": (
+                "reject_unsafe_existing_root_helper_launcher_and_plist_paths_"
+                "before_payload"
+            ),
+            "package_postinstall_helper_path_policy": (
+                "pre_exec_root_owned_0755_no_extended_acl_no_symlink_"
+                "single_link_helper"
+            ),
+            "legacy_packaged_log_default_migration_policy": (
+                "exact_prior_packaged_line_only_preserve_all_other_configuration_lines"
+            ),
             "top_level_process": "SBsrv",
             "child_process_ownership": (
                 "SBsrv_to_shared_SBgate_to_standalone_SBParser"

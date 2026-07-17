@@ -173,6 +173,16 @@ def main() -> int:
     require(identity.get("group") == "ScratchBird", "group_name")
     require(identity.get("group_namespace") == "local_SAM", "group_namespace")
     require(
+        identity.get("group_creation_mechanism")
+        == r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup",
+        "group_creation_mechanism",
+    )
+    require(
+        identity.get("group_creation_process_architecture")
+        == "64_bit_required",
+        "group_creation_process_architecture",
+    )
+    require(
         identity.get("group_principal") == "exact_local_SAM_alias",
         "group_type_validation",
     )
@@ -296,6 +306,9 @@ def main() -> int:
             '$group.PSBase.Invoke("Members")',
             "if ($members.Count -ne 0)",
             "filesystem_operations_group_member_count = 0",
+            'filesystem_operations_group_creation_policy = "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            "filesystem_operations_group_created_by_this_run = [bool]$GroupCreatedByThisRun",
+            'lifecycle_process_architecture = "64_bit"',
             "service_local_sam_group_membership = $false",
             "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
             "$ServiceCreatedByThisRun",
@@ -303,6 +316,13 @@ def main() -> int:
             "Rollback-CreatedService",
             "function Ensure-SBsrvService",
             '$LifecyclePhase = "PRECHECK"',
+            "[Environment]::Is64BitProcess",
+            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"',
+            "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup `",
+            '$script:LifecyclePhase = "GROUP_IDENTITY_COMMAND_DISCOVERY"',
+            '$script:LifecyclePhase = "GROUP_IDENTITY_CREATE"',
+            '$script:LifecyclePhase = "GROUP_IDENTITY_POSTFAILURE_INVENTORY"',
+            '$script:LifecyclePhase = "GROUP_IDENTITY_FINAL_VALIDATE"',
             '"BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase"',
             '@("create", $ServiceName',
             "Assert-ServiceRecord $service -RequireFreshDefaults",
@@ -322,12 +342,31 @@ def main() -> int:
         "GROUP_MEMBERSHIP_REQUIRED",
         ".Add((\"WinNT://",
         "$_.Exception",
+        '$computer.Create("group", $GroupName)',
+        "$group.SetInfo()",
     ):
         require(forbidden not in lifecycle, f"lifecycle_forbidden:{forbidden}")
 
     require(
         lifecycle.count('"create", $ServiceName') == 1,
         "multiple_service_create_paths",
+    )
+    require(
+        lifecycle.count(
+            'Get-CimInstance -ClassName Win32_UserAccount -Filter '
+            '"Name=\'scratchbird\' AND LocalAccount=TRUE"'
+        )
+        >= 2,
+        "local_sam_user_not_rechecked_in_final_validator",
+    )
+    require(
+        "ScratchBird must not create a local SAM service user" in smoke,
+        "actual_smoke_local_sam_user_absence_check",
+    )
+    require(
+        lifecycle.index("[Environment]::Is64BitProcess")
+        < lifecycle.index('$LifecyclePhase = "PATH_VALIDATION"'),
+        "windows_64bit_process_guard_order",
     )
     require(
         "$env:USERNAME" not in lifecycle
@@ -434,9 +473,17 @@ def main() -> int:
             "$script:AdministrativeExtractRoot = $payloadRoot",
             'Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json"',
             "administrative-extract-cleanup-proof.json",
+            "without a pre-existing ScratchBird SAM identity",
+            "Assert-InstalledWindowsSystem -RequireGroupCreatedByThisRun",
+            "filesystem_operations_group_preserved_after_uninstall",
             '$group.PSBase.Invoke("Members")',
             "ScratchBird filesystem-operations group must have no members",
             "$evidence.filesystem_operations_group_member_count -ne 0",
+            "$evidence.filesystem_operations_group_creation_policy",
+            "$evidence.filesystem_operations_group_created_by_this_run",
+            "$evidence.lifecycle_process_architecture",
+            "param([switch] $RequireGroupCreatedByThisRun)",
+            "Fresh MSI install did not create the ScratchBird group",
             "service_local_sam_group_membership = $false",
             "human_service_group_membership_mutated = $false",
             'create_time_os_authorization = "administrator_only"',

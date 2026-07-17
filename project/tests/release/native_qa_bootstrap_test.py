@@ -427,14 +427,50 @@ class NativeQaBootstrapTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("<key>InitGroups</key>", launchd_probe)
         self.assertIn("<false/>", launchd_probe)
-        self.assertIn("--verify-running-service-identity", launchd_probe)
+        self.assertIn("/opt/ScratchBird/bin/SBlaunch", launchd_probe)
+        self.assertIn("<string>credential-probe</string>", launchd_probe)
+        self.assertIn("<string>root</string>", launchd_probe)
+        self.assertIn("<string>wheel</string>", launchd_probe)
         self.assertIn('sudo test -e "$path"', launchd_probe)
         self.assertIn('sudo launchctl bootout "system/$label"', launchd_probe)
         self.assertIn("host_computed_authority_canaries=refused", launchd_probe)
         self.assertIn('[[ "$canary_count" -gt 0 ]]', launchd_probe)
         self.assertIn("launchd_service_process_credential=passed", launchd_probe)
+        self.assertIn("raw_supplementary_group_count=0", launchd_probe)
         self.assertNotIn("/opt/ScratchBird/bin/SBsrv", launchd_probe)
         self.assertNotIn("/opt/ScratchBird/bin/SBmgr", launchd_probe)
+        launcher = (
+            REPO_ROOT
+            / "project/tools/installers/macos/scratchbird-macos-service-launcher.c"
+        ).read_text(encoding="utf-8")
+        for token in (
+            'strcmp(argv[1], "sbsrv")',
+            'strcmp(argv[1], "sbmgr")',
+            'strcmp(argv[1], "credential-probe")',
+            "setgroups(0, NULL)",
+            "setgid(runtime_gid)",
+            "setuid(runtime_uid)",
+            "close_inherited_descriptors()",
+            "execve(target, selected_argv, clean_environment)",
+        ):
+            self.assertIn(token, launcher)
+        self.assertNotIn("--target", launcher)
+        cmake = (REPO_ROOT / "project/CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("add_executable(sb_macos_service_launcher", cmake)
+        self.assertIn(
+            'sb_public_brand_target(sb_macos_service_launcher "SBlaunch"',
+            cmake,
+        )
+        release_cmake = (
+            REPO_ROOT / "project/tests/release/CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("NAME macos_system_installer_fixture_smoke", release_cmake)
+        self.assertIn("smoke_install_macos_system.py", release_cmake)
+        native_stage = (
+            REPO_ROOT / "project/tools/release/stage_native_release_bundle.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"macos": ("SBlaunch",)', native_stage)
+        self.assertIn("for name in native_executables(platform):", native_stage)
         lifecycle_helper = (
             REPO_ROOT
             / "project/tools/installers/macos/scratchbird-macos-system-install.sh"
@@ -644,14 +680,24 @@ case "${SB_TEST_PKG_SCRIPTS_REPRESENTATION:?}" in
   directory)
     mkdir -p "$expanded/Scripts"
     printf '%s\\n' '#!/bin/sh' \\
+      '/bin/launchctl print system' \\
+      'for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do /bin/launchctl print "system/$label"; launchctl_status=113; test "$launchctl_status" -ne 113; done' \\
+      > "$expanded/Scripts/preinstall"
+    printf '%s\\n' '#!/bin/sh' \\
       '/opt/ScratchBird/libexec/scratchbird-macos-system-install post-install' \\
       > "$expanded/Scripts/postinstall"
+    chmod 0755 "$expanded/Scripts/preinstall" "$expanded/Scripts/postinstall"
     ;;
   archive)
     : > "$expanded/Scripts"
     printf '%s\\n' '#!/bin/sh' \\
+      '/bin/launchctl print system' \\
+      'for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do /bin/launchctl print "system/$label"; launchctl_status=113; test "$launchctl_status" -ne 113; done' \\
+      > "$expanded/Scripts.preinstall"
+    printf '%s\\n' '#!/bin/sh' \\
       '/opt/ScratchBird/libexec/scratchbird-macos-system-install post-install' \\
       > "$expanded/Scripts.postinstall"
+    chmod 0755 "$expanded/Scripts.preinstall" "$expanded/Scripts.postinstall"
     ;;
   *)
     exit 64
@@ -669,6 +715,7 @@ source_path="${2:?source is required}"
 target_path="${3:?target is required}"
 mkdir -p "$target_path"
 if [[ "$(basename "$source_path")" = Scripts ]]; then
+  cp "$source_path.preinstall" "$target_path/preinstall"
   cp "$source_path.postinstall" "$target_path/postinstall"
 fi
 """,
@@ -696,12 +743,19 @@ fi
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("smoke_install_macos=fail:runtime_bin_missing", result.stdout)
             self.assertNotIn("pkg_scripts_missing", result.stdout)
+            self.assertNotIn("pkg_preinstall_missing", result.stdout)
             self.assertNotIn("pkg_postinstall_missing", result.stdout)
+            preinstall = (
+                work_root / "pkg-expanded/Scripts/preinstall"
+                if representation == "directory"
+                else work_root / "pkg-scripts/preinstall"
+            )
             postinstall = (
                 work_root / "pkg-expanded/Scripts/postinstall"
                 if representation == "directory"
                 else work_root / "pkg-scripts/postinstall"
             )
+            self.assertTrue(preinstall.is_file(), result.stdout)
             self.assertTrue(postinstall.is_file(), result.stdout)
 
     def test_linux_system_payload_materializes_runtime_and_identity(self) -> None:

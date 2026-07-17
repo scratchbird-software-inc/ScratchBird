@@ -81,6 +81,9 @@ REQUIRED_EXECUTABLES = (
     "SBmgr",
     *REQUIRED_PARSER_EXECUTABLES,
 )
+PLATFORM_REQUIRED_EXECUTABLES = {
+    "macos": ("SBlaunch",),
+}
 
 def static_library_candidates(library_name: str) -> dict[str, tuple[str, ...]]:
     return {
@@ -160,7 +163,10 @@ def main() -> int:
             )
 
     executable_suffix = ".exe" if args.platform == "windows" else ""
-    for name in REQUIRED_EXECUTABLES:
+    for name in (
+        REQUIRED_EXECUTABLES
+        + PLATFORM_REQUIRED_EXECUTABLES.get(args.platform, ())
+    ):
         rel = f"bin/{name}{executable_suffix}"
         path = root / rel
         if not path.is_file():

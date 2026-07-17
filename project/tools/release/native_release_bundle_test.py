@@ -71,7 +71,7 @@ class NativeReleaseBundleTest(unittest.TestCase):
         source = root / "proof-output" / "output" / "linux"
         for rel in ("bin", "lib", "etc/scratchbird", "share/scratchbird/resources"):
             (source / rel).mkdir(parents=True, exist_ok=True)
-        for name in stage.NATIVE_EXECUTABLES:
+        for name in stage.native_executables("linux"):
             (source / "bin" / name).write_bytes(b"native executable\n")
         for name in ("libSBcore.so", "libSBcore_static.a", "libSBParser_udr.a"):
             (source / "lib" / name).write_bytes(b"native library\n")

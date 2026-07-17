@@ -56,6 +56,8 @@
   "native_default_port": 3092,
   "os_identity": {
     "group": "ScratchBird",
+    "group_creation_mechanism": "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup",
+    "group_creation_process_architecture": "64_bit_required",
     "group_purpose": "filesystem_operations_only_no_database_or_security_authority",
     "group_namespace": "local_SAM",
     "group_principal": "exact_local_SAM_alias",

@@ -2772,6 +2772,30 @@ if(NOT TARGET sb_engine_shared)
   )
 endif()
 
+# macOS launchd may retain directory-derived supplementary groups even when a
+# daemon plist disables InitGroups.  Keep the root bootstrap surface to this
+# libSystem-only launcher: it clears the group set, irreversibly assumes the
+# locked scratchbird OS identity, and then execs a fixed product entry point.
+if(APPLE)
+  add_executable(sb_macos_service_launcher
+    tools/installers/macos/scratchbird-macos-service-launcher.c
+  )
+  target_compile_features(sb_macos_service_launcher PRIVATE c_std_11)
+  target_compile_options(sb_macos_service_launcher PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+  )
+  add_test(
+    NAME macos_service_launcher_selector_refusal
+    COMMAND $<TARGET_FILE:sb_macos_service_launcher> unsupported-selector
+  )
+  set_tests_properties(macos_service_launcher_selector_refusal PROPERTIES
+    WILL_FAIL TRUE
+    LABELS "public_release;public_release_correctness;security;macos"
+  )
+endif()
+
 include(CMakePackageConfigHelpers)
 configure_package_config_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ScratchBirdEngineConfig.cmake.in
@@ -2831,6 +2855,7 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
       sb_server
       sb_listener
       sbmn_manager
+      sb_macos_service_launcher
       sbp_sbsql
       sbp_firebird)
     if(TARGET ${sb_installed_runtime_target})
@@ -3838,6 +3863,7 @@ sb_public_brand_target(sb_engine_shared "SBcore" "ScratchBird Engine" "runtime")
 sb_public_brand_target(sb_listener "SBgate" "ScratchBird Listener" "runtime")
 sb_public_brand_target(sb_server "SBsrv" "ScratchBird IPC Server" "runtime")
 sb_public_brand_target(sbmn_manager "SBmgr" "ScratchBird Single Node Manager" "runtime")
+sb_public_brand_target(sb_macos_service_launcher "SBlaunch" "ScratchBird macOS Service Launcher" "runtime")
 sb_public_brand_target(sbp_sbsql "SBParser" "ScratchBird Core Parser" "runtime")
 sb_public_brand_target(sbl_sbsql_parser_pipeline "SBParser_pipeline" "ScratchBird Core Parser Pipeline" "runtime")
 sb_public_brand_target(sbl_sbsql_parser_worker_core "SBParser_core" "ScratchBird Core Parser Worker Core" "runtime")

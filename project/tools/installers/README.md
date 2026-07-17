@@ -152,17 +152,40 @@ copies a default into the canonical live root
 `/Library/Application Support/ScratchBird` only when that file is missing, so
 an upgrade cannot overwrite an operator configuration. The system payload does
 not install a duplicate live configuration under `/etc` and does not create a
-compatibility symlink.
+compatibility symlink. The one upgrade exception is a line-exact migration of
+the two prior packaged application-log defaults from `/var/log/scratchbird`
+into `/var/log/scratchbird/runtime`; all other configuration lines are
+preserved, and ambiguous, linked, nonregular, or non-newline-terminated inputs
+fail closed before directory ownership is changed. Any other effective SBsrv
+or SBmgr log assignment directly below the now root-owned legacy log root also
+fails closed; operators must place custom rotating logs in the service-owned
+`runtime` subtree.
 
 The package creates or verifies the local `scratchbird` group and the hidden,
 non-login `scratchbird` service identity. It prepares data under
 `/var/lib/scratchbird`, logs under `/var/log/scratchbird`, and server,
 listener, and manager runtime/control paths under `/var/run/scratchbird`, with
 mode `0750` and explicit ownership. It creates no database or security sidecar.
-The launchd definitions specify `UserName=scratchbird`,
-`GroupName=scratchbird`, and `InitGroups=false`; only `SBsrv` and optional
-`SBmgr` are top-level jobs. Both jobs remain disabled, unloaded, and
-`RunAtLoad=false` after installation.
+The launchd definitions run only the fixed-selector `SBlaunch` bootstrap as
+`root:wheel`. macOS launchd can retain host-computed directory groups even
+with `InitGroups=false`, so the tiny launcher clears all supplementary groups,
+irreversibly assumes `scratchbird:scratchbird`, closes inherited descriptors,
+and immediately `execve`s the fixed SBsrv or SBmgr command. It accepts no
+caller-supplied target or forwarded arguments. Both jobs remain disabled,
+unloaded, and `RunAtLoad=false` after installation. The root-owned
+`/var/log/scratchbird/launchd` directory and four pre-created regular files
+prevent the service identity from substituting a symlink before launchd opens
+standard output or error. Application logs use the separate, service-owned
+`/var/log/scratchbird/runtime` directory so SBsrv/SBmgr rotation can safely
+rename and recreate their own files after the identity drop. The log authority
+directories and launchd files have extended ACLs removed and verified absent.
+The `/opt`, `/opt/ScratchBird`, and `bin` launcher chain is root-owned,
+non-writable by group/other, non-symlinked, and ACL-free; `SBlaunch` is also a
+single-link regular executable. The PackageKit postinstall independently
+validates the equivalent `/opt/ScratchBird/libexec` chain and lifecycle helper
+before executing that helper as root. Both launchd plists are normalized and
+verified as root-owned, ACL-free, single-link `0644` regular files with the
+exact fixed-selector contract while their jobs are unloaded.
 `SBsrv` owns the shared `SBgate`, which owns the standalone native `SBParser`.
 The sole native default listener port is 3092.
 
@@ -185,14 +208,27 @@ any other local group, are forbidden. The transitive `admin` membership check
 remains an additional fail-closed guard. Open Directory may report
 host-computed groups such as `everyone`, `localaccounts`, `_lpoperator`, or a
 local sharepoint group even though the package added no such membership. That
-directory inventory is diagnostic, never an installer allowlist. Disabling
-launchd group initialization prevents those host-computed groups from being
-copied into a service process. The hosted package gate launches a one-shot
-credential probe—not a ScratchBird service—and verifies the raw kernel group
-set plus read/write denial against files owned by authority-bearing computed
-groups. The package never adds a human account to the service group. Root alone
+directory inventory is diagnostic, never an installer allowlist. Hosted proof
+shows that `InitGroups=false` does not remove that computed set, so `SBlaunch`
+explicitly clears it before assuming the service UID/GID. The hosted package
+gate selects a one-shot credential probe—not a ScratchBird service—through the
+same launcher and verifies a raw supplementary-group count of zero plus
+read/write denial against files owned by authority-bearing computed groups.
+The package never adds a human account to the service group. Root alone
 authorizes explicit create-time bootstrap; the numeric service identity is used
 only for ScratchBird filesystem ownership and process execution.
+
+Before PackageKit replaces an existing payload, the package `preinstall`
+requires the system launchd domain to be available and both ScratchBird labels
+to return launchd's exact not-loaded status. The postinstall helper repeats
+that check before making host changes. Preinstall also rejects unsafe existing
+symlink, hard-link, ownership, mode, or ACL topology across the root helper,
+launcher, and exact launchd-plist paths before PackageKit can write through
+them. An operator must boot out an older
+loaded ScratchBird job before upgrade; the package never unloads, reloads,
+enables, or starts it implicitly. Concurrent root-level launchd mutation during
+the package transaction is outside the installer contract and is not treated
+as an atomic service-state operation.
 
 The packaged launchd jobs pass the canonical configuration paths explicitly,
 so service operation does not depend on implicit discovery. Interactive

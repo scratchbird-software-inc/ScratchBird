@@ -113,7 +113,7 @@ def system_config_tokens(
     elif platform == "macos":
         run_root = "/var/run/scratchbird"
         data_root = "/var/lib/scratchbird"
-        log_root = "/var/log/scratchbird"
+        log_root = "/var/log/scratchbird/runtime"
         server_runtime = f"{run_root}/sb_server"
         server_control = f"{run_root}/sb_server/control"
     elif platform == "windows":
@@ -290,7 +290,8 @@ def main() -> int:
     if profile.get("policy_content_file_count") != resource_summary["policy_content_file_count"]:
         fail("policy_content_count_mismatch")
     expected_executables = {
-        native.platform_executable(name, platform) for name in native.NATIVE_EXECUTABLES
+        native.platform_executable(name, platform)
+        for name in native.native_executables(platform)
     }
     declared_executables = set(profile.get("executables", []))
     if declared_executables != expected_executables:

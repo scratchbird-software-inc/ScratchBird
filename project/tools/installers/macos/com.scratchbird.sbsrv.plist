@@ -6,15 +6,13 @@
   <string>com.scratchbird.sbsrv</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/ScratchBird/bin/SBsrv</string>
-    <string>--config</string>
-    <string>/Library/Application Support/ScratchBird/SBsrv.conf</string>
-    <string>--foreground</string>
+    <string>/opt/ScratchBird/bin/SBlaunch</string>
+    <string>sbsrv</string>
   </array>
   <key>UserName</key>
-  <string>scratchbird</string>
+  <string>root</string>
   <key>GroupName</key>
-  <string>scratchbird</string>
+  <string>wheel</string>
   <key>InitGroups</key>
   <false/>
   <key>WorkingDirectory</key>
@@ -32,8 +30,8 @@
   <key>Umask</key>
   <integer>23</integer>
   <key>StandardOutPath</key>
-  <string>/var/log/scratchbird/SBsrv.out.log</string>
+  <string>/var/log/scratchbird/launchd/SBsrv.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/scratchbird/SBsrv.err.log</string>
+  <string>/var/log/scratchbird/launchd/SBsrv.err.log</string>
 </dict>
 </plist>

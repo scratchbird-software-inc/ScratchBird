@@ -2382,6 +2382,18 @@ set_tests_properties(native_qa_bootstrap_test PROPERTIES
   LABELS "public_release_correctness;native_qa_bootstrap_test;installers;operational_readiness;native_sbsql;tls;dbbt;secure_bootstrap;fail_closed"
 )
 
+if(UNIX)
+  add_test(
+    NAME macos_system_installer_fixture_smoke
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/installers/smoke_install_macos_system.py
+            --work-root ${CMAKE_CURRENT_BINARY_DIR}/macos_system_installer_fixture_smoke
+  )
+  set_tests_properties(macos_system_installer_fixture_smoke PROPERTIES
+    LABELS "public_release_correctness;installers;macos;system_package;upgrade;service_identity;fail_closed"
+  )
+endif()
+
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
 add_test(
   NAME public_config_policy_migration_gate

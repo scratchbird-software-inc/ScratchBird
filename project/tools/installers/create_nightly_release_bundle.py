@@ -44,6 +44,7 @@ NATIVE_EXECUTABLES = (
     "SBsec",
     "SBdoc",
     "SBcop",
+    "SBlaunch",
 )
 
 ARTIFACT_ROOTS = {

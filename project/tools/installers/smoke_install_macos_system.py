@@ -25,8 +25,9 @@ SERVICE_USER = "scratchbird"
 SERVICE_GROUP = "scratchbird"
 NATIVE_PORT = 3092
 MACOS_SERVICE_PROCESS_GROUP_POLICY = (
-    "host_computed_directory_groups_not_copied_into_service_process"
+    "launchd_host_computed_groups_cleared_before_scratchbird_product_exec"
 )
+MACOS_SERVICE_LAUNCHER = "/opt/ScratchBird/bin/SBlaunch"
 CONFIG_NAMES = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -40,6 +41,8 @@ REQUIRED_DIRECTORIES = (
     "var/lib/scratchbird/data",
     "var/lib/scratchbird/install",
     "var/log/scratchbird",
+    "var/log/scratchbird/launchd",
+    "var/log/scratchbird/runtime",
     "var/run/scratchbird",
     "var/run/scratchbird/sb_server",
     "var/run/scratchbird/sb_server/control",
@@ -56,7 +59,9 @@ CONFIG_REPLACEMENTS: dict[str, dict[str, str]] = {
         "control_dir = runtime/control": (
             "control_dir = /var/run/scratchbird/sb_server/control"
         ),
-        "log_file = stderr": "log_file = /var/log/scratchbird/SBsrv.log",
+        "log_file = stderr": (
+            "log_file = /var/log/scratchbird/runtime/SBsrv.log"
+        ),
         "default_path = data/default.sbdb": (
             "default_path = /var/lib/scratchbird/data/default.sbdb"
         ),
@@ -100,7 +105,7 @@ CONFIG_REPLACEMENTS: dict[str, dict[str, str]] = {
             "manager.control_dir = /var/run/scratchbird/manager/control"
         ),
         "manager.log.path = stderr": (
-            "manager.log.path = /var/log/scratchbird/SBmgr.log"
+            "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log"
         ),
         "manager.owner.database_path = data/default.sbdb": (
             "manager.owner.database_path = /var/lib/scratchbird/data/default.sbdb"
@@ -181,6 +186,21 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
         fail("profile_create_authority_not_root_only")
     if profile.get("human_service_group_membership_mutation") != "forbidden":
         fail("profile_human_membership_mutation_not_forbidden")
+    lifecycle = profile.get("lifecycle", {})
+    if lifecycle.get("package_preinstall") != "preinstall":
+        fail("profile_pkg_preinstall_missing")
+    if lifecycle.get("package_preinstall_existing_topology_policy") != (
+        "reject_unsafe_existing_root_helper_launcher_and_plist_paths_before_"
+        "payload"
+    ):
+        fail("profile_pkg_preinstall_topology_policy_mismatch")
+    if lifecycle.get("package_postinstall") != "postinstall":
+        fail("profile_pkg_postinstall_missing")
+    if lifecycle.get("package_postinstall_helper_path_policy") != (
+        "pre_exec_root_owned_0755_no_extended_acl_no_symlink_"
+        "single_link_helper"
+    ):
+        fail("profile_pkg_postinstall_helper_path_policy_mismatch")
 
     identity = profile.get("os_identity", {})
     if identity.get("service_user") != SERVICE_USER:
@@ -256,6 +276,48 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
         fail("profile_service_run_at_load")
     if service.get("launchd_init_groups") is not False:
         fail("profile_service_launchd_init_groups")
+    if service.get("launchd_bootstrap_identity") != "root:wheel":
+        fail("profile_service_launchd_bootstrap_identity")
+    if service.get("launchd_definition_path_policy") != (
+        "root_owned_0644_no_extended_acl_no_symlink_single_link_"
+        "exact_fixed_selector"
+    ):
+        fail("profile_launchd_definition_path_policy_mismatch")
+    if service.get("launchd_standard_log_root") != (
+        "/var/log/scratchbird/launchd"
+    ):
+        fail("profile_service_launchd_log_root_mismatch")
+    if service.get("launchd_standard_log_file_identity") != (
+        "root:scratchbird:0640_no_extended_acl"
+    ):
+        fail("profile_service_launchd_log_file_identity_mismatch")
+    if service.get("service_launcher") != MACOS_SERVICE_LAUNCHER:
+        fail("profile_service_launcher_mismatch")
+    if service.get("service_launcher_interface") != (
+        "fixed_selector_only_no_forwarded_arguments"
+    ):
+        fail("profile_service_launcher_interface_mismatch")
+    if service.get("service_launcher_path_policy") != (
+        "root_owned_nonwritable_no_extended_acl_no_symlink_"
+        "single_link_launcher"
+    ):
+        fail("profile_service_launcher_path_policy_mismatch")
+    if service.get("final_product_identity") != "scratchbird:scratchbird":
+        fail("profile_service_final_identity_mismatch")
+    if service.get("final_supplementary_groups") != []:
+        fail("profile_service_final_groups_not_empty")
+    if service.get("service_runtime_log_root") != "/var/log/scratchbird/runtime":
+        fail("profile_service_runtime_log_root_mismatch")
+    upgrade = profile.get("upgrade_policy", {})
+    if upgrade.get("loaded_legacy_launchd_job") != (
+        "reject_in_preinstall_before_payload_replacement_and_recheck_in_"
+        "postinstall_helper"
+    ):
+        fail("profile_loaded_legacy_launchd_upgrade_policy_mismatch")
+    if upgrade.get("legacy_packaged_log_defaults") != (
+        "exact_prior_packaged_line_only_preserve_all_other_configuration_lines"
+    ):
+        fail("profile_legacy_log_migration_policy_mismatch")
     labels = service.get("launchd_labels")
     if labels != ["com.scratchbird.sbsrv", "com.scratchbird.sbmgr"]:
         fail("profile_launchd_service_set_mismatch")
@@ -289,6 +351,34 @@ def validate_profile(asset_root: Path) -> dict[str, Any]:
             continue
         if absolute not in profile_paths:
             fail(f"profile_directory_missing:{absolute}")
+    directory_rows = {
+        row.get("path"): row
+        for row in profile.get("directories", [])
+        if isinstance(row, dict)
+    }
+    expected_log_directories = {
+        "/var/log/scratchbird": {
+            "path": "/var/log/scratchbird",
+            "owner": "root",
+            "group": "scratchbird",
+            "mode": "0750",
+        },
+        "/var/log/scratchbird/launchd": {
+            "path": "/var/log/scratchbird/launchd",
+            "owner": "root",
+            "group": "scratchbird",
+            "mode": "0750",
+        },
+        "/var/log/scratchbird/runtime": {
+            "path": "/var/log/scratchbird/runtime",
+            "owner": "scratchbird",
+            "group": "scratchbird",
+            "mode": "0750",
+        },
+    }
+    for path, expected in expected_log_directories.items():
+        if directory_rows.get(path) != expected:
+            fail(f"profile_log_directory_authority_mismatch:{path}")
     return profile
 
 
@@ -309,9 +399,9 @@ def validate_launchd(asset_root: Path) -> dict[str, Any]:
         expected_label = path.name.removesuffix(".plist")
         if label != expected_label:
             fail(f"launchd_label_mismatch:{path.name}")
-        if payload.get("UserName") != SERVICE_USER:
+        if payload.get("UserName") != "root":
             fail(f"launchd_user_mismatch:{path.name}")
-        if payload.get("GroupName") != SERVICE_GROUP:
+        if payload.get("GroupName") != "wheel":
             fail(f"launchd_group_mismatch:{path.name}")
         if payload.get("InitGroups") is not False:
             fail(f"launchd_init_groups_not_disabled:{path.name}")
@@ -321,35 +411,31 @@ def validate_launchd(asset_root: Path) -> dict[str, Any]:
             fail(f"launchd_keep_alive:{path.name}")
         if payload.get("Disabled") is not True:
             fail(f"launchd_not_disabled:{path.name}")
+        expected_selector = {
+            "com.scratchbird.sbsrv": "sbsrv",
+            "com.scratchbird.sbmgr": "sbmgr",
+        }[label]
         arguments = payload.get("ProgramArguments")
-        if not isinstance(arguments, list) or "--config" not in arguments:
-            fail(f"launchd_arguments_invalid:{path.name}")
-        expected_executable = {
-            "com.scratchbird.sbsrv": "/opt/ScratchBird/bin/SBsrv",
-            "com.scratchbird.sbmgr": "/opt/ScratchBird/bin/SBmgr",
-        }[label]
-        if not arguments or arguments[0] != expected_executable:
+        if arguments != [MACOS_SERVICE_LAUNCHER, expected_selector]:
             fail(f"launchd_top_level_executable_mismatch:{path.name}")
-        expected_config = {
-            "com.scratchbird.sbsrv": (
-                "/Library/Application Support/ScratchBird/SBsrv.conf"
-            ),
-            "com.scratchbird.sbmgr": (
-                "/Library/Application Support/ScratchBird/SBmgr.conf"
-            ),
-        }[label]
-        config_index = arguments.index("--config")
-        if (
-            config_index + 1 >= len(arguments)
-            or arguments[config_index + 1] != expected_config
-        ):
-            fail(f"launchd_config_path_mismatch:{path.name}")
         if "--create-if-missing" in arguments:
             fail(f"launchd_database_creation_forbidden:{path.name}")
         if any("SBgate" in str(value) or "SBParser" in str(value) for value in arguments):
             fail(f"launchd_child_process_service_forbidden:{path.name}")
+        expected_log_prefix = "/var/log/scratchbird/launchd/"
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.startswith(expected_log_prefix):
+                fail(f"launchd_standard_log_path_invalid:{path.name}:{key}")
         rows.append(
-            {"label": label, "arguments": arguments, "init_groups": False}
+            {
+                "label": label,
+                "arguments": arguments,
+                "launchd_bootstrap_identity": "root:wheel",
+                "final_product_identity": "scratchbird:scratchbird",
+                "final_supplementary_groups": [],
+                "init_groups": False,
+            }
         )
     return {"services": rows, "default_state": "disabled_unloaded_not_run_at_load"}
 
@@ -363,6 +449,7 @@ def validate_helper_static(helper: Path) -> None:
         "SERVICE_GROUP=scratchbird",
         "SERVICE_UID_MIN=501",
         "SERVICE_UID_MAX_EXCLUSIVE=60000",
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
         "ensure_service_is_not_admin",
         "ensure_service_group_membership_is_exact",
         "ensure_service_has_no_explicit_supplementary_membership",
@@ -379,7 +466,24 @@ def validate_helper_static(helper: Path) -> None:
         '[ "$membership_count" -eq 1 ]',
         '[ "$guid_membership_count" -eq 1 ]',
         'ensure_service_group_membership_is_exact "$user_generated_uid"',
-        "host_computed_directory_groups_not_copied_into_service_process",
+        "launchd_host_computed_groups_cleared_before_scratchbird_product_exec",
+        "make_regular_file 0640",
+        "remove_extended_acl",
+        'chmod -N "$path"',
+        "validate_root_service_launcher_path",
+        "validate_launchd_service_definitions",
+        "root_owned_0644_no_extended_acl_no_symlink_single_link_exact_fixed_selector",
+        "root_owned_nonwritable_no_extended_acl_no_symlink_single_link_launcher",
+        "/var/log/scratchbird/launchd/SBsrv.out.log",
+        "/var/log/scratchbird/launchd/SBmgr.err.log",
+        "/var/log/scratchbird/runtime",
+        "ensure_services_not_loaded",
+        '/bin/launchctl print system',
+        '/bin/launchctl print "system/$label"',
+        '[ "$launchctl_status" -eq 113 ]',
+        "migrate_legacy_packaged_log_defaults",
+        "exact_prior_packaged_line_only_preserve_all_other_configuration_lines",
+        'printf \'  "service_launcher": "/opt/ScratchBird/bin/SBlaunch"',
         'printf \'  "launchd_init_groups": false',
         "/Groups/admin",
         'dseditgroup -n . -o checkmember',
@@ -407,11 +511,12 @@ def validate_helper_static(helper: Path) -> None:
         "launchctl enable",
         "launchctl start",
         "SBsec",
-        "SBsrv",
+        "/opt/ScratchBird/bin/SBsrv",
         "--create-if-missing",
         ".sbdb",
         'id -G "$SERVICE_USER"',
         "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",
+        "host_computed_directory_groups_not_copied_into_service_process",
         ".sbrd",
         "security_principal_events",
         "local_password_auth",
@@ -428,13 +533,78 @@ def validate_helper_static(helper: Path) -> None:
             fail(f"lifecycle_forbidden_native_port:{forbidden_port}")
 
 
+def validate_launcher_static(launcher: Path) -> dict[str, Any]:
+    if not launcher.is_file():
+        fail("service_launcher_source_missing")
+    text = launcher.read_text(encoding="utf-8")
+    for fragment in (
+        'strcmp(argv[1], "sbsrv")',
+        'strcmp(argv[1], "sbmgr")',
+        'strcmp(argv[1], "credential-probe")',
+        '"/opt/ScratchBird/bin/SBsrv"',
+        '"/opt/ScratchBird/bin/SBmgr"',
+        '"--verify-running-service-identity"',
+        "setgroups(0, NULL)",
+        "setgid(runtime_gid)",
+        "setuid(runtime_uid)",
+        'ScratchBirdKernelGetGroups(int size, gid_t groups[])',
+        'validate_executable_target(target, runtime_gid)',
+        "metadata.st_nlink",
+        "close_inherited_descriptors()",
+        "execve(target, selected_argv, clean_environment)",
+        '"PATH=/usr/bin:/bin:/usr/sbin:/sbin"',
+        'deny("SB_MACOS_LAUNCHER.SELECTOR_DENIED")',
+    ):
+        if fragment not in text:
+            fail(f"service_launcher_contract_missing:{fragment}")
+    for forbidden in (
+        "system(",
+        "popen(",
+        "execlp(",
+        "execvp(",
+        "posix_spawn",
+        "fork(",
+        "--target",
+    ):
+        if forbidden in text:
+            fail(f"service_launcher_forbidden_fragment:{forbidden}")
+    if text.count("validate_executable_target(target, runtime_gid)") != 2:
+        fail("service_launcher_target_revalidation_missing")
+    return {
+        "fixed_selectors": ["sbsrv", "sbmgr", "credential-probe"],
+        "supplementary_groups_cleared": True,
+        "final_identity": "scratchbird:scratchbird",
+        "arbitrary_target_or_arguments": "forbidden",
+    }
+
+
 def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
+    preinstall = asset_root / "pkg-scripts" / "preinstall.in"
     postinstall = asset_root / "pkg-scripts" / "postinstall.in"
-    if not postinstall.is_file():
-        fail("pkg_postinstall_template_missing")
+    if not preinstall.is_file() or not postinstall.is_file():
+        fail("pkg_lifecycle_template_missing")
+    preinstall_text = preinstall.read_text(encoding="utf-8")
+    for fragment in (
+        "BOOTSTRAP.SERVICE_STATE_INVALID",
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        "validate_existing_directory /opt true",
+        "validate_existing_file /opt/ScratchBird/bin/SBlaunch 755",
+        "/Library/LaunchDaemons/com.scratchbird.sbsrv.plist 644",
+        "/bin/launchctl print system",
+        '/bin/launchctl print "system/$label"',
+        'if [ "$launchctl_status" -ne 113 ]',
+        "com.scratchbird.sbsrv com.scratchbird.sbmgr",
+    ):
+        if fragment not in preinstall_text:
+            fail(f"pkg_preinstall_contract_missing:{fragment}")
     text = postinstall.read_text(encoding="utf-8")
     required = (
         "/opt/ScratchBird/libexec/scratchbird-macos-system-install",
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        "require_no_extended_acl",
+        "/opt/ScratchBird/libexec",
+        "root:wheel:755",
+        "'%l'",
         "--identity-mode system",
         "--package-format pkg",
         "@SCRATCHBIRD_VERSION@",
@@ -454,8 +624,12 @@ def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
     ):
         if forbidden in text:
             fail(f"pkg_postinstall_forbidden_fragment:{forbidden}")
+        if forbidden in preinstall_text:
+            fail(f"pkg_preinstall_forbidden_fragment:{forbidden}")
     return {
+        "preinstall_template": "present",
         "postinstall_template": "present",
+        "loaded_legacy_launchd_job": "rejected_before_payload_replacement",
         "human_service_group_membership_mutation": "forbidden",
         "service_activation": "not_performed",
     }
@@ -573,6 +747,11 @@ def validate_builder_integration(
     scripts_root = work_root / "builder-pkg-scripts"
     portable_config = portable_root / "etc" / "scratchbird"
     portable_config.mkdir(parents=True)
+    portable_bin = portable_root / "opt" / "ScratchBird" / "bin"
+    portable_bin.mkdir(parents=True)
+    portable_launcher = portable_bin / "SBlaunch"
+    portable_launcher.write_bytes(b"fixture-macos-service-launcher\n")
+    portable_launcher.chmod(0o755)
     source_config = repo_root / "project" / "config" / "templates"
     for name in CONFIG_NAMES:
         shutil.copy2(source_config / name, portable_config / name)
@@ -641,6 +820,12 @@ def validate_builder_integration(
         fail("builder_launchd_manifest_services_missing")
     if any(row.get("init_groups") is not False for row in launchd_services):
         fail("builder_launchd_manifest_init_groups_not_disabled")
+    if any(row.get("launchd_bootstrap_user") != "root" for row in launchd_services):
+        fail("builder_launchd_manifest_bootstrap_user_mismatch")
+    if any(row.get("final_user") != SERVICE_USER for row in launchd_services):
+        fail("builder_launchd_manifest_final_user_mismatch")
+    if any(row.get("final_supplementary_groups") != [] for row in launchd_services):
+        fail("builder_launchd_manifest_final_groups_not_empty")
 
     staged_helper = (
         system_root
@@ -651,9 +836,23 @@ def validate_builder_integration(
     )
     if not staged_helper.is_file() or not os.access(staged_helper, os.X_OK):
         fail("builder_lifecycle_helper_not_staged")
+    staged_launcher = system_root / "opt" / "ScratchBird" / "bin" / "SBlaunch"
+    if not staged_launcher.is_file() or not os.access(staged_launcher, os.X_OK):
+        fail("builder_service_launcher_not_staged")
     postinstall = scripts_root / "postinstall"
-    if not postinstall.is_file() or not os.access(postinstall, os.X_OK):
-        fail("builder_pkg_postinstall_not_materialized")
+    preinstall = scripts_root / "preinstall"
+    if (
+        not preinstall.is_file()
+        or not os.access(preinstall, os.X_OK)
+        or not postinstall.is_file()
+        or not os.access(postinstall, os.X_OK)
+    ):
+        fail("builder_pkg_lifecycle_scripts_not_materialized")
+    preinstall_text = preinstall.read_text(encoding="utf-8")
+    if "@SCRATCHBIRD_VERSION@" in preinstall_text:
+        fail("builder_pkg_preinstall_unexpected_version_token")
+    if '/bin/launchctl print "system/$label"' not in preinstall_text:
+        fail("builder_pkg_preinstall_loaded_job_guard_missing")
     postinstall_text = postinstall.read_text(encoding="utf-8")
     if "@SCRATCHBIRD_VERSION@" in postinstall_text:
         fail("builder_pkg_postinstall_version_token_not_replaced")
@@ -724,6 +923,52 @@ def validate_builder_integration(
         fail("builder_system_evidence_process_group_policy_mismatch")
     if evidence.get("service", {}).get("launchd_init_groups") is not False:
         fail("builder_system_evidence_launchd_init_groups_not_disabled")
+    if evidence.get("service", {}).get("launchd_bootstrap_identity") != "root:wheel":
+        fail("builder_system_evidence_bootstrap_identity_mismatch")
+    if evidence.get("service", {}).get("launchd_definition_path_policy") != (
+        "root_owned_0644_no_extended_acl_no_symlink_single_link_"
+        "exact_fixed_selector"
+    ):
+        fail("builder_system_evidence_launchd_definition_path_policy_mismatch")
+    if evidence.get("service", {}).get("launchd_standard_log_root") != (
+        "/var/log/scratchbird/launchd"
+    ):
+        fail("builder_system_evidence_launchd_log_root_mismatch")
+    if evidence.get("service", {}).get("launchd_standard_log_file_identity") != (
+        "root:scratchbird:0640_no_extended_acl"
+    ):
+        fail("builder_system_evidence_launchd_log_file_identity_mismatch")
+    if evidence.get("service", {}).get("service_launcher_path_policy") != (
+        "root_owned_nonwritable_no_extended_acl_no_symlink_"
+        "single_link_launcher"
+    ):
+        fail("builder_system_evidence_launcher_path_policy_mismatch")
+    if evidence.get("service", {}).get("final_product_identity") != (
+        "scratchbird:scratchbird"
+    ):
+        fail("builder_system_evidence_final_identity_mismatch")
+    if evidence.get("service", {}).get("final_supplementary_groups") != []:
+        fail("builder_system_evidence_final_groups_not_empty")
+    if evidence.get("service", {}).get("service_runtime_log_root") != (
+        "/var/log/scratchbird/runtime"
+    ):
+        fail("builder_system_evidence_runtime_log_root_mismatch")
+    if evidence.get("service", {}).get(
+        "loaded_legacy_launchd_job_upgrade_policy"
+    ) != "reject_before_payload_replacement_and_recheck_postinstall":
+        fail("builder_system_evidence_loaded_job_upgrade_policy_mismatch")
+    if evidence.get("service", {}).get(
+        "package_preinstall_existing_topology_policy"
+    ) != "reject_unsafe_existing_root_helper_launcher_and_plist_paths_before_payload":
+        fail("builder_system_evidence_preinstall_topology_policy_mismatch")
+    if evidence.get("service", {}).get(
+        "package_postinstall_helper_path_policy"
+    ) != "pre_exec_root_owned_0755_no_extended_acl_no_symlink_single_link_helper":
+        fail("builder_system_evidence_postinstall_helper_path_policy_mismatch")
+    if evidence.get("service", {}).get(
+        "legacy_packaged_log_default_migration_policy"
+    ) != "exact_prior_packaged_line_only_preserve_all_other_configuration_lines":
+        fail("builder_system_evidence_legacy_log_migration_policy_mismatch")
 
     staged_plists = sorted(
         (system_root / "Library" / "LaunchDaemons").glob(
@@ -737,9 +982,9 @@ def validate_builder_integration(
         fail("builder_launchd_service_set_mismatch")
     for path in staged_plists:
         payload = plistlib.loads(path.read_bytes())
-        if payload.get("UserName") != SERVICE_USER:
+        if payload.get("UserName") != "root":
             fail(f"builder_launchd_user_mismatch:{path.name}")
-        if payload.get("GroupName") != SERVICE_GROUP:
+        if payload.get("GroupName") != "wheel":
             fail(f"builder_launchd_group_mismatch:{path.name}")
         if payload.get("InitGroups") is not False:
             fail(f"builder_launchd_init_groups_not_disabled:{path.name}")
@@ -754,6 +999,7 @@ def validate_builder_integration(
         "pkgbuild_command_contract": True,
         "system_package_evidence": True,
         "launchd_system_assets_staged": True,
+        "service_launcher_staged": True,
         "native_default_port": NATIVE_PORT,
     }
 
@@ -778,6 +1024,26 @@ def run_fixture_smoke(
         if not path.is_dir():
             fail(f"fixture_directory_missing:{rel}")
         require_mode(path, 0o750)
+    for name in (
+        "SBsrv.out.log",
+        "SBsrv.err.log",
+        "SBmgr.out.log",
+        "SBmgr.err.log",
+    ):
+        log_path = (
+            fixture_root
+            / "var"
+            / "log"
+            / "scratchbird"
+            / "launchd"
+            / name
+        )
+        if not log_path.is_file() or log_path.is_symlink():
+            fail(f"fixture_launchd_log_missing_or_invalid:{name}")
+        require_mode(log_path, 0o640)
+    for name in ("SBsrv.log", "SBmgr.log"):
+        if (fixture_root / "var" / "log" / "scratchbird" / "runtime" / name).exists():
+            fail(f"fixture_inactive_application_log_created:{name}")
     validate_installed_configs(fixture_root)
 
     identity_root = (
@@ -840,11 +1106,32 @@ def run_fixture_smoke(
             MACOS_SERVICE_PROCESS_GROUP_POLICY
         ),
         "launchd_init_groups": False,
+        "launchd_bootstrap_identity": "root:wheel",
+        "launchd_definition_path_policy": (
+            "root_owned_0644_no_extended_acl_no_symlink_single_link_"
+            "exact_fixed_selector"
+        ),
+        "package_postinstall_helper_path_policy": (
+            "pre_exec_root_owned_0755_no_extended_acl_no_symlink_"
+            "single_link_helper"
+        ),
+        "service_launcher": "/opt/ScratchBird/bin/SBlaunch",
+        "service_launcher_path_policy": (
+            "root_owned_nonwritable_no_extended_acl_no_symlink_"
+            "single_link_launcher"
+        ),
+        "final_product_identity": "scratchbird:scratchbird",
+        "final_supplementary_groups_empty": True,
         "human_service_group_membership_mutated": False,
         "create_time_os_authorization": "root_only",
         "service_enablement_default": "disabled",
         "service_activity_default": "not_started",
         "launchd_load_performed": False,
+        "legacy_packaged_log_default_migration_policy": (
+            "exact_prior_packaged_line_only_preserve_all_other_"
+            "configuration_lines"
+        ),
+        "legacy_packaged_log_default_migrations": 0,
         "native_default_port": NATIVE_PORT,
         "database_files_created": False,
         "security_sidecars_created": False,
@@ -855,9 +1142,32 @@ def run_fixture_smoke(
 
     config_root = fixture_root / "Library" / "Application Support" / "ScratchBird"
     server_config = config_root / "SBsrv.conf"
+    server_text = server_config.read_text(encoding="utf-8").replace(
+        "log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        "log_file = /var/log/scratchbird/SBsrv.log",
+        1,
+    )
     server_config.write_text(
-        server_config.read_text(encoding="utf-8") + "operator_override = preserved\n",
+        server_text + "operator_override = preserved\n", encoding="utf-8"
+    )
+    manager_config = config_root / "SBmgr.conf"
+    manager_config.write_text(
+        manager_config.read_text(encoding="utf-8").replace(
+            "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+            "manager.log.path = /var/log/scratchbird/SBmgr.log",
+            1,
+        ),
         encoding="utf-8",
+    )
+    expected_server_after_migration = server_config.read_bytes().replace(
+        b"log_file = /var/log/scratchbird/SBsrv.log",
+        b"log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        1,
+    )
+    expected_manager_after_migration = manager_config.read_bytes().replace(
+        b"manager.log.path = /var/log/scratchbird/SBmgr.log",
+        b"manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+        1,
     )
     custom_config = config_root / "operator-local.conf"
     custom_config.write_text("operator_local = preserved\n", encoding="utf-8")
@@ -869,6 +1179,231 @@ def run_fixture_smoke(
         fail(f"fixture_repeat_failed:{repeat.returncode}:{repeat.stderr.strip()}")
     if "operator_override = preserved" not in server_config.read_text(encoding="utf-8"):
         fail("fixture_upgrade_overwrote_server_config")
+    if "log_file = /var/log/scratchbird/runtime/SBsrv.log" not in (
+        server_config.read_text(encoding="utf-8")
+    ):
+        fail("fixture_upgrade_server_log_default_not_migrated")
+    if "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log" not in (
+        manager_config.read_text(encoding="utf-8")
+    ):
+        fail("fixture_upgrade_manager_log_default_not_migrated")
+    if server_config.read_bytes() != expected_server_after_migration:
+        fail("fixture_upgrade_server_config_bytes_not_preserved")
+    if manager_config.read_bytes() != expected_manager_after_migration:
+        fail("fixture_upgrade_manager_config_bytes_not_preserved")
+    repeated_state = json.loads(state_path.read_text(encoding="utf-8"))
+    if repeated_state.get("legacy_packaged_log_default_migrations") != 2:
+        fail("fixture_upgrade_log_default_migration_count_mismatch")
+    idempotent_config_bytes = {
+        path: path.read_bytes() for path in (server_config, manager_config)
+    }
+    idempotent = run(lifecycle_command(helper, fixture_root))
+    if idempotent.returncode != 0:
+        fail(
+            f"fixture_migration_idempotence_failed:{idempotent.returncode}:"
+            f"{idempotent.stderr.strip()}"
+        )
+    if any(path.read_bytes() != body for path, body in idempotent_config_bytes.items()):
+        fail("fixture_migration_idempotence_changed_config")
+    manager_config.write_text(
+        manager_config.read_text(encoding="utf-8").replace(
+            "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+            "manager.log.path = /var/log/scratchbird/SBmgr.log",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    partial_server_before = server_config.read_bytes()
+    partial_resume = run(lifecycle_command(helper, fixture_root))
+    if partial_resume.returncode != 0:
+        fail(
+            f"fixture_partial_migration_resume_failed:{partial_resume.returncode}:"
+            f"{partial_resume.stderr.strip()}"
+        )
+    if server_config.read_bytes() != partial_server_before:
+        fail("fixture_partial_migration_resume_changed_server_config")
+    if "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log" not in (
+        manager_config.read_text(encoding="utf-8")
+    ):
+        fail("fixture_partial_migration_resume_manager_not_migrated")
+    partial_state = json.loads(state_path.read_text(encoding="utf-8"))
+    if partial_state.get("legacy_packaged_log_default_migrations") != 1:
+        fail("fixture_partial_migration_resume_count_mismatch")
+
+    ambiguous_root = work_root / "migration-ambiguous"
+    shutil.copytree(fixture_root, ambiguous_root)
+    ambiguous_config = (
+        ambiguous_root / "Library" / "Application Support" / "ScratchBird"
+    )
+    ambiguous_server = ambiguous_config / "SBsrv.conf"
+    ambiguous_manager = ambiguous_config / "SBmgr.conf"
+    ambiguous_server.write_text(
+        ambiguous_server.read_text(encoding="utf-8").replace(
+            "log_file = /var/log/scratchbird/runtime/SBsrv.log",
+            "log_file = /var/log/scratchbird/SBsrv.log",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    ambiguous_manager.write_text(
+        ambiguous_manager.read_text(encoding="utf-8")
+        + "manager.log.path = /var/log/scratchbird/SBmgr.log\n",
+        encoding="utf-8",
+    )
+    ambiguous_before = {
+        path: path.read_bytes() for path in (ambiguous_server, ambiguous_manager)
+    }
+    ambiguous = run(lifecycle_command(helper, ambiguous_root))
+    if (
+        ambiguous.returncode == 0
+        or ambiguous.stderr != "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_ambiguous_log_migration_not_refused_code_only")
+    if any(path.read_bytes() != body for path, body in ambiguous_before.items()):
+        fail("fixture_ambiguous_log_migration_partially_changed_config")
+
+    newline_root = work_root / "migration-no-final-newline"
+    shutil.copytree(fixture_root, newline_root)
+    newline_server = (
+        newline_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBsrv.conf"
+    )
+    newline_body = newline_server.read_bytes().replace(
+        b"log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        b"log_file = /var/log/scratchbird/SBsrv.log",
+        1,
+    ).rstrip(b"\n")
+    newline_server.write_bytes(newline_body)
+    newline = run(lifecycle_command(helper, newline_root))
+    if newline.returncode == 0 or newline.stderr != (
+        "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_noncanonical_line_topology_not_refused_code_only")
+    if newline_server.read_bytes() != newline_body:
+        fail("fixture_noncanonical_line_topology_changed_config")
+
+    hardlink_root = work_root / "migration-hardlink"
+    shutil.copytree(fixture_root, hardlink_root)
+    hardlink_server = (
+        hardlink_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBsrv.conf"
+    )
+    external_server = work_root / "migration-hardlink-external.conf"
+    external_server.write_bytes(hardlink_server.read_bytes())
+    external_server.chmod(0o600)
+    hardlink_server.unlink()
+    os.link(external_server, hardlink_server)
+    external_before = (external_server.read_bytes(), stat.S_IMODE(external_server.stat().st_mode))
+    hardlink = run(lifecycle_command(helper, hardlink_root))
+    if hardlink.returncode == 0 or hardlink.stderr != (
+        "BOOTSTRAP.DIRECTORY_PERMISSION_INVALID\n"
+    ):
+        fail("fixture_hardlinked_config_not_refused_code_only")
+    external_after = (external_server.read_bytes(), stat.S_IMODE(external_server.stat().st_mode))
+    if external_after != external_before:
+        fail("fixture_hardlinked_external_inode_changed")
+
+    custom_root = work_root / "migration-custom-root-log"
+    shutil.copytree(fixture_root, custom_root)
+    custom_server = (
+        custom_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBsrv.conf"
+    )
+    custom_body = custom_server.read_text(encoding="utf-8").replace(
+        "log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        'LOG_FILE = "/var/log/scratchbird/runtime/../custom-SBsrv.log"',
+        1,
+    )
+    custom_server.write_text(custom_body, encoding="utf-8")
+    custom = run(lifecycle_command(helper, custom_root))
+    if custom.returncode == 0 or custom.stderr != (
+        "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_custom_root_log_assignment_not_refused_code_only")
+    if custom_server.read_text(encoding="utf-8") != custom_body:
+        fail("fixture_custom_root_log_refusal_changed_config")
+
+    manager_escape_root = work_root / "migration-manager-root-log-escape"
+    shutil.copytree(fixture_root, manager_escape_root)
+    manager_escape = (
+        manager_escape_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBmgr.conf"
+    )
+    manager_escape_body = manager_escape.read_text(encoding="utf-8").replace(
+        "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+        "manager.log.path = /var/log/scratchbird/runtime/../custom-SBmgr.log",
+        1,
+    )
+    manager_escape.write_text(manager_escape_body, encoding="utf-8")
+    manager_escape_result = run(
+        lifecycle_command(helper, manager_escape_root)
+    )
+    if manager_escape_result.returncode == 0 or manager_escape_result.stderr != (
+        "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_manager_root_log_escape_not_refused_code_only")
+    if manager_escape.read_text(encoding="utf-8") != manager_escape_body:
+        fail("fixture_manager_root_log_escape_changed_config")
+
+    private_alias_root = work_root / "migration-private-var-alias"
+    shutil.copytree(fixture_root, private_alias_root)
+    private_alias_server = (
+        private_alias_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBsrv.conf"
+    )
+    private_alias_body = private_alias_server.read_text(encoding="utf-8").replace(
+        "log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        'LOG_FILE = "/private/var/log/scratchbird/custom-SBsrv.log"',
+        1,
+    )
+    private_alias_server.write_text(private_alias_body, encoding="utf-8")
+    private_alias_result = run(lifecycle_command(helper, private_alias_root))
+    if private_alias_result.returncode == 0 or private_alias_result.stderr != (
+        "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_private_var_log_alias_not_refused_code_only")
+    if private_alias_server.read_text(encoding="utf-8") != private_alias_body:
+        fail("fixture_private_var_log_alias_changed_config")
+
+    relative_alias_root = work_root / "migration-relative-root-log-alias"
+    shutil.copytree(fixture_root, relative_alias_root)
+    relative_alias_manager = (
+        relative_alias_root
+        / "Library"
+        / "Application Support"
+        / "ScratchBird"
+        / "SBmgr.conf"
+    )
+    relative_alias_body = relative_alias_manager.read_text(
+        encoding="utf-8"
+    ).replace(
+        "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+        "manager.log.path = ../../var/log/scratchbird/custom-SBmgr.log",
+        1,
+    )
+    relative_alias_manager.write_text(relative_alias_body, encoding="utf-8")
+    relative_alias_result = run(lifecycle_command(helper, relative_alias_root))
+    if relative_alias_result.returncode == 0 or relative_alias_result.stderr != (
+        "BOOTSTRAP.INSTALL_DEFAULTS_INVALID\n"
+    ):
+        fail("fixture_relative_root_log_alias_not_refused_code_only")
+    if relative_alias_manager.read_text(encoding="utf-8") != relative_alias_body:
+        fail("fixture_relative_root_log_alias_changed_config")
     if custom_config.read_text(encoding="utf-8") != "operator_local = preserved\n":
         fail("fixture_upgrade_overwrote_operator_config")
     if data_file.read_text(encoding="utf-8") != "operator-data\n":
@@ -909,6 +1444,15 @@ def run_fixture_smoke(
         "post_install": "passed",
         "idempotence": "passed",
         "upgrade_config_and_data_preservation": "passed",
+        "legacy_packaged_log_default_migration": "passed",
+        "partial_migration_resume": "passed",
+        "legacy_log_migration_ambiguity_refusal": "passed",
+        "legacy_log_migration_line_topology_refusal": "passed",
+        "configuration_hardlink_refusal": "passed",
+        "custom_root_log_assignment_refusal": "passed",
+        "manager_root_log_escape_refusal": "passed",
+        "private_var_log_alias_refusal": "passed",
+        "relative_root_log_alias_refusal": "passed",
         "pre_remove_preservation": "passed",
         "installer_user_surface_refusal": "passed",
         "human_service_group_membership_mutation": "forbidden",
@@ -939,6 +1483,9 @@ def main() -> int:
         "schema_id": "scratchbird.macos_system_install_smoke.v1",
         "profile": validate_profile(asset_root),
         "launchd": validate_launchd(asset_root),
+        "service_launcher": validate_launcher_static(
+            asset_root / "scratchbird-macos-service-launcher.c"
+        ),
         "pkg_scripts": validate_pkg_scripts(asset_root),
     }
     validate_helper_static(helper)

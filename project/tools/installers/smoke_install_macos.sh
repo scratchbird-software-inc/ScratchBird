@@ -83,8 +83,19 @@ case "$package" in
         fi
       fi
     fi
+    preinstall_script="$(find "$pkg_scripts_root" -name preinstall -type f | head -n 1)"
+    [[ -n "$preinstall_script" ]] || fail "pkg_preinstall_missing"
+    [[ -x "$preinstall_script" ]] || fail "pkg_preinstall_not_executable"
+    grep -F '/bin/launchctl print system' "$preinstall_script" >/dev/null || fail "pkg_preinstall_domain_guard_missing"
+    grep -F 'com.scratchbird.sbsrv com.scratchbird.sbmgr' "$preinstall_script" >/dev/null || fail "pkg_preinstall_label_guard_missing"
+    grep -F 'launchctl_status" -ne 113' "$preinstall_script" >/dev/null || fail "pkg_preinstall_absent_status_guard_missing"
+    ! grep -F '@SCRATCHBIRD_VERSION@' "$preinstall_script" >/dev/null || fail "pkg_preinstall_version_token_unresolved"
+    if grep -E 'launchctl[[:space:]]+(load|bootstrap|enable|start|bootout)' "$preinstall_script" >/dev/null; then
+      fail "pkg_preinstall_service_mutation_forbidden"
+    fi
     postinstall_script="$(find "$pkg_scripts_root" -name postinstall -type f | head -n 1)"
     [[ -n "$postinstall_script" ]] || fail "pkg_postinstall_missing"
+    [[ -x "$postinstall_script" ]] || fail "pkg_postinstall_not_executable"
     grep -F '/opt/ScratchBird/libexec/scratchbird-macos-system-install' "$postinstall_script" >/dev/null || fail "pkg_postinstall_helper_missing"
     ! grep -F '@SCRATCHBIRD_VERSION@' "$postinstall_script" >/dev/null || fail "pkg_postinstall_version_token_unresolved"
     if grep -E 'launchctl[[:space:]]+(load|bootstrap|enable|start)' "$postinstall_script" >/dev/null; then
@@ -137,6 +148,8 @@ if [[ "$package_kind" == "system-pkg" ]]; then
   [[ -x "$runtime_root/libexec/scratchbird-macos-system-install" ]] || fail "macos_lifecycle_helper_missing"
 fi
 
+[[ -x "$runtime_root/bin/SBlaunch" ]] || fail "macos_service_launcher_missing"
+
 llvm_runtime_library=$(python3 -c '
 import json, platform, sys
 profile = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -178,14 +191,14 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "com.scratchbird.sbsrv": "/Library/Application Support/ScratchBird/SBsrv.conf",
-    "com.scratchbird.sbmgr": "/Library/Application Support/ScratchBird/SBmgr.conf",
+    "com.scratchbird.sbsrv": "sbsrv",
+    "com.scratchbird.sbmgr": "sbmgr",
 }
-for label, config in expected.items():
+for label, selector in expected.items():
     payload = plistlib.loads((root / f"{label}.plist").read_bytes())
-    if payload.get("UserName") != "scratchbird":
+    if payload.get("UserName") != "root":
         raise SystemExit(f"launchd_user_mismatch:{label}")
-    if payload.get("GroupName") != "scratchbird":
+    if payload.get("GroupName") != "wheel":
         raise SystemExit(f"launchd_group_mismatch:{label}")
     if payload.get("InitGroups") is not False:
         raise SystemExit(f"launchd_init_groups_not_disabled:{label}")
@@ -194,8 +207,8 @@ for label, config in expected.items():
     if payload.get("RunAtLoad") is not False or payload.get("KeepAlive") is not False:
         raise SystemExit(f"launchd_default_activity_mismatch:{label}")
     arguments = payload.get("ProgramArguments", [])
-    if "--config" not in arguments or config not in arguments:
-        raise SystemExit(f"launchd_config_mismatch:{label}")
+    if arguments != ["/opt/ScratchBird/bin/SBlaunch", selector]:
+        raise SystemExit(f"launchd_launcher_selector_mismatch:{label}")
 PY
   if command -v plutil >/dev/null 2>&1; then
     while IFS= read -r plist; do
@@ -243,14 +256,99 @@ if [[ "$payload_root" != "/" && "$package_kind" == "system-pkg" ]]; then
   [[ ! -e "$fresh_root/etc/scratchbird" ]] || fail "lifecycle_duplicate_etc_config_root"
   printf 'preserve=yes\n' > "$live_config/local-preserve.conf"
   cp -R "$fresh_root"/. "$upgraded_root"/
+  upgraded_config="$upgraded_root/Library/Application Support/ScratchBird"
+  python3 - "$upgraded_config" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+replacements = {
+    "SBsrv.conf": (
+        "log_file = /var/log/scratchbird/runtime/SBsrv.log",
+        "log_file = /var/log/scratchbird/SBsrv.log",
+    ),
+    "SBmgr.conf": (
+        "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log",
+        "manager.log.path = /var/log/scratchbird/SBmgr.log",
+    ),
+}
+for name, (current, legacy) in replacements.items():
+    path = root / name
+    text = path.read_text(encoding="utf-8")
+    if text.count(current) != 1:
+        raise SystemExit(f"legacy_log_seed_source_mismatch:{name}")
+    path.write_text(text.replace(current, legacy, 1), encoding="utf-8")
+PY
   upgraded_helper="$upgraded_root/opt/ScratchBird/libexec/scratchbird-macos-system-install"
   "$upgraded_helper" post-install \
     --root "$upgraded_root" \
     --identity-mode fixture \
     --package-format fixture \
     --package-version 0.0.0-smoke
-  upgraded_config="$upgraded_root/Library/Application Support/ScratchBird"
   [[ -f "$upgraded_config/local-preserve.conf" ]] || fail "lifecycle_upgrade_config_not_preserved"
+  grep -Fx 'log_file = /var/log/scratchbird/runtime/SBsrv.log' \
+    "$upgraded_config/SBsrv.conf" >/dev/null || fail "lifecycle_legacy_server_log_not_migrated"
+  grep -Fx 'manager.log.path = /var/log/scratchbird/runtime/SBmgr.log' \
+    "$upgraded_config/SBmgr.conf" >/dev/null || fail "lifecycle_legacy_manager_log_not_migrated"
+  python3 - "$upgraded_root/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+if state.get("legacy_packaged_log_default_migrations") != 2:
+    raise SystemExit("legacy_log_migration_count_mismatch")
+PY
+  idempotent_before="$(shasum -a 256 \
+    "$upgraded_config/SBsrv.conf" "$upgraded_config/SBmgr.conf")"
+  "$upgraded_helper" post-install \
+    --root "$upgraded_root" \
+    --identity-mode fixture \
+    --package-format fixture \
+    --package-version 0.0.0-smoke
+  idempotent_after="$(shasum -a 256 \
+    "$upgraded_config/SBsrv.conf" "$upgraded_config/SBmgr.conf")"
+  [[ "$idempotent_after" == "$idempotent_before" ]] || \
+    fail "lifecycle_upgrade_idempotence_changed_config"
+  python3 - "$upgraded_root/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+if state.get("legacy_packaged_log_default_migrations") != 0:
+    raise SystemExit("idempotent_log_migration_count_mismatch")
+PY
+  python3 - "$upgraded_config/SBmgr.conf" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+current = "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log"
+legacy = "manager.log.path = /var/log/scratchbird/SBmgr.log"
+if text.count(current) != 1 or legacy in text:
+    raise SystemExit("partial_migration_seed_topology_invalid")
+path.write_text(text.replace(current, legacy, 1), encoding="utf-8")
+PY
+  partial_server_before="$(shasum -a 256 "$upgraded_config/SBsrv.conf" | awk '{print $1}')"
+  "$upgraded_helper" post-install \
+    --root "$upgraded_root" \
+    --identity-mode fixture \
+    --package-format fixture \
+    --package-version 0.0.0-smoke
+  partial_server_after="$(shasum -a 256 "$upgraded_config/SBsrv.conf" | awk '{print $1}')"
+  [[ "$partial_server_after" == "$partial_server_before" ]] || \
+    fail "lifecycle_partial_resume_changed_migrated_server_config"
+  grep -Fx 'manager.log.path = /var/log/scratchbird/runtime/SBmgr.log' \
+    "$upgraded_config/SBmgr.conf" >/dev/null || \
+    fail "lifecycle_partial_resume_manager_log_not_migrated"
+  python3 - "$upgraded_root/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+if state.get("legacy_packaged_log_default_migrations") != 1:
+    raise SystemExit("partial_resume_log_migration_count_mismatch")
+PY
   "$upgraded_helper" pre-remove \
     --root "$upgraded_root" \
     --identity-mode fixture \
@@ -269,6 +367,8 @@ if [[ "$payload_root" != "/" && "$package_kind" == "system-pkg" ]]; then
     echo "fresh_install=passed"
     echo "canonical_config_root=passed"
     echo "upgrade_idempotence=passed"
+    echo "partial_migration_resume=passed"
+    echo "legacy_packaged_log_default_migration=passed"
     echo "config_preservation=passed"
     echo "pre_remove_preservation=passed"
     echo "uninstall_runtime_removal=passed"

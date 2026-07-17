@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: MPL-2.0
 
 set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
     printf '%s\n' BOOTSTRAP.OS_AUTHORITY_DENIED >&2
     exit 1
 fi
@@ -16,6 +18,37 @@ if [ "$target_volume" != / ]; then
 fi
 
 helper=/opt/ScratchBird/libexec/scratchbird-macos-system-install
+
+require_no_extended_acl() {
+    acl_mode=$(/bin/ls -lde "$1" 2>/dev/null | \
+        /usr/bin/awk 'NR == 1 { print $1 }')
+    case "$acl_mode" in
+        ''|*+*)
+            printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+            exit 1
+            ;;
+    esac
+}
+
+for directory in /opt /opt/ScratchBird /opt/ScratchBird/libexec; do
+    if [ ! -d "$directory" ] || [ -L "$directory" ] || \
+       [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$directory" 2>/dev/null)" != \
+         root:wheel:755 ]; then
+        printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+        exit 1
+    fi
+    require_no_extended_acl "$directory"
+done
+
+if [ ! -f "$helper" ] || [ -L "$helper" ] || [ ! -x "$helper" ] || \
+   [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$helper" 2>/dev/null)" != \
+     root:wheel:755 ] || \
+   [ "$(/usr/bin/stat -f '%l' "$helper" 2>/dev/null)" != 1 ]; then
+    printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+    exit 1
+fi
+require_no_extended_acl "$helper"
+
 if [ ! -x "$helper" ]; then
     printf '%s\n' BOOTSTRAP.INSTALL_DEFAULTS_INVALID >&2
     exit 1

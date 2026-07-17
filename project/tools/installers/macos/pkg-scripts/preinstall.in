@@ -1,0 +1,106 @@
+#!/bin/sh
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+# Reject an upgrade before payload replacement if launchd still has either
+# prior ScratchBird job loaded. A cached legacy job would otherwise bypass the
+# new fixed-selector credential-dropping launcher until explicitly booted out.
+
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    printf '%s\n' BOOTSTRAP.OS_AUTHORITY_DENIED >&2
+    exit 1
+fi
+
+target_volume=${3:-/}
+if [ "$target_volume" != / ]; then
+    printf '%s\n' BOOTSTRAP.INSTALL_DEFAULTS_INVALID >&2
+    exit 1
+fi
+
+require_no_extended_acl() {
+    acl_mode=$(/bin/ls -lde "$1" 2>/dev/null | \
+        /usr/bin/awk 'NR == 1 { print $1 }')
+    case "$acl_mode" in
+        ''|*+*)
+            printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+            exit 1
+            ;;
+    esac
+}
+
+validate_existing_directory() {
+    path=$1
+    required=$2
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        [ "$required" = false ] && return 0
+        printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+        exit 1
+    fi
+    if [ ! -d "$path" ] || [ -L "$path" ] || \
+       [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$path" 2>/dev/null)" != \
+         root:wheel:755 ]; then
+        printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+        exit 1
+    fi
+    require_no_extended_acl "$path"
+}
+
+validate_existing_file() {
+    path=$1
+    mode=$2
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        return 0
+    fi
+    if [ ! -f "$path" ] || [ -L "$path" ] || \
+       [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$path" 2>/dev/null)" != \
+         "root:wheel:$mode" ] || \
+       [ "$(/usr/bin/stat -f '%l' "$path" 2>/dev/null)" != 1 ]; then
+        printf '%s\n' BOOTSTRAP.DIRECTORY_PERMISSION_INVALID >&2
+        exit 1
+    fi
+    require_no_extended_acl "$path"
+}
+
+# PackageKit has not replaced the payload yet. Refuse unsafe pre-existing
+# topology so it cannot follow a service-writable symlink or hard link while
+# laying down the root-executed helper, launcher, or launchd definitions.
+validate_existing_directory /opt true
+validate_existing_directory /opt/ScratchBird false
+validate_existing_directory /opt/ScratchBird/bin false
+validate_existing_directory /opt/ScratchBird/libexec false
+validate_existing_file /opt/ScratchBird/bin/SBlaunch 755
+validate_existing_file \
+    /opt/ScratchBird/libexec/scratchbird-macos-system-install 755
+validate_existing_directory /Library/LaunchDaemons true
+validate_existing_file \
+    /Library/LaunchDaemons/com.scratchbird.sbsrv.plist 644
+validate_existing_file \
+    /Library/LaunchDaemons/com.scratchbird.sbmgr.plist 644
+
+[ -x /bin/launchctl ] || {
+    printf '%s\n' BOOTSTRAP.SERVICE_STATE_INVALID >&2
+    exit 1
+}
+/bin/launchctl print system >/dev/null 2>&1 || {
+    printf '%s\n' BOOTSTRAP.SERVICE_STATE_INVALID >&2
+    exit 1
+}
+
+for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
+    if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+        printf '%s\n' BOOTSTRAP.SERVICE_STATE_INVALID >&2
+        exit 1
+    else
+        launchctl_status=$?
+        if [ "$launchctl_status" -ne 113 ]; then
+            printf '%s\n' BOOTSTRAP.SERVICE_STATE_INVALID >&2
+            exit 1
+        fi
+    fi
+done
+
+exit 0

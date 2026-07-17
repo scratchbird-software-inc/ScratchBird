@@ -2,9 +2,10 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
-# Prove the credential launchd actually supplies when InitGroups is disabled.
-# This intentionally launches only the bootstrap authority probe, never a
-# ScratchBird server, listener, manager, parser, or database process.
+# Prove the installed fixed-selector launcher clears launchd's host-computed
+# groups before it execs a ScratchBird process. This intentionally selects only
+# the bootstrap authority probe, never a server, listener, manager, parser, or
+# database process.
 
 set -euo pipefail
 
@@ -33,10 +34,19 @@ proof_root="$(cd "$proof_root" && pwd -P)"
 label=com.scratchbird.credential-probe
 runtime_plist=/Library/LaunchDaemons/com.scratchbird.credential-probe.plist
 runtime_probe=/var/lib/scratchbird/install/sb_bootstrap_launchd_credential_probe
-runtime_stdout=/var/log/scratchbird/launchd-credential-probe.out
-runtime_stderr=/var/log/scratchbird/launchd-credential-probe.err
+runtime_launcher=/opt/ScratchBird/bin/SBlaunch
+runtime_stdout=/var/log/scratchbird/launchd/credential-probe.out
+runtime_stderr=/var/log/scratchbird/launchd/credential-probe.err
 canary_root=/var/lib/scratchbird/install/launchd-credential-canaries
 proof_plist="$proof_root/launchd-credential-probe.plist"
+
+sudo test -x "$runtime_launcher" || fail "launcher_missing"
+sudo test ! -L "$runtime_launcher" || fail "launcher_symlink"
+launcher_metadata=$(sudo stat -f '%u:%Lp' "$runtime_launcher" 2>/dev/null || true)
+[[ "$launcher_metadata" == 0:* ]] || fail "launcher_owner_invalid"
+launcher_mode=${launcher_metadata#*:}
+[[ "$launcher_mode" =~ ^[0-7]{3,4}$ ]] || fail "launcher_mode_invalid"
+(( (8#$launcher_mode & 0022) == 0 )) || fail "launcher_write_authority_invalid"
 
 for path in "$runtime_plist" "$runtime_probe" "$runtime_stdout" \
   "$runtime_stderr" "$canary_root"; do
@@ -88,15 +98,13 @@ cat > "$proof_plist" <<'PLIST'
   <string>com.scratchbird.credential-probe</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/var/lib/scratchbird/install/sb_bootstrap_launchd_credential_probe</string>
-    <string>--verify-running-service-identity</string>
-    <string>/Library/Application Support/ScratchBird/SBbootstrap.profile</string>
-    <string>/var/lib/scratchbird/install/launchd-credential-canaries</string>
+    <string>/opt/ScratchBird/bin/SBlaunch</string>
+    <string>credential-probe</string>
   </array>
   <key>UserName</key>
-  <string>scratchbird</string>
+  <string>root</string>
   <key>GroupName</key>
-  <string>scratchbird</string>
+  <string>wheel</string>
   <key>InitGroups</key>
   <false/>
   <key>RunAtLoad</key>
@@ -104,9 +112,9 @@ cat > "$proof_plist" <<'PLIST'
   <key>KeepAlive</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>/var/log/scratchbird/launchd-credential-probe.out</string>
+  <string>/var/log/scratchbird/launchd/credential-probe.out</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/scratchbird/launchd-credential-probe.err</string>
+  <string>/var/log/scratchbird/launchd/credential-probe.err</string>
 </dict>
 </plist>
 PLIST
@@ -176,6 +184,9 @@ grep -Fx "effective_group=scratchbird" \
 grep -Fx "supplementary_group_policy=exact_scratchbird_only" \
   "$proof_root/launchd-service-credential.txt" >/dev/null || \
   fail "supplementary_group_mismatch"
+grep -Fx "raw_supplementary_group_count=0" \
+  "$proof_root/launchd-service-credential.txt" >/dev/null || \
+  fail "raw_supplementary_group_count"
 grep -Fx "host_computed_authority_canaries=refused" \
   "$proof_root/launchd-service-credential.txt" >/dev/null || \
   fail "host_computed_authority_canary"

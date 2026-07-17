@@ -165,6 +165,7 @@ def check_macos_system_installed_verifier(
         require_token(job, diagnostic_token, rel)
     step = workflow_step_block(job, step_name, rel, job_name)
     smoke = "project/tools/installers/smoke_install_macos.sh"
+    upgrade_guard = "project/tools/installers/smoke_macos_upgrade_guards.sh"
     installer = "sudo installer -pkg"
     verifier = "project/tools/release/verify_native_installed_payload.py"
     mode = "--config-mode system-installed"
@@ -181,6 +182,7 @@ def check_macos_system_installed_verifier(
     inventory_proof = "macos-system-database-security-proof.txt"
     for token in (
         smoke,
+        upgrade_guard,
         installer,
         verifier,
         'python_bin="$(command -v python3)"',
@@ -203,13 +205,27 @@ def check_macos_system_installed_verifier(
         launchd_proof,
         "launchd_service_process_credential=passed",
         "supplementary_group_policy=exact_scratchbird_only",
+        "raw_supplementary_group_count=0",
         "host_computed_authority_canaries=refused",
         "host_computed_authority_canary_count",
         "bootstrap_authority_regain=refused",
         "com.scratchbird.credential-probe",
         'sudo launchctl bootout "system/$label"',
         'data.get("InitGroups") is not False',
-        "host_computed_directory_groups_not_copied_into_service_process",
+        "launchd_host_computed_groups_cleared_before_scratchbird_product_exec",
+        "/opt/ScratchBird/bin/SBlaunch",
+        'data.get("UserName") != "root"',
+        'data.get("GroupName") != "wheel"',
+        "root:scratchbird:750",
+        "root:scratchbird:640",
+        'sudo ls -lde "$authority_path"',
+        "/opt/ScratchBird/libexec/scratchbird-macos-system-install",
+        "/Library/LaunchDaemons/com.scratchbird.sbsrv.plist",
+        "for service_plist in",
+        "SB_MACOS_LAUNCHER.ROOT_AUTHORITY_REQUIRED",
+        'test "$?" -eq 113',
+        "/var/log/scratchbird/launchd",
+        "/var/log/scratchbird/runtime",
         "service_authentication_authority_present",
         "service_shadow_hash_data_present",
         "service_user_record=",
@@ -243,13 +259,22 @@ def check_macos_system_installed_verifier(
                 f"{rel}:{job_name}:{forbidden}"
             )
     verifier_offset = step.index(verifier)
+    upgrade_guard_offset = step.index(upgrade_guard)
+    preinstall_guard_offset = step.index(
+        'preinstall "$package" "$proof_root"', upgrade_guard_offset
+    )
+    postinstall_guard_offset = step.index(
+        'postinstall "$package" "$proof_root"', preinstall_guard_offset
+    )
     mode_offset = step.find(mode, verifier_offset)
     inventory_offset = step.find(inventory, mode_offset)
     if not (
         step.index(smoke)
+        < preinstall_guard_offset
         < step.index(installer)
         < step.index(installer_status)
         < step.index(failure_identity)
+        < postinstall_guard_offset
         < verifier_offset
         < mode_offset
         < inventory_offset
@@ -564,6 +589,30 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
+    upgrade_guard = (
+        repo_root
+        / "project"
+        / "tools"
+        / "installers"
+        / "smoke_macos_upgrade_guards.sh"
+    )
+    if not upgrade_guard.is_file():
+        fail("macos_upgrade_guard_smoke_missing")
+    upgrade_guard_text = upgrade_guard.read_text(encoding="utf-8")
+    for token in (
+        "/bin/launchctl print system",
+        "com.scratchbird.sbsrv com.scratchbird.sbmgr",
+        '[[ "$status" -eq 113 ]]',
+        "sudo installer -pkg",
+        "macos-preinstall-loaded-job-guard.txt",
+        "macos-postinstall-upgrade-guard.txt",
+        "legacy_packaged_log_default_migrations",
+        "loaded_job_helper_recheck_mutated_state",
+        "unsafe_existing_symlink_refusal=passed",
+        "unsafe_existing_hardlink_refusal=passed",
+        "unsafe_existing_plist_symlink_refusal=passed",
+    ):
+        require_token(upgrade_guard_text, token, upgrade_guard.name)
     workflow_root = repo_root / ("." + "github") / "workflows"
     if not workflow_root.is_dir():
         fail("workflow_root_missing")

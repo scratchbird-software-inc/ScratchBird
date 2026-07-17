@@ -82,6 +82,9 @@ function Get-ExactScratchBirdGroup {
   if ($members.Count -ne 0) {
     throw "ScratchBird filesystem-operations group must have no members"
   }
+  if (@(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE").Count -ne 0) {
+    throw "ScratchBird must not create a local SAM service user"
+  }
   return $rows[0]
 }
 
@@ -143,6 +146,7 @@ function Assert-NoInstallerDatabaseArtifacts {
 }
 
 function Assert-InstalledWindowsSystem {
+  param([switch] $RequireGroupCreatedByThisRun)
   $runtimeRoot = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "ScratchBird"
   $stateRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "ScratchBird"
   foreach ($binary in @("SBsrv", "SBgate", "SBParser", "SBmgr")) {
@@ -193,8 +197,14 @@ function Assert-InstalledWindowsSystem {
     throw "Windows system install evidence is missing"
   }
   $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.filesystem_operations_group_member_count -ne 0 -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
+  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.filesystem_operations_group_member_count -ne 0 -or $evidence.filesystem_operations_group_creation_policy -ne "Microsoft.PowerShell.LocalAccounts\New-LocalGroup_when_missing" -or $evidence.lifecycle_process_architecture -ne "64_bit" -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
     throw "Windows system install evidence is invalid"
+  }
+  if ($evidence.filesystem_operations_group_created_by_this_run -isnot [bool]) {
+    throw "Windows group creation evidence is invalid"
+  }
+  if ($RequireGroupCreatedByThisRun -and -not $evidence.filesystem_operations_group_created_by_this_run) {
+    throw "Fresh MSI install did not create the ScratchBird group"
   }
 
   $configRoot = Join-Path $stateRoot "config"
@@ -378,6 +388,9 @@ if ($AdministrativeExtractOnly) {
 if (@(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Count -ne 0) {
   throw "actual MSI smoke requires a host without a pre-existing scratchbird service"
 }
+if (@(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE").Count -ne 0 -or @(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE").Count -ne 0) {
+  throw "actual MSI smoke requires a host without a pre-existing ScratchBird SAM identity"
+}
 
 $installLog = Join-Path $WorkRoot "msi-actual-install.log"
 Invoke-Msi @(
@@ -388,7 +401,7 @@ Invoke-Msi @(
   "/l*v",
   "`"$installLog`""
 ) "msiexec actual install failed"
-$installed = Assert-InstalledWindowsSystem
+$installed = Assert-InstalledWindowsSystem -RequireGroupCreatedByThisRun
 
 $configMarker = Join-Path $installed.state_root "config\qa-operator-preserve.conf"
 $dataMarker = Join-Path $installed.state_root "data\qa-operator-preserve.dat"
@@ -448,6 +461,7 @@ if ((Get-FileHash -LiteralPath $configMarker -Algorithm SHA256).Hash -ne $config
   throw "MSI uninstall changed operator config/data"
 }
 Assert-NoInstallerDatabaseArtifacts $installed.state_root
+[void](Get-ExactScratchBirdGroup)
 
 @{
   schema_id = "scratchbird.windows_msi_actual_install_smoke.v1"
@@ -458,6 +472,8 @@ Assert-NoInstallerDatabaseArtifacts $installed.state_root
   service_fresh_install = "manual_stopped"
   service_account = "NT SERVICE\scratchbird"
   filesystem_operations_group_member_count = 0
+  filesystem_operations_group_created_on_fresh_install = $true
+  filesystem_operations_group_preserved_after_uninstall = $true
   service_authority_scope = "filesystem_directory_and_process_execution_only_no_database_or_security_authority"
   service_local_sam_group_membership = $false
   human_service_group_membership_mutated = $false

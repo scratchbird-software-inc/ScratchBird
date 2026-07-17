@@ -528,6 +528,7 @@ jobs:
             /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
             /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
             /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
+            /Library/LaunchDaemons/com.scratchbird.upgrade-guard-test.plist \
             /var/lib/scratchbird \
             /var/log/scratchbird \
             /var/run/scratchbird \
@@ -567,7 +568,8 @@ jobs:
             sudo rm -f \
               /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
               /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
-              /Library/LaunchDaemons/com.scratchbird.credential-probe.plist || \
+              /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
+              /Library/LaunchDaemons/com.scratchbird.upgrade-guard-test.plist || \
               cleanup_status=1
             sudo rm -rf \
               /opt/ScratchBird \
@@ -590,6 +592,7 @@ jobs:
               /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
               /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
               /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
+              /Library/LaunchDaemons/com.scratchbird.upgrade-guard-test.plist \
               /var/lib/scratchbird \
               /var/log/scratchbird \
               /var/run/scratchbird \
@@ -632,6 +635,8 @@ jobs:
           trap cleanup_on_exit EXIT
 
           project/tools/installers/smoke_install_macos.sh "$package" "$proof_root"
+          bash project/tools/installers/smoke_macos_upgrade_guards.sh \
+            preinstall "$package" "$proof_root"
           installer_status=0
           set +e
           sudo installer -pkg "$package" -target / \
@@ -677,6 +682,8 @@ jobs:
             fi
             exit "$installer_status"
           fi
+          bash project/tools/installers/smoke_macos_upgrade_guards.sh \
+            postinstall "$package" "$proof_root"
           python_bin="$(command -v python3)"
           [[ "$python_bin" = /* && -x "$python_bin" ]]
           sudo install -d -o root -g scratchbird -m 0750 "$verifier_root"
@@ -698,16 +705,88 @@ jobs:
           sudo rm -rf "$verifier_root"
           sudo test ! -e "$verifier_root"
           sudo test ! -L "$verifier_root"
+          for root_executable in \
+            /opt/ScratchBird/bin/SBlaunch \
+            /opt/ScratchBird/libexec/scratchbird-macos-system-install; do
+            test "$(sudo stat -f '%Su:%Sg:%Lp' "$root_executable")" = \
+              root:wheel:755
+            test "$(sudo stat -f '%l' "$root_executable")" = 1
+          done
+          for launcher_directory in \
+            /opt /opt/ScratchBird /opt/ScratchBird/bin \
+            /opt/ScratchBird/libexec /Library/LaunchDaemons; do
+            test "$(sudo stat -f '%Su:%Sg:%Lp' "$launcher_directory")" = \
+              root:wheel:755
+          done
+          for service_plist in \
+            /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
+            /Library/LaunchDaemons/com.scratchbird.sbmgr.plist; do
+            test "$(sudo stat -f '%Su:%Sg:%Lp' "$service_plist")" = \
+              root:wheel:644
+            test "$(sudo stat -f '%l' "$service_plist")" = 1
+          done
+          set +e
+          launcher_refusal="$(/opt/ScratchBird/bin/SBlaunch sbsrv 2>&1)"
+          launcher_refusal_status=$?
+          set -e
+          test "$launcher_refusal_status" -eq 78
+          test "$launcher_refusal" = SB_MACOS_LAUNCHER.ROOT_AUTHORITY_REQUIRED
+          test "$(sudo stat -f '%Su:%Sg:%Lp' /var/log/scratchbird)" = \
+            root:scratchbird:750
+          test "$(sudo stat -f '%Su:%Sg:%Lp' /var/log/scratchbird/launchd)" = \
+            root:scratchbird:750
+          test "$(sudo stat -f '%Su:%Sg:%Lp' /var/log/scratchbird/runtime)" = \
+            scratchbird:scratchbird:750
+          for log_name in SBsrv.out.log SBsrv.err.log SBmgr.out.log \
+            SBmgr.err.log; do
+            sudo test ! -L "/var/log/scratchbird/launchd/$log_name"
+            test "$(sudo stat -f '%Su:%Sg:%Lp' "/var/log/scratchbird/launchd/$log_name")" = \
+              root:scratchbird:640
+            test "$(sudo stat -f '%l' "/var/log/scratchbird/launchd/$log_name")" = 1
+          done
+          for authority_path in \
+            /opt /opt/ScratchBird /opt/ScratchBird/bin \
+            /opt/ScratchBird/libexec \
+            /opt/ScratchBird/bin/SBlaunch \
+            /opt/ScratchBird/libexec/scratchbird-macos-system-install \
+            /Library/LaunchDaemons \
+            /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
+            /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+            /var/log/scratchbird /var/log/scratchbird/launchd \
+            /var/log/scratchbird/runtime \
+            /var/log/scratchbird/launchd/SBsrv.out.log \
+            /var/log/scratchbird/launchd/SBsrv.err.log \
+            /var/log/scratchbird/launchd/SBmgr.out.log \
+            /var/log/scratchbird/launchd/SBmgr.err.log; do
+            sudo test ! -L "$authority_path"
+            acl_mode="$(sudo ls -lde "$authority_path" | awk 'NR == 1 { print $1 }')"
+            case "$acl_mode" in
+              ''|*+*) echo "Unexpected macOS ACL: $authority_path" >&2; exit 1 ;;
+            esac
+          done
+          sudo test ! -e /var/log/scratchbird/runtime/SBsrv.log
+          sudo test ! -L /var/log/scratchbird/runtime/SBsrv.log
+          sudo test ! -e /var/log/scratchbird/runtime/SBmgr.log
+          sudo test ! -L /var/log/scratchbird/runtime/SBmgr.log
           python3 - /Library/LaunchDaemons <<'PY'
           import pathlib
           import plistlib
           import sys
 
           root = pathlib.Path(sys.argv[1])
-          for label in ("com.scratchbird.sbsrv", "com.scratchbird.sbmgr"):
+          expected = {
+              "com.scratchbird.sbsrv": "sbsrv",
+              "com.scratchbird.sbmgr": "sbmgr",
+          }
+          for label, selector in expected.items():
               data = plistlib.loads((root / f"{label}.plist").read_bytes())
-              if data.get("UserName") != "scratchbird" or data.get("GroupName") != "scratchbird":
+              if data.get("UserName") != "root" or data.get("GroupName") != "wheel":
                   raise SystemExit(f"macos_system_launchd_identity_mismatch:{label}")
+              if data.get("ProgramArguments") != [
+                  "/opt/ScratchBird/bin/SBlaunch",
+                  selector,
+              ]:
+                  raise SystemExit(f"macos_system_launchd_selector_mismatch:{label}")
               if data.get("InitGroups") is not False:
                   raise SystemExit(f"macos_system_launchd_init_groups_mismatch:{label}")
               if data.get("Disabled") is not True:
@@ -716,9 +795,11 @@ jobs:
                   raise SystemExit(f"macos_system_launchd_activity_mismatch:{label}")
           PY
           for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
-            if launchctl print "system/$label" >/dev/null 2>&1; then
+            if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
               echo "System package unexpectedly loaded $label." >&2
               exit 1
+            else
+              test "$?" -eq 113
             fi
           done
           inventory_path="$proof_root/macos-system-filesystem-inventory.txt"
@@ -761,8 +842,12 @@ jobs:
               "service_shadow_hash_data_present": False,
               "service_administrator_group_membership": False,
               "service_group_membership_policy": "exact_scratchbird_name_and_generated_uid_only_no_nested_groups",
-              "resolved_effective_group_policy": "host_computed_directory_groups_not_copied_into_service_process",
+              "resolved_effective_group_policy": "launchd_host_computed_groups_cleared_before_scratchbird_product_exec",
               "launchd_init_groups": False,
+              "launchd_bootstrap_identity": "root:wheel",
+              "service_launcher": "/opt/ScratchBird/bin/SBlaunch",
+              "final_product_identity": "scratchbird:scratchbird",
+              "final_supplementary_groups_empty": True,
               "service_enablement_default": "disabled",
               "service_activity_default": "not_started",
               "launchd_load_performed": False,
@@ -791,6 +876,8 @@ jobs:
           grep -Fx 'effective_group=scratchbird' \
             "$proof_root/launchd-service-credential.txt"
           grep -Fx 'supplementary_group_policy=exact_scratchbird_only' \
+            "$proof_root/launchd-service-credential.txt"
+          grep -Fx 'raw_supplementary_group_count=0' \
             "$proof_root/launchd-service-credential.txt"
           grep -Fx 'host_computed_authority_canaries=refused' \
             "$proof_root/launchd-service-credential.txt"
@@ -849,6 +936,10 @@ jobs:
             echo "host_user_group_admission=not_performed"
             echo "bootstrap_authority_identity_drop=passed"
             echo "launchd_process_credential=passed"
+            echo "launchd_bootstrap_identity=root:wheel"
+            echo "service_launcher=/opt/ScratchBird/bin/SBlaunch"
+            echo "final_product_identity=scratchbird:scratchbird"
+            echo "raw_supplementary_group_count=0"
             echo "supplementary_group_policy=exact_scratchbird_only"
             echo "host_computed_authority_canaries=refused"
             echo "launchd_default_state=disabled_not_loaded"
