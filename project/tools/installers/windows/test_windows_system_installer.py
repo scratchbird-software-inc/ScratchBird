@@ -158,7 +158,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertEqual(
                 profile["os_identity"]["group_creation_mechanism"],
-                r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup",
+                "absolute_System32_net.exe_localgroup_add",
             )
             self.assertEqual(
                 profile["os_identity"]["group_creation_process_architecture"],
@@ -183,9 +183,50 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                 profile["service"]["creation_mechanism"],
                 "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService",
             )
+            transaction = profile["installer_transaction"]
+            self.assertTrue(transaction["rollback_required"])
             self.assertEqual(
-                profile["service"]["fresh_install_failure_service_rollback"],
-                "remove_service_created_by_this_install_attempt",
+                transaction["rollback_disabled_policy"],
+                "blocked_by_package_launch_condition",
+            )
+            self.assertEqual(
+                transaction["journal"],
+                r"HKLM\SOFTWARE\ScratchBird\InstallerTransaction",
+            )
+            self.assertEqual(
+                transaction["rollback_scope"],
+                "service_and_filesystem_operations_group_identity_only",
+            )
+            self.assertEqual(
+                transaction["fresh_install_failure"],
+                "remove_service_and_group_created_by_install_attempt",
+            )
+            self.assertEqual(
+                transaction["uninstall_failure"],
+                "restore_snapshotted_service_identity_configuration_and_"
+                "runtime_state_fields_and_verify_preserved_group_identity",
+            )
+            self.assertEqual(
+                transaction["programdata_configuration_and_acl_policy"],
+                "preserved_not_rolled_back_and_required_acl_reapplied_on_retry",
+            )
+            self.assertEqual(
+                transaction["post_install_identity_finalization"],
+                "checked_deferred_before_install_finalize",
+            )
+            self.assertEqual(
+                transaction["post_install_journal_cleanup"],
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete",
+            )
+            self.assertEqual(
+                transaction["pre_remove_journal_cleanup"],
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete",
+            )
+            self.assertEqual(
+                transaction["fault_injection"],
+                "WIXFAILWHENDEFERRED=1",
             )
             topology = profile["topology"]
             self.assertEqual(
@@ -250,8 +291,10 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             self.assertNotIn("SB_INSTALLER_USER", lifecycle)
             self.assertNotIn("InstallerUser", lifecycle)
             self.assertIn('Execute="deferred"', lifecycle)
+            self.assertIn('Execute="rollback"', lifecycle)
+            self.assertIn('Execute="commit"', lifecycle)
             self.assertIn('Impersonate="no"', lifecycle)
-            self.assertEqual(lifecycle.count("[System64Folder]"), 2)
+            self.assertEqual(lifecycle.count("[System64Folder]"), 7)
             self.assertNotIn("[SystemFolder]", lifecycle)
             self.assertIn(
                 '-InstallRoot &quot;[INSTALLFOLDER].&quot;', lifecycle
@@ -261,9 +304,16 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertIn("NOT UPGRADINGPRODUCTCODE", lifecycle)
             self.assertNotIn("@SCRATCHBIRD_VERSION@", lifecycle)
-            ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+            ns = {
+                "w": "http://wixtoolset.org/schemas/v4/wxs",
+                "util": "http://wixtoolset.org/schemas/v4/wxs/util",
+            }
             main_tree = ET.fromstring(main)
             lifecycle_tree = ET.fromstring(lifecycle)
+            launch = main_tree.find("./w:Package/w:Launch", ns)
+            self.assertIsNotNone(launch)
+            self.assertEqual(launch.get("Condition"), "NOT RollbackDisabled")
+            self.assertIn("rollback", launch.get("Message", "").lower())
             refs = {
                 row.get("Id")
                 for row in main_tree.findall(
@@ -275,6 +325,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             fragments = lifecycle_tree.findall("./w:Fragment", ns)
             self.assertEqual(len(fragments), 1)
             fragment = fragments[0]
+            self.assertIsNotNone(fragment.find("./util:FailWhenDeferred", ns))
             action_ids = {
                 row.get("Id")
                 for row in fragment.findall("./w:CustomAction", ns)
@@ -285,10 +336,110 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             }
             self.assertEqual(
                 action_ids,
-                {"ScratchBirdPostInstall", "ScratchBirdPreRemove"},
+                {
+                    "ScratchBirdRollbackPostInstall",
+                    "ScratchBirdPostInstall",
+                    "ScratchBirdFinalizePostInstall",
+                    "ScratchBirdCleanupPostInstall",
+                    "ScratchBirdRollbackPreRemove",
+                    "ScratchBirdPreRemove",
+                    "ScratchBirdCommitPreRemove",
+                },
             )
             self.assertEqual(property_ids, action_ids)
             self.assertTrue(refs.issubset(action_ids))
+            actions = {
+                row.get("Id"): row
+                for row in fragment.findall("./w:CustomAction", ns)
+            }
+            for action_id in (
+                "ScratchBirdRollbackPostInstall",
+                "ScratchBirdRollbackPreRemove",
+            ):
+                self.assertEqual(actions[action_id].get("Execute"), "rollback")
+                self.assertEqual(actions[action_id].get("Return"), "ignore")
+            for action_id in (
+                "ScratchBirdPostInstall",
+                "ScratchBirdFinalizePostInstall",
+                "ScratchBirdPreRemove",
+            ):
+                self.assertEqual(actions[action_id].get("Execute"), "deferred")
+                self.assertEqual(actions[action_id].get("Return"), "check")
+            for action_id in (
+                "ScratchBirdCleanupPostInstall",
+                "ScratchBirdCommitPreRemove",
+            ):
+                self.assertEqual(actions[action_id].get("Execute"), "commit")
+                self.assertEqual(actions[action_id].get("Return"), "ignore")
+            for action in actions.values():
+                self.assertEqual(action.get("Impersonate"), "no")
+                self.assertEqual(action.get("HideTarget"), "yes")
+
+            set_properties = {
+                row.get("Id"): row
+                for row in fragment.findall("./w:SetProperty", ns)
+            }
+            install_condition = 'NOT (REMOVE~="ALL")'
+            remove_condition = (
+                'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+            )
+            for action_id in (
+                "ScratchBirdRollbackPostInstall",
+                "ScratchBirdPostInstall",
+                "ScratchBirdFinalizePostInstall",
+            ):
+                row = set_properties[action_id]
+                self.assertEqual(row.get("Condition"), install_condition)
+                self.assertIn(
+                    '-InstallRoot "[INSTALLFOLDER]."', row.get("Value", "")
+                )
+            install_cleanup = set_properties[
+                "ScratchBirdCleanupPostInstall"
+            ]
+            self.assertEqual(
+                install_cleanup.get("Condition"), install_condition
+            )
+            self.assertEqual(
+                install_cleanup.get("Value"),
+                '"[System64Folder]reg.exe" delete '
+                '"HKLM\\SOFTWARE\\ScratchBird\\InstallerTransaction" /f',
+            )
+            self.assertNotIn(
+                "powershell", install_cleanup.get("Value", "").lower()
+            )
+            for action_id in (
+                "ScratchBirdRollbackPreRemove",
+                "ScratchBirdPreRemove",
+            ):
+                row = set_properties[action_id]
+                self.assertEqual(row.get("Condition"), remove_condition)
+                self.assertIn(
+                    '-InstallRoot "[INSTALLFOLDER]."', row.get("Value", "")
+                )
+            uninstall_commit = set_properties["ScratchBirdCommitPreRemove"]
+            self.assertEqual(
+                uninstall_commit.get("Condition"), remove_condition
+            )
+            self.assertEqual(
+                uninstall_commit.get("Value"),
+                '"[System64Folder]reg.exe" delete '
+                '"HKLM\\SOFTWARE\\ScratchBird\\InstallerTransaction" /f',
+            )
+            self.assertNotIn(
+                "powershell", uninstall_commit.get("Value", "").lower()
+            )
+            expected_script_actions = {
+                "ScratchBirdRollbackPostInstall": "RollbackPostInstall",
+                "ScratchBirdPostInstall": "PostInstall",
+                "ScratchBirdFinalizePostInstall": "CommitPostInstall",
+                "ScratchBirdRollbackPreRemove": "RollbackPreRemove",
+                "ScratchBirdPreRemove": "PreRemove",
+            }
+            for action_id, script_action in expected_script_actions.items():
+                self.assertIn(
+                    f"-Action {script_action}",
+                    set_properties[action_id].get("Value", ""),
+                )
 
             scheduled = {
                 row.get("Action"): row
@@ -297,21 +448,52 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                 )
             }
             self.assertEqual(set(scheduled), action_ids)
+            for action_id in (
+                "ScratchBirdRollbackPostInstall",
+                "ScratchBirdPostInstall",
+                "ScratchBirdFinalizePostInstall",
+                "ScratchBirdCleanupPostInstall",
+            ):
+                self.assertEqual(
+                    scheduled[action_id].get("Condition"), install_condition
+                )
+            for action_id in (
+                "ScratchBirdRollbackPreRemove",
+                "ScratchBirdPreRemove",
+                "ScratchBirdCommitPreRemove",
+            ):
+                self.assertEqual(
+                    scheduled[action_id].get("Condition"), remove_condition
+                )
+            self.assertEqual(
+                scheduled["ScratchBirdRollbackPostInstall"].get("Before"),
+                "ScratchBirdPostInstall",
+            )
             self.assertEqual(
                 scheduled["ScratchBirdPostInstall"].get("Before"),
-                "InstallFinalize",
+                "ScratchBirdFinalizePostInstall",
             )
             self.assertEqual(
-                scheduled["ScratchBirdPostInstall"].get("Condition"),
-                'NOT (REMOVE~="ALL")',
+                scheduled["ScratchBirdFinalizePostInstall"].get("Before"),
+                "ScratchBirdCleanupPostInstall",
             )
             self.assertEqual(
-                scheduled["ScratchBirdPreRemove"].get("Before"),
-                "RemoveFiles",
+                scheduled["ScratchBirdCleanupPostInstall"].get("Before"),
+                "Wix4FailWhenDeferred_X64",
             )
             self.assertEqual(
-                scheduled["ScratchBirdPreRemove"].get("Condition"),
-                'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE',
+                scheduled["ScratchBirdRollbackPreRemove"].get("Before"),
+                "ScratchBirdPreRemove",
+            )
+            self.assertEqual(
+                scheduled["ScratchBirdPreRemove"].get("Before"), "RemoveFiles"
+            )
+            self.assertEqual(
+                scheduled["ScratchBirdCommitPreRemove"].get("Before"),
+                "Wix4FailWhenDeferred_X64",
+            )
+            self.assertTrue(
+                all(row.get("After") is None for row in scheduled.values())
             )
 
     @unittest.skipUnless(
@@ -379,6 +561,43 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertFalse(evidence["database_files_created"])
             self.assertFalse(evidence["security_sidecars_created"])
+            transaction = evidence["installer_transaction"]
+            self.assertTrue(transaction["rollback_required"])
+            self.assertEqual(
+                transaction["rollback_disabled_policy"],
+                "blocked_by_package_launch_condition",
+            )
+            self.assertEqual(
+                transaction["journal"],
+                r"HKLM\SOFTWARE\ScratchBird\InstallerTransaction",
+            )
+            self.assertEqual(
+                transaction["rollback_scope"],
+                "service_and_filesystem_operations_group_identity_only",
+            )
+            self.assertEqual(
+                transaction["uninstall_failure"],
+                "restore_snapshotted_service_identity_configuration_and_"
+                "runtime_state_fields_and_verify_preserved_group_identity",
+            )
+            self.assertEqual(
+                transaction["programdata_configuration_and_acl_policy"],
+                "preserved_not_rolled_back_and_required_acl_reapplied_on_retry",
+            )
+            self.assertEqual(
+                transaction["post_install_identity_finalization"],
+                "checked_deferred_before_install_finalize",
+            )
+            self.assertEqual(
+                transaction["post_install_journal_cleanup"],
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete",
+            )
+            self.assertEqual(
+                transaction["pre_remove_journal_cleanup"],
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete",
+            )
             self.assertEqual(
                 evidence["verification"],
                 "pending_windows_actual_msi_install_smoke",
@@ -540,7 +759,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn("if ($members.Count -ne 0)", lifecycle)
         self.assertIn("filesystem_operations_group_member_count = 0", lifecycle)
         self.assertIn(
-            'filesystem_operations_group_creation_policy = "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            'filesystem_operations_group_creation_policy = "absolute_System32_net.exe_localgroup_add_when_missing"',
             lifecycle,
         )
         self.assertIn(
@@ -554,53 +773,64 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn('$LifecyclePhase = "PRECHECK"', lifecycle)
         self.assertIn("[Environment]::Is64BitProcess", lifecycle)
         self.assertIn(
-            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"',
+            '$GroupName = "ScratchBird"',
             lifecycle,
         )
         self.assertIn(
-            "function Get-LocalAccountsModuleManifest",
+            '$GroupDescription = "ScratchBird filesystem operations group; no database or security authority"',
             lifecycle,
         )
         self.assertIn(
-            'Join-Path $PSHOME "Modules\\Microsoft.PowerShell.LocalAccounts"',
+            "function Get-SystemNetExecutable",
             lifecycle,
         )
         self.assertIn(
-            '$manifestName = "Microsoft.PowerShell.LocalAccounts.psd1"',
+            "$systemDirectory = [Environment]::SystemDirectory",
             lifecycle,
         )
         self.assertIn(
-            "Get-ChildItem -LiteralPath $moduleRoot -Directory -Force",
-            lifecycle,
-        )
-        self.assertIn("$versionDirectory.Name -notmatch", lifecycle)
-        self.assertIn(
-            "if ($candidates.Count -ne 1)",
+            '$candidate = Join-Path $canonicalSystemDirectory "net.exe"',
             lifecycle,
         )
         self.assertIn(
-            "$moduleManifest = Get-LocalAccountsModuleManifest",
+            "[IO.FileAttributes]::ReparsePoint",
             lifecycle,
         )
         self.assertIn(
-            "Import-Module -Name $moduleManifest -Force -ErrorAction Stop",
-            lifecycle,
-        )
-        self.assertIn("if ($commands.Count -ne 1)", lifecycle)
-        self.assertIn("$command.ModuleName", lifecycle)
-        self.assertIn("$command.Source", lifecycle)
-        self.assertIn(
-            "& $command `",
+            "[IO.Path]::GetDirectoryName($canonicalCandidate)",
             lifecycle,
         )
         self.assertIn(
-            "-Confirm:$false `",
+            "[IO.Path]::GetFileName($canonicalCandidate)",
+            lifecycle,
+        )
+        self.assertIn(
+            "function Get-PostInstallGroupComment",
+            lifecycle,
+        )
+        self.assertIn(
+            '& $net "localgroup" $GroupName "/add" '
+            '"/comment:$transactionComment" 1>$null 2>$null',
+            lifecycle,
+        )
+        self.assertIn(
+            "$nativeStatus = [int]$LASTEXITCODE",
+            lifecycle,
+        )
+        self.assertIn(
+            "if ($nativeStatus -ne 0)",
+            lifecycle,
+        )
+        self.assertIn(
+            "[Globalization.CultureInfo]::InvariantCulture",
+            lifecycle,
+        )
+        self.assertIn(
+            '$script:LifecyclePhase = "GROUP_IDENTITY_CREATE_EXIT_$nativeStatusText"',
             lifecycle,
         )
         for phase in (
-            "GROUP_IDENTITY_MODULE_MANIFEST",
-            "GROUP_IDENTITY_MODULE_IMPORT",
-            "GROUP_IDENTITY_COMMAND_DISCOVERY",
+            "GROUP_IDENTITY_NATIVE_PATH",
             "GROUP_IDENTITY_CREATE",
             "GROUP_IDENTITY_POSTFAILURE_INVENTORY",
             "GROUP_IDENTITY_FINAL_VALIDATE",
@@ -611,6 +841,8 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         )
         self.assertNotIn('$computer.Create("group", $GroupName)', lifecycle)
         self.assertNotIn("$group.SetInfo()", lifecycle)
+        self.assertNotIn("Microsoft.PowerShell.LocalAccounts", lifecycle)
+        self.assertNotIn("New-LocalGroup", lifecycle)
         self.assertLess(
             lifecycle.index("[Environment]::Is64BitProcess"),
             lifecycle.index("$LifecyclePhase = \"PATH_VALIDATION\""),
@@ -620,6 +852,54 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             lifecycle,
         )
         self.assertNotIn("$_.Exception", lifecycle)
+        for token in (
+            '$TransactionKey = "HKLM:\\SOFTWARE\\ScratchBird\\InstallerTransaction"',
+            '$TransactionStateName = "State"',
+            '$TransactionSchema = "scratchbird.windows_installer_transaction.v1"',
+            '"PostInstall"',
+            '"RollbackPostInstall"',
+            '"CommitPostInstall"',
+            '"PreRemove"',
+            '"RollbackPreRemove"',
+            "function New-TransactionRegistryAcl",
+            "function Initialize-TransactionState",
+            "function Write-TransactionState",
+            "function Read-TransactionState",
+            "function Assert-TransactionStateShape",
+            "function Remove-TransactionState",
+            "function New-PostInstallTransactionState",
+            "function New-PreRemoveTransactionState",
+            "function Invoke-RollbackPostInstall",
+            "function Invoke-CommitPostInstall",
+            "function Invoke-PreRemove",
+            "function Invoke-RollbackPreRemove",
+            "function Restore-PreRemoveService",
+            "function Test-ServiceMatchesSnapshot",
+            'operation = "post_install"',
+            'operation = "pre_remove"',
+            'existing_configuration = "preserve_never_overwrite"',
+            'existing_state_directory_acls = "preserve_on_identity_rollback"',
+            'filesystem_operations_group = "preserve_never_delete"',
+            'service_snapshot = "restore_only_when_exact_service_remains_absent"',
+            "service_security_sddl",
+            "registry_security_sddl",
+            "delayed_auto_start_present",
+            "commit_completed = $false",
+            "$transaction.commit_completed = $true",
+            "Remove-TransactionState $transaction",
+        ):
+            self.assertIn(token, lifecycle)
+        commit_block = lifecycle[
+            lifecycle.index("function Invoke-CommitPostInstall") :
+            lifecycle.index("function Invoke-PreRemove")
+        ]
+        self.assertIn("Write-TransactionState $transaction", commit_block)
+        self.assertNotIn("Remove-TransactionState", commit_block)
+        self.assertIn("SetAccessRuleProtection($true, $false)", lifecycle)
+        self.assertIn('"S-1-5-18"', lifecycle)
+        self.assertIn('"S-1-5-32-544"', lifecycle)
+        self.assertNotIn("$ServiceCreatedByThisRun", lifecycle)
+        self.assertNotIn("function Rollback-CreatedService", lifecycle)
         smoke = (
             REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
         ).read_text(encoding="utf-8")
@@ -649,6 +929,60 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "filesystem_operations_group_preserved_after_uninstall",
             smoke,
         )
+        for token in (
+            '$InstallerTransactionRegistryPath = '
+            '"HKLM:\\SOFTWARE\\ScratchBird\\InstallerTransaction"',
+            "function Invoke-MsiExpectedFailure",
+            "if ($process.ExitCode -ne 1603)",
+            "function Assert-MsiLogContainsTokens",
+            "function Assert-InstallerTransactionJournalAbsent",
+            "function Assert-NoScratchBirdIdentityAndJournal",
+            "function Get-ScratchBirdIdentitySnapshot",
+            "function Assert-ScratchBirdIdentitySnapshot",
+            "function Get-ScratchBirdServiceSecuritySddl",
+            "function ConvertTo-NormalizedScratchBirdSddl",
+            "WIXFAILWHENDEFERRED=1",
+            "msi-fault-injected-fresh-install.log",
+            "msi-fault-injected-uninstall.log",
+            "Wix4FailWhenDeferred_X64",
+            "ScratchBirdFinalizePostInstall",
+            "ScratchBirdCleanupPostInstall",
+            "qa-failed-install-retry-preserve.conf",
+            "service_security_sddl",
+            "registry_sddl",
+            "delayed_auto_start_present",
+            "fault_injected_fresh_install = "
+            '"failed_as_expected_identity_rollback_passed"',
+            "fault_injected_uninstall = "
+            '"failed_as_expected_snapshotted_service_fields_restore_and_'
+            'preserved_group_verification_passed"',
+            "installer_transaction_rollback_scope = "
+            '"service_and_filesystem_operations_group_identity_only"',
+            "failed_install_programdata_configuration_and_acl_policy = "
+            '"preserved_not_rolled_back_and_required_acl_reapplied_on_retry"',
+            "service_snapshotted_identity_configuration_and_runtime_state_"
+            "fields_restored_after_failed_uninstall = $true",
+            "filesystem_operations_group_preserved_during_failed_uninstall = "
+            "$true",
+            "post_install_identity_finalization = "
+            '"checked_deferred_before_install_finalize"',
+            "post_install_journal_cleanup = "
+            '"ignored_commit_after_successful_install_finalize_'
+            'fixed_absolute_System32_reg.exe_exact_key_delete"',
+            "pre_remove_journal_cleanup = "
+            '"ignored_commit_after_successful_install_finalize_'
+            'fixed_absolute_System32_reg.exe_exact_key_delete"',
+        ):
+            self.assertIn(token, smoke)
+        self.assertEqual(smoke.count('"WIXFAILWHENDEFERRED=1"'), 2)
+        self.assertLess(
+            smoke.index("msi-fault-injected-fresh-install.log"),
+            smoke.index('Join-Path $WorkRoot "msi-actual-install.log"'),
+        )
+        self.assertLess(
+            smoke.index("msi-fault-injected-uninstall.log"),
+            smoke.index('Join-Path $WorkRoot "msi-actual-uninstall.log"'),
+        )
         self.assertNotIn(
             'Join-Path $WorkRoot "administrative-extract"', smoke
         )
@@ -674,7 +1008,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         )
         self.assertIn(
             '$evidence.filesystem_operations_group_creation_policy -ne '
-            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            '"absolute_System32_net.exe_localgroup_add_when_missing"',
             installed_block,
         )
         self.assertIn(

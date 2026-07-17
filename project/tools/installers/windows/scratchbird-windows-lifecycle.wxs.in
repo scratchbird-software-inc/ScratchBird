@@ -6,8 +6,27 @@
   WixToolset.Util.wixext. No human identity is admitted to the ScratchBird
   filesystem service group by the installer.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix
+  xmlns="http://wixtoolset.org/schemas/v4/wxs"
+  xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Fragment>
+    <util:FailWhenDeferred />
+
+    <SetProperty
+      Id="ScratchBirdRollbackPostInstall"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action RollbackPostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Before="ScratchBirdRollbackPostInstall"
+      Sequence="execute"
+      Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <CustomAction
+      Id="ScratchBirdRollbackPostInstall"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore"
+      HideTarget="yes" />
+
     <SetProperty
       Id="ScratchBirdPostInstall"
       Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
@@ -21,6 +40,51 @@
       Execute="deferred"
       Impersonate="no"
       Return="check"
+      HideTarget="yes" />
+
+    <SetProperty
+      Id="ScratchBirdFinalizePostInstall"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action CommitPostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Before="ScratchBirdFinalizePostInstall"
+      Sequence="execute"
+      Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <CustomAction
+      Id="ScratchBirdFinalizePostInstall"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      HideTarget="yes" />
+
+    <SetProperty
+      Id="ScratchBirdCleanupPostInstall"
+      Value="&quot;[System64Folder]reg.exe&quot; delete &quot;HKLM\SOFTWARE\ScratchBird\InstallerTransaction&quot; /f"
+      Before="ScratchBirdCleanupPostInstall"
+      Sequence="execute"
+      Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <CustomAction
+      Id="ScratchBirdCleanupPostInstall"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="commit"
+      Impersonate="no"
+      Return="ignore"
+      HideTarget="yes" />
+
+    <SetProperty
+      Id="ScratchBirdRollbackPreRemove"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action RollbackPreRemove -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Before="ScratchBirdRollbackPreRemove"
+      Sequence="execute"
+      Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction
+      Id="ScratchBirdRollbackPreRemove"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore"
       HideTarget="yes" />
 
     <SetProperty
@@ -38,14 +102,49 @@
       Return="check"
       HideTarget="yes" />
 
+    <SetProperty
+      Id="ScratchBirdCommitPreRemove"
+      Value="&quot;[System64Folder]reg.exe&quot; delete &quot;HKLM\SOFTWARE\ScratchBird\InstallerTransaction&quot; /f"
+      Before="ScratchBirdCommitPreRemove"
+      Sequence="execute"
+      Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction
+      Id="ScratchBirdCommitPreRemove"
+      BinaryRef="Wix4UtilCA_X64"
+      DllEntry="WixQuietExec"
+      Execute="commit"
+      Impersonate="no"
+      Return="ignore"
+      HideTarget="yes" />
+
     <InstallExecuteSequence>
       <Custom
-        Action="ScratchBirdPostInstall"
-        Before="InstallFinalize"
+        Action="ScratchBirdRollbackPostInstall"
+        Before="ScratchBirdPostInstall"
         Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom
+        Action="ScratchBirdPostInstall"
+        Before="ScratchBirdFinalizePostInstall"
+        Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom
+        Action="ScratchBirdFinalizePostInstall"
+        Before="ScratchBirdCleanupPostInstall"
+        Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom
+        Action="ScratchBirdCleanupPostInstall"
+        Before="Wix4FailWhenDeferred_X64"
+        Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom
+        Action="ScratchBirdRollbackPreRemove"
+        Before="ScratchBirdPreRemove"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom
         Action="ScratchBirdPreRemove"
         Before="RemoveFiles"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom
+        Action="ScratchBirdCommitPreRemove"
+        Before="Wix4FailWhenDeferred_X64"
         Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Fragment>

@@ -53,10 +53,23 @@
     "install_evidence": "%ProgramData%\\ScratchBird\\install\\WINDOWS_SYSTEM_INSTALL_STATE.json",
     "security_sidecars_created": false
   },
+  "installer_transaction": {
+    "fault_injection": "WIXFAILWHENDEFERRED=1",
+    "fresh_install_failure": "remove_service_and_group_created_by_install_attempt",
+    "journal": "HKLM\\SOFTWARE\\ScratchBird\\InstallerTransaction",
+    "post_install_identity_finalization": "checked_deferred_before_install_finalize",
+    "post_install_journal_cleanup": "ignored_commit_after_successful_install_finalize_fixed_absolute_System32_reg.exe_exact_key_delete",
+    "pre_remove_journal_cleanup": "ignored_commit_after_successful_install_finalize_fixed_absolute_System32_reg.exe_exact_key_delete",
+    "programdata_configuration_and_acl_policy": "preserved_not_rolled_back_and_required_acl_reapplied_on_retry",
+    "rollback_disabled_policy": "blocked_by_package_launch_condition",
+    "rollback_required": true,
+    "rollback_scope": "service_and_filesystem_operations_group_identity_only",
+    "uninstall_failure": "restore_snapshotted_service_identity_configuration_and_runtime_state_fields_and_verify_preserved_group_identity"
+  },
   "native_default_port": 3092,
   "os_identity": {
     "group": "ScratchBird",
-    "group_creation_mechanism": "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup",
+    "group_creation_mechanism": "absolute_System32_net.exe_localgroup_add",
     "group_creation_process_architecture": "64_bit_required",
     "group_purpose": "filesystem_operations_only_no_database_or_security_authority",
     "group_namespace": "local_SAM",
@@ -91,7 +104,6 @@
     "creation_mechanism": "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService",
     "default_activity": "stopped",
     "default_start_type": "manual",
-    "fresh_install_failure_service_rollback": "remove_service_created_by_this_install_attempt",
     "name": "scratchbird",
     "scm_runtime_handoff": "native_SBsrv_ServiceMain_in_process_no_wrapper",
     "scm_running_gate": "SBPS_and_shared_SBgate_management_ready",

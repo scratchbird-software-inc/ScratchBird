@@ -1647,7 +1647,7 @@ def materialize_windows_wix_lifecycle(
     if not source.is_file():
         fail(f"windows_wix_lifecycle_asset_missing:{source}")
     text = source.read_text(encoding="utf-8")
-    if text.count("@SCRATCHBIRD_VERSION@") != 2:
+    if text.count("@SCRATCHBIRD_VERSION@") != 5:
         fail("windows_wix_lifecycle_version_token_mismatch")
     target = output_root / "scratchbird-windows-lifecycle.wxs"
     target.write_text(
@@ -1670,6 +1670,7 @@ def make_wix_msi(payload_root: Path, output_root: Path, version: str, require_ms
   <Package Name="{PRODUCT_NAME}" Manufacturer="{MANUFACTURER}" Version="{windows_msi_version(version)}" UpgradeCode="{WINDOWS_UPGRADE_CODE}" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer ScratchBird build is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Launch Condition="NOT RollbackDisabled" Message="ScratchBird requires Windows Installer rollback to be enabled." />
     <CustomActionRef Id="ScratchBirdPostInstall" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="ScratchBird">
@@ -1803,7 +1804,7 @@ def write_windows_system_package_evidence(
             "filesystem_operations_group_namespace": "local_SAM",
             "filesystem_operations_group_member_policy": "must_be_empty",
             "filesystem_operations_group_creation_mechanism": (
-                "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"
+                "absolute_System32_net.exe_localgroup_add"
             ),
             "lifecycle_process_architecture": "64_bit_required",
             "service_account_namespace": "NT SERVICE",
@@ -1818,6 +1819,40 @@ def write_windows_system_package_evidence(
             ),
             "create_time_os_authorization": "administrator_only",
             "human_service_group_membership_mutation": False,
+        },
+        "installer_transaction": {
+            "rollback_required": True,
+            "rollback_disabled_policy": (
+                "blocked_by_package_launch_condition"
+            ),
+            "journal": (
+                r"HKLM\SOFTWARE\ScratchBird\InstallerTransaction"
+            ),
+            "rollback_scope": (
+                "service_and_filesystem_operations_group_identity_only"
+            ),
+            "fresh_install_failure": (
+                "remove_service_and_group_created_by_install_attempt"
+            ),
+            "uninstall_failure": (
+                "restore_snapshotted_service_identity_configuration_and_"
+                "runtime_state_fields_and_verify_preserved_group_identity"
+            ),
+            "programdata_configuration_and_acl_policy": (
+                "preserved_not_rolled_back_and_required_acl_reapplied_on_retry"
+            ),
+            "post_install_identity_finalization": (
+                "checked_deferred_before_install_finalize"
+            ),
+            "post_install_journal_cleanup": (
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete"
+            ),
+            "pre_remove_journal_cleanup": (
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete"
+            ),
+            "fault_injection": "WIXFAILWHENDEFERRED=1",
         },
         "lifecycle_assets": sorted(WINDOWS_SYSTEM_ASSETS.values()),
         "database_files_created": False,

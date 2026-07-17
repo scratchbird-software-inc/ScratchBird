@@ -185,6 +185,7 @@ def main() -> int:
             fail("windows_system_evidence_invalid")
         service = evidence.get("service")
         identity = evidence.get("os_identity")
+        transaction = evidence.get("installer_transaction")
         if (
             not isinstance(service, dict)
             or service.get("name") != "scratchbird"
@@ -204,7 +205,7 @@ def main() -> int:
             != SERVICE_AUTHORITY_SCOPE
             or identity.get("local_sam_group_membership") is not False
             or identity.get("filesystem_operations_group_creation_mechanism")
-            != r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup"
+            != "absolute_System32_net.exe_localgroup_add"
             or identity.get("lifecycle_process_architecture")
             != "64_bit_required"
             or identity.get("create_time_os_authorization")
@@ -212,6 +213,41 @@ def main() -> int:
             or identity.get("human_service_group_membership_mutation") is not False
         ):
             fail("windows_system_service_authority_scope_invalid")
+        if (
+            not isinstance(transaction, dict)
+            or transaction.get("rollback_required") is not True
+            or transaction.get("rollback_disabled_policy")
+            != "blocked_by_package_launch_condition"
+            or transaction.get("journal")
+            != r"HKLM\SOFTWARE\ScratchBird\InstallerTransaction"
+            or transaction.get("rollback_scope")
+            != "service_and_filesystem_operations_group_identity_only"
+            or transaction.get("fresh_install_failure")
+            != "remove_service_and_group_created_by_install_attempt"
+            or transaction.get("uninstall_failure")
+            != (
+                "restore_snapshotted_service_identity_configuration_and_"
+                "runtime_state_fields_and_verify_preserved_group_identity"
+            )
+            or transaction.get("programdata_configuration_and_acl_policy")
+            != (
+                "preserved_not_rolled_back_and_required_acl_reapplied_on_retry"
+            )
+            or transaction.get("post_install_identity_finalization")
+            != "checked_deferred_before_install_finalize"
+            or transaction.get("post_install_journal_cleanup")
+            != (
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete"
+            )
+            or transaction.get("pre_remove_journal_cleanup")
+            != (
+                "ignored_commit_after_successful_install_finalize_"
+                "fixed_absolute_System32_reg.exe_exact_key_delete"
+            )
+            or transaction.get("fault_injection") != "WIXFAILWHENDEFERRED=1"
+        ):
+            fail("windows_system_installer_transaction_evidence_invalid")
     if args.platform == "macos":
         macos_block = data.get("macos")
         if not isinstance(macos_block, dict):

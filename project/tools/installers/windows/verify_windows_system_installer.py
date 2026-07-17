@@ -91,11 +91,6 @@ def main() -> int:
         == "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService",
         "service_creation_mechanism",
     )
-    require(
-        service.get("fresh_install_failure_service_rollback")
-        == "remove_service_created_by_this_install_attempt",
-        "service_creation_rollback",
-    )
     require(service.get("top_level_process") == "SBsrv", "service_top_level")
     require("--service" in service.get("arguments", []), "service_mode")
     require(
@@ -117,6 +112,69 @@ def main() -> int:
         service.get("scm_validation_state")
         == "focused_contract_green_hosted_configured_database_start_stop_pending",
         "scm_validation_state",
+    )
+    transaction = profile.get("installer_transaction", {})
+    require(
+        transaction.get("rollback_required") is True,
+        "installer_transaction_rollback_required",
+    )
+    require(
+        transaction.get("rollback_disabled_policy")
+        == "blocked_by_package_launch_condition",
+        "installer_transaction_rollback_disabled_policy",
+    )
+    require(
+        transaction.get("journal")
+        == r"HKLM\SOFTWARE\ScratchBird\InstallerTransaction",
+        "installer_transaction_journal",
+    )
+    require(
+        transaction.get("rollback_scope")
+        == "service_and_filesystem_operations_group_identity_only",
+        "installer_transaction_scope",
+    )
+    require(
+        transaction.get("fresh_install_failure")
+        == "remove_service_and_group_created_by_install_attempt",
+        "installer_transaction_fresh_install_failure",
+    )
+    require(
+        transaction.get("uninstall_failure")
+        == (
+            "restore_snapshotted_service_identity_configuration_and_"
+            "runtime_state_fields_and_verify_preserved_group_identity"
+        ),
+        "installer_transaction_uninstall_failure",
+    )
+    require(
+        transaction.get("programdata_configuration_and_acl_policy")
+        == "preserved_not_rolled_back_and_required_acl_reapplied_on_retry",
+        "installer_transaction_programdata_policy",
+    )
+    require(
+        transaction.get("post_install_identity_finalization")
+        == "checked_deferred_before_install_finalize",
+        "installer_transaction_post_install_finalization",
+    )
+    require(
+        transaction.get("post_install_journal_cleanup")
+        == (
+            "ignored_commit_after_successful_install_finalize_"
+            "fixed_absolute_System32_reg.exe_exact_key_delete"
+        ),
+        "installer_transaction_post_install_cleanup",
+    )
+    require(
+        transaction.get("pre_remove_journal_cleanup")
+        == (
+            "ignored_commit_after_successful_install_finalize_"
+            "fixed_absolute_System32_reg.exe_exact_key_delete"
+        ),
+        "installer_transaction_pre_remove_cleanup",
+    )
+    require(
+        transaction.get("fault_injection") == "WIXFAILWHENDEFERRED=1",
+        "installer_transaction_fault_injection",
     )
 
     topology = profile.get("topology", {})
@@ -174,7 +232,7 @@ def main() -> int:
     require(identity.get("group_namespace") == "local_SAM", "group_namespace")
     require(
         identity.get("group_creation_mechanism")
-        == r"Microsoft.PowerShell.LocalAccounts\New-LocalGroup",
+        == "absolute_System32_net.exe_localgroup_add",
         "group_creation_mechanism",
     )
     require(
@@ -288,7 +346,8 @@ def main() -> int:
             "[int]$row.SIDType -ne 4",
             "NT SERVICE\\scratchbird",
             '"start= demand"',
-            '@("sidtype", $ServiceName, "restricted")',
+            '"sidtype",',
+            '"restricted"',
             "ServiceSidType",
             "SetAccessRuleProtection($true, $false)",
             "Grant-ServiceRuntimeReadExecute",
@@ -306,42 +365,72 @@ def main() -> int:
             '$group.PSBase.Invoke("Members")',
             "if ($members.Count -ne 0)",
             "filesystem_operations_group_member_count = 0",
-            'filesystem_operations_group_creation_policy = "Microsoft.PowerShell.LocalAccounts\\New-LocalGroup_when_missing"',
+            'filesystem_operations_group_creation_policy = "absolute_System32_net.exe_localgroup_add_when_missing"',
             "filesystem_operations_group_created_by_this_run = [bool]$GroupCreatedByThisRun",
             'lifecycle_process_architecture = "64_bit"',
             "service_local_sam_group_membership = $false",
             "filesystem_directory_and_process_execution_only_no_database_or_security_authority",
-            "$ServiceCreatedByThisRun",
-            "function Rollback-CreatedService",
-            "Rollback-CreatedService",
             "function Ensure-SBsrvService",
             '$LifecyclePhase = "PRECHECK"',
             "[Environment]::Is64BitProcess",
-            "function Get-LocalAccountsModuleManifest",
-            'Join-Path $PSHOME "Modules\\Microsoft.PowerShell.LocalAccounts"',
-            '$manifestName = "Microsoft.PowerShell.LocalAccounts.psd1"',
-            "Get-ChildItem -LiteralPath $moduleRoot -Directory -Force",
-            "$versionDirectory.Name -notmatch",
-            "if ($candidates.Count -ne 1)",
-            "$moduleManifest = Get-LocalAccountsModuleManifest",
-            "Import-Module -Name $moduleManifest -Force -ErrorAction Stop",
-            '"Microsoft.PowerShell.LocalAccounts\\New-LocalGroup"',
-            "if ($commands.Count -ne 1)",
-            "$command.ModuleName",
-            "$command.Source",
-            "& $command `",
-            "-Confirm:$false `",
-            '$script:LifecyclePhase = "GROUP_IDENTITY_MODULE_MANIFEST"',
-            '$script:LifecyclePhase = "GROUP_IDENTITY_MODULE_IMPORT"',
-            '$script:LifecyclePhase = "GROUP_IDENTITY_COMMAND_DISCOVERY"',
+            '$GroupName = "ScratchBird"',
+            '$GroupDescription = "ScratchBird filesystem operations group; no database or security authority"',
+            "function Get-SystemNetExecutable",
+            "$systemDirectory = [Environment]::SystemDirectory",
+            '$candidate = Join-Path $canonicalSystemDirectory "net.exe"',
+            "[IO.FileAttributes]::ReparsePoint",
+            "[IO.Path]::GetDirectoryName($canonicalCandidate)",
+            '[IO.Path]::GetFileName($canonicalCandidate)',
+            "function Get-PostInstallGroupComment",
+            '$script:LifecyclePhase = "GROUP_IDENTITY_NATIVE_PATH"',
             '$script:LifecyclePhase = "GROUP_IDENTITY_CREATE"',
+            '& $net "localgroup" $GroupName "/add" '
+            '"/comment:$transactionComment" 1>$null 2>$null',
+            "$nativeStatus = [int]$LASTEXITCODE",
+            "if ($nativeStatus -ne 0)",
+            "[Globalization.CultureInfo]::InvariantCulture",
+            '$script:LifecyclePhase = "GROUP_IDENTITY_CREATE_EXIT_$nativeStatusText"',
             '$script:LifecyclePhase = "GROUP_IDENTITY_POSTFAILURE_INVENTORY"',
             '$script:LifecyclePhase = "GROUP_IDENTITY_FINAL_VALIDATE"',
             '"BOOTSTRAP.GROUP_CREATE_FAILED.$creationFailurePhase"',
             '"BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase"',
-            '@("create", $ServiceName',
+            '"create",',
             "Assert-ServiceRecord $service -RequireFreshDefaults",
-            "& $sc delete $ServiceName",
+            'Invoke-NativeQuiet $sc @("delete", $ServiceName)',
+            '$TransactionKey = "HKLM:\\SOFTWARE\\ScratchBird\\InstallerTransaction"',
+            '$TransactionStateName = "State"',
+            '$TransactionSchema = "scratchbird.windows_installer_transaction.v1"',
+            '"PostInstall"',
+            '"RollbackPostInstall"',
+            '"CommitPostInstall"',
+            '"PreRemove"',
+            '"RollbackPreRemove"',
+            "function New-TransactionRegistryAcl",
+            "function Initialize-TransactionState",
+            "function Write-TransactionState",
+            "function Read-TransactionState",
+            "function Assert-TransactionStateShape",
+            "function Remove-TransactionState",
+            "function New-PostInstallTransactionState",
+            "function New-PreRemoveTransactionState",
+            "function Invoke-RollbackPostInstall",
+            "function Invoke-CommitPostInstall",
+            "function Invoke-PreRemove",
+            "function Invoke-RollbackPreRemove",
+            "function Restore-PreRemoveService",
+            "function Test-ServiceMatchesSnapshot",
+            'operation = "post_install"',
+            'operation = "pre_remove"',
+            'existing_configuration = "preserve_never_overwrite"',
+            'existing_state_directory_acls = "preserve_on_identity_rollback"',
+            'filesystem_operations_group = "preserve_never_delete"',
+            'service_snapshot = "restore_only_when_exact_service_remains_absent"',
+            "service_security_sddl",
+            "registry_security_sddl",
+            "delayed_auto_start_present",
+            "commit_completed = $false",
+            "$transaction.commit_completed = $true",
+            "Remove-TransactionState $transaction",
         ),
         "lifecycle",
     )
@@ -359,12 +448,28 @@ def main() -> int:
         "$_.Exception",
         '$computer.Create("group", $GroupName)',
         "$group.SetInfo()",
+        "Microsoft.PowerShell.LocalAccounts",
+        "New-LocalGroup",
+        "$ServiceCreatedByThisRun",
+        "function Rollback-CreatedService",
     ):
         require(forbidden not in lifecycle, f"lifecycle_forbidden:{forbidden}")
 
     require(
-        lifecycle.count('"create", $ServiceName') == 1,
-        "multiple_service_create_paths",
+        lifecycle.count('"create",') == 2,
+        "service_create_paths_not_fresh_and_restore",
+    )
+    commit_block = lifecycle[
+        lifecycle.index("function Invoke-CommitPostInstall") :
+        lifecycle.index("function Invoke-PreRemove")
+    ]
+    require(
+        "Write-TransactionState $transaction" in commit_block,
+        "post_install_finalization_not_journaled",
+    )
+    require(
+        "Remove-TransactionState" not in commit_block,
+        "checked_post_install_finalization_deletes_rollback_journal",
     )
     require(
         lifecycle.count(
@@ -397,15 +502,26 @@ def main() -> int:
         tree = ET.fromstring(wix)
     except ET.ParseError as exc:
         fail(f"wix_xml:{exc}")
-    ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+    ns = {
+        "w": "http://wixtoolset.org/schemas/v4/wxs",
+        "util": "http://wixtoolset.org/schemas/v4/wxs/util",
+    }
     require(
-        wix.count("[System64Folder]") == 2,
-        "wix_x64_powershell_reference_count",
+        wix.count("[System64Folder]") == 7,
+        "wix_x64_lifecycle_executable_reference_count",
+    )
+    require(
+        wix.count("@SCRATCHBIRD_VERSION@") == 5,
+        "wix_lifecycle_version_token_count",
     )
     require("[SystemFolder]" not in wix, "wix_32bit_powershell_forbidden")
     fragments = tree.findall("./w:Fragment", ns)
     require(len(fragments) == 1, "wix_lifecycle_fragment_not_atomic")
     fragment = fragments[0]
+    require(
+        fragment.find("./util:FailWhenDeferred", ns) is not None,
+        "wix_fault_injection_not_wired",
+    )
     properties = tree.findall(".//w:Property", ns)
     require(
         all(row.get("Id") != "SB_INSTALLER_USER" for row in properties),
@@ -420,29 +536,135 @@ def main() -> int:
         row.get("Id"): row
         for row in fragment.findall("./w:CustomAction", ns)
     }
-    for action_id in ("ScratchBirdPostInstall", "ScratchBirdPreRemove"):
-        require(action_id in actions, f"wix_action_missing:{action_id}")
+    expected_actions = {
+        "ScratchBirdRollbackPostInstall",
+        "ScratchBirdPostInstall",
+        "ScratchBirdFinalizePostInstall",
+        "ScratchBirdCleanupPostInstall",
+        "ScratchBirdRollbackPreRemove",
+        "ScratchBirdPreRemove",
+        "ScratchBirdCommitPreRemove",
+    }
+    require(set(actions) == expected_actions, "wix_lifecycle_action_set")
+    for action_id in (
+        "ScratchBirdRollbackPostInstall",
+        "ScratchBirdRollbackPreRemove",
+    ):
         require(
-            actions[action_id].get("Execute") == "deferred",
+            actions[action_id].get("Execute") == "rollback"
+            and actions[action_id].get("Return") == "ignore",
+            f"wix_rollback_action_invalid:{action_id}",
+        )
+    for action_id in (
+        "ScratchBirdPostInstall",
+        "ScratchBirdFinalizePostInstall",
+        "ScratchBirdPreRemove",
+    ):
+        require(
+            actions[action_id].get("Execute") == "deferred"
+            and actions[action_id].get("Return") == "check",
             f"wix_action_not_deferred:{action_id}",
         )
+    for action_id in (
+        "ScratchBirdCleanupPostInstall",
+        "ScratchBirdCommitPreRemove",
+    ):
         require(
-            actions[action_id].get("Impersonate") == "no",
+            actions[action_id].get("Execute") == "commit"
+            and actions[action_id].get("Return") == "ignore",
+            f"wix_commit_action_invalid:{action_id}",
+        )
+    for action_id, action in actions.items():
+        require(
+            action.get("Impersonate") == "no",
             f"wix_action_impersonation:{action_id}",
         )
         require(
-            actions[action_id].get("HideTarget") == "yes",
+            action.get("HideTarget") == "yes",
             f"wix_action_target_visible:{action_id}",
         )
     set_properties = {
-        row.get("Id"): row.get("Value", "")
+        row.get("Id"): row
         for row in fragment.findall("./w:SetProperty", ns)
     }
-    for action_id in ("ScratchBirdPostInstall", "ScratchBirdPreRemove"):
+    require(
+        set(set_properties) == expected_actions,
+        "wix_lifecycle_property_set",
+    )
+    install_condition = 'NOT (REMOVE~="ALL")'
+    remove_condition = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+    for action_id in (
+        "ScratchBirdRollbackPostInstall",
+        "ScratchBirdPostInstall",
+        "ScratchBirdFinalizePostInstall",
+    ):
         require(
             '-InstallRoot "[INSTALLFOLDER]."'
-            in set_properties.get(action_id, ""),
+            in set_properties[action_id].get("Value", ""),
             f"wix_install_root_trailing_separator_guard:{action_id}",
+        )
+        require(
+            set_properties[action_id].get("Condition") == install_condition,
+            f"wix_install_property_condition:{action_id}",
+        )
+    install_cleanup = set_properties["ScratchBirdCleanupPostInstall"]
+    require(
+        install_cleanup.get("Condition") == install_condition,
+        "wix_install_cleanup_condition",
+    )
+    require(
+        install_cleanup.get("Value")
+        == (
+            '"[System64Folder]reg.exe" delete '
+            '"HKLM\\SOFTWARE\\ScratchBird\\InstallerTransaction" /f'
+        ),
+        "wix_install_cleanup_not_fixed_exact_registry_delete",
+    )
+    require(
+        "powershell" not in install_cleanup.get("Value", "").lower(),
+        "wix_install_cleanup_payload_dependency",
+    )
+    for action_id in (
+        "ScratchBirdRollbackPreRemove",
+        "ScratchBirdPreRemove",
+    ):
+        require(
+            '-InstallRoot "[INSTALLFOLDER]."'
+            in set_properties[action_id].get("Value", ""),
+            f"wix_install_root_trailing_separator_guard:{action_id}",
+        )
+        require(
+            set_properties[action_id].get("Condition") == remove_condition,
+            f"wix_remove_property_condition:{action_id}",
+        )
+    uninstall_commit = set_properties["ScratchBirdCommitPreRemove"]
+    require(
+        uninstall_commit.get("Condition") == remove_condition,
+        "wix_remove_commit_condition",
+    )
+    require(
+        uninstall_commit.get("Value")
+        == (
+            '"[System64Folder]reg.exe" delete '
+            '"HKLM\\SOFTWARE\\ScratchBird\\InstallerTransaction" /f'
+        ),
+        "wix_remove_commit_not_fixed_exact_registry_delete",
+    )
+    require(
+        "powershell" not in uninstall_commit.get("Value", "").lower(),
+        "wix_remove_commit_payload_dependency",
+    )
+    for action_id, script_action in {
+        "ScratchBirdRollbackPostInstall": "RollbackPostInstall",
+        "ScratchBirdPostInstall": "PostInstall",
+        "ScratchBirdFinalizePostInstall": "CommitPostInstall",
+        "ScratchBirdRollbackPreRemove": "RollbackPreRemove",
+        "ScratchBirdPreRemove": "PreRemove",
+    }.items():
+        require(
+            f"-Action {script_action}"
+            in set_properties[action_id].get("Value", ""),
+            f"wix_script_action_mismatch:{action_id}",
         )
     scheduled = {
         row.get("Action"): row
@@ -451,21 +673,65 @@ def main() -> int:
         )
     }
     require(
-        set(scheduled) == set(actions),
+        set(scheduled) == expected_actions,
         "wix_lifecycle_actions_not_scheduled_in_linked_fragment",
+    )
+    for action_id in (
+        "ScratchBirdRollbackPostInstall",
+        "ScratchBirdPostInstall",
+        "ScratchBirdFinalizePostInstall",
+        "ScratchBirdCleanupPostInstall",
+    ):
+        require(
+            scheduled[action_id].get("Condition") == install_condition,
+            f"wix_install_sequence_condition:{action_id}",
+        )
+    for action_id in (
+        "ScratchBirdRollbackPreRemove",
+        "ScratchBirdPreRemove",
+        "ScratchBirdCommitPreRemove",
+    ):
+        require(
+            scheduled[action_id].get("Condition") == remove_condition,
+            f"wix_remove_sequence_condition:{action_id}",
+        )
+    require(
+        scheduled["ScratchBirdRollbackPostInstall"].get("Before")
+        == "ScratchBirdPostInstall",
+        "wix_post_install_rollback_order",
     )
     require(
         scheduled["ScratchBirdPostInstall"].get("Before")
-        == "InstallFinalize",
-        "wix_post_install_sequence",
+        == "ScratchBirdFinalizePostInstall",
+        "wix_post_install_fault_sequence",
+    )
+    require(
+        scheduled["ScratchBirdFinalizePostInstall"].get("Before")
+        == "ScratchBirdCleanupPostInstall",
+        "wix_post_install_commit_sequence",
+    )
+    require(
+        scheduled["ScratchBirdCleanupPostInstall"].get("Before")
+        == "Wix4FailWhenDeferred_X64",
+        "wix_post_install_cleanup_sequence",
+    )
+    require(
+        scheduled["ScratchBirdRollbackPreRemove"].get("Before")
+        == "ScratchBirdPreRemove",
+        "wix_pre_remove_rollback_order",
     )
     require(
         scheduled["ScratchBirdPreRemove"].get("Before") == "RemoveFiles",
         "wix_pre_remove_sequence",
     )
     require(
-        "REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" in wix,
-        "wix_upgrade_remove_guard",
+        scheduled["ScratchBirdCommitPreRemove"].get("Before")
+        == "Wix4FailWhenDeferred_X64",
+        "wix_pre_remove_commit_sequence",
+    )
+    require(
+        all(row.get("After") is None for row in scheduled.values()),
+        "wix_lifecycle_action_has_unbounded_after_sequence",
     )
     require(
         "SB_INSTALLER_USER" not in wix and "InstallerUser" not in wix,
@@ -509,6 +775,48 @@ def main() -> int:
             "@SCRATCHBIRD_|operator_required|compatibility|emulation|firebird|mysql|postgres",
             "service_fresh_install = \"manual_stopped\"",
             "scm_runtime_start_proof = \"not_claimed_by_installer_lifecycle_smoke\"",
+            '$InstallerTransactionRegistryPath = '
+            '"HKLM:\\SOFTWARE\\ScratchBird\\InstallerTransaction"',
+            "function Invoke-MsiExpectedFailure",
+            "if ($process.ExitCode -ne 1603)",
+            "function Assert-MsiLogContainsTokens",
+            "function Assert-InstallerTransactionJournalAbsent",
+            "function Assert-NoScratchBirdIdentityAndJournal",
+            "function Get-ScratchBirdIdentitySnapshot",
+            "function Assert-ScratchBirdIdentitySnapshot",
+            "function Get-ScratchBirdServiceSecuritySddl",
+            "function ConvertTo-NormalizedScratchBirdSddl",
+            "WIXFAILWHENDEFERRED=1",
+            "msi-fault-injected-fresh-install.log",
+            "msi-fault-injected-uninstall.log",
+            "Wix4FailWhenDeferred_X64",
+            "ScratchBirdFinalizePostInstall",
+            "ScratchBirdCleanupPostInstall",
+            "qa-failed-install-retry-preserve.conf",
+            "service_security_sddl",
+            "registry_sddl",
+            "delayed_auto_start_present",
+            "fault_injected_fresh_install = "
+            '"failed_as_expected_identity_rollback_passed"',
+            "fault_injected_uninstall = "
+            '"failed_as_expected_snapshotted_service_fields_restore_and_'
+            'preserved_group_verification_passed"',
+            "installer_transaction_rollback_scope = "
+            '"service_and_filesystem_operations_group_identity_only"',
+            "failed_install_programdata_configuration_and_acl_policy = "
+            '"preserved_not_rolled_back_and_required_acl_reapplied_on_retry"',
+            "service_snapshotted_identity_configuration_and_runtime_state_"
+            "fields_restored_after_failed_uninstall = $true",
+            "filesystem_operations_group_preserved_during_failed_uninstall = "
+            "$true",
+            "post_install_identity_finalization = "
+            '"checked_deferred_before_install_finalize"',
+            "post_install_journal_cleanup = "
+            '"ignored_commit_after_successful_install_finalize_'
+            'fixed_absolute_System32_reg.exe_exact_key_delete"',
+            "pre_remove_journal_cleanup = "
+            '"ignored_commit_after_successful_install_finalize_'
+            'fixed_absolute_System32_reg.exe_exact_key_delete"',
         ),
         "smoke",
     )
@@ -529,6 +837,20 @@ def main() -> int:
         smoke.index('"/a"') < smoke.index('"/i"'),
         "administrative_extract_not_separate",
     )
+    require(
+        smoke.count('"WIXFAILWHENDEFERRED=1"') == 2,
+        "fault_injection_install_uninstall_count",
+    )
+    require(
+        smoke.index("msi-fault-injected-fresh-install.log")
+        < smoke.index('Join-Path $WorkRoot "msi-actual-install.log"'),
+        "fresh_install_fault_not_before_normal_install",
+    )
+    require(
+        smoke.index("msi-fault-injected-uninstall.log")
+        < smoke.index('Join-Path $WorkRoot "msi-actual-uninstall.log"'),
+        "uninstall_fault_not_before_normal_uninstall",
+    )
 
     require_tokens(
         builder,
@@ -544,6 +866,9 @@ def main() -> int:
             "write_windows_system_package_evidence(",
             '"WixToolset.Util.wixext"',
             '<CustomActionRef Id="ScratchBirdPostInstall" />',
+            '<Launch Condition="NOT RollbackDisabled" '
+            'Message="ScratchBird requires Windows Installer rollback to be enabled." />',
+            'if text.count("@SCRATCHBIRD_VERSION@") != 5:',
             '"native_default_port": 3092',
             r'service_identity = NT SERVICE\scratchbird',
             "@SCRATCHBIRD_STATE_ROOT@",
@@ -555,10 +880,13 @@ def main() -> int:
         workflow,
         (
             "Set up WiX and utility extension",
-            "Verify Windows LocalAccounts lifecycle dependency",
+            "Verify Windows native local-group lifecycle dependency",
             'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
             "System.Management.Automation.Language.Parser]::ParseFile",
-            'windows_localaccounts_dependency=passed',
+            "$env:SB_SMOKE_PARSE_PATH",
+            'windows_native_local_group_dependency=passed',
+            "$systemDirectory = [Environment]::SystemDirectory",
+            '$candidate = Join-Path $canonicalSystemDirectory "net.exe"',
             "wix extension add -g",
             "dotnet tool install --global wix --version 4.0.6",
             "WixToolset.Util.wixext/4.0.6",

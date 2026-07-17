@@ -30,6 +30,64 @@ function Invoke-Msi {
   }
 }
 
+function Invoke-MsiExpectedFailure {
+  param(
+    [Parameter(Mandatory = $true)] [string[]] $Arguments,
+    [Parameter(Mandatory = $true)] [string] $Failure
+  )
+  $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $Arguments -Wait -PassThru
+  if ($process.ExitCode -ne 1603) {
+    throw "$($Failure): expected MSI error 1603, got $($process.ExitCode)"
+  }
+  return $process.ExitCode
+}
+
+function Assert-MsiLogContainsTokens {
+  param(
+    [Parameter(Mandatory = $true)] [string] $Path,
+    [Parameter(Mandatory = $true)] [string[]] $Tokens
+  )
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "MSI log is missing: $Path"
+  }
+  $text = Get-Content -LiteralPath $Path -Raw
+  foreach ($token in $Tokens) {
+    if (-not $text.Contains($token)) {
+      throw "MSI log does not prove expected transaction action: $token"
+    }
+  }
+}
+
+$InstallerTransactionRegistryPath = "HKLM:\SOFTWARE\ScratchBird\InstallerTransaction"
+
+function Assert-InstallerTransactionJournalAbsent {
+  if (Test-Path -LiteralPath $InstallerTransactionRegistryPath) {
+    throw "ScratchBird installer transaction journal remains"
+  }
+}
+
+function Assert-NoScratchBirdIdentityAndJournal {
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $serviceCount = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Count
+    $groupCount = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE").Count
+    $journalExists = Test-Path -LiteralPath $InstallerTransactionRegistryPath
+    if ($serviceCount -eq 0 -and $groupCount -eq 0 -and -not $journalExists) {
+      break
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  if (@(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Count -ne 0) {
+    throw "scratchbird service remains after failed fresh-install rollback"
+  }
+  if (@(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE").Count -ne 0) {
+    throw "ScratchBird group remains after failed fresh-install rollback"
+  }
+  if (@(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE").Count -ne 0) {
+    throw "scratchbird local SAM user exists after failed fresh-install rollback"
+  }
+  Assert-InstallerTransactionJournalAbsent
+}
+
 function New-ShortAdministrativeExtractRoot {
   $driveRoot = [IO.Path]::GetPathRoot($env:SystemRoot)
   if ([string]::IsNullOrWhiteSpace($driveRoot)) {
@@ -86,6 +144,106 @@ function Get-ExactScratchBirdGroup {
     throw "ScratchBird must not create a local SAM service user"
   }
   return $rows[0]
+}
+
+function Get-ScratchBirdServiceSecuritySddl {
+  $sc = Join-Path $env:SystemRoot "System32\sc.exe"
+  if (-not (Test-Path -LiteralPath $sc -PathType Leaf)) {
+    throw "System32 sc.exe is unavailable"
+  }
+  $output = @(& $sc "sdshow" "scratchbird" 2>$null)
+  if ([int]$LASTEXITCODE -ne 0) {
+    throw "scratchbird service security descriptor query failed"
+  }
+  $sddlRows = @($output | ForEach-Object {
+    ([string]$_).Trim()
+  } | Where-Object {
+    $_ -match '^[OGDS]:'
+  })
+  if ($sddlRows.Count -ne 1) {
+    throw "scratchbird service security descriptor is invalid"
+  }
+  return [string]$sddlRows[0]
+}
+
+function ConvertTo-NormalizedScratchBirdSddl {
+  param([string] $Sddl)
+  if ([string]::IsNullOrWhiteSpace($Sddl)) {
+    throw "ScratchBird security descriptor is empty"
+  }
+  $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+  return $descriptor.GetSddlForm(
+    [Security.AccessControl.AccessControlSections]::All
+  )
+}
+
+function Get-ScratchBirdIdentitySnapshot {
+  $group = Get-ExactScratchBirdGroup
+  $services = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'")
+  if ($services.Count -ne 1) {
+    throw "exactly one scratchbird service is required for identity snapshot"
+  }
+  $service = $services[0]
+  $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\scratchbird"
+  $serviceSidType = (Get-ItemProperty -LiteralPath $serviceRegistryPath -Name "ServiceSidType").ServiceSidType
+  $serviceSid = [Security.Principal.NTAccount]::new(
+    "NT SERVICE\scratchbird"
+  ).Translate([Security.Principal.SecurityIdentifier]).Value
+  $serviceRegistryAcl = Get-Acl -LiteralPath $serviceRegistryPath
+  $serviceRegistryKey = Get-Item -LiteralPath $serviceRegistryPath -Force
+  $delayedAutoStartPresent = @(
+    $serviceRegistryKey.GetValueNames()
+  ) -contains "DelayedAutoStart"
+  $delayedAutoStart = if ($delayedAutoStartPresent) {
+    [int]$serviceRegistryKey.GetValue("DelayedAutoStart")
+  } else {
+    $null
+  }
+  $serviceSecuritySddl = ConvertTo-NormalizedScratchBirdSddl (
+    Get-ScratchBirdServiceSecuritySddl
+  )
+  $registrySddl = ConvertTo-NormalizedScratchBirdSddl (
+    [string]$serviceRegistryAcl.Sddl
+  )
+  return [ordered]@{
+    group = [ordered]@{
+      name = [string]$group.Name
+      domain = [string]$group.Domain
+      sid = [string]$group.SID
+      sid_type = [int]$group.SIDType
+      description = [string]$group.Description
+      member_count = 0
+    }
+    service = [ordered]@{
+      name = [string]$service.Name
+      display_name = [string]$service.DisplayName
+      path_name = [string]$service.PathName
+      start_name = [string]$service.StartName
+      start_mode = [string]$service.StartMode
+      state = [string]$service.State
+      service_type = [string]$service.ServiceType
+      error_control = [string]$service.ErrorControl
+      description = [string]$serviceRegistryKey.GetValue("Description")
+      delayed_auto_start_present = [bool]$delayedAutoStartPresent
+      delayed_auto_start = $delayedAutoStart
+      service_sid = $serviceSid
+      service_sid_type = [int]$serviceSidType
+      service_security_sddl = $serviceSecuritySddl
+      registry_sddl = $registrySddl
+    }
+  }
+}
+
+function Assert-ScratchBirdIdentitySnapshot {
+  param(
+    [Parameter(Mandatory = $true)] $Expected
+  )
+  $actual = Get-ScratchBirdIdentitySnapshot
+  $expectedJson = $Expected | ConvertTo-Json -Depth 8 -Compress
+  $actualJson = $actual | ConvertTo-Json -Depth 8 -Compress
+  if (-not [string]::Equals($actualJson, $expectedJson, [StringComparison]::Ordinal)) {
+    throw "failed uninstall did not restore the snapshotted ScratchBird service identity/configuration/runtime-state fields and preserved group identity"
+  }
 }
 
 function Assert-SidNotInAnyLocalSamGroup {
@@ -197,7 +355,7 @@ function Assert-InstalledWindowsSystem {
     throw "Windows system install evidence is missing"
   }
   $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.filesystem_operations_group_member_count -ne 0 -or $evidence.filesystem_operations_group_creation_policy -ne "Microsoft.PowerShell.LocalAccounts\New-LocalGroup_when_missing" -or $evidence.lifecycle_process_architecture -ne "64_bit" -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
+  if ($evidence.native_default_port -ne 3092 -or $evidence.service_name -ne "scratchbird" -or $evidence.service_account -ne "NT SERVICE\scratchbird" -or $evidence.service_authority_scope -ne "filesystem_directory_and_process_execution_only_no_database_or_security_authority" -or $evidence.service_local_sam_group_membership -ne $false -or $evidence.filesystem_operations_group_member_count -ne 0 -or $evidence.filesystem_operations_group_creation_policy -ne "absolute_System32_net.exe_localgroup_add_when_missing" -or $evidence.lifecycle_process_architecture -ne "64_bit" -or $evidence.human_service_group_membership_mutated -ne $false -or $evidence.create_time_os_authorization -ne "administrator_only" -or $evidence.filesystem_operations_group_sid -ne [string]$group.SID -or $evidence.topology -ne "client_to_optional_SBmgr_not_used_with_emulation_to_shared_SBgate_to_standalone_selected_SBParser_to_SBPS_IPC_to_SBsrv_engine" -or $evidence.database_files_created -ne $false -or $evidence.security_sidecars_created -ne $false) {
     throw "Windows system install evidence is invalid"
   }
   if ($evidence.filesystem_operations_group_created_by_this_run -isnot [bool]) {
@@ -206,6 +364,7 @@ function Assert-InstalledWindowsSystem {
   if ($RequireGroupCreatedByThisRun -and -not $evidence.filesystem_operations_group_created_by_this_run) {
     throw "Fresh MSI install did not create the ScratchBird group"
   }
+  Assert-InstallerTransactionJournalAbsent
 
   $configRoot = Join-Path $stateRoot "config"
   $runtimeValue = $runtimeRoot.Replace("\", "/")
@@ -391,6 +550,41 @@ if (@(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Cou
 if (@(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE").Count -ne 0 -or @(Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='scratchbird' AND LocalAccount=TRUE").Count -ne 0) {
   throw "actual MSI smoke requires a host without a pre-existing ScratchBird SAM identity"
 }
+Assert-InstallerTransactionJournalAbsent
+
+$failedFreshInstallLog = Join-Path $WorkRoot "msi-fault-injected-fresh-install.log"
+$failedFreshInstallExitCode = Invoke-MsiExpectedFailure @(
+  "/i",
+  "`"$PackagePath`"",
+  "/qn",
+  "/norestart",
+  "WIXFAILWHENDEFERRED=1",
+  "/l*v",
+  "`"$failedFreshInstallLog`""
+) "fault-injected fresh MSI install"
+Assert-MsiLogContainsTokens $failedFreshInstallLog @(
+  "ScratchBirdPostInstall",
+  "ScratchBirdFinalizePostInstall",
+  "ScratchBirdCleanupPostInstall",
+  "Wix4FailWhenDeferred_X64",
+  "ScratchBirdRollbackPostInstall"
+)
+Assert-NoScratchBirdIdentityAndJournal
+
+$retryStateRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "ScratchBird"
+$retryConfigRoot = Join-Path $retryStateRoot "config"
+if (-not (Test-Path -LiteralPath $retryConfigRoot -PathType Container)) {
+  throw "fault-injected install did not preserve its ProgramData configuration directory"
+}
+Assert-NoInstallerDatabaseArtifacts $retryStateRoot
+$retryConfigMarker = Join-Path $retryConfigRoot "qa-failed-install-retry-preserve.conf"
+[IO.File]::WriteAllText(
+  $retryConfigMarker,
+  "operator_config_preserved_across_identity_only_rollback_and_retry"
+)
+$retryConfigHash = (
+  Get-FileHash -LiteralPath $retryConfigMarker -Algorithm SHA256
+).Hash
 
 $installLog = Join-Path $WorkRoot "msi-actual-install.log"
 Invoke-Msi @(
@@ -401,7 +595,18 @@ Invoke-Msi @(
   "/l*v",
   "`"$installLog`""
 ) "msiexec actual install failed"
+Assert-MsiLogContainsTokens $installLog @(
+  "ScratchBirdFinalizePostInstall",
+  "ScratchBirdCleanupPostInstall"
+)
 $installed = Assert-InstalledWindowsSystem -RequireGroupCreatedByThisRun
+if (
+  -not (Test-Path -LiteralPath $retryConfigMarker -PathType Leaf) -or
+  (Get-FileHash -LiteralPath $retryConfigMarker -Algorithm SHA256).Hash -ne
+    $retryConfigHash
+) {
+  throw "normal retry did not preserve failed-install ProgramData configuration"
+}
 
 $configMarker = Join-Path $installed.state_root "config\qa-operator-preserve.conf"
 $dataMarker = Join-Path $installed.state_root "data\qa-operator-preserve.dat"
@@ -435,6 +640,37 @@ if (-not [string]::IsNullOrWhiteSpace($UpgradePackagePath)) {
 }
 
 $productCode = Get-MsiProperty $installedPackagePath "ProductCode"
+$installedIdentitySnapshot = Get-ScratchBirdIdentitySnapshot
+$failedUninstallLog = Join-Path $WorkRoot "msi-fault-injected-uninstall.log"
+$failedUninstallExitCode = Invoke-MsiExpectedFailure @(
+  "/x",
+  $productCode,
+  "/qn",
+  "/norestart",
+  "WIXFAILWHENDEFERRED=1",
+  "/l*v",
+  "`"$failedUninstallLog`""
+) "fault-injected MSI uninstall"
+Assert-MsiLogContainsTokens $failedUninstallLog @(
+  "ScratchBirdPreRemove",
+  "ScratchBirdCommitPreRemove",
+  "Wix4FailWhenDeferred_X64",
+  "ScratchBirdRollbackPreRemove"
+)
+Assert-ScratchBirdIdentitySnapshot $installedIdentitySnapshot
+Assert-InstallerTransactionJournalAbsent
+[void](Assert-InstalledWindowsSystem)
+if (
+  (Get-FileHash -LiteralPath $retryConfigMarker -Algorithm SHA256).Hash -ne
+    $retryConfigHash -or
+  (Get-FileHash -LiteralPath $configMarker -Algorithm SHA256).Hash -ne
+    $configHash -or
+  (Get-FileHash -LiteralPath $dataMarker -Algorithm SHA256).Hash -ne
+    $dataHash
+) {
+  throw "fault-injected uninstall changed preserved ProgramData content"
+}
+
 $uninstallLog = Join-Path $WorkRoot "msi-actual-uninstall.log"
 Invoke-Msi @(
   "/x",
@@ -444,6 +680,9 @@ Invoke-Msi @(
   "/l*v",
   "`"$uninstallLog`""
 ) "msiexec actual uninstall failed"
+Assert-MsiLogContainsTokens $uninstallLog @(
+  "ScratchBirdCommitPreRemove"
+)
 
 for ($attempt = 0; $attempt -lt 20; $attempt++) {
   if (@(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Count -eq 0) {
@@ -454,10 +693,22 @@ for ($attempt = 0; $attempt -lt 20; $attempt++) {
 if (@(Get-CimInstance -ClassName Win32_Service -Filter "Name='scratchbird'").Count -ne 0) {
   throw "scratchbird service record remains after uninstall"
 }
-if (-not (Test-Path -LiteralPath $configMarker -PathType Leaf) -or -not (Test-Path -LiteralPath $dataMarker -PathType Leaf)) {
+Assert-InstallerTransactionJournalAbsent
+if (
+  -not (Test-Path -LiteralPath $retryConfigMarker -PathType Leaf) -or
+  -not (Test-Path -LiteralPath $configMarker -PathType Leaf) -or
+  -not (Test-Path -LiteralPath $dataMarker -PathType Leaf)
+) {
   throw "MSI uninstall removed operator config/data"
 }
-if ((Get-FileHash -LiteralPath $configMarker -Algorithm SHA256).Hash -ne $configHash -or (Get-FileHash -LiteralPath $dataMarker -Algorithm SHA256).Hash -ne $dataHash) {
+if (
+  (Get-FileHash -LiteralPath $retryConfigMarker -Algorithm SHA256).Hash -ne
+    $retryConfigHash -or
+  (Get-FileHash -LiteralPath $configMarker -Algorithm SHA256).Hash -ne
+    $configHash -or
+  (Get-FileHash -LiteralPath $dataMarker -Algorithm SHA256).Hash -ne
+    $dataHash
+) {
   throw "MSI uninstall changed operator config/data"
 }
 Assert-NoInstallerDatabaseArtifacts $installed.state_root
@@ -466,14 +717,27 @@ Assert-NoInstallerDatabaseArtifacts $installed.state_root
 @{
   schema_id = "scratchbird.windows_msi_actual_install_smoke.v1"
   administrative_extract = "passed_separate_no_lifecycle_claim"
+  fault_injected_fresh_install = "failed_as_expected_identity_rollback_passed"
+  fault_injected_fresh_install_exit_code = $failedFreshInstallExitCode
   actual_install = "passed"
   upgrade = $upgradeStatus
+  fault_injected_uninstall = "failed_as_expected_snapshotted_service_fields_restore_and_preserved_group_verification_passed"
+  fault_injected_uninstall_exit_code = $failedUninstallExitCode
   uninstall = "passed"
+  installer_transaction_journal_cleared = $true
+  installer_transaction_rollback_scope = "service_and_filesystem_operations_group_identity_only"
+  rollback_disabled_policy = "blocked_by_package_launch_condition"
+  post_install_identity_finalization = "checked_deferred_before_install_finalize"
+  post_install_journal_cleanup = "ignored_commit_after_successful_install_finalize_fixed_absolute_System32_reg.exe_exact_key_delete"
+  pre_remove_journal_cleanup = "ignored_commit_after_successful_install_finalize_fixed_absolute_System32_reg.exe_exact_key_delete"
+  failed_install_programdata_configuration_and_acl_policy = "preserved_not_rolled_back_and_required_acl_reapplied_on_retry"
   service_fresh_install = "manual_stopped"
   service_account = "NT SERVICE\scratchbird"
   filesystem_operations_group_member_count = 0
   filesystem_operations_group_created_on_fresh_install = $true
+  filesystem_operations_group_preserved_during_failed_uninstall = $true
   filesystem_operations_group_preserved_after_uninstall = $true
+  service_snapshotted_identity_configuration_and_runtime_state_fields_restored_after_failed_uninstall = $true
   service_authority_scope = "filesystem_directory_and_process_execution_only_no_database_or_security_authority"
   service_local_sam_group_membership = $false
   human_service_group_membership_mutated = $false
