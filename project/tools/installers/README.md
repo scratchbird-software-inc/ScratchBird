@@ -175,7 +175,10 @@ An existing `scratchbird` user is rejected unless it satisfies that complete
 headless contract and its nonzero UID is unique and remains in that range. The
 hosted gate also injects an authentication-authority record temporarily and
 proves the installer refuses it before restoring and revalidating the locked
-account. The `scratchbird` group must contain exactly the service user by name
+account. Attribute absence is determined from the complete Directory Service
+record; `dscl` missing-key exit status is not an authority because macOS may
+report “No such key” with a successful status. The `scratchbird` group must
+contain exactly the service user by name
 and generated UID, with no nested groups. Explicit membership of the service
 user in any other local group, and nesting of the `scratchbird` group inside
 any other local group, are forbidden. The transitive `admin` membership check

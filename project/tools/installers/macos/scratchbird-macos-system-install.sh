@@ -329,14 +329,8 @@ ensure_service_identity() {
     [ "$user_shell" = "$NON_LOGIN_SHELL" ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_hidden" = 1 ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_password" = '*' ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
-    if dscl . -read "/Users/$SERVICE_USER" AuthenticationAuthority \
-        >/dev/null 2>&1 || \
-        dscl . -read "/Users/$SERVICE_USER" ShadowHashData \
-        >/dev/null 2>&1; then
-        fail BOOTSTRAP.GROUP_INPUT_INVALID
-    fi
     if printf '%s\n' "$user_record" | \
-        grep -Eq '^(AuthenticationAuthority|ShadowHashData|dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)):'; then
+        grep -Eq '^(AuthenticationAuthority|ShadowHashData|dsAttrType(Native|Standard):(AuthenticationAuthority|ShadowHashData)):'; then
         fail BOOTSTRAP.GROUP_INPUT_INVALID
     fi
     numeric_identity_is_unique /Users UniqueID "$user_uid" || \

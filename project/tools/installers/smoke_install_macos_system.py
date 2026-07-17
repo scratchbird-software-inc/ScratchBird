@@ -365,7 +365,7 @@ def validate_helper_static(helper: Path) -> None:
         "ensure_service_is_not_admin",
         "ensure_service_group_membership_is_exact",
         "ensure_service_has_no_explicit_supplementary_membership",
-        "dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)",
+        "dsAttrType(Native|Standard):(AuthenticationAuthority|ShadowHashData)",
         '[ "$user_password" = \'*\' ]',
         "local_group_has_guid_member",
         "local_group_nests_group_guid",
@@ -413,6 +413,8 @@ def validate_helper_static(helper: Path) -> None:
         "--installer-user",
         "GROUP_MEMBERSHIP_REQUIRED",
         "admin 2>/dev/null) ||",
+        'dscl . -read "/Users/$SERVICE_USER" AuthenticationAuthority',
+        'dscl . -read "/Users/$SERVICE_USER" ShadowHashData',
     ):
         if forbidden in text:
             fail(f"lifecycle_forbidden_fragment:{forbidden}")

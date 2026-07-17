@@ -649,14 +649,15 @@ jobs:
               if [ "$(sudo dscl . -read /Users/scratchbird Password 2>/dev/null | awk 'NR == 1 { print $2 }')" = '*' ]; then
                 password_marker_exact=true
               fi
+              service_user_record="$(sudo dscl . -read /Users/scratchbird 2>/dev/null)"
               authentication_authority_present=false
-              if sudo dscl . -read /Users/scratchbird AuthenticationAuthority \
-                  >/dev/null 2>&1; then
+              if printf '%s\n' "$service_user_record" | grep -Eq \
+                  '^(AuthenticationAuthority|dsAttrType(Native|Standard):AuthenticationAuthority):'; then
                 authentication_authority_present=true
               fi
               shadow_hash_data_present=false
-              if sudo dscl . -read /Users/scratchbird ShadowHashData \
-                  >/dev/null 2>&1; then
+              if printf '%s\n' "$service_user_record" | grep -Eq \
+                  '^(ShadowHashData|dsAttrType(Native|Standard):ShadowHashData):'; then
                 shadow_hash_data_present=true
               fi
               {
@@ -781,14 +782,10 @@ jobs:
           service_home="$(sudo dscl . -read /Users/scratchbird NFSHomeDirectory | awk 'NR == 1 { print $2 }')"
           service_hidden="$(sudo dscl . -read /Users/scratchbird IsHidden | awk 'NR == 1 { print $2 }')"
           service_password="$(sudo dscl . -read /Users/scratchbird Password | awk 'NR == 1 { print $2 }')"
-          if sudo dscl . -read /Users/scratchbird AuthenticationAuthority \
-              >/dev/null 2>&1; then
-            echo "ScratchBird service account has an authentication authority." >&2
-            exit 1
-          fi
-          if sudo dscl . -read /Users/scratchbird ShadowHashData \
-              >/dev/null 2>&1; then
-            echo "ScratchBird service account has shadow password data." >&2
+          service_user_record="$(sudo dscl . -read /Users/scratchbird)"
+          if printf '%s\n' "$service_user_record" | grep -Eq \
+              '^(AuthenticationAuthority|ShadowHashData|dsAttrType(Native|Standard):(AuthenticationAuthority|ShadowHashData)):'; then
+            echo "ScratchBird service account has an authentication or shadow-hash record." >&2
             exit 1
           fi
           host_user="$(id -un)"

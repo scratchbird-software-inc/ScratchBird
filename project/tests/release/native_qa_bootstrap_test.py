@@ -434,7 +434,15 @@ class NativeQaBootstrapTest(unittest.TestCase):
             / "project/tools/installers/macos/scratchbird-macos-system-install.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "dsAttrTypeNative:(AuthenticationAuthority|ShadowHashData)",
+            "dsAttrType(Native|Standard):(AuthenticationAuthority|ShadowHashData)",
+            lifecycle_helper,
+        )
+        self.assertNotIn(
+            'dscl . -read "/Users/$SERVICE_USER" AuthenticationAuthority',
+            lifecycle_helper,
+        )
+        self.assertNotIn(
+            'dscl . -read "/Users/$SERVICE_USER" ShadowHashData',
             lifecycle_helper,
         )
         self.assertIn('[ "$user_password" = \'*\' ]', lifecycle_helper)

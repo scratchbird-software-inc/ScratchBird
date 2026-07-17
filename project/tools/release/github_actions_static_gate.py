@@ -202,6 +202,8 @@ def check_macos_system_installed_verifier(
         "host_computed_directory_groups_not_copied_into_service_process",
         "service_authentication_authority_present",
         "service_shadow_hash_data_present",
+        "service_user_record=",
+        "dsAttrType(Native|Standard)",
         "AuthenticationAuthority",
         "ShadowHashData",
         'test "$service_password" = \'*\'',
@@ -221,6 +223,15 @@ def check_macos_system_installed_verifier(
         'echo "forbidden_matches=0"',
     ):
         require_token(step, token, rel)
+    for forbidden in (
+        "dscl . -read /Users/scratchbird AuthenticationAuthority",
+        "dscl . -read /Users/scratchbird ShadowHashData",
+    ):
+        if forbidden in step:
+            fail(
+                f"macos_dscl_missing_attribute_exit_status_forbidden:"
+                f"{rel}:{job_name}:{forbidden}"
+            )
     verifier_offset = step.index(verifier)
     mode_offset = step.find(mode, verifier_offset)
     inventory_offset = step.find(inventory, mode_offset)
