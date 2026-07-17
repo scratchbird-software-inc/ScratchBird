@@ -302,6 +302,8 @@ def main() -> int:
             "function Rollback-CreatedService",
             "Rollback-CreatedService",
             "function Ensure-SBsrvService",
+            '$LifecyclePhase = "PRECHECK"',
+            '"BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase"',
             '@("create", $ServiceName',
             "Assert-ServiceRecord $service -RequireFreshDefaults",
             "& $sc delete $ServiceName",
@@ -319,6 +321,7 @@ def main() -> int:
         "InstallerUser",
         "GROUP_MEMBERSHIP_REQUIRED",
         ".Add((\"WinNT://",
+        "$_.Exception",
     ):
         require(forbidden not in lifecycle, f"lifecycle_forbidden:{forbidden}")
 
@@ -341,6 +344,11 @@ def main() -> int:
     except ET.ParseError as exc:
         fail(f"wix_xml:{exc}")
     ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+    require(
+        wix.count("[System64Folder]") == 2,
+        "wix_x64_powershell_reference_count",
+    )
+    require("[SystemFolder]" not in wix, "wix_32bit_powershell_forbidden")
     fragments = tree.findall("./w:Fragment", ns)
     require(len(fragments) == 1, "wix_lifecycle_fragment_not_atomic")
     fragment = fragments[0]

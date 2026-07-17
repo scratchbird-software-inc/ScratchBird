@@ -243,6 +243,8 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             self.assertNotIn("InstallerUser", lifecycle)
             self.assertIn('Execute="deferred"', lifecycle)
             self.assertIn('Impersonate="no"', lifecycle)
+            self.assertEqual(lifecycle.count("[System64Folder]"), 2)
+            self.assertNotIn("[SystemFolder]", lifecycle)
             self.assertIn(
                 '-InstallRoot &quot;[INSTALLFOLDER].&quot;', lifecycle
             )
@@ -525,6 +527,12 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         self.assertIn(
             "service_local_sam_group_membership = $false", lifecycle
         )
+        self.assertIn('$LifecyclePhase = "PRECHECK"', lifecycle)
+        self.assertIn(
+            '"BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase"',
+            lifecycle,
+        )
+        self.assertNotIn("$_.Exception", lifecycle)
         smoke = (
             REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
         ).read_text(encoding="utf-8")
