@@ -26,6 +26,10 @@ fi
 
 rm -rf "$work_root"
 mkdir -p "$work_root"
+# The lifecycle helper deliberately rejects relative or non-normalized install
+# roots.  Hosted workflows pass a workspace-relative proof directory, so make
+# that root canonical before deriving the isolated fresh/upgrade fixtures.
+work_root="$(cd "$work_root" && pwd -P)"
 
 system_install="${SB_MACOS_SMOKE_INSTALL_SYSTEM:-false}"
 require_signed="${SB_MACOS_REQUIRE_SIGNED:-false}"

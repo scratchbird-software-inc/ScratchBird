@@ -501,6 +501,12 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("portable_launchd_manifest_forbidden", smoke)
         self.assertIn("portable_launchd_root_forbidden", smoke)
         self.assertIn("execution_mode=foreground_only", smoke)
+        canonical_work_root = 'work_root="$(cd "$work_root" && pwd -P)"'
+        self.assertIn(canonical_work_root, smoke)
+        self.assertLess(
+            smoke.index(canonical_work_root),
+            smoke.index('--root "$fresh_root"'),
+        )
         self.assertIn(
             '"$runtime_root" --config-root "$config_root" '
             "--config-mode system-installed",
