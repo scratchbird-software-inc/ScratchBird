@@ -547,6 +547,8 @@ def validate_launcher_static(launcher: Path) -> dict[str, Any]:
         "setgroups(0, NULL)",
         "setgid(runtime_gid)",
         "setuid(runtime_uid)",
+        "require_no_additional_group_authority",
+        "groups[index] != effective_group",
         'ScratchBirdKernelGetGroups(int size, gid_t groups[])',
         'validate_executable_target(target, runtime_gid)',
         "metadata.st_nlink",
@@ -573,6 +575,8 @@ def validate_launcher_static(launcher: Path) -> dict[str, Any]:
     return {
         "fixed_selectors": ["sbsrv", "sbmgr", "credential-probe"],
         "supplementary_groups_cleared": True,
+        "group_access_list_policy": "effective_gid_only",
+        "additional_supplementary_group_count": 0,
         "final_identity": "scratchbird:scratchbird",
         "arbitrary_target_or_arguments": "forbidden",
     }

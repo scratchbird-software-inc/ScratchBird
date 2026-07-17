@@ -212,7 +212,8 @@ directory inventory is diagnostic, never an installer allowlist. Hosted proof
 shows that `InitGroups=false` does not remove that computed set, so `SBlaunch`
 explicitly clears it before assuming the service UID/GID. The hosted package
 gate selects a one-shot credential probe—not a ScratchBird service—through the
-same launcher and verifies a raw supplementary-group count of zero plus
+same launcher and verifies that the raw kernel group-access list contains only
+the effective ScratchBird GID, with zero additional supplementary groups, plus
 read/write denial against files owned by authority-bearing computed groups.
 The package never adds a human account to the service group. Root alone
 authorizes explicit create-time bootstrap; the numeric service identity is used

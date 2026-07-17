@@ -405,7 +405,7 @@ class NativeQaBootstrapTest(unittest.TestCase):
             / "project/drivers/tool/cli/bootstrap_os_authority_test.cpp"
         ).read_text(encoding="utf-8")
         for token in (
-            "launchd_credential_raw_group_ids=",
+            "launchd_credential_group_access_list_ids=",
             "launchd_credential_exact_group_policy=",
         ):
             self.assertIn(token, authority_test_source)
@@ -436,7 +436,8 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("host_computed_authority_canaries=refused", launchd_probe)
         self.assertIn('[[ "$canary_count" -gt 0 ]]', launchd_probe)
         self.assertIn("launchd_service_process_credential=passed", launchd_probe)
-        self.assertIn("raw_supplementary_group_count=0", launchd_probe)
+        self.assertIn("group_access_list_policy=effective_gid_only", launchd_probe)
+        self.assertIn("additional_supplementary_group_count=0", launchd_probe)
         self.assertNotIn("/opt/ScratchBird/bin/SBsrv", launchd_probe)
         self.assertNotIn("/opt/ScratchBird/bin/SBmgr", launchd_probe)
         launcher = (
@@ -450,6 +451,8 @@ class NativeQaBootstrapTest(unittest.TestCase):
             "setgroups(0, NULL)",
             "setgid(runtime_gid)",
             "setuid(runtime_uid)",
+            "require_no_additional_group_authority",
+            "groups[index] != effective_group",
             "close_inherited_descriptors()",
             "execve(target, selected_argv, clean_environment)",
         ):

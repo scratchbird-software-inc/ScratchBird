@@ -701,7 +701,11 @@ jobs:
             "$proof_root/launchd-service-credential.txt"
           grep -Fx 'supplementary_group_policy=exact_scratchbird_only' \
             "$proof_root/launchd-service-credential.txt"
-          grep -Fx 'raw_supplementary_group_count=0' \
+          grep -Eq '^group_access_list_count=[0-9]+$' \
+            "$proof_root/launchd-service-credential.txt"
+          grep -Fx 'group_access_list_policy=effective_gid_only' \
+            "$proof_root/launchd-service-credential.txt"
+          grep -Fx 'additional_supplementary_group_count=0' \
             "$proof_root/launchd-service-credential.txt"
           grep -Fx 'host_computed_authority_canaries=refused' \
             "$proof_root/launchd-service-credential.txt"
@@ -764,7 +768,8 @@ jobs:
             echo "launchd_bootstrap_identity=root:wheel"
             echo "service_launcher=/opt/ScratchBird/bin/SBlaunch"
             echo "final_product_identity=scratchbird:scratchbird"
-            echo "raw_supplementary_group_count=0"
+            echo "group_access_list_policy=effective_gid_only"
+            echo "additional_supplementary_group_count=0"
             echo "supplementary_group_policy=exact_scratchbird_only"
             echo "host_computed_authority_canaries=refused"
             echo "launchd_default_state=disabled_not_loaded"

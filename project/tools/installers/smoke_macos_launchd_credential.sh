@@ -184,9 +184,15 @@ grep -Fx "effective_group=scratchbird" \
 grep -Fx "supplementary_group_policy=exact_scratchbird_only" \
   "$proof_root/launchd-service-credential.txt" >/dev/null || \
   fail "supplementary_group_mismatch"
-grep -Fx "raw_supplementary_group_count=0" \
+grep -Eq '^group_access_list_count=[0-9]+$' \
   "$proof_root/launchd-service-credential.txt" >/dev/null || \
-  fail "raw_supplementary_group_count"
+  fail "group_access_list_count"
+grep -Fx "group_access_list_policy=effective_gid_only" \
+  "$proof_root/launchd-service-credential.txt" >/dev/null || \
+  fail "group_access_list_policy"
+grep -Fx "additional_supplementary_group_count=0" \
+  "$proof_root/launchd-service-credential.txt" >/dev/null || \
+  fail "additional_supplementary_group_count"
 grep -Fx "host_computed_authority_canaries=refused" \
   "$proof_root/launchd-service-credential.txt" >/dev/null || \
   fail "host_computed_authority_canary"

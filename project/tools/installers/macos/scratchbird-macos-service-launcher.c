@@ -29,6 +29,7 @@
 
 #define SCRATCHBIRD_EXIT_DENIED 78
 #define SCRATCHBIRD_LOOKUP_BUFFER_SIZE 16384U
+#define SCRATCHBIRD_MAX_KERNEL_GROUPS 1024
 
 #if defined(__APPLE__)
 /*
@@ -61,7 +62,7 @@ static void deny(const char *code)
     _exit(SCRATCHBIRD_EXIT_DENIED);
 }
 
-static int raw_supplementary_group_count(void)
+static int raw_group_access_list_count(void)
 {
 #if defined(__APPLE__)
     return ScratchBirdKernelGetGroups(0, NULL);
@@ -70,12 +71,40 @@ static int raw_supplementary_group_count(void)
 #endif
 }
 
-static void require_empty_supplementary_groups(const char *failure_code)
+static void require_no_additional_group_authority(const char *failure_code)
 {
-    if (raw_supplementary_group_count() != 0)
+    const int count = raw_group_access_list_count();
+
+    if (count < 0 || count > SCRATCHBIRD_MAX_KERNEL_GROUPS)
     {
         deny(failure_code);
     }
+#if defined(__APPLE__)
+    {
+        gid_t groups[SCRATCHBIRD_MAX_KERNEL_GROUPS];
+        const gid_t effective_group = getegid();
+        int index;
+
+        if (count > 0 &&
+            ScratchBirdKernelGetGroups(count, groups) != count)
+        {
+            deny(failure_code);
+        }
+        for (index = 0; index < count; ++index)
+        {
+            /* Darwin may include the effective GID in its access list. */
+            if (groups[index] != effective_group)
+            {
+                deny(failure_code);
+            }
+        }
+    }
+#else
+    if (count != 0)
+    {
+        deny(failure_code);
+    }
+#endif
 }
 
 static void close_inherited_descriptors(void)
@@ -256,7 +285,7 @@ int main(int argc, char *argv[])
     {
         deny("SB_MACOS_LAUNCHER.CLEAR_GROUPS_DENIED");
     }
-    require_empty_supplementary_groups(
+    require_no_additional_group_authority(
         "SB_MACOS_LAUNCHER.CLEAR_GROUPS_VERIFICATION_DENIED");
 
     if (setgid(runtime_gid) != 0)
@@ -273,7 +302,7 @@ int main(int argc, char *argv[])
     {
         deny("SB_MACOS_LAUNCHER.IDENTITY_VERIFICATION_DENIED");
     }
-    require_empty_supplementary_groups(
+    require_no_additional_group_authority(
         "SB_MACOS_LAUNCHER.GROUPS_VERIFICATION_DENIED");
 
     if (setgid((gid_t) 0) == 0)
@@ -289,7 +318,7 @@ int main(int argc, char *argv[])
     {
         deny("SB_MACOS_LAUNCHER.POST_REGAIN_IDENTITY_DENIED");
     }
-    require_empty_supplementary_groups(
+    require_no_additional_group_authority(
         "SB_MACOS_LAUNCHER.POST_REGAIN_GROUPS_DENIED");
 
     (void) umask((mode_t) 0027);

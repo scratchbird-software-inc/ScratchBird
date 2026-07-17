@@ -61,7 +61,7 @@ void Write(const std::filesystem::path& path, const std::string& body) {
 }
 
 #ifndef _WIN32
-int RawSupplementaryGroupCount() {
+int RawGroupAccessListCount() {
 #ifdef __APPLE__
   return SbTestKernelGetGroups(0, nullptr);
 #else
@@ -80,9 +80,9 @@ void PrintRunningCredentialDiagnostic(uid_t expected_uid,
   std::cerr << "launchd_credential_effective_gid=" << getegid() << '\n';
   std::cerr << "launchd_credential_exact_group_policy="
             << (exact_group_policy ? "passed" : "failed") << '\n';
-  const int count = RawSupplementaryGroupCount();
+  const int count = RawGroupAccessListCount();
   if (count < 0 || count > 1024) {
-    std::cerr << "launchd_credential_raw_group_ids=unavailable\n";
+    std::cerr << "launchd_credential_group_access_list_ids=unavailable\n";
     return;
   }
   std::vector<gid_t> groups(static_cast<std::size_t>(count), 0);
@@ -93,10 +93,10 @@ void PrintRunningCredentialDiagnostic(uid_t expected_uid,
   const int loaded = count == 0 ? 0 : getgroups(count, groups.data());
 #endif
   if (loaded != count) {
-    std::cerr << "launchd_credential_raw_group_ids=unavailable\n";
+    std::cerr << "launchd_credential_group_access_list_ids=unavailable\n";
     return;
   }
-  std::cerr << "launchd_credential_raw_group_ids=";
+  std::cerr << "launchd_credential_group_access_list_ids=";
   for (int index = 0; index < count; ++index) {
     if (index != 0) std::cerr << ',';
     std::cerr << groups[static_cast<std::size_t>(index)];
@@ -177,11 +177,17 @@ int VerifyRunningServiceIdentity(const std::string& profile_path,
   const bool exact_group_policy =
       scratchbird::cli::BootstrapCurrentProcessHasOnlyConfiguredGroup(
           static_cast<std::uint64_t>(service_group_id));
-  const int raw_supplementary_group_count = RawSupplementaryGroupCount();
+  const int group_access_list_count = RawGroupAccessListCount();
+#ifdef __APPLE__
+  const bool group_access_list_shape_valid =
+      group_access_list_count >= 0 && group_access_list_count <= 1024;
+#else
+  const bool group_access_list_shape_valid = group_access_list_count == 0;
+#endif
   if (service_user_id == 0 || service_group_id == 0 ||
       getuid() != service_user_id || geteuid() != service_user_id ||
       getgid() != service_group_id || getegid() != service_group_id ||
-      !exact_group_policy || raw_supplementary_group_count != 0) {
+      !exact_group_policy || !group_access_list_shape_valid) {
     PrintRunningCredentialDiagnostic(service_user_id, service_group_id,
                                      exact_group_policy);
     std::cerr << scratchbird::cli::kBootstrapDeniedDiagnostic << '\n';
@@ -225,8 +231,9 @@ int VerifyRunningServiceIdentity(const std::string& profile_path,
   std::cout << "effective_user=scratchbird\n";
   std::cout << "effective_group=scratchbird\n";
   std::cout << "supplementary_group_policy=exact_scratchbird_only\n";
-  std::cout << "raw_supplementary_group_count="
-            << raw_supplementary_group_count << '\n';
+  std::cout << "group_access_list_count=" << group_access_list_count << '\n';
+  std::cout << "group_access_list_policy=effective_gid_only\n";
+  std::cout << "additional_supplementary_group_count=0\n";
   std::cout << "host_computed_authority_canaries=refused\n";
   std::cout << "host_computed_authority_canary_count=" << canary_count << '\n';
   std::cout << "bootstrap_authority_regain=refused\n";
