@@ -15,10 +15,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -295,6 +297,51 @@ bool CanonicalIntegerDistinctKey(const EngineDescriptor& descriptor,
   return true;
 }
 
+// This deliberately admits the decimal real64 grammar accepted by the
+// non-Apple from_chars path.  In particular, it excludes locale-sensitive
+// separators, leading whitespace and a leading plus, which strtod otherwise
+// accepts on macOS.
+bool DecimalReal64Text(std::string_view value) {
+  if (value.empty()) return false;
+  std::size_t position = 0;
+  if (value[position] == '-') {
+    ++position;
+    if (position == value.size()) return false;
+  }
+
+  bool significand_digit = false;
+  while (position < value.size() &&
+         std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
+    significand_digit = true;
+    ++position;
+  }
+  if (position < value.size() && value[position] == '.') {
+    ++position;
+    while (position < value.size() &&
+           std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
+      significand_digit = true;
+      ++position;
+    }
+  }
+  if (!significand_digit) return false;
+
+  if (position < value.size() &&
+      (value[position] == 'e' || value[position] == 'E')) {
+    ++position;
+    if (position < value.size() &&
+        (value[position] == '-' || value[position] == '+')) {
+      ++position;
+    }
+    const std::size_t exponent_begin = position;
+    while (position < value.size() &&
+           std::isdigit(static_cast<unsigned char>(value[position])) != 0) {
+      ++position;
+    }
+    if (position == exponent_begin) return false;
+  }
+  return position == value.size();
+}
+
 bool CanonicalReal64Value(const EngineDescriptor& descriptor,
                           std::string_view encoded,
                           double* value,
@@ -319,12 +366,31 @@ bool CanonicalReal64Value(const EngineDescriptor& descriptor,
     }
     return false;
   }
+  if (!DecimalReal64Text(canonical.value.encoded_value)) {
+    if (error_detail != nullptr) {
+      *error_detail = "global_aggregate_real64_value_invalid";
+    }
+    return false;
+  }
   double parsed = 0.0;
+#if defined(__APPLE__)
+  // Apple libc++ does not provide the C++17 floating-point from_chars
+  // overload. Keep the same full-input, range, and finite-value contract
+  // with the C conversion routine available on both supported macOS runners.
+  std::string parse_text = canonical.value.encoded_value;
+  char* parsed_end = nullptr;
+  errno = 0;
+  parsed = std::strtod(parse_text.c_str(), &parsed_end);
+  const bool parse_failed =
+      errno == ERANGE || parsed_end != parse_text.c_str() + parse_text.size();
+#else
   const char* begin = canonical.value.encoded_value.data();
   const char* end = begin + canonical.value.encoded_value.size();
   const auto [parsed_end, error] =
       std::from_chars(begin, end, parsed, std::chars_format::general);
-  if (error != std::errc{} || parsed_end != end || !std::isfinite(parsed)) {
+  const bool parse_failed = error != std::errc{} || parsed_end != end;
+#endif
+  if (parse_failed || !std::isfinite(parsed)) {
     if (error_detail != nullptr) {
       *error_detail = "global_aggregate_real64_value_invalid";
     }
